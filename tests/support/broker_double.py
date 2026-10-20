@@ -96,8 +96,7 @@ def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> Non
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
                                  plans=Plans(data_root))
     identities.resolve(principal, allocate=True)
-    drive(identities.admission("admit", principal, center,
-     routing=projection(identities.path)))
+    drive(identities.admit(principal, routing=projection(identities.path)))
 
 
 def _peer_uid(sock: socket.socket) -> int:

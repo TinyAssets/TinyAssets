@@ -86,7 +86,7 @@ def _universe_for(tmp_path: Path, host: str, repo: str) -> tuple[Path, Path]:
         grant_id="grant-git",
         connection_id="conn-git",
         owner_user_id=principal,
-        universe_id=UNIVERSE,
+
     )
     for op in ("checkout", "push"):
         grant_consent(

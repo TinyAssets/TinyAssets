@@ -334,7 +334,7 @@ def test_real_broker_rechecks_the_original_ledger_authority_between_hops(chain, 
         grant_id="original",
         connection_id="download",
         owner_user_id="alice",
-        universe_id="u-1",
+
     )
     audit = []
     network = _TrustedNetworkDriver(

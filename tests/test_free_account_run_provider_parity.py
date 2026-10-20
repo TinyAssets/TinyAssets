@@ -226,7 +226,7 @@ def _seed_universe(
     )
     ledger.grant_connection(
         grant_id=grant_id, connection_id=connection_id, owner_user_id=owner,
-        universe_id=universe,
+
         unprompted_action_cap=ActionCap("http_requests", 500, "requests"),
     )
     definition = register_definition(

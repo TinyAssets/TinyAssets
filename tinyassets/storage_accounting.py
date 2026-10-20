@@ -570,6 +570,7 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".centers.db": "platform: box-local center membership, charged by owner volume quota",
     "credential-custody.db": "platform: broker credential ownership",
     "plans.db": "platform: broker billing plan state",
     "next-wake.db": "platform: broker next-wake index and last successful wake timestamps",

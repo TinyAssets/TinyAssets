@@ -31,8 +31,7 @@ def admissions(root):
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=Plans(root))
     for owner, center in (("alice", "alpha"), ("alice", "beta"), ("bob", "gamma")):
         identities.resolve(owner, allocate=True)
-        drive(identities.admission("admit", owner, center,
-     routing=projection(identities.path)))
+        drive(identities.admit(owner, routing=projection(identities.path)))
     return identities
 
 
@@ -94,9 +93,6 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_pa
     changed["entries"].append({"scope": "account", "table": "rules", "values": {
         "agent": "main", "action_class": "app.write", "connection": "", "operation": "",
         "behaviour": "ask_first"}})
-    changed["entries"].append({"scope": "beta", "table": "rules", "values": {
-        "agent": "main", "action_class": "app.write", "connection": "", "operation": "",
-        "behaviour": "hand_off"}})
     with pytest.raises(PolicyRefused):
         store.write("alice", "an-agent-token-" + "x" * 32, before.generation, changed)
     with pytest.raises(PolicyRefused):
@@ -106,7 +102,7 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_pa
     after = store.write("alice", cookie, before.generation, changed)
     assert after.generation == 2 and after.digest != before.digest
     assert store.decide("alice", center="alpha", action_class="app.write")["decision"] == "ask"
-    assert store.decide("alice", center="beta", action_class="app.write")["decision"] == "deny"
+    assert store.decide("alice", center="beta", action_class="app.write")["decision"] == "ask"
     assert store.decide("alice", center="alpha", action_class="app.read")["decision"] == "allow"
     with sqlite3.connect(store._path("alice")) as db:
         rows = db.execute("SELECT kind,session_id,old_digest,new_digest FROM receipts "
@@ -120,7 +116,7 @@ def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path):
     identities = admissions(tmp_path)
     store = PolicyStore(tmp_path, identities)
     store.bootstrap()
-    drive(identities.admission("admit", "alice", "new", routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     legacy = _legacy(tmp_path, "new", "hand_off")
     original = legacy.read_bytes()
     assert store.decide("alice", center="new", action_class="app.write")["decision"] == "allow"
@@ -152,7 +148,7 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
     # permits the first reservation and refuses the over-cap reservation.
     (tmp_path / ".broker/restore-spend-until").write_text("retired authority")
     current = broker.client.owner_policy("read")
-    proposed = broker.client.owner_policy("proposal", center="alpha", change={
+    proposed = broker.client.owner_policy("proposal", change={
         "expected_generation": current["generation"], "policy": current["policy"]})
     assert proposed["generation"] == current["generation"]
     assert any(row["kind"] == "proposal" for row in
@@ -170,11 +166,11 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
                broker.client.owner_policy("receipts")["receipts"])
     capped = json.loads(json.dumps(written["policy"]))
     capped["spend"]["transaction"] = 10
-    capped["entries"].append({"scope": "alpha", "table": "rules", "values": {
+    capped["entries"].append({"scope": "account", "table": "rules", "values": {
         "agent": "main", "action_class": "spend", "behaviour": "do"}})
     broker.client.owner_policy("write", cookie=cookie,
                                expected_generation=written["generation"], policy=capped)
-    request = {"center": "alpha", "action_class": "spend", "connection": "",
+    request = {"action_class": "spend", "connection": "",
                "operation": "", "destination": "", "source": "model-a",
                "agent": "main", "amount": 8, "request_id": "model-call-1"}
     assert broker.client.owner_policy("decide", request=request)["decision"] == "allow"
@@ -187,8 +183,8 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
 def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_path):  # noqa: F811
     cookie = "interactive-cookie-" + "h" * 32
     _session(tmp_path, "alice", cookie)
-    drive(broker.server._owner_identities.admission("admit", "alice", "cc-alice",
-        routing=projection(broker.server._owner_identities.path)))
+    drive(broker.server._owner_identities.admit(
+        "alice", routing=projection(broker.server._owner_identities.path)))
     store = PolicyStore(tmp_path, broker.server._owner_identities)
     store.bootstrap()
     # The inference OPEN must reach the current spend policy even when an old
@@ -278,7 +274,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path):
              "action_class": "app.write", "connection": "conn", "operation": "POST",
              "origin": "https://example.com", "scope": "always",
              "policy_generation": current.generation + 1}
-    document["entries"].append({"scope": "alpha", "table": "approval_grants", "values": {
+    document["entries"].append({"scope": "account", "table": "approval_grants", "values": {
         "id": 5, "agent": "main", "record_kind": "preapproval",
         "decision_id": "grant-5", "grant_json": json.dumps(grant)}})
     written = store.write("alice", cookie, current.generation, document)
@@ -288,7 +284,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path):
              "origin": "https://example.com", "agent": "main"}
     assert store.allows_grant("alice", **query)
     assert not store.allows_grant("alice", **{**query, "agent": "worker"})
-    assert not store.allows_grant("alice", **{**query, "center": "beta"})
+    assert store.allows_grant("alice", **{**query, "center": "beta"})
     edited = json.loads(json.dumps(document))
     edited["egress"] = {"mode": "allowlist", "allowlist": ["example.com"]}
     later = store.write("alice", cookie, written.generation, edited)
@@ -309,7 +305,7 @@ def test_egress_and_spend_caps_stay_under_approvals(tmp_path):
     document["egress"] = {"mode": "allowlist", "allowlist": ["example.com"]}
     document["spend"].update({"transaction": 50, "monthly": 90,
                               "ask_above": 30, "source_ceilings": {"model-a": 45}})
-    document["entries"].append({"scope": "alpha", "table": "rules", "values": {
+    document["entries"].append({"scope": "account", "table": "rules", "values": {
         "agent": "main", "action_class": "spend", "behaviour": "do"}})
     store.write("alice", cookie, current.generation, document)
     assert store.decide("alice", center="alpha", action_class="app.write",

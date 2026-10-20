@@ -139,7 +139,6 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
         and grant.connection_id == authority.connection_id
         and grant.owner_user_id == owner_user_id
         and view.owner_user_id == owner_user_id
-        and grant.universe_id == universe_id
         and view.connection_type == "http"
         and "POST" in view.scopes
     )

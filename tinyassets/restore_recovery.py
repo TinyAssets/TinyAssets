@@ -126,7 +126,7 @@ def reset_credentials(staged, now):
         os.chown(path, 1001, 1001)
     for pattern in (
         ".runtime/app_refresh_sessions/*.json",
-        ".platform/credential-vaults/*/.credential-vault.json",
+        ".broker/accounts/*/credentials/.credential-vault.json",
     ):
         for path in staged.glob(pattern):
             _safe(staged, path.relative_to(staged)).unlink()

@@ -1156,7 +1156,7 @@ async def _handle_policy(request: Any) -> Any:
     elif data.get("action") == "apply_proposal" and set(data) == {
             "action", "center", "request_id"}:
         from tinyassets.api.pending_requests import displayed_row_matches
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
         from tinyassets.storage.pending_requests import get_request, resolve_request
 
         proposed_center = data["center"]

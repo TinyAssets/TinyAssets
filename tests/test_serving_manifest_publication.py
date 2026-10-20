@@ -50,7 +50,7 @@ def scene(tmp_path, monkeypatch):
         grant_id="http_grant_" + "d" * 32,
         connection_id="http_" + "c" * 32,
         owner_user_id="owner-1",
-        universe_id="u-owner",
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     second = register_definition(

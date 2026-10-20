@@ -10,7 +10,7 @@ import pytest
 from tests.support.admission import Plans, async_call, drive, projection, suspend
 from tinyassets.boxes.layout import hold
 from tinyassets.broker.admission import local_mutate, read, require_admitted
-from tinyassets.broker.box_admission import owner_record, resolve, resolve_owner
+from tinyassets.broker.box_admission import owner_record, resolve_owner
 from tinyassets.broker.owner_identities import OwnerIdentities
 
 
@@ -35,15 +35,16 @@ def owner_box(tmp_path):
     return identities, uid
 
 
-def test_owner_public_admission_needs_no_center_and_keeps_center_channels_scoped(owner_box):
+def test_owner_public_admission_needs_no_center_and_refuses_center_fields(owner_box):
     identities, uid = owner_box
     assert resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice"}) == {
         "op": "BOX_ADMITTED", "uid": uid, "quota": 1024**3}
     with sqlite3.connect(identities.path) as db:
-        assert db.execute("SELECT COUNT(*) FROM center_admissions").fetchone() == (0,)
+        assert db.execute("SELECT name FROM sqlite_master "
+                          "WHERE name='center_admissions'").fetchall() == []
         assert db.execute("SELECT COUNT(*) FROM owner_box_secrets").fetchone() == (0,)
-    with pytest.raises(PermissionError):
-        resolve(identities, {"op": "BOX_ADMISSION", "principal": "alice", "center": "a"})
+    with pytest.raises(ValueError):
+        resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice", "center": "a"})
 
 
 @pytest.mark.parametrize("column,value", [
@@ -94,31 +95,30 @@ def test_owner_public_admission_refuses_missing_identity_plan_or_schema(owner_bo
         resolve_owner(identities, request)
 
 
-def test_broker_admission_requires_permanent_mapping_center_binding_and_migrated_quota(tmp_path):
+def test_broker_admission_requires_permanent_owner_mapping_and_migrated_quota(tmp_path):
     tmp_path.chmod(0o700)
     identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
     identity = identities.resolve("alice", allocate=True)
-    drive(identities.admission("admit", "alice", "a", routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
         db.execute("INSERT INTO box_records VALUES (?,?,?,?)",
                    ("alice", identity.uid, identity.uid, 1024**3))
-    request = {"op": "BOX_ADMISSION", "principal": "alice", "center": "a"}
-    assert resolve(identities, request) == {"op": "BOX_ADMITTED", "uid": identity.uid,
+    request = {"op": "BOX_PUBLIC", "principal": "alice"}
+    assert resolve_owner(identities, request) == {"op": "BOX_ADMITTED", "uid": identity.uid,
                                            "quota": 1024**3}
     with pytest.raises(PermissionError):
-        resolve(identities, {**request, "principal": "bob"})
+        resolve_owner(identities, {**request, "principal": "bob"})
     with pytest.raises(ValueError):
-        resolve(identities, {**request, "uid": identity.uid})
+        resolve_owner(identities, {**request, "uid": identity.uid})
     with sqlite3.connect(identities.path) as db:
         db.execute("UPDATE box_records SET project_id=project_id+1")
     with pytest.raises(PermissionError):
-        resolve(identities, request)
+        resolve_owner(identities, request)
     with sqlite3.connect(identities.path) as db:
         db.execute("UPDATE box_records SET project_id=machine")
-    drive(identities.admission("retire", "alice", "a", routing=projection(identities.path)))
-    assert resolve(identities, request)["uid"] == identity.uid
+    assert resolve_owner(identities, request)["uid"] == identity.uid
 
 
 
@@ -152,7 +152,7 @@ def test_new_owner_box_reservation_is_canonical_idempotent_and_fail_closed(tmp_p
     state.mkdir(mode=0o700)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     uid = identities.resolve("alice", allocate=True).uid
-    drive(identities.admission("admit", "alice", "a", routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     def no_owner_read(*args):
         raise AssertionError("broker provisioning must read only shared plans")
 
@@ -161,22 +161,22 @@ def test_new_owner_box_reservation_is_canonical_idempotent_and_fail_closed(tmp_p
                         lambda tier: SimpleNamespace(storage_bytes=1024**3))
     # No startup schema creation, even after authenticated admission.
     with pytest.raises(sqlite3.OperationalError):
-        provision(identities, tmp_path, "alice", "a")
+        provision(identities, tmp_path, "alice")
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT UNIQUE, "
                    "project_id INT UNIQUE, bhard_bytes INT)")
-    provision(identities, tmp_path, "alice", "a")
+    provision(identities, tmp_path, "alice")
     monkeypatch.setattr("tinyassets.usage_policy.limits_for",
                         lambda tier: SimpleNamespace(storage_bytes=1024))
-    provision(identities, tmp_path, "alice", "a")
-    assert resolve(identities, {"op": "BOX_ADMISSION", "principal": "alice", "center": "a"}) == {
+    provision(identities, tmp_path, "alice")
+    assert resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice"}) == {
         "op": "BOX_ADMITTED", "uid": uid, "quota": 1024**3}
     with pytest.raises(PermissionError):
-        provision(identities, tmp_path, "bob", "a")
+        provision(identities, tmp_path, "bob")
     with sqlite3.connect(identities.path) as db:
         db.execute("UPDATE box_records SET project_id=project_id+1")
     with pytest.raises(PermissionError, match="reservation changed"):
-        provision(identities, tmp_path, "alice", "a")
+        provision(identities, tmp_path, "alice")
 
 
 @pytest.fixture
@@ -187,8 +187,7 @@ def authority(tmp_path):
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
                                  plans=Plans(tmp_path))
     uid = identities.resolve("alice", allocate=True).uid
-    drive(identities.admission("admit", "alice", "center",
-     routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -219,8 +218,12 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     if state in {"abuse", "both"}:
         suspend(identities.plans, owner, reason="abuse", suspended=True)
     if state == "center-retired":
-        drive(identities.admission("retire", owner, "center",
-        routing=projection(identities.path)))
+        from tinyassets.owner_centers import Centers
+
+        box = tmp_path / "box"
+        box.mkdir()
+        Centers(box).create("center")
+        Centers(box).retire("center")
     if state == "account-retired":
         drive(local_mutate(identities.path, owner, "erase",
       routing=projection(identities.path)))
@@ -246,8 +249,8 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
         "admission": lambda: require_admitted(identities, owner),
         "router": lambda: identities.box_route(owner),
         "boxhostd": lambda: owner_record(identities, owner),
-        "channel-admission": lambda: resolve(identities, {"op": "BOX_ADMISSION",
-                                                         "principal": owner, "center": "center"}),
+        "channel-admission": lambda: resolve_owner(identities, {"op": "BOX_PUBLIC",
+                                                         "principal": owner}),
         "public-egress": lambda: resolve_owner(identities, {"op": "BOX_PUBLIC",
                                                            "principal": owner}),
     }
@@ -266,7 +269,7 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     drive(Waker(index, identities.plans,
                 wake=async_call(lambda owner, **kw: woke.append(owner)))._wake(owner))
     assert woke == ([owner] if expected else [])
-    channel = SimpleNamespace(_box_owner=owner, _box_center="center", _server=SimpleNamespace(
+    channel = SimpleNamespace(_box_owner=owner, _server=SimpleNamespace(
         _owner_identities=identities, _fence=SimpleNamespace(generation=1, token="test")))
     from tinyassets.rpc_frames import FrameError
 
@@ -275,7 +278,7 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     except FrameError:
         assert not expected
     else:
-        assert expected and scope["principal"] == owner and scope["command_center"] == "center"
+        assert expected and scope == {"principal": owner, "generation": 1, "token": "test"}
     record = read(identities, owner)
     assert active_owner(owner, tmp_path)  # Authentication has no erasure-history read.
     assert (record.state == "admitted") == expected
@@ -297,12 +300,17 @@ def test_sources_cannot_clear_each_other_or_terminal_erasure(authority):
        routing=projection(authority.path)))
 
 
-def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authority):
+def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authority, tmp_path):
     before = authority.box_route("alice")
-    drive(authority.admission("retire", "alice", "center",
-     routing=projection(authority.path)))
+    from tinyassets.owner_centers import Centers
+
+    box = tmp_path / "box"
+    box.mkdir()
+    Centers(box).create("center")
+    Centers(box).retire("center")
+    assert Centers(box).active() == []
     assert authority.box_route("alice") == before
-    assert owner_record(authority, "alice")["centers"] == []
+    assert "centers" not in owner_record(authority, "alice")
     from tinyassets.broker.next_wake import NextWakeIndex
 
     assert NextWakeIndex(authority).due(now=1) == ["alice"]
@@ -311,7 +319,7 @@ def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authorit
 def test_retirement_writes_only_the_terminal_record(authority):
     with sqlite3.connect(authority.path) as db:
         before = {table: db.execute(f"SELECT * FROM {table}").fetchall() for table in
-                  ("box_records", "owner_identities", "center_admissions", "owner_box_secrets")}
+                  ("box_records", "owner_identities", "owner_box_secrets")}
         assert db.execute("SELECT name FROM sqlite_master "
                           "WHERE name='owner_box_revocations'").fetchall() == []
     assert set(authority.plans.read("alice")) == {

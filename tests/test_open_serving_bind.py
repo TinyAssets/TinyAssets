@@ -54,7 +54,7 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     ledger.grant_connection(
         grant_id=_GRANT_ID, connection_id=_CONN_ID, owner_user_id="owner-1",
-        universe_id="u-owner",
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     ledger.configure_capability(

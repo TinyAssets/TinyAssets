@@ -1154,7 +1154,7 @@ def request_from_user(
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     if action.get("type") == "policy_proposal":
         from tinyassets.broker.client import owner_policy_operation
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
 
         owner = admitted_owner(udir.parent, center=_uid)
         owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
@@ -2074,7 +2074,7 @@ def _reconcile_connections(uid, udir):
         action = row["action"]
         if action.get("type") not in _SECRET_FIELD_TYPES or not displayed_row_matches(row):
             continue
-        _, grant_id = _ids(universe_id=uid, destination=action["destination"])
+        _, grant_id = _ids(owner=permissions.current_actor_id(), destination=action["destination"])
         try:
             resource = granted_resource_row(_base_path(), principal=actor,
                                            command_center=uid, grant_id=grant_id)
@@ -3169,7 +3169,8 @@ def _model_use_refusal(uid: str, action: dict[str, Any]) -> dict[str, Any] | Non
     from tinyassets.api.http_connection import _ids
     from tinyassets.principals import named_principal
 
-    connection_id, grant_id = _ids(universe_id=uid, destination=action["destination"])
+    connection_id, grant_id = _ids(
+        owner=permissions.current_actor_id(), destination=action["destination"])
     return model_use_refusal(
         base=_base_path(), uid=uid, actor=named_principal(permissions.current_actor_id()),
         connection_id=connection_id, grant_id=grant_id,

@@ -79,7 +79,7 @@ def rig(tmp_path, monkeypatch):
         grant_id="grant-models",
         connection_id="conn-models",
         owner_user_id="owner",
-        universe_id="u-models",
+
     )
     definition = definitions.register_definition(
         universe_id="u-models",
@@ -259,7 +259,6 @@ def test_publication_requires_current_get_and_credentialed_owner_authority(rig, 
     "changes",
     [
         {"owner_user_id": "other"},
-        {"universe_id": "other"},
         {"connection_id": "other"},
         {"granted_at": 0},
         {"revoked_at": 1},

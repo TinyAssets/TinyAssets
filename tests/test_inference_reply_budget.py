@@ -77,7 +77,7 @@ def broker(tmp_path):
         )
         ledger.grant_connection(
             grant_id=grant_id, connection_id=connection_id,
-            owner_user_id="owner", universe_id="universe",
+            owner_user_id="owner",
         )
     ledger.configure_capability(
         connection_id="conn-model", capability_kind="model_use",

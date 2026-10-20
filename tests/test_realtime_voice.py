@@ -85,7 +85,7 @@ def _seed_binding(
         grant_id=_GRANT_ID,
         connection_id=_CONNECTION_ID,
         owner_user_id=owner,
-        universe_id=universe_id,
+
     )
     ledger.configure_capability(
         connection_id=_CONNECTION_ID,

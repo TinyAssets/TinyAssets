@@ -27,19 +27,19 @@ def local_page(ledger, *, principal, command_center, cursor, limit, include_revo
     with ledger._connect() as conn:
         conn.execute("BEGIN")
         rows = conn.execute(
-            "SELECT c.*, g.grant_id, g.universe_id, g.granted_at, g.unprompted_action_cap_json "
+            "SELECT c.*, g.grant_id, g.granted_at, g.unprompted_action_cap_json "
             "FROM outbound_connection_grants g "
             "JOIN outbound_connections c ON c.connection_id=g.connection_id "
-            "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
+            "WHERE g.owner_user_id=? AND c.owner_user_id=? "
             "AND g.revoked_at IS NULL AND (c.revoked_at IS NULL OR ?) AND g.grant_id>? "
             "ORDER BY g.grant_id LIMIT ?",
-            (principal, principal, command_center, include_revoked, cursor, limit + 1),
+            (principal, principal, include_revoked, cursor, limit + 1),
         ).fetchall()
         items = []
         for row in rows[:limit]:
             cap = row["unprompted_action_cap_json"]
             grant = ConnectionGrant(row["grant_id"], row["connection_id"], principal,
-                                     command_center, row["granted_at"], None,
+                                     row["granted_at"], None,
                                      ActionCap(**json.loads(cap)) if cap else None)
             items.append({"grant": asdict(grant), "connection": _resource_from_row(row).to_view(
             ).as_dict(), "incarnation": row["incarnation"]})
@@ -89,8 +89,7 @@ def connections(data_root, *, principal, command_center, limit=None, include_rev
                 view = ConnectionView(**(vrow | {"scopes": tuple(vrow["scopes"]),
                     "allowed_endpoints": _parse_allowed_endpoints(vrow["allowed_endpoints"])}))
                 if not all((grant.owner_user_id == view.owner_user_id == principal,
-                            grant.universe_id == command_center,
-                            grant.connection_id == view.connection_id,
+                                    grant.connection_id == view.connection_id,
                             grant.revoked_at is None,
                             view.revoked_at is None or include_revoked,
                             isinstance(grant.grant_id, str), grant.grant_id > previous,

@@ -279,3 +279,36 @@ credential operation SHALL only revoke an account, never mint or list credential
 - **AND** deletion step 6 revokes only after the router acknowledges installing the withdrawal revision or a later revision
 - **AND** a mint checked before installation is revoked by step 6; no credential survives either order
 - **AND** unavailable publication keeps step 6 pending on the existing tick, and relay retirement never waits for a mint
+
+### Requirement: The shared layer is keyed by owner, not center
+The shared layer SHALL key admission, credential custody, grants, egress policy
+and relay channels by owner. An owner's centers SHALL be a table inside
+the owner's box, and creating or retiring a center SHALL be a box operation. The
+shared layer SHALL hold no center admission table and no per-center store.
+
+#### Scenario: The cutover drops center-keyed custody
+- **WHEN** the cutover migration runs
+- **THEN** each owner's center table is written into that owner's box from the admitted center-to-owner mapping
+- **AND** every center-keyed credential, connection, grant and policy scope is dropped and counted, and no custody is carried into the owner-keyed stores
+- **AND** owner-keyed policy keeps account rules, egress and spend controls, with a recomputed digest, next generation and migration receipt
+- **AND** owners reconnect through the door's ordinary connection flow
+
+#### Scenario: Creating a center touches no shared store
+- **WHEN** an owner creates a new center
+- **THEN** the center is recorded inside the owner's box
+- **AND** no shared admission, custody or policy row is created for the center
+
+#### Scenario: Retiring a center touches no shared store
+- **WHEN** an owner retires a center
+- **THEN** only the box-local center table changes
+- **AND** shared databases and directories remain unchanged
+
+#### Scenario: The owner channel needs no center admission
+- **WHEN** an admitted owner's box has zero or several centers
+- **THEN** the bound owner channel serves without a shared center list
+- **AND** substituted owner or box identifiers cannot select another account
+
+#### Scenario: Same-service connections keep distinct handles
+- **WHEN** an owner creates two connections to the same service
+- **THEN** each connection's handle selects its own credential and grant
+- **AND** another owner cannot read, dispatch or revoke either connection

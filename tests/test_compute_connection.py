@@ -105,7 +105,7 @@ def _seed_grant(base: Path, *, owner: str, universe: str,
     )
     ledger.grant_connection(
         grant_id=grant_id, connection_id=conn_id, owner_user_id=owner,
-        universe_id=universe, unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
 
 
@@ -188,15 +188,15 @@ def test_api_key_http_absent_grant_rejected(base: Path) -> None:
     assert r["error"] == "not_found"
 
 
-def test_api_key_http_cross_universe_grant_hidden(base: Path) -> None:
+def test_api_key_http_same_owner_centers_share_grant(base: Path) -> None:
     _make_universe(base, "u-x", admin="founder")
     _make_universe(base, "u-other", admin="founder")
-    _seed_grant(base, owner="founder", universe="u-other")  # grant bound to u-other
+    _seed_grant(base, owner="founder", universe="u-other")
     _login("founder")
     r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
                  model="m", ref=_GRANT_ID)
-    # Isolation: a grant for another universe is not confirmed — uniform not_found.
-    assert r == {"error": "not_found", "resource": "connection"}
+    assert r["status"] == "registered"
+    assert r["ref"] == _GRANT_ID
 
 
 def test_api_key_http_cross_owner_grant_hidden(base: Path) -> None:

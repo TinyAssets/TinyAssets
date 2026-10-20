@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tests.support.admission import Plans, async_call, drive, projection, suspend
+from tests.support.admission import Plans, async_call, drive, projection, retire_local, suspend
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.next_wake import FLOOR_SECONDS, NextWakeIndex
@@ -37,11 +37,10 @@ def index(tmp_path):
     for owner in ("a", "b", "c", "retired", "reserved"):
         identities.resolve(owner, allocate=True)
         if owner != "reserved":
-            drive(identities.admission("admit", owner, "cc-" + owner,
-                routing=projection(identities.path)))
+            drive(identities.admit(owner, routing=projection(identities.path)))
             from tinyassets.broker.box_admission import provision
 
-            provision(identities, tmp_path, owner, "cc-" + owner)
+            provision(identities, tmp_path, owner)
     drive(local_mutate(identities.path, "retired", "erase",
       routing=projection(identities.path)))
     return NextWakeIndex(identities)
@@ -95,8 +94,7 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
         index.report("a", 0, now=0)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='b'")
-    drive(index.identities.admission("retire", "c", "cc-c",
-      routing=projection(index.identities.path)))
+    retire_local(index.identities.path.parent / "synthetic-box-c", "cc-c")
     calls = []
     from tinyassets.broker.box_admission import owner_record
 
@@ -199,7 +197,7 @@ def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(
     plans = Plans(tmp_path)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=plans)
     identities.resolve("a", allocate=True)
-    drive(identities.admission("admit", "a", "cc-a", routing=projection(identities.path)))
+    drive(identities.admit("a", routing=projection(identities.path)))
     assert plans.read("a")["tier"] == "free"
     assert not (state / "plans.db").exists()
     for reason in ("billing", "abuse"):
@@ -313,12 +311,7 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
     class Admission:
         broker_socket = live.socket_path
 
-        def grant(self, principal, selected, purpose):
-            assert live.identities.admitted_owner(selected) == principal
-            return SimpleNamespace(uid=uid)
 
-        def authorize(self, grant, selected):
-            return live.identities.admitted_owner(selected) == owner
 
     with tempfile.TemporaryDirectory(prefix="ta-wake-") as short:
         directory = Path(short)
@@ -413,15 +406,14 @@ def test_bound_report_cannot_name_another_owner(sleeping_box):
     box = sleeping_box
     await_report(box, box.at)
     victim = box.index.identities.resolve("victim", allocate=True)
-    drive(box.index.identities.admission("admit", "victim", "cc-victim",
-        routing=projection(box.index.identities.path)))
+    drive(box.index.identities.admit("victim", routing=projection(box.index.identities.path)))
     box.index.report("victim", box.at + 99, now=0)
     path = box.relays.bind(box.owner, box.uid)
     for field in ("owner", "principal", "uid"):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(5)
             sock.connect(str(path))
-            sock.sendall(rf.control(rf.CONNECTION, {"op": "BOX_SHARED"}))
+            sock.sendall(rf.control(rf.CONNECTION, {"op": "BOX_CONNECT"}))
             assert rf.read_frame_blocking(sock).control() == {"op": "BOX_CONNECTED"}
             sock.sendall(rf.control(rf.CONNECTION, {
                 "op": "NEXT_WAKE", "at": 1, field: victim.uid if field == "uid" else "victim"}))

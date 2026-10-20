@@ -113,7 +113,7 @@ def _ledger_with_cap(
         grant_id="grant-1",
         connection_id="conn-1",
         owner_user_id="user-1",
-        universe_id="universe-1",
+
         unprompted_action_cap=ActionCap(
             name="issues-per-action",
             maximum=2,
@@ -121,7 +121,7 @@ def _ledger_with_cap(
         ),
     )
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-1", connection_id="conn-1",
     )
     return ledger, (proxy, calls)
@@ -261,7 +261,7 @@ def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
         grant_id="grant-1",
         connection_id="conn-1",
         owner_user_id="user-1",
-        universe_id="universe-1",
+
         unprompted_action_cap=ActionCap(
             name="repository-actions",
             maximum=2,
@@ -269,7 +269,7 @@ def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
         ),
     )
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-1", connection_id="conn-1",
     )
     universe = tmp_path / "universe-1"
@@ -557,7 +557,7 @@ def test_cap_cannot_be_evaluated_for_a_different_grant_than_proxy(tmp_path):
         grant_id="grant-uncapped",
         connection_id="conn-uncapped",
         owner_user_id="user-1",
-        universe_id="universe-1",
+
     )
 
     with pytest.raises(PermissionError, match="proxy grant"):

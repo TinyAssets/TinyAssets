@@ -4,15 +4,10 @@ Only the broker opens this database, inside its private state directory. A
 missing database is an error except at explicit first-volume initialization.
 Account erasure and rollback must retain it: files can outlive either action.
 
-DA1 (owner-dynamic-admission): the same database holds the append-only,
-generation-numbered ``center_admissions`` log, the only record of which command
-centers are admitted. The broker derives each row's machine from the
-principal's reservation; a caller never supplies it.
 """
 from __future__ import annotations
 
 import os
-import re
 import secrets
 import sqlite3
 import stat
@@ -30,29 +25,6 @@ OWNER_ID_LAST = 399999
 class OwnerIdentity:
     uid: int
     gid: int
-
-
-@dataclass(frozen=True)
-class AdmissionRow:
-    generation: int
-    event: str
-    principal: str
-    center: str
-    machine: int
-
-
-ADMISSION_EVENTS = ("admit", "retire")
-
-
-class CenterUnadmitted(LookupError):
-    """A retire named a center the log never admitted; nothing was appended."""
-# The bounded bootstrap's center character set (deploy/role_owner_launcher.py).
-_CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
-
-
-def validate_center(center: str) -> None:
-    if not isinstance(center, str) or not _CENTER.fullmatch(center):
-        raise ValueError("invalid command center name")
 
 
 def validate_principal(principal: str) -> None:
@@ -101,16 +73,6 @@ class OwnerIdentities:
                 db.execute(f"CREATE TRIGGER IF NOT EXISTS no_identity_{operation.lower()} "
                            f"BEFORE {operation} ON owner_identities BEGIN "
                            "SELECT RAISE(ABORT, 'owner identities are permanent'); END")
-            db.execute("CREATE TABLE IF NOT EXISTS center_admissions ("
-                       "generation INTEGER PRIMARY KEY AUTOINCREMENT, "
-                       "event TEXT NOT NULL CHECK (event IN ('admit','retire')), "
-                       "principal TEXT NOT NULL, center TEXT NOT NULL, "
-                       "machine INTEGER NOT NULL CHECK(machine BETWEEN 300001 AND 399999), "
-                       "UNIQUE(center, event))")
-            for operation in ("DELETE", "UPDATE"):
-                db.execute(f"CREATE TRIGGER IF NOT EXISTS no_admission_{operation.lower()} "
-                           f"BEFORE {operation} ON center_admissions BEGIN "
-                           "SELECT RAISE(ABORT, 'center admissions are append-only'); END")
             db.execute("CREATE TABLE IF NOT EXISTS owner_box_secrets ("
                        "principal TEXT PRIMARY KEY NOT NULL, secret TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS routing_sequence (revision INTEGER NOT NULL)")
@@ -160,61 +122,30 @@ class OwnerIdentities:
         return sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
                                uri=True, timeout=30)
 
-    async def admission(self, event: str, principal: str, center: str, *, routing) -> AdmissionRow:
+    async def admit(self, principal: str, *, routing) -> OwnerIdentity:
         if routing is None:
             raise RuntimeError("admission mutation requires routing")
         from tinyassets.broker.admission import thread_work
 
-        row = await thread_work(self._admission, event, principal, center)
+        identity = await thread_work(self._admit, principal)
         await routing.changed(principal)
-        return row
+        return identity
 
-    def _admission(self, event: str, principal: str, center: str) -> AdmissionRow:
-        """Append (or return the identical existing) admit/retire row; DA1."""
-        if event not in ADMISSION_EVENTS:
-            raise ValueError("invalid admission event")
-        validate_principal(principal)
-        validate_center(center)
-        plans = self.plans
+    def _admit(self, principal: str) -> OwnerIdentity:
+        """Admit one reserved owner; centers never enter the shared map (C11)."""
+        from tinyassets.broker.admission import admission, mutate
+
+        identity = self.resolve(principal)
         with closing(self._connect(write=True)) as db, db:
-            plans.attach_admission(db)
+            self.plans.attach_admission(db)
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
-            rows = {row[1]: row for row in db.execute(
-                "SELECT generation, event, principal, center, machine FROM center_admissions "
-                "WHERE center=?", (center,))}
-            admitted = rows.get("admit")
-            if admitted is not None and admitted[2] != principal:
-                raise PermissionError("center is admitted to another principal")
-            if event == "admit":
-                from tinyassets.broker.admission import mutate
-
-                mutate(db, principal, "admit")
-                if "retire" in rows:
-                    raise PermissionError("a retired center is never admitted again")
-                if admitted is not None:
-                    return _row(admitted)
-                found = db.execute("SELECT machine_id FROM owner_identities WHERE principal=?",
-                                   (principal,)).fetchone()
-                if found is None:
-                    raise LookupError("owner identity is not allocated")
-                machine = found[0]
-                first_admission = db.execute(
-                    "SELECT 1 FROM center_admissions WHERE principal=? AND event='admit'",
-                    (principal,)).fetchone() is None
-                plans.admit_free(db, principal, first_admission=first_admission)
-                db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
-                           (principal, secrets.token_urlsafe(32)))
-            else:
-                if admitted is None:
-                    raise CenterUnadmitted("retire requires a prior admit")
-                if "retire" in rows:
-                    return _row(rows["retire"])
-                machine = admitted[4]
-            cursor = db.execute("INSERT INTO center_admissions "
-                                "(event, principal, center, machine) VALUES (?, ?, ?, ?)",
-                                (event, principal, center, machine))
-            return _row((cursor.lastrowid, event, principal, center, machine))
+            first = admission(db, principal).state == "absent"
+            mutate(db, principal, "admit")
+            self.plans.admit_free(db, principal, first_admission=first)
+            db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
+                       (principal, secrets.token_urlsafe(32)))
+        return identity
 
     def owner_machine(self, principal: str) -> int | None:
         """Read-only reservation lookup; never allocates."""
@@ -246,65 +177,6 @@ class OwnerIdentities:
             if secret is None:
                 raise LookupError("owner ingress credential is missing")
             return row[0], secret[0]
-
-    def center_state(self, center: str) -> str:
-        validate_center(center)
-        with closing(self._connect(write=False)) as db:
-            events = {row[0] for row in db.execute(
-                "SELECT event FROM center_admissions WHERE center=?", (center,))}
-        return "retired" if "retire" in events else "admitted" if events else "unadmitted"
-
-    def admitted_owner(self, center: str) -> str:
-        """The mapper's live owner binding; no allocation or inferred grants."""
-        validate_center(center)
-        with closing(self._connect(write=False)) as db:
-            rows = dict(db.execute(
-                "SELECT event, principal FROM center_admissions WHERE center=?", (center,)))
-        if 'admit' not in rows or 'retire' in rows:
-            raise PermissionError('center has no live owner admission')
-        validate_principal(rows['admit'])
-        return rows['admit']
-
-    def sole_center(self, principal: str) -> str:
-        """Resolve only this identity's sole live admission, never an owner store."""
-        validate_principal(principal)
-        with closing(self._connect(write=False)) as db:
-            rows = db.execute(
-                "SELECT a.center FROM center_admissions a WHERE a.event='admit' "
-                "AND a.principal=? AND NOT EXISTS (SELECT 1 FROM center_admissions r "
-                "WHERE r.center=a.center AND r.event='retire') LIMIT 2",
-                (principal,),
-            ).fetchall()
-        if len(rows) != 1:
-            raise LookupError("owner has no unique live center")
-        return rows[0][0]
-
-    def admission_row(self, generation: int) -> AdmissionRow | None:
-        if type(generation) is not int or generation < 1:
-            raise ValueError("invalid admission generation")
-        with closing(self._connect(write=False)) as db:
-            found = db.execute("SELECT generation, event, principal, center, machine "
-                               "FROM center_admissions WHERE generation=?",
-                               (generation,)).fetchone()
-        return None if found is None else _row(found)
-
-    def admissions_after(self, generation: int) -> list[AdmissionRow]:
-        """Ordered log delta for the restart contract (DA7)."""
-        if type(generation) is not int or generation < 0:
-            raise ValueError("invalid admission generation")
-        with closing(self._connect(write=False)) as db:
-            rows = db.execute("SELECT generation, event, principal, center, machine "
-                              "FROM center_admissions WHERE generation>? ORDER BY generation",
-                              (generation,)).fetchall()
-        return [_row(row) for row in rows]
-
-
-def _row(values) -> AdmissionRow:
-    generation, event, principal, center, machine = values
-    if (type(generation) is not int or generation < 1 or event not in ADMISSION_EVENTS
-            or type(machine) is not int or not OWNER_ID_FIRST <= machine <= OWNER_ID_LAST):
-        raise RuntimeError("invalid durable admission row")
-    return AdmissionRow(generation, event, principal, center, machine)
 
 
 def _owner_request(data_root: Path, request: dict) -> dict:
@@ -356,41 +228,6 @@ def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -
     return OwnerIdentity(answer["uid"], answer["gid"])
 
 
-def admitted_owner(data_root: Path, *, center: str) -> str:
-    """Read the mapper's owner binding through authenticated broker IPC."""
-    validate_center(center)
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        from tinyassets.owner_channel import request
-
-        return request(center, {"op": "BOX_IDENTITY"})["principal"]
-    answer = _owner_request(data_root, {'op': 'ADMITTED_OWNER', 'center': center})
-    if set(answer) != {'op', 'principal'} or answer['op'] != 'ADMITTED_OWNER_IS':
-        raise PermissionError('center owner admission refused')
-    validate_principal(answer['principal'])
-    return answer['principal']
-
-
-def connection_center(data_root: Path, *, principal: str, center: str = "") -> str:
-    """Select the door's center from broker identity state alone."""
-    validate_principal(principal)
-    if center:
-        try:
-            if admitted_owner(data_root, center=center) == principal:
-                return center
-        except (PermissionError, ValueError):
-            pass
-        raise LookupError("center not found")
-    answer = _owner_request(data_root, {"op": "SOLE_CENTER", "principal": principal})
-    if answer == {"op": "SOLE_CENTER_UNADMITTED"}:
-        raise LookupError("center not found")
-    if set(answer) != {"op", "center"} or answer["op"] != "SOLE_CENTER_IS":
-        raise RuntimeError("center admission unavailable")
-    validate_center(answer["center"])
-    return answer["center"]
-
-
 def wake_owner(data_root: Path, *, principal: str) -> None:
     """Cold wake only. Awake forwarding never calls the control plane."""
     validate_principal(principal)
@@ -399,3 +236,10 @@ def wake_owner(data_root: Path, *, principal: str) -> None:
         raise LookupError("owner has no live admission")
     if answer != {"op": "OWNER_LIFECYCLE_DONE"}:
         raise RuntimeError("owner wake refused")
+
+
+def admit_owner(data_root: Path, *, principal: str) -> int:
+    answer = _owner_request(data_root, {"op": "ADMIT_OWNER", "principal": principal})
+    if set(answer) != {"op", "machine"} or answer["op"] != "OWNER_ADMIT_IS":
+        raise PermissionError("owner admission refused")
+    return answer["machine"]

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import drive, projection
+from tests.support.admission import drive, projection, retire_local
 from tinyassets.broker import box_admission, owner_volumes
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
@@ -108,8 +108,8 @@ def storage(tmp_path):
                    "project_id INT, bhard_bytes INT)")
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        drive(identities.admission("admit", owner, owner, routing=projection(identities.path)))
-        box_admission.provision(identities, tmp_path, owner, owner)
+        drive(identities.admit(owner, routing=projection(identities.path)))
+        box_admission.provision(identities, tmp_path, owner)
 
     events = []
     runtime = SimpleNamespace(stop=lambda uid: events.append(("stop", uid)),
@@ -256,7 +256,9 @@ def test_restore_needs_only_published_reference_not_local_catalog_or_volume(stor
     assert result["volume_generation"] == published["volume_generation"] + 1
     assert storage.volumes.images[uid] == b"initial"
     assert all(owner == uid for _, owner in storage.volumes.events)
-    assert storage.identities.admitted_owner("alice") == "alice"
+    from tinyassets.broker.admission import read
+
+    assert read(storage.identities, "alice").state == "admitted"
 
 
 def test_retention_keeps_seven_and_never_deletes_current_map_reference(storage):
@@ -311,8 +313,7 @@ def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
 def test_center_retirement_preserves_account_volume_recovery(storage):
     start(storage)
     snapshot = sleep(storage)
-    drive(storage.identities.admission("retire", "alice", "alice",
-        routing=projection(storage.identities.path)))
+    retire_local(storage.identities.path.parent / "synthetic-box-alice", "alice")
     restored = drive(storage.lifecycle.restore("alice", snapshot["snapshot_id"]))
     assert restored["uid"] == snapshot["uid"]
     assert restored["volume_generation"] == snapshot["volume_generation"] + 1
@@ -324,7 +325,7 @@ def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage
         db.execute("DELETE FROM box_records WHERE principal='alice'")
     with pytest.raises(sqlite3.IntegrityError):
         box_admission.provision(storage.identities, storage.identities.path.parent.parent,
-                                "alice", "alice")
+                                "alice")
     from tinyassets.broker.admission import local_mutate
 
     drive(local_mutate(storage.identities.path, "alice", "erase",

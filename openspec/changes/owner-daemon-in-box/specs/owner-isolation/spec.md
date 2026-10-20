@@ -292,12 +292,28 @@ shared layer SHALL hold no center admission table and no per-center store.
 - **WHEN** the cutover migration runs
 - **THEN** each owner's center table is written into that owner's box from the admitted center-to-owner mapping
 - **AND** every center-keyed credential, connection, grant and policy scope is dropped and counted, and no custody is carried into the owner-keyed stores
+- **AND** owner-keyed policy keeps account rules, egress and spend controls, with a recomputed digest, next generation and migration receipt
 - **AND** owners reconnect through the door's ordinary connection flow
 
 #### Scenario: Creating a center touches no shared store
 - **WHEN** an owner creates a new center
 - **THEN** the center is recorded inside the owner's box
 - **AND** no shared admission, custody or policy row is created for the center
+
+#### Scenario: Retiring a center touches no shared store
+- **WHEN** an owner retires a center
+- **THEN** only the box-local center table changes
+- **AND** shared databases and directories remain unchanged
+
+#### Scenario: The owner channel needs no center admission
+- **WHEN** an admitted owner's box has zero or several centers
+- **THEN** the bound owner channel serves without a shared center list
+- **AND** substituted owner or box identifiers cannot select another account
+
+#### Scenario: Same-service connections keep distinct handles
+- **WHEN** an owner creates two connections to the same service
+- **THEN** each connection's handle selects its own credential and grant
+- **AND** another owner cannot read, dispatch or revoke either connection
 
 ### Requirement: Deploys start each box on the published image at wake
 A deploy SHALL publish the new image and drain awake boxes to sleep between turns.

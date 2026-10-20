@@ -32,3 +32,12 @@ class Centers:
         with closing(sqlite3.connect(self.path)) as db:
             return [row[0] for row in db.execute(
                 "SELECT center FROM centers WHERE retired=0 ORDER BY center")]
+
+
+def admitted_owner(data_root: Path, *, center: str) -> str:
+    from tinyassets.owner_runtime import require
+
+    runtime = require(Path(data_root) / center)
+    if center not in Centers(runtime.root).active():
+        raise PermissionError("center is not active")
+    return runtime.principal

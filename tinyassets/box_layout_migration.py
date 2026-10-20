@@ -158,10 +158,11 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "owner", principals=("owner",))
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
-    add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
+    add(".broker/state/owner-identities.db", "owner_identities box_records "
         "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots owner_admission "
         "routing_sequence deletion_jobs",
         "broker")
+    add(".broker/state/owner-identities.db", "center_admissions", "dropped")
     add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
     add(".broker/credential-custody.db", "deleted_principals", "broker")
@@ -169,7 +170,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "llm_credential_deposit_commits llm_credential_refresh_state", "dropped")
     add("outbound.db", "outbound_connections outbound_connection_grants "
         "outbound_connector_artifacts outbound_connector_artifact_edges connection_capabilities "
-        "broker_schema_migrations box_model_sources", "dropped")
+        "broker_schema_migrations box_model_sources browser_vault", "dropped")
     rules[".broker/outbound.db"] = dict(rules["outbound.db"])
     add(".broker/outbound.db", "agent_model_launches agent_request_attempts "
         "agent_request_dispatches agent_request_usage agent_request_usage_links", "broker")
@@ -687,7 +688,8 @@ def _census(data: Path, *, _inventory: dict | None = None,
             if placement == "dropped":
                 kind = {"outbound_connections": "connections",
                         "outbound_connection_grants": "grants",
-                        "box_model_sources": "source_descriptors", "ops": "replay_operations",
+                        "box_model_sources": "source_descriptors", "browser_vault": "credentials",
+                        "ops": "replay_operations",
                         "once_approvals": "policy_approvals"}.get(table)
                 if table.startswith("llm_credential_"):
                     kind = "custody_metadata"
@@ -2053,11 +2055,6 @@ def _verify_workflow_definitions(tree: Path) -> dict[str, int]:
 
 def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) -> None:
     from tinyassets.broker.owner_reads import Plans
-    from tinyassets.broker.vault import metadata_connection
-    from tinyassets.credential_vault import _ensure_custody_schema
-
-    with closing(metadata_connection(shared)) as custody, custody:
-        _ensure_custody_schema(custody)
     plans = Plans(shared)
     plans.initialize()
     for owner in plan:
@@ -2116,6 +2113,28 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
                     raise RuntimeError("hook digest has conflicting owners")
                 db.execute("INSERT OR IGNORE INTO hook_owners VALUES (?,?)",
                            (row["token_hash"], owner))
+    # C11: retained accounting already records its owner. Remove the obsolete
+    # center key in the existing staging transaction; no custody is carried.
+    from tinyassets.storage.agent_request_usage import _SCHEMA
+
+    outbound = shared / ".broker/outbound.db"
+    with closing(sqlite3.connect(outbound)) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        for table in ("agent_request_usage", "agent_request_attempts",
+                      "agent_request_usage_links", "agent_request_dispatches",
+                      "agent_model_launches"):
+            columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
+            if "universe" not in columns:
+                continue
+            columns.remove("universe")
+            selected = ",".join(map(_quoted, columns))
+            rows = db.execute(f"SELECT {selected} FROM {table}").fetchall()
+            db.execute(f"DROP TABLE {table}")
+            for statement in _SCHEMA:
+                db.execute(statement)
+            placeholders = ",".join("?" for _ in columns)
+            db.executemany(f"INSERT INTO {table} ({selected}) VALUES ({placeholders})", rows)
+
     # C11: policy is already owner-keyed. Only center entries are discarded.
     from tinyassets.broker.policy import _canonical, _digest
 
@@ -2388,8 +2407,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     # C6: legacy authorities have been converted and their jobs completed.
     for suffix in ("", "-wal", "-shm", "-journal"):
         (shared / (NAME + suffix)).unlink(missing_ok=True)
-    with closing(sqlite3.connect(shared / ".broker/credential-custody.db")) as db, db:
-        db.execute("DROP TABLE IF EXISTS deleted_principals")
+    (shared / ".broker/credential-custody.db").unlink(missing_ok=True)
     for marker in (shared / ".broker/accounts").glob("*/.deleted"):
         marker.unlink()
     for directory, dirs, files in os.walk(shared, followlinks=False):

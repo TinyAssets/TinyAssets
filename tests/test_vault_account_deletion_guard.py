@@ -7,7 +7,7 @@ import pytest
 
 from tests.support.admission import drive, projection
 from tinyassets.broker import vault
-from tinyassets.credential_vault import custody_metadata_path
+from tinyassets.credential_vault import custody_namespace
 
 OWNER = "user-vault-deletion"
 HOME = "u-vault-deletion"
@@ -28,8 +28,8 @@ def admitted(tmp_path):
 
 
 def write(home, owner=OWNER):
-    return vault.write_credential_vault(home, [RECORD], owner_user_id=owner,
-                                      universe_id=home.name)
+    return vault.write_credential_vault(custody_namespace(home.parent, owner), [RECORD],
+                                      owner_user_id=owner)
 
 
 def delete(root):
@@ -42,10 +42,8 @@ def delete(root):
 
 
 def assert_no_credentials(home):
-    assert not vault.credential_vault_path(home).exists()
-    with sqlite3.connect(custody_metadata_path(home.parent)) as conn:
-        assert conn.execute("SELECT * FROM llm_credential_deposit_owners "
-                            "WHERE owner_user_id=?", (OWNER,)).fetchall() == []
+    assert not vault.credential_vault_path(custody_namespace(home.parent, OWNER)).exists()
+    assert not (home.parent / ".broker/credential-custody.db").exists()
 
 
 def test_deletion_waits_for_inflight_vault_persist_then_erases(tmp_path, monkeypatch):
@@ -86,7 +84,8 @@ def test_no_daemon_database_or_admission_lock_is_needed(tmp_path):
     write(home)
     assert not home.exists()
     assert not (tmp_path / ".tinyassets.db").exists()
-    assert (vault.credential_vault_path(home).parent / ".custody.lock").is_file()
+    namespace = custody_namespace(home.parent, OWNER)
+    assert (vault.credential_vault_path(namespace).parent / ".custody.lock").is_file()
 
 
 def test_deletion_preserves_another_owners_vault(tmp_path):
@@ -94,7 +93,7 @@ def test_deletion_preserves_another_owners_vault(tmp_path):
     write(tmp_path / "another", owner="another-owner")
     delete(tmp_path)
     assert_no_credentials(tmp_path / HOME)
-    assert vault.load_credential_vault(tmp_path / "another")[0] == RECORD
+    assert vault.load_credential_vault(custody_namespace(tmp_path, "another-owner"))[0] == RECORD
 
 
 def test_malformed_admission_schema_refuses_deposit(tmp_path, admitted):
@@ -116,7 +115,7 @@ def test_unreadable_admission_refuses_deposit(tmp_path, monkeypatch):
         return conn
 
     with monkeypatch.context() as scope:
-        scope.setattr(vault.sqlite3, "connect", guarded)
+        scope.setattr(sqlite3, "connect", guarded)
         with pytest.raises(sqlite3.DatabaseError):
             write(tmp_path / HOME)
     assert_no_credentials(tmp_path / HOME)

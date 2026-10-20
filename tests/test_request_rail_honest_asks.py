@@ -33,7 +33,7 @@ def _stored_paths(root, uid="u-1", destination="github", actor="alice"):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    conn_id, _ = _ids(universe_id=uid, destination=destination)
+    conn_id, _ = _ids(owner="alice", destination=destination)
     ledger = ConnectionLedger(root / ".broker" / "outbound.db", data_root=root,
                               verify_authenticated_principal=lambda: actor)
     res = ledger._get_connection_resource(conn_id)
@@ -177,7 +177,7 @@ def test_a_tab_whose_key_was_revoked_after_it_was_raised_refuses_at_answer(base)
                                       "path_template": "/repos/o/r/contents/t.json",
                                       "methods": ["PUT"]}]})
     assert ask["status"] == "pending"
-    _conn_id, grant_id = _ids(universe_id="u-1", destination="github")
+    _conn_id, grant_id = _ids(owner="alice", destination="github")
     assert _ledger(base).revoke_grant(grant_id) is True
 
     out = _owner_answer("u-1", request_id=ask["request_id"], values={})
@@ -195,7 +195,7 @@ def test_an_orphaned_connection_is_not_an_oracle(base):  # noqa: F811
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _seed_connection("u-1")
-    _conn_id, grant_id = _ids(universe_id="u-1", destination="github")
+    _conn_id, grant_id = _ids(owner="alice", destination="github")
     assert _ledger(base).revoke_grant(grant_id) is True
 
     out = _ask("u-1", kind="API", title="let me open pull requests",
@@ -216,7 +216,7 @@ def test_the_write_is_guarded_on_scopes_as_well_as_endpoints(base):  # noqa: F81
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _seed_connection("u-1")
-    conn_id, _grant_id = _ids(universe_id="u-1", destination="github")
+    conn_id, _grant_id = _ids(owner="alice", destination="github")
     ledger = _ledger(base)
     endpoints_json, scopes_json = ledger.policy_json(conn_id)
     endpoints = [e.as_dict() for e in ledger._get_connection_resource(conn_id).allowed_endpoints]
@@ -265,7 +265,7 @@ def test_the_reprovision_path_carries_scopes_from_its_cas_snapshot(base, monkeyp
     _login("alice")
     _seed_connection("u-1")
     ledger = _ledger(base)
-    connection_id, _ = _ids(universe_id="u-1", destination="github")
+    connection_id, _ = _ids(owner="alice", destination="github")
     resource = ledger.get_connection(connection_id)
     original = BrokerClient.http_connect
     stages = []

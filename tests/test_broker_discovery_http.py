@@ -41,7 +41,7 @@ def discovery(broker, tmp_path, monkeypatch):  # noqa: F811 - imported pytest fi
                             "methods": ["GET"]}],
     )
     ledger.grant_connection(grant_id="grant-a", connection_id="conn-a",
-                            owner_user_id="alice", universe_id="cc-alice")
+                            owner_user_id="alice")
     daemon_thread = threading.get_ident()
 
     def ledger_for(principal):
@@ -79,7 +79,7 @@ def test_discovery_queries_and_streams_without_a_daemon_ledger(discovery):
 
 
 @pytest.mark.parametrize("change", [
-    {"owner_user_id": "bob"}, {"universe_id": "cc-bob"}, {"grant_id": "missing"},
+    {"owner_user_id": "bob"}, {"grant_id": "missing"},
 ])
 def test_discovery_ipc_refuses_foreign_scope_before_stream(discovery, change):
     with pytest.raises(ModelDiscoveryUnavailable) as caught:
@@ -130,3 +130,7 @@ def test_discovery_ipc_does_not_require_a_readable_model_profile(discovery):
         conn.execute("INSERT INTO connection_capabilities VALUES (?, ?, ?, 0)",
                      ("conn-a", "model_discovery", "malformed profile"))
     assert discovery.read() == {"data": ["alice"]}
+
+
+def test_same_owner_other_center_can_discover(discovery):
+    assert discovery.read(universe_id="other") == discovery.read()

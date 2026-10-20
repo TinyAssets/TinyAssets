@@ -16,7 +16,7 @@ def ledger(tmp_path):
         allowed_endpoints=[{"host": "models.example.com", "path_template": "/catalogue",
                             "methods": ["GET", "POST"]}])
     value.grant_connection(grant_id="grant-a", connection_id="conn-a",
-                           owner_user_id="alice", universe_id="cc-alice")
+                           owner_user_id="alice")
     return value
 
 
@@ -53,7 +53,7 @@ def test_capability_rechecks_grant_inside_transaction(ledger, monkeypatch, actio
 
 
 @pytest.mark.parametrize("scope", [
-    {"principal": "bob"}, {"command_center": "cc-bob"},
+    {"principal": "bob"},
 ])
 def test_capability_foreign_scope_does_not_mutate(ledger, scope):
     with pytest.raises(GrantResolutionError):
@@ -72,3 +72,8 @@ def test_capability_configure_read_and_disable(ledger):
     assert run(action="read", descriptor=None, enabled=False) == expected
     assert run(enabled=False, descriptor=None) == {"descriptor": None}
     assert run(action="read", descriptor=None, enabled=False) == {"descriptor": None}
+
+
+def test_same_owner_other_center_configures_same_capability(ledger):
+    result = local_operation(ledger, principal="alice", command_center="other", document=document())
+    assert result == {"descriptor": {"headers": {"X-Fixture": "yes"}}}

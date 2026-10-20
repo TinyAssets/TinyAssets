@@ -786,7 +786,7 @@ def test_pretraffic_restore_ignores_migration_and_canary_writes(cutover, tmp_pat
 def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
     import hashlib
 
-    from tinyassets.broker.vault import check_not_deleted, metadata_connection
+    from tinyassets.broker.vault import check_not_deleted
 
     data = cutover[0]
     digest = hashlib.sha256(b'retired-account').hexdigest()
@@ -806,14 +806,12 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
                    ('retired-account', json.dumps({'completed_phases': list(PHASES)})))
     migration.apply(*cutover)
     assert not (data / '.tinyassets.db').exists()
-    with closing(metadata_connection(data)) as db:
-        assert db.execute("SELECT name FROM sqlite_master "
-                          "WHERE name='deleted_principals'").fetchall() == []
-        from tinyassets.broker.admission import local_read
+    assert not (data / '.broker/credential-custody.db').exists()
+    from tinyassets.broker.admission import local_read
 
-        assert local_read(data, 'retired-account').state == 'erased'
-        with pytest.raises(PermissionError, match='deleted'):
-            check_not_deleted(data, 'retired-account')
+    assert local_read(data, 'retired-account').state == 'erased'
+    with pytest.raises(PermissionError, match='deleted'):
+        check_not_deleted(data, 'retired-account')
         check_not_deleted(data, 'bob')
 
 
@@ -896,8 +894,7 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
                 secret.chmod(0o400)
                 runtime.start(uid, uid, relay=relays.bind(owner, uid), app_dir=app,
                               secret_file=secret, memory_bytes=1024**3,
-                              volume_mount={"source": str(roots[uid])}, volume_generation=1,
-                              centers=("a1", "a2") if owner == "alice" else ("b1", "b2"))
+                              volume_mount={"source": str(roots[uid])}, volume_generation=1)
             for owner, uid, centers in [('alice', 300001, ('a1', 'a2')),
                                         ('bob', 300002, ('b1', 'b2'))]:
                 socket = run / str(uid) / 'app.sock'

@@ -109,8 +109,7 @@ def synthetic(tmp_path, monkeypatch):
         destination="git.test", credential_ref="vault://http/git.test", connection_type="http",
         auth_scheme="bearer", git_host="git.test",
         allowed_endpoints=[{"host": "git.test", "path_template": "/api", "methods": ["GET"]}])
-    book.grant_connection(grant_id="grant", connection_id="git", owner_user_id="alice",
-                          universe_id="center")
+    book.grant_connection(grant_id="grant", connection_id="git", owner_user_id="alice")
     incarnation = book.incarnation("git")
     resource = book._active_resource_for_grant("grant")
     dispatch = oc.CredentialBlindBroker(book, resolve_credential=lambda *_: secret,

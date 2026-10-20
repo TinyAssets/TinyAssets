@@ -14,7 +14,7 @@ from tinyassets.storage.outbound_connections import ConnectionLedger, ProxyReque
 @pytest.fixture
 def consumers(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+    monkeypatch.setattr("tinyassets.owner_centers.admitted_owner",
                         lambda root, *, center: "alice")
     ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
     for owner in ("alice", "bob"):
@@ -26,7 +26,7 @@ def consumers(tmp_path, monkeypatch):
                                 "methods": ["GET"]}],
         )
         ledger.grant_connection(grant_id=f"grant-{owner}", connection_id=f"conn-{owner}",
-                                owner_user_id=owner, universe_id="cc-alice")
+                                owner_user_id=owner)
     definition = register_definition(
         universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
         protocol="chat_messages", model="fixture", ref="grant-alice",
@@ -93,13 +93,13 @@ def test_display_does_not_query_grants_without_owner_admission(consumers, monkey
     def denied(*args, **kwargs):
         raise PermissionError("center is retired")
 
-    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner", denied)
+    monkeypatch.setattr("tinyassets.owner_centers.admitted_owner", denied)
     assert source_display_name(base=consumers.root, universe_id="cc-alice",
                                provider=consumers.provider) == ""
     assert consumers.calls == []
 
 
-@pytest.mark.parametrize("change", [{"actor": "bob"}, {"universe_id": "cc-bob"},
+@pytest.mark.parametrize("change", [{"actor": "bob"},
                                   {"grant_id": "grant-bob"}, {"grant_id": "absent"}])
 def test_compute_grant_query_preserves_uniform_foreign_refusal(consumers, change):
     args = dict(base=consumers.root, universe_id="cc-alice", actor="alice", grant_id="grant-alice")
@@ -146,3 +146,8 @@ def test_malformed_resource_projection_is_a_fixed_transport_error(monkeypatch, p
     with pytest.raises(ProxyRequestError, match="invalid credential broker resource projection"):
         ledger_queries.granted_resource_row("/synthetic", principal="alice",
                                         command_center="cc-alice", grant_id="grant-alice")
+
+
+def test_owner_grant_is_available_from_each_local_center(consumers):
+    assert _validate_http_grant(base=consumers.root, universe_id="second",
+                                actor="alice", grant_id="grant-alice") is None

@@ -102,7 +102,7 @@ class AsyncBrokerClient:
                 self._reader, self._writer = await asyncio.open_unix_connection(
                     os.fspath(broker_egress().socket_path))
                 self._writer.write(rf.control(rf.CONNECTION, {
-                    "op": "BOX_CONNECT", "center": self._command_center}))
+                    "op": "BOX_CONNECT"}))
                 await self._writer.drain()
                 answer = await rf.read_frame(self._reader)
                 if (answer is None or answer.stream != rf.CONNECTION
@@ -170,7 +170,7 @@ class AsyncBrokerClient:
         self._streams[stream.id] = stream
         document = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
-            "principal": self._principal, "command_center": self._command_center,
+            "principal": self._principal,
             "grant_id": grant_id, "connection_id": connection_id, "verb": verb,
             "request": request, "credit": MAX_WINDOW,
         }

@@ -19,9 +19,9 @@ def validate(document):
                 or end - start > timedelta(days=2)):
             raise ValueError("invalid daily evidence window")
         cursor = document["cursor"]
-        if cursor is not None and (not isinstance(cursor, list) or len(cursor) != 3
-                                   or any(not isinstance(v, str) for v in cursor[:2])
-                                   or type(cursor[2]) is not int or cursor[2] < 1):
+        if cursor is not None and (not isinstance(cursor, list) or len(cursor) != 2
+                                   or not isinstance(cursor[0], str)
+                                   or type(cursor[1]) is not int or cursor[1] < 1):
             raise ValueError("invalid evidence cursor")
     elif action == "linked_turns":
         if (set(document) != {"action", "subjects"}
@@ -40,17 +40,17 @@ def local_operation(store, principal, document):
     with store._connection() as conn:
         if document["action"] == "linked_turns":
             return {"linked": [conn.execute(
-                "SELECT 1 FROM agent_request_usage_links WHERE owner=? AND universe=? "
-                "AND kind='turn' AND subject_id=? LIMIT 1", (principal, *pair),
+                "SELECT 1 FROM agent_request_usage_links WHERE owner=? "
+                "AND kind='turn' AND subject_id=? LIMIT 1", (principal, pair[1]),
             ).fetchone() is not None for pair in document["subjects"]]}
-        cursor = document["cursor"] or ["", "", 0]
+        cursor = document["cursor"] or ["", 0]
         rows = conn.execute(
-            "SELECT universe, usage_id, ordinal, attempt_json FROM agent_request_attempts "
+            "SELECT usage_id, ordinal, attempt_json FROM agent_request_attempts "
             "WHERE owner=? AND source_ref=? AND dispatched_at IS NOT NULL "
             "AND julianday(dispatched_at)>=julianday(?) "
             "AND julianday(dispatched_at)<=julianday(?) "
-            "AND (universe,usage_id,ordinal)>(?,?,?) "
-            "ORDER BY universe,usage_id,ordinal LIMIT ?",
+            "AND (usage_id,ordinal)>(?,?) "
+            "ORDER BY usage_id,ordinal LIMIT ?",
             (principal, document["source_ref"], document["start"], document["end"],
              *cursor, PAGE_SIZE + 1)).fetchall()
         events = []
@@ -59,7 +59,7 @@ def local_operation(store, principal, document):
             events.append({"dispatched_at": attempt["dispatched_at"],
                            "usage_id": row["usage_id"], "ordinal": row["ordinal"],
                            "free": attempt["free"], "succeeded": attempt["state"] == "succeeded"})
-        return {"events": events, "next_cursor": list(rows[PAGE_SIZE - 1][:3])
+        return {"events": events, "next_cursor": list(rows[PAGE_SIZE - 1][:2])
                 if len(rows) > PAGE_SIZE else None}
 
 

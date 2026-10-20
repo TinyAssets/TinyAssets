@@ -30,7 +30,7 @@ def ledger(tmp_path):
                                 "methods": ["POST"]}],
         )
         ledger.grant_connection(grant_id=f"grant-{owner}", connection_id=f"conn-{owner}",
-                                owner_user_id=owner, universe_id=f"cc-{owner}")
+                                owner_user_id=owner)
     return ledger
 
 
@@ -41,7 +41,7 @@ def _query(ledger, **changes):
 
 
 @pytest.mark.parametrize("changes", [
-    {"principal": "bob"}, {"command_center": "cc-bob"}, {"grant_id": "grant-bob"},
+    {"principal": "bob"}, {"grant_id": "grant-bob"},
     {"connection_id": "conn-bob"}, {"grant_id": "missing"},
 ])
 def test_foreign_or_missing_scope_never_returns_facts(ledger, changes):
@@ -122,7 +122,7 @@ def test_an_unavailable_broker_never_constructs_a_local_ledger(ledger, monkeypat
                      command_center="cc-alice", grant_id="grant-alice")
 
 
-def test_git_grants_select_only_live_owner_center_scopes(ledger):
+def test_git_grants_select_all_live_connections_for_only_the_owner(ledger):
     for owner, center in (("alice", "cc-alice"), ("alice", "other"),
                           ("bob", "cc-alice")):
         suffix = f"{owner}-{center}"
@@ -135,12 +135,13 @@ def test_git_grants_select_only_live_owner_center_scopes(ledger):
                                 "methods": ["GET"]}],
         )
         ledger.grant_connection(grant_id=f"git-grant-{suffix}",
-                                connection_id=f"git-{suffix}", owner_user_id=owner,
-                                universe_id=center)
+                                connection_id=f"git-{suffix}", owner_user_id=owner)
     assert _query(ledger, query=GIT_GRANTS)["selected"] == [
-        ("git-grant-alice-cc-alice", "git-alice-cc-alice")]
+        ("git-grant-alice-cc-alice", "git-alice-cc-alice"),
+        ("git-grant-alice-other", "git-alice-other")]
     ledger.revoke_grant("git-grant-alice-cc-alice")
-    assert _query(ledger, query=GIT_GRANTS)["selected"] == []
+    assert _query(ledger, query=GIT_GRANTS)["selected"] == [
+        ("git-grant-alice-other", "git-alice-other")]
 
 
 def test_cli_git_projection_rechecks_exact_grant_without_secret(ledger, monkeypatch, tmp_path):
@@ -153,7 +154,7 @@ def test_cli_git_projection_rechecks_exact_grant_without_secret(ledger, monkeypa
                             "methods": ["GET"]}],
     )
     ledger.grant_connection(grant_id="git-grant", connection_id="git-alice",
-                            owner_user_id="alice", universe_id="cc-alice")
+                            owner_user_id="alice")
 
     def broker_query(data_root, **kwargs):
         assert data_root == tmp_path
@@ -184,10 +185,11 @@ def test_wire_whitelist_and_fence_are_checked_before_ledger_open(ledger, tmp_pat
     handler = object.__new__(_Connection)
     handler._server = SimpleNamespace(_fence=fence, _ledger_for=ledger_for)
     doc = dict(op="LEDGER_QUERY", query=DISCOVERY_FACTS, principal="alice",
-               command_center="cc-alice", grant_id="grant-alice", connection_id="conn-alice",
+               grant_id="grant-alice", connection_id="conn-alice",
                generation=generation, token=token)
     for extra in ({"token": "wrong"}, {"generation": True}, {"query": "_connect"},
-                  {"sql": "SELECT *"}, {"path": "/data/outbound.db"}, {"query": []}):
+                  {"sql": "SELECT *"}, {"path": "/data/outbound.db"}, {"query": []},
+                  {"command_center": "cc-bob"}):
         assert handler._ledger_query(doc | extra)["op"] == "LEDGER_REFUSED"
     assert calls == []
     assert handler._ledger_query(doc)["result"]["resource"]["owner_user_id"] == "alice"

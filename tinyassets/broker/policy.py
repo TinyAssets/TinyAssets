@@ -170,22 +170,12 @@ class PolicyStore:
             raise PolicyRefused("interactive owner session required")
         return row[0]
 
-    def _centers(self, owner: str, *, active: bool = False) -> list[str]:
-        if self._admissions is None:
-            raise PolicyRefused("owner admission log unavailable")
-        rows = self._admissions.admissions_after(0)
-        admitted = {row.center for row in rows if row.event == "admit" and row.principal == owner}
-        if not active:
-            return sorted(admitted)
-        retired = {row.center for row in rows if row.event == "retire"}
-        return sorted(admitted - retired)
-
     def bootstrap(self) -> None:
         """Initialize owners independently; a failure refuses only that owner."""
         if self._admissions is None:
             return
-        owners = {row.principal for row in self._admissions.admissions_after(0)
-                  if row.event == "admit"}
+        with self._admissions._connect(write=False) as db:
+            owners = {row[0] for row in db.execute("SELECT principal FROM owner_identities")}
         for owner in sorted(owners):
             self.bootstrap_owner(owner)
 
@@ -252,7 +242,7 @@ class PolicyStore:
                         "deny", "refused"))
 
     def receipt_proposal(self, owner: str, center: str, change: dict) -> dict:
-        if center not in self._centers(owner, active=True) or not isinstance(change, dict):
+        if not isinstance(change, dict):
             raise PolicyRefused("invalid policy proposal")
         policy = self.read(owner)
         digest = _digest(change)
@@ -268,10 +258,9 @@ class PolicyStore:
             raise PolicyRefused("invalid policy document")
         if not isinstance(document["entries"], list):
             raise PolicyRefused("invalid policy entries")
-        centers = set(self._centers(owner))
         for entry in document["entries"]:
             if (not isinstance(entry, dict) or set(entry) != {"scope", "table", "values"}
-                    or entry["scope"] not in centers | {"account"}
+                    or entry["scope"] != "account"
                     or entry["table"] not in {"rules", "approval_grants", "operation_kinds",
                                                "review_on", "review_off"}
                     or not isinstance(entry["values"], dict)):
@@ -304,14 +293,12 @@ class PolicyStore:
     def classify(self, owner: str, center: str, connection: str,
                  method: str, path: str) -> tuple[str, str]:
         """Declared HTTP meaning; undeclared calls conservatively count as writes."""
-        if center not in self._centers(owner, active=True):
-            raise PolicyRefused("center is not admitted to this owner")
         policy = self.read(owner).document
         method = str(method or "").upper()
         path = str(path or "/").rstrip("/") or "/"
         matches = []
         for entry in policy["entries"]:
-            if entry["table"] != "operation_kinds" or entry["scope"] not in (center, "account"):
+            if entry["table"] != "operation_kinds" or entry["scope"] != "account":
                 continue
             values = entry["values"]
             prefix = str(values.get("path_prefix") or "/").rstrip("/") or "/"
@@ -386,14 +373,13 @@ class PolicyStore:
                 return False
             document = json.loads(row["document"])
             for entry in document["entries"]:
-                if entry["table"] != "approval_grants" or entry["scope"] not in (center, "account"):
+                if entry["table"] != "approval_grants" or entry["scope"] != "account":
                     continue
                 values = entry["values"]
                 if values.get("decision_id") != decision_id:
                     continue
                 grant = json.loads(values.get("grant_json") or "{}")
                 if (grant.get("revoked") or grant.get("owner") != owner
-                        or grant.get("home") != center
                         or grant.get("agent") != agent
                         or grant.get("action_class") != action_class
                         or grant.get("connection") != connection
@@ -423,8 +409,6 @@ class PolicyStore:
         Amounts are minor currency units; a nonzero amount is reserved only
         after all rules permit the request.
         """
-        if center not in self._centers(owner, active=True):
-            raise PolicyRefused("center is not admitted to this owner")
         if (type(amount) is not int or amount < 0
                 or (amount and (not isinstance(request_id, str) or not request_id))):
             raise PolicyRefused("invalid spend amount")
@@ -444,7 +428,7 @@ class PolicyStore:
                 raise RuntimeError("policy digest mismatch")
             matches = []
             for entry in policy["entries"]:
-                if entry["table"] != "rules" or entry["scope"] not in ("account", center):
+                if entry["table"] != "rules" or entry["scope"] != "account":
                     continue
                 values = entry["values"]
                 if (values.get("action_class") == action_class

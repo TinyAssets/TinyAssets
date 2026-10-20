@@ -125,7 +125,6 @@ class OwnerDaemons:
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
-                           centers=tuple(record["centers"]),
                            volume_generation=record["volume_generation"], **launch_options)
         while True:
             if not self.runtime.alive(box.uid):

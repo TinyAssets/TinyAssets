@@ -78,7 +78,7 @@ def _seed(base: Path, *, owner: str = "founder", universe: str = "u-x") -> None:
         grant_id=_GRANT_ID,
         connection_id=_CONN_ID,
         owner_user_id=owner,
-        universe_id=universe,
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
 
@@ -353,7 +353,7 @@ def _seed_single_path(base: Path, path: str, *, owner: str = "founder",
         grant_id=_GRANT_ID,
         connection_id=_CONN_ID,
         owner_user_id=owner,
-        universe_id=universe,
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
 

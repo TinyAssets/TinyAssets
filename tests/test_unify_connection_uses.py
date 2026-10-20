@@ -654,7 +654,7 @@ def _priced_connection(base):
     answered = _answer(_ask(PRICED_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
     assert answered["status"] == "answered", answered
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
-    grant = ledger.get_grant(_ids(universe_id=UID, destination="priced")[1])
+    grant = ledger.get_grant(_ids(owner=OWNER, destination="priced")[1])
     ledger.configure_capability(
         connection_id=grant.connection_id, capability_kind="model_discovery",
         descriptor=DESCRIPTOR, enabled=True, expected_grant=grant,
@@ -723,7 +723,7 @@ def test_a_declaration_cannot_replace_accepted_spending_limits(owner, monkeypatc
     answered = _answer(_ask({**PRICED_ASK, "destination": "capped"}, _KEY_FIELD)[
         "request_id"], {"secret": LLM_KEY})
     assert answered["status"] == "answered", answered
-    grant_id = _ids(universe_id=UID, destination="capped")[1]
+    grant_id = _ids(owner=OWNER, destination="capped")[1]
     definition = register_definition(
         universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
         protocol="chat_messages", model="seed", ref=grant_id,

@@ -20,6 +20,14 @@ from tinyassets.ta_capabilities import ExecutionContext
 @pytest.fixture
 def case(tmp_path, monkeypatch):
     seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
+    from tinyassets.owner_centers import Centers
+    Centers(tmp_path).create("cc-alice")
+    from tinyassets.daemon_server import _connect, grant_universe_access
+    from tinyassets.universe_owner import record_creation
+
+    grant_universe_access(tmp_path, universe_id="cc-alice", actor_id="alice", permission="admin")
+    with _connect(tmp_path) as connection:
+        record_creation(connection, universe_id="cc-alice", owner_id="alice")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
     for owner in ("alice", "bob"):
@@ -32,7 +40,7 @@ def case(tmp_path, monkeypatch):
         )
         ledger.grant_connection(
             grant_id=f"grant-{owner}", connection_id=f"conn-{owner}", owner_user_id=owner,
-            universe_id="cc-alice", unprompted_action_cap=ActionCap("calls", 3, "requests"))
+             unprompted_action_cap=ActionCap("calls", 3, "requests"))
     calls = []
 
     from tinyassets.broker.client import BrokerClient as RealBrokerClient
@@ -77,7 +85,7 @@ def test_scoped_snapshot_preserves_grant_cap_and_redacts_effector_view(case):
 
 
 @pytest.mark.parametrize("change", [
-    {"principal": "bob"}, {"universe_id": "cc-bob"}, {"grant_id": "grant-bob"},
+    {"principal": "bob"}, {"grant_id": "grant-bob"},
     {"connection_id": "conn-bob"}, {"grant_id": "absent"},
 ])
 def test_effector_never_reads_foreign_authority(case, change):
@@ -179,3 +187,10 @@ def test_bound_preview_uses_same_snapshot_for_grant_view_and_incarnation(case):
     assert len(case.calls) == 1
     with pytest.raises(bound_requests.RequestRefused, match="authority is unavailable"):
         bound_requests._authority(home, packet, "bob", "main")
+
+
+def test_other_local_center_uses_same_owner_authority(case):
+    grant, view, error = effector._read_connection_context(**(case.args | {"universe_id": "other"}))
+    assert error == ""
+    assert grant == case.ledger.get_grant("grant-alice")
+    assert view == case.ledger.get_connection_view("conn-alice")

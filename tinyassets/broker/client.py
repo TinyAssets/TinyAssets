@@ -122,7 +122,7 @@ class BrokerClient:
 
         generation, token = self._fence()
         wire = {"op": "MODEL_SOURCE", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
+                "generation": generation,
                 "token": token, "definition": definition}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
@@ -148,7 +148,7 @@ class BrokerClient:
         validate_query(query, self._principal, self._command_center, grant_id, connection_id)
         generation, token = self._fence()
         document = {"op": "LEDGER_QUERY", "query": query, "principal": self._principal,
-                    "command_center": self._command_center, "grant_id": grant_id,
+                    "grant_id": grant_id,
                     "connection_id": connection_id, "generation": generation, "token": token}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
@@ -179,7 +179,7 @@ class BrokerClient:
         validate(cursor, limit, include_revoked)
         generation, token = self._fence()
         wire = {"op": "CONNECTION_CATALOG", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
+                "generation": generation,
                 "token": token, "cursor": cursor, "limit": limit,
                 "include_revoked": include_revoked}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -238,7 +238,7 @@ class BrokerClient:
         validate(document)
         generation, token = self._fence()
         wire = {"op": "DISCONNECT", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
+                "generation": generation,
                 "token": token, "document": document}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
@@ -270,7 +270,7 @@ class BrokerClient:
         validate(document)
         generation, token = self._fence()
         wire = {"op": "USAGE", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
+                "generation": generation,
                 "token": token, "usage_id": usage_id, "document": document}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
@@ -303,7 +303,7 @@ class BrokerClient:
         validate(document)
         generation, token = self._fence()
         wire = {"op": "HTTP_CONNECT", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
+                "generation": generation,
                 "token": token, "document": document}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
@@ -339,7 +339,7 @@ class BrokerClient:
         validate(document)
         generation, token = self._fence()
         wire = {"op": "CAPABILITY", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
+                "generation": generation,
                 "token": token, "document": document}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
@@ -381,7 +381,7 @@ class BrokerClient:
         generation, token = self._fence()
         open_doc = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
-            "principal": self._principal, "command_center": self._command_center,
+            "principal": self._principal,
             "grant_id": grant_id, "connection_id": connection_id, "verb": verb,
             "request": request, "credit": MAX_WINDOW,
         }
@@ -458,10 +458,11 @@ def owner_policy_operation(data_root: Path, owner: str, action: str,
     supervisor = get_supervisor(data_root)
     if supervisor is None:
         raise ProxyRequestError("owner policy broker unavailable")
-    center = fields.get("center", "")
+    fields.pop("center", None)
     if action == "decide":
-        center = fields.get("request", {}).get("center", "")
-    client = BrokerClient(supervisor.socket_path, principal=owner, command_center=center,
+        fields["request"] = {key: value for key, value in fields["request"].items()
+                             if key != "center"}
+    client = BrokerClient(supervisor.socket_path, principal=owner, command_center=owner,
                           fence=supervisor.fence, verify_peer=supervisor.verify_broker,
                           timeout=30)
     return client.owner_policy(action, **fields)

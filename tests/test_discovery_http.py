@@ -52,8 +52,8 @@ def test_owned_grant_can_discover_before_model_registration(rig):
     assert len(rig.calls) == 1
 
 
-@pytest.mark.parametrize("owner,universe", [("stranger", "universe"), ("owner", "other")])
-def test_pre_registration_discovery_keeps_owner_and_universe_fences(rig, owner, universe):
+@pytest.mark.parametrize("owner,universe", [("stranger", "universe")])
+def test_pre_registration_discovery_keeps_owner_fence(rig, owner, universe):
     with pytest.raises(discovery.ModelDiscoveryUnavailable):
         discovery.read_granted_discovery_document(
             db_path=rig.db, grant_id="grant-discovery", owner_user_id=owner,
@@ -88,7 +88,7 @@ def rig(tmp_path, monkeypatch):
         grant_id="grant-discovery",
         connection_id="conn-discovery",
         owner_user_id="owner",
-        universe_id="universe",
+
     )
     definition = ProviderDefinition(
         id="provdef-discovery",
@@ -146,8 +146,7 @@ def rig(tmp_path, monkeypatch):
 
     def query_ledger(base, *, query, principal, command_center, grant_id):
         grant = ledger.get_grant(grant_id)
-        if (grant is None or grant.revoked_at is not None or grant.owner_user_id != principal
-                or grant.universe_id != command_center):
+        if grant is None or grant.revoked_at is not None or grant.owner_user_id != principal:
             raise outbound_connections.GrantResolutionError("grant not admitted")
         with ledger._connect() as conn:
             row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id = ?",
@@ -155,7 +154,7 @@ def rig(tmp_path, monkeypatch):
         return {"resource": None if row is None else dict(row)}
 
     def broker_channel(base, *, principal, command_center, grant_id, connection_id):
-        ledger.authorize_exact(universe_id=command_center, grant_id=grant_id,
+        ledger.authorize_exact( grant_id=grant_id,
                                connection_id=connection_id)
         state.starts.append({"owner_user_id": principal, "universe_id": command_center,
                              "grant_id": grant_id, "connection_id": connection_id})
@@ -260,7 +259,7 @@ def test_revoked_authority_is_refused_before_proxy(rig, target):
     "table, column, value",
     [
         ("outbound_connection_grants", "owner_user_id", "someone-else"),
-        ("outbound_connection_grants", "universe_id", "someone-else"),
+        ("outbound_connection_grants", "grant_id", "someone-else"),
         ("outbound_connections", "owner_user_id", "someone-else"),
         ("outbound_connections", "scopes_json", '["POST"]'),
     ],
@@ -421,3 +420,10 @@ def test_refresh_adds_unknown_model_without_changing_grant_or_following_links(ri
     assert rig.ledger.get_connection_view("conn-discovery") == before
     assert rig.calls == [("GET", {"url": URL}), ("GET", {"url": URL})]
     assert rig.closes == 2
+
+
+def test_pre_registration_discovery_is_owner_scoped_across_centers(rig):
+    assert discovery.read_granted_discovery_document(
+        db_path=rig.db, grant_id="grant-discovery", owner_user_id="owner",
+        universe_id="other", url=URL) == {"data": []}
+    assert len(rig.calls) == 1

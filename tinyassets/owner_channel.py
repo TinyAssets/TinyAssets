@@ -39,8 +39,7 @@ def connect(sock, center):
     from tinyassets.owner_runtime import broker_egress
 
     sock.connect(str(broker_egress().socket_path))
-    sock.sendall(rf.control(rf.CONNECTION, {"op": "BOX_CONNECT", "center": center}
-                           if center else {"op": "BOX_SHARED"}))
+    sock.sendall(rf.control(rf.CONNECTION, {"op": "BOX_CONNECT"}))
     answer = rf.read_frame_blocking(sock)
     if (answer is None or answer.kind != rf.CONTROL or answer.stream != rf.CONNECTION
             or answer.control() != {"op": "BOX_CONNECTED"}):

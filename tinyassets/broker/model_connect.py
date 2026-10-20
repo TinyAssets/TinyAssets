@@ -55,7 +55,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         from tinyassets.onboarding.hosted_model_auth import endpoint_policy
 
         flow = PendingFlow(**document["flow"])
-        if (flow.owner != principal or flow.universe_id != command_center
+        if (flow.owner != principal
                 or flow.callback_url != document["redirect_uri"]):
             raise ValueError("invalid preset binding")
         preset = load_preset(flow.preset_id)

@@ -58,8 +58,8 @@ def fleet(tmp_path, monkeypatch):
                    "project_id INT, bhard_bytes INT)")
     for owner in "abc":
         identities.resolve(owner, allocate=True)
-        drive(identities.admission("admit", owner, owner, routing=projection(identities.path)))
-        box_admission.provision(identities, tmp_path, owner, owner)
+        drive(identities.admit(owner, routing=projection(identities.path)))
+        box_admission.provision(identities, tmp_path, owner)
     admission, runtime = Admission(identities), Runtime()
     admission.secrets = {owner: identities.box_route(owner)[1] for owner in "abc"}
     volumes = Volumes()

@@ -444,17 +444,13 @@ def _payload(value: Any) -> dict[str, Any]:
     return document
 
 
-def _ids(*, universe_id: str, destination: str) -> tuple[str, str]:
-    """Deterministic (connection_id, grant_id) from (universe, destination).
+def _ids(*, owner: str, destination: str) -> tuple[str, str]:
+    """Stable handles per authenticated owner and user-named connection.
 
-    Length-prefixed canonical serialization (not ambiguous concatenation) so no
-    two distinct (universe, destination) pairs can collide, and the actor is
-    deliberately excluded so one destination has exactly one connection per
-    universe regardless of which admin provisions it.
+    The handle is independent of service/provider; two labels for the same
+    endpoint retain separate credentials, grants and revocation.
     """
-    material = (
-        f"{len(universe_id)}:{universe_id}\0{len(destination)}:{destination}\0http"
-    ).encode()
+    material = f"{len(owner)}:{owner}\0{len(destination)}:{destination}\0http".encode()
     digest = hashlib.sha256(material).hexdigest()[:32]
     return f"http_{digest}", f"http_grant_{digest}"
 
@@ -648,7 +644,6 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
     if existing_grant is not None and (
         existing_grant.connection_id != connection_id
         or existing_grant.owner_user_id != actor
-        or existing_grant.universe_id != uid
         or existing_grant.revoked_at is not None
     ):
         return {"error": "connection_conflict", "resource": "grant"}
@@ -733,10 +728,11 @@ CONNECT_FIELDS = frozenset({
 
 def connection_door_link(center, destination, request_ref):
     """Existing request deep link; all values are credential-free identifiers."""
+    from tinyassets.api import permissions
     from tinyassets.onboarding import app_config
 
     resource = urllib.parse.urlsplit(str(app_config().get("resource") or "https://tinyassets.io/mcp"))
-    connection_id, _ = _ids(universe_id=center, destination=destination)
+    connection_id, _ = _ids(owner=permissions.current_actor_id(), destination=destination)
     query = urllib.parse.urlencode({
         "request": request_ref, "center": center, "connection": connection_id})
     return {"status": "connect_required", "request_ref": request_ref,
@@ -937,7 +933,7 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             "detail": "destination must name the connection to remove",
         }
 
-    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+    connection_id, grant_id = _ids(owner=permissions.current_actor_id(), destination=destination)
 
     from tinyassets.broker.disconnect import disconnect
     from tinyassets.storage.outbound_connections import GrantResolutionError, _resource_from_row
@@ -1060,7 +1056,7 @@ def _rotation_target(
     them.
     """
     base = _base_path()
-    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+    connection_id, grant_id = _ids(owner=actor, destination=destination)
     from tinyassets.broker.ledger_queries import authorized_connection
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
@@ -1103,7 +1099,6 @@ def _rotation_target(
         grant is None
         or grant.connection_id != connection_id
         or grant.owner_user_id != actor
-        or grant.universe_id != uid
         or grant.revoked_at is not None
     ):
         return dict(_NOT_FOUND)
@@ -1451,7 +1446,7 @@ def _extend_preview(
         validate_git_scopes,
     )
 
-    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+    connection_id, grant_id = _ids(owner=actor, destination=destination)
     from tinyassets.broker.connection_authority import read_policy
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
@@ -1485,7 +1480,6 @@ def _extend_preview(
         grant is None
         or grant.revoked_at is not None
         or grant.owner_user_id != actor
-        or grant.universe_id != uid
         or grant.connection_id != connection_id
     ):
         return dict(_NOT_FOUND)

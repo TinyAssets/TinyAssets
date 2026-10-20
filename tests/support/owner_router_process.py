@@ -19,7 +19,6 @@ def main():
     # A test process has no boxhostd mount: the fixed mount is this temp root.
     owner_runtime.OWNER_MOUNT = root
     os.environ.setdefault("TINYASSETS_VOLUME_GENERATION", "1")
-    os.environ.setdefault("TINYASSETS_ADMITTED_CENTERS", "[]")
     owner_runtime._is_owner_mount = lambda path: path == root
     # These process doubles share the host netns; real boxes each bind 3128
     # in their own null netns. Egress commands have a dedicated real-port rig.
@@ -32,6 +31,9 @@ def main():
 
     owner = current().principal
     center = "cc-" + owner
+    from tinyassets.boxes.lifecycle import admit_center
+
+    admit_center(root, principal=owner, center=center)
     folder = root / center
     folder.mkdir(exist_ok=True)
     (folder / "hello.txt").write_text(owner + " private data")

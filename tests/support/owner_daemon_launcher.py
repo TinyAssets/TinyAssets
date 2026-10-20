@@ -1,5 +1,4 @@
 """runsc substitute only: launch the real owner app in a separate Linux process."""
-import json
 import os
 import subprocess
 import sys
@@ -18,15 +17,14 @@ class ProcessRuntime:
         self.logs = []
 
     def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes,
-              volume_mount, volume_generation, centers=(), rootfs=None):
+              volume_mount, volume_generation, rootfs=None):
         log = tempfile.TemporaryFile()
         self.logs.append(log)
         self.processes[uid] = subprocess.Popen([
             sys.executable, "-m", self.module, str(self.roots[uid]),
             str(relay), str(secret_file), str(app_dir / "app.sock"),
         ], stdout=log, stderr=log, env={**os.environ,
-             "TINYASSETS_VOLUME_GENERATION": str(volume_generation),
-             "TINYASSETS_ADMITTED_CENTERS": json.dumps(centers)})
+             "TINYASSETS_VOLUME_GENERATION": str(volume_generation)})
 
     def alive(self, uid):
         return uid in self.processes and self.processes[uid].poll() is None

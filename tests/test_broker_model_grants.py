@@ -8,7 +8,8 @@ from tinyassets.storage.outbound_connections import ConnectionLedger, Credential
 @pytest.fixture
 def ordinary(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "owner")
     ledger.create_connection(
         connection_id="connection", owner_user_id="owner", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("POST",),
@@ -16,7 +17,7 @@ def ordinary(tmp_path, monkeypatch):
         allowed_endpoints=[{"host": "models.example.com", "path_template": "/chat",
                             "methods": ["POST"]}])
     ledger.grant_connection(grant_id="grant", connection_id="connection",
-                            owner_user_id="owner", universe_id="center")
+                            owner_user_id="owner")
     return ledger
 
 
@@ -44,7 +45,7 @@ def test_platform_registration_latches_before_file_write_and_never_unlatches(ord
                             ).grant_requires_inference_usage("grant")
 
 
-@pytest.mark.parametrize("bad", ["owner", "center", "grant", "revoked"])
+@pytest.mark.parametrize("bad", ["owner", "grant", "revoked"])
 def test_source_publication_refuses_unowned_or_dead_grant_without_latching(ordinary, bad):
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.owner_sources import read
@@ -54,7 +55,7 @@ def test_source_publication_refuses_unowned_or_dead_grant_without_latching(ordin
         ordinary.revoke_connection("connection")
     with pytest.raises(BrokerRefused):
         register_definition(
-            universe_id="elsewhere" if bad == "center" else "center",
+            universe_id="center",
             owner_user_id="foreign" if bad == "owner" else "owner", access_method="api_key_http",
             protocol="openai_chat", ref="absent" if bad == "grant" else "grant", model="model")
     assert not ordinary.grant_requires_inference_usage("grant")
@@ -79,7 +80,8 @@ def test_source_publication_rolls_back_descriptor_when_latch_fails(ordinary):
 
 @pytest.mark.parametrize("source", ["compute", "model_use", "model_discovery", "ordinary"])
 def test_model_classification_is_recorded_at_grant_and_survives_metadata_removal(tmp_path, source):
-    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "owner")
     ledger.create_connection(
         connection_id="connection", owner_user_id="owner", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"),
@@ -95,7 +97,7 @@ def test_model_classification_is_recorded_at_grant_and_survives_metadata_removal
             conn.execute("INSERT INTO connection_capabilities VALUES (?, ?, '{}', 1)",
                          ("connection", source))
     ledger.grant_connection(grant_id="grant", connection_id="connection",
-                            owner_user_id="owner", universe_id="center")
+                            owner_user_id="owner")
     with ledger._connect() as conn:
         recorded = conn.execute(
             "SELECT inference_required FROM outbound_connection_grants").fetchone()[0]
@@ -103,7 +105,8 @@ def test_model_classification_is_recorded_at_grant_and_survives_metadata_removal
         conn.execute("DELETE FROM connection_capabilities")
         conn.execute("UPDATE outbound_connections SET destination='service'")
     # Reopening the ledger cannot downgrade the recorded requirement.
-    reopened = ConnectionLedger(ledger._db_path, data_root=tmp_path)
+    reopened = ConnectionLedger(ledger._db_path, data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "owner")
     assert reopened.grant_requires_inference_usage("grant") == (
         source in {"model_use", "model_discovery"})
     events = []
@@ -127,7 +130,8 @@ def test_model_classification_is_recorded_at_grant_and_survives_metadata_removal
 
 
 def test_model_capability_added_after_grant_latches_metering(tmp_path):
-    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "owner")
     ledger.create_connection(
         connection_id="connection", owner_user_id="owner", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("POST",),
@@ -136,7 +140,7 @@ def test_model_capability_added_after_grant_latches_metering(tmp_path):
                             "methods": ["POST"]}],
     )
     ledger.grant_connection(grant_id="grant", connection_id="connection",
-                            owner_user_id="owner", universe_id="center")
+                            owner_user_id="owner")
     assert not ledger.grant_requires_inference_usage("grant")
     ledger.configure_capability(
         connection_id="connection", capability_kind="model_use", enabled=True,
@@ -147,50 +151,7 @@ def test_model_capability_added_after_grant_latches_metering(tmp_path):
     assert ledger.grant_requires_inference_usage("grant")
 
 
-@pytest.mark.parametrize("source", ["ordinary", "compute", "model_use", "model_discovery",
-                                   "published", "unknown"])
-@pytest.mark.parametrize("old_column", [False, True])
-def test_existing_grants_backfill_from_broker_state(tmp_path, source, old_column):
-    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
-    ledger.create_connection(
-        connection_id="connection", owner_user_id="owner", connection_class="http",
-        connection_type="http", auth_scheme="bearer", scopes=("POST",),
-        provider="http", destination="compute:model" if source == "compute" else "service",
-        credential_ref="vault://http/test",
-        allowed_endpoints=[{"host": "models.example.com", "path_template": "/chat",
-                            "methods": ["POST"]}],
-    )
-    ledger.grant_connection(grant_id="grant", connection_id="connection",
-                            owner_user_id="owner", universe_id="center")
-    if source == "published":
-        from tinyassets.broker.owner_sources import publish
-        from tinyassets.providers.definition import ProviderDefinition, _definition_id
-
-        fields = dict(universe_id="center", owner_user_id="owner", access_method="api_key_http",
-                      protocol="openai_chat", ref="grant", model="model")
-        definition = ProviderDefinition(id=_definition_id(**fields), **fields,
-                                        visibility="private", created_at="now").as_dict()
-        publish(ledger, "owner", "center", definition)
-    with ledger._connect() as conn:
-        conn.execute("DELETE FROM broker_schema_migrations")
-        if source in {"model_use", "model_discovery"}:
-            conn.execute("INSERT INTO connection_capabilities VALUES (?, ?, '{}', 1)",
-                         ("connection", source))
-        conn.execute("UPDATE outbound_connection_grants SET inference_required=?",
-                     (int(source == "unknown"),))
-        if source == "unknown":
-            conn.commit()
-            conn.execute("PRAGMA foreign_keys=OFF")
-            conn.execute("DELETE FROM outbound_connections")
-        if not old_column:
-            conn.execute("ALTER TABLE outbound_connection_grants DROP COLUMN inference_required")
-    reopened = ConnectionLedger(ledger._db_path, data_root=tmp_path)
-    assert reopened.grant_requires_inference_usage("grant") == (
-        source not in {"ordinary", "compute"})
-
-
-
-def test_backfill_never_reads_old_host_center_definitions(ordinary, monkeypatch):
+def test_reopening_never_reads_old_host_center_definitions(ordinary, monkeypatch):
     from pathlib import Path
 
     original = Path.open
@@ -205,3 +166,13 @@ def test_backfill_never_reads_old_host_center_definitions(ordinary, monkeypatch)
     reopened = ConnectionLedger(ordinary._db_path, data_root=ordinary._data_root)
     assert reopened.grant_requires_inference_usage("grant") is False
     assert not (ordinary._data_root / "center").exists()
+
+
+def test_same_owner_source_is_visible_across_local_centers(ordinary):
+    from tinyassets.broker.owner_sources import read
+    from tinyassets.providers.definition import register_definition
+    source = register_definition(universe_id="first", owner_user_id="owner",
+        access_method="api_key_http", protocol="openai_chat", ref="grant", model="model")
+    assert ordinary.grant_requires_inference_usage("grant")
+    assert read(ordinary, "first") == read(ordinary, "second")
+    assert read(ordinary, "second")[0]["id"] == source.id

@@ -18,11 +18,11 @@ import httpx
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tests.support.admission import drive, projection, suspend
+from tests.support.admission import drive, projection, retire_local, suspend
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.provider import Identity
 from tinyassets.broker.admission import local_mutate
-from tinyassets.broker.owner_identities import OwnerIdentities, _owner_request
+from tinyassets.broker.owner_identities import OwnerIdentities
 
 
 @pytest.fixture(autouse=True)
@@ -51,8 +51,7 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     for name in ("alice", "bob", "reserved"):
         identities.resolve(name, allocate=True)
     for name in ("alice", "bob"):
-        drive(identities.admission("admit", name, "cc-" + name,
-          routing=projection(identities.path)))
+        drive(identities.admit(name, routing=projection(identities.path)))
     live = SimpleNamespace(socket_path=broker.path,
                            fence=lambda: (broker.state["generation"], broker.state["token"]),
                            verify_broker=lambda channel: None)
@@ -78,8 +77,7 @@ def test_secret_mint_rotation_and_admission_through_real_broker(admitted, boxes,
     for owner in ("unknown", "reserved"):
         with pytest.raises(LookupError):
             admitted.box_route(owner)
-    drive(admitted.admission("retire", "alice", "cc-alice",
-      routing=projection(admitted.path)))
+    retire_local(boxes.roots["alice"], "cc-alice")
     assert admitted.box_route("alice") == rotated
 
 
@@ -774,7 +772,7 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     request("bob", {"operation": "hook_revoke", "token_hash": hashlib.sha256(token.encode())
             .hexdigest()})
     assert HookOwners(tmp_path).resolve(token) == "alice"
-    drive(admitted.admission("retire", "bob", "cc-bob", routing=projection(admitted.path)))
+    retire_local(boxes.roots["bob"], "cc-bob")
     assert request("bob", {"operation": "key_list"})["op"] == "ROUTER_CREDENTIAL_IS"
     drive(local_mutate(admitted.path, "bob", "erase", routing=projection(admitted.path)))
     with pytest.raises(FileNotFoundError):
@@ -1029,16 +1027,15 @@ def test_boxhostd_real_process_restart_keeps_secret_and_serves_again(
         assert ready.status_code == 200
 
 
-def test_center_retirement_stops_old_daemon_and_admitted_owner_wakes_again(
+def test_local_center_retirement_preserves_owner_daemon_and_route(
     boxes, admitted, tmp_path,
 ):
     from tinyassets.owner_router import BoxRoute, forward, resolve_box
 
     stale = resolve_box("alice")
     uid = admitted.owner_machine("alice")
-    _owner_request(tmp_path, {"op": "CENTER_ADMISSION", "event": "retire",
-                              "principal": "alice", "center": "cc-alice"})
-    assert not boxes.runtime.alive(uid)
+    retire_local(boxes.roots["alice"], "cc-alice")
+    assert boxes.runtime.alive(uid)
     assert admitted.box_route("alice") == (uid, stale.secret)
 
     async def proxy(scope, receive, send):
@@ -1055,7 +1052,7 @@ def test_center_retirement_stops_old_daemon_and_admitted_owner_wakes_again(
     # C6: lifecycle stop updates the center list; the owner remains wakeable.
     assert resolve_box("alice").secret == stale.secret
     assert boxes.runtime.alive(uid)
-    assert boxes.manager.admission.owner("alice")["centers"] == []
+    assert "centers" not in boxes.manager.admission.owner("alice")
 
 
 def test_root_lifecycle_callback_is_absent_and_cannot_override_a_binding(boxes, admitted):
@@ -1074,32 +1071,25 @@ def test_root_lifecycle_callback_is_absent_and_cannot_override_a_binding(boxes, 
     assert admitted.box_route("alice") == before
 
 
-def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, admitted):
+def test_shared_channel_cannot_create_or_retire_local_centers(boxes, admitted):
     from tinyassets import rpc_frames as rf
+    from tinyassets.owner_centers import Centers
 
     uid = admitted.owner_machine("alice")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
-        channel.settimeout(10)
-        channel.connect(str(boxes.relays.directory / f"{uid}.sock"))
-        channel.sendall(rf.control(0, {"op": "BOX_SHARED"}))
-        assert rf.read_frame_blocking(channel).control() == {"op": "BOX_CONNECTED"}
-        for doc in ({"op": "RETIRE_CENTER", "center": "cc-bob"},
-                    {"op": "RETIRE_CENTER", "center": "cc-bob", "principal": "bob"}):
-            channel.sendall(rf.control(0, doc))
-            assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
-            assert boxes.runtime.alive(uid)
-        channel.sendall(rf.control(0, {"op": "RETIRE_CENTER", "center": "cc-alice"}))
-        assert rf.read_frame_blocking(channel).control()["op"] == "BOX_RESULT"
-    assert not boxes.runtime.alive(uid)
-    assert boxes.runtime.alive(admitted.owner_machine("bob"))
+    before = Centers(boxes.roots["alice"]).active()
+    for operation in ("ADMIT_CENTER", "RETIRE_CENTER"):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(10)
+            channel.connect(str(boxes.relays.directory / f"{uid}.sock"))
+            channel.sendall(rf.control(0, {"op": "BOX_CONNECT"}))
+            assert rf.read_frame_blocking(channel).control() == {"op": "BOX_CONNECTED"}
+            channel.sendall(rf.control(0, {"op": operation, "center": "cc-alice"}))
+            assert rf.read_frame_blocking(channel) is None
+        assert boxes.runtime.alive(uid)
+        assert boxes.runtime.alive(admitted.owner_machine("bob"))
+        assert Centers(boxes.roots["alice"]).active() == before
     assert admitted.box_route("alice") == (uid, boxes.secrets["alice"])
-    assert boxes.manager.admission.owner("alice")["centers"] == []
-
-
-
-
-
-
+    assert "centers" not in boxes.manager.admission.owner("alice")
 
 
 def test_box_admitted_request_blocks_eviction_until_disconnect(
@@ -1169,7 +1159,7 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
         channel.connect(str(boxes.host_path))
         if op in {"BOX_IDENTITY", "BOX_PING", "BOX_PUBLISH", "BOX_READ"}:
             channel.sendall(rf.control(rf.CONNECTION, {
-                "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
+                "op": "BOX_CHANNEL", "principal": "alice"}))
             assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
         drive(local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
             routing=projection(tmp_path / ".broker/state/owner-identities.db")))
@@ -1183,4 +1173,6 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
             reply = rf.read_frame_blocking(channel)
             assert reply.control() == {"op": "BOX_REFUSED"}
     assert not boxes.runtime.alive(uid)
-    assert admitted.admitted_owner("cc-alice") == "alice"
+    from tinyassets.broker.admission import read
+
+    assert read(admitted, "alice").state == "erased"

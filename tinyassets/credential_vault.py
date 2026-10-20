@@ -63,15 +63,23 @@ def credential_vault_path(universe_dir: str | Path) -> Path:
     return _credential_root(Path(universe_dir)) / VAULT_FILENAME
 
 
-def _credential_root(universe: Path) -> Path:
-    """Platform custody of a command center's credentials: outside its box."""
+def custody_namespace(data_root: Path, owner: str) -> Path:
+    """C11: one credential store derived from the authenticated owner."""
+    from tinyassets.broker.admission import digest
+
+    return Path(data_root) / ".broker/accounts" / digest(owner)
+
+
+def custody_data_root(namespace: Path) -> Path:
+    return Path(namespace).parents[2]
+
+
+def _credential_root(namespace: Path) -> Path:
     from tinyassets.owner_runtime import current
 
     if current() is not None:
         raise PermissionError("raw credential custody is unavailable in owner mode")
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", universe.name):
-        raise ValueError("invalid credential command center")
-    return universe.parent / ".platform" / "credential-vaults" / universe.name
+    return namespace / "credentials"
 
 
 def vault_exists(universe_dir: str | Path | None) -> bool:
@@ -103,47 +111,11 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
 
 def http_deposit_refusal(
     universe_dir: str | Path, *, destination: str, owner_user_id: str,
-) -> str:
-    """Why an owned http write for ``destination`` would be refused, or ``""``.
+) -> str | None:
+    from tinyassets.broker.vault import check_not_deleted
 
-    Read-only, and derived from the SAME rows :func:`write_credential_vault`
-    compares, so a surface that previews a write cannot disagree with the write
-    that follows. There is deliberately no second copy of the rule here — both
-    conditions below are the ones the writer raises ``PermissionError`` for.
-
-    It exists because a ROTATION is previewed before the owner is asked to paste
-    anything: a record left with no ownership row (deposited before http
-    ownership was tracked, or by an owner-less path) is refused by the write, and
-    admitting that card would put an unfulfillable tab in front of the owner
-    (Codex refute-review, P2 #4).
-    """
-    universe = Path(universe_dir).resolve(strict=False)
-    service = (destination or "").strip().lower()
-    owner = (owner_user_id or "").strip()
-    if not service or not owner:
-        return "incomplete_request"
-    path = custody_metadata_path(universe.parent)
-    rows = []
-    if path.exists():
-        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
-        try:
-            rows = conn.execute(
-                "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
-                "WHERE universe_id = ?", (universe.name,),
-            ).fetchall()
-        finally:
-            conn.close()
-    if any(str(row[1]) != owner for row in rows):
-        return "foreign_owner"
-    owned = {str(row[0]) for row in rows}
-    if f"http:{service}" in owned:
-        return ""
-    on_disk = {
-        _service(record)
-        for record in load_credential_vault(universe)
-        if record.get("credential_type") == "http"
-    }
-    return "unowned_record" if service in on_disk else ""
+    check_not_deleted(custody_data_root(Path(universe_dir)), owner_user_id)
+    return None
 
 
 def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
@@ -179,7 +151,7 @@ def _credential_key(record: dict[str, Any]) -> tuple[Any, ...]:
     """Return the logical key used for single-record vault upserts."""
     credential_type = str(record["credential_type"])
     service = _service(record)
-    if credential_type == "vcs":
+    if credential_type in {"vcs", "http"}:
         destination = str(record.get("destination") or "").strip()
         return credential_type, service, destination
     return credential_type, service
@@ -360,19 +332,6 @@ class LLMCredentialCustodyReference:
 def _canonical_digest(value: object) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _ensure_credential_owner_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS llm_credential_deposit_owners (
-            universe_id TEXT NOT NULL,
-            service TEXT NOT NULL,
-            owner_user_id TEXT NOT NULL,
-            PRIMARY KEY (universe_id, service)
-        )
-        """
-    )
 
 
 def _custody_reference_digest(
@@ -700,8 +659,3 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     source = os.environ if env is None else env
     value = source.get("TINYASSETS_UNIVERSE", "").strip()
     return Path(value) if value else None
-
-
-def custody_metadata_path(data_root: str | Path) -> Path:
-    """Broker-owned ownership and deletion metadata, never the owner database."""
-    return Path(data_root).resolve() / ".broker" / "credential-custody.db"

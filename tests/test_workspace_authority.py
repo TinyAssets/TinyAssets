@@ -509,7 +509,7 @@ def test_the_broker_refuses_a_git_scope_as_a_verb(tmp_path) -> None:
         grant_id="grant-1",
         connection_id="conn-1",
         owner_user_id="user-1",
-        universe_id="u-1",
+
     )
     dispatched: list[str] = []
 

@@ -181,7 +181,10 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
                     pipe.send("routes_published")
                     continue
                 if command == "expire":
-                    keeper = ConnectionTokens(universe_dir=root / "center", owner_user_id="owner")
+                    from tinyassets.credential_vault import custody_namespace
+
+                    keeper = ConnectionTokens(
+                        universe_dir=custody_namespace(root, "owner"), owner_user_id="owner")
                     bundle = tokens.decode(keeper._read("fixture"))
                     keeper._write("fixture", replace(bundle, expires_at=time.time() - 10))
                 pipe.send(list(events))
@@ -362,7 +365,6 @@ home = root / "center"
 home.mkdir(parents=True, exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
 os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
-os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda p: p == root
 os.environ["TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"] = "1"
 # Reuse the effector rig's explicit owner-approved rule and real consent store.
@@ -527,7 +529,6 @@ root = Path(root)
 root.mkdir(parents=True, exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
 os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
-os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda p: p == root
 runtime = owner_runtime.start(Path(relay))
 try:
@@ -715,7 +716,7 @@ def test_box_action_and_approval_link_then_ledger_completion(lifecycle):
     assert refused["error"] == "connection_setup_invalid"
     query = parse_qs(urlsplit(direct["connect_url"]).query)
     assert query == {"request": [direct["request_ref"]], "center": ["center"],
-                     "connection": [_ids(universe_id="center", destination="direct")[0]]}
+                     "connection": [_ids(owner="owner", destination="direct")[0]]}
     pending = _box_operation(rig, "ask", {
         "kind": "connection", "title": "Connect fixture", "body": "Allow this endpoint.",
         "fields": [], "action": {"type": "connect", "destination": "fixture",
@@ -728,7 +729,7 @@ def test_box_action_and_approval_link_then_ledger_completion(lifecycle):
     assert refused["error"] == "request_invalid"
     assert parse_qs(urlsplit(answer["connect_url"]).query) == {
         "request": [ref], "center": ["center"],
-        "connection": [_ids(universe_id="center", destination="fixture")[0]]}
+        "connection": [_ids(owner="owner", destination="fixture")[0]]}
     assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "pending"
     body = {"center": "center", "request_ref": "unrelated-request",
             "secret": DEPOSIT_SECRETS["bearer"], "definition": {

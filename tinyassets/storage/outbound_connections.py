@@ -253,7 +253,6 @@ class ConnectionGrant:
     grant_id: str
     connection_id: str
     owner_user_id: str
-    universe_id: str
     granted_at: float
     revoked_at: float | None
     unprompted_action_cap: ActionCap | None
@@ -1100,7 +1099,7 @@ class CredentialBlindBroker:
 
             grant = self._ledger.require_active_grant(grant_id)
             usage = resolve_inference_usage(
-                self._ledger._data_root, grant.owner_user_id, grant.universe_id,
+                self._ledger._data_root, grant.owner_user_id, grant.owner_user_id,
                 self._ledger, resource, grant_id, verb, request, inference_usage, operation_id,
             )
         if usage is not None:
@@ -4830,7 +4829,6 @@ CREATE TABLE IF NOT EXISTS outbound_connection_grants (
     grant_id        TEXT PRIMARY KEY,
     connection_id   TEXT NOT NULL REFERENCES outbound_connections(connection_id),
     owner_user_id   TEXT NOT NULL,
-    universe_id     TEXT NOT NULL,
     granted_at      REAL NOT NULL,
     revoked_at      REAL,
     unprompted_action_cap_json TEXT,
@@ -4847,7 +4845,7 @@ CREATE TABLE IF NOT EXISTS connection_capabilities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbound_grant_resolution
-    ON outbound_connection_grants(owner_user_id, universe_id, revoked_at);
+    ON outbound_connection_grants(owner_user_id, revoked_at);
 
 CREATE TABLE IF NOT EXISTS outbound_connector_artifacts (
     artifact_id              TEXT PRIMARY KEY,
@@ -5037,9 +5035,6 @@ class ConnectionLedger:
             if "inference_required" not in grant_columns or not connection.execute(
                 "SELECT 1 FROM broker_schema_migrations WHERE name='model_source_metering'"
             ).fetchone():
-                from tinyassets.broker.owner_sources import backfill_metering
-
-                backfill_metering(connection)
                 connection.execute("INSERT OR IGNORE INTO broker_schema_migrations "
                                    "VALUES ('model_source_metering')")
             # The column default also applies to rows inserted by older writers.
@@ -5547,7 +5542,6 @@ class ConnectionLedger:
                     or expected_grant.connection_id != connection_key
                     or grant_row["owner_user_id"] != resource.owner_user_id
                     or grant_row["owner_user_id"] != expected_grant.owner_user_id
-                    or grant_row["universe_id"] != expected_grant.universe_id
                     or grant_row["granted_at"] != expected_grant.granted_at
                 ):
                     raise PermissionError("discovery grant context changed")
@@ -5633,10 +5627,10 @@ class ConnectionLedger:
                     "SELECT 1 FROM outbound_connection_grants g "
                     "JOIN outbound_connections c ON c.connection_id=g.connection_id "
                     "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
-                    "AND c.owner_user_id=? AND g.universe_id=? AND g.granted_at=? "
+                    "AND c.owner_user_id=? AND g.granted_at=? "
                     "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
                     (expected_grant.grant_id, connection_key, expected_grant.owner_user_id,
-                     expected_grant.owner_user_id, expected_grant.universe_id,
+                     expected_grant.owner_user_id,
                      expected_grant.granted_at),
                 ).fetchone()
                 if (admitted is None or expected_grant.connection_id != connection_key
@@ -5661,7 +5655,6 @@ class ConnectionLedger:
         grant_id: str,
         connection_id: str,
         owner_user_id: str,
-        universe_id: str,
         granted_at: float | None = None,
         unprompted_action_cap: ActionCap | None = None,
         _transaction: sqlite3.Connection | None = None,
@@ -5676,7 +5669,7 @@ class ConnectionLedger:
             grant_id=_required("grant_id", grant_id),
             connection_id=resource.connection_id,
             owner_user_id=owner,
-            universe_id=_required("universe_id", universe_id),
+
             granted_at=time.time() if granted_at is None else granted_at,
             revoked_at=None,
             unprompted_action_cap=unprompted_action_cap,
@@ -5686,9 +5679,9 @@ class ConnectionLedger:
             connection.execute(
                 f"""
                 INSERT INTO outbound_connection_grants (
-                    grant_id, connection_id, owner_user_id, universe_id,
+                    grant_id, connection_id, owner_user_id,
                     granted_at, revoked_at, unprompted_action_cap_json, inference_required
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?, (
+                ) VALUES (?, ?, ?, ?, NULL, ?, (
                     SELECT {_MODEL_CONNECTION_SQL} FROM outbound_connections c
                     WHERE c.connection_id = ?
                 ))
@@ -5697,7 +5690,6 @@ class ConnectionLedger:
                     grant.grant_id,
                     grant.connection_id,
                     grant.owner_user_id,
-                    grant.universe_id,
                     grant.granted_at,
                     (
                         json.dumps(
@@ -5740,7 +5732,7 @@ class ConnectionLedger:
             grant_id=row["grant_id"],
             connection_id=row["connection_id"],
             owner_user_id=row["owner_user_id"],
-            universe_id=row["universe_id"],
+
             granted_at=row["granted_at"],
             revoked_at=row["revoked_at"],
             unprompted_action_cap=cap,
@@ -5750,7 +5742,6 @@ class ConnectionLedger:
         self,
         *,
         owner_user_id: str,
-        universe_id: str,
         active_only: bool = True,
         limit: int = 100,
     ) -> list[ConnectionGrant]:
@@ -5762,11 +5753,11 @@ class ConnectionLedger:
             rows = connection.execute(
                 """
                 SELECT * FROM outbound_connection_grants
-                WHERE owner_user_id = ? AND universe_id = ?
+                WHERE owner_user_id = ?
                   AND (? = 0 OR revoked_at IS NULL)
                 ORDER BY grant_id LIMIT ?
                 """,
-                (owner_user_id, universe_id, int(active_only), limit),
+                (owner_user_id, int(active_only), limit),
             ).fetchall()
         result: list[ConnectionGrant] = []
         for row in rows:
@@ -5776,7 +5767,7 @@ class ConnectionLedger:
                     grant_id=row["grant_id"],
                     connection_id=row["connection_id"],
                     owner_user_id=row["owner_user_id"],
-                    universe_id=row["universe_id"],
+
                     granted_at=row["granted_at"],
                     revoked_at=row["revoked_at"],
                     unprompted_action_cap=(
@@ -5853,7 +5844,6 @@ class ConnectionLedger:
     def resolve_exact_scoped_proxy(
         self,
         *,
-        universe_id: str,
         grant_id: str,
         connection_id: str,
     ) -> ScopedConnectionProxy:
@@ -5863,20 +5853,20 @@ class ConnectionLedger:
         is ever spawned, and the daemon never holds the credential.
         """
         grant, resource = self.authorize_exact(
-            universe_id=universe_id, grant_id=grant_id, connection_id=connection_id,
+             grant_id=grant_id, connection_id=connection_id,
         )
         return ScopedConnectionProxy(
             grant_id=grant.grant_id, provider=resource.provider,
             destination=resource.destination, scopes=resource.scopes,
             _channel=_broker_channel(
                 self._data_root, principal=resource.owner_user_id,
-                command_center=grant.universe_id, grant_id=grant.grant_id,
+                command_center=grant.owner_user_id, grant_id=grant.grant_id,
                 connection_id=resource.connection_id,
             ),
         )
 
     def authorize_exact(
-        self, *, universe_id: str, grant_id: str, connection_id: str,
+        self, *, grant_id: str, connection_id: str,
     ) -> tuple[ConnectionGrant, ConnectionResource]:
         """The exact checks every broker request runs (I14 decision 2).
 
@@ -5893,7 +5883,6 @@ class ConnectionLedger:
         exact = (
             grant.connection_id == resource.connection_id,
             grant.owner_user_id == owner_user_id,
-            grant.universe_id == _required("universe_id", universe_id),
             resource.owner_user_id == owner_user_id,
             resource.revoked_at is None,
         )
@@ -5902,17 +5891,19 @@ class ConnectionLedger:
         return grant, resource
 
     def broker_dispatch_config(
-        self, *, grant_id: str, universe_id: str, provider: str, destination: str,
+        self, *, grant_id: str, provider: str, destination: str,
         owner_user_id: str, connection_type: str = "",
     ) -> dict[str, Any]:
         """The trusted dispatcher's configuration for one grant (worker or broker)."""
+        from tinyassets.credential_vault import custody_namespace
+
         grant_runtime_id = hashlib.sha256(grant_id.encode("utf-8")).hexdigest()
         return {
             "allow_test_fixtures": self._allow_test_fixtures,
             "allow_http_connections": _outbound_http_enabled(),
             "ledger_db_path": str(self._db_path.resolve()),
             "data_root": str(self._data_root.resolve()),
-            "universe_dir": str((self._data_root / universe_id).resolve()),
+            "universe_dir": str(custody_namespace(self._data_root, owner_user_id)),
             "provider": provider,
             "destination": destination,
             "connection_type": (connection_type or "").strip().lower(),
@@ -5952,7 +5943,7 @@ class ConnectionLedger:
                 milliseconds = max(1, int(_remaining_redirect_seconds(deadline) * 1000))
                 connection.execute(f"PRAGMA busy_timeout = {milliseconds}")
             row = connection.execute(
-                """SELECT c.*, g.universe_id AS grant_universe,
+                """SELECT c.*, g.owner_user_id AS grant_owner,
                           g.granted_at AS grant_created_at
                      FROM outbound_connection_grants AS g
                      JOIN outbound_connections AS c ON c.connection_id = g.connection_id

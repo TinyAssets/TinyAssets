@@ -139,9 +139,10 @@ def _ledger(base: Path, actor: str) -> Any:
 
 
 def _http_records(udir: Path) -> list[dict[str, Any]]:
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
-    return [r for r in load_credential_vault(udir) if r.get("credential_type") == "http"]
+    return [r for r in load_credential_vault(custody_namespace(udir.parent, "founder"))
+            if r.get("credential_type") == "http"]
 
 
 # --------------------------------------------------------------------------- #
@@ -173,7 +174,7 @@ def test_owner_provisions_http_connection_round_trip(base: Path) -> None:
     assert recs[0]["token"] == "sk-SECRET-token"
 
     # Ledger: connection is http, endpoint stored, grant bound to the universe.
-    conn_id, grant_id = _ids(universe_id="u-owner", destination="webhook:acme")
+    conn_id, grant_id = _ids(owner="founder", destination="webhook:acme")
     ledger = _ledger(base, "founder")
     resource = ledger._get_connection_resource(conn_id)
     assert resource is not None
@@ -215,7 +216,7 @@ def test_connection_scope_is_the_endpoint_methods_not_a_type_token(base: Path) -
     )
     assert result["status"] == "provisioned"
 
-    conn_id, _grant_id = _ids(universe_id="u-scope", destination="webhook:acme")
+    conn_id, _grant_id = _ids(owner="founder", destination="webhook:acme")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert resource is not None
     # Sorted, uppercased, de-duped union of every endpoint's methods — the verbs the
@@ -238,13 +239,14 @@ def _seed_legacy_http_connection(
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.api.http_connection import _ids
     from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import custody_namespace
     from tinyassets.storage.outbound_connections import ActionCap
 
     udir = _make_universe(base, uid, admin="founder")
     seed_owner_admission(base, principal="founder", center=uid)
-    conn_id, grant_id = _ids(universe_id=uid, destination="webhook:acme")
+    conn_id, grant_id = _ids(owner="founder", destination="webhook:acme")
     write_credential_vault(
-        udir,
+        custody_namespace(base, "founder"),
         [
             {
                 "credential_type": "http",
@@ -273,7 +275,7 @@ def _seed_legacy_http_connection(
         grant_id=grant_id,
         connection_id=conn_id,
         owner_user_id="founder",
-        universe_id=grant_universe or uid,
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
@@ -377,7 +379,7 @@ def test_connections_list_includes_http_channel_connections(base: Path) -> None:
     _make_universe(base, "u-list", admin="founder")
     _login("founder")
     _connect("u-list", destination="webhook:slack-like")  # generic http deposit
-    conn_id, grant_id = _ids(universe_id="u-list", destination="webhook:slack-like")
+    conn_id, grant_id = _ids(owner="founder", destination="webhook:slack-like")
 
     result = cloud_connections(action="list", universe_id="u-list")
     conns = result["connections"]
@@ -432,7 +434,7 @@ def test_connections_list_isolates_by_owner_not_just_universe(base: Path) -> Non
         )
         ledger.grant_connection(
             grant_id=grant_id, connection_id=conn_id, owner_user_id=owner,
-            universe_id="u-shared",
+
         )
 
     _seed("founder", "webhook:founders", "http_founder", "grant_founder")
@@ -475,7 +477,7 @@ def test_provision_routes_through_write_graph(base: Path) -> None:
         from urllib.parse import parse_qs, urlsplit
         query = parse_qs(urlsplit(payload["connect_url"]).query)
         from tinyassets.api.http_connection import _ids
-        assert query["connection"] == [_ids(universe_id="u-route", destination="webhook:r")[0]]
+        assert query["connection"] == [_ids(owner="founder", destination="webhook:r")[0]]
         assert query["center"] == ["u-route"]
     finally:
         importlib.reload(us)
@@ -579,7 +581,7 @@ def test_header_scheme_deposits_generically(base: Path) -> None:
     assert result["auth_scheme"] == "header"
     assert "k-" + "y" * 30 not in json.dumps(result)
 
-    conn_id, _g = _ids(universe_id="u-hdr", destination="some-api")
+    conn_id, _g = _ids(owner="founder", destination="some-api")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert resource.auth_scheme == "header"
     # Stored exactly like a bearer token: one opaque string. The header NAME is
@@ -614,7 +616,7 @@ def test_oauth1a_scheme_deposits_generically(base: Path) -> None:
 
     # Stored as ONE opaque string per connection (the broker parses it at request
     # time) and the connection row carries the scheme so the child signs correctly.
-    conn_id, _g = _ids(universe_id="u-o1", destination="x:my-account")
+    conn_id, _g = _ids(owner="founder", destination="x:my-account")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert resource.auth_scheme == "oauth1a"
     assert _http_records(udir)[0]["token"] == bundle
@@ -802,7 +804,7 @@ def test_reprovision_with_changed_endpoints_is_a_conflict(base: Path) -> None:
     assert recs[0]["token"] == "sk-v1"
     from tinyassets.api.http_connection import _ids
 
-    conn_id, _ = _ids(universe_id="u-epchg", destination="webhook:acme")
+    conn_id, _ = _ids(owner="founder", destination="webhook:acme")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert [e.host for e in resource.allowed_endpoints] == ["api.example.com"]
 
@@ -854,7 +856,7 @@ def test_atomic_broker_commit_rolls_back_grant_fault_then_retries(
     assert _connect("u-heal")["error"] == "model_connection_incomplete"
     from tinyassets.api.http_connection import _ids
 
-    conn_id, grant_id = _ids(universe_id="u-heal", destination="webhook:acme")
+    conn_id, grant_id = _ids(owner="founder", destination="webhook:acme")
     ledger = _ledger(base, "founder")
     assert ledger._get_connection_resource(conn_id) is None  # rolled back with the grant
     assert ledger.get_grant(grant_id) is None  # no grant → cannot authorize a call
@@ -891,7 +893,7 @@ def test_create_failure_does_not_deposit_and_retry_succeeds(
 
     from tinyassets.api.http_connection import _ids
 
-    conn_id, grant_id = _ids(universe_id="u-orphan", destination="webhook:acme")
+    conn_id, grant_id = _ids(owner="founder", destination="webhook:acme")
     ledger = _ledger(base, "founder")
     assert ledger._get_connection_resource(conn_id) is None
     assert ledger.get_grant(grant_id) is None
@@ -914,6 +916,7 @@ def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
     recorded, so the deposit fails closed and the legacy secret is preserved. A
     second admin cannot seize it; recovery needs a dedicated flow (Codex review)."""
     from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import custody_namespace
     from tinyassets.daemon_server import grant_universe_access
 
     udir = _make_universe(base, "u-legacy", admin="founder")
@@ -923,7 +926,7 @@ def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
     )
     # Simulate a legacy deposit: an http vault record with NO owner row (owner-less).
     write_credential_vault(
-        udir,
+        custody_namespace(base, "founder"),
         [{
             "credential_type": "http",
             "service": "webhook:acme",
@@ -1002,7 +1005,7 @@ def test_adding_an_endpoint_extends_instead_of_conflicting(base: Path) -> None:
     # The original endpoint survives — extension adds, it never replaces.
     from tinyassets.api.http_connection import _ids
 
-    conn_id, _ = _ids(universe_id="u-ext", destination="webhook:acme")
+    conn_id, _ = _ids(owner="founder", destination="webhook:acme")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert sorted(e.path_template for e in resource.allowed_endpoints) == [
         "/v1/messages", "/v1/threads",
@@ -1025,7 +1028,7 @@ def test_extension_widens_the_method_scope_with_it(base: Path) -> None:
     assert out["status"] == "provisioned"
     from tinyassets.api.http_connection import _ids
 
-    conn_id, _ = _ids(universe_id="u-ext2", destination="webhook:acme")
+    conn_id, _ = _ids(owner="founder", destination="webhook:acme")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert sorted(resource.scopes) == ["POST", "PUT"]
 
@@ -1042,7 +1045,7 @@ def test_removing_an_endpoint_is_still_a_conflict(base: Path) -> None:
     assert out == {"error": "connection_conflict"}
     from tinyassets.api.http_connection import _ids
 
-    conn_id, _ = _ids(universe_id="u-narrow", destination="webhook:acme")
+    conn_id, _ = _ids(owner="founder", destination="webhook:acme")
     resource = _ledger(base, "founder")._get_connection_resource(conn_id)
     assert len(resource.allowed_endpoints) == 2, "nothing was dropped"
 
@@ -1088,7 +1091,7 @@ def test_new_http_connection_has_no_per_connection_request_cap(base: Path) -> No
     ledger = _ledger(base, "founder")
     result = _connect("u-nocap")
     assert result["status"] == "provisioned"
-    _conn_id, grant_id = _ids(universe_id="u-nocap", destination="webhook:acme")
+    _conn_id, grant_id = _ids(owner="founder", destination="webhook:acme")
     # Use the pre-existing ledger: reopening would let migration hide a capped
     # grant accidentally written by provisioning.
     grant = ledger.require_active_grant(grant_id)
@@ -1117,7 +1120,7 @@ def test_http_cap_migration_preserves_other_caps_and_malformed_rows(base: Path) 
         other_id = f"other-{index}"
         ledger.grant_connection(
             grant_id=other_id, connection_id=conn_id,
-            owner_user_id="founder", universe_id=f"other-universe-{index}",
+            owner_user_id="founder",
         )
         with ledger._connect() as conn:
             conn.execute(

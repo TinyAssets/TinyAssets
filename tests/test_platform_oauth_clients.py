@@ -37,6 +37,7 @@ from tests.test_generic_oauth_connections import (
 )
 from tinyassets.connection_oauth import directory, discovery, service, tokens
 from tinyassets.connection_oauth.transport import OAuthError
+from tinyassets.credential_vault import custody_namespace
 
 SECRET_NAME = "TINYASSETS_OAUTH_UNFORESEEN_CLIENT_SECRET"
 CLIENT_NAME = "TINYASSETS_OAUTH_UNFORESEEN_CLIENT_ID"
@@ -349,13 +350,15 @@ def test_two_connections_of_one_owner_keep_distinct_tokens(configured, provider,
         with _as(OWNER):
             ask = _ask(action={**TASKS_ASK, "destination": destination})
         assert _sign_in(provider, ask["request_id"])[2].status_code == 200
-    before = {r["destination"]: r["token"] for r in load_credential_vault(app / UID)}
+    before = {r["destination"]: r["token"]
+              for r in load_credential_vault(custody_namespace(app, OWNER))}
     from tinyassets.broker.tokens import ConnectionTokens
 
-    keeper = ConnectionTokens(universe_dir=app / UID, owner_user_id=OWNER)
+    keeper = ConnectionTokens(universe_dir=custody_namespace(app, OWNER), owner_user_id=OWNER)
     keeper.current("second", before["second"],
                    rejected=tokens.decode(before["second"]).access_token)
-    after = {r["destination"]: r["token"] for r in load_credential_vault(app / UID)}
+    after = {r["destination"]: r["token"]
+             for r in load_credential_vault(custody_namespace(app, OWNER))}
     assert before["tasklark"] == after["tasklark"]
     assert before["second"] != after["second"]
 
@@ -389,7 +392,7 @@ def test_concurrent_broker_refresh_spends_once(configured, provider, app):
     provider.refresh_delay = 0.1
     from tinyassets.broker.tokens import ConnectionTokens
 
-    keeper = ConnectionTokens(universe_dir=app / UID, owner_user_id=OWNER)
+    keeper = ConnectionTokens(universe_dir=custody_namespace(app, OWNER), owner_user_id=OWNER)
     with ThreadPoolExecutor(max_workers=4) as pool:
         replies = list(pool.map(lambda _: keeper.current("tasklark", keeper._read("tasklark"),
                                 rejected=original.access_token), range(4)))
@@ -495,7 +498,7 @@ def test_invalid_directory_does_not_block_shared_broker_channel(configured, tmp_
                               verify_authenticated_principal=lambda: "user-1")
     _grant_github_connection(ledger)
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1", grant_id="grant-github", connection_id="conn-github")
+         grant_id="grant-github", connection_id="conn-github")
     proxy.close()
     assert set(service._bindings) == before
 
@@ -591,5 +594,5 @@ def test_unavailable_broker_mints_no_child_oauth_capability(configured, tmp_path
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
     with pytest.raises(ProxyRequestError, match="credential broker is not running"):
         ledger.resolve_exact_scoped_proxy(
-            universe_id="universe-1", grant_id="grant-github", connection_id="conn-github")
+             grant_id="grant-github", connection_id="conn-github")
     assert set(service._bindings) == before

@@ -620,7 +620,7 @@ def test_the_inventory_renders_the_mode_and_never_a_wildcard(tmp_path):
     resource = ledger._get_connection_resource("conn-1")
     grant = ledger.grant_connection(
         grant_id="grant-1", connection_id="conn-1", owner_user_id="user-1",
-        universe_id="u-1",
+
     )
     row = _project(resource, grant)
     assert row["access"] == "full"
@@ -1059,7 +1059,7 @@ def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
     _create(ledger, scopes=("GET",))
     ledger.grant_connection(
         grant_id="grant-1", connection_id="conn-1",
-        owner_user_id="user-1", universe_id="u-1",
+        owner_user_id="user-1",
     )
 
     sent: list[str] = []

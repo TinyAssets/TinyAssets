@@ -9,12 +9,11 @@ from contextvars import ContextVar
 BOX_REQUEST = ContextVar("broker_box_request", default=False)
 
 
-def publish(ledger, owner, center, document):
+def publish(ledger, owner, owner_scope, document):
     from tinyassets.providers.definition import _validate, _verified_definition
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
-    definition = _verified_definition(
-        {**document, "owner_user_id": owner, "universe_id": center}, expect_universe=center)
+    definition = _verified_definition({**document, "owner_user_id": owner})
     if definition.access_method != "api_key_http":
         raise PermissionError("owner mode requires an HTTP broker source")
     _validate(access_method=definition.access_method, protocol=definition.protocol,
@@ -25,63 +24,30 @@ def publish(ledger, owner, center, document):
         grant = conn.execute(
             "SELECT g.grant_id FROM outbound_connection_grants g "
             "JOIN outbound_connections c ON c.connection_id=g.connection_id "
-            "WHERE g.grant_id=? AND g.owner_user_id=? AND g.universe_id=? "
+            "WHERE g.grant_id=? AND g.owner_user_id=? "
             "AND c.owner_user_id=? AND c.connection_type='http' "
             "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
-            (definition.ref, owner, center, owner),
+            (definition.ref, owner, owner),
         ).fetchone()
         if grant is None:
             raise GrantResolutionError("outbound connection grant identity mismatch")
         conn.execute("CREATE TABLE IF NOT EXISTS box_model_sources ("
-                     "center TEXT NOT NULL, id TEXT NOT NULL, definition TEXT NOT NULL, "
-                     "PRIMARY KEY(center, id))")
+                     "owner TEXT NOT NULL, id TEXT NOT NULL, definition TEXT NOT NULL, "
+                     "PRIMARY KEY(owner, id))")
         conn.execute("INSERT INTO box_model_sources VALUES (?, ?, ?) "
-                     "ON CONFLICT(center, id) DO UPDATE SET definition=excluded.definition",
-                     (center, definition.id, json.dumps(definition.as_dict())))
+                     "ON CONFLICT(owner, id) DO UPDATE SET definition=excluded.definition",
+                     (owner, definition.id, json.dumps(definition.as_dict())))
         conn.execute("UPDATE outbound_connection_grants SET inference_required=1 "
                      "WHERE grant_id=? AND inference_required=0", (definition.ref,))
     return {"id": definition.id}
 
 
-def backfill_metering(conn):
-    """Only promote old grants, from shared metadata the broker can itself read."""
-    from tinyassets.providers.definition import _verified_definition
-
-    conn.execute(
-        "UPDATE outbound_connection_grants SET inference_required=1 "
-        "WHERE inference_required=0 AND connection_id IN ("
-        "SELECT c.connection_id FROM outbound_connections c "
-        "JOIN connection_capabilities k ON k.connection_id=c.connection_id "
-        "WHERE c.connection_type='http' "
-        "AND k.capability_kind IN ('model_use', 'model_discovery'))")
-    grants = conn.execute(
-        "SELECT grant_id, owner_user_id, universe_id FROM outbound_connection_grants "
-        "WHERE inference_required=0").fetchall()
-    if not grants:
-        return
-    published = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name='box_model_sources'").fetchone()
-    for center in {row["universe_id"] for row in grants}:
-        rows = [json.loads(row[0]) for row in conn.execute(
-            "SELECT definition FROM box_model_sources WHERE center=?", (center,))
-        ] if published else []
-        refs = set()
-        for row in rows:
-            definition = _verified_definition(row, expect_universe=center)
-            if definition.access_method == "api_key_http":
-                refs.add((definition.ref, definition.owner_user_id))
-        for grant in grants:
-            if (grant["universe_id"] == center
-                    and (grant["grant_id"], grant["owner_user_id"]) in refs):
-                conn.execute("UPDATE outbound_connection_grants SET inference_required=1 "
-                             "WHERE grant_id=? AND inference_required=0", (grant["grant_id"],))
-
-
-def read(ledger, center):
+def read(ledger, owner_scope):
+    owner_scope = ledger.require_authenticated_principal_id()
     with closing(sqlite3.connect(ledger._db_path)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='box_model_sources'").fetchone()
         if not exists:
             return []
         return [json.loads(row[0]) for row in conn.execute(
-            "SELECT definition FROM box_model_sources WHERE center=?", (center,))]
+            "SELECT definition FROM box_model_sources WHERE owner=?", (owner_scope,))]

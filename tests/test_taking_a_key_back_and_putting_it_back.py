@@ -69,7 +69,7 @@ def _connection(basedir, uid, actor="alice"):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    conn_id, _ = _ids(universe_id=uid, destination="github")
+    conn_id, _ = _ids(owner="alice", destination="github")
     ledger = ConnectionLedger(basedir / ".broker" / "outbound.db", data_root=basedir,
                               verify_authenticated_principal=lambda: actor)
     return ledger._get_connection_resource(conn_id)
@@ -86,11 +86,11 @@ def test_the_connection_id_is_the_same_one_afterwards(base):
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
-    before, _ = _ids(universe_id="u-1", destination="github")
+    before, _ = _ids(owner="alice", destination="github")
     _deposit("u-1")
     _remove_through_the_rail("u-1")
     _deposit("u-1", secret="ghp_" + "y" * 36)
-    after, _ = _ids(universe_id="u-1", destination="github")
+    after, _ = _ids(owner="alice", destination="github")
 
     assert before == after
     assert _connection(base, "u-1") is not None, "the connection did not come back"
@@ -121,7 +121,7 @@ def test_removing_the_key_takes_back_what_it_authorized(base):
     _deposit("u-1", scopes=[f"git_read:{REPO}", f"git_write:{REPO}"])
 
     from tinyassets.api.http_connection import _ids
-    conn_id, _ = _ids(universe_id="u-1", destination="github")
+    conn_id, _ = _ids(owner="alice", destination="github")
 
     granted = _ask("u-1", kind="Approval", title="Let me check out the repo",
                    fields=[],

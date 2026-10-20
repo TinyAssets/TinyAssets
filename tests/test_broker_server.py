@@ -83,11 +83,11 @@ class Ledger:
     def __init__(self, principal):
         self.principal = principal
 
-    def authorize_exact(self, *, universe_id, grant_id, connection_id):
+    def authorize_exact(self, *, grant_id, connection_id):
         from tinyassets.storage.outbound_connections import GrantResolutionError
 
-        if grant_id in REVOKED or (self.principal, universe_id, grant_id, connection_id) != (
-            "alice", "cc-alice", "grant-a", "conn-a",
+        if grant_id in REVOKED or (self.principal, grant_id, connection_id) != (
+            "alice", "grant-a", "conn-a",
         ):
             raise GrantResolutionError("outbound connection grant identity mismatch")
         return object(), object()
@@ -127,7 +127,6 @@ def broker(tmp_path, monkeypatch):
         return dispatch
 
     from tests.support.admission import Plans
-    from tinyassets.broker.admission import local_mutate
     from tinyassets.broker.owner_identities import OwnerIdentities
 
     state_dir = tmp_path / ".broker/state"
@@ -136,7 +135,7 @@ def broker(tmp_path, monkeypatch):
     identities = OwnerIdentities(state_dir / "owner-identities.db", initialize=True,
                                  plans=Plans(tmp_path))
     identities.resolve("alice", allocate=True)
-    drive(local_mutate(identities.path, "alice", "admit", routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
                           roles={os.getuid(): OWNER}, data_root=tmp_path,
                           owner_identities=identities)
@@ -165,7 +164,7 @@ def broker(tmp_path, monkeypatch):
         upstream = None
         try:
             first = await rf.read_frame(reader)
-            assert first.control() == {"op": "BOX_CONNECT", "center": "cc-alice"}
+            assert first.control() == {"op": "BOX_CONNECT"}
             upstream_reader, upstream = await asyncio.open_unix_connection(path)
             writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
             await writer.drain()
@@ -298,8 +297,7 @@ def test_status_reports_an_operation_that_may_have_sent(broker):
         sock.settimeout(5)
         sock.connect(str(broker.path))
         sock.sendall(rf.control(rf.CONNECTION, {"op": "STATUS", "op_id": op,
-                                                "principal": "alice",
-                                                "command_center": "cc-alice"}))
+                                                "principal": "alice"}))
         answer = rf.read_frame_blocking(sock).control()
     assert answer["state"] == "completed" and answer["side_effect_state"] == "unknown"
 
@@ -313,7 +311,7 @@ def test_a_cancel_closes_the_upstream_and_ends_the_stream(broker):
         sock.connect(str(broker.path))
         sock.sendall(rf.control(1, {
             "op": "OPEN", "op_id": new_op_id(), "principal": "alice",
-            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+            "grant_id": "grant-a", "connection_id": "conn-a",
             "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 10,
             **broker.state,
         }))
@@ -333,7 +331,7 @@ def test_data_never_exceeds_the_credit_granted(broker):
         sock.connect(str(broker.path))
         sock.sendall(rf.control(1, {
             "op": "OPEN", "op_id": new_op_id(), "principal": "alice",
-            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+            "grant_id": "grant-a", "connection_id": "conn-a",
             "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 30,
             **broker.state,
         }))
@@ -381,7 +379,7 @@ def test_an_unmapped_uid_is_dropped_before_any_frame(broker):
 def _open_raw(broker, sock, *, credit=0, op_id=None, stream_id=1):
     sock.sendall(rf.control(stream_id, {
         "op": "OPEN", "op_id": op_id or new_op_id(), "principal": "alice",
-        "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+        "grant_id": "grant-a", "connection_id": "conn-a",
         "verb": "POST", "request": {"url": "u", "body": {}}, "credit": credit,
         **broker.state,
     }))
@@ -403,14 +401,14 @@ def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
 
     broker.server._roles = {os.getuid(): BOX_HOST}
 
-    def admitted(identities, request):
-        assert request == {"op": "BOX_ADMISSION", "principal": "alice", "center": "cc-alice"}
+    def admitted(identities, request, *, data_root=None):
+        assert request == {"op": "BOX_PUBLIC", "principal": "alice"}
         return {"op": "BOX_ADMITTED", "uid": 300001, "quota": 1024**3}
 
-    monkeypatch.setattr(box_admission, "resolve", admitted)
+    monkeypatch.setattr(box_admission, "resolve_owner", admitted)
     with _connect(broker) as sock:
         sock.sendall(rf.control(rf.CONNECTION, {
-            "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
+            "op": "BOX_CHANNEL", "principal": "alice"}))
         assert rf.read_frame_blocking(sock).control()["op"] == "BOX_ADMITTED"
         if attempt == "policy":
             sock.sendall(rf.control(rf.CONNECTION, {
@@ -419,7 +417,7 @@ def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
             sock.sendall(rf.control(1, {
                 "op": "OPEN", "op_id": new_op_id(),
                 "principal": "bob" if attempt == "foreign" else "alice",
-                "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+                "grant_id": "grant-a", "connection_id": "conn-a",
                 "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 8192,
                 "generation": -1, "token": "guest-cannot-choose-fence"}))
         if attempt == "valid":
@@ -448,8 +446,8 @@ def test_a_refusal_after_the_operation_sent_reports_unknown_not_none(broker):
 def test_invalid_authority_cannot_claim_a_proven_unsent_operation(broker):
     with _connect(broker) as sock:
         sock.sendall(rf.control(1, {
-            "op": "OPEN", "op_id": new_op_id(), "principal": "invalid|principal",
-            "command_center": "cc-alice", "grant_id": "grant-a",
+            "op": "OPEN", "op_id": new_op_id(), "principal": "",
+            "grant_id": "grant-a",
             "connection_id": "conn-a", "verb": "POST", "request": {"url": "u"},
             "credit": 0, **broker.state,
         }))
@@ -523,7 +521,7 @@ def test_a_stream_that_cannot_start_is_refused_and_never_sent(broker):
         _open_raw(broker, sock, op_id=op)
         end = rf.read_frame_blocking(sock).control()
     assert end["outcome"] == "refused" and end["side_effect_state"] == "none"
-    assert broker.ops.status("alice|cc-alice", op).state == "refused"
+    assert broker.ops.status("alice", op).state == "refused"
     assert broker.server._streams == {}
 
 
@@ -678,7 +676,7 @@ def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
         async def serve(reader, writer):
             connections.append(writer)
             admitted = await rf.read_frame(reader)
-            assert admitted.control() == {"op": "BOX_CONNECT", "center": "cc-alice"}
+            assert admitted.control() == {"op": "BOX_CONNECT"}
             writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
             await writer.drain()
             frame = await rf.read_frame(reader)

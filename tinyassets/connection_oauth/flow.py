@@ -75,9 +75,7 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
     if not isinstance(challenge, str) or not pkce.HANDLE_RE.fullmatch(challenge):
         raise FlowError("invalid_pkce_challenge")
     from tinyassets.api.helpers import _base_path
-    from tinyassets.broker.owner_identities import connection_center
 
-    connection_center(_base_path(), principal=owner, center=universe_id)
     callback = redirect_uri(public_resource)
     offer = definition["oauth"]
     scopes = list(offer.get("scopes") or [])
@@ -142,9 +140,7 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
     if not isinstance(verifier, str) or not pkce.VERIFIER_RE.fullmatch(verifier):
         raise FlowError("invalid_pkce_verifier")
     from tinyassets.api.helpers import _base_path
-    from tinyassets.broker.owner_identities import connection_center
 
-    connection_center(_base_path(), principal=owner, center=universe_id)
     digest = pkce.handle_digest(handle)
     with pkce.flows_db(_base_path()) as (conn, now):
         flow = conn.execute("SELECT * FROM connection_oauth_flows WHERE handle_digest = ?",

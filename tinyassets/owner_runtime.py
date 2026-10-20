@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import sys
@@ -109,15 +108,9 @@ def start(relay: Path) -> OwnerRuntime:
         raise PermissionError("owner relay refused startup admission")
     root = OWNER_MOUNT
     from tinyassets.boxes.boxd import OwnerBoxd
-    from tinyassets.broker.owner_identities import validate_center
+    from tinyassets.owner_centers import Centers
 
-    # C1: initialization moved from the shared project-quota provisioner into
-    # the owner boundary. Names come from the broker's launch admission.
-    centers = json.loads(os.environ["TINYASSETS_ADMITTED_CENTERS"])
-    if not isinstance(centers, list):
-        raise ValueError("admitted center names required")
-    for center in centers:
-        validate_center(center)
+    for center in Centers(root).active():
         (root / center).mkdir(mode=0o700, exist_ok=True)
     (root / ".agent-home").mkdir(mode=0o700, exist_ok=True)
 

@@ -94,7 +94,7 @@ class Capabilities:
         self.outside_identity = current_identity_or_none()
 
     def _bound_policy_owner(self):
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
 
         try:
             return admitted_owner(self.root.parent, center=self.root.name) == self.context.owner

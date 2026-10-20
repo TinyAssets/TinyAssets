@@ -60,7 +60,7 @@ def _arrange(monkeypatch, tmp_path, *, connection_owner="founder-1"):
         grant_id="grant-voice",
         connection_id="conn-voice",
         owner_user_id=connection_owner,
-        universe_id=universe_id,
+
     )
     return ledger
 

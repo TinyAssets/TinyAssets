@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.broker.vault import write_credential_vault
+from tinyassets.credential_vault import custody_namespace
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
@@ -94,8 +95,9 @@ def _setup(
     seed_owner_admission(data_root, principal="user-1", center=universe_id)
     universe_dir = data_root / universe_id
     write_credential_vault(
-        universe_dir,
+        custody_namespace(data_root, "user-1"),
         [{"credential_type": "http", "destination": vault_name, "token": token}],
+        owner_user_id="user-1",
     )
     db_path = data_root / ".broker" / "outbound.db"
     ledger = ConnectionLedger(
@@ -118,7 +120,7 @@ def _setup(
         grant_id="grant-http",
         connection_id="conn-http",
         owner_user_id="user-1",
-        universe_id=grant_universe or universe_id,
+
     )
     if grant_consent_for:
         # A connection grant alone is NOT sufficient to fire an effect; a live
@@ -222,7 +224,7 @@ def _install_inprocess_proxy(
         "allow_test_fixtures": False,
         "allow_http_connections": True,
         "ledger_db_path": str(Path(db_path).resolve()),
-        "universe_dir": str(Path(universe_dir).resolve()),
+        "universe_dir": str(custody_namespace(Path(universe_dir).parent, "user-1")),
         "provider": provider,
         "destination": destination,
         "connection_type": "http",
@@ -487,13 +489,15 @@ def test_served_broker_resolves_credential_and_stays_blind(tmp_path, monkeypatch
 # --------------------------------------------------------------------------- #
 # Isolation: a grant bound to another universe cannot be borrowed
 # --------------------------------------------------------------------------- #
-def test_grant_from_another_universe_is_refused(tmp_path, monkeypatch):
+def test_grant_from_another_owner_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv(_HTTP_FLAG, "1")
     data_root, universe_dir, db_path = _setup(
         tmp_path, universe_id="universe-1", grant_universe="universe-1"
     )
     other_dir = data_root / "universe-2"
     other_dir.mkdir(exist_ok=True)
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
 
     def _must_not_open(**_k):
         raise AssertionError("proxy must not open for a cross-universe grant")
@@ -508,12 +512,14 @@ def test_grant_from_another_universe_is_refused(tmp_path, monkeypatch):
         "request": {"path": "/v1/messages", "body": {"x": 1}},
     }
     run_state = {"out": json.dumps(packet)}
-    evidence = run_authenticated_external_call_effector(
-        node_id="n",
-        output_keys=["out"],
-        run_state=run_state,
-        base_path=str(other_dir),  # running universe-2; grant is bound to universe-1
-    )
+    with identity_context(Identity(user_id="other-owner", username="other-owner",
+                                   capabilities=["write"])):
+        evidence = run_authenticated_external_call_effector(
+            node_id="n",
+            output_keys=["out"],
+            run_state=run_state,
+            base_path=str(other_dir),  # running universe-2; grant is bound to universe-1
+        )
     # The broker does not disclose foreign grant details to the caller.
     assert evidence["error_kind"] == "connection_authority_unavailable"
 

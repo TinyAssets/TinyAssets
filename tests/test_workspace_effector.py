@@ -81,7 +81,7 @@ def _setup(
     destination=f"github.com/{REPO}",
     endpoints=None,
     consent_host=HOST,
-    grant_universe=None,
+    grant_owner=None,
     consents=("checkout", "push"),
 ) -> tuple[Path, Path]:
     """A universe with a git connection, a grant and the typed consents.
@@ -101,7 +101,7 @@ def _setup(
     )
     ledger.create_connection(
         connection_id="conn-git",
-        owner_user_id=principal,
+        owner_user_id=grant_owner or principal,
         connection_class="outbound-http",
         scopes=scopes,
         provider="http",
@@ -115,8 +115,8 @@ def _setup(
     ledger.grant_connection(
         grant_id="grant-git",
         connection_id="conn-git",
-        owner_user_id=principal,
-        universe_id=grant_universe or UNIVERSE,
+        owner_user_id=grant_owner or principal,
+
     )
     from tinyassets.storage.effector_consents import grant_consent
 
@@ -364,14 +364,9 @@ def test_no_universe_authority_is_refused(tmp_path: Path, chain: EffectChain) ->
 # --------------------------------------------------------------------------- #
 
 
-def test_a_grant_from_another_universe_is_refused(tmp_path: Path, chain: EffectChain) -> None:
-    """The broker scopes every authority read to the RUNNING command center.
-
-    It answers one way for anything it will not authorize -- a grant for
-    another center, a grant that does not exist, a revoked one -- because
-    telling them apart would describe another owner's ledger to this run.
-    """
-    _root, universe_dir = _setup(tmp_path, grant_universe="universe-2")
+def test_a_grant_from_another_owner_is_refused(tmp_path: Path, chain: EffectChain) -> None:
+    """A foreign owner cannot authorize a workspace operation."""
+    _root, universe_dir = _setup(tmp_path, grant_owner="other-owner")
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
     assert result["error_kind"] == "connection_authority_unavailable"
 

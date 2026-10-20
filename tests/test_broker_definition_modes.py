@@ -23,7 +23,7 @@ def base(tmp_path, monkeypatch):
         allowed_endpoints=[{"host": "models.example.com", "path_template": "/chat",
                             "methods": ["POST"]}])
     ledger.grant_connection(grant_id="grant", connection_id="connection",
-                            owner_user_id="alice", universe_id="alice")
+                            owner_user_id="alice")
     get_supervisor(tmp_path)  # Bootstrap before observing metadata-only replacements.
     return tmp_path
 

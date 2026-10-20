@@ -18,7 +18,6 @@ def main():
     os.environ["TINYASSETS_ASSIGNED_QUEUE_POLL_SECONDS"] = "0.05"
     owner_runtime.OWNER_MOUNT = root
     os.environ.setdefault("TINYASSETS_VOLUME_GENERATION", "1")
-    os.environ.setdefault("TINYASSETS_ADMITTED_CENTERS", "[]")
     owner_runtime._is_owner_mount = lambda path: path == root
     # Process doubles share a netns; production has one null netns per box.
     from tinyassets import owner_public_egress

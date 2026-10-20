@@ -601,6 +601,15 @@ and `RETIRE_CENTER`, per-center vault directories, `_namespace`,
 **Deleted:** the shared center tables, ops, environment and per-center
 directories listed above.
 
+**As-built, d2 checkpoint (2026-10-20; validation in progress):** owner admission
+and owner channels replace shared center admission and relay namespaces. Centers
+are in the box's `.centers.db`; startup reads that table. Grants, custody,
+source publication, replay and shared accounting select authenticated owners.
+The existing staged cutover drops custody with per-kind census counts, writes
+local center tables, and projects retained owner policy with its next digest
+and receipt. No credential ownership join, binding rebuild or service merge is
+implemented. Focused root integration: 152 passed. Full validation remains pending.
+
 ### C12. Deploys are image-at-wake (T2)
 The research has no per-box rolling deploy. A deploy publishes the new image,
 then drains awake boxes to sleep between turns, and every box starts the newly

@@ -43,7 +43,7 @@ def rig(tmp_path, monkeypatch):
         allowed_endpoints=[dict(host="models.example", path_template="/v1/chat", methods=["POST"])],
     )
     ledger.grant_connection(grant_id=GRANT, connection_id=CONNECTION,
-                            owner_user_id=OWNER_ID, universe_id=UNIVERSE)
+                            owner_user_id=OWNER_ID)
     fields = dict(universe_id=UNIVERSE, owner_user_id=OWNER_ID, access_method="api_key_http",
                   protocol="openai_chat", model="model", ref=GRANT)
     # Registration publishes MODEL_SOURCE through the fenced broker operation;
@@ -115,7 +115,7 @@ def build_dispatch(base, *, statuses=(200,), events=None, refresh_failure=False,
 
     ledger = outbound.ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                                         verify_authenticated_principal=lambda: OWNER_ID)
-    config = ledger.broker_dispatch_config(grant_id=grant_id, universe_id=UNIVERSE,
+    config = ledger.broker_dispatch_config(grant_id=grant_id,
                                            provider="http", destination="compute:synthetic",
                                            owner_user_id=OWNER_ID, connection_type="http")
     # The factory captures the resolver/driver objects. Token keeper is a fake
@@ -421,7 +421,7 @@ def test_real_unix_broker_preserves_retry_usage_and_stop(uds_broker, rig, limit)
     budget.settle_invocation(ordinal, "succeeded" if limit == 2 else "failed")
     assert budget.receipt()["dispatched"] == events.count("send") == limit
     assert not uds_broker.server._streams
-    assert uds_broker.ops.status(f"{OWNER_ID}|{UNIVERSE}", reference.operation_id).state in {
+    assert uds_broker.ops.status(OWNER_ID, reference.operation_id).state in {
         "completed", "failed"}
 
 
@@ -476,7 +476,7 @@ def test_usage_settlement_failure_cannot_strand_broker_end(uds_broker, rig, monk
         uds_invoke(uds_broker, reference)
     assert streams[0].closed
     assert not uds_broker.server._streams
-    assert uds_broker.ops.status(f"{OWNER_ID}|{UNIVERSE}", reference.operation_id).state == "failed"
+    assert uds_broker.ops.status(OWNER_ID, reference.operation_id).state == "failed"
     assert "could not finalize inference usage" in caplog.text
     assert budget.receipt()["dispatched"] == 1
 
@@ -539,7 +539,7 @@ def test_real_unix_cancel_during_connect_has_no_send_or_refresh(uds_broker, rig)
     assert budget.receipt()["dispatched"] == 0
     assert budget.receipt()["attempts"][ordinal - 1]["state"] == "not_sent"
     assert not uds_broker.server._streams
-    operation = uds_broker.ops.status(f"{OWNER_ID}|{UNIVERSE}", reference.operation_id)
+    operation = uds_broker.ops.status(OWNER_ID, reference.operation_id)
     assert operation.state == "cancelled"
 
 
@@ -550,7 +550,7 @@ def test_provider_definition_file_cannot_latch_or_unlatch_metering(rig, symlink,
 
     ordinary = "grant-ordinary"
     rig.ledger.grant_connection(grant_id=ordinary, connection_id=CONNECTION,
-                                owner_user_id=OWNER_ID, universe_id=UNIVERSE)
+                                owner_user_id=OWNER_ID)
     assert not rig.ledger.grant_requires_inference_usage(ordinary)
     budget, ordinal, reference = reserve(rig)
     path = rig.base / UNIVERSE / "provider_definitions.json"

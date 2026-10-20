@@ -378,7 +378,7 @@ def add_second_source(agent, monkeypatch):
     )
     grant = rig.ledger.grant_connection(
         grant_id="independent-grant", connection_id="independent", owner_user_id="owner",
-        universe_id="u-models",
+
     )
     other = register_definition(
         universe_id="u-models", owner_user_id="owner", access_method="api_key_http",

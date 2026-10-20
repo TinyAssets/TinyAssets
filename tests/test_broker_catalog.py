@@ -8,12 +8,12 @@ from tinyassets.broker.catalog import connections, local_page
 def test_catalog_pages_are_scoped_redacted_and_complete(ledger):  # noqa: F811
     for number in range(130):
         ledger.grant_connection(grant_id=f"page-{number:03}", connection_id="conn-a",
-                                owner_user_id="alice", universe_id="cc-alice")
-    ledger.grant_connection(grant_id="foreign-center", connection_id="conn-a",
-                            owner_user_id="alice", universe_id="cc-bob")
+                                owner_user_id="alice")
+    ledger.grant_connection(grant_id="second-owner-connection", connection_id="conn-a",
+                            owner_user_id="alice")
     rows = list(connections(ledger._data_root, principal="alice", command_center="cc-alice"))
-    assert len(rows) == 131
-    assert len({grant.grant_id for grant, _, _ in rows}) == 131
+    assert len(rows) == 132
+    assert len({grant.grant_id for grant, _, _ in rows}) == 132
     assert all(not hasattr(view, "credential_ref") for _, view, _ in rows)
     assert len(list(connections(ledger._data_root, principal="alice",
                                 command_center="cc-alice", limit=65))) == 65
@@ -21,7 +21,7 @@ def test_catalog_pages_are_scoped_redacted_and_complete(ledger):  # noqa: F811
                             command_center="cc-alice")) == []
     ledger.revoke_grant("grant-a")
     assert len(list(connections(ledger._data_root, principal="alice",
-                                command_center="cc-alice"))) == 130
+                                command_center="cc-alice"))) == 131
     ledger.revoke_connection("conn-a")
     assert list(connections(ledger._data_root, principal="alice",
                             command_center="cc-alice")) == []

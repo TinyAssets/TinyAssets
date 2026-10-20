@@ -78,10 +78,8 @@ class OwnerRelays:
                         self.admission.data_root, bound_owner, doc["request"])
                     guest.sendall(rf.control(rf.CONNECTION, answer))
                     return
-                shared = doc == {"op": "BOX_SHARED"}
                 owner_public = doc == {"op": "BOX_PUBLIC"}
-                if not shared and not owner_public and (set(doc) != {"op", "center"}
-                                                       or doc["op"] != "BOX_CONNECT"):
+                if not owner_public and doc != {"op": "BOX_CONNECT"}:
                     raise BoxAuthError("invalid relay operation")
                 if self.admission is None:
                     raise BoxAuthError("relay broker admission unavailable")
@@ -89,12 +87,8 @@ class OwnerRelays:
                 broker.connect(str(self.admission.broker_socket))
                 if peer(broker)[1:] != (1002, 1002):
                     raise BoxAuthError("relay peer is not the broker")
-                request = {
-                    "op": ("BOX_SHARED" if shared else
-                           "BOX_PUBLIC" if owner_public else "BOX_CHANNEL"),
-                    "principal": owner}
-                if not owner_public:
-                    request["center"] = doc.get("center", "")
+                request = {"op": "BOX_PUBLIC" if owner_public else "BOX_CHANNEL",
+                           "principal": owner}
                 broker.sendall(rf.control(rf.CONNECTION, request))
                 answer = rf.read_frame_blocking(broker)
                 if answer is None or answer.control().get("op") != "BOX_ADMITTED":

@@ -5593,11 +5593,13 @@
       if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: exchange outcomes may be uncertain.
-      if(!payload.center&&typeof queueScope!=="undefined"&&queueScope)payload.center=queueScope;
+      const center=payload.center||(typeof queueScope!=="undefined"?queueScope:"");
+      const {center:localCenter,...ownerPayload}=payload;
+      void localCenter;
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify(payload),
+        body:JSON.stringify(ownerPayload),
       });
       const result=await response.json();
       if(epoch!==this.epoch)throw new Error("sign_in_required");
@@ -5606,7 +5608,7 @@
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
       if(result.model_confirmation)
-        return InlineApprovals.post("model_connection",result.model_confirmation);
+        return InlineApprovals.post("model_connection",{...result.model_confirmation,universe_id:center});
       return result;
     },
     async begin(){
@@ -6863,8 +6865,8 @@
         // signed in now, and never repaints a newer list.
         if(!live())return;
         if(!response.ok||doc.error||!Array.isArray(doc.connections))throw new Error("unavailable");
-        status.textContent=doc.connections.length?"":"No HTTP connections are saved for this command center.";
-        for(const row of doc.connections) list.append(connectionRow(doc.universe_id,row,generation));
+        status.textContent=doc.connections.length?"":"No HTTP connections are saved for this account.";
+        for(const row of doc.connections) list.append(connectionRow(doc.owner,row,generation));
 
       }catch(_e){
         if(!live())return;
@@ -6926,7 +6928,7 @@
       panel.setAttribute("aria-label","Confirm disconnecting "+label);
       explain.id=panelId+"-detail";
       panel.setAttribute("aria-describedby",explain.id);
-      explain.textContent="Disconnect "+label+" from your command center? Its saved key and its "
+      explain.textContent="Disconnect "+label+" from your account? Its saved key and its "
         +"model access are removed from TinyAssets. Your conversation history and your designs stay. "
         +"Your provider account itself is not changed or deleted. Requests already sent may still finish.";
       approve.type="button";approve.className="btn btn--danger";approve.textContent="Confirm disconnect";
@@ -6993,7 +6995,7 @@
           // rebuilt here, and never a second attempt.
           const result=await fetch("/app/connections",{method:"POST",credentials:"same-origin",
             headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-            body:JSON.stringify({universe_id:universeId,destination:row.destination,incarnation:row.incarnation})});
+            body:JSON.stringify({destination:row.destination,incarnation:row.incarnation})});
           const removed=await result.json();
           if(!live())return;
           if(!result.ok||removed.error)throw new Error("unconfirmed");
@@ -7331,11 +7333,12 @@
       MCP._assertLogin(epoch);
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
-      if(center)payload={...payload,center};
+      const {center:localCenter,...ownerPayload}=payload;
+      void localCenter;
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify(payload),
+        body:JSON.stringify(ownerPayload),
       });
       const result=await response.json();
       MCP._assertLogin(epoch);
@@ -7344,7 +7347,7 @@
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
       if(result.model_confirmation)
-        return InlineApprovals.post("model_connection",result.model_confirmation);
+        return InlineApprovals.post("model_connection",{...result.model_confirmation,universe_id:center});
       return result;
     },
     async begin(req,note,button,opts){

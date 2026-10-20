@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from tinyassets.credential_vault import custody_namespace
+
 
 def validate(document):
     from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS, _MAX_SECRET_CHARS
@@ -95,7 +97,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
 
     validate(document)
     destination, policy = document["destination"], document["policy"]
-    connection_id, grant_id = _ids(universe_id=command_center, destination=destination)
+    connection_id, grant_id = _ids(owner=principal, destination=destination)
     validate_query(AUTHORIZED_CONNECTION, principal, command_center, grant_id, connection_id)
     endpoints = _parse_allowed_endpoints(policy["endpoints"])
     access = normalize_access_mode(policy["access_mode"])
@@ -167,7 +169,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         if grant is None:
             grant = ledger.grant_connection(
                 grant_id=grant_id, connection_id=connection_id, owner_user_id=principal,
-                universe_id=command_center,
+
                 _transaction=conn)
         if plan["legacy_scope_upgrade"]:
             ledger._upgrade_http_connection_scopes(
@@ -234,7 +236,7 @@ def _update_local(ledger, *, principal, command_center, document):
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     validate(document)
-    connection_id, grant_id = _ids(universe_id=command_center, destination=document["destination"])
+    connection_id, grant_id = _ids(owner=principal, destination=document["destination"])
     validate_query(AUTHORIZED_CONNECTION, principal, command_center, grant_id, connection_id)
     expected = document["expected"]
     with ledger._connect() as conn:
@@ -242,9 +244,9 @@ def _update_local(ledger, *, principal, command_center, document):
         row = conn.execute(
             "SELECT c.* FROM outbound_connections c JOIN outbound_connection_grants g "
             "ON g.connection_id=c.connection_id WHERE c.connection_id=? AND g.grant_id=? "
-            "AND c.owner_user_id=? AND g.owner_user_id=? AND g.universe_id=? "
+            "AND c.owner_user_id=? AND g.owner_user_id=? "
             "AND c.revoked_at IS NULL AND g.revoked_at IS NULL",
-            (connection_id, grant_id, principal, principal, command_center)).fetchone()
+            (connection_id, grant_id, principal, principal)).fetchone()
         if (row is None or row["connection_type"] != "http" or row["provider"] != "http"
                 or row["connection_class"] != "http"
                 or row["destination"] != document["destination"]
@@ -304,7 +306,7 @@ def _deposit(ledger, center, principal, destination, secret):
     from tinyassets.credential_vault import http_credential_record
 
     try:
-        write_credential_vault(ledger._data_root / center,
+        write_credential_vault(custody_namespace(ledger._data_root, principal),
             [http_credential_record(destination=destination, token=secret)],
             owner_user_id=principal, universe_id=center)
     except PermissionError:
@@ -338,21 +340,20 @@ def _custody_local(ledger, *, principal, command_center, document, committed_via
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     validate(document)
-    connection, grant = _ids(universe_id=command_center, destination=document["destination"])
+    connection, grant = _ids(owner=principal, destination=document["destination"])
     with ledger._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT c.* FROM outbound_connections c "
             "JOIN outbound_connection_grants g ON g.connection_id=c.connection_id "
             "WHERE c.connection_id=? AND g.grant_id=? AND c.owner_user_id=? "
-            "AND g.owner_user_id=? AND g.universe_id=? AND c.revoked_at IS NULL "
-            "AND g.revoked_at IS NULL", (connection, grant, principal, principal,
-                                        command_center)).fetchone()
+            "AND g.owner_user_id=? AND c.revoked_at IS NULL "
+            "AND g.revoked_at IS NULL", (connection, grant, principal, principal)).fetchone()
         if (row is None or row["connection_type"] != "http"
                 or row["connection_class"] != "http" or row["provider"] != "http"
                 or row["destination"] != document["destination"]
                 or row["credential_ref"] != "vault://http/" + document["destination"]):
             raise GrantResolutionError("connection unavailable")
-        refusal = http_deposit_refusal(ledger._data_root / command_center,
+        refusal = http_deposit_refusal(custody_namespace(ledger._data_root, principal),
             destination=document["destination"], owner_user_id=principal)
         if document["action"] == "inspect_custody":
             return {"refusal": refusal}

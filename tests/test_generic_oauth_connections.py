@@ -266,7 +266,6 @@ def _post(operation, data, *, home=UID, cookie=None):
     if operation == "oauth_begin" and "request_id" in data:
         data = {**data}
         data["request_ref"] = data.pop("request_id")
-        data["center"] = home
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.storage.pending_requests import get_request
 
@@ -290,7 +289,8 @@ def _post(operation, data, *, home=UID, cookie=None):
             base_url="https://tinyassets.io",
         ) as client:
             proof = (session_cookie() if operation in {"oauth_begin", "source_sign_in"} else "")
-            return await client.post("/app/model-connect/" + operation, json=data,
+            return await client.post("/app/model-connect/" + operation,
+                                     json={k: v for k, v in data.items() if k != "center"},
                                      headers={"Origin": "https://tinyassets.io",
                                               "Cookie": proof if cookie is None else cookie})
     return asyncio.run(run())
@@ -354,7 +354,7 @@ def _broker(base, uid, owner, grant_id, runtime):
     def dispatch(request_grant, verb, request):
         assert request_grant == grant_id
         proxy = ledger.resolve_exact_scoped_proxy(
-            universe_id=uid, grant_id=grant_id, connection_id=grant.connection_id)
+             grant_id=grant_id, connection_id=grant.connection_id)
         try:
             return proxy.request(verb, request)
         finally:
@@ -369,9 +369,10 @@ def _call(dispatch, grant_id):
 
 def _vault_bundle(base, uid=UID):
     from tinyassets.connection_oauth.tokens import decode
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
-    records = [r for r in load_credential_vault(base / uid)
+    namespace = custody_namespace(base, OWNER if uid == UID else OTHER)
+    records = [r for r in load_credential_vault(namespace)
                if r.get("destination") == "tasklark"]
     assert len(records) == 1
     return decode(records[0]["token"])
@@ -385,7 +386,7 @@ def _connected(provider, app, tmp_path):
     assert done.status_code == 200, done.text
     from tinyassets.api.http_connection import _ids
 
-    _cid, grant_id = _ids(universe_id=UID, destination="tasklark")
+    _cid, grant_id = _ids(owner=OWNER, destination="tasklark")
     return done, grant_id
 
 
@@ -544,7 +545,7 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
+    connection_id, grant_id = _ids(owner=OWNER, destination="tasklark")
     ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)
     resource = ledger._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
@@ -591,8 +592,8 @@ def _age(base, *, expires_at):
     from dataclasses import replace
 
     from tinyassets.broker.tokens import ConnectionTokens
-
-    keeper = ConnectionTokens(universe_dir=base / UID, owner_user_id=OWNER)
+    from tinyassets.credential_vault import custody_namespace
+    keeper = ConnectionTokens(universe_dir=custody_namespace(base, OWNER), owner_user_id=OWNER)
     keeper._write("tasklark", replace(_vault_bundle(base), expires_at=expires_at))
 
 
@@ -727,13 +728,13 @@ def test_an_oauth_connection_is_never_usable_by_another_universe(provider, app, 
         done = _post("oauth_exchange", {"flow": q["state"], "code": q["code"],
                                         "code_verifier": VERIFIER})
     assert done.status_code == 200, done.text
-    connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
+    connection_id, grant_id = _ids(owner=OWNER, destination="tasklark")
 
     # The other owner cannot open a proxy on the grant...
     other_ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app,
                                     verify_authenticated_principal=lambda: OTHER)
     with pytest.raises(GrantResolutionError):
-        other_ledger.resolve_exact_scoped_proxy(universe_id=OTHER_UID, grant_id=grant_id,
+        other_ledger.resolve_exact_scoped_proxy( grant_id=grant_id,
                                                 connection_id=connection_id)
     # The shared broker channel also refuses the foreign grant before dispatch.
     foreign = _broker(app, OTHER_UID, OTHER, grant_id, tmp_path / "foreign")

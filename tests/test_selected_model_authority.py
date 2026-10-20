@@ -417,7 +417,7 @@ def test_revoked_primary_does_not_prevent_independent_connected_source(served, m
         grant_id="independent-grant",
         connection_id="independent",
         owner_user_id="owner",
-        universe_id="u-models",
+
     )
     other = register_definition(
         universe_id="u-models",
@@ -920,7 +920,7 @@ def test_revoked_primary_does_not_prevent_independent_accepted_member(served, mo
         grant_id="independent-grant",
         connection_id="independent",
         owner_user_id="owner",
-        universe_id="u-models",
+
     )
     other = register_definition(
         universe_id="u-models",

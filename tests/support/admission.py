@@ -82,3 +82,14 @@ def async_call(function):
     async def call(*args, **kwargs):
         return await asyncio.to_thread(function, *args, **kwargs)
     return call
+
+
+def retire_local(root, center):
+    """Exercise local center membership independently of the shared owner map."""
+    from tinyassets.owner_centers import Centers
+
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    centers = Centers(root)
+    centers.create(center)
+    centers.retire(center)

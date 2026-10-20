@@ -71,7 +71,7 @@ def test_removing_takes_away_the_secret_and_the_ledger_rows(base: Path) -> None:
     assert _http_records(udir) == []
 
     # And so are the connection and its grant.
-    conn_id, grant_id = _ids(universe_id="u-owner", destination="webhook:acme")
+    conn_id, grant_id = _ids(owner="founder", destination="webhook:acme")
     ledger = _ledger(base, "founder")
     assert ledger._get_connection_resource(conn_id) is None
     assert ledger.get_grant(grant_id) is None

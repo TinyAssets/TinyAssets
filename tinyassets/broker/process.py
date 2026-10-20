@@ -73,7 +73,7 @@ class _Dispatchers:
             dispatch = self._cache.get(key)
             if dispatch is None:
                 config = self.ledger_for(principal).broker_dispatch_config(
-                    grant_id=grant_id, universe_id=command_center,
+                    grant_id=grant_id,
                     provider=resource.provider, destination=resource.destination,
                     owner_user_id=resource.owner_user_id,
                     connection_type=resource.connection_type,
@@ -146,8 +146,8 @@ async def serve(args: argparse.Namespace) -> None:
         roles={int(args.owner_uid): OWNER, **({0: BOX_HOST} if registration else {})},
         owner_identities=identities,
         policy_store=policy_store,
-        provision_box=(lambda owner, center: provision(
-            identities, Path(args.data_root), owner, center)) if registration else None,
+        provision_box=(lambda owner: provision(
+            identities, Path(args.data_root), owner)) if registration else None,
         data_root=Path(args.data_root),
     )
     socket_path = Path(args.socket)

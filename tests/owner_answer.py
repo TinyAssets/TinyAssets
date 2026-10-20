@@ -82,7 +82,7 @@ def connect_owner_provider(home, owner, monkeypatch):
         allowed_endpoints=[{"host": "api.example.com",
                             "path_template": "/v1/chat/completions", "methods": ["POST"]}])
     ledger.grant_connection(grant_id=grant, connection_id=connection, owner_user_id=owner,
-                            universe_id=home.name,
+
                             unprompted_action_cap=ActionCap("http_requests", 100, "requests"))
     ledger.configure_capability(
         connection_id=connection, capability_kind="model_use", enabled=True,

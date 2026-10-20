@@ -67,7 +67,7 @@ def seed_http_assignment(
         grant_id=grant_id,
         connection_id=connection_id,
         owner_user_id=owner_user_id,
-        universe_id=universe_id,
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     definition = register_definition(

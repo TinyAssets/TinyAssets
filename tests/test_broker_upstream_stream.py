@@ -177,7 +177,7 @@ def ledger(tmp_path):
                             "methods": ["POST"]}],
     )
     ledger.grant_connection(grant_id="grant-model", connection_id="conn-model",
-                            owner_user_id="owner", universe_id="universe")
+                            owner_user_id="owner")
     return ledger
 
 

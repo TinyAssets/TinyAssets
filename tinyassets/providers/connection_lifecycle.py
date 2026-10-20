@@ -162,7 +162,7 @@ def intentionally_disconnected(base, *, owner, uid):
     for row in rows:
         # Completed records are daemon state, but still validate the exact
         # identity before using the destination-based broker recovery read.
-        if _ids(universe_id=uid, destination=row[1])[0] != row[0]:
+        if _ids(owner=owner, destination=row[1])[0] != row[0]:
             return False
         try:
             snapshot = disconnect(base, principal=owner, command_center=uid,

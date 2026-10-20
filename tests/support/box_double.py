@@ -227,6 +227,9 @@ def install(monkeypatch):
     def admit_center(data_root, *, principal, center):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", center):
             raise RuntimeError("invalid command center name")
+        from tinyassets.owner_centers import Centers
+
+        Centers(data_root).create(center)
         (Path(data_root) / center).mkdir(exist_ok=True)
         return 1
 

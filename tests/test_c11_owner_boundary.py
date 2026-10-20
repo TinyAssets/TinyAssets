@@ -8,11 +8,12 @@ from tests.support.migration_volumes import contents
 from tests.test_owner_cutover_apply import cutover  # noqa: F401
 from tests.test_owner_cutover_census import _fingerprint, source  # noqa: F401
 from tinyassets import box_layout_migration as migration
+from tinyassets.boxes.lifecycle import admit_center, retire_center
 from tinyassets.broker.policy import _canonical, _digest
 from tinyassets.owner_centers import Centers
 
 
-def test_center_operations_change_only_the_box(tmp_path):
+def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
     shared, box = tmp_path / "shared", tmp_path / "box"
     shared.mkdir()
     box.mkdir()
@@ -22,12 +23,19 @@ def test_center_operations_change_only_the_box(tmp_path):
     (shared / "custody").mkdir()
     (shared / "custody/opaque").write_bytes(b"synthetic shared state")
     before = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))
+    import os
+    from types import SimpleNamespace
+
+    from tinyassets import owner_runtime
+
+    monkeypatch.setattr(owner_runtime, "_runtime", SimpleNamespace(
+        pid=os.getpid(), root=box, principal="alice"))
     centers = Centers(box)
     assert centers.active() == []
     for name in ("one", "two", "three"):
-        centers.create(name)
+        admit_center(box, principal="alice", center=name)
     assert centers.active() == ["one", "three", "two"]
-    centers.retire("two")
+    retire_center("two")
     assert Centers(box).active() == ["one", "three"]
     after = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))
     assert after == before
@@ -64,6 +72,7 @@ def test_cutover_drops_custody_and_retains_account_policy(cutover):  # noqa: F81
         """)
         db.execute("INSERT INTO policy VALUES (1,4,?,?)", (old_digest, _canonical(document)))
     with sqlite3.connect(data / "outbound.db") as db:
+        db.execute("ALTER TABLE outbound_connection_grants ADD COLUMN universe_id TEXT")
         db.execute("INSERT INTO outbound_connection_grants "
                    "(grant_id,connection_id,owner_user_id,universe_id,granted_at) "
                    "VALUES (?,?,?,?,?)", ("old-grant", "alice-legacy", "alice", "a1", 1))
@@ -78,7 +87,8 @@ def test_cutover_drops_custody_and_retains_account_policy(cutover):  # noqa: F81
     migration.apply(*cutover)
     migration.verify(data, store)
     assert not (data / ".platform/credential-vaults").exists()
-    for relative in (".broker/outbound.db", ".broker/credential-custody.db"):
+    assert not (data / ".broker/credential-custody.db").exists()
+    for relative in (".broker/outbound.db",):
         with sqlite3.connect(data / relative) as db:
             tables = [row[0] for row in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]

@@ -160,7 +160,7 @@ def _cloud_authority_fixture(
         grant_id="destination_grant_project",
         connection_id="conn_tinyassets",
         owner_user_id="acct_alice",
-        universe_id="universe_alice",
+
         granted_at=1.0,
         unprompted_action_cap=(
             action_cap
@@ -734,7 +734,7 @@ def test_inactive_cloud_authority_rejects_stale_request_or_connection(
 
 @pytest.mark.parametrize(
     "fault",
-    ["grant_revoked", "grant_owner", "grant_universe", "destination"],
+    ["grant_revoked", "grant_owner", "connection_owner", "destination"],
 )
 def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
     tmp_path: Path,
@@ -763,7 +763,7 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
             grant_id=definition.destination_grant_id,
             connection_id="conn_other_owner",
             owner_user_id="acct_other",
-            universe_id="universe_alice",
+
             granted_at=1.0,
             unprompted_action_cap=ActionCap(
                 "one_pull_request",
@@ -772,23 +772,9 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
             ),
         )
         ledger = other_ledger
-    elif fault == "grant_universe":
-        grant = ledger.get_grant(definition.destination_grant_id)
-        assert grant is not None
-        ledger.revoke_grant(grant.grant_id, revoked_at=2.0)
-        ledger.grant_connection(
-            grant_id="replacement_grant",
-            connection_id=grant.connection_id,
-            owner_user_id="acct_alice",
-            universe_id="universe_other",
-            granted_at=3.0,
-            unprompted_action_cap=ActionCap(
-                "one_pull_request",
-                1,
-                "pull_requests",
-            ),
-        )
-        definition = replace(definition, destination_grant_id="replacement_grant")
+    elif fault == "connection_owner":
+        with ledger._connect() as connection:
+            connection.execute("UPDATE outbound_connections SET owner_user_id='acct_other'")
     else:
         other_ledger = ConnectionLedger(
             tmp_path / "other" / ".broker" / "outbound.db",
@@ -808,7 +794,7 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
             grant_id=definition.destination_grant_id,
             connection_id="conn_other",
             owner_user_id="acct_alice",
-            universe_id="universe_alice",
+
             granted_at=1.0,
             unprompted_action_cap=ActionCap(
                 "one_pull_request",

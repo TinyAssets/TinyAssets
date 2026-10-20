@@ -113,12 +113,12 @@ def connect(**changes):
 
 def test_fresh_repeat_additive_and_full_deposit(removal):
     from tinyassets.api.http_connection import _ids
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
     for changes in ({}, {}, {"allowed_endpoints": [FIRST, EXTRA]}):
         result = connect(**changes)
         assert result.get("status") == "provisioned", result
         assert "synthetic-fixture" not in str(result)
-    connection, grant = _ids(universe_id="cc-alice", destination="fresh")
+    connection, grant = _ids(owner="alice", destination="fresh")
     resource = removal.ledger._get_connection_resource(connection)
     assert len(resource.allowed_endpoints) == 2 and resource.access_mode == "exact"
     assert removal.ledger.get_grant(grant).owner_user_id == "alice"
@@ -126,7 +126,7 @@ def test_fresh_repeat_additive_and_full_deposit(removal):
         result = connect(destination="fresh-full", access="full")
         assert result.get("status") == "provisioned", result
         assert removal.ledger.access_mode(result["connection_id"]) == "full"
-    assert load_credential_vault(removal.root / "cc-alice")
+    assert load_credential_vault(custody_namespace(removal.root, "alice"))
     assert not (removal.root / "outbound.db").exists()
 
 
@@ -151,7 +151,7 @@ def test_failed_deposit_creates_no_connection_or_grant(removal, monkeypatch):
         raise OSError("fixture vault failure")
     monkeypatch.setattr(credential_vault, "write_credential_vault", fail)
     assert connect()["error"] == "deposit_failed"
-    connection, grant = _ids(universe_id="cc-alice", destination="fresh")
+    connection, grant = _ids(owner="alice", destination="fresh")
     assert removal.ledger._get_connection_resource(connection) is None
     assert removal.ledger.get_grant(grant) is None
 
@@ -162,9 +162,9 @@ def test_failed_deposit_creates_no_connection_or_grant(removal, monkeypatch):
     ("outbound_connection_grants", "owner_user_id", "bob"),
 ])
 def test_commit_rechecks_both_rows(removal, monkeypatch, table, column, value):
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
-    before = load_credential_vault(removal.root / "cc-alice")
+    before = load_credential_vault(custody_namespace(removal.root, "alice"))
     from tinyassets.broker.client import BrokerClient
     original = BrokerClient.http_connect
 
@@ -177,7 +177,7 @@ def test_commit_rechecks_both_rows(removal, monkeypatch, table, column, value):
     result = connect(destination="fixture", allowed_endpoints=[FIRST, EXTRA])
     assert result["error"] == "connection_conflict", result
     assert len(removal.ledger._get_connection_resource(removal.connection).allowed_endpoints) == 1
-    assert load_credential_vault(removal.root / "cc-alice") == before
+    assert load_credential_vault(custody_namespace(removal.root, "alice")) == before
 
 
 def test_legacy_upgrade_and_extension_share_transaction(removal):
@@ -205,7 +205,7 @@ def test_lost_commit_ack_is_not_replayed(removal, monkeypatch):
     monkeypatch.setattr(BrokerClient, "http_connect", lost)
     assert connect()["error"] == "model_connection_incomplete"
     assert calls == ["prepare", "commit"]
-    connection, grant = _ids(universe_id="cc-alice", destination="fresh")
+    connection, grant = _ids(owner="alice", destination="fresh")
     assert removal.ledger._get_connection_resource(connection) is not None
     assert removal.ledger.get_grant(grant) is not None
     monkeypatch.setattr(BrokerClient, "http_connect", original)
@@ -243,7 +243,7 @@ def test_only_door_commit_can_complete_a_model_ask(removal, monkeypatch):
         ref = asked["request_id"]
         result = connect(request_ref=ref, allowed_endpoints=[endpoint])
         assert result["status"] == "provisioned"
-        connection, _ = _ids(universe_id="cc-alice", destination="fresh")
+        connection, _ = _ids(owner="alice", destination="fresh")
         # Defense in depth: even a forged/stale reference on a box grant cannot approve.
         with removal.ledger._connect() as db:
             assert db.execute("SELECT committed_via FROM outbound_connections "
@@ -258,3 +258,33 @@ def test_only_door_commit_can_complete_a_model_ask(removal, monkeypatch):
         pending_requests.reconcile_connections("cc-alice", home)
         assert get_request(home, ref)["status"] == "answered"
         assert len(applied) == 1
+
+
+def test_owner_connections_to_same_service_keep_distinct_custody(removal):
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.broker.disconnect import disconnect
+    from tinyassets.broker.ledger_queries import GRANTED_RESOURCE, query_ledger
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    for handle in ("first-account", "second-account"):
+        assert connect(destination=handle, secret="synthetic-" + handle)["status"] == "provisioned"
+    first, first_grant = _ids(owner="alice", destination="first-account")
+    second, second_grant = _ids(owner="alice", destination="second-account")
+    assert first != second and first_grant != second_grant
+    assert {r["destination"]: r["token"] for r in load_credential_vault(
+        custody_namespace(removal.root, "alice"))} == {
+            "first-account": "synthetic-first-account",
+            "second-account": "synthetic-second-account"}
+    with pytest.raises(GrantResolutionError):
+        query_ledger(removal.root, query=GRANTED_RESOURCE, principal="bob", command_center="bob",
+                     grant_id=first_grant, connection_id=first)
+    args = dict(principal="alice", command_center="alice", destination="first-account")
+    incarnation = removal.ledger.incarnation(first)
+    disconnect(removal.root, **args, action="fence", incarnation=incarnation)
+    disconnect(removal.root, **args, action="erase", incarnation=incarnation)
+    assert removal.ledger.get_connection(first) is None
+    assert removal.ledger.get_connection(second).connection_id == second
+    assert [r["token"] for r in load_credential_vault(
+        custody_namespace(removal.root, "alice"))] == [
+        "synthetic-second-account"]

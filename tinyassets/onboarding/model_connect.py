@@ -46,7 +46,7 @@ async def handle_model_connect(request):
               "oauth_exchange": {"flow", "code", "code_verifier"}}
     if operation not in fields:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
-    optional = {"center", "request_ref"}
+    optional = {"request_ref"}
     if operation == "oauth_begin":
         optional |= {"definition", "destination"}
     if operation == "oauth_exchange":
@@ -72,16 +72,12 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     identity = current_identity()
 
-    resolved_center = ""
-
     def run():
-        nonlocal resolved_center
-
         from tinyassets.api.helpers import _base_path
         from tinyassets.broker.catalog import connections
         from tinyassets.broker.http_connect import connect_operation
         from tinyassets.broker.model_connect import request as broker_request
-        from tinyassets.broker.owner_identities import connection_center
+        from tinyassets.broker.owner_identities import owner_admission
         from tinyassets.connection_oauth import flow as sign_in
         from tinyassets.onboarding import inline_model_connect as inline
         from tinyassets.onboarding.connection_definition import (
@@ -96,12 +92,8 @@ async def handle_model_connect(request):
             session = lookup(request.cookies.get(COOKIE, ""))
             if session is not None and json.loads(session["identity_json"])["user_id"] != owner:
                 raise FlowError("identity_conflict", 401)
-            requested = request.query_params.get("center", "")
-            if requested and data.get("center") and requested != data["center"]:
-                raise LookupError("center not found")
-            center = connection_center(base, principal=owner,
-                                       center=data.get("center") or requested)
-            resolved_center = center
+            owner_admission(base, owner).require_work()
+            center = owner
             ref = data.get("request_ref", "")
             approval = None
             if operation in {"oauth_begin", "inline_begin", "source_sign_in"}:
@@ -192,8 +184,7 @@ async def handle_model_connect(request):
             from tinyassets.onboarding.source_connect import model_source
 
             if model_source(result.get("allowed_endpoints", [])) is not None:
-                result["model_confirmation"] = {"grant_id": result["grant_id"],
-                                                "universe_id": resolved_center}
+                result["model_confirmation"] = {"grant_id": result["grant_id"]}
         return JSONResponse(result, headers=_HEADERS)
     except (hosted.HostedAuthError, FlowError) as exc:
         detail = getattr(exc, "detail", "") if operation in {"deposit", "rotate"} else ""

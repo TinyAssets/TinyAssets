@@ -418,7 +418,7 @@ def _deposit(base, *, owner, uid, destination, access_mode):
         access_mode=access_mode,
     )
     ledger.grant_connection(grant_id=f"grant-{owner}", connection_id=f"conn-{owner}",
-                            owner_user_id=owner, universe_id=uid)
+                            owner_user_id=owner)
 
 
 def test_the_readback_shows_full_channel_access_and_only_mine(monkeypatch, base):

@@ -32,8 +32,7 @@ def door(discovery, tmp_path, monkeypatch):  # noqa: F811
     identities = OwnerIdentities(tmp_path / "admissions.db", initialize=True)
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        drive(identities.admission("admit", owner, "cc-" + owner,
-            routing=projection(identities.path)))
+        drive(identities.admit(owner, routing=projection(identities.path)))
     discovery.broker.server._owner_identities = identities
     discovery.broker.server._data_root = root
     from tinyassets import router_credentials
@@ -95,50 +94,56 @@ def test_protected_cookie_and_bearer_must_name_the_same_owner(door):
     assert response.status_code == 401 and response.json()["error"] == "identity_conflict"
 
 
-def test_inventory_at_empty_router_root_uses_sole_admission(door):
+def test_inventory_at_empty_router_root_uses_authenticated_owner(door):
     call, _, _ = door
     response = call()
     assert response.status_code == 200, response.text
-    assert response.json()["universe_id"] == "cc-alice"
+    assert response.json()["owner"] == "alice"
     assert response.json()["connections"][0]["connection_id"] == "conn-a"
     assert "vault://" not in response.text
 
 
-@pytest.mark.parametrize("owner,center", [("alice", "cc-bob"), ("unknown", ""),
-                                          ("alice", "missing"), ("alice", "../cc-bob")])
-def test_foreign_or_unknown_center_is_not_found(door, owner, center):
+@pytest.mark.parametrize("center", ["cc-bob", "missing", "../cc-bob"])
+def test_caller_center_cannot_change_owner_inventory(door, center):
     call, _, _ = door
-    assert call(owner, center).status_code == 404
+    response = call("alice", center)
+    assert response.status_code == 200
+    assert response.json() == call("alice").json()
+    assert call("bob", center).json()["connections"] == []
+    assert call("unknown", center).status_code == 404
 
 
-def test_ambiguous_and_retired_admissions_never_select_another_center(door):
+def test_owner_inventory_does_not_depend_on_local_center_membership(door, tmp_path):
+    from tinyassets.owner_centers import Centers
+
     call, identities, _ = door
-    drive(identities.admission("admit", "alice", "second",
-     routing=projection(identities.path)))
-    assert call().status_code == 404
-    assert call(center="second").status_code == 200
-    drive(identities.admission("retire", "alice", "cc-alice",
-        routing=projection(identities.path)))
-    assert call(center="cc-alice").status_code == 404
-    assert call().json()["universe_id"] == "second"
-    drive(identities.admission("retire", "alice", "second",
-      routing=projection(identities.path)))
-    assert call().status_code == 404
+    before = call().json()
+    local = tmp_path / "owner-volume"
+    local.mkdir()
+    centers = Centers(local)
+    assert centers.active() == []
+    centers.create("one")
+    centers.create("two")
+    assert call().json() == before
+    centers.retire("one")
+    centers.retire("two")
+    assert call().json() == before
+    assert centers.active() == []
 
 
-def test_sole_center_query_is_fenced_and_has_no_caller_selected_result(door):
+def test_owner_admission_query_is_fenced_and_has_no_caller_selected_box(door):
     from tinyassets.broker.owner_identities import _owner_request
 
     _, _, rig = door
     for change in ({"center": "cc-bob"}, {"principal": ""}, {"uid": 300001}):
-        assert _owner_request(rig.root, {"op": "SOLE_CENTER", "principal": "alice", **change}) == {
-            "op": "SOLE_CENTER_REFUSED"}
+        assert _owner_request(rig.root, {"op": "OWNER_ADMISSION", "principal": "alice",
+                                        **change}) == {"op": "OWNER_ADMISSION_REFUSED"}
     rig.broker.state["token"] = "stale"
-    assert _owner_request(rig.root, {"op": "SOLE_CENTER", "principal": "alice"}) == {
-        "op": "SOLE_CENTER_REFUSED"}
+    assert _owner_request(rig.root, {"op": "OWNER_ADMISSION", "principal": "alice"}) == {
+        "op": "OWNER_ADMISSION_REFUSED"}
 
 
-def test_door_disconnect_needs_no_owner_tree_and_rejects_foreign_center(door):
+def test_door_disconnect_needs_no_owner_tree_and_cannot_remove_another_owner_handle(door):
     from tinyassets.broker.http_connect import connect_operation
 
     call, _, rig = door
@@ -149,10 +154,11 @@ def test_door_disconnect_needs_no_owner_tree_and_rejects_foreign_center(door):
     prepared = connect_operation(rig.root, **args, action="prepare")
     connected = connect_operation(rig.root, **args, action="commit", expected=prepared["revision"])
     connection = connected["projection"]["connection_id"]
-    body = {"universe_id": "cc-alice", "destination": "door",
+    body = {"destination": "door",
             "incarnation": rig.ledger.incarnation(connection)}
-    assert call("bob", body=body).status_code == 404
-    assert call(center="cc-bob", body=body).status_code == 404
+    assert call("bob", body=body).json()["connection_removed"] is False
+    assert rig.ledger.get_connection(connection) is not None
+    assert call(body=body | {"owner": "bob"}).status_code == 400
     assert call(body=body | {"incarnation": "stale"}).status_code == 409
     response = call(body=body)
     assert response.status_code == 200, response.text
@@ -167,15 +173,15 @@ def test_door_keeps_failed_cleanup_reachable_without_owner_disconnection_store(d
     from tinyassets.broker import vault
 
     call, _, rig = door
-    connection, grant = _ids(universe_id="cc-alice", destination="retry")
+    connection, grant = _ids(owner="alice", destination="retry")
     rig.ledger.create_connection(connection_id=connection, owner_user_id="alice",
         connection_class="http", connection_type="http", auth_scheme="none", scopes=["GET"],
         provider="http", destination="retry", credential_ref="vault://http/retry",
         allowed_endpoints=[{"host": "service.example.com", "path_template": "/",
                             "methods": ["GET"]}])
     rig.ledger.grant_connection(grant_id=grant, connection_id=connection,
-                                owner_user_id="alice", universe_id="cc-alice")
-    body = {"universe_id": "cc-alice", "destination": "retry",
+                                owner_user_id="alice")
+    body = {"destination": "retry",
             "incarnation": rig.ledger.incarnation(connection)}
     original = vault.forget_credential
 

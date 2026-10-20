@@ -39,16 +39,8 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
     identities = OwnerIdentities(shared / ".broker/state/owner-identities.db", initialize=True,
                                  plans=Plans(shared))
     uid = identities.resolve("alice", allocate=True).uid
-    if getattr(request, "param", True):
-        drive(identities.admission("admit", "alice", "center",
-         routing=projection(identities.path)))
-    from tinyassets.broker.admission import local_mutate
-
-    drive(local_mutate(identities.path, "alice", "admit", routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     Plans(shared).apply("alice", tier="paid", event_created=1)
-    if getattr(request, "param", True) == "retired":
-        drive(identities.admission("retire", "alice", "center",
-          routing=projection(identities.path)))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -65,6 +57,13 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
     root = tmp_path / "owner"
     home = root / "center"
     home.mkdir(parents=True)
+    from tinyassets.owner_centers import Centers
+
+    centers = Centers(root)
+    if getattr(request, "param", True):
+        centers.create("center")
+    if getattr(request, "param", True) == "retired":
+        centers.retire("center")
     core = OwnerBoxd(owner_id="alice", owner_root=root, state_dir=root / ".owner-boxd",
                      relay=path)
     runtime = owner_runtime.OwnerRuntime("alice", os.getuid(), root, os.getpid(), core, path)
@@ -250,9 +249,9 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
     {"op": "BOX_PUBLIC", "center": "foreign"},
     {"op": "BOX_PUBLIC", "principal": "alice"},
     {"op": "BOX_PUBLIC", "principal": "bob"},
-    {"op": "BOX_CONNECT"},
+    {"op": "BOX_CONNECT", "principal": "bob"},
     {"op": "BOX_SHARED", "center": "center"},
-    {"op": "BOX_CHANNEL", "center": "center"},
+    {"op": "BOX_CHANNEL"},
     {"op": "UNKNOWN"},
 ])
 def test_invalid_relay_operations_refuse_before_broker_contact(native, monkeypatch, document):
@@ -421,13 +420,11 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(nativ
         assert rf.read_frame_blocking(channel) is None
 
 
-@pytest.mark.parametrize("op", ["BOX_CONNECT", "BOX_SHARED", "BOX_PUBLIC"])
+@pytest.mark.parametrize("op", ["BOX_CONNECT", "BOX_PUBLIC"])
 def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, monkeypatch, op):
     from tinyassets.broker.admission import local_mutate
 
     document = {"op": op}
-    if op == "BOX_CONNECT":
-        document["center"] = "center"
 
     def connect():
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
@@ -442,5 +439,7 @@ def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, mo
         host.setattr(owner_runtime, "_runtime", None)
         drive(local_mutate(native.identities.path, "alice", "erase",
             routing=projection(native.identities.path)))
-    assert native.identities.admitted_owner("center") == "alice"
+    from tinyassets.broker.admission import read
+
+    assert read(native.identities, "alice").state == "erased"
     assert connect() is None

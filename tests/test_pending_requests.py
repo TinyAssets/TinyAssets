@@ -892,7 +892,7 @@ def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    conn_id, _ = _ids(universe_id="u-1", destination="github")
+    conn_id, _ = _ids(owner="alice", destination="github")
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     res = ledger._get_connection_resource(conn_id)

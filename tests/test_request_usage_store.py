@@ -32,7 +32,7 @@ def installed_source(tmp_path):
         allowed_endpoints=[dict(host="models.example", path_template="/v1/chat",
                                 methods=["POST"])])
     ledger.grant_connection(grant_id="grant", connection_id="connection",
-                            owner_user_id="owner", universe_id="home")
+                            owner_user_id="owner")
     publish(ledger, "owner", "home", dict(
         _FIELDS, id=SOURCE.removeprefix("api_key_http:"), visibility="private",
         created_at="2026-10-04T00:00:00+00:00"))
@@ -75,7 +75,7 @@ def _broker_store(base):
 
 
 @pytest.mark.parametrize("change", [
-    {"owner": "other"}, {"universe": "other"}, {"usage_id": "another-parent"},
+    {"owner": "other"}, {"usage_id": "another-parent"},
     {"grant_id": "other"}, {"connection_id": "other"}, {"verb": "GET"},
     {"request": {"body": "substituted"}}, {"operation_id": "different-operation"},
 ])
@@ -494,3 +494,15 @@ def test_abandoned_admitted_run_releases_without_leaking_parent_liveness(budget,
     # Abandonment must only drop liveness; the broker reconciles the receipt.
     assert calls == []
     assert budget.receipt()["closed"]
+
+
+def test_one_owner_allocation_is_shared_across_its_centers(budget):
+    ordinal = reserve(budget)
+    ref = ticket(budget, ordinal)
+    dispatch = claim(budget, ref, universe="another-local-center")
+    dispatch.dispatched()
+    budget.settle_invocation(ordinal, "succeeded")
+    assert budget.receipt()["dispatched"] == 1
+    with _broker_store(budget._store.base)._connection() as db:
+        assert "universe" not in {row[1] for row in db.execute(
+            "PRAGMA table_info(agent_request_dispatches)")}

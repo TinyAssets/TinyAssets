@@ -249,8 +249,7 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
         return stop(uid)
 
     monkeypatch.setattr(boxes.runtime, "stop", checked_stop)
-    drive(admitted.admission("admit", "alice", "cc-alice-extra",
-        routing=projection(admitted.path)))
+    drive(admitted.admit("alice", routing=projection(admitted.path)))
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     monkeypatch.setenv(canary_sign_in.USER_ENV, "alice")
     with canary_sign_in._limits() as db:
@@ -315,8 +314,11 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             assert not boxes.runtime.alive(admitted.owner_machine("alice"))
             assert boxes.runtime.alive(admitted.owner_machine("bob"))
             # C6 erases the owner record; center history is not an authority.
-            assert admitted.center_state("cc-alice") == "admitted"
-            assert admitted.center_state("cc-alice-extra") == "admitted"
+            import sqlite3
+
+            with sqlite3.connect(admitted.path) as db:
+                assert db.execute("SELECT name FROM sqlite_master WHERE "
+                                  "name='center_admissions'").fetchall() == []
             assert rejected == [401]
             with pytest.raises(LookupError):
                 admitted.box_route("alice")
@@ -724,7 +726,7 @@ def test_withdrawal_closes_inflight_open_before_ack(jobs, boxes, monkeypatch, op
 
     entered, release = threading.Event(), threading.Event()
     module = box_admission if operation == "BOX_CHANNEL" else public_egress
-    name = "resolve" if operation == "BOX_CHANNEL" else "resolve_owner"
+    name = "resolve_owner"
     original = getattr(module, name)
     def held(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -736,8 +738,7 @@ def test_withdrawal_closes_inflight_open_before_ack(jobs, boxes, monkeypatch, op
         channel.settimeout(5)
         channel.connect(str(boxes.host_path))
         channel.sendall(rf.control(rf.CONNECTION, {
-            "op": operation, "principal": "alice",
-            **({"center": "cc-alice"} if operation == "BOX_CHANNEL" else {})}))
+            "op": operation, "principal": "alice"}))
         try:
             assert entered.wait(5)
             results = []
@@ -769,8 +770,7 @@ def test_withdrawal_closes_existing_channels_and_public_streams_before_ack(jobs,
             channel.settimeout(5)
             channel.connect(str(boxes.host_path))
             channel.sendall(rf.control(rf.CONNECTION, {
-                "op": operation, "principal": "alice",
-            **({"center": "cc-alice"} if operation == "BOX_CHANNEL" else {})}))
+                "op": operation, "principal": "alice"}))
             assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
             channels.append(channel)
         complete_deletion(jobs.service, "alice")
@@ -809,21 +809,15 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
 
 def test_custody_step_erases_shared_secrets_without_owner_content_access(jobs, boxes, tmp_path,
                                                                        monkeypatch):
-    from contextlib import closing
-
-    from tinyassets.broker.vault import metadata_connection
+    from tinyassets.credential_vault import credential_vault_path, custody_namespace
 
     vaults = {}
-    with closing(metadata_connection(tmp_path)) as db:
-        for owner in ("alice", "bob"):
-            center = "cc-" + owner
-            db.execute("INSERT INTO llm_credential_deposit_owners VALUES (?,?,?)",
-                       (center, "http:synthetic", owner))
-            vault = tmp_path / ".platform/credential-vaults" / center / ".credential-vault.json"
-            vault.parent.mkdir(parents=True, mode=0o700)
-            vault.parent.parent.chmod(0o700)
-            vault.write_text("synthetic secret " + owner)
-            vaults[owner] = vault
+    for owner in ("alice", "bob"):
+        vault = credential_vault_path(custody_namespace(tmp_path, owner))
+        vault.parent.mkdir(parents=True, mode=0o700)
+        vault.parent.parent.chmod(0o700)
+        vault.write_text("synthetic secret " + owner)
+        vaults[owner] = vault
     complete_deletion(jobs.service, "alice")
     for method in ("open", "stat", "lstat", "iterdir"):
         original = getattr(Path, method)

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinyassets.broker.client import owner_policy_operation
-from tinyassets.broker.owner_identities import admitted_owner
 from tinyassets.broker.policy import BEHAVIOURS
+from tinyassets.owner_centers import admitted_owner
 
 DO, DO_IF_PREAPPROVED, ASK_FIRST, HAND_OFF = BEHAVIOURS
 MAIN_AGENT = "main"
@@ -45,7 +45,7 @@ def projection(home: Path) -> dict:
 def entries(home: Path, table: str) -> list[dict]:
     document = projection(home)["policy"]
     return [entry for entry in document["entries"]
-            if entry["table"] == table and entry["scope"] in ("account", Path(home).name)]
+            if entry["table"] == table and entry["scope"] == "account"]
 
 
 def standing_grants(home: Path, agent: str = MAIN_AGENT) -> list[dict]:

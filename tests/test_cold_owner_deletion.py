@@ -113,7 +113,7 @@ async def probe():
             uid = identities.resolve(owner, allocate=True).uid
             await owner_call(identities.path, owner, identities.admission,
                              "admit", owner, owner, routing=projection)
-            box_admission.provision(identities, shared, owner, owner)
+            box_admission.provision(identities, shared, owner)
             identities.box_route(owner)
             identities.plans.apply(owner, tier="paid", event_created=1)
             if owner == "suspended":
@@ -141,7 +141,7 @@ async def probe():
             assert not any(path.exists() for path in (image, relay, directory, secret))
             volumes._detached(uid)
             assert Admission().volume(owner)["uid"] == uid
-            assert identities.center_state(owner) == "admitted"
+            assert identities.owner_machine(owner) == uid
             from tinyassets.broker.admission import read
 
             assert read(identities, owner).state == "erased"

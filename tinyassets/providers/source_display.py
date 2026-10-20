@@ -61,7 +61,7 @@ def source_display_name(*, base: Path | str, universe_id: str, provider: str) ->
         return ""
     try:
         from tinyassets.broker.ledger_queries import granted_resource_row
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
         from tinyassets.providers.definition import get_definition
 
         definition = get_definition(universe_id, definition_id)

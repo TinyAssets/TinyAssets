@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+from tinyassets.credential_vault import custody_namespace
+
 
 def validate(document):
     if not isinstance(document, dict) or set(document) != {"action", "destination", "incarnation"}:
@@ -23,7 +25,7 @@ def local_operation(ledger, *, principal, command_center, document):
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     validate(document)
-    connection_id, grant_id = _ids(universe_id=command_center, destination=document["destination"])
+    connection_id, grant_id = _ids(owner=principal, destination=document["destination"])
     validate_query(AUTHORIZED_CONNECTION, principal, command_center, grant_id, connection_id)
     with ledger._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -32,7 +34,7 @@ def local_operation(ledger, *, principal, command_center, document):
         if row is None:
             from tinyassets.broker.vault import forget_credential
 
-            removed = (forget_credential(ledger._data_root / command_center,
+            removed = (forget_credential(custody_namespace(ledger._data_root, principal),
                 credential_type="http", destination=document["destination"])
                 if document["action"] == "erase" else 0)
             return {"resource": None, "incarnation": "", "removed": False,
@@ -77,7 +79,8 @@ def local_operation(ledger, *, principal, command_center, document):
                     if failure:
                         result["revocation_message"] = recovery_message(credential)
 
-            result["secrets_removed"] = forget_credential(ledger._data_root / command_center,
+            result["secrets_removed"] = forget_credential(
+                custody_namespace(ledger._data_root, principal),
                 credential_type="http", destination=document["destination"],
                 before_erase=before_erase)
             for table in ("connection_capabilities", "outbound_connection_grants"):

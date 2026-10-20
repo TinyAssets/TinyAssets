@@ -32,7 +32,7 @@ def post(operation, body):
         if hasattr(broker, "server"):
             broker.server._owner_identities = OwnerIdentities(
                 base / ".broker/state/owner-identities.db", plans=Plans(base))
-    raw = json.dumps(body).encode()
+    raw = json.dumps({key: value for key, value in body.items() if key != "center"}).encode()
     from tinyassets.api.permissions import is_authenticated_request
     cookie = session_cookie() if is_authenticated_request() else ""
 
@@ -73,7 +73,7 @@ def rotate_http(*, universe_id="", payload=None):
     from tinyassets.broker.ledger_queries import granted_resource_row
 
     document = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
-    _, grant = _ids(universe_id=universe_id, destination=document["destination"])
+    _, grant = _ids(owner=current_identity().user_id, destination=document["destination"])
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     try:

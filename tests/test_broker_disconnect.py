@@ -33,7 +33,7 @@ def removal(discovery, monkeypatch):
     (discovery.root / "cc-alice").mkdir()
     grant_universe_access(discovery.root, universe_id="cc-alice", actor_id="alice",
                           permission="admin")
-    connection, grant = _ids(universe_id="cc-alice", destination="fixture")
+    connection, grant = _ids(owner="alice", destination="fixture")
     discovery.ledger.create_connection(
         connection_id=connection, owner_user_id="alice", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("GET",), provider="http",
@@ -41,7 +41,7 @@ def removal(discovery, monkeypatch):
         allowed_endpoints=[{"host": "models.example.com", "path_template": "/catalogue",
                             "methods": ["GET"]}])
     discovery.ledger.grant_connection(grant_id=grant, connection_id=connection,
-                                     owner_user_id="alice", universe_id="cc-alice")
+                                     owner_user_id="alice")
     discovery.connection = connection
     discovery.grant = grant
     discovery.incarnation = discovery.ledger.incarnation(connection)
@@ -79,8 +79,9 @@ def test_actual_remove_fences_then_erases_via_ipc(removal, monkeypatch):
 
 @pytest.mark.parametrize("action", ["inspect", "fence", "erase"])
 def test_foreign_owner_cannot_inspect_or_mutate(removal, action):
-    with pytest.raises(GrantResolutionError):
-        operation(removal, principal="bob", action=action, incarnation=removal.incarnation)
+    assert operation(removal, principal="bob", action=action, incarnation=removal.incarnation) == {
+        "resource": None, "incarnation": "", "removed": False, "secrets_removed": 0,
+        "revocation_message": ""}
     assert removal.ledger._get_connection_resource(removal.connection).revoked_at is None
 
 
@@ -229,11 +230,11 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
     from tinyassets.broker import supervisor
-    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.credential_vault import credential_vault_path, custody_namespace
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
     # The owner's vault is in platform custody beside the center, not its box.
-    owner_vault = credential_vault_path(removal.root / "cc-alice")
+    owner_vault = credential_vault_path(custody_namespace(removal.root, "alice"))
     before = removal.ledger._get_connection_resource(removal.connection)
     with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
         preview = preview_rotate_http(universe_id="cc-alice", payload={"destination": "fixture"})

@@ -489,7 +489,7 @@ def test_unlisted_mcp_through_connect_card(
     refreshed = tokens.refresh(bundle)
     assert refreshed.resource == endpoint and len(forms) == 2
     assert len(registrations) == (1 if registration == "dcr" else 0)
-    _, grant_id = _ids(universe_id=UID, destination="tasklark")
+    _, grant_id = _ids(owner=OWNER, destination="tasklark")
     dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "runtime")
     for number, method in enumerate(
         ["initialize", "notifications/initialized", "tools/list", "tools/call"]

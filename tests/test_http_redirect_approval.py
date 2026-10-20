@@ -31,7 +31,7 @@ def _seed(base, mode):
     _login("alice")
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
     verify_authenticated_principal=lambda: "alice")
-    cid, gid = _ids(universe_id="u-1", destination="downloads")
+    cid, gid = _ids(owner="alice", destination="downloads")
     ledger.create_connection(
         connection_id=cid,
         owner_user_id="alice",
@@ -46,7 +46,7 @@ def _seed(base, mode):
         access_mode=mode,
     )
     ledger.grant_connection(
-        grant_id=gid, connection_id=cid, owner_user_id="alice", universe_id="u-1"
+        grant_id=gid, connection_id=cid, owner_user_id="alice"
     )
     return ledger, cid
 
@@ -377,5 +377,5 @@ def test_new_connection_deposit_uses_the_disclosed_redirect_policy(base):
         },
     )
     assert done.get("status") == "answered", done
-    cid, _ = _ids(universe_id="u-1", destination="new-downloads")
+    cid, _ = _ids(owner="alice", destination="new-downloads")
     assert ledger.get_connection(cid).allowed_endpoints[0].redirect_mode == "public_https_get"

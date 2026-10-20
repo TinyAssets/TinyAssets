@@ -40,7 +40,7 @@ def rig(tmp_path, monkeypatch):
         ],
     )
     ledger.grant_connection(grant_id="bootstrap-grant", connection_id="bootstrap-connection",
-                            owner_user_id="owner", universe_id="u-owner")
+                            owner_user_id="owner")
     payload = {"data": [row()]}
     calls = []
     def catalogue(**kwargs):

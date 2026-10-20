@@ -59,7 +59,7 @@ async def handle_connections(request):
             data = json.loads(raw) if raw is not None else None
             if (
                 not isinstance(data, dict)
-                or set(data) != {"universe_id", "destination", "incarnation"}
+                or set(data) != {"destination", "incarnation"}
                 or any(not isinstance(v, str) or not v or len(v) > 200 for v in data.values())
             ):
                 raise ValueError
@@ -72,7 +72,7 @@ async def handle_connections(request):
         from tinyassets.api.http_connection import _project
         from tinyassets.broker.catalog import connections
         from tinyassets.broker.disconnect import disconnect
-        from tinyassets.broker.owner_identities import connection_center
+        from tinyassets.broker.owner_identities import owner_admission
         from tinyassets.onboarding.owner_sessions import COOKIE, lookup
 
         with identity_context(identity):
@@ -81,13 +81,8 @@ async def handle_connections(request):
                     and json.loads(session["identity_json"])["user_id"] != identity.user_id):
                 return {"error": "identity_conflict"}, 401
             base = _base_path()
-            requested_center = request.query_params.get("center", "")
-            if data is not None and requested_center and requested_center != data["universe_id"]:
-                raise LookupError("center not found")
-            uid = connection_center(
-                base, principal=identity.user_id,
-                center=data["universe_id"] if data is not None else
-                requested_center)
+            owner_admission(base, identity.user_id).require_work()
+            uid = identity.user_id
             if data is not None:
                 args = dict(principal=identity.user_id, command_center=uid,
                             destination=data["destination"])
@@ -111,7 +106,7 @@ async def handle_connections(request):
                      else "provisioned"}
                     for grant, resource, incarnation in inventory
                     if resource.connection_type == "http"]
-            return {"universe_id": uid,
+            return {"owner": uid,
                     "connections": [{**row, "label": connection_label(row)} for row in rows]}, 200
 
     try:

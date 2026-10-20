@@ -22,7 +22,7 @@ def case(tmp_path, monkeypatch):
             allowed_endpoints=[{"host": "models.example.com", "path_template": "/chat",
                                 "methods": ["POST"]}])
         ledger.grant_connection(grant_id=f"grant-{owner}", connection_id=f"conn-{owner}",
-                                owner_user_id=owner, universe_id="cc-alice")
+                                owner_user_id=owner)
         ledger.configure_capability(
             connection_id=f"conn-{owner}", capability_kind="model_use", enabled=True,
             descriptor={"wire": "openai_chat", "billing": "free", "models": [

@@ -426,7 +426,7 @@ def _policy(base, uid, *, destination="acme", actor="alice"):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    conn_id, grant_id = _ids(universe_id=uid, destination=destination)
+    conn_id, grant_id = _ids(owner="alice", destination=destination)
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: actor)
     return ledger.policy_json(conn_id), ledger.get_grant(grant_id)
@@ -435,9 +435,11 @@ def _policy(base, uid, *, destination="acme", actor="alice"):
 def _stored_secret(base, uid, *, destination="acme"):
     """What the NEXT call would present, through the resolver the broker child
     actually runs — not by reading the vault file ourselves."""
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.credential_vault import custody_namespace
     from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
-
-    resolver = _GeneralVaultCredentialResolver(universe_dir=base / uid)
+    resolver = _GeneralVaultCredentialResolver(
+        universe_dir=custody_namespace(base, current_identity().user_id))
     return resolver(f"vault://http/{destination}")
 
 
@@ -626,7 +628,7 @@ def test_a_sign_in_connection_is_not_rotated_by_pasting(base):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    conn_id, _ = _ids(universe_id="u-1", destination="acme")
+    conn_id, _ = _ids(owner="alice", destination="acme")
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
@@ -678,31 +680,25 @@ def test_another_admin_cannot_replace_the_depositors_key(base):
     assert _stored_secret(base, "u-1") == SECRET
 
 
-def test_another_universe_cannot_replace_this_universes_key(base):
-    """Two universes, the same destination label, one owner. The connection id
-    is derived from (universe, destination), so a rotation in one can never
-    reach the other's row — and the grant's universe is compared anyway,
-    because a derivation is not a check."""
+def test_same_owner_centers_rotate_one_connection_and_foreign_owner_cannot(base):
     from tests.support.connection_door import rotate_http
 
-    _make_universe(base, "u-1", admin="alice")
-    _make_universe(base, "u-2", admin="alice")
+    for center in ("u-1", "u-2", "u-3"):
+        _make_universe(base, center, admin="alice")
     _login("alice")
-    _deposit("u-1", secret=SECRET)
-    _deposit("u-2", secret="other-" + "c" * 40)
-
+    assert not _deposit("u-1", secret=SECRET).get("error")
     out = rotate_http(universe_id="u-2", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
     assert out.get("status") == "rotated", out
-
+    assert _stored_secret(base, "u-1") == REPLACEMENT
     assert _stored_secret(base, "u-2") == REPLACEMENT
-    assert _stored_secret(base, "u-1") == SECRET, "the other universe's key moved"
-
-    # A universe with no such connection is absent, never another's.
-    _make_universe(base, "u-3", admin="alice")
     assert rotate_http(universe_id="u-3", payload=json.dumps({
-        "destination": "acme", "secret": REPLACEMENT})) == {
-        "error": "not_found"}
+        "destination": "acme", "secret": SECRET}))["status"] == "rotated"
+    _make_universe(base, "bob-center", admin="bob")
+    _login("bob")
+    assert rotate_http(universe_id="bob-center", payload=json.dumps({
+        "destination": "acme", "secret": REPLACEMENT})) == {"error": "not_found"}
+    _login("alice")
     assert _stored_secret(base, "u-1") == SECRET
 
 
@@ -723,7 +719,7 @@ def test_a_grant_bound_to_another_universe_is_refused(base):
     _make_universe(base, "u-2", admin="alice")
     _login("alice")
     _deposit("u-1")
-    _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
+    _conn_id, grant_id = _ids(owner="alice", destination="acme")
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
@@ -744,7 +740,7 @@ def _ledger_connection(base, *, uid, destination, actor="alice", **over):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    conn_id, grant_id = _ids(universe_id=uid, destination=destination)
+    conn_id, grant_id = _ids(owner="alice", destination=destination)
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: actor)
     fields = {
@@ -764,7 +760,7 @@ def _ledger_connection(base, *, uid, destination, actor="alice", **over):
     }
     ledger.create_connection(**fields)
     ledger.grant_connection(grant_id=grant_id, connection_id=conn_id,
-                            owner_user_id=actor, universe_id=uid)
+                            owner_user_id=actor)
     return conn_id, grant_id
 
 
@@ -907,7 +903,7 @@ def test_a_connection_with_no_live_grant_is_not_rotatable(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _deposit("u-1")
-    _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
+    _conn_id, grant_id = _ids(owner="alice", destination="acme")
     ConnectionLedger(
         base / ".broker" / "outbound.db", data_root=base,
         verify_authenticated_principal=lambda: "alice",
@@ -1057,9 +1053,14 @@ def test_every_http_record_says_when_its_secret_was_stored(base):
     written by every path that stores a secret: the merge replaces the whole
     slot, so a field only one writer sets disappears on the next write by
     another."""
-    from tinyassets.credential_vault import HTTP_DEPOSITED_AT, load_credential_vault
+    from tinyassets.credential_vault import (
+        HTTP_DEPOSITED_AT,
+        custody_namespace,
+        load_credential_vault,
+    )
 
-    udir = _make_universe(base, "u-1", admin="alice")
+    _make_universe(base, "u-1", admin="alice")
+    udir = custody_namespace(base, "alice")
     _login("alice")
     _deposit("u-1")
     [deposited] = [r for r in load_credential_vault(udir)

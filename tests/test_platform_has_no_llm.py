@@ -282,7 +282,7 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     )
     other_ledger.grant_connection(
         grant_id=other_grant, connection_id=other_connection, owner_user_id="owner-2",
-        universe_id=universe.name,
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     other_definition = register_definition(

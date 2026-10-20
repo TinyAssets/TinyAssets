@@ -53,7 +53,7 @@ def discovery(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
                             "methods": ["GET"]}],
     )
     ledger.grant_connection(grant_id="grant-a", connection_id="conn-a",
-                            owner_user_id="alice", universe_id="cc-alice")
+                            owner_user_id="alice")
     daemon_thread = threading.get_ident()
 
     def ledger_for(principal):

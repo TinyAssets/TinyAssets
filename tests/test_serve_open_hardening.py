@@ -40,7 +40,7 @@ def _seed_grant(tmp_path: Path, monkeypatch) -> str:
     )
     ledger.grant_connection(
         grant_id="http_grant_x", connection_id="http_c", owner_user_id="o",
-        universe_id="u", unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     d = register_definition(
         universe_id="u", owner_user_id="o", access_method="api_key_http",

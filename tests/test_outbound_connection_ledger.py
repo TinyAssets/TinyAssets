@@ -84,7 +84,7 @@ def test_connection_and_per_universe_grant_persist_with_revocation(tmp_path):
         grant_id="grant-u1",
         connection_id=connection.connection_id,
         owner_user_id="user-1",
-        universe_id="universe-1",
+
     )
 
     reopened = ConnectionLedger(db_path, data_root=tmp_path)
@@ -111,7 +111,7 @@ def test_revoking_connection_invalidates_all_grants_and_cap_evaluation(tmp_path)
         )
     with pytest.raises(GrantResolutionError, match="revoked"):
         ledger.resolve_exact_scoped_proxy(
-            universe_id="universe-1",
+
             grant_id="grant-github", connection_id="conn-github",
         )
 
@@ -137,7 +137,7 @@ def _grant_github_connection(
         grant_id=grant_id,
         connection_id=connection_id,
         owner_user_id="user-1",
-        universe_id="universe-1",
+
     )
 
 
@@ -160,7 +160,7 @@ def test_resolve_exact_scoped_proxy_uses_only_current_exact_grant(tmp_path, monk
     )
 
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-github", connection_id="conn-github",
     )
 
@@ -197,7 +197,7 @@ def test_resolve_exact_scoped_proxy_uses_named_grant_not_class_ambiguity(tmp_pat
     )
 
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-github",
         connection_id="conn-github",
     )
@@ -218,7 +218,7 @@ def test_resolve_exact_scoped_proxy_refuses_caller_supplied_owner_identity(tmp_p
     with pytest.raises(TypeError, match="owner_user_id"):
         ledger.resolve_exact_scoped_proxy(
             owner_user_id=forged_owner,
-            universe_id="universe-1",
+
             grant_id="grant-github", connection_id="conn-github",
         )
 
@@ -232,7 +232,7 @@ def test_resolve_exact_scoped_proxy_fails_closed_without_principal_verifier(tmp_
 
     with pytest.raises(PermissionError, match="principal verifier"):
         ledger.resolve_exact_scoped_proxy(
-            universe_id="universe-1",
+
             grant_id="grant-github", connection_id="conn-github",
         )
 
@@ -246,13 +246,13 @@ def test_proxy_api_rejects_caller_supplied_factory_or_config(tmp_path):
     _grant_github_connection(ledger)
     with pytest.raises(TypeError, match="dispatch_factory"):
         ledger.resolve_exact_scoped_proxy(
-            universe_id="universe-1",
+
             grant_id="grant-github", connection_id="conn-github",
             dispatch_factory="evil.module:leak_secret",
         )
     with pytest.raises(TypeError, match="dispatch_config"):
         ledger.resolve_exact_scoped_proxy(
-            universe_id="universe-1",
+
             grant_id="grant-github", connection_id="conn-github",
             dispatch_config={"payload": "raw-secret"},
         )
@@ -269,7 +269,7 @@ def test_test_fixture_transport_is_disabled_by_default(tmp_path, monkeypatch):
     )
     _grant_github_connection(ledger)
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-github", connection_id="conn-github",
     )
 
@@ -290,7 +290,7 @@ def test_resolve_exact_scoped_proxy_fails_closed_without_fallback(tmp_path, case
         ledger.revoke_grant("grant-github")
     with pytest.raises(GrantResolutionError, match=case):
         ledger.resolve_exact_scoped_proxy(
-            universe_id="universe-1",
+
             grant_id="grant-github", connection_id="conn-github",
         )
 
@@ -315,7 +315,7 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
         str(_runtime_log(tmp_path, "grant-github", "audit.jsonl"))
     )
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-github", connection_id="conn-github",
     )
     graph_state = {"connection": proxy}
@@ -382,7 +382,7 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
         str(_runtime_log(tmp_path, "grant-github", "audit.jsonl"))
     )
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-github", connection_id="conn-github",
     )
 
@@ -544,14 +544,16 @@ def test_general_vault_resolver_matches_http_record_only(tmp_path, monkeypatch):
 
 def _make_http_ledger_with_vault(tmp_path, *, credential_ref="vault://http/anthropic-conn"):
     """Real composition scaffolding: a REAL vault http record + an http connection."""
-    universe_dir = tmp_path / "universe-1"
+    from tinyassets.credential_vault import custody_namespace
+
+    universe_dir = custody_namespace(tmp_path, "user-1")
     write_credential_vault(
         universe_dir,
         [{
             "credential_type": "http",
             "destination": "anthropic-conn",
             "token": "real-vault-http-token",
-        }],
+        }], owner_user_id="user-1",
     )
     ledger = ConnectionLedger(
         tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
@@ -575,7 +577,7 @@ def _make_http_ledger_with_vault(tmp_path, *, credential_ref="vault://http/anthr
         grant_id="grant-http",
         connection_id="conn-http",
         owner_user_id="user-1",
-        universe_id="universe-1",
+
     )
     return ledger
 
@@ -594,7 +596,7 @@ def test_http_broker_composition_resolves_through_real_general_vault_resolver(
     ledger = _make_http_ledger_with_vault(tmp_path)
 
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-http",
         connection_id="conn-http",
     )
@@ -638,7 +640,7 @@ def test_forged_foreign_scheme_row_never_vends_a_token_to_the_http_driver(
         )
 
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-http",
         connection_id="conn-http",
     )
@@ -690,10 +692,10 @@ def test_row_mutation_from_legacy_to_http_after_proxy_start_is_refused(
         grant_id="grant-legacy",
         connection_id="conn-legacy",
         owner_user_id="user-1",
-        universe_id="universe-1",
+
     )
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-legacy",
         connection_id="conn-legacy",
     )
@@ -742,7 +744,7 @@ def test_row_mutation_from_http_to_legacy_after_proxy_start_is_refused(
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     ledger = _make_http_ledger_with_vault(tmp_path)
     proxy = ledger.resolve_exact_scoped_proxy(
-        universe_id="universe-1",
+
         grant_id="grant-http",
         connection_id="conn-http",
     )

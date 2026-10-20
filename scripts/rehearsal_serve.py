@@ -41,7 +41,7 @@ def router_snapshot_call(owner, action):
     return asyncio.run(run())
 
 
-def owner(root, relay, secret, socket, uid, generation, centers, inherited_mounts):
+def owner(root, relay, secret, socket, uid, generation, inherited_mounts):
     import fcntl
     import socket as sockets
     import struct
@@ -65,7 +65,6 @@ def owner(root, relay, secret, socket, uid, generation, centers, inherited_mount
         subprocess.run(["mount", "--bind", original, mounted], check=True)
     uid = int(uid)
     os.environ["TINYASSETS_VOLUME_GENERATION"] = generation
-    os.environ["TINYASSETS_ADMITTED_CENTERS"] = centers
     os.setgroups([])
     os.setgid(uid)
     os.setuid(uid)
@@ -337,7 +336,7 @@ def smoke(confirm=False):
                 self.mounts = {}
 
             def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes,
-                      volume_mount, volume_generation, centers):
+                      volume_mount, volume_generation):
                 log = tempfile.TemporaryFile()
                 logs.append(log)
                 self.mounts[uid] = volume_mount["source"]
@@ -355,7 +354,7 @@ def smoke(confirm=False):
                         str(relay),
                         str(secret_file),
                         str(app_dir / "app.sock"),
-                        str(uid), str(volume_generation), json.dumps(centers),
+                        str(uid), str(volume_generation),
                         json.dumps(list(self.mounts.values())),
                     ],
                     stdout=log,
@@ -604,7 +603,6 @@ asyncio.run(launch())
                                 deposited = shared.post(
                                     "/app/model-connect/deposit",
                                     json={
-                                        "center": center,
                                         "request_ref": request["request_id"],
                                         "secret": "synthetic-rehearsal-key-never-sent",
                                         "definition": {

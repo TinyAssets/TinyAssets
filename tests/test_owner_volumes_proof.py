@@ -282,12 +282,11 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     broker.mkdir(parents=True, mode=0o700)
     identities = OwnerIdentities(broker / "owner-identities.db", initialize=True)
     uid = identities.resolve("proof-owner", allocate=True).uid
-    asyncio.run(identities.admission("admit", "proof-owner", "proof-center",
-        routing=projection(identities.path)))
+    asyncio.run(identities.admit("proof-owner", routing=projection(identities.path)))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
-    box_admission.provision(identities, data, "proof-owner", "proof-center")
+    box_admission.provision(identities, data, "proof-owner")
 
     class Admission:
         def owner(self, owner):

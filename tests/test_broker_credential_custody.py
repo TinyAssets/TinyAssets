@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from tinyassets.broker.http_connect import connect_operation
-from tinyassets.credential_vault import custody_metadata_path, load_credential_vault
+from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
 
 def test_no_vault_writer_outside_broker():
@@ -127,11 +127,11 @@ def test_deposit_is_written_in_broker_process(tmp_path, monkeypatch, scheme, sec
         assert parent.poll(5)
         assert parent.recv() == ("writer", process.pid)
         assert process.pid != os.getpid()
-        assert load_credential_vault(root / "center")[0]["token"] == secret
-        connection, grant = _ids(universe_id="center", destination="fixture")
+        assert load_credential_vault(custody_namespace(root, "owner"))[0]["token"] == secret
+        connection, grant = _ids(owner="owner", destination="fixture")
         ledger = ConnectionLedger(root / ".broker/outbound.db", data_root=root)
         assert ledger.get_grant(grant).connection_id == connection
-        assert custody_metadata_path(root).exists()
+        assert not (root / ".broker/credential-custody.db").exists()
         assert not (root / ".tinyassets.db").exists()
         assert not (root / "center").exists()
         assert secret not in json.dumps(result)

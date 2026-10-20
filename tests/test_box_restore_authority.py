@@ -736,7 +736,7 @@ def startup(tmp_path, monkeypatch):
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
     for owner in ("alice", "bob"):
-        provision(identities, tmp_path, owner, owner)
+        provision(identities, tmp_path, owner)
     (tmp_path / ".layout.lock").touch()
     (tmp_path / ".layout.json").write_text(json.dumps(
         {"layout": 2, "box_layout": "owner-box", "state": "stable"}))

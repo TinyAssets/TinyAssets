@@ -131,10 +131,8 @@ class PendingFlow:
 def _authority(owner: str, universe_id: str):
     """Resolve only broker admission; no owner store is available at the door."""
     from tinyassets.api.helpers import _base_path
-    from tinyassets.broker.owner_identities import connection_center
 
     base = _base_path()
-    connection_center(base, principal=owner, center=universe_id)
     yield base
 
 

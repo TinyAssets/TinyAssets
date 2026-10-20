@@ -304,7 +304,7 @@ def test_a_bootstrap_connection_resolves_to_its_installed_preset_name(agent, mon
     """``model:<preset id>`` is what the guided sign-in deposits; read its name."""
     from tinyassets.providers.source_display import source_display_name
 
-    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+    monkeypatch.setattr("tinyassets.owner_centers.admitted_owner",
                         lambda root, *, center: "owner")
     ledger = agent.served.rig.ledger
     with ledger._connect() as conn:
@@ -319,7 +319,7 @@ def test_a_bootstrap_connection_resolves_to_its_installed_preset_name(agent, mon
 
 
 def test_a_hand_made_connection_shows_the_owner_s_own_destination(agent, monkeypatch):
-    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+    monkeypatch.setattr("tinyassets.owner_centers.admitted_owner",
                         lambda root, *, center: "owner")
 
     from tinyassets.providers.source_display import source_display_name
@@ -330,17 +330,17 @@ def test_a_hand_made_connection_shows_the_owner_s_own_destination(agent, monkeyp
     ) == "compute:models"
 
 
-def test_a_grant_bound_elsewhere_never_lends_its_name(agent, monkeypatch):
-    """Never label one universe's source with another universe's connection."""
+def test_same_owner_grant_retains_display_name_across_centers(agent, monkeypatch):
+    """Connection labels belong to their owner across local centers."""
     from tests.support.broker_double import seed_unchecked_definition
     from tinyassets.providers.source_display import source_display_name
 
-    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+    monkeypatch.setattr("tinyassets.owner_centers.admitted_owner",
                         lambda root, *, center: "owner")
 
     foreign = agent.served.rig.ledger.grant_connection(
         grant_id="grant-other", connection_id="conn-models",
-        owner_user_id="owner", universe_id="u-other",
+        owner_user_id="owner",
     )
     borrowed = seed_unchecked_definition(
         universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
@@ -349,7 +349,7 @@ def test_a_grant_bound_elsewhere_never_lends_its_name(agent, monkeypatch):
     assert source_display_name(
         base=agent.served.rig.base, universe_id="u-models",
         provider=f"api_key_http:{borrowed.id}",
-    ) == ""
+    ) == "compute:models"
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude-code", "api_key_http:absent", ""])
@@ -368,7 +368,7 @@ def test_the_writer_receipt_carries_the_connection_name(agent, monkeypatch):
         receipt_from_response,
     )
 
-    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+    monkeypatch.setattr("tinyassets.owner_centers.admitted_owner",
                         lambda root, *, center: "owner")
     ledger = agent.served.rig.ledger
     with ledger._connect() as conn:

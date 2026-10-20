@@ -50,7 +50,7 @@ def test_oci_bundle_exposes_only_owner_tree_relay_and_bounded_tmp(tmp_path):
     assert config["mounts"][-1]["options"][-1] == f"size={TMP_BYTES}"
     assert config["process"]["env"] == [
         "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/owner",
-        "TINYASSETS_VOLUME_GENERATION=3", "TINYASSETS_ADMITTED_CENTERS=[]",
+        "TINYASSETS_VOLUME_GENERATION=3",
         "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
     ]
     assert config["process"]["noNewPrivileges"] is True
@@ -103,7 +103,7 @@ def test_persistent_daemon_launch_has_mount_secret_socket_static_env_and_memory_
     assert mounts["/home/owner"]["source"] == str(tmp_path / "mounts/300001")
     assert config["process"]["env"] == [
         "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/owner",
-        "TINYASSETS_VOLUME_GENERATION=3", "TINYASSETS_ADMITTED_CENTERS=[]",
+        "TINYASSETS_VOLUME_GENERATION=3",
         "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright"]
 
 

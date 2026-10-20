@@ -387,7 +387,7 @@ class _Connection:
                 answer = {"op": "LIFECYCLE_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
-        if self._role == BOX_HOST and op in {"BOX_CHANNEL", "BOX_SHARED"}:
+        if self._role == BOX_HOST and op == "BOX_CHANNEL":
             # C6: withdrawal also cancels an admission still resolving.
             self._principals.add(doc.get("principal"))
         if self._role in {BOX_HOST, BOX}:
@@ -400,24 +400,19 @@ class _Connection:
                 await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
                 return
         if self._role == BOX_HOST:
-            if op not in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
+            if op != "BOX_CHANNEL":
                 raise rf.FrameError("box host channel is read-only admission")
             from tinyassets.broker.admission import owner_lock
-            from tinyassets.broker.box_admission import resolve
+            from tinyassets.broker.box_admission import resolve_owner
 
             try:
                 async with owner_lock(self._server._owner_identities.path, doc["principal"]):
-                    if op == "BOX_SHARED":
-                        await asyncio.to_thread(self._server._owner_identities.box_route,
-                                                doc["principal"])
-                        answer = {"op": "BOX_ADMITTED"}
-                    else:
-                        answer = await asyncio.to_thread(resolve, self._server._owner_identities,
-                                                         {**doc, "op": "BOX_ADMISSION"})
-                    if op in {"BOX_CHANNEL", "BOX_SHARED"}:
-                        self._principals.add(doc["principal"])
-                        self._box_owner, self._box_center = doc["principal"], doc["center"]
-                        self._role = BOX
+                    answer = await asyncio.to_thread(
+                        resolve_owner, self._server._owner_identities,
+                        {**doc, "op": "BOX_PUBLIC"})
+                    self._principals.add(doc["principal"])
+                    self._box_owner = doc["principal"]
+                    self._role = BOX
                     await self.send_async(rf.control(rf.CONNECTION, answer))
                     await self._queue.join()
             except Exception:  # no authority or broker data on a refusal
@@ -436,16 +431,6 @@ class _Connection:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
-            if op == "RETIRE_CENTER":
-                answer = await owner_call(self._server._owner_identities.path, self._box_owner,
-                                          self._box_retire_center, doc)
-                await self.send_async(rf.control(rf.CONNECTION, answer))
-                return
-            if op == "ADMIT_CENTER":
-                answer = await owner_call(self._server._owner_identities.path, self._box_owner,
-                                          self._box_admit_center, doc)
-                await self.send_async(rf.control(rf.CONNECTION, answer))
-                return
             if op == "BOX_IDENTITY":
                 self._box_scope(doc)
                 await self.send_async(rf.control(rf.CONNECTION, {
@@ -458,12 +443,6 @@ class _Connection:
                 if doc["action"] in {"write", "issue_once"} and "session_proof" not in doc:
                     raise rf.FrameError("protected policy changes require shared door proof")
                 doc = {**doc, "principal": self._box_owner}
-                if doc["action"] in {"classify", "decide", "proposal"}:
-                    self._box_scope({})
-                    if doc["action"] == "decide":
-                        doc["request"] = {**doc["request"], "center": self._box_center}
-                    else:
-                        doc["center"] = self._box_center
                 answer = await asyncio.to_thread(self._owner_policy, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
@@ -540,14 +519,8 @@ class _Connection:
         elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "CENTER_ADMISSION":
-            answer = await self._center_admission(doc)
-            await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "ADMITTED_OWNER":
-            answer = await asyncio.to_thread(self._admitted_owner, doc)
-            await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "SOLE_CENTER":
-            answer = await asyncio.to_thread(self._sole_center, doc)
+        elif op == "ADMIT_OWNER":
+            answer = await self._admit_owner(doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_ADMISSION":
             from tinyassets.broker.admission import read
@@ -575,7 +548,7 @@ class _Connection:
             answer = await asyncio.to_thread(self._usage, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "HTTP_CONNECT":
-            _namespace(doc.get("principal"), doc.get("command_center"))
+            _owner(doc.get("principal"))
             self._principals.add(doc["principal"])
             answer = await asyncio.to_thread(self._http_connect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -607,7 +580,7 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "FENCE_ACK", "generation": generation, "token": token}))
         elif op == "STATUS":
-            namespace = _namespace(doc.get("principal"), doc.get("command_center"))
+            namespace = _owner(doc.get("principal"))
             state, effect = await asyncio.to_thread(
                 self._operation_state, namespace, str(doc.get("op_id", "")))
             await self.send_async(rf.control(rf.CONNECTION, {
@@ -615,42 +588,6 @@ class _Connection:
                 "side_effect_state": effect}))
         else:
             raise rf.FrameError("unknown connection operation")
-
-    async def _box_admit_center(self, doc):
-        """A new center belongs to the relay's owner, never a supplied principal."""
-        try:
-            if set(doc) != {"op", "center"}:
-                raise ValueError("invalid center admission")
-            identities = self._server._owner_identities
-            with self._server._fence.send(
-                    self._server._fence.generation, self._server._fence.token):
-                identities.box_route(self._box_owner)
-                row = await identities.admission("admit", self._box_owner, doc["center"],
-                                           routing=self._server.routing)
-            return {"op": "BOX_RESULT", "result": {
-                "generation": row.generation, "machine": row.machine}}
-        except Exception:  # noqa: BLE001 - no identity or persisted state on refusal
-            return {"op": "BOX_REFUSED"}
-
-    def _stop_owner_box(self, owner):
-        from tinyassets.boxes.daemon_control import request
-        uid = self._server._owner_identities.owner_machine(owner)
-        if uid is None:
-            raise LookupError("owner lifecycle binding missing")
-        if request("stop", uid=uid) != {"stopped": True}:
-            raise RuntimeError("boxhostd did not acknowledge retirement")
-
-    async def _box_retire_center(self, doc):
-        try:
-            if set(doc) != {"op", "center"}:
-                raise ValueError("invalid retirement")
-            row = await self._server._owner_identities.admission(
-                "retire", self._box_owner, doc["center"], routing=self._server.routing)
-            await asyncio.to_thread(self._stop_owner_box, self._box_owner)
-            return {"op": "BOX_RESULT", "result": {
-                "generation": row.generation, "machine": row.machine}}
-        except Exception:
-            return {"op": "BOX_REFUSED"}
 
     def _box_scope(self, doc):
         from tinyassets.broker.admission import require_admitted
@@ -660,12 +597,9 @@ class _Connection:
         except (PermissionError, LookupError) as exc:
             raise rf.FrameError("erased box admission") from exc
         # The socket selected this scope. Guest identity fields grant nothing.
-        if (not getattr(self, "_box_center", None)
-                or doc.get("principal", self._box_owner) != self._box_owner
-                or doc.get("command_center", self._box_center) != self._box_center):
+        if doc.get("principal", self._box_owner) != self._box_owner:
             raise rf.FrameError("retired box admission")
-        return {**doc, "principal": self._box_owner, "command_center": self._box_center,
-                "generation": self._server._fence.generation,
+        return {**doc, "principal": self._box_owner, "generation": self._server._fence.generation,
                 "token": self._server._fence.token}
 
     async def _usage_lease(self, doc):
@@ -742,17 +676,6 @@ class _Connection:
         except Exception:  # noqa: BLE001 - no identity, path or persisted state on refusal
             return {"op": "OWNER_IDENTITY_REFUSED"}
 
-    def _admitted_owner(self, doc: dict[str, Any]) -> dict[str, Any]:
-        try:
-            if (set(doc) != {'op', 'center', 'generation', 'token'}
-                    or type(doc['generation']) is not int or type(doc['token']) is not str):
-                raise ValueError('invalid admitted owner request')
-            with self._server._fence.send(doc['generation'], doc['token']):
-                principal = self._server._owner_identities.admitted_owner(doc['center'])
-                return {'op': 'ADMITTED_OWNER_IS', 'principal': principal}
-        except Exception:  # noqa: BLE001 - do not expose broker state on refusal
-            return {'op': 'ADMITTED_OWNER_REFUSED'}
-
     async def _owner_lifecycle(self, doc: dict[str, Any]) -> dict[str, Any]:
         try:
             if (set(doc) != {"op", "principal", "generation", "token"}
@@ -766,61 +689,38 @@ class _Connection:
         except Exception:  # noqa: BLE001 - never expose broker state on refusal
             return {"op": "OWNER_LIFECYCLE_REFUSED"}
 
-    def _sole_center(self, doc: dict[str, Any]) -> dict[str, Any]:
-        try:
-            if (set(doc) != {"op", "principal", "generation", "token"}
-                    or type(doc["generation"]) is not int or type(doc["token"]) is not str):
-                raise ValueError("invalid center request")
-            with self._server._fence.send(doc["generation"], doc["token"]):
-                center = self._server._owner_identities.sole_center(doc["principal"])
-                return {"op": "SOLE_CENTER_IS", "center": center}
-        except LookupError:
-            return {"op": "SOLE_CENTER_UNADMITTED"}
-        except Exception:  # noqa: BLE001 - no persisted state on refusal
-            return {"op": "SOLE_CENTER_REFUSED"}
-
-    async def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
-        """DA1: append-only admit/retire; machine always from the reservation."""
-        from tinyassets.broker.owner_identities import CenterUnadmitted
-
+    async def _admit_owner(self, doc):
         try:
             return await owner_call(self._server._owner_identities.path, doc["principal"],
-                                    self._center_admission_locked, doc)
-        except CenterUnadmitted:
-            # D218 retires a tree-less center only if the log admitted it.
-            return {"op": "CENTER_ADMISSION_UNADMITTED"}
-        except Exception:  # noqa: BLE001 - retry completes durable partial admission
-            return {"op": "CENTER_ADMISSION_REFUSED"}
+                                    self._admit_owner_locked, doc)
+        except Exception:
+            return {"op": "OWNER_ADMIT_REFUSED"}
 
-    async def _center_admission_locked(self, doc):
-        if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
+    async def _admit_owner_locked(self, doc):
+        if set(doc) != {"op", "principal", "generation", "token"}:
             raise ValueError("unsupported admission fields")
-        if (not isinstance(doc["event"], str) or type(doc["generation"]) is not int
-                or not isinstance(doc["token"], str)):
+        if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
             raise ValueError("invalid admission request")
         with self._server._fence.send(doc["generation"], doc["token"]):
-            row = await self._server._owner_identities.admission(
-                doc["event"], doc["principal"], doc["center"], routing=self._server.routing)
-            if doc["event"] == "retire":
-                await asyncio.to_thread(self._stop_owner_box, doc["principal"])
-            if doc["event"] == "admit" and self._server._policy_store is not None:
+            identity = await self._server._owner_identities.admit(
+                doc["principal"], routing=self._server.routing)
+            if self._server._policy_store is not None:
                 self._server._policy_store.bootstrap_owner(doc["principal"])
-            if doc["event"] == "admit" and self._server._provision_box is not None:
-                self._server._provision_box(doc["principal"], doc["center"])
-            return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
-                    "machine": row.machine}
+            if self._server._provision_box is not None:
+                self._server._provision_box(doc["principal"])
+            return {"op": "OWNER_ADMIT_IS", "machine": identity.uid}
 
     def _model_source(self, doc):
         from tinyassets.broker.owner_sources import publish
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+            if set(doc) != {"op", "principal", "generation", "token",
                             "definition"}:
                 raise ValueError("unsupported source fields")
-            _namespace(doc["principal"], doc["command_center"])
+            _owner(doc["principal"])
             with self._server._fence.send(doc["generation"], doc["token"]):
                 result = publish(self._server._ledger_for(doc["principal"]),
-                                 doc["principal"], doc["command_center"], doc["definition"])
+                                 doc["principal"], doc["principal"], doc["definition"])
             return {"op": "BOX_RESULT", "result": result}
         except Exception:
             return {"op": "BOX_REFUSED"}
@@ -829,10 +729,10 @@ class _Connection:
         from tinyassets.broker.ledger_queries import local_query, validate_query
 
         try:
-            if set(doc) != {"op", "query", "principal", "command_center", "grant_id",
+            if set(doc) != {"op", "query", "principal", "grant_id",
                             "connection_id", "generation", "token"}:
                 raise ValueError("unsupported ledger query fields")
-            validate_query(doc["query"], doc["principal"], doc["command_center"],
+            validate_query(doc["query"], doc["principal"], doc["principal"],
                            doc["grant_id"], doc["connection_id"])
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
@@ -842,7 +742,7 @@ class _Connection:
                 ledger = self._server._ledger_for(doc["principal"])
                 result = local_query(
                     ledger, query=doc["query"], principal=doc["principal"],
-                    command_center=doc["command_center"], grant_id=doc["grant_id"],
+                    command_center=doc["principal"], grant_id=doc["grant_id"],
                     connection_id=doc["connection_id"],
                 )
                 answer = {"op": "LEDGER_RESULT", "result": result}
@@ -860,12 +760,12 @@ class _Connection:
         from tinyassets.broker.browser_vault import local_operation
 
         try:
-            if set(doc) != {'op', 'principal', 'command_center', 'generation', 'token', 'document'}:
+            if set(doc) != {'op', 'principal', 'generation', 'token', 'document'}:
                 raise ValueError('invalid browser custody fields')
-            _namespace(doc['principal'], doc['command_center'])
+            _owner(doc['principal'])
             with self._server._fence.send(doc['generation'], doc['token']):
                 result = local_operation(self._server._ledger_for(doc['principal']),
-                    principal=doc['principal'], command_center=doc['command_center'],
+                    principal=doc['principal'], command_center=doc['principal'],
                     document=doc['document'])
                 return {'op': 'BROWSER_RESULT', 'result': result}
         except Exception:  # noqa: BLE001 - credentials never enter error payloads
@@ -875,19 +775,19 @@ class _Connection:
         from tinyassets.broker.catalog import local_page, validate
 
         try:
-            if not {"op", "principal", "command_center", "generation", "token",
+            if not {"op", "principal", "generation", "token",
                     "cursor", "limit"} <= set(doc) <= {
-                    "op", "principal", "command_center", "generation", "token",
+                    "op", "principal", "generation", "token",
                     "cursor", "limit", "include_revoked"}:
                 raise ValueError("unsupported catalog fields")
-            _namespace(doc["principal"], doc["command_center"])
+            _owner(doc["principal"])
             validate(doc["cursor"], doc["limit"], doc.get("include_revoked", False))
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 result = local_page(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
-                                    command_center=doc["command_center"],
+                                    command_center=doc["principal"],
                                     cursor=doc["cursor"], limit=doc["limit"],
                                     include_revoked=doc.get("include_revoked", False))
                 answer = {"op": "CATALOG_RESULT", "result": result}
@@ -900,17 +800,17 @@ class _Connection:
         from tinyassets.broker.disconnect import local_operation, validate
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+            if set(doc) != {"op", "principal", "generation", "token",
                             "document"}:
                 raise ValueError("unsupported disconnect fields")
-            _namespace(doc["principal"], doc["command_center"])
+            _owner(doc["principal"])
             validate(doc["document"])
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
-                                    command_center=doc["command_center"],
+                                    command_center=doc["principal"],
                                     document=doc["document"])
                 answer = {"op": "DISCONNECT_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
@@ -942,26 +842,24 @@ class _Connection:
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
                 result = {"receipts": store.receipts(owner)}
             elif action == "proposal" and set(doc) == {
-                    "op", "action", "principal", "center", "change"}:
-                result = store.receipt_proposal(owner, doc["center"], doc["change"])
+                    "op", "action", "principal", "change"}:
+                result = store.receipt_proposal(owner, owner, doc["change"])
             elif action == "write" and set(doc) == {
                     "op", "action", "principal", proof_key, "expected_generation", "policy"}:
                 result = store.write(owner, doc[proof_key], doc["expected_generation"],
                                      doc["policy"]).projection()
             elif action == "classify" and set(doc) == {
-                    "op", "action", "principal", "center", "connection", "method", "path"}:
+                    "op", "action", "principal", "connection", "method", "path"}:
                 action_class, operation = store.classify(
-                    owner, doc["center"], doc["connection"], doc["method"], doc["path"])
+                    owner, owner, doc["connection"], doc["method"], doc["path"])
                 result = {"action_class": action_class, "operation": operation}
             elif action == "issue_once" and set(doc) == {
                     "op", "action", "principal", proof_key, "expected_generation",
-                    "center", "grant_id", "connection_id", "verb", "request",
+                    "grant_id", "connection_id", "verb", "request",
                     "destination"}:
                 self._server._ledger_for(owner).authorize_exact(
-                    universe_id=doc["center"], grant_id=doc["grant_id"],
+                     grant_id=doc["grant_id"],
                     connection_id=doc["connection_id"])
-                if self._server._owner_identities.admitted_owner(doc["center"]) != owner:
-                    raise PolicyRefused("center is not this owner's")
                 raw = doc["request"]
                 if not isinstance(raw, dict) or not isinstance(doc["destination"], str):
                     raise PolicyRefused("invalid approved request")
@@ -977,10 +875,10 @@ class _Connection:
             elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
                 request = doc["request"]
                 if not isinstance(request, dict) or set(request) != {
-                        "center", "action_class", "connection", "operation", "destination",
+                        "action_class", "connection", "operation", "destination",
                         "amount", "source", "agent", "request_id"}:
                     raise PolicyRefused("invalid policy decision request")
-                result = store.decide(owner, **request)
+                result = store.decide(owner, center=owner, **request)
             else:
                 raise PolicyRefused("unsupported policy operation")
             answer = {"op": "OWNER_POLICY_RESULT", "result": result}
@@ -1003,10 +901,10 @@ class _Connection:
         from tinyassets.storage.agent_request_usage import ModelLaunchEnded
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+            if set(doc) != {"op", "principal", "generation", "token",
                             "usage_id", "document"}:
                 raise ValueError("unsupported accounting fields")
-            _namespace(doc["principal"], doc["command_center"])
+            _owner(doc["principal"])
             validate(doc["document"])
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
@@ -1014,7 +912,7 @@ class _Connection:
                 try:
                     result = local_operation(self._server._ledger_for(doc["principal"]),
                                              principal=doc["principal"],
-                                             command_center=doc["command_center"],
+                                             command_center=doc["principal"],
                                              usage_id=doc["usage_id"], document=doc["document"])
                     answer = {"op": "USAGE_RESULT", "result": result}
                 except RequestBudgetExceeded as exc:
@@ -1032,10 +930,10 @@ class _Connection:
         from tinyassets.broker.http_connect import local_operation, validate
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+            if set(doc) != {"op", "principal", "generation", "token",
                             "document"}:
                 raise ValueError("unsupported connect fields")
-            _namespace(doc["principal"], doc["command_center"])
+            _owner(doc["principal"])
             validate(doc["document"])
             if self._role == BOX and ("request_ref" in doc["document"]
                     or doc["document"].get("secret")
@@ -1049,15 +947,9 @@ class _Connection:
                 if self._closed.is_set():
                     raise PermissionError("connection cancelled")
                 require_admitted(self._server._owner_identities, doc["principal"])
-                if doc["document"]["action"] in {
-                        "oauth_offer", "oauth_exchange", "preset_exchange"}:
-                    if (self._server._owner_identities is None
-                            or self._server._owner_identities.admitted_owner(
-                                doc["command_center"]) != doc["principal"]):
-                        raise PermissionError("connection requires live center admission")
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
-                                    command_center=doc["command_center"],
+                                    command_center=doc["principal"],
                                     document=doc["document"],
                                     committed_via="door" if self._role == OWNER else "box")
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
@@ -1078,17 +970,17 @@ class _Connection:
         )
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+            if set(doc) != {"op", "principal", "generation", "token",
                             "document"}:
                 raise ValueError("unsupported capability fields")
-            _namespace(doc["principal"], doc["command_center"])
+            _owner(doc["principal"])
             validate(doc["document"])
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                          principal=doc["principal"],
-                                         command_center=doc["command_center"],
+                                         command_center=doc["principal"],
                                          document=doc["document"])
                 answer = {"op": "CAPABILITY_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
@@ -1123,14 +1015,15 @@ class _Connection:
     async def _open(self, stream_id: int, doc: dict[str, Any]) -> None:
         if self._role == BOX:
             doc = self._box_scope(doc)
-        principal, command_center = doc.get("principal"), doc.get("command_center")
+        principal = doc.get("principal")
+        command_center = principal
         op_id = doc.get("op_id")
 
         async def refuse(error_class: str) -> None:
             effect = "unknown"
             if self._role == OWNER and isinstance(op_id, str):
                 try:
-                    namespace = _namespace(principal, command_center)
+                    namespace = _owner(principal)
                     _, effect = await asyncio.to_thread(self._operation_state, namespace, op_id)
                 except rf.FrameError:
                     # An invalid namespace gives us no authority to query an
@@ -1158,7 +1051,7 @@ class _Connection:
             await refuse("refused")
             return
         try:
-            namespace = _namespace(principal, command_center)
+            namespace = _owner(principal)
         except rf.FrameError:
             await refuse("refused")
             return
@@ -1171,7 +1064,7 @@ class _Connection:
                 await asyncio.to_thread(require_admitted, self._server._owner_identities, principal)
                 ledger = self._server._ledger_for(principal)
                 _grant, resource = await asyncio.to_thread(
-                    ledger.authorize_exact, universe_id=command_center, grant_id=grant_id,
+                    ledger.authorize_exact, grant_id=grant_id,
                     connection_id=connection_id,
                 )
             except Exception as exc:  # noqa: BLE001 - mapped to a fixed class
@@ -1247,7 +1140,7 @@ class _Connection:
                                  credit=credit)
                 if verb.startswith(("git_read:", "git_write:")):
                     stream.authority = lambda: ledger.authorize_exact(
-                        universe_id=command_center, grant_id=grant_id, connection_id=connection_id)
+                         grant_id=grant_id, connection_id=connection_id)
                     if request.get("upload") is True:
                         from tinyassets.broker.git_upload import Upload
 
@@ -1467,8 +1360,11 @@ class _Fenced(BrokerStreamStop):
     pass
 
 
-def _namespace(principal: Any, command_center: Any) -> str:
-    if not isinstance(principal, str) or not isinstance(command_center, str) \
-            or not principal or not command_center or "|" in principal:
-        raise rf.FrameError("a namespace needs a principal and a command center")
-    return f"{principal}|{command_center}"
+def _owner(principal: Any) -> str:
+    from tinyassets.broker.owner_identities import validate_principal
+
+    try:
+        validate_principal(principal)
+    except ValueError as exc:
+        raise rf.FrameError("authenticated owner required") from exc
+    return principal

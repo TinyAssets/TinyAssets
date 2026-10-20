@@ -69,9 +69,9 @@ class ConnectionTokens:
             # Re-read INSIDE the locks: the holder before us may have rotated it.
             try:
                 from tinyassets.broker.vault import check_not_deleted
-                from tinyassets.credential_vault import http_deposit_refusal
+                from tinyassets.credential_vault import custody_data_root, http_deposit_refusal
 
-                check_not_deleted(self._universe_dir.parent, self._owner)
+                check_not_deleted(custody_data_root(self._universe_dir), self._owner)
 
                 if http_deposit_refusal(self._universe_dir, destination=destination,
                                         owner_user_id=self._owner):

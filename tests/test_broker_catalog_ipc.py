@@ -24,7 +24,7 @@ def test_catalog_real_ipc_pages_and_consumer_redact_authority(discovery):
 
     for number in range(70):
         discovery.ledger.grant_connection(grant_id=f"page-{number:03}", connection_id="conn-a",
-                                          owner_user_id="alice", universe_id="cc-alice")
+                                          owner_user_id="alice")
     rows = list(connections(discovery.root, principal="alice", command_center="cc-alice"))
     assert len(rows) == 71
     assert len({grant.grant_id for grant, _, _ in rows}) == 71
@@ -40,7 +40,6 @@ def test_catalog_real_ipc_pages_and_consumer_redact_authority(discovery):
 
 @pytest.mark.parametrize("scope", [
     {"principal": "bob", "command_center": "cc-alice"},
-    {"principal": "alice", "command_center": "cc-bob"},
 ])
 def test_catalog_foreign_scope_gets_no_rows(discovery, scope):
     assert list(connections(discovery.root, **scope)) == []
@@ -50,7 +49,7 @@ def test_catalog_foreign_scope_gets_no_rows(discovery, scope):
 def test_catalog_rechecks_revocation_between_pages(discovery, monkeypatch):
     for number in range(70):
         discovery.ledger.grant_connection(grant_id=f"page-{number:03}", connection_id="conn-a",
-                                          owner_user_id="alice", universe_id="cc-alice")
+                                          owner_user_id="alice")
     original = BrokerClient.connection_catalog
     calls = []
 
@@ -130,8 +129,7 @@ def test_actual_app_and_summary_catalogs_over_ipc(discovery, monkeypatch):
 
     identities = OwnerIdentities(root / "identities.db", initialize=True)
     identities.resolve("alice", allocate=True)
-    drive(identities.admission("admit", "alice", "cc-alice",
-       routing=projection(identities.path)))
+    drive(identities.admit("alice", routing=projection(identities.path)))
     discovery.broker.server._owner_identities = identities
 
     async def app():
@@ -154,3 +152,9 @@ def test_actual_app_and_summary_catalogs_over_ipc(discovery, monkeypatch):
     assert "compute:discovery" in summary
     assert "vault://" not in summary
     assert not (root / "outbound.db").exists()
+
+
+def test_same_owner_centers_see_same_connection_inventory(discovery):
+    first = list(connections(discovery.root, principal="alice", command_center="cc-alice"))
+    assert len(first) == 1
+    assert list(connections(discovery.root, principal="alice", command_center="other")) == first

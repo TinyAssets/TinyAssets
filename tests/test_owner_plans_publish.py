@@ -34,7 +34,6 @@ root, relay, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 root.mkdir(exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
 os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
-os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 try:
@@ -202,15 +201,15 @@ def test_admission_creates_free_atomically_and_never_repairs_missing_existing_pl
     identities = OwnerIdentities(
         tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
     plans.set_plan("owner", "paid", event_created=5)
-    drive(identities.admission("admit", "owner", "second",
-     routing=projection(identities.path)))
+    drive(identities.admit("owner", routing=projection(identities.path)))
     assert plans.read("owner")["tier"] == "paid"
     with sqlite3.connect(plans.path) as db:
         db.execute("DELETE FROM plans WHERE owner='owner'")
     with pytest.raises(PlanMissing):
-        drive(identities.admission("admit", "owner", "third",
-        routing=projection(identities.path)))
-    assert identities.center_state("third") == "unadmitted"
+        drive(identities.admit("owner", routing=projection(identities.path)))
+    from tinyassets.broker.admission import read
+
+    assert read(identities, "owner").state == "admitted"
 
 
 def test_box_publication_author_and_router_listing(box, monkeypatch):  # noqa: F811
@@ -239,14 +238,17 @@ def test_admission_failure_rolls_back_the_free_row(tmp_path):
         tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
     identities.resolve("new-owner", allocate=True)
     with sqlite3.connect(identities.path) as db:
-        db.execute("CREATE TRIGGER refuse_new_center BEFORE INSERT ON center_admissions "
-                   "WHEN NEW.principal='new-owner' BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+        db.execute("CREATE TRIGGER refuse_new_owner BEFORE INSERT ON owner_admission "
+                   "WHEN NEW.digest='"
+                   "44f1beb3983a5e9593c1e499c925a0f8a5ccb6bd6ac9f83dfd5aa5d563a849a6' "
+                   "BEGIN SELECT RAISE(ABORT, 'fixture'); END")
     with pytest.raises(sqlite3.IntegrityError, match="fixture"):
-        drive(identities.admission("admit", "new-owner", "new-center",
-            routing=projection(identities.path)))
+        drive(identities.admit("new-owner", routing=projection(identities.path)))
     with pytest.raises(PlanMissing):
         Plans(tmp_path).read("new-owner")
-    assert identities.center_state("new-center") == "unadmitted"
+    from tinyassets.broker.admission import read
+
+    assert read(identities, "new-owner").state == "absent"
 
 
 def test_mapped_legacy_events_and_conflicting_owner_claims(tmp_path, monkeypatch):

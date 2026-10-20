@@ -40,8 +40,8 @@ def authority(tmp_path, monkeypatch):
                    "project_id INT, bhard_bytes INT)")
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        drive(identities.admission("admit", owner, owner, routing=projection(identities.path)))
-        box_admission.provision(identities, tmp_path, owner, owner)
+        drive(identities.admit(owner, routing=projection(identities.path)))
+        box_admission.provision(identities, tmp_path, owner)
     events, remote, released = [], Remote(), []
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
     server.routing = BrokerLifecycle(server)
