@@ -599,11 +599,44 @@ rollback (C4) is unchanged.
 - **Shared clocks.** The deletions in C5, C6 and the spend fence leave two:
   boxhostd's maintain loop and the waker.
 
+### C14. The broker owns each owner's lifecycle; deletion records live in the broker (T2, T5, T9)
+The round-2 structural review (2026-10-20) found that the deletion job decides in
+the broker but writes `erased` because boxhostd calls back into it, and that one
+deletion runs the erase mutation about four times across three callbacks. The
+per-owner serialization C5 and C6 assign to the broker was in fact boxhostd's
+UID flock. Target:
+- **A broker-owned per-owner lock** serializes admission changes, wake, channel
+  open, snapshot publication, restore and deletion for that owner. boxhostd's
+  UID lock only protects its own local execution and is never the authority.
+- **Deletion step 1 runs in the broker under that lock:** write the off-host job
+  record, set the admission record to `erased`, close the owner's channels and
+  publish the withdrawal to routing. Only then does it call boxhostd with plain
+  operations (`stop <uid>`, `destroy <uid>`, `delete_snapshots <uid>`), which
+  never call back.
+- **Job records live in the broker's identity database.** Each change is written
+  through to the off-host copy. Status pages and enqueue read the local rows.
+  Platform recovery reads the off-host copy. The remote is not the only store.
+- **No new clock.** A job runs when it's enqueued; retries are picked up by the
+  waker's existing tick (`retry_at`). The 1-second deletion poll goes.
+- **Deleted:** the boxhostd→broker erase callbacks (`BOX_ADMISSION_ERASE`,
+  `BOX_RETIRE_ADMISSION`, `OwnerRegistry.erase_admission`, the
+  `retire_owner` erase path); the unused owner-channel ops `RETIRE_OWNER`,
+  `ERASE_ACCOUNT`, `CLOSE_OWNER_CHANNELS` and `OWNER_ADMISSION_ERASE`;
+  `HostRecords` and boxhostd's `deletion_records` transport op; the 1-second
+  deletion loop; the stale `account_erasure.py` orchestration wording; and the
+  duplicate job-record literal in the one-shot migration (one producer).
+- **Recovery (b5) startup mode:** platform recovery starts the services with
+  ordinary admission closed for every owner. Unfinished deletion jobs then run
+  through the normal broker path, and only then does admission open.
+  `resume_deletion_jobs` is that phase, not a lock-holding offline step.
+
 ### Build order and lanes
 Lane a (C1–C4) and step 1 are complete. The remaining lanes run one after
 another on `conv/c6-research-shape`, each after the previous lane has merged:
 - **(a2b) C10 storage scaling,** plus the remnants of the paired model.
-- **(b) C5, C6:** the routing-only router, one admission record, the deletion job.
+- **(b) C5, C6, C14:** the routing-only router, one admission record, the
+  deletion job, then (b6) broker-owned lifecycle serialization with no callbacks,
+  and (b5) recovery's startup mode.
 - **(d) C11–C13:** an owner-keyed shared layer, image-at-wake deploys, fewer mechanisms.
 - **(c) C7–C9:** the egress allowlist, owner policy in the box, the wake index.
   It runs after d, because policy and allowlists are keyed by owner.
