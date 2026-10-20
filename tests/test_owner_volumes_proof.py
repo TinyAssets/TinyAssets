@@ -295,7 +295,8 @@ def integrated_lifecycle(root, volumes, rootfs, size):
 
         def retire(self, owner, expected_uid):
             assert identities.owner_machine(owner) == expected_uid
-            identities.retire_owner(owner)
+            from tinyassets.broker.admission import local_mutate
+            local_mutate(identities.path, owner, "erase")
 
     runtime = GvisorRuntime(runsc=Path("/gvisor/runsc"), rootfs=rootfs,
                             state_root=root / "integrated-state",
@@ -321,6 +322,22 @@ def integrated_lifecycle(root, volumes, rootfs, size):
                            SimpleNamespace(bind=lambda *_: relay, retire=lambda _: None),
                            sockets, idle_seconds=1)
 
+    from tinyassets.boxes import daemon_control
+    from tinyassets.boxes.host_service import HostService
+    from tinyassets.broker.routing import RoutingAuthority
+
+    service = HostService(manager.admission, volumes, manager.relays, manager)
+    original_request = daemon_control.request
+    def execute(operation, owner=None, **fields):
+        answer = service.lifecycle({"lifecycle": operation, **fields,
+                                    **({"owner": owner} if owner is not None else {})}, 1002)
+        if set(answer) == {"error"}:
+            raise RuntimeError(answer["error"])
+        return answer
+    daemon_control.request = execute
+    routing = RoutingAuthority(SimpleNamespace(_owner_identities=identities, _data_root=root))
+    routing.publish = lambda **kwargs: None
+
     def status(box, operation="status", **body):
         return states[box.uid].status(drain=operation == "drain",
                                       revoke=operation == "revoke",
@@ -329,12 +346,13 @@ def integrated_lifecycle(root, volumes, rootfs, size):
 
     manager._rpc = status
     try:
-        assert manager.ensure_awake("proof-owner") == uid
+        assert routing.wake("proof-owner") == uid
         assert volumes.size(uid) == size
         runtime.exec(uid, ["/bin/sh", "-c", "printf integrated > /home/owner/content; sync"],
                      timeout=30)
         with manager.condition:
             assert manager._sleep(manager.boxes[uid], idle=0)
+        routing.volumes.recover("proof-owner")
         published = manager.admission.volume("proof-owner")
         assert published["snapshot_id"] and published["work"] is None
         original_bytes = digest(volumes.store / f"{uid}.img")
@@ -357,10 +375,10 @@ def integrated_lifecycle(root, volumes, rootfs, size):
             delete_image(owner_uid)
         def wake():
             waking.set()
-            return manager.ensure_awake("proof-owner")
+            return routing.wake("proof-owner")
         volumes.delete = paused_delete
         with ThreadPoolExecutor(2) as pool:
-            eviction = pool.submit(manager.maintain)
+            eviction = pool.submit(routing.volumes.evict, "proof-owner")
             assert deleting.wait(30)
             request = pool.submit(wake)
             assert waking.wait(30)
@@ -374,6 +392,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         assert result.stdout == "integrated"
         with manager.condition:
             assert manager._sleep(manager.boxes[uid], idle=0)
+        routing.volumes.recover("proof-owner")
         published = manager.admission.volume("proof-owner")
         print("PROOF C10 sparse eviction cold-wake PASS", flush=True)
         import runpy
@@ -399,18 +418,21 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         volumes.delete(uid)
         with sqlite3.connect(identities.path) as db:
             db.execute("DELETE FROM owner_snapshots")
-        assert manager.restore("proof-owner", published["snapshot_id"]) == {
-            "volume_generation": published["volume_generation"] + 1}
-        manager.ensure_awake("proof-owner")
+        assert routing.volumes.restore("proof-owner", published["snapshot_id"])[
+            "volume_generation"] == published["volume_generation"] + 1
+        routing.wake("proof-owner")
         assert generations == [1, 2, 3]
         result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
         assert result.stdout == "integrated"
-        manager.destroy("proof-owner", uid)
+        from tinyassets.broker.admission import local_mutate
+        local_mutate(identities.path, "proof-owner", "erase")
+        assert execute("destroy", uid=uid) == {"destroyed": True}
         assert not runtime.alive(uid)
         volumes._detached(uid)
         assert not (volumes.store / f"{uid}.img").exists()
         print("PROOF integrated lifecycle map/runsc/generation/no-traversal PASS", flush=True)
     finally:
+        daemon_control.request = original_request
         runtime.stop(uid)
         volumes.detach(uid)
         listener.close()

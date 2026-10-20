@@ -12,7 +12,9 @@ from tests.test_owner_router import admitted, boxes, cloud_runtime, router  # no
 from tinyassets.boxes.images import Images
 
 
-def test_roll_drains_real_request_and_restarts_only_its_owner(router, boxes, admitted, tmp_path):  # noqa: F811
+def test_roll_drains_real_request_and_restarts_only_its_owner(
+    router, boxes, admitted, tmp_path, broker,  # noqa: F811
+):
     manager = boxes.manager
     root = tmp_path / "harnesses"
     old, new = image(root, "1"), image(root, "2")
@@ -24,7 +26,7 @@ def test_roll_drains_real_request_and_restarts_only_its_owner(router, boxes, adm
     other_uid = admitted.owner_machine("bob")
     original, other = boxes.runtime.processes[uid], boxes.runtime.processes[other_uid]
     manager.roll_wait = 10
-    manager.roll(new.name)
+    broker.server.routing.roll(new.name)
     results = []
 
     async def exercise():
@@ -49,7 +51,8 @@ def test_roll_drains_real_request_and_restarts_only_its_owner(router, boxes, adm
                 assert original.poll() is None and not results
                 await incoming.put({"type": "http.disconnect"})
 
-        thread = threading.Thread(target=lambda: results.append(manager.roll(new.name, uid)))
+        thread = threading.Thread(
+            target=lambda: results.append(broker.server.routing.roll(new.name, uid)))
         scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
                  "method": "GET", "scheme": "http", "path": "/app/api/test-stream",
                  "raw_path": b"/app/api/test-stream", "query_string": b"", "root_path": "",

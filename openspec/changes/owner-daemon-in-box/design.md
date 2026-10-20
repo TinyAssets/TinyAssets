@@ -64,15 +64,16 @@ the shared tree walks in `boxes/quota.py`, `boxes/destroy.py`,
   in `destroy.py`, the owner-tree walk in `restore_recovery.finish_erasures`, and
   the mount and symlink checks around owner trees.
 
-**As built (a1 runtime):** `OwnerDaemons` uses `VolumeLifecycle` and `OwnerVolumes`;
-the UID lock spans runtime transitions and broker publication. boxhostd creates a
-private mount namespace, uses `BOX_STORE_DIR` for opaque images, and gives runsc
-only `attach().oci_mount()`. Owner directory initialization runs inside the box.
-Account retirement (`broker.server._retire_owner` → `destroy`) deletes the volume;
-center retirement (`_box_retire_center` / `_center_admission` → `_stop_owner_box`
-→ `retire`) is stop-only and performs no volume operation. Runtime sockets and
-the secret are removed separately. The next wake releases a retained attachment.
-The project-quota module, owner-tree destroy helpers and `finish_erasures` are deleted.
+**As built (b6 runtime):** broker `VolumeLifecycle` owns transitions and map
+publication under the broker's owner lock. `OwnerDaemons` and `OwnerVolumes`
+execute bound UID operations; their local UID lock protects execution only.
+boxhostd creates a private mount namespace and gives runsc only
+`attach().oci_mount()`. Owner directory initialization runs inside the box.
+The broker deletion job erases admission once before `stop`, `destroy` and
+`delete_snapshots`. Center retirement stops without deleting the volume.
+Runtime sockets and secrets are removed separately. No host operation calls
+back for lifecycle or volume state; the waker tick reconciles authorized idle
+stops and pending work before subsequent wakes.
 **As built (a2a migration):** stopped apply creates each owner's image at the
 retained box-record allowance (or the census-derived allowance being seeded at
 cutover). It copies and verifies the existing census disposition inside temporary
@@ -444,7 +445,7 @@ revocations, deletion of box-record rows as an admission signal, plan suspension
 columns, policy deletion markers, vault tombstones and polling stream watcher are
 removed. Account retirement writes only terminal admission. Authentication reads
 only the record's erased state through b2. Cutover converts the legacy facts and
-removes their stores; progress remains in b2a's off-host jobs. Record-only tests
+removes their stores; progress now lives in broker job rows with off-host write-through (b6). Record-only tests
 replace the temporary equivalence matrix. Routing snapshot/secret persistence
 and platform recovery ordering remain later lane work.
 
@@ -509,8 +510,8 @@ authority:
 path. A 2 GiB XFS image uses 67,457,024 physical bytes in the pinned Linux
 venue. The permanent volume binding now records `local` and `asleep_at`.
 Completed snapshot publication starts the cold interval; wake clears it.
-After more than seven days, maintenance records eviction work, removes the
-opaque image and commits `local=false` under the existing UID lock. Pending
+After more than seven days, the broker waker tick records eviction work under
+the owner lock, asks boxhostd to remove the opaque image, and commits `local=false`. Pending
 snapshot/restore work and absent admission prevent eviction. Interrupted
 eviction resumes before wake, and a cold wake uses C2 restore and generation
 commit before attach; restore failure never creates an empty image.
@@ -986,21 +987,14 @@ are described in the 3c-2 as-built contract above.
   broker-owned. SIGTERM for shutdown/idle sleep reaches
   OwnerBoxd.close, which cancels children and closes/joins all proxy streams
   and threads before exit; the next wake can immediately bind the fixed port.
-- **Control socket.** The existing `daemon.sock` accepts `ensure_awake(owner,
-  scheduled: bool)` and `status(owner)` from kernel uid/gid 1001; only the
-  broker's 1002 peer can send `retire(owner, uid)`. Its group is the existing
-  shared 1102 group. Root replies are credential-checked. Status includes awake,
-  failure count and the last error, never a secret. Broker retirement has four
-  reserved listener workers. Eight scheduled waiters may occupy workers; the remaining listener capacity stays available for interactive
-  requests. Queue overflow refuses loudly.
-> **Superseded by T1/C5.** Control-plane admission publishes the current route and per-box secret, and the router forwards awake traffic from its installed routing snapshot. Lifecycle transitions refresh that snapshot.
-
-- **Admission.** Root-only broker `BOX_LIFECYCLE(principal, rotate)` reads the
-  live admissions and box record. The UID, XFS quota and centers come from the
-  broker. `rotate=true` mints the next secret. Router resolution first waits for
-  boxhostd, then obtains the current secret through `OWNER_BOX_ROUTE`; it opens
-  no owner data and starts no process. Control waits expire at 65 seconds and
-  become `box_unavailable` (503); unknown/deleted owners remain 404.
+- **Control socket and admission (b6).** Only broker UID 1002 sends bound wake
+  records and plain UID lifecycle operations to `daemon.sock`. Router UID 1001
+  can read status but cannot start, stop, restore or destroy. The broker derives
+  UID, quota, centers and persistent secret from the owner's binding under its
+  owner lock, reconciles pending volume work, and supplies the committed launch
+  generation. Root administration enters through broker `LIFECYCLE_ADMIN`.
+  Four listener workers remain reserved for broker execution and eight slots
+  bound scheduled waiters. Missing bindings refuse; no executor callback exists.
 - **Launch.** runsc starts `/opt/venv/bin/python -B -m tinyassets.owner_daemon`
   with `--socket /run/owner/app.sock --relay /run/boxhostd/relay.sock
   --secret-file /run/boxhostd/secret`. The only data root is `/home/owner`.
@@ -1033,35 +1027,22 @@ are described in the 3c-2 as-built contract above.
   A box surviving an idle interval resets its failure count. A failed launch
   whose cleanup cannot prove absence keeps its capacity reservation and is
   never advertised as ready.
-- **Wake lease.** Router resolution atomically wakes and leases a box through
-  boxhostd's router-only `resolve(owner, cleanup)` operation. LRU and idle sleep
-  skip leased boxes. The router releases the opaque lease after upstream response
-  headers prove ingress admission, or on forwarding failure; abandoned leases
-  expire after ten seconds. Cleanup resolution may reach a draining ingress.
+- **Wake serialization (b6).** Broker owner locks cover wake and withdrawal.
+  Router forwarding uses the installed route; the unused host resolve/release
+  operations and Box lease state are deleted. Owner Activity gates still prevent
+  idle shutdown or rollout from interrupting active work.
 - **Deletion drain.** The authenticated internal deletion route closes the same
   activity gate used by requests and turns before waiting on their completion condition for up to twenty seconds
   for active work. It admits only deletion/control calls while draining. A bound
   timeout reports `drain` unfinished; a retry may finish quiescence. No sweep
   starts while a turn can still write.
-> **Superseded by C1/C6.** Stop the runtime, fully unmount and detach, and delete the opaque owner image. Remove runtime sockets and the per-box secret separately. No owner-tree walk.
-
-- **Retirement and account erasure.** Center retirement still stops without
-  destroying retained centers. Account retirement permanently fences admission
-  and secret rotation, then requires boxhostd's broker-only `destroy(owner, uid)`
-  acknowledgment: prove stop, erase the complete XFS owner tree without following
-  links or mounts, clear quota limits, remove relay/app socket directories and
-  the secret. Every part is idempotent, including after broker tombstoning.
-  The door serializes deletion attempts and appends the ledger entry before
-  the local sweep, recording that phase before retirement. It records destruction, broker custody erasure, owner-keyed
-  Stripe cancellation plus shared plan update through BILLING_PLAN, router
-  credential revocation, and existing WorkOS identity deletion. The door imports identity
-  erasure from `router_account_deletion`; billing uses the owner-keyed
-  `billing.stripe_adapter.cancel_account_billing`. The box-local
-  `account_deletion` module performs neither shared phase. Billing runs even
-  after destruction failure. Identity deletion waits until the other steps finish
-  so sign-in remains available for retries. Only a fully confirmed receipt returns
-  200; every other outcome names unfinished phases. A tombstone blocks new work,
-  never unfinished cleanup. No owner path or store is read at the door.
+- **Deletion (b6).** The broker identity database holds job progress and billing
+  receipts, written through off-host before effects. Enqueue executes the job;
+  the existing waker tick retries due local rows. Erasure, channel closure and
+  withdrawal publication precede all host calls. Plain `stop`, `destroy` and
+  `delete_snapshots` never mutate admission. Status and enqueue never read the
+  remote. Platform recovery imports the off-host job through the same broker
+  path; closed-startup sequencing remains b5.
 
 - **Linux proof.** The oracle has no runsc. Lifecycle/OCI tests use the existing
   runtime-double pattern; the router process fixture now launches actual owner
@@ -1512,12 +1493,12 @@ explicit classes refuse. Shared tables are not split.
   host root through the inspected data-volume socket. The router verifies the
   kernel peer, commits `traffic_opened_at` to `.router-traffic.sqlite3`, and then
   admits ordinary authenticated requests. Broker callers cannot open admission.
-- **Authority and metadata.** Kernel-authenticated `daemon.sock` accepts
-  `roll(image[, uid])` only from root (the deploy caller) or broker UID 1002;
-  router UID 1001 cannot roll. The no-UID call durably publishes the next-wake
-  image and returns awake box UIDs plus the count of known sleeping boxes.
-  The driver makes no per-box call for those sleeping boxes. Per-UID calls return `rolled`,
-  `deferred_busy`, `asleep`, or `rolled_back` with reason `health_failed`.
+- **Authority and metadata (b6).** The deploy driver uses root-authenticated
+  broker `LIFECYCLE_ADMIN`. The broker resolves the UID to its permanent owner
+  binding and holds that owner's lock across drain, sleep snapshot, candidate
+  wake and rollback. Only the broker can select the host's next image through
+  `roll(image)`; the host no longer orchestrates per-UID roll calls. The driver
+  still receives `rolled`, `deferred_busy`, `asleep`, or `rolled_back` results.
   Root-private `/var/lib/boxhostd/state/images.json` records the current image
   and each UID's last launch image, using file and directory fsync plus atomic
   replacement. The launch record is written before starting a process, because
@@ -1534,16 +1515,12 @@ explicit classes refuse. Shared tables are not split.
   If drain/restore cannot complete safely, the control call fails loudly;
   maintenance only drains that failed box safely, and never kills its work.
   Retirement waits at most 600 seconds for an in-flight restart to settle.
-- **Wakes and concurrency.** Roll reuses slice 4's atomic 10-second
-  `resolve(owner, cleanup=...)` / `release(owner, lease)` wake leases, stored
-  on each Box. Router forwarding releases the lease after response admission or
-  on failure/cancellation and uses the normal broker route. Sleep, initial
-  roll and candidate rollback use the same lease expiry, idle guard and
-  drain decision, including the active-turn and deletion refusals. A dead
-  router cannot pin a box forever. Startup/shutdown release the fleet lock
-  during a roll, retaining capacity reservations; other interactive wakes still work and start on the
-  latest published image. The driver has at most two box operations in flight.
-  A busy box is deferred without interruption. Sleeping boxes are untouched.
+- **Wakes and concurrency (b6).** Owner locks serialize rollout with that owner's
+  wake, restore and deletion. The executor releases its capacity condition
+  during candidate readiness, so other owners can wake. A failed candidate's
+  active work must drain before rollback; unknown status never permits a kill.
+  No resolve/release lease or lock-delegation protocol remains.
+
 - **Failure containment and cutover.** Only the failed box is restored to its
   own previous image. Static parsing of the image's layout declaration must
   prove `ACTIVE_BOX_LAYOUT = "owner-box"` before any launch or rollback.

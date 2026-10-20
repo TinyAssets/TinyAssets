@@ -184,6 +184,7 @@ def owner(root, relay, secret, socket, uid, generation, centers, inherited_mount
 
 
 def broker(directory, *, register=False):
+    os.environ.setdefault("BACKUP_DEST", ":local:/snapshots/owner-snapshots")
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore
     from tinyassets.broker.owner_identities import OwnerIdentities
@@ -229,7 +230,15 @@ def broker(directory, *, register=False):
                 send(channel, {"ready": True})
                 assert receive(channel, identity) == {"ready": True}
             stop = asyncio.Event()
-            publication = asyncio.create_task(server.routing.run(stop))
+            from tinyassets.broker.waker import Waker
+
+            if not register:
+                # The native content venue installs its projection below. The
+                # separate registered production proof exercises actual push.
+                server.routing.publish = lambda **kwargs: None
+            publication = asyncio.create_task(Waker(
+                server.next_wakes, identities.plans, wake=server.routing.wake,
+                lifecycle_tick=server.routing.tick, poll_seconds=1).run(stop))
             try:
                 await listener.serve_forever()
             finally:
@@ -307,6 +316,9 @@ def smoke(confirm=False):
         logs, children = [], []
 
         class Runtime:
+            from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+            box_id = staticmethod(GvisorRuntime.box_id)
+
             def __init__(self):
                 self.processes = {}
                 self.mounts = {}
@@ -384,8 +396,23 @@ def smoke(confirm=False):
             run / "apps",
             awake_cap=max(1, len(journal["plan"])),
         )
+        import threading
+
+        from tinyassets.boxes.host_service import HostService
+        from tinyassets.broker.lifecycle_control import request as lifecycle_request
+
+        host = HostService(admission, volumes, relays, manager)
+        host_stop = threading.Event()
+        listener = threading.Thread(target=host.serve, args=(
+            run / "daemon.sock", 1102, host.daemon, host_stop), daemon=True)
+        listener.start()
+        deadline = time.monotonic() + 10
+        while not (run / "daemon.sock").exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("native lifecycle listener failed")
+            time.sleep(.01)
         def resolve(name):
-            uid = manager.ensure_awake(name)
+            uid = lifecycle_request("wake", owner=name)
             return BoxRoute(run / "apps" / str(uid) / "app.sock", manager.boxes[uid].secret)
 
         from tinyassets.cutover_control import admit
@@ -403,7 +430,9 @@ def smoke(confirm=False):
         projection = snapshot(Path('/data'))
         records = {}
         for item in journal['plan']:
-            record = admission.owner(item['principal'])
+            route = resolve(item['principal'])
+            uid = next(box.uid for box in manager.boxes.values() if box.owner == item['principal'])
+            record = {'uid': uid, 'secret': route.secret}
             records[digest(item['principal'])] = {
                 'state': 'admitted', 'socket': str(run / 'apps' / str(record['uid']) / 'app.sock'),
                 'secret': record['secret']}
@@ -623,13 +652,10 @@ print(json.dumps(key))
                             return answer.json()
 
                         operations = proof('restore_prepare')
-                        uid = admission.owner(owner_name)['uid']
-                        assert manager._drain(manager.boxes[uid], idle=0, stop=True)
-                        snapshot = admission.volume(owner_name)['snapshot_id']
+                        snapshot = lifecycle_request('sleep', owner=owner_name)['snapshot_id']
                         proof('restore_mutate', operations=operations)
                         router_key('revoke', key)
-                        assert manager._drain(manager.boxes[uid], idle=0, stop=True)
-                        manager.storage.restore(owner_name, snapshot, lambda: runtime.stop(uid))
+                        lifecycle_request('restore', owner=owner_name, snapshot_id=snapshot)
                         restored = proof('restore_verify', operations=operations)
                         router_key('refused', key)
                         counts['restore_replay_refusals'] = restored['replay_refusals']
@@ -643,6 +669,8 @@ print(json.dumps(key))
                 sys.stderr.write(stream.read().decode(errors="replace"))
             raise
         finally:
+            host_stop.set()
+            listener.join(5)
             for child in children:
                 if child.poll() is None:
                     child.kill()
@@ -693,25 +721,34 @@ def host_startup():
             owners = [row['principal'] for row in json.loads(
                 Path('/data/.owner-cutover.json').read_text())['plan']]
             code = """
-import json, sys, time
+import asyncio, json, sys
+from pathlib import Path
 from tinyassets.boxes.daemon_control import request
-for owner in json.loads(sys.argv[1]):
-    deadline = time.monotonic() + 30
-    while True:
-        try:
-            assert request('status', owner)['uid'] >= 300001
-            break
-        except (RuntimeError, OSError):
-            if time.monotonic() > deadline: raise
-            time.sleep(.05)
+from tinyassets.broker.owner_identities import wake_owner
+from tinyassets.broker.supervisor import BrokerSupervisor
+from tinyassets.router_credentials import serving
+supervisor = BrokerSupervisor.from_boxhost(
+    Path('/data'), socket_path=Path('/run/tinyassets-boxhostd/broker/broker.sock'),
+    proof='synthetic-rehearsal-proof' * 2)
+supervisor.start()
+async def probe():
+    async with serving(Path('/data')):
+        for owner in json.loads(sys.argv[1]):
+            await asyncio.to_thread(wake_owner, Path('/data'), principal=owner)
+            status = await asyncio.to_thread(request, 'status', owner)
+            assert status['uid'] >= 300001 and status['awake']
+asyncio.run(probe())
 """
             result = subprocess.run([sys.executable, '-c', code, json.dumps(owners)],
-                                    user=1001, group=1001, extra_groups=[1102],
-                                    capture_output=True, text=True, timeout=45)
+                                    user=1001, group=1001, extra_groups=[1100, 1101, 1102],
+                                    capture_output=True, text=True, timeout=180)
             if result.returncode:
                 output.seek(0)
                 raise RuntimeError('host startup failed: ' + result.stderr +
                                    output.read().decode(errors='replace'))
+            from tinyassets.broker.lifecycle_control import request
+            for owner in owners:
+                request("sleep", owner=owner)
             print(json.dumps({'owners': len(owners)}))
         finally:
             process.terminate()

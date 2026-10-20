@@ -21,6 +21,7 @@ from tinyassets import rpc_frames as rf
 from tinyassets.boxes.admission import OwnerRegistry
 from tinyassets.boxes.boxd import OwnerBoxd
 from tinyassets.boxes.relay import OwnerRelays
+from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.owner_reads import Plans
 from tinyassets.broker.public_egress import PublicEgress
@@ -218,7 +219,7 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
         with sqlite3.connect(native.identities.path) as db:
             db.execute("DELETE FROM box_records")
     elif refusal == "tombstone":
-        native.identities.retire_owner("alice")
+        local_mutate(native.identities.path, "alice", "erase")
     elif refusal in {"billing", "abuse"}:
         native.identities.plans.set_suspension("alice", reason=refusal, suspended=True)
     elif refusal == "owner_cap":
@@ -419,7 +420,7 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(nativ
 
 @pytest.mark.parametrize("op", ["BOX_CONNECT", "BOX_SHARED", "BOX_PUBLIC"])
 def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, monkeypatch, op):
-    from tinyassets.broker.owner_identities import _owner_request
+    from tinyassets.broker.admission import local_mutate
 
     document = {"op": op}
     if op == "BOX_CONNECT":
@@ -436,7 +437,6 @@ def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, mo
     # This rig combines host and box Python contexts. Fence from the host side.
     with monkeypatch.context() as host:
         host.setattr(owner_runtime, "_runtime", None)
-        _owner_request(native.identities.path.parents[2],
-                       {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
+        local_mutate(native.identities.path, "alice", "erase")
     assert native.identities.admitted_owner("center") == "alice"
     assert connect() is None

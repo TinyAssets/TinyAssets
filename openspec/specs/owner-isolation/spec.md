@@ -125,3 +125,31 @@ permanent volume bindings and SHALL never receive executable legacy owner paths.
 - **WHEN** cutover imports a pending quarantine without an owner_volumes record
 - **THEN** the one-shot migration deletes the recorded old tree and writes its job receipt before publication
 - **AND** missing billing or identity authority refuses cutover rather than inferring completion
+
+
+### Requirement: The broker serializes each owner's lifecycle and boxhostd only executes
+The broker SHALL hold a per-owner lock that serializes admission changes, wake,
+channel open, snapshot publication, restore and deletion for that owner.
+boxhostd SHALL execute stop, destroy and snapshot deletion as plain operations
+and SHALL NOT call back into the broker to change admission. Deletion job
+records SHALL live in the broker's identity database, with each change written
+through to an off-host copy.
+
+#### Scenario: Deletion erases once, in the broker
+- **WHEN** an owner's deletion job runs step 1
+- **THEN** the broker sets the admission record to `erased` once, under its per-owner lock, before calling boxhostd
+- **AND** no boxhostd operation calls back into the broker to change admission
+
+#### Scenario: Enqueue and status read only local job rows
+- **WHEN** an owner enqueues deletion or reads its capability status page
+- **THEN** the broker performs zero remote reads and writes every progress change through off-host
+- **AND** enqueue executes immediately and the existing waker tick retries due unfinished local rows
+
+#### Scenario: Wake and deletion serialize in the broker
+- **WHEN** wake and deletion run concurrently for one owner
+- **THEN** one broker owner lock orders them, and no wake completes under erased admission
+
+#### Scenario: Lifecycle results have one call direction
+- **WHEN** sleep, pending recovery, restore or eviction runs
+- **THEN** the broker holds the owner lock and commits map transitions from executor results
+- **AND** the existing waker tick collects results of already-authorized host execution without callbacks or an additional clock

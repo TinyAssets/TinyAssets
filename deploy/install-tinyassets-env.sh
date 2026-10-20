@@ -836,12 +836,25 @@ write_daemon_env() {
             classify_env_value || true # Already validated by render_daemon_content.
             # C6: the broker deletion job invokes billing and identity erasure.
             if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
-                  "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == WORKOS_API_KEY ]]; then
+                  "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == WORKOS_API_KEY ||
+                  "${ENV_KEY}" == BACKUP_DEST ]]; then
                 selected=1
                 out+="${line}"$'\n'
             fi
         fi
     done
+    # C14: the broker writes job metadata directly to the existing backup remote.
+    # This is configuration, not a second lifecycle authority or root RPC.
+    local backup_config="${TINYASSETS_RCLONE_CONFIG-/root/.config/rclone/rclone.conf}"
+    local broker_config="${BROKER_ENV_FILE%/*}/broker-rclone.conf"
+    if [ -f "${backup_config}" ]; then
+        install -m 0440 -o root -g 1002 -- "${backup_config}" "${broker_config}"
+    else
+        # Local synthetic destinations need no remote credentials. A configured
+        # remote without credentials still fails closed at the first write.
+        install -m 0440 -o root -g 1002 /dev/null "${broker_config}"
+    fi
+    out+="RCLONE_CONFIG=/etc/tinyassets/broker-rclone.conf"$'\n'
     ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )
     echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
 }

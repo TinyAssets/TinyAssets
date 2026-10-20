@@ -14,7 +14,6 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tinyassets.platform_backup import validate_manifest  # noqa: E402
@@ -49,10 +48,9 @@ def select(manifest, archive, directory):
 
 
 def restore(manifest, archive, directory, selected):
-    from tinyassets.boxes.volume_lifecycle import VolumeLifecycle
     from tinyassets.boxes.volumes import OwnerVolumes
-    from tinyassets.broker import owner_volumes
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.volume_lifecycle import VolumeLifecycle
 
     owner, uid, snapshot_id, sha256, generation, registry = selected
     snapshot = manifest.parent / str(uid) / f"{snapshot_id}.img.gz"
@@ -79,16 +77,13 @@ def restore(manifest, archive, directory, selected):
         mounted = True
         volumes = OwnerVolumes(store, directory / "owner-mounts", ":local:" + str(manifest.parent))
         identities = OwnerIdentities(registry)
-        class VolumeMapClient:
-            def volume(self, principal, action="binding", **arguments):
-                return owner_volumes.dispatch(identities, {
-                    "op": "BOX_VOLUME", "principal": principal,
-                    "action": action, "arguments": arguments})
-        # This private drill store has never launched a process. Use the real
-        # restore/generation transaction without starting any owner's agent.
-        runtime = SimpleNamespace(stop=lambda uid: None)
-        lifecycle = VolumeLifecycle(volumes, VolumeMapClient(), runtime)
-        restored = lifecycle.restore(owner, snapshot_id, lambda: None)
+        def execute(operation, **fields):
+            assert operation == "restore"
+            volumes.restore(fields["uid"], fields["snapshot_id"], fields["sha256"])
+            return {"restored": True}
+        # The broker orchestrates the map; this private drill has no process to stop.
+        lifecycle = VolumeLifecycle(identities, execute)
+        restored = lifecycle.restore(owner, snapshot_id)
         assert restored["volume_generation"] == generation + 1
         with (store / f"{uid}.img").open("rb") as stream:
             assert hashlib.file_digest(stream, "sha256").hexdigest() == sha256

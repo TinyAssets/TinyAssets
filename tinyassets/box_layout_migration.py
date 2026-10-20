@@ -159,7 +159,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         principals=("owner_user_id",))
     add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
         "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots owner_admission "
-        "routing_sequence",
+        "routing_sequence deletion_jobs",
         "broker")
     add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
@@ -2357,11 +2357,15 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 "op": "BOX_VOLUME", "principal": owner.principal, "action": "publish",
                 "arguments": {"snapshot_id": snapshot_id, "sha256": digest}})
             _crash_at(f"after_owner_snapshot:{owner.uid}")
-    from tinyassets.boxes.deletion_records import RemoteRecords
+    from tinyassets.broker.deletion_jobs import JobRows
+    from tinyassets.broker.deletion_records import RemoteRecords
     from tinyassets.cutover_deletions import NAME, finish
 
-    report["legacy_deletion_receipts"] = finish(
-        legacy, shared, store, RemoteRecords(volumes.remote))
+    remote_jobs = RemoteRecords(volumes.remote)
+    job_rows = JobRows(identities, remote_jobs)
+    for job in remote_jobs.records():
+        job_rows.save(job)
+    report["legacy_deletion_receipts"] = finish(legacy, shared, store, job_rows)
     # C6: legacy authorities have been converted and their jobs completed.
     for suffix in ("", "-wal", "-shm", "-journal"):
         (shared / (NAME + suffix)).unlink(missing_ok=True)

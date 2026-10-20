@@ -1,4 +1,4 @@
-"""Broker-owned tombstones fence delayed writes and racing refreshes."""
+"""Broker withdrawal precedes custody cleanup and fences delayed writes."""
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +31,14 @@ def write(home, owner=OWNER):
                                       universe_id=home.name)
 
 
+def delete(root):
+    from tinyassets.broker.admission import local_mutate, owner_lock
+    path = root / ".broker/state/owner-identities.db"
+    with owner_lock(path, OWNER):
+        local_mutate(path, OWNER, "erase")
+        vault.erase_owner(root, OWNER)
+
+
 def assert_no_credentials(home):
     assert not vault.credential_vault_path(home).exists()
     with sqlite3.connect(custody_metadata_path(home.parent)) as conn:
@@ -52,7 +60,7 @@ def test_deletion_waits_for_inflight_vault_persist_then_erases(tmp_path, monkeyp
     with ThreadPoolExecutor(max_workers=2) as pool:
         writing = pool.submit(write, home)
         assert entered.wait(10)
-        deleting = pool.submit(vault.erase_owner, tmp_path, OWNER)
+        deleting = pool.submit(delete, tmp_path)
         try:
             assert not deleting.done()
         finally:
@@ -65,7 +73,7 @@ def test_deletion_waits_for_inflight_vault_persist_then_erases(tmp_path, monkeyp
 
 
 def test_delayed_write_after_deletion_refuses_without_key_or_owner_rows(tmp_path):
-    vault.erase_owner(tmp_path, OWNER)
+    delete(tmp_path)
     with pytest.raises(PermissionError, match="deleted"):
         write(tmp_path / HOME)
     assert_no_credentials(tmp_path / HOME)
@@ -82,7 +90,7 @@ def test_no_daemon_database_or_admission_lock_is_needed(tmp_path):
 def test_deletion_preserves_another_owners_vault(tmp_path):
     write(tmp_path / HOME)
     write(tmp_path / "another", owner="another-owner")
-    vault.erase_owner(tmp_path, OWNER)
+    delete(tmp_path)
     assert_no_credentials(tmp_path / HOME)
     assert vault.load_credential_vault(tmp_path / "another")[0] == RECORD
 

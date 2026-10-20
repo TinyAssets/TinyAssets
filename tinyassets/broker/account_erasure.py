@@ -1,15 +1,10 @@
-"""Shared door-to-broker deletion phase and broker-local ledger erasure.
+"""Broker-local custody and ledger erasure for the deletion job.
 
 Only a principal and the fixed account scope select this operation. A caller
 cannot provide a table, path, SQL statement or home to expand the deletion.
-The door owns orchestration; the broker owns custody and ledger writes.
+The broker deletion job owns orchestration, custody and ledger writes.
 """
 from __future__ import annotations
-
-import os
-import socket
-
-from tinyassets import rpc_frames as rf
 
 ACCOUNT_SCOPE = "account-deletion"
 TABLES = frozenset({
@@ -76,49 +71,3 @@ def local_erase(ledger, *, principal, command_center, erase_external_keys=True):
     (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
     return counts
 
-
-def close_channels(data_root, *, principal):
-    return _request(data_root, principal=principal, channels_only=True)
-
-
-def erase_account(data_root, *, principal):
-    return _request(data_root, principal=principal, channels_only=False)
-
-
-def _request(data_root, *, principal, channels_only):
-    from tinyassets.broker.supervisor import get_supervisor
-    from tinyassets.storage.outbound_connections import ProxyRequestError
-
-    validate(principal, ACCOUNT_SCOPE)
-    supervisor = get_supervisor(data_root)
-    if supervisor is None:
-        raise ProxyRequestError("the credential broker is not running")
-    generation, token = supervisor.fence()
-    document = {"op": "CLOSE_OWNER_CHANNELS" if channels_only else "ERASE_ACCOUNT",
-                "principal": principal,
-                "command_center": ACCOUNT_SCOPE, "generation": generation, "token": token}
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
-        channel.settimeout(30)
-        try:
-            channel.connect(os.fspath(supervisor.socket_path))
-            supervisor.verify_broker(channel)
-            channel.sendall(rf.control(rf.CONNECTION, document))
-            frame = rf.read_frame_blocking(channel)
-            if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
-                raise rf.FrameError("invalid account erasure reply")
-            answer = frame.control()
-        except (OSError, rf.FrameError):
-            # No automatic replay of an ambiguous mutation. A fresh explicit
-            # deletion retry may safely find zero remaining rows.
-            raise ProxyRequestError("broker account erasure outcome unavailable") from None
-    if channels_only:
-        if answer != {"op": "OWNER_CHANNELS_CLOSED"}:
-            raise ProxyRequestError("broker channel closure refused")
-        return
-    if set(answer) != {"op", "counts"} or answer["op"] != "ACCOUNT_ERASED":
-        raise ProxyRequestError("broker account erasure refused")
-    counts = answer["counts"]
-    if (not isinstance(counts, dict) or not counts.keys() <= TABLES
-            or any(type(n) is not int or n < 1 for n in counts.values())):
-        raise ProxyRequestError("invalid broker account erasure counts")
-    return counts

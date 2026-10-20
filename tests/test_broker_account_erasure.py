@@ -7,8 +7,8 @@ import pytest
 
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
-from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, erase_account, local_erase
-from tinyassets.storage.outbound_connections import ConnectionLedger, ProxyRequestError
+from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase
+from tinyassets.storage.outbound_connections import ConnectionLedger
 
 
 def seed(ledger):
@@ -107,40 +107,20 @@ def test_stale_fence_and_extra_target_fields_refuse(discovery):
             channel.settimeout(5)
             channel.connect(str(discovery.broker.path))
             channel.sendall(rf.control(rf.CONNECTION, wire | change))
-            assert rf.read_frame_blocking(channel).control()["op"] == "ACCOUNT_ERASURE_REFUSED"
+            assert channel.recv(1) == b""
     assert discovery.ledger.get_connection("erase-a") is not None
 
 
-def test_shared_erasure_retries_explicitly_after_a_lost_committed_ack(discovery, monkeypatch):
-    from tinyassets import rpc_frames as rf
-
+def test_broker_local_erasure_replays_after_lost_completion_receipt(discovery):
     seed(discovery.ledger)
-    original = rf.read_frame_blocking
-    reads = []
-
-    def lose_first_ack(channel):
-        frame = original(channel)
-        reads.append(frame.control())
-        if len(reads) == 1:
-            raise rf.FrameError("lost committed acknowledgement")
-        return frame
-
-    monkeypatch.setattr(rf, "read_frame_blocking", lose_first_ack)
-    with pytest.raises(ProxyRequestError, match="outcome unavailable"):
-        erase_account(discovery.root, principal="erase-a")
-    assert len(reads) == 1
-    assert reads[0]["counts"]["agent_request_dispatches"] == 1
+    counts = local_erase(discovery.ledger, principal="erase-a", command_center=ACCOUNT_SCOPE)
+    assert counts["agent_request_dispatches"] == 1
     assert discovery.ledger.get_connection("erase-a") is None
     assert discovery.ledger.get_connection("erase-b") is not None
-    assert erase_account(discovery.root, principal="erase-a") == {}
-    assert len(reads) == 2
+    assert local_erase(discovery.ledger, principal="erase-a", command_center=ACCOUNT_SCOPE) == {}
 
 
-def test_shared_erasure_refuses_when_the_broker_is_unavailable(discovery, monkeypatch):
-    from tinyassets.broker import supervisor
-
-    seed(discovery.ledger)
-    monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
-    with pytest.raises(ProxyRequestError, match="broker is not running"):
-        erase_account(discovery.root, principal="erase-b")
-    assert discovery.ledger.get_connection("erase-b") is not None
+def test_erasure_has_no_outward_or_unavailable_broker_client():
+    from tinyassets.broker import account_erasure
+    assert not hasattr(account_erasure, "erase_account")
+    assert not hasattr(account_erasure, "close_channels")

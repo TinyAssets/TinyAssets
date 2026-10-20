@@ -23,8 +23,8 @@ def owner_record(identities, owner: str, *, for_wake=False) -> dict:
     volume = binding(identities, owner)
     if not for_wake and volume["work"] and volume["work"]["kind"] == "restore":
         raise PermissionError("owner restore has not committed")
-    # C5 binds the wake before boxhostd resumes pending volume work. The host
-    # commits recovery and uses that resulting generation before any launch.
+    # C13/C14: the broker reconciles pending volume work under its owner lock
+    # and supplies the resulting committed generation to the host.
     result.update({key: volume[key] for key in (
         "volume_generation", "snapshot_id", "snapshot_sha256")})
     from tinyassets.usage_policy import limits_for
@@ -34,12 +34,6 @@ def owner_record(identities, owner: str, *, for_wake=False) -> dict:
     if uid != result["uid"]:
         raise RuntimeError("owner reservation changed")
     return result
-
-
-def lifecycle(identities, doc):
-    if set(doc) != {"op", "principal"} or doc["op"] != "BOX_LIFECYCLE":
-        raise ValueError("invalid lifecycle request")
-    return owner_record(identities, doc["principal"])
 
 
 def resolve(identities, request: dict) -> dict:

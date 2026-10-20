@@ -1,4 +1,4 @@
-"""C3/C6 off-host job transport, using the host's existing rclone destination.
+"""C3/C14 off-host job copy, written directly by the broker.
 
 These are control-plane records, never files inside an owner's volume.
 """
@@ -48,8 +48,6 @@ class RemoteRecords:
                 raise ValueError("deletion record identity differs")
             data = json.dumps(arguments["record"], sort_keys=True).encode()
             self._run("rcat", path, input=data)
-            if self._run("cat", path) != data:
-                raise RuntimeError("off-host deletion record readback differs")
             return None
         raise ValueError("invalid deletion record operation")
 
@@ -62,6 +60,3 @@ class RemoteRecords:
     def records(self):
         return [self.load(key) for key in self.execute("list", {})]
 
-    def delete_snapshots(self, uid):
-        # The host derives this UID from the permanent owner-volume binding.
-        self._run("delete", self.remote, "--include", f"/{uid}/**")

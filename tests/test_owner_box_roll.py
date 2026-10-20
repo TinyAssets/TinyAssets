@@ -31,15 +31,16 @@ def rolling(fleet, tmp_path):  # noqa: F811
 
 def test_roll_waits_for_a_turn_and_interactive_wake_uses_newest_image(rolling):
     manager = rolling.manager
-    uid = manager.ensure_awake("a")
+    uid = rolling.wake("a")
     original = rolling.states[uid]
     result = []
     manager.roll_wait = 3
-    assert manager.roll(rolling.new) == {"uids": [uid], "asleep": 0}
+    assert rolling.routing.roll(rolling.new) == {"uids": [uid], "asleep": 0}
     with original.enter():
-        thread = threading.Thread(target=lambda: result.append(manager.roll(rolling.new, uid)))
+        thread = threading.Thread(
+            target=lambda: result.append(rolling.routing.roll(rolling.new, uid)))
         thread.start()
-        other = manager.ensure_awake("b")
+        other = rolling.wake("b")
         assert manager.boxes[other].image == rolling.new
         assert manager.boxes[uid].image == rolling.old
         assert not rolling.runtime.stops
@@ -53,47 +54,41 @@ def test_roll_waits_for_a_turn_and_interactive_wake_uses_newest_image(rolling):
 
 def test_sleeping_box_untouched_and_image_record_survives_host_restart(rolling):
     manager = rolling.manager
-    uid = manager.ensure_awake("a")
+    uid = rolling.wake("a")
     with manager.condition:
         assert manager._sleep(manager.boxes[uid], idle=0)
     starts, stops = len(rolling.runtime.starts), len(rolling.runtime.stops)
-    assert manager.roll(rolling.new) == {"uids": [], "asleep": 1}
-    assert manager.roll(rolling.new, uid) == {"uid": uid, "outcome": "asleep"}
+    assert rolling.routing.roll(rolling.new) == {"uids": [], "asleep": 1}
+    assert rolling.routing.roll(rolling.new, uid) == {"uid": uid, "outcome": "asleep"}
     assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == (starts, stops)
     recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
     assert recovered.current == rolling.new and recovered.last[str(uid)] == rolling.old
     manager.images = recovered
-    manager.ensure_awake("a")
+    rolling.wake("a")
     assert recovered.last[str(uid)] == rolling.new
     assert rolling.runtime.starts[-1][1]["rootfs"] == rolling.root / rolling.new
 
 
-def test_busy_turn_and_unreleased_wake_lease_defer_without_stopping(rolling):
-    manager = rolling.manager
-    lease = manager.resolve("a")
-    uid = lease["uid"]
-    manager.roll(rolling.new)
-    assert manager.roll(rolling.new, uid)["outcome"] == "deferred_busy"
-    manager.release("a", lease["lease"])
+def test_busy_turn_defers_roll_without_stopping(rolling):
+    uid = rolling.wake("a")
+    rolling.routing.roll(rolling.new)
     with rolling.states[uid].enter():
-        assert manager.roll(rolling.new, uid)["outcome"] == "deferred_busy"
+        assert rolling.routing.roll(rolling.new, uid)["outcome"] == "deferred_busy"
     assert not rolling.runtime.stops
-    assert manager.roll(rolling.new, uid)["outcome"] == "rolled"
+    assert rolling.routing.roll(rolling.new, uid)["outcome"] == "rolled"
 
 
-def test_abandoned_router_lease_expires_without_pinning_the_box(rolling):
+def test_abandoned_wake_has_no_lease_pinning_the_box(rolling):
     manager = rolling.manager
-    lease = manager.resolve("a")
-    uid = lease["uid"]
-    manager.roll(rolling.new)
-    manager.boxes[uid].leases[lease["lease"]] = 0
-    assert manager.roll(rolling.new, uid) == {"uid": uid, "outcome": "rolled"}
-    assert not manager.boxes[uid].leases
+    uid = rolling.wake("a")
+    rolling.routing.roll(rolling.new)
+    assert rolling.routing.roll(rolling.new, uid) == {"uid": uid, "outcome": "rolled"}
+    assert "leases" not in vars(manager.boxes[uid])
 
 
 def test_failed_health_rolls_back_only_that_box(rolling, monkeypatch):
     manager = rolling.manager
-    a, b = manager.ensure_awake("a"), manager.ensure_awake("b")
+    a, b = rolling.wake("a"), rolling.wake("b")
     manager.wake_timeout = .05
     original = manager._rpc
 
@@ -103,9 +98,9 @@ def test_failed_health_rolls_back_only_that_box(rolling, monkeypatch):
         return original(box, operation, **body)
 
     monkeypatch.setattr(manager, "_rpc", rpc)
-    manager.roll(rolling.new)
-    assert manager.roll(rolling.new, b)["outcome"] == "rolled"
-    assert manager.roll(rolling.new, a) == {
+    rolling.routing.roll(rolling.new)
+    assert rolling.routing.roll(rolling.new, b)["outcome"] == "rolled"
+    assert rolling.routing.roll(rolling.new, a) == {
         "uid": a, "outcome": "rolled_back", "reason": "health_failed"}
     assert rolling.runtime.live == {a, b}
     assert manager.boxes[a].image == rolling.old
@@ -115,7 +110,7 @@ def test_failed_health_rolls_back_only_that_box(rolling, monkeypatch):
 
 def test_cutover_boundary_refuses_previous_image_and_never_starts_it(rolling, monkeypatch):
     manager = rolling.manager
-    uid = manager.ensure_awake("a")
+    uid = rolling.wake("a")
     # An old-image record cannot be used after split writes, even if the
     # candidate's health fails. There is no caller override for this refusal.
     (rolling.root / rolling.old / "app/tinyassets/storage_layout.py").write_text(
@@ -127,27 +122,27 @@ def test_cutover_boundary_refuses_previous_image_and_never_starts_it(rolling, mo
         raise BoxError("synthetic unhealthy image")
 
     monkeypatch.setattr(rolling.runtime, "start", start)
-    manager.roll(rolling.new)
+    rolling.routing.roll(rolling.new)
     with pytest.raises(BoxError, match="cutover boundary.*backup-restore"):
-        manager.roll(rolling.new, uid)
+        rolling.routing.roll(rolling.new, uid)
     assert len(rolling.runtime.starts) == 2
     assert not rolling.runtime.live and not manager.boxes[uid].wanted
     with pytest.raises(BoxError, match="cutover boundary"):
-        manager.roll(rolling.old)
+        rolling.routing.roll(rolling.old)
 
 
 def test_image_reference_and_symlink_cannot_select_another_host_path(rolling):
     with pytest.raises(BoxError, match="immutable"):
-        rolling.manager.roll("../somewhere")
+        rolling.routing.roll("../somewhere")
     link = rolling.root / ("harness-" + "3" * 64)
     link.symlink_to(rolling.root / rolling.new, target_is_directory=True)
     with pytest.raises(BoxError, match="unavailable"):
-        rolling.manager.roll(link.name)
+        rolling.routing.roll(link.name)
 
 
 def test_interactive_wake_is_not_blocked_by_another_box_readiness_poll(rolling, monkeypatch):
     manager = rolling.manager
-    uid = manager.ensure_awake("a")
+    uid = rolling.wake("a")
     entered, ready = threading.Event(), threading.Event()
     original = manager._rpc
 
@@ -159,13 +154,13 @@ def test_interactive_wake_is_not_blocked_by_another_box_readiness_poll(rolling, 
         return original(box, operation, **body)
 
     monkeypatch.setattr(manager, "_rpc", rpc)
-    manager.roll(rolling.new)
+    rolling.routing.roll(rolling.new)
     results = []
-    thread = threading.Thread(target=lambda: results.append(manager.roll(rolling.new, uid)))
+    thread = threading.Thread(target=lambda: results.append(rolling.routing.roll(rolling.new, uid)))
     thread.start()
     assert entered.wait(2)
     try:
-        other = manager.ensure_awake("b")
+        other = rolling.wake("b")
         assert manager.boxes[other].image == rolling.new
         assert not results
     finally:
@@ -179,7 +174,7 @@ def test_failed_candidate_running_turn_is_not_killed_even_when_rollback_cannot_d
     rolling, monkeypatch, previous_present,
 ):
     manager = rolling.manager
-    uid = manager.ensure_awake("a")
+    uid = rolling.wake("a")
     manager.wake_timeout = manager.roll_wait = .05
     original_start, original_rpc = rolling.runtime.start, manager._rpc
     gates = []
@@ -198,13 +193,12 @@ def test_failed_candidate_running_turn_is_not_killed_even_when_rollback_cannot_d
 
     monkeypatch.setattr(rolling.runtime, "start", start)
     monkeypatch.setattr(manager, "_rpc", rpc)
-    manager.roll(rolling.new)
+    rolling.routing.roll(rolling.new)
     if not previous_present:
         (rolling.root / rolling.old).rename(rolling.root / "missing-rollback-image")
     try:
-        with pytest.raises(BoxError, match="rollback failed" if previous_present else
-                           "cutover boundary"):
-            manager.roll(rolling.new, uid)
+        with pytest.raises(RuntimeError, match="candidate cannot safely drain"):
+            rolling.routing.roll(rolling.new, uid)
         assert rolling.runtime.live == {uid}
         assert rolling.runtime.stops == [uid]  # only the original drained image
         manager.maintain()
@@ -219,14 +213,12 @@ def test_failed_candidate_running_turn_is_not_killed_even_when_rollback_cannot_d
 
 def test_roll_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
     manager = rolling.manager
-    lease = manager.resolve("a")
-    uid = lease["uid"]
+    uid = rolling.wake("a")
     state = rolling.states[uid]
     with state.enter():
         state.status(deleting=True)
-    manager.release("a", lease["lease"])
-    manager.roll(rolling.new)
-    assert manager.roll(rolling.new, uid) == {"uid": uid, "outcome": "deferred_busy"}
+    rolling.routing.roll(rolling.new)
+    assert rolling.routing.roll(rolling.new, uid) == {"uid": uid, "outcome": "deferred_busy"}
     assert not rolling.runtime.stops
     assert rolling.runtime.live == {uid}
     assert manager.boxes[uid].image == rolling.old

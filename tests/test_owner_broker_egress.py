@@ -21,6 +21,7 @@ from tests.support.broker_double import seed_owner_admission
 from tests.support.broker_ipc import broker  # noqa: F401
 from tinyassets import owner_runtime
 from tinyassets.boxes.lifecycle import admit_center
+from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.server import BOX_HOST
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -261,7 +262,7 @@ def test_box_account_retired_during_connect_refuses_before_credential_send(box):
     from tinyassets.broker.ops import new_op_id
 
     def retire():
-        box.identities.retire_owner("owner")
+        local_mutate(box.identities.path, "owner", "erase")
 
     box.transport["before_connect"] = retire
     # Exercise the relay's broker-side protocol directly: the relay also closes
@@ -310,7 +311,7 @@ def test_box_shared_channel_rechecks_owner_admission_on_every_read(box):
             "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
         with pytest.MonkeyPatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
-            box.identities.retire_owner("owner")
+            local_mutate(box.identities.path, "owner", "erase")
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
@@ -383,7 +384,7 @@ def test_retired_owner_cannot_admit_on_an_already_open_channel(box, monkeypatch)
         identities = box.broker.server._owner_identities
         with monkeypatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
-            identities.retire_owner("owner")
+            local_mutate(identities.path, "owner", "erase")
         channel.sendall(rf.control(rf.CONNECTION, {"op": "ADMIT_CENTER", "center": "late"}))
         assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
     assert identities.center_state("late") == "unadmitted"

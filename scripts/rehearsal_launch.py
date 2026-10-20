@@ -84,14 +84,14 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
         if process is not None:
             process.terminate()
             try:
-                # C2 shutdown includes compression, upload and readback. Do not
-                # silently kill that work and hand a pending snapshot to serving.
+                # C13: callers finish broker sleep/publication before host stop.
+                # Never silently kill a host whose local shutdown has not completed.
                 if process.wait(180) != 0:
                     raise RuntimeError("production host did not finish shutdown")
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(10)
-                raise RuntimeError("production host snapshot shutdown timed out") from None
+                raise RuntimeError("production host shutdown timed out") from None
         try:
             # Include failed launches; none may leave a sandbox in the engine.
             # This is the unit's default KillMode=control-group teardown.
@@ -175,6 +175,11 @@ asyncio.run(launch())
                     "import os; os.chdir('/'); os.listdir('/'); os.chdir('/app'); "
                     "import tinyassets; assert os.getuid() >= 300001"],
                     check=True, stdout=output, stderr=output, timeout=30)
+                # C13: the broker coordinates sleep and publication while the
+                # executor is still available. Host shutdown only executes.
+                from tinyassets.broker.lifecycle_control import request as lifecycle_request
+
+                lifecycle_request("sleep", owner=owner_name)
             current_snapshot, pending = snapshot()
             assert current_snapshot != previous_snapshot and pending is None, (
                 "production shutdown did not publish its completed owner snapshot")

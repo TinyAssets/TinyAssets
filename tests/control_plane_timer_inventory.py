@@ -39,15 +39,7 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 CLASSIFICATION: dict[str, tuple[str, str]] = {
 
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons._launch": (
-        CONTROL_PLANE, "C2 boxhostd lifecycle: snapshot retries and the 24-hour snapshot cycle",
-    ),
-
-    "tinyassets/broker/deletion_jobs.py::DeletionJobs.run": (
-        CONTROL_PLANE, "C6 broker resumes off-host deletion jobs until every step has a receipt",
-    ),
-    "tinyassets/broker/routing.py::RoutingAuthority.run": (
-        CONTROL_PLANE, "C5 snapshot delivery retry and router restart bootstrap; "
-        "installed healthy routes never expire and no owner work runs here",
+        CALL_SCOPED, "one broker-authorized launch waits for its bounded readiness deadline",
     ),
 
     "tinyassets/broker/waker.py::Waker.run": (
@@ -63,11 +55,8 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.retire": (
         CALL_SCOPED, "one retirement waits at most 600 seconds for an in-flight restart",
     ),
-    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.roll": (
-        CALL_SCOPED, "one deploy waits at most 60 seconds for existing work and wake leases",
-    ),
-    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.roll#2": (
-        CALL_SCOPED, "one failed candidate gets at most 60 seconds to drain before rollback",
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.drain": (
+        CALL_SCOPED, "one broker-authorized drain waits at most 60 seconds for owner work",
     ),
     "tinyassets/boxes/gvisor_runtime.py::GvisorRuntime.shutdown": (
         CALL_SCOPED, "bounded SIGTERM flush wait for one stopped owner daemon",

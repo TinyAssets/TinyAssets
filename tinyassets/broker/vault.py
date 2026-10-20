@@ -446,10 +446,7 @@ def check_not_deleted(data_root, owner):
 
 
 def erase_owner(data_root, principal):
-    """Withdraw admission before locking and removing credential custody."""
-    from tinyassets.broker.admission import local_mutate
-
-    local_mutate(Path(data_root) / ".broker/state/owner-identities.db", principal, "erase")
+    """Remove credential custody after the broker job withdrew admission."""
     conn = metadata_connection(data_root)
     try:
         centers = [row[0] for row in conn.execute(

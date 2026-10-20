@@ -232,6 +232,12 @@ services:
     volumes:
       - tinyassets-data:/data
       # Separate broker-only keys. Never included in data-volume backups.
+      - type: bind
+        source: /etc/tinyassets/broker-rclone.conf
+        target: /etc/tinyassets/broker-rclone.conf
+        read_only: true
+        bind:
+          create_host_path: false
       - tinyassets-browser-keys:/var/lib/ta-broker
       - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd
     logging: *tinyassets_log_forwarding

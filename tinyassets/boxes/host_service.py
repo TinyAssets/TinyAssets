@@ -110,59 +110,88 @@ class HostService:
         from tinyassets.broker.owner_identities import validate_principal
 
         try:
-            if (uid == 1002 and document.get("lifecycle") == "deletion_records"
-                    and set(document) == {"lifecycle", "action", "arguments"}):
-                from tinyassets.boxes.deletion_records import RemoteRecords
-
-                return {"result": RemoteRecords(self.volumes.remote).execute(
-                    document["action"], document["arguments"])}
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
-            if (uid in {0, 1002} and document.get("lifecycle") == "roll"
-                    and set(document) in ({"lifecycle", "image"}, {"lifecycle", "image", "uid"})):
-                return self.daemons.roll(document["image"], document.get("uid"))
+            operation = document.get("lifecycle")
+            if (uid == 1002 and operation == "roll"
+                    and set(document) == {"lifecycle", "image"}):
+                return self.daemons.roll(document["image"])
+            if uid == 1002 and "uid" in document:
+                owner_uid = document["uid"]
+                self.daemons.runtime.box_id(owner_uid)
+                fields = {
+                    "stop": set(), "destroy": set(), "delete_snapshots": set(),
+                    "drain": set(),
+                    "status": set(), "create": {"quota"}, "snapshot": {"snapshot_id"},
+                    "restore": {"snapshot_id", "sha256"}, "evict": set(),
+                    "delete_snapshot": {"snapshot_id"},
+                }
+                if (operation not in fields
+                        or set(document) != {"lifecycle", "uid"} | fields[operation]):
+                    raise BoxError("invalid bound lifecycle operation")
+                if operation == "drain":
+                    return self.daemons.drain(owner_uid)
+                if operation == "status":
+                    return self.daemons.status(owner_uid)
+                with self.daemons.condition, self.volumes.operation(owner_uid):
+                    if operation == "stop":
+                        self.daemons.withdraw(owner_uid)
+                        return {"stopped": True}
+                    if operation == "destroy":
+                        self.daemons.destroy(owner_uid)
+                        return {"destroyed": True}
+                    if operation == "delete_snapshots":
+                        self.volumes._run("rclone", "delete", self.volumes.remote,
+                                          "--include", f"/{owner_uid}/**")
+                        return {"deleted": True}
+                    if operation == "create":
+                        try:
+                            self.volumes.create(owner_uid, document["quota"])
+                        except FileExistsError:
+                            pass  # Publication may have completed before a broker restart.
+                        return {"created": True}
+                    if operation == "delete_snapshot":
+                        return {"deleted": self.volumes.delete_snapshot(
+                            owner_uid, document["snapshot_id"])}
+                    if operation == "evict":
+                        self.volumes.delete(owner_uid)
+                        return {"evicted": True}
+                    box = self.daemons.boxes.get(owner_uid)
+                    if box and box.awake:
+                        self.daemons._rpc(box, "snapshot-stop")
+                        if not self.daemons._sleep(box, idle=0):
+                            raise BoxError("owner work must drain before volume operation")
+                    elif box is None:
+                        self.daemons.runtime.shutdown(owner_uid)
+                    self.volumes.detach(owner_uid)
+                    if operation == "snapshot":
+                        snapshot_id, sha256 = self.volumes.snapshot(
+                            owner_uid, document["snapshot_id"])
+                        return {"snapshot_id": snapshot_id, "sha256": sha256}
+                    self.volumes.restore(owner_uid, document["snapshot_id"], document["sha256"])
+                    return {"restored": True}
             validate_principal(document.get("owner"))
-            operation, owner = document["lifecycle"], document["owner"]
-            if (uid == 1002 and operation == "withdraw"
-                    and set(document) == {"lifecycle", "owner"}):
-                self.daemons.withdraw(owner)
-                return {"withdrawn": True}
-            if (uid == 1002 and operation == "delete_snapshots"
-                    and set(document) == {"lifecycle", "owner"}):
-                from tinyassets.boxes.deletion_records import RemoteRecords
-
-                owner_uid = self.admission.volume(owner)["uid"]
-                with self.volumes.operation(owner_uid):
-                    RemoteRecords(self.volumes.remote).delete_snapshots(owner_uid)
-                return {"deleted": True}
-            if (uid == 0 and operation == "restore"
-                    and set(document) == {"lifecycle", "owner", "snapshot_id"}):
-                return self.daemons.restore(owner, document["snapshot_id"])
-            if (uid == 1002 and operation == "destroy"
-                    and set(document) == {"lifecycle", "owner"}):
-                owner_uid = self.admission.volume(owner)["uid"]
-                self.daemons.destroy(owner, owner_uid)
-                return {"destroyed": True}
+            owner = document["owner"]
             if (uid == 1002 and operation == "wake"
-                    and set(document) == {"lifecycle", "owner", "scheduled", "record"}):
+                    and set(document) in ({"lifecycle", "owner", "scheduled", "record"},
+                                          {"lifecycle", "owner", "scheduled", "record", "image"})):
                 scheduled = document["scheduled"]
                 if type(scheduled) is not bool:
                     raise ValueError("scheduled must be boolean")
                 if scheduled and not self._scheduled_slots.acquire(blocking=False):
                     raise BoxError("scheduled wake queue is full")
                 try:
-                    return {"uid": self.daemons.ensure_awake(
-                        owner, scheduled=scheduled, launch=document["record"])}
+                    ready = self.daemons.ensure_awake(
+                        owner, scheduled=scheduled, launch=document["record"],
+                        **({"image": document["image"]} if "image" in document else {}))
+                    return {"uid": ready} if ready is not None else {"asleep": True}
                 finally:
                     if scheduled:
                         self._scheduled_slots.release()
             if (uid == 1001 and operation == "status"
                     and set(document) == {"lifecycle", "owner"}):
-                return self.daemons.status(owner)
-            if (uid == 1002 and operation == "retire"
-                    and set(document) == {"lifecycle", "owner"}):
-                self.daemons.retire(owner, self.admission.volume(owner)["uid"])
-                return {"stopped": True}
+                box = next(box for box in self.daemons.boxes.values() if box.owner == owner)
+                return self.daemons.status(box.uid)
             raise BoxError("lifecycle operation refused for this peer")
         except LookupError:
             return {"error": "unadmitted"}

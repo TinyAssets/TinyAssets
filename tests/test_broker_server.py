@@ -727,10 +727,12 @@ def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("damage", ["erased", "operation"])
-def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage):
-    from tinyassets.broker.account_erasure import ACCOUNT_SCOPE
+def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage, monkeypatch):
     from tinyassets.broker.admission import local_mutate
 
+    monkeypatch.setattr(broker.server.routing, "publish", lambda **kw: None)
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request",
+                        lambda operation, **fields: {"stopped": True})
     upstream_peers = []
 
     class Blocked(Script):
@@ -765,20 +767,11 @@ def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage):
             assert rf.read_frame_blocking(client).control()["op"] == "ADMITTED"
             assert rf.read_frame_blocking(client).control()["op"] == "HEAD"
         started = time.monotonic()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
-            control.settimeout(3)
-            control.connect(str(broker.path))
-            if damage == "erased":
-                document = {"op": "OWNER_ADMISSION_ERASE", "principal": "alice",
-                            **broker.state}
-                expected = {"op": "OWNER_ADMISSION_ERASED"}
-            else:
-                local_mutate(broker.server._owner_identities.path, "alice", "erase")
-                document = {"op": "CLOSE_OWNER_CHANNELS", "principal": "alice",
-                            "command_center": ACCOUNT_SCOPE, **broker.state}
-                expected = {"op": "OWNER_CHANNELS_CLOSED"}
-            control.sendall(rf.control(rf.CONNECTION, document))
-            assert rf.read_frame_blocking(control).control() == expected
+        if damage == "erased":
+            local_mutate(broker.server._owner_identities.path, "alice", "erase")
+        else:
+            asyncio.run_coroutine_threadsafe(
+                broker.server.withdraw_channels("alice"), broker.server._loop).result(3)
         for client in clients:
             assert client.recv(1) == b""
         for peer in upstream_peers:

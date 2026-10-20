@@ -6,6 +6,7 @@ import sqlite3
 
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
+from tinyassets.broker.admission import channel_lock
 from tinyassets.broker.box_admission import resolve_owner
 
 
@@ -26,14 +27,15 @@ class PublicEgress:
         task = asyncio.current_task()
         self.channels[task] = (owner, writer)
         try:
-            await asyncio.to_thread(resolve_owner, self.identities, document,
-                                    data_root=self.data_root)
-            if sum(self.active.values()) >= 64 or self.active.get(owner, 0) >= 32:
-                raise EgressRefused("owner or host egress capacity reached")
-            self.active[owner] = self.active.get(owner, 0) + 1
-            admitted = True
-            writer.write(rf.control(rf.CONNECTION, {"op": "BOX_ADMITTED"}))
-            await asyncio.wait_for(writer.drain(), 30)
+            async with channel_lock(self.identities.path, owner):
+                await asyncio.to_thread(resolve_owner, self.identities, document,
+                                        data_root=self.data_root)
+                if sum(self.active.values()) >= 64 or self.active.get(owner, 0) >= 32:
+                    raise EgressRefused("owner or host egress capacity reached")
+                self.active[owner] = self.active.get(owner, 0) + 1
+                admitted = True
+                writer.write(rf.control(rf.CONNECTION, {"op": "BOX_ADMITTED"}))
+                await asyncio.wait_for(writer.drain(), 30)
             # readuntil retains body bytes, and limits are checked before DNS.
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 30)
             if len(head) > 16384:

@@ -36,7 +36,6 @@ def test_sleeping_and_suspended_deletion_without_box_starts():
 async def probe():
     import socket
     import sqlite3
-    from types import SimpleNamespace
 
     from tinyassets.boxes.gvisor_runtime import GvisorRuntime
     from tinyassets.boxes.owner_daemons import OwnerDaemons
@@ -47,7 +46,6 @@ async def probe():
     from tinyassets.broker.box_admission import owner_record
     from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.owner_reads import Plans
-    from tinyassets.broker.server import BOX_HOST, _Connection
 
     root, store = Path("/venue"), Path("/venue/owners")
     store.mkdir(parents=True)
@@ -73,8 +71,6 @@ async def probe():
         with sqlite3.connect(identities.path) as db:
             db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                        "project_id INT, bhard_bytes INT)")
-        channel = _Connection(SimpleNamespace(_data_root=shared, _owner_identities=identities),
-                              None, BOX_HOST)
 
         class Admission:
             def volume(self, owner, action="binding", **arguments):
@@ -85,10 +81,6 @@ async def probe():
             def owner(self, owner):
                 return owner_record(identities, owner)
 
-            def retire(self, owner, uid):
-                assert channel._retire_box_admission({
-                    "op": "BOX_RETIRE_ADMISSION", "principal": owner, "uid": uid
-                }) == {"op": "BOX_ADMISSION_RETIRED"}
 
         runtime = GvisorRuntime(runsc=Path("/runsc"), rootfs=root,
                                 state_root=root / "state", bundle_root=root / "bundles",
@@ -131,12 +123,12 @@ async def probe():
             app.close()
             local_mutate(identities.path, owner, "erase")
             try:
-                manager.resolve(owner, cleanup=True)
-            except LookupError:
+                owner_record(identities, owner, for_wake=True)
+            except PermissionError:
                 pass
             else:
                 raise AssertionError("cold owner acquired a cleanup box")
-            manager.destroy(owner, uid)
+            manager.destroy(uid)
             assert json.loads(runtime._command("list", "--format=json").stdout) in (None, [])
             assert not any(path.exists() for path in (image, relay, directory, secret))
             volumes._detached(uid)

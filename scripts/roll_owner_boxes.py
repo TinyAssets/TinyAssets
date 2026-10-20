@@ -112,7 +112,7 @@ def host_control(image_ref, uid):
         raise ValueError("invalid image identity")
     harness = Path("/opt/tinyassets/boxhostd/harness-current").resolve(strict=True)
     sys.path.insert(0, str(harness / "app"))
-    from tinyassets.boxes.daemon_control import request
+    from tinyassets.broker.lifecycle_control import request
 
     fields = {"image": "harness-" + image[7:]}
     if uid is None:

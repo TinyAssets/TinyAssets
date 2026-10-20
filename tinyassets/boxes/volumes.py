@@ -93,7 +93,7 @@ class OwnerVolumes:
                 self._held.uids = held
 
     def operation(self, uid: int):
-        """C1/C2: keep the same UID lock through runtime and map publication."""
+        """C1/C2: serialize local execution only; the broker owns lifecycle authority."""
         return self._lock(uid)
 
     def size(self, uid: int) -> int:
@@ -101,7 +101,7 @@ class OwnerVolumes:
         with self._lock(uid):
             return self._image(uid).stat().st_size
 
-    def delete_snapshot(self, uid: int, snapshot_id: str, forget) -> bool:
+    def delete_snapshot(self, uid: int, snapshot_id: str) -> bool:
         """The broker supplies an unreferenced object from this owner's catalog."""
         from tinyassets.platform_backup import pinned_snapshots, retention_lock
 
@@ -111,7 +111,6 @@ class OwnerVolumes:
             if (uid, snapshot_id) in pinned_snapshots(self.remote):
                 return False
             self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
-            forget()
             return True
 
     @staticmethod

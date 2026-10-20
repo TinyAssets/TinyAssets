@@ -1,19 +1,21 @@
-"""C3/C6: the broker owns deletion progress; off-host records are authoritative.
+"""C3/C14: local broker jobs, with every change written through off-host.
 
-No owner-volume paths enter this module. The host transports opaque metadata
-and performs volume operations; only this job decides which step comes next.
+No owner-volume paths enter this module. The host performs opaque volume
+operations; only this job decides the next step.
 """
 from __future__ import annotations
 
-import asyncio
 import hmac
+import json
 import logging
+import os
 import secrets
 import threading
 import time
 from contextlib import closing
 
-from tinyassets.broker.admission import digest
+from tinyassets.broker.admission import digest, owner_lock, read
+from tinyassets.broker.deletion_records import RemoteRecords
 
 STEPS = ("withdrawal", "volume", "snapshots", "custody", "billing",
          "credentials", "identity", "receipt")
@@ -27,23 +29,44 @@ class WithdrawalPending(RuntimeError):
         self.progress = progress
 
 
-class HostRecords:
-    """C3: backup transport stays with the host's existing backup credentials."""
+def new_job(owner, uid, *, key=None, clock=time.time):
+    """One producer for runtime jobs and one-shot cutover receipts."""
+    return {"id": key or digest(owner), "owner": owner, "uid": uid,
+            "status_token": secrets.token_urlsafe(32), "created_at": clock(),
+            "completed_steps": [], "attempts": {}, "retry_at": 0,
+            "failed_step": None, "billing_cleanup": {}, "results": {}}
 
-    def call(self, action, **arguments):
-        from tinyassets.boxes.daemon_control import request
 
-        return request("deletion_records", action=action, arguments=arguments)["result"]
+def schema(db):
+    db.execute("CREATE TABLE IF NOT EXISTS deletion_jobs ("
+               "id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL)")
+
+
+class JobRows:
+    """C14: status/enqueue/restart read the identity DB, never the remote."""
+    def __init__(self, identities, remote):
+        self.identities, self.remote = identities, remote
 
     def load(self, key):
-        return self.call("read", key=key)
+        with closing(self.identities._connect(write=False)) as db:
+            row = db.execute("SELECT record FROM deletion_jobs WHERE id=?", (key,)).fetchone()
+        if row is None:
+            raise LookupError("deletion job is missing")
+        return json.loads(row[0])
 
     def save(self, job):
-        self.call("write", key=job["id"], record=job)
+        # A successful transport acknowledgement precedes local progress/effects.
+        # A failed local commit can only cause an idempotent step to be replayed.
+        self.remote.save(job)
+        with closing(self.identities._connect(write=True)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("INSERT INTO deletion_jobs VALUES (?,?) ON CONFLICT(id) "
+                       "DO UPDATE SET record=excluded.record",
+                       (job["id"], json.dumps(job, sort_keys=True)))
 
     def records(self):
-        for key in self.call("list"):
-            yield self.load(key)
+        with closing(self.identities._connect(write=False)) as db:
+            return [json.loads(row[0]) for row in db.execute("SELECT record FROM deletion_jobs")]
 
 
 def load_unfinished_jobs(records=None):
@@ -52,37 +75,40 @@ def load_unfinished_jobs(records=None):
     Missing/unreadable records raise. Loading never changes admission or starts
     recovery; the running broker's resume_loaded_job executes the normal path.
     """
-    return [job for job in (records or HostRecords()).records()
+    return [job for job in (records or RemoteRecords(os.environ["BACKUP_DEST"])).records()
             if job["completed_steps"] != list(STEPS)]
 
 
 class DeletionJobs:
     def __init__(self, server, *, records=None, clock=time.time):
         self.server = server
-        self.records = records or HostRecords()
+        self.records = JobRows(server._owner_identities, records or RemoteRecords(
+            os.environ["BACKUP_DEST"]))
         self.clock = clock
-        self.lock = threading.RLock()
         self.record_lock = threading.RLock()
 
     def enqueue(self, owner):
         from tinyassets.broker.owner_volumes import binding
 
-        with self.lock:
+        with owner_lock(self.server._owner_identities.path, owner):
             key = digest(owner)
-            # Listing must succeed: an unavailable remote is never "no job".
-            jobs = {job["id"]: job for job in self.records.records()}
-            job = jobs.get(key)
-            if job is None:
+            try:
+                job = self.records.load(key)
+            except LookupError:
                 record = binding(self.server._owner_identities, owner)
-                job = {"id": key, "owner": owner, "uid": record["uid"],
-                       "status_token": secrets.token_urlsafe(32), "created_at": self.clock(),
-                       "completed_steps": [], "attempts": {}, "retry_at": 0,
-                       "failed_step": None, "billing_cleanup": {}, "results": {}}
-                self.records.save(job)  # C6 step 1: off-host BEFORE withdrawing admission.
+                job = new_job(owner, record["uid"], clock=self.clock)
+                self.records.save(job)
             try:
                 self._step(job, "withdrawal", force=True)
             except Exception as error:
                 raise WithdrawalPending(self.public(job, include_url=True)) from error
+            # C14: enqueue executes immediately; failures after withdrawal are
+            # durable progress, retried by the existing waker tick.
+            try:
+                for step in STEPS[1:]:
+                    self._step(job, step)
+            except Exception:
+                log.exception("deletion job remains pending")
             return self.public(job, include_url=True)
 
     @staticmethod
@@ -137,56 +163,59 @@ class DeletionJobs:
             raise
 
     def resume_loaded_job(self, loaded):
-        """b5 API: resume through the same broker steps, under its single writer.
+        """b5 imports trusted off-host authority, then uses the normal job path.
 
-        Reload off-host so a stale caller cannot rewind progress or supply an
-        owner/UID. Withdrawal is re-established even after a historical restore.
+        Ordinary restart/tick supplies local rows. Recovery supplies the newer
+        off-host record while admission is closed; startup ordering is b5.
         """
-        with self.lock:
+        from tinyassets.broker.owner_volumes import binding
+
+        owner = loaded["owner"]
+        with owner_lock(self.server._owner_identities.path, owner):
+            record = binding(self.server._owner_identities, owner)
+            if loaded["id"] != digest(owner) or loaded["uid"] != record["uid"]:
+                raise PermissionError("deletion job must match the permanent owner binding")
+            self.records.save(loaded)
             job = self.records.load(loaded["id"])
             self._step(job, "withdrawal", force=True)
             for step in STEPS:
                 self._step(job, step)
             return self.public(job)
 
-    async def run(self, stop):
-        while not stop.is_set():
-            try:
-                jobs = await asyncio.to_thread(load_unfinished_jobs, self.records)
-                for job in jobs:
-                    if stop.is_set():
-                        break
-                    if job["retry_at"] <= self.clock():
-                        try:
-                            await asyncio.to_thread(self.resume_loaded_job, job)
-                        except Exception:
-                            log.exception("deletion job remains pending")
-            except Exception:
-                log.exception("deletion job authority unavailable")
-            try:
-                await asyncio.wait_for(stop.wait(), 1)
-            except TimeoutError:
-                pass
+    def tick(self):
+        for job in load_unfinished_jobs(self.records):
+            if job["retry_at"] <= self.clock():
+                try:
+                    with owner_lock(self.server._owner_identities.path, job["owner"]):
+                        self.resume_loaded_job(self.records.load(job["id"]))
+                except Exception:
+                    log.exception("deletion job remains pending")
 
     def _withdrawal(self, job):
         from tinyassets.broker.admission import local_mutate
 
-        local_mutate(self.server._owner_identities.path, job["owner"], "erase")
-        from tinyassets.boxes.daemon_control import request
+        # The admission row is the durable receipt for this mutation even if
+        # the process died before writing the step's completion receipt.
+        if read(self.server._owner_identities, job["owner"]).state != "erased":
+            local_mutate(self.server._owner_identities.path, job["owner"], "erase")
+        else:
+            self.server.routing.changed(job["owner"])
 
-        if request("withdraw", job["owner"]) != {"withdrawn": True}:
-            raise RuntimeError("owner withdrawal remains pending")
+    def _uid(self, job):
+        from tinyassets.broker.owner_volumes import binding
+
+        return binding(self.server._owner_identities, job["owner"])["uid"]
 
     def _volume(self, job):
         from tinyassets.boxes.daemon_control import request
 
-        if request("destroy", job["owner"]) != {"destroyed": True}:
+        if request("destroy", uid=self._uid(job)) != {"destroyed": True}:
             raise RuntimeError("owner volume deletion remains pending")
 
     def _snapshots(self, job):
         from tinyassets.boxes.daemon_control import request
 
-        if request("delete_snapshots", job["owner"]) != {"deleted": True}:
+        if request("delete_snapshots", uid=self._uid(job)) != {"deleted": True}:
             raise RuntimeError("owner snapshot deletion remains pending")
         with closing(self.server._owner_identities._connect(write=True)) as db, db:
             db.execute("DELETE FROM owner_snapshots WHERE principal=?", (job["owner"],))

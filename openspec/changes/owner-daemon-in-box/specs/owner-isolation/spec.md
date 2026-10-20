@@ -97,7 +97,8 @@ wake and open, and close the owner's existing ingress and egress before erasure
 is acknowledged. It then deletes the volume and snapshots, erases custody,
 cancels billing, revokes router credentials, deletes the identity and writes a
 receipt. Snapshot publication, restore and deletion SHALL be serialized per owner.
-Progress, retries and billing receipts SHALL live only in off-host job records.
+Progress, retries and billing receipts SHALL live in the broker identity database,
+with every change written through to the off-host copy (C14).
 Missing required authority SHALL leave the job pending.
 
 
@@ -143,12 +144,12 @@ Missing required authority SHALL leave the job pending.
 
 #### Scenario: An interrupted job resumes without sign-in
 - **WHEN** the broker restarts between any two deletion effects
-- **THEN** it resumes unfinished jobs from off-host records and repeats incomplete effects idempotently
+- **THEN** the existing waker tick resumes unfinished local job rows and repeats incomplete effects idempotently
 - **AND** no snapshot can publish after erased admission
 
 #### Scenario: Recovery loads jobs independently of its historical backup
 - **WHEN** recovery calls `load_unfinished_jobs()` and passes a loaded job to the running broker
-- **THEN** the job reloads its authoritative off-host record and resumes through the normal execution path
+- **THEN** the broker imports that authoritative off-host record into its local job rows and resumes through the normal execution path
 - **AND** the historical shared database cannot discard the newer job
 
 ### Requirement: Every egress path checks the owner's allowlist at the proxy
@@ -199,6 +200,20 @@ through to an off-host copy.
 - **WHEN** an owner's deletion job runs step 1
 - **THEN** the broker sets the admission record to `erased` once, under its per-owner lock, before calling boxhostd
 - **AND** no boxhostd operation calls back into the broker to change admission
+
+#### Scenario: Enqueue and status read only local job rows
+- **WHEN** an owner enqueues deletion or reads its capability status page
+- **THEN** the broker performs zero remote reads and writes every progress change through off-host
+- **AND** enqueue executes immediately and the existing waker tick retries due unfinished local rows
+
+#### Scenario: Wake and deletion serialize in the broker
+- **WHEN** wake and deletion run concurrently for one owner
+- **THEN** one broker owner lock orders them, and no wake completes under erased admission
+
+#### Scenario: Lifecycle results have one call direction
+- **WHEN** sleep, pending recovery, restore or eviction runs
+- **THEN** the broker holds the owner lock and commits map transitions from executor results
+- **AND** the existing waker tick collects results of already-authorized host execution without callbacks or an additional clock
 
 #### Scenario: Recovery finishes deletions before admitting anyone
 - **WHEN** the shared layer is restored and services start with admission closed

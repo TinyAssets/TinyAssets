@@ -118,6 +118,9 @@ class OwnerIdentities:
             from tinyassets.broker.owner_volumes import schema
 
             schema(db)
+            from tinyassets.broker.deletion_jobs import schema as job_schema
+
+            job_schema(db)
             if initialize:
                 from tinyassets.broker.admission import schema as admission_schema
 
@@ -242,16 +245,6 @@ class OwnerIdentities:
                 raise LookupError("owner ingress credential is missing")
             return row[0], secret[0]
 
-    def retire_owner(self, principal: str) -> int:
-        """Terminal owner admission; permanent identity and volume bindings stay."""
-        uid = self.owner_machine(principal)
-        if uid is None:
-            raise LookupError("unknown owner")
-        from tinyassets.broker.admission import local_mutate
-
-        local_mutate(self.path, principal, "erase")
-        return uid
-
     def center_state(self, center: str) -> str:
         validate_center(center)
         with closing(self._connect(write=False)) as db:
@@ -344,13 +337,6 @@ def owner_admission(data_root: Path, owner: str):
             or answer["state"] not in {"absent", "admitted", "suspended", "erased"}):
         raise PermissionError("owner admission unavailable")
     return OwnerAdmissionRecord(answer["state"], frozenset(answer["reasons"]))
-
-
-def retire_owner(data_root: Path, *, principal: str):
-    validate_principal(principal)
-    answer = _owner_request(data_root, {"op": "RETIRE_OWNER", "principal": principal})
-    if answer != {"op": "OWNER_RETIRED"}:
-        raise RuntimeError("owner retirement refused")
 
 
 def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -> OwnerIdentity:

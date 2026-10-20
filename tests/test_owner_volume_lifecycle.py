@@ -10,9 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets.boxes.volume_lifecycle import VolumeLifecycle
 from tinyassets.broker import box_admission, owner_volumes
+from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
+from tinyassets.broker.volume_lifecycle import VolumeLifecycle
 
 
 class Images:
@@ -72,9 +73,8 @@ class Images:
         self.images.pop(uid, None)
         self.events.append(("delete", uid))
 
-    def delete_snapshot(self, uid, snapshot_id, forget):
+    def delete_snapshot(self, uid, snapshot_id):
         self.remote.pop((uid, snapshot_id), None)
-        forget()
         return True
 
 
@@ -89,10 +89,6 @@ class Admission:
 
     def owner(self, owner):
         return box_admission.owner_record(self.identities, owner)
-
-    def retire(self, owner, uid):
-        assert self.identities.owner_machine(owner) == uid
-        self.identities.retire_owner(owner)
 
     def pending_volumes(self):
         return owner_volumes.pending(self.identities)
@@ -116,38 +112,68 @@ def storage(tmp_path):
     runtime = SimpleNamespace(stop=lambda uid: events.append(("stop", uid)),
                               shutdown=lambda uid: events.append(("shutdown", uid)))
     images = Images()
-    lifecycle = VolumeLifecycle(images, Admission(identities), runtime)
-    return SimpleNamespace(lifecycle=lifecycle, volumes=images, admission=lifecycle.admission,
-                           identities=identities, events=events, runtime=runtime)
+    from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+    from tinyassets.boxes.host_service import HostService
+
+    runtime.box_id = GvisorRuntime.box_id
+    live = set()
+    manager = SimpleNamespace(condition=threading.Condition(threading.RLock()), runtime=runtime,
+                              boxes={}, status=lambda uid: {"uid": uid, "awake": uid in live})
+    service = HostService(None, images, None, manager)
+    def execute(operation, **fields):
+        result = service.lifecycle({"lifecycle": operation, **fields}, 1002)
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        return result
+    lifecycle = VolumeLifecycle(identities, execute)
+    return SimpleNamespace(lifecycle=lifecycle, volumes=images, admission=Admission(identities),
+                           identities=identities, events=events, runtime=runtime, live=live)
+
+
+def start(storage, owner="alice"):
+    record = storage.lifecycle.prepare(
+        owner, box_admission.owner_record(storage.identities, owner, for_wake=True))
+    uid = record["uid"]
+    storage.volumes.detach(uid)
+    mount = storage.volumes.attach(uid)
+    storage.volumes.grow(uid, max(record["quota"], storage.volumes.size(uid)))
+    storage.live.add(uid)
+    return record, mount.oci_mount()
 
 
 def sleep(storage, owner="alice"):
-    uid = storage.admission.volume(owner)["uid"]
-    storage.lifecycle.sleep(owner, lambda: storage.runtime.shutdown(uid))
-    return storage.admission.volume(owner)
+    uid = storage.lifecycle.volume(owner)["uid"]
+    storage.runtime.shutdown(uid)
+    storage.volumes.detach(uid)
+    storage.live.discard(uid)
+    try:
+        storage.lifecycle.recover(owner)
+    except (OSError, RuntimeError, PermissionError):
+        pass  # Explicit retry tests inspect retained work and the prior reference.
+    return storage.lifecycle.volume(owner)
 
 
 def test_every_sleep_publishes_verified_reference_and_growth_never_shrinks(storage):
-    record, mount = storage.lifecycle.prepare("alice")
+    record, mount = start(storage)
     uid = record["uid"]
     assert mount["uid"] == uid
     first = sleep(storage)
     assert first["snapshot_id"] and first["snapshot_sha256"] and first["work"] is None
     storage.identities.plans.apply("alice", tier="paid", event_created=1)
-    storage.lifecycle.prepare("alice")
+    start(storage)
     grown = storage.volumes.size(uid)
     assert ("grow", uid) in storage.volumes.events
     second = sleep(storage)
     assert second["snapshot_id"] != first["snapshot_id"]
     storage.identities.plans.apply("alice", tier="free", event_created=2)
-    storage.lifecycle.prepare("alice")
+    start(storage)
     assert storage.volumes.size(uid) == grown
 
 
 def test_failed_upload_retains_reference_and_retries_without_waking(storage):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     previous = sleep(storage)
-    storage.lifecycle.prepare("alice")
+    start(storage)
     storage.volumes.fail_upload = True
     failed = sleep(storage)
     assert failed["snapshot_id"] == previous["snapshot_id"]
@@ -156,19 +182,19 @@ def test_failed_upload_retains_reference_and_retries_without_waking(storage):
     storage.volumes.fail_upload = False
     storage.volumes.events.clear()
     storage.lifecycle.recover("alice")
-    assert storage.admission.volume("alice")["snapshot_id"] == pending_id
+    assert storage.lifecycle.volume("alice")["snapshot_id"] == pending_id
     assert not any(event == "attach" for event, _ in storage.volumes.events)
 
 
 def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     previous = sleep(storage)
-    storage.lifecycle.prepare("alice")
+    start(storage)
     upload = storage.volumes.snapshot
 
     def erase_during_upload(uid, snapshot_id):
         result = upload(uid, snapshot_id)
-        storage.identities.retire_owner("alice")
+        local_mutate(storage.identities.path, "alice", "erase")
         return result
 
     monkeypatch.setattr(storage.volumes, "snapshot", erase_during_upload)
@@ -181,11 +207,11 @@ def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
 
 
 def test_interrupted_restore_commits_generation_before_next_mount(storage, monkeypatch):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     before = sleep(storage)
     uid = before["uid"]
     storage.volumes.images[uid] = b"newer"
-    original = storage.admission.volume
+    original = storage.lifecycle.volume
     interrupted = False
 
     def interrupt(owner, action="binding", **arguments):
@@ -195,28 +221,28 @@ def test_interrupted_restore_commits_generation_before_next_mount(storage, monke
             raise OSError("map commit interrupted")
         return original(owner, action, **arguments)
 
-    monkeypatch.setattr(storage.admission, "volume", interrupt)
+    monkeypatch.setattr(storage.lifecycle, "volume", interrupt)
     with pytest.raises(OSError, match="interrupted"):
-        storage.lifecycle.restore("alice", before["snapshot_id"], lambda: None)
+        storage.lifecycle.restore("alice", before["snapshot_id"])
     assert storage.volumes.images[uid] == b"initial"
     assert original("alice")["volume_generation"] == before["volume_generation"]
     with pytest.raises(PermissionError, match="restore"):
         storage.admission.owner("alice")
-    record, _ = storage.lifecycle.prepare("alice")
+    record, _ = start(storage)
     assert record["volume_generation"] == before["volume_generation"] + 1
-    assert original("alice")["work"] is None
+    assert original("alice")["work"] == {"kind": "running"}
     assert storage.volumes.events[-2:] == [("attach", uid), ("grow", uid)]
 
 
 def test_restore_needs_only_published_reference_not_local_catalog_or_volume(storage):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     published = sleep(storage)
     uid = published["uid"]
     storage.volumes.images.pop(uid)
     with sqlite3.connect(storage.identities.path) as db:
         db.execute("DELETE FROM owner_snapshots")
     storage.volumes.events.clear()
-    result = storage.lifecycle.restore("alice", published["snapshot_id"], lambda: None)
+    result = storage.lifecycle.restore("alice", published["snapshot_id"])
     assert result["volume_generation"] == published["volume_generation"] + 1
     assert storage.volumes.images[uid] == b"initial"
     assert all(owner == uid for _, owner in storage.volumes.events)
@@ -225,39 +251,41 @@ def test_restore_needs_only_published_reference_not_local_catalog_or_volume(stor
 
 def test_retention_keeps_seven_and_never_deletes_current_map_reference(storage):
     for _ in range(9):
-        storage.lifecycle.prepare("alice")
+        start(storage)
         record = sleep(storage)
-    retained = storage.admission.volume("alice", "snapshots")
+    retained = storage.lifecycle.volume("alice", "snapshots")
     assert len(retained) == 7
     assert len(storage.volumes.remote) == 7
     assert (record["uid"], record["snapshot_id"]) in storage.volumes.remote
     with pytest.raises(PermissionError, match="map references"):
-        storage.admission.volume("alice", "forget", snapshot_id=record["snapshot_id"])
+        storage.lifecycle.volume("alice", "forget", snapshot_id=record["snapshot_id"])
 
 
 def test_restore_old_snapshot_repoints_map_and_retention_preserves_it(storage, monkeypatch):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     first = sleep(storage)
     prune = storage.lifecycle.prune
     monkeypatch.setattr(storage.lifecycle, "prune", lambda owner: None)
     for _ in range(8):
-        storage.lifecycle.prepare("alice")
+        start(storage)
         sleep(storage)
-    restored = storage.lifecycle.restore("alice", first["snapshot_id"], lambda: None)
+    restored = storage.lifecycle.restore("alice", first["snapshot_id"])
     assert restored["snapshot_id"] == first["snapshot_id"]
     assert restored["snapshot_sha256"] == first["snapshot_sha256"]
     prune("alice")
-    assert len(storage.admission.volume("alice", "snapshots")) == 7
+    assert len(storage.lifecycle.volume("alice", "snapshots")) == 7
     assert len(storage.volumes.remote) == 7
     assert (first["uid"], first["snapshot_id"]) in storage.volumes.remote
 
 
 def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
-    record, _ = storage.lifecycle.prepare("alice")
+    record, _ = start(storage)
     uid = record["uid"]
-    assert storage.lifecycle.delete("alice", lambda: storage.runtime.stop(uid)) == uid
+    local_mutate(storage.identities.path, "alice", "erase")
+    storage.runtime.stop(uid)
+    storage.volumes.delete(uid)
     assert uid not in storage.volumes.images
-    assert storage.admission.volume("alice")["uid"] == uid
+    assert storage.lifecycle.volume("alice")["uid"] == uid
     with sqlite3.connect(storage.identities.path) as db:
         with pytest.raises(sqlite3.IntegrityError, match="permanent"):
             db.execute("UPDATE owner_volumes SET uid=399999 WHERE principal='alice'")
@@ -268,10 +296,10 @@ def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
 
 
 def test_center_retirement_preserves_account_volume_recovery(storage):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     snapshot = sleep(storage)
     storage.identities.admission("retire", "alice", "alice")
-    restored = storage.lifecycle.restore("alice", snapshot["snapshot_id"], lambda: None)
+    restored = storage.lifecycle.restore("alice", snapshot["snapshot_id"])
     assert restored["uid"] == snapshot["uid"]
     assert restored["volume_generation"] == snapshot["volume_generation"] + 1
     assert restored["uid"] in storage.volumes.images
@@ -342,7 +370,7 @@ def test_database_validation_is_owner_local_and_retried_after_failure(tmp_path):
                                        {"volume_generation": 8}])
 def test_volume_protocol_refuses_caller_selected_binding(storage, arguments):
     with pytest.raises(ValueError):
-        storage.admission.volume("alice", **arguments)
+        storage.lifecycle.volume("alice", **arguments)
 
 
 def age_sleep(storage, seconds):
@@ -352,7 +380,7 @@ def age_sleep(storage, seconds):
 
 
 def test_cold_eviction_restores_exact_bytes_before_attach(storage):
-    record, _ = storage.lifecycle.prepare("alice")
+    record, _ = start(storage)
     uid = record["uid"]
     storage.volumes.images[uid] = b"owner bytes\x00\xff"
     before = sleep(storage)
@@ -361,14 +389,14 @@ def test_cold_eviction_restores_exact_bytes_before_attach(storage):
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
     assert "alice" in storage.admission.pending_volumes()
     assert storage.lifecycle.evict("alice")
-    assert not storage.admission.volume("alice")["local"]
+    assert not storage.lifecycle.volume("alice")["local"]
     assert uid not in storage.volumes.images
     storage.volumes.events.clear()
-    record, _ = storage.lifecycle.prepare("alice")
+    record, _ = start(storage)
     assert storage.volumes.images[uid] == b"owner bytes\x00\xff"
     assert record["volume_generation"] == before["volume_generation"] + 1
-    assert storage.admission.volume("alice")["local"]
-    assert storage.admission.volume("alice")["asleep_at"] is None
+    assert storage.lifecycle.volume("alice")["local"]
+    assert storage.lifecycle.volume("alice")["asleep_at"] is None
     events = storage.volumes.events
     assert events.index(("restore", uid)) < events.index(("attach", uid))
     assert ("create", uid) not in storage.volumes.events
@@ -376,61 +404,61 @@ def test_cold_eviction_restores_exact_bytes_before_attach(storage):
 
 @pytest.mark.parametrize("state", ["pending", "restore", "erased", "unverified", "awake"])
 def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     before = sleep(storage)
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
     if state == "pending":
-        storage.admission.volume("alice", "sleep")
+        storage.lifecycle.volume("alice", "sleep")
     elif state == "restore":
-        storage.admission.volume("alice", "restore", snapshot_id=before["snapshot_id"])
+        storage.lifecycle.volume("alice", "restore", snapshot_id=before["snapshot_id"])
     elif state == "erased":
-        storage.identities.retire_owner("alice")
+        local_mutate(storage.identities.path, "alice", "erase")
     elif state == "unverified":
         with sqlite3.connect(storage.identities.path) as db:
             db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL")
     else:
-        storage.lifecycle.prepare("alice")
+        start(storage)
     if state in ("erased", "unverified"):
         with pytest.raises((PermissionError, ValueError)):
             storage.lifecycle.evict("alice")
     else:
         assert not storage.lifecycle.evict("alice")
     assert before["uid"] in storage.volumes.images
-    assert storage.admission.volume("alice")["local"]
+    assert storage.lifecycle.volume("alice")["local"]
 
 
 def test_cold_restore_failure_never_creates_empty_volume(storage):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     before = sleep(storage)
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
     storage.lifecycle.evict("alice")
     storage.volumes.remote.clear()
     storage.volumes.events.clear()
-    with pytest.raises(KeyError):
-        storage.lifecycle.prepare("alice")
+    with pytest.raises(RuntimeError):
+        start(storage)
     assert before["uid"] not in storage.volumes.images
     assert not storage.volumes.attached
     assert not any(event == "create" for event, _ in storage.volumes.events)
-    assert storage.admission.volume("alice")["work"]["kind"] == "restore"
+    assert storage.lifecycle.volume("alice")["work"]["kind"] == "restore"
 
 
 def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
-    storage.lifecycle.prepare("alice")
+    start(storage)
     before = sleep(storage)
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
-    dispatch = storage.admission.volume
+    dispatch = storage.lifecycle.volume
 
     def interrupted(owner, action="binding", **arguments):
         if action == "evicted":
             raise OSError("commit interrupted")
         return dispatch(owner, action, **arguments)
 
-    monkeypatch.setattr(storage.admission, "volume", interrupted)
+    monkeypatch.setattr(storage.lifecycle, "volume", interrupted)
     with pytest.raises(OSError):
         storage.lifecycle.evict("alice")
     assert before["uid"] not in storage.volumes.images
-    monkeypatch.setattr(storage.admission, "volume", dispatch)
-    storage.lifecycle.prepare("alice")
+    monkeypatch.setattr(storage.lifecycle, "volume", dispatch)
+    start(storage)
     assert storage.volumes.images[before["uid"]] == b"initial"
 
 
@@ -438,12 +466,12 @@ def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
 def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeypatch, first):
     from concurrent.futures import ThreadPoolExecutor
 
-    storage.lifecycle.prepare("alice")
+    start(storage)
     before = sleep(storage)
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
     entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
     action = "wake" if first == "wake" else "evict"
-    dispatch = storage.admission.volume
+    dispatch = storage.lifecycle.volume
 
     def paused(owner, operation="binding", **arguments):
         if operation == action and not entered.is_set():
@@ -451,8 +479,8 @@ def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeyp
             assert release.wait(10)
         return dispatch(owner, operation, **arguments)
 
-    monkeypatch.setattr(storage.admission, "volume", paused)
-    methods = {"wake": storage.lifecycle.prepare, "evict": storage.lifecycle.evict}
+    monkeypatch.setattr(storage.lifecycle, "volume", paused)
+    methods = {"wake": lambda owner: start(storage, owner), "evict": storage.lifecycle.evict}
     def second():
         second_started.set()
         return methods["evict" if first == "wake" else "wake"]("alice")
@@ -466,7 +494,7 @@ def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeyp
         one.result(timeout=10)
         two.result(timeout=10)
     assert storage.volumes.images[before["uid"]] == b"initial"
-    assert storage.admission.volume("alice")["local"]
+    assert storage.lifecycle.volume("alice")["local"]
     assert before["uid"] in storage.volumes.attached
 
 
@@ -477,7 +505,7 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
     from tinyassets.boxes.boxd import OwnerBoxd
     from tinyassets.boxes.provider import BoxOperationRefused
 
-    storage.lifecycle.prepare("alice")
+    start(storage)
     published = sleep(storage)
 
     keys = ApiKeyStore(tmp_path)
@@ -497,8 +525,8 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
     core.close()
     keys.revoke("alice", key["key_id"], authority=None)
     assert keys.resolve(key["key"]) is None
-    other = storage.admission.volume("bob")
-    restored = storage.lifecycle.restore("alice", published["snapshot_id"], lambda: None)
+    other = storage.lifecycle.volume("bob")
+    restored = storage.lifecycle.restore("alice", published["snapshot_id"])
     shutil.rmtree(owner)
     shutil.copytree(snapshot, owner)
     core = OwnerBoxd(owner_id="alice", owner_root=owner, state_dir=owner / ".owner-boxd",
@@ -517,5 +545,5 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
     finally:
         core.close()
     assert keys.resolve(key["key"]) is None
-    assert storage.admission.volume("bob") == other
+    assert storage.lifecycle.volume("bob") == other
     assert restored["volume_generation"] == published["volume_generation"] + 1

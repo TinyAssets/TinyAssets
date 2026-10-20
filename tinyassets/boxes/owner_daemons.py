@@ -6,7 +6,6 @@ import json
 import logging
 import math
 import os
-import secrets
 import socket
 import threading
 import time
@@ -14,9 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tinyassets.boxes.admission import BoxSuspended
 from tinyassets.boxes.provider import BoxAuthError, BoxBusy, BoxError
-from tinyassets.broker.box_admission import OwnerSuspended
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +33,8 @@ class Box:
     image: str = ""
     restarting: bool = False
     roll_failed: bool = False
-    deletion_only: bool = False
-    leases: dict[str, float] = field(default_factory=dict)
+    launch: dict = field(default_factory=dict)
+    sleeping: bool = False
 
 
 class OwnerDaemons:
@@ -48,11 +45,8 @@ class OwnerDaemons:
         if (not 0 < idle_seconds <= 86400 or awake_cap < 1 or wake_timeout <= 0
                 or backoff_cap < 1 or failure_limit < 1 or not 0 < roll_wait <= 60):
             raise ValueError("positive owner lifecycle limits required")
-        from tinyassets.boxes.volume_lifecycle import VolumeLifecycle
-
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
-        self.storage = VolumeLifecycle(volumes, admission, runtime)
         self.directory = Path(directory)
         self.idle_seconds, self.awake_cap = idle_seconds, awake_cap
         self.memory_bytes, self.wake_timeout = memory_bytes, wake_timeout
@@ -61,7 +55,6 @@ class OwnerDaemons:
         self.condition = threading.Condition(threading.RLock())
         self.waiting: list[tuple[bool, object]] = []
         self.images, self.roll_wait = images, roll_wait
-        self.rolling = set()
         self.idle_guard = lambda uid: nullcontext(True)
 
     def _rpc(self, box, operation="status", **body):
@@ -123,9 +116,22 @@ class OwnerDaemons:
                 raise
 
     def _launch(self, box, deadline, *, image=None, launch=None):
-        if box.deletion_only:
-            raise BoxAuthError("deleting owner cannot restart")
-        record, volume_mount = self.storage.prepare(box.owner, launch)
+        record = launch or box.launch
+        if not record:
+            raise BoxAuthError("broker launch authorization is missing")
+        launch_options = {}
+        if self.images is not None:
+            image = image or self.images.current
+            if not self.images.compatible(image):
+                raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
+            launch_options["rootfs"] = self.images.path(image)
+            # Persist before launch: a process can write before readiness.
+            self.images.ran(box.uid, image)
+            box.image = image
+        self.volumes.detach(box.uid)
+        mount = self.volumes.attach(box.uid)
+        self.volumes.grow(box.uid, max(record["quota"], self.volumes.size(box.uid)))
+        volume_mount = mount.oci_mount()
         if record["uid"] != box.uid:
             raise BoxError("broker owner reservation changed")
         relay = self.relays.bind(box.owner, box.uid)
@@ -133,20 +139,11 @@ class OwnerDaemons:
         directory, secret = self._paths(box.uid, box.secret)
         # Reserve capacity before touching runsc; failed cleanup keeps the slot.
         box.awake = True
-        launch = {}
-        if self.images is not None:
-            image = image or self.images.current
-            if not self.images.compatible(image):
-                raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
-            launch["rootfs"] = self.images.path(image)
-            # Persist before launch: a process can write before readiness.
-            self.images.ran(box.uid, image)
-            box.image = image
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
                            centers=tuple(record["centers"]),
-                           volume_generation=record["volume_generation"], **launch)
+                           volume_generation=record["volume_generation"], **launch_options)
         while True:
             if not self.runtime.alive(box.uid):
                 raise BoxError("owner daemon exited during startup")
@@ -182,7 +179,9 @@ class OwnerDaemons:
                     pass  # A dead/unreachable ingress is still followed by a proven stop.
                 self.runtime.stop(box.uid)
             else:
-                self.storage.sleep(box.owner, lambda: self.runtime.shutdown(box.uid))
+                self.runtime.shutdown(box.uid)
+                self.volumes.detach(box.uid)
+                box.sleeping = True
             box.awake = False
         box.secret = ""
         box.error, box.failures, box.retry_at = "", 0, 0
@@ -193,10 +192,6 @@ class OwnerDaemons:
 
     def _sleep(self, box, *, idle, stop=True):
         if box.restarting:
-            return False
-        now = time.monotonic()
-        box.leases = {key: end for key, end in box.leases.items() if end > now}
-        if box.leases:
             return False
         with self.idle_guard(box.uid) as allowed:
             return self._drain(box, idle=idle, stop=stop) if allowed else False
@@ -225,49 +220,20 @@ class OwnerDaemons:
             return False  # Keep the uncertain sandbox's capacity reservation.
         return True
 
-    def resolve(self, owner, *, cleanup=False):
-        # The same lock covers readiness and the lease: no eviction window.
-        with self.condition:
-            if cleanup:
-                # Cleanup may address an existing process but never readmit or
-                # wake a fenced owner. Cold/missing boxes go straight to destroy.
-                box = next((box for box in self.boxes.values() if box.owner == owner
-                            and box.awake and self.runtime.alive(box.uid)), None)
-                if box is None:
-                    raise LookupError("owner has no live cleanup box")
-                box.deletion_only = True
-                box.wanted = False
-                self._rpc(box, "delete-admission")
-                uid = box.uid
-            else:
-                uid = self.ensure_awake(owner)
-            token = secrets.token_urlsafe(32)
-            self.boxes[uid].leases[token] = time.monotonic() + 10
-            result = {"uid": uid, "lease": token}
-            if cleanup:
-                result["secret"] = self.boxes[uid].secret
-            return result
-
-    def release(self, owner, token):
-        with self.condition:
-            for box in self.boxes.values():
-                if box.owner == owner:
-                    box.leases.pop(token, None)
-            self.condition.notify_all()
-
-    def ensure_awake(self, owner, *, scheduled=False, launch=None):
+    def ensure_awake(self, owner, *, scheduled=False, launch=None, image=None):
         if type(scheduled) is not bool:
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
         with self.condition:
-            self.storage.recover(owner)
-            record = launch if launch is not None else self.admission.owner(owner)
+            if launch is None:
+                raise BoxAuthError("broker launch authorization is missing")
+            record = launch
             uid = record["uid"]
             box = self.boxes.setdefault(uid, Box(owner, uid))
+            box.launch = record
+            box.sleeping = False
             if box.owner != owner:
                 raise BoxError("broker owner reservation changed")
-            if box.deletion_only:
-                raise BoxAuthError("deleting owner cannot restart")
             ticket = (scheduled, object())
             self.waiting.append(ticket)
             try:
@@ -282,7 +248,7 @@ class OwnerDaemons:
                         if record["quota"] > self.volumes.size(uid):
                             if not self._sleep(box, idle=0):
                                 raise BoxBusy("owner work must drain before volume growth")
-                            continue
+                            return None
                         if box.error:
                             raise BoxError("owner sandbox has an unverified launch or stop")
                         if self._rpc(box)["draining"]:
@@ -309,20 +275,33 @@ class OwnerDaemons:
                         if sum(item.awake or item.restarting for item in
                                self.boxes.values()) < self.awake_cap:
                             box.wanted = True
+                            self.waiting.remove(ticket)
                             try:
-                                self._start(box, deadline, launch=record)
+                                if image is None:
+                                    self._start(box, deadline, launch=record)
+                                else:
+                                    box.restarting = True
+                                    self.condition.release()
+                                    try:
+                                        self._start(box, deadline, launch=record, image=image,
+                                                    cleanup=False)
+                                    finally:
+                                        self.condition.acquire()
+                                        box.restarting = False
                                 return uid
                             except Exception as exc:
+                                if image is not None:
+                                    box.roll_failed, box.wanted = True, False
                                 self._failed(box, exc)
-                                raise BoxError("owner daemon startup failed") from exc
+                                raise BoxError(f"owner daemon startup failed: {exc}") from exc
                     left = deadline - time.monotonic()
                     if left <= 0:
                         raise BoxBusy("owner wake capacity/backoff deadline exceeded")
                     self.condition.wait(min(left, 1))
-                    # A queued wake never keeps an admission across retirement.
-                    self.admission.owner(owner)
+                    # The broker holds this owner's lifecycle lock for the entire call.
             finally:
-                self.waiting.remove(ticket)
+                if ticket in self.waiting:
+                    self.waiting.remove(ticket)
                 self.condition.notify_all()
 
     def retire(self, owner, uid):
@@ -343,183 +322,71 @@ class OwnerDaemons:
                 self._stop(box, retire=True)
             self.condition.notify_all()
 
-    def withdraw(self, owner):
+    def withdraw(self, uid):
         """C5/C6: close work and drain before making old ingress unreachable."""
         with self.condition:
-            uid = self.admission.volume(owner)["uid"]
             with self.volumes.operation(uid):
                 box = self.boxes.get(uid)
                 if box is not None and box.awake and self.runtime.alive(uid):
-                    box.deletion_only, box.wanted = True, False
+                    box.wanted = False
                     deadline = time.monotonic() + 20
                     while self._rpc(box, "delete-admission")["active"]:
                         if time.monotonic() >= deadline:
                             raise BoxBusy("owner work did not drain before withdrawal")
                         time.sleep(.02)
-                self.retire(owner, uid)
+                self.retire(box.owner if box else "", uid)
 
-    def destroy(self, owner, uid):
+    def destroy(self, uid):
         """Account retirement, unlike center retirement, erases the entire volume."""
         from tinyassets.boxes.destroy import socket_tree
 
         with self.condition:
-            uid = self.storage.delete(owner, lambda: self.retire(owner, uid))
+            box = self.boxes.get(uid)
+            self.retire(box.owner if box else "", uid)
+            self.volumes.delete(uid)
             self.relays.retire(uid)
             socket_tree(self.directory, uid)
             (self.directory / "secrets" / str(uid)).unlink(missing_ok=True)
             self.boxes.pop(uid, None)
 
-    def restore(self, owner, snapshot_id):
+    def status(self, uid):
         with self.condition:
-            record = self.admission.volume(owner)
-            uid = record["uid"]
-            box = self.boxes.get(uid)
-            if box and box.awake:
-                self._rpc(box, "snapshot-stop")
-            if box and box.awake and not self._sleep(box, idle=0, stop=False):
-                raise BoxBusy("owner work must drain before restore")
-            result = self.storage.restore(owner, snapshot_id, lambda: self.retire(owner, uid))
-            return {"volume_generation": result["volume_generation"]}
-
-    def status(self, owner):
-        with self.condition:
-            try:
-                uid = self.admission.owner(owner)["uid"]
-            except (BoxAuthError, PermissionError):
-                box = next((b for b in self.boxes.values() if b.owner == owner), None)
-                if box is None:
-                    raise
-                uid = box.uid
             box = self.boxes.get(uid)
             return {"uid": uid, "awake": bool(box and box.awake),
                     "failures": box.failures if box else 0,
                     "error": box.error if box else "",
+                    "resume": bool(box and box.sleeping and box.wanted),
                     "image": (box.image if box else
                               self.images.last.get(str(uid), "") if self.images else "")}
 
-    def roll(self, image, uid=None):
-        """Publish the wake image, then drain/restart one box without killing work."""
+    def roll(self, image):
+        """Execute selection only; the broker orchestrates per-owner restarts."""
         with self.condition:
             if self.images is None:
                 raise BoxError("image registry unavailable")
-            if uid is None:
-                if self.rolling:
-                    raise BoxError("another roll is in progress")
-                self.images.select(image)
-                known = set(map(int, self.images.last)) | set(self.boxes)
-                awake = {box.uid for box in self.boxes.values() if box.awake}
-                return {"uids": sorted(awake), "asleep": len(known - awake)}
-            self.runtime.box_id(uid)
-            if image != self.images.current:
-                raise BoxError("roll image superseded")
+            self.images.select(image)
+            known = set(map(int, self.images.last)) | set(self.boxes)
+            awake = {box.uid for box in self.boxes.values() if box.awake}
+            return {"uids": sorted(awake), "asleep": len(known - awake)}
+
+    def drain(self, uid):
+        with self.condition:
             box = self.boxes.get(uid)
             if box is None or not box.awake:
-                return {"uid": uid, "outcome": "asleep"}
-            if uid in self.rolling:
-                return {"uid": uid, "outcome": "deferred_busy"}
-            self.rolling.add(uid)
+                return {"drained": True}
             deadline = time.monotonic() + self.roll_wait
-            try:
-                while box.awake:
-                    if box.image == image:
-                        if (box.error or box.roll_failed or not self.runtime.alive(uid)
-                                or self._rpc(box)["draining"]):
-                            raise BoxError("current box image is not healthy")
-                        return {"uid": uid, "outcome": "rolled"}
-                    # No admission gap: drain closes the same gate held by HTTP
-                    # and detached turns. Unknown state never permits a stop.
-                    if self._sleep(box, idle=0, stop=False):
-                        break
-                    left = deadline - time.monotonic()
-                    if left <= 0:
-                        return {"uid": uid, "outcome": "deferred_busy"}
-                    self.condition.wait(min(left, .1))
-                else:
-                    return {"uid": uid, "outcome": "asleep"}
-                previous = box.image
-                try:
-                    self._roll_start(box, image)
-                    return {"uid": uid, "outcome": "rolled"}
-                except Exception:
-                    # Never restore an image that cannot understand split data.
-                    # Fail closed even if candidate cleanup or restore fails.
-                    box.error = "candidate health failed"
-                    try:
-                        compatible = bool(previous and self.images.compatible(previous))
-                    except OSError:
-                        compatible = False  # An absent image cannot prove the cutover floor.
-                    try:
-                        # Startup can already have scheduled work. A failed
-                        # health probe never authorizes killing that work.
-                        drain_deadline = time.monotonic() + self.roll_wait
-                        while self.runtime.alive(uid):
-                            if self._sleep(box, idle=0, stop=False):
-                                break
-                            left = drain_deadline - time.monotonic()
-                            if left <= 0:
-                                raise BoxError("candidate cannot safely drain")
-                            self.condition.wait(min(left, .1))
-                        if not compatible:
-                            self._stop(box)
-                            raise BoxError("cutover rollback refused")
-                        self._roll_start(box, previous)
-                    except Exception:
-                        box.wanted = False
-                        box.roll_failed = True
-                        box.error = ("box rollback failed" if compatible else
-                                     "cutover boundary: restore with deploy/backup-restore.sh")
-                        raise BoxError(box.error) from None
-                    return {"uid": uid, "outcome": "rolled_back", "reason": "health_failed"}
-            finally:
-                self.rolling.remove(uid)
-                self.condition.notify_all()
-
-    def _roll_start(self, box, image):
-        # Keep a capacity reservation while other boxes wake or roll. The
-        # lifecycle lock is not held during candidate readiness polling.
-        box.awake = True
-        box.restarting = True
-        self.condition.release()
-        try:
-            self._stop(box)
-            box.wanted = True
-            self._start(box, time.monotonic() + self.wake_timeout, image=image, cleanup=False)
-        finally:
-            self.condition.acquire()
-            box.restarting = False
-            self.condition.notify_all()
+            while not self._sleep(box, idle=0, stop=False):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return {"drained": False}
+                self.condition.wait(min(left, .1))
+            return {"drained": True}
 
     def maintain(self):
         """One host clock handles idle sleep and bounded crash restart."""
         with self.condition:
-            try:
-                pending = self.admission.pending_volumes()
-            except Exception:
-                log.exception("volume maintenance authority unavailable")
-                pending = []
-            for owner in pending:
-                try:
-                    record = self.storage.recover(owner)
-                    box = self.boxes.get(record["uid"])
-                    if box and not self.runtime.alive(box.uid):
-                        box.awake = False
-                    self.storage.evict(owner)
-                except Exception:
-                    log.exception("volume maintenance remains pending")
             for box in self.boxes.values():
-                if box.uid in self.rolling:
-                    continue
-                try:
-                    self.admission.owner(box.owner)
-                except (LookupError, BoxAuthError, PermissionError, OSError) as exc:
-                    outcome = ("suspended" if isinstance(exc, (BoxSuspended, OwnerSuspended))
-                               else "admission_refused")
-                    try:
-                        self._stop(box, retire=True)
-                    except Exception as stop_error:
-                        self._failed(box, stop_error)
-                    box.wanted = False
-                    box.error = outcome
+                if box.restarting:
                     continue
                 if box.roll_failed:
                     if box.awake:
@@ -553,7 +420,7 @@ class OwnerDaemons:
                                 and time.monotonic() >= box.retry_at
                                 and box.failures < self.failure_limit):
                             self._sleep(box, idle=self.idle_seconds)
-                if (box.wanted and not box.awake
+                if (box.wanted and not box.awake and not box.sleeping
                         and time.monotonic() >= box.retry_at and not self.waiting
                         and sum(item.awake or item.restarting for item in
                                 self.boxes.values()) < self.awake_cap):

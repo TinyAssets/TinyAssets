@@ -134,8 +134,9 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
     broker.server._owner_identities = identities
     stops = []
 
-    def stopped(operation, owner, **fields):
-        assert operation == "retire" and owner == "alice" and fields == {}
+    def stopped(operation, **fields):
+        assert operation == "stop" and fields == {"uid": identities.owner_machine("alice")}
+        owner = "alice"
         assert identities.box_route(owner)[0] == identities.owner_machine(owner)
         assert identities.center_state("alice-home") == "retired"
         stops.append(owner)
@@ -160,79 +161,17 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
 
 
 
-def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, monkeypatch):  # noqa: F811
-    from types import SimpleNamespace
-
-    from tinyassets.boxes.host_service import HostService
-
+def test_retired_owner_rpc_cannot_mutate_admission(broker, tmp_path):  # noqa: F811
     identities = store(tmp_path, "alice", "bob")
-
     broker.server._owner_identities = identities
-    for owner, center in (("alice", "a"), ("alice", "a2"), ("bob", "b")):
-        identities.admission("admit", owner, center)
-    with sqlite3.connect(identities.path) as db:
-        db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
-                   "project_id INT, bhard_bytes INT)")
-        for owner in ("alice", "bob"):
-            from tinyassets.broker.owner_volumes import provision
-
-            uid = identities.owner_machine(owner)
-            db.execute("INSERT INTO box_records VALUES (?,?,?,?)", (owner, uid, uid, 2 * 1024**3))
-            provision(db, owner, uid)
-    stopped = []
-
-    destroyed = []
-
-    def destroy(owner, uid):
-        # The root host owns retirement now; model its broker callback before
-        # the synthetic volume destruction and lost acknowledgement.
-        assert owner == "alice" and uid == 300001
-        assert identities.retire_owner(owner) == uid
-        assert identities.center_state("a") == identities.center_state("a2") == "admitted"
-        from tinyassets.broker.admission import read
-
-        assert read(identities, owner).state == "erased"
-        with pytest.raises(LookupError):
-            identities.box_route("alice")
-        stopped.append(owner)
-        if len(stopped) == 1:
-            raise OSError("destroy acknowledgement lost")
-        destroyed.append(owner)
-
-    from tinyassets.broker.admission import local_mutate
-    from tinyassets.broker.owner_volumes import binding
-
-    host = HostService(SimpleNamespace(data_root=tmp_path,
-                                      erase_admission=lambda owner: local_mutate(
-                                          identities.path, owner, "erase"),
-                                      volume=lambda owner: binding(identities, owner)), None, None,
-                       SimpleNamespace(destroy=destroy))
-
-    def stop(operation, owner, **fields):
-        return host.lifecycle({"lifecycle": operation, "owner": owner, **fields}, 1002)
-
-    monkeypatch.setattr("tinyassets.boxes.daemon_control.request", stop)
-
-    def retire(**changes):
-        document = {"op": "RETIRE_OWNER", "principal": "alice",
-                    "generation": broker.state["generation"], "token": broker.state["token"]}
+    identities.admission("admit", "alice", "alice-home")
+    before = rows(identities)
+    for changes in ({}, {"token": "stale"}, {"uid": 300001}, {"principal": "unknown"}):
+        document = {"op": "RETIRE_OWNER", "principal": "alice", **broker.state, **changes}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
             channel.settimeout(5)
             channel.connect(str(broker.path))
-            channel.sendall(rf.control(0, document | changes))
-            return rf.read_frame_blocking(channel).control()
-
-    before = rows(identities)
-    for changes in ({"token": "stale"}, {"generation": True}, {"uid": 300001},
-                    {"principal": "unknown"}):
-        assert retire(**changes) == {"op": "OWNER_RETIRE_REFUSED"}
-        assert rows(identities) == before and not stopped
-    assert retire() == {"op": "OWNER_RETIRE_REFUSED"}
-    after = rows(identities)
-    assert retire() == {"op": "OWNER_RETIRED"}
-    assert destroyed == ["alice"]
-    assert rows(identities) == after
-    assert identities.center_state("b") == "admitted"
-    assert identities.box_route("bob")
-    with pytest.raises(PermissionError, match="deleted"):
-        identities.admission("admit", "alice", "new")
+            channel.sendall(rf.control(0, document))
+            assert rf.read_frame_blocking(channel) is None
+        assert rows(identities) == before
+        assert identities.box_route("alice")

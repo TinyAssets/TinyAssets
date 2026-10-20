@@ -220,7 +220,7 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     if state == "center-retired":
         identities.admission("retire", owner, "center")
     if state == "account-retired":
-        identities.retire_owner(owner)
+        local_mutate(identities.path, owner, "erase")
     if state == "erased":
         local_mutate(identities.path, owner, "erase")
     if state == "policy-erased":
@@ -278,7 +278,7 @@ def test_sources_cannot_clear_each_other_or_terminal_erasure(authority):
         plans.set_suspension("alice", reason=reason, suspended=True)
     plans.set_suspension("alice", reason="billing", suspended=False)
     assert read(authority, "alice").reasons == {"abuse"}
-    authority.retire_owner("alice")
+    local_mutate(authority.path, "alice", "erase")
     for reason in ("billing", "abuse"):
         plans.set_suspension("alice", reason=reason, suspended=False)
         assert read(authority, "alice").state == "erased"
@@ -304,7 +304,7 @@ def test_retirement_writes_only_the_terminal_record(authority):
                           "WHERE name='owner_box_revocations'").fetchall() == []
     assert set(authority.plans.read("alice")) == {
         "owner", "tier", "event_created", "ends_at", "customer_id", "subscription_id", "attempt"}
-    authority.retire_owner("alice")
+    local_mutate(authority.path, "alice", "erase")
     assert read(authority, "alice").state == "erased"
     assert not allowed(lambda: authority.box_route("alice"))
     with sqlite3.connect(authority.path) as db:
@@ -333,7 +333,7 @@ def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_
     from tinyassets.router_credentials import active_owner
     from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
 
-    authority.retire_owner("alice")
+    local_mutate(authority.path, "alice", "erase")
     assert not active_owner("alice", tmp_path)  # Start the fixture broker before authority loss.
     if damage == "missing":
         authority.path.unlink()
@@ -390,7 +390,7 @@ def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
     authority.plans.set_suspension("alice", reason="abuse", suspended=True)
     assert active_owner("alice", tmp_path)
     assert not allowed(lambda: authority.box_route("alice"))
-    authority.retire_owner("alice")
+    local_mutate(authority.path, "alice", "erase")
     assert not active_owner("alice", tmp_path)
 
 
@@ -434,21 +434,23 @@ def test_cutover_drops_center_revocation_and_seeds_terminal_and_source_reasons(a
     for reason in ("billing", "abuse"):
         authority.plans.set_suspension("alice", reason=reason, suspended=False)
     assert len(authority.box_route("alice")[1]) == 43
-    authority.retire_owner("alice")
+    local_mutate(authority.path, "alice", "erase")
     _seed_owner_admission(tmp_path, legacy)
     assert read(authority, "alice").state == "erased"
 
 
 @pytest.mark.parametrize("owner,uid", [("alice", 300002), ("unknown", 300001),
                                       ("unknown", 399999)])
-def test_retirement_requires_record_and_positive_owner_binding(authority, owner, uid):
+def test_deletion_resume_requires_positive_permanent_binding(authority, owner, uid):
     from types import SimpleNamespace
 
-    from tinyassets.broker.server import _Connection
+    from tinyassets.broker.deletion_jobs import DeletionJobs, new_job
 
-    local_mutate(authority.path, owner, "erase")
-    channel = SimpleNamespace(_server=SimpleNamespace(_owner_identities=authority))
-    assert _Connection._retire_box_admission(channel, {
-        "op": "BOX_RETIRE_ADMISSION", "principal": owner, "uid": uid}) == {"op": "BOX_REFUSED"}
-    assert read(authority, "alice").state == ("erased" if owner == "alice" else "admitted")
+    class Remote:
+        def save(self, job):
+            pytest.fail("unbound job was written")
+    jobs = DeletionJobs(SimpleNamespace(_owner_identities=authority), records=Remote())
+    with pytest.raises((LookupError, PermissionError)):
+        jobs.resume_loaded_job(new_job(owner, uid))
+    assert read(authority, "alice").state == "admitted"
     assert authority.owner_machine("unknown") is None

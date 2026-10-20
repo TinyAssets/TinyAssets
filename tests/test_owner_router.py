@@ -20,6 +20,7 @@ import pytest
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.provider import Identity
+from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities, _owner_request
 
 
@@ -171,19 +172,17 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
 
         monkeypatch.setattr(manager, "_paths", paths)
 
-        def control(operation, owner, **fields):
-            if operation == "wake":
-                return {"uid": manager.ensure_awake(
-                    owner, launch=fields["record"], scheduled=fields["scheduled"])}
-            if operation == "withdraw":
-                manager.withdraw(owner)
-                return {"withdrawn": True}
-            if operation == "destroy":
-                manager.destroy(owner, admission.volume(owner)["uid"])
-                return {"destroyed": True}
-            assert operation == "retire"
-            manager.retire(owner, admission.volume(owner)["uid"])
-            return {"stopped": True}
+        from tinyassets.boxes.host_service import HostService
+
+        host = HostService(admission, volumes, relays, manager)
+        def control(operation, owner=None, **fields):
+            result = host.lifecycle({"lifecycle": operation, **fields,
+                                     **({"owner": owner} if owner is not None else {})}, 1002)
+            if result.get("error") == "unadmitted":
+                raise LookupError("owner has no live admission")
+            if set(result) == {"error"}:
+                raise RuntimeError(result["error"])
+            return result
 
         monkeypatch.setattr(daemon_control, "request", control)
         try:
@@ -472,6 +471,7 @@ def test_cold_request_uses_broker_and_keeps_credential(
     with boxes.manager.condition:
         assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
     assert not boxes.runtime.alive(uid)
+    broker.server.routing.volumes.recover("alice")
     binding = boxes.manager.admission.volume("alice")
     if pending_restore:
         boxes.manager.admission.volume("alice", "restore", snapshot_id=binding["snapshot_id"])
@@ -507,7 +507,7 @@ def test_cold_request_uses_broker_and_keeps_credential(
     assert admitted.box_route("alice") == (uid, secret)
     assert boxes.manager.boxes[uid].secret == secret
     assert launches == [binding["volume_generation"] + int(pending_restore)]
-    assert boxes.manager.admission.volume("alice")["work"] is None
+    assert boxes.manager.admission.volume("alice")["work"] == {"kind": "running"}
 
 
 def test_withdrawn_route_rejects_delayed_snapshot_and_wake(
@@ -755,7 +755,7 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     assert HookOwners(tmp_path).resolve(token) == "alice"
     admitted.admission("retire", "bob", "cc-bob")
     assert request("bob", {"operation": "key_list"})["op"] == "ROUTER_CREDENTIAL_IS"
-    admitted.retire_owner("bob")
+    local_mutate(admitted.path, "bob", "erase")
     assert request("bob", {"operation": "key_list"}) == {"op": "BOX_REFUSED"}
 
 
@@ -852,14 +852,14 @@ def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
 
 def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     from tinyassets import router_credentials
-    from tinyassets.broker.owner_identities import _owner_request, owner_admission
+    from tinyassets.broker.owner_identities import owner_admission
     from tinyassets.router_credentials import dispatch
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
     token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
     assert token
-    _owner_request(tmp_path, {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
+    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
     router_credentials.revoke_account(tmp_path, "alice")
     assert owner_admission(tmp_path, "alice").state == "erased"
     # The door's revocation removed the hook the owner minted before deletion.
@@ -928,40 +928,20 @@ def test_center_retirement_stops_old_daemon_and_admitted_owner_wakes_again(
     assert boxes.manager.admission.owner("alice")["centers"] == []
 
 
-def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
-    boxes, admitted, monkeypatch,
-):
+def test_root_lifecycle_callback_is_absent_and_cannot_override_a_binding(boxes, admitted):
     from tinyassets import rpc_frames as rf
 
-    def call(document):
+    before = admitted.box_route("alice")
+    for override in ({}, {"uid": 300002}, {"rotate": True}, {"quota": 1},
+                     {"principal": "reserved"}, {"deletion_only": True}):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
             channel.settimeout(5)
             channel.connect(str(boxes.host_path))
-            channel.sendall(rf.control(0, document))
-            return rf.read_frame_blocking(channel).control()
-
-    request = {"op": "BOX_LIFECYCLE", "principal": "alice"}
-    assert call(request) == {"op": "BOX_LIFECYCLE_IS", "uid": admitted.owner_machine("alice"),
-                             "quota": 2 * 1024**3, "centers": ["cc-alice"],
-                             "volume_generation": 1, "snapshot_id": None, "snapshot_sha256": None,
-                             "secret": admitted.box_route("alice")[1]}
-    for override in ({"uid": 300002}, {"rotate": 1}, {"quota": 1}):
-        assert call(request | override) == {"op": "BOX_REFUSED"}
-    assert call(request | {"principal": "reserved"}) == {"op": "BOX_UNADMITTED"}
-    old = admitted.box_route("alice")[1]
-    assert call(request | {"rotate": True}) == {"op": "BOX_REFUSED"}
-    assert admitted.box_route("alice")[1] == old
-    admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
-    assert call(request) == {"op": "BOX_SUSPENDED"}
-    assert call(request | {"deletion_only": True}) == {"op": "BOX_REFUSED"}
-    assert call(request | {"deletion_only": "yes"}) == {"op": "BOX_REFUSED"}
-    from tinyassets.boxes import bootstrap
-    from tinyassets.boxes.admission import BoxSuspended, OwnerRegistry
-
-    monkeypatch.setattr(bootstrap, "peer", lambda sock: (os.getpid(), 1002, 1002))
-    registry = OwnerRegistry(admitted.path.parent.parent, boxes.host_path)
-    with pytest.raises(BoxSuspended, match="suspended"):
-        registry.owner("alice")
+            channel.sendall(rf.control(0, {"op": "BOX_LIFECYCLE", "principal": "alice",
+                                           **override}))
+            answer = rf.read_frame_blocking(channel)
+            assert answer is None or answer.control() == {"op": "BOX_REFUSED"}
+    assert admitted.box_route("alice") == before
 
 
 def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, admitted):
@@ -1045,7 +1025,6 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
                                 "BOX_PING", "BOX_PUBLISH", "BOX_READ"])
 def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted, tmp_path, op):
     from tinyassets import rpc_frames as rf
-    from tinyassets.broker.owner_identities import _owner_request
 
     uid = admitted.owner_machine("alice")
     assert boxes.runtime.alive(uid)
@@ -1056,7 +1035,7 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
             channel.sendall(rf.control(rf.CONNECTION, {
                 "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
             assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
-        _owner_request(tmp_path, {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
+        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
         document = {"op": op, "principal": "alice"}
         if op in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
             document["center"] = "cc-alice"

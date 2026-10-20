@@ -14,11 +14,12 @@ MAX_PENDING = 2
 
 class Waker:
     def __init__(self, index, plans, *, wake, clock=time.time,
-                 poll_seconds=POLL_SECONDS):
+                 poll_seconds=POLL_SECONDS, lifecycle_tick=None):
         if not math.isfinite(poll_seconds) or poll_seconds <= 0:
             raise ValueError("waker interval must be positive and finite")
         self.index, self.plans, self.wake = index, plans, wake
         self.clock, self.poll_seconds = clock, poll_seconds
+        self.lifecycle_tick = lifecycle_tick
         self.pending = {}
         self.attempted = {}
 
@@ -32,6 +33,8 @@ class Waker:
         self.index.woken(owner, now=self.clock())
 
     async def tick(self):
+        if self.lifecycle_tick is not None:
+            await asyncio.to_thread(self.lifecycle_tick)
         for owner, task in list(self.pending.items()):
             if task.done():
                 del self.pending[owner]

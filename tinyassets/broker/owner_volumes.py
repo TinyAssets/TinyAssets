@@ -1,7 +1,7 @@
 """T3/C2: broker-owned permanent volume bindings and recoverable lifecycle work.
 
 This database contains references, never paths into owner contents. boxhostd is
-the sole caller; the broker derives every UID from the permanent owner identity.
+a pure executor; the broker derives every UID from the permanent owner identity.
 The one-shot migration populates existing bindings before runtime admission.
 """
 
@@ -47,7 +47,9 @@ def transaction(identities, owner, *, active=True):
     from tinyassets.broker.owner_identities import validate_principal
 
     validate_principal(owner)
-    with closing(identities._connect(write=True)) as db, db:
+    from tinyassets.broker.admission import owner_lock
+
+    with owner_lock(identities.path, owner), closing(identities._connect(write=True)) as db, db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
@@ -98,7 +100,7 @@ def reference(snapshot_id, sha256):
 
 
 def dispatch(identities, document):
-    """Root-only protocol; no caller UID, path, generation or quota is accepted."""
+    """Broker-internal transitions; never exposed on the host protocol."""
     if set(document) != {"op", "principal", "action", "arguments"}:
         raise ValueError("invalid volume lifecycle request")
     owner, action, arguments = (document["principal"], document["action"],
@@ -128,8 +130,9 @@ def dispatch(identities, document):
             record["local"] = False
             work = None
         elif action == "wake":
-            if work is not None or not record["local"]:
+            if work not in (None, {"kind": "running"}) or not record["local"]:
                 raise PermissionError("volume must be local and committed before wake")
+            work = {"kind": "running"}
             db.execute("UPDATE owner_volumes SET asleep_at=NULL WHERE principal=?", (owner,))
             record["asleep_at"] = None
         elif action == "created":
@@ -137,7 +140,7 @@ def dispatch(identities, document):
                 raise PermissionError("volume creation is not pending")
             work = None
         elif action == "sleep":
-            if work is None:
+            if work in (None, {"kind": "running"}):
                 work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex}
             elif work["kind"] != "snapshot":
                 raise PermissionError("restore must complete before sleep")

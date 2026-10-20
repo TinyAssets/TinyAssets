@@ -1026,9 +1026,9 @@ def test_cutover_imports_legacy_facts_and_refuses_unfinishable_obligations(cutov
 
 
 def test_cutover_publishes_legacy_receipt_only_after_path_cleanup(cutover):
-    from tinyassets.boxes.deletion_records import RemoteRecords
     from tinyassets.broker.admission import digest, local_read
     from tinyassets.broker.deletion_jobs import STEPS
+    from tinyassets.broker.deletion_records import RemoteRecords
     from tinyassets.cutover_deletions import PHASES
 
     data, store, *_ = cutover
@@ -1048,6 +1048,9 @@ def test_cutover_publishes_legacy_receipt_only_after_path_cleanup(cutover):
     job = records.load(digest("host-only"))
     assert job["completed_steps"] == list(STEPS)
     assert job["results"]["receipt"]["deleted"]
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        local, = db.execute("SELECT record FROM deletion_jobs WHERE id=?", (job["id"],)).fetchone()
+    assert json.loads(local) == job
     assert local_read(data, "host-only").state == "erased"
     assert not (data / ".erasure-ledger.sqlite3").exists()
 
@@ -1184,8 +1187,8 @@ def test_cutover_converts_and_removes_legacy_erasure_ledger(cutover):
     with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT name FROM sqlite_master "
                           "WHERE name='owner_box_revocations'").fetchall() == []
-    from tinyassets.boxes.deletion_records import RemoteRecords
     from tinyassets.broker.deletion_jobs import STEPS
+    from tinyassets.broker.deletion_records import RemoteRecords
 
     job = RemoteRecords(migration._volumes(store).remote).load(digest("ledger-only"))
     assert job["completed_steps"] == list(STEPS)

@@ -38,6 +38,12 @@ services:
         required: false
     volumes:
       - tinyassets-data:/data
+      - type: bind
+        source: /etc/tinyassets/broker-rclone.conf
+        target: /etc/tinyassets/broker-rclone.conf
+        read_only: true
+        bind:
+          create_host_path: false
       - tinyassets-browser-keys:/var/lib/ta-broker
       - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd
     logging:

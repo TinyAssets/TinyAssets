@@ -23,6 +23,9 @@ class RoutingAuthority:
         self.server = server
         self.identities = server._owner_identities
         self.root = server._data_root
+        from tinyassets.broker.volume_lifecycle import VolumeLifecycle
+
+        self.volumes = VolumeLifecycle(self.identities)
         self._publication = threading.Lock()
         self._instance = None
 
@@ -72,6 +75,9 @@ class RoutingAuthority:
 
         with owner_lock(self.identities.path, owner):
             state = read(self.identities, owner).state
+            if state != "admitted":
+                asyncio.run_coroutine_threadsafe(
+                    self.server.withdraw_channels(owner), self.server._loop).result(30)
             try:
                 self.publish()
             except (OSError, RuntimeError):
@@ -82,14 +88,13 @@ class RoutingAuthority:
             if state != "admitted":
                 # C5 permits ack after all projections install OR old ingress is
                 # unreachable. Stopping it also retires in-flight route copies.
-                asyncio.run_coroutine_threadsafe(
-                    self.server.withdraw_channels(owner), self.server._loop).result(30)
-                operation, expected = ("withdraw", {"withdrawn": True}) if state == "erased" else (
-                    "retire", {"stopped": True})
-                if request(operation, owner) != expected:
+                uid = self.identities.owner_machine(owner)
+                if uid is None:
+                    raise LookupError("owner lifecycle binding missing")
+                if request("stop", uid=uid) != {"stopped": True}:
                     raise RuntimeError("admission withdrawal remains pending")
 
-    def wake(self, owner, *, scheduled=False):
+    def wake(self, owner, *, scheduled=False, image=None):
         from tinyassets.boxes.daemon_control import request
         from tinyassets.broker.box_admission import owner_record
 
@@ -98,7 +103,12 @@ class RoutingAuthority:
             # A new process cannot accept stale ingress after a failed withdrawal
             # delivery. Reinstallation precedes every cold lifecycle operation.
             self.publish()
-            result = request("wake", owner, record=record, scheduled=scheduled)
+            record = self.volumes.prepare(owner, record)
+            fields = {"image": image} if image is not None else {}
+            result = request("wake", owner, record=record, scheduled=scheduled, **fields)
+            if result == {"asleep": True}:
+                record = self.volumes.prepare(owner, record)
+                result = request("wake", owner, record=record, scheduled=scheduled, **fields)
             if result != {"uid": record["uid"]}:
                 raise RuntimeError("broker-bound box did not become ready")
             return result["uid"]
@@ -108,7 +118,7 @@ class RoutingAuthority:
 
         with owner_lock(self.identities.path, owner):
             read(self.identities, owner).require_work()
-            if request("retire", owner) != {"stopped": True}:
+            if request("stop", uid=self.identities.owner_machine(owner)) != {"stopped": True}:
                 raise RuntimeError("old box credential retirement remains pending")
             with closing(self.identities._connect(write=True)) as db, db:
                 db.execute("PRAGMA synchronous=FULL")
@@ -116,15 +126,44 @@ class RoutingAuthority:
                            (secrets.token_urlsafe(32), owner))
             self.publish()
 
-    async def run(self, stop):
-        while not stop.is_set():
+    def roll(self, image, uid=None):
+        from tinyassets.boxes.daemon_control import request
+
+        if uid is None:
+            return request("roll", image=image)
+        with closing(self.identities._connect(write=False)) as db:
+            row = db.execute("SELECT principal FROM owner_identities WHERE machine_id=?",
+                             (uid,)).fetchone()
+        if row is None:
+            raise LookupError("roll requires a permanent owner binding")
+        owner = row[0]
+        with owner_lock(self.identities.path, owner):
+            read(self.identities, owner).require_work()
+            status = self.volumes.host(owner, "status")
+            result = {"uid": self.identities.owner_machine(owner)}
+            if not status["awake"]:
+                return {**result, "outcome": "asleep"}
+            if status["image"] == image and not status["error"]:
+                return {**result, "outcome": "rolled"}
+            if not self.volumes.host(owner, "drain")["drained"]:
+                return {**result, "outcome": "deferred_busy"}
+            self.volumes.volume(owner, "sleep")
+            self.volumes.recover(owner)
             try:
-                await asyncio.to_thread(self.publish, only_restart=True)
+                self.wake(owner, image=image)
+                return {**result, "outcome": "rolled"}
             except Exception:
-                # Establish/retry delivery only; healthy installed routes never
-                # expire and forwarding does not depend on this control loop.
-                self._instance = None
-            try:
-                await asyncio.wait_for(stop.wait(), 1)
-            except TimeoutError:
-                pass
+                if not self.volumes.host(owner, "drain")["drained"]:
+                    raise RuntimeError("candidate cannot safely drain") from None
+                self.volumes.volume(owner, "sleep")
+                self.volumes.recover(owner)
+                self.wake(owner, image=status["image"])
+                return {**result, "outcome": "rolled_back", "reason": "health_failed"}
+
+    def tick(self):
+        try:
+            self.publish(only_restart=True)
+        except Exception:
+            self._instance = None
+        self.volumes.tick(self.wake)
+        self.server.deletion_jobs.tick()

@@ -304,6 +304,7 @@ class _Connection:
             frame = await self._queue.get()
             self._writer.write(frame)
             await self._writer.drain()
+            self._queue.task_done()
 
     def send(self, frame: bytes | list[bytes], stream: _Stream | None = None,
              *, final: bool = False) -> None:
@@ -373,50 +374,18 @@ class _Connection:
             raise rf.FrameError("unknown stream operation")
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
-        if (self._role == BOX_HOST and op == "BOX_ADMISSION_ERASE"
-                or self._role == OWNER and op == "OWNER_ADMISSION_ERASE"):
-            from tinyassets.broker.admission import local_mutate
-
+        if self._role == BOX_HOST and op == "LIFECYCLE_ADMIN":
             try:
-                expected = {"op", "principal"} | (
-                    {"generation", "token"} if self._role == OWNER else set())
-                if set(doc) != expected:
-                    raise ValueError("invalid erasure transition")
-                if self._role == OWNER and not self._server._fence.admits(
-                        doc["generation"], doc["token"]):
-                    raise Fenced("invalid fence")
-                await asyncio.to_thread(local_mutate, self._server._owner_identities.path,
-                                        doc["principal"], "erase")
-                closing = [task for task, (owner, _) in self._server._public_egress.channels.items()
-                           if owner == doc["principal"]]
-                closing.extend(c._handler for c in self._server._connections
-                               if doc["principal"] in c._principals)
-                self._server.close_owner(doc["principal"])
-                await asyncio.gather(*closing, return_exceptions=True)
-                answer = {"op": "OWNER_ADMISSION_ERASED"}
+                if set(doc) != {"op", "operation", "arguments"}:
+                    raise ValueError("invalid lifecycle command")
+                operations = {"roll": self._server.routing.roll,
+                              "wake": self._server.routing.wake,
+                              "sleep": self._server.routing.volumes.sleep,
+                              "restore": self._server.routing.volumes.restore}
+                result = await asyncio.to_thread(operations[doc["operation"]], **doc["arguments"])
+                answer = {"op": "LIFECYCLE_RESULT", "result": result}
             except Exception:
-                answer = {"op": "BOX_REFUSED"}
-            await self.send_async(rf.control(rf.CONNECTION, answer))
-            return
-        if self._role == BOX_HOST and doc == {"op": "BOX_VOLUME_PENDING"}:
-            from tinyassets.broker.owner_volumes import pending
-
-            result = await asyncio.to_thread(pending, self._server._owner_identities)
-            await self.send_async(rf.control(rf.CONNECTION, {
-                "op": "BOX_VOLUME_RESULT", "result": result}))
-            return
-        if self._role == BOX_HOST and op == "BOX_VOLUME":
-            from tinyassets.broker.owner_volumes import dispatch
-
-            try:
-                result = await asyncio.to_thread(dispatch, self._server._owner_identities, doc)
-                answer = {"op": "BOX_VOLUME_RESULT", "result": result}
-            except Exception:
-                answer = {"op": "BOX_REFUSED"}
-            await self.send_async(rf.control(rf.CONNECTION, answer))
-            return
-        if self._role == BOX_HOST and op == "BOX_RETIRE_ADMISSION":
-            answer = await asyncio.to_thread(self._retire_box_admission, doc)
+                answer = {"op": "LIFECYCLE_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
         if self._role == BOX_HOST and op in {"BOX_CHANNEL", "BOX_SHARED"}:
@@ -427,52 +396,37 @@ class _Connection:
 
             try:
                 owner = self._box_owner if self._role == BOX else doc.get("principal")
-                if op != "BOX_LIFECYCLE":
-                    await asyncio.to_thread(require_admitted, self._server._owner_identities, owner)
+                await asyncio.to_thread(require_admitted, self._server._owner_identities, owner)
             except Exception:
                 await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
                 return
         if self._role == BOX_HOST:
-            if op == "BOX_LIFECYCLE":
-                from tinyassets.broker.admission import OwnerErased
-                from tinyassets.broker.box_admission import OwnerSuspended, lifecycle
-
-                try:
-                    result = await asyncio.to_thread(lifecycle, self._server._owner_identities, doc)
-                    answer = {"op": "BOX_LIFECYCLE_IS", **result}
-                except OwnerErased:
-                    answer = {"op": "BOX_REFUSED"}
-                except LookupError:
-                    answer = {"op": "BOX_UNADMITTED"}
-                except OwnerSuspended:
-                    answer = {"op": "BOX_SUSPENDED"}
-                except Exception:
-                    answer = {"op": "BOX_REFUSED"}
-                await self.send_async(rf.control(rf.CONNECTION, answer))
-                return
             if op == "BOX_CREDENTIAL":
                 answer = await asyncio.to_thread(self._box_credential, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op not in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
                 raise rf.FrameError("box host channel is read-only admission")
+            from tinyassets.broker.admission import channel_lock
             from tinyassets.broker.box_admission import resolve
 
             try:
-                if op == "BOX_SHARED":
-                    await asyncio.to_thread(self._server._owner_identities.box_route,
-                                            doc["principal"])
-                    answer = {"op": "BOX_ADMITTED"}
-                else:
-                    answer = await asyncio.to_thread(resolve, self._server._owner_identities,
-                                                     {**doc, "op": "BOX_ADMISSION"})
-                if op in {"BOX_CHANNEL", "BOX_SHARED"}:
-                    self._principals.add(doc["principal"])
-                    self._box_owner, self._box_center = doc["principal"], doc["center"]
-                    self._role = BOX
+                async with channel_lock(self._server._owner_identities.path, doc["principal"]):
+                    if op == "BOX_SHARED":
+                        await asyncio.to_thread(self._server._owner_identities.box_route,
+                                                doc["principal"])
+                        answer = {"op": "BOX_ADMITTED"}
+                    else:
+                        answer = await asyncio.to_thread(resolve, self._server._owner_identities,
+                                                         {**doc, "op": "BOX_ADMISSION"})
+                    if op in {"BOX_CHANNEL", "BOX_SHARED"}:
+                        self._principals.add(doc["principal"])
+                        self._box_owner, self._box_center = doc["principal"], doc["center"]
+                        self._role = BOX
+                    await self.send_async(rf.control(rf.CONNECTION, answer))
+                    await self._queue.join()
             except Exception:  # no authority or broker data on a refusal
-                answer = {"op": "BOX_REFUSED"}
-            await self.send_async(rf.control(rf.CONNECTION, answer))
+                await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
             return
         if self._role == BOX:
             if op == "NEXT_WAKE":
@@ -581,9 +535,6 @@ class _Connection:
         elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "RETIRE_OWNER":
-            answer = await asyncio.to_thread(self._retire_owner, doc)
-            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
             answer = await asyncio.to_thread(self._center_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -614,28 +565,6 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "MODEL_SOURCE":
             answer = await asyncio.to_thread(self._model_source, doc)
-            await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "CLOSE_OWNER_CHANNELS":
-            from tinyassets.broker.account_erasure import validate
-            from tinyassets.broker.admission import read
-
-            try:
-                if set(doc) != {"op", "principal", "command_center", "generation", "token"}:
-                    raise ValueError("unsupported closure fields")
-                validate(doc["principal"], doc["command_center"])
-                if (type(doc["generation"]) is not int or not isinstance(doc["token"], str)
-                        or not self._server._fence.admits(doc["generation"], doc["token"])):
-                    raise Fenced("invalid fence")
-                if (await asyncio.to_thread(
-                        read, self._server._owner_identities, doc["principal"])).state != "erased":
-                    raise ValueError("owner is not fenced")
-                self._server.close_owner(doc["principal"])
-                answer = {"op": "OWNER_CHANNELS_CLOSED"}
-            except Exception:
-                answer = {"op": "OWNER_CHANNELS_REFUSED"}
-            await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "ERASE_ACCOUNT":
-            answer = await asyncio.to_thread(self._erase_account, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "USAGE":
             answer = await asyncio.to_thread(self._usage, doc)
@@ -697,21 +626,28 @@ class _Connection:
         except Exception:  # noqa: BLE001 - no identity or persisted state on refusal
             return {"op": "BOX_REFUSED"}
 
-    def _stop_owner_box(self, owner, uid):
+    def _stop_owner_box(self, owner):
         from tinyassets.boxes.daemon_control import request
+        from tinyassets.broker.admission import owner_lock
 
-        if request("retire", owner) != {"stopped": True}:
-            raise RuntimeError("boxhostd did not acknowledge retirement")
+        with owner_lock(self._server._owner_identities.path, owner):
+            uid = self._server._owner_identities.owner_machine(owner)
+            if uid is None:
+                raise LookupError("owner lifecycle binding missing")
+            if request("stop", uid=uid) != {"stopped": True}:
+                raise RuntimeError("boxhostd did not acknowledge retirement")
 
     def _box_retire_center(self, doc):
         try:
             if set(doc) != {"op", "center"}:
                 raise ValueError("invalid retirement")
-            row = self._server._owner_identities.admission(
-                "retire", self._box_owner, doc["center"])
-            self._stop_owner_box(self._box_owner, row.machine)
-            return {"op": "BOX_RESULT", "result": {
-                "generation": row.generation, "machine": row.machine}}
+            from tinyassets.broker.admission import owner_lock
+            with owner_lock(self._server._owner_identities.path, self._box_owner):
+                row = self._server._owner_identities.admission(
+                    "retire", self._box_owner, doc["center"])
+                self._stop_owner_box(self._box_owner)
+                return {"op": "BOX_RESULT", "result": {
+                    "generation": row.generation, "machine": row.machine}}
         except Exception:
             return {"op": "BOX_REFUSED"}
 
@@ -860,41 +796,6 @@ class _Connection:
         except Exception:  # noqa: BLE001 - no persisted state on refusal
             return {"op": "SOLE_CENTER_REFUSED"}
 
-    def _retire_owner(self, doc):
-        try:
-            if (set(doc) != {"op", "principal", "generation", "token"}
-                    or type(doc["generation"]) is not int or not isinstance(doc["token"], str)):
-                raise ValueError("invalid owner retirement")
-            with self._server._fence.send(doc["generation"], doc["token"]):
-                # Opaque lifecycle operations require the permanent owner binding.
-                identities = self._server._owner_identities
-                if identities.owner_machine(doc["principal"]) is None:
-                    raise RuntimeError("owner deletion requires its permanent reservation")
-                from tinyassets.boxes.daemon_control import request
-
-                if request("destroy", doc["principal"]) != {"destroyed": True}:
-                    raise RuntimeError("boxhostd did not confirm owner destruction")
-            return {"op": "OWNER_RETIRED"}
-        except Exception:
-            return {"op": "OWNER_RETIRE_REFUSED"}
-
-    def _retire_box_admission(self, doc):
-        from tinyassets.broker.admission import read
-
-        try:
-            if (set(doc) != {"op", "principal", "uid"} or type(doc["uid"]) is not int
-                    or not 300001 <= doc["uid"] <= 399999):
-                raise ValueError("invalid admission retirement")
-            if read(self._server._owner_identities, doc["principal"]).state != "erased":
-                raise PermissionError("retirement requires an erasure fence")
-            identities = self._server._owner_identities
-            uid = identities.owner_machine(doc["principal"])
-            if uid != doc["uid"]:
-                raise PermissionError("retirement reservation differs")
-            return {"op": "BOX_ADMISSION_RETIRED"}
-        except Exception:
-            return {"op": "BOX_REFUSED"}
-
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
         from tinyassets.broker.owner_identities import CenterUnadmitted
@@ -908,42 +809,23 @@ class _Connection:
             with self._server._fence.send(doc["generation"], doc["token"]):
                 if self._server._owner_identities is None:
                     raise RuntimeError("owner identities are not initialized")
-                row = self._server._owner_identities.admission(
-                    doc["event"], doc["principal"], doc["center"])
-                if doc["event"] == "retire":
-                    self._stop_owner_box(doc["principal"], row.machine)
-                if doc["event"] == "admit" and self._server._policy_store is not None:
-                    self._server._policy_store.bootstrap_owner(doc["principal"])
-                if doc["event"] == "admit" and self._server._provision_box is not None:
-                    self._server._provision_box(doc["principal"], doc["center"])
-                return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
-                        "machine": row.machine}
+                from tinyassets.broker.admission import owner_lock
+                with owner_lock(self._server._owner_identities.path, doc["principal"]):
+                    row = self._server._owner_identities.admission(
+                        doc["event"], doc["principal"], doc["center"])
+                    if doc["event"] == "retire":
+                        self._stop_owner_box(doc["principal"])
+                    if doc["event"] == "admit" and self._server._policy_store is not None:
+                        self._server._policy_store.bootstrap_owner(doc["principal"])
+                    if doc["event"] == "admit" and self._server._provision_box is not None:
+                        self._server._provision_box(doc["principal"], doc["center"])
+                    return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
+                            "machine": row.machine}
         except CenterUnadmitted:
             # D218 retires a tree-less center only if the log admitted it.
             return {"op": "CENTER_ADMISSION_UNADMITTED"}
         except Exception:  # noqa: BLE001 - retry completes durable partial admission
             return {"op": "CENTER_ADMISSION_REFUSED"}
-
-    def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.broker.account_erasure import local_erase, validate
-
-        try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token"}:
-                raise ValueError("unsupported erasure fields")
-            validate(doc["principal"], doc["command_center"])
-            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
-                raise Fenced("invalid fence")
-            with self._server._fence.send(doc["generation"], doc["token"]):
-                counts = local_erase(self._server._ledger_for(doc["principal"]),
-                                     principal=doc["principal"],
-                                     command_center=doc["command_center"])
-                if self._server._policy_store is not None:
-                    erased = self._server._policy_store.erase(doc["principal"])
-                    if erased:
-                        counts["owner_policy"] = erased
-                return {"op": "ACCOUNT_ERASED", "counts": counts}
-        except Exception:  # noqa: BLE001 - no persisted values on the wire
-            return {"op": "ACCOUNT_ERASURE_REFUSED"}
 
     def _model_source(self, doc):
         from tinyassets.broker.owner_sources import publish
@@ -1298,114 +1180,121 @@ class _Connection:
             await refuse("refused")
             return
         self._principals.add(principal)
-        try:
-            from tinyassets.broker.admission import require_admitted
-
-            await asyncio.to_thread(require_admitted, self._server._owner_identities, principal)
-            ledger = self._server._ledger_for(principal)
-            _grant, resource = await asyncio.to_thread(
-                ledger.authorize_exact, universe_id=command_center, grant_id=grant_id,
-                connection_id=connection_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - mapped to a fixed class
-            name = type(exc).__name__
-            await refuse(name if name in ERROR_CLASSES else "GrantResolutionError")
-            return
-        if not self._server._fence.admits(generation, token):
-            await refuse("fenced")
-            return
-        digest = request_digest(grant_id=grant_id, connection_id=connection_id, verb=verb,
-                                request=request)
-        credit = doc.get("credit")
-        credit = min(max(credit, 0), MAX_WINDOW) if type(credit) is int else 0
-
-        def admit_and_start() -> str | None:
-            """One unit, run to the end even if the handler is cancelled: an
-            operation is never left reserved with no stream to settle it."""
+        from tinyassets.broker.admission import channel_lock
+        async with channel_lock(self._server._owner_identities.path, principal):
             try:
-                admission = self._server._ops.admit(namespace, op_id, digest)
-            except OpIdInvalid:
-                return "refused"
-            if admission.kind != "new":
-                return {"expired": "expired", "existing": "duplicate",
-                        "mismatch": "duplicate"}.get(admission.kind, "refused")
-            if self._closed.is_set():
-                self._server._ops.finish(namespace, op_id, "refused")
-                return "refused"
-            if self._server._policy_store is not None:
+                from tinyassets.broker.admission import require_admitted
+
+                await asyncio.to_thread(require_admitted, self._server._owner_identities, principal)
+                ledger = self._server._ledger_for(principal)
+                _grant, resource = await asyncio.to_thread(
+                    ledger.authorize_exact, universe_id=command_center, grant_id=grant_id,
+                    connection_id=connection_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - mapped to a fixed class
+                name = type(exc).__name__
+                await refuse(name if name in ERROR_CLASSES else "GrantResolutionError")
+                return
+            if not self._server._fence.admits(generation, token):
+                await refuse("fenced")
+                return
+            digest = request_digest(grant_id=grant_id, connection_id=connection_id, verb=verb,
+                                    request=request)
+            credit = doc.get("credit")
+            credit = min(max(credit, 0), MAX_WINDOW) if type(credit) is int else 0
+
+            def admit_and_start() -> str | None:
+                """One unit, run to the end even if the handler is cancelled: an
+                operation is never left reserved with no stream to settle it."""
                 try:
-                    store = self._server._policy_store
-                    spend = store.read(principal).document["spend"]
-                    if (doc.get("inference_usage") is not None
-                            and (spend["source_ceilings"] or any(
-                                spend[key] is not None for key in
-                                ("daily", "monthly", "transaction", "ask_above")))):
-                        store.decide(principal, center=command_center, action_class="spend",
-                                     connection=connection_id, source=connection_id)
-                        self._server._ops.finish(namespace, op_id, "refused")
-                        return "refused"
-                    raw_path = request.get("url") or request.get("path") or "/"
-                    parsed = urlsplit(raw_path)
-                    path = parsed.path or "/"
-                    action_class, operation = store.classify(
-                        principal, command_center, connection_id, verb, path)
-                    host = parsed.hostname or getattr(resource, "destination", "")
-                    policy = store.decide(
-                        principal, center=command_center, action_class=action_class,
-                        connection=connection_id, operation=operation, destination=host)
-                    if policy["decision"] != "allow":
-                        origin = (parsed.scheme or "https") + "://" + host.lower()
-                        if parsed.port and parsed.port != 443:
-                            origin += f":{parsed.port}"
-                        standing = (policy["decision"] in ("ask", "hold")
-                                    and store.allows_grant(
-                                        principal, center=command_center,
-                                        generation=policy["generation"],
-                                        decision_id=doc.get("policy_grant_ref"),
-                                        action_class=action_class, connection=connection_id,
-                                        operation=operation, origin=origin,
-                                        agent=doc.get("policy_agent"),
-                                        task_id=doc.get("policy_task_id") or ""))
-                        once = (policy["decision"] in ("ask", "hold") and not standing
-                                and store.consume_once(principal, doc.get("policy_approval"),
-                                                       digest, policy["generation"]))
-                        if not (standing or once):
-                            self._server._ops.finish(namespace, op_id, "refused")
-                            return "refused"
-                except Exception:  # noqa: BLE001 - policy unavailability never permits a send
+                    admission = self._server._ops.admit(namespace, op_id, digest)
+                except OpIdInvalid:
+                    return "refused"
+                if admission.kind != "new":
+                    return {"expired": "expired", "existing": "duplicate",
+                            "mismatch": "duplicate"}.get(admission.kind, "refused")
+                if self._closed.is_set():
                     self._server._ops.finish(namespace, op_id, "refused")
                     return "refused"
-            stream = _Stream(stream_id, generation, token, namespace, op_id,
-                             deadline=time.monotonic() + _stream_budget(request),
-                             credit=credit)
-            if verb.startswith(("git_read:", "git_write:")):
-                stream.authority = lambda: ledger.authorize_exact(
-                    universe_id=command_center, grant_id=grant_id, connection_id=connection_id)
-                if request.get("upload") is True:
-                    from tinyassets.broker.git_upload import Upload
+                if self._server._policy_store is not None:
+                    try:
+                        store = self._server._policy_store
+                        spend = store.read(principal).document["spend"]
+                        if (doc.get("inference_usage") is not None
+                                and (spend["source_ceilings"] or any(
+                                    spend[key] is not None for key in
+                                    ("daily", "monthly", "transaction", "ask_above")))):
+                            store.decide(principal, center=command_center, action_class="spend",
+                                         connection=connection_id, source=connection_id)
+                            self._server._ops.finish(namespace, op_id, "refused")
+                            return "refused"
+                        raw_path = request.get("url") or request.get("path") or "/"
+                        parsed = urlsplit(raw_path)
+                        path = parsed.path or "/"
+                        action_class, operation = store.classify(
+                            principal, command_center, connection_id, verb, path)
+                        host = parsed.hostname or getattr(resource, "destination", "")
+                        policy = store.decide(
+                            principal, center=command_center, action_class=action_class,
+                            connection=connection_id, operation=operation, destination=host)
+                        if policy["decision"] != "allow":
+                            origin = (parsed.scheme or "https") + "://" + host.lower()
+                            if parsed.port and parsed.port != 443:
+                                origin += f":{parsed.port}"
+                            standing = (policy["decision"] in ("ask", "hold")
+                                        and store.allows_grant(
+                                            principal, center=command_center,
+                                            generation=policy["generation"],
+                                            decision_id=doc.get("policy_grant_ref"),
+                                            action_class=action_class, connection=connection_id,
+                                            operation=operation, origin=origin,
+                                            agent=doc.get("policy_agent"),
+                                            task_id=doc.get("policy_task_id") or ""))
+                            once = (policy["decision"] in ("ask", "hold") and not standing
+                                    and store.consume_once(principal, doc.get("policy_approval"),
+                                                           digest, policy["generation"]))
+                            if not (standing or once):
+                                self._server._ops.finish(namespace, op_id, "refused")
+                                return "refused"
+                    except Exception:  # noqa: BLE001 - policy unavailability never permits a send
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return "refused"
+                stream = _Stream(stream_id, generation, token, namespace, op_id,
+                                 deadline=time.monotonic() + _stream_budget(request),
+                                 credit=credit)
+                if verb.startswith(("git_read:", "git_write:")):
+                    stream.authority = lambda: ledger.authorize_exact(
+                        universe_id=command_center, grant_id=grant_id, connection_id=connection_id)
+                    if request.get("upload") is True:
+                        from tinyassets.broker.git_upload import Upload
 
-                    stream.upload = Upload(lambda: self._checkpoint(stream), lambda: self.send(
-                        rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream))
-            with self._server._streams_lock:
-                self._server._streams[(self._key, stream_id)] = stream
-            try:
-                dispatch = self._server._dispatch_for(principal, command_center, grant_id,
-                                                      resource)
-                threading.Thread(
-                    target=self._run, args=(stream, dispatch, grant_id, verb, request,
-                                            doc.get("idle_s"), doc.get("inference_usage")),
-                    name=f"broker-stream-{stream_id}", daemon=True,
-                ).start()
-            except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
+                        stream.upload = Upload(lambda: self._checkpoint(stream), lambda: self.send(
+                            rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream))
                 with self._server._streams_lock:
-                    self._server._streams.pop((self._key, stream_id), None)
-                self._server._ops.finish(namespace, op_id, "refused")
-                return "refused"
-            return None
+                    self._server._streams[(self._key, stream_id)] = stream
+                try:
+                    dispatch = self._server._dispatch_for(principal, command_center, grant_id,
+                                                          resource)
+                    threading.Thread(
+                        target=self._run, args=(stream, dispatch, grant_id, verb, request,
+                                                doc.get("idle_s"), doc.get("inference_usage")),
+                        name=f"broker-stream-{stream_id}", daemon=True,
+                    ).start()
+                except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
+                    with self._server._streams_lock:
+                        self._server._streams.pop((self._key, stream_id), None)
+                    self._server._ops.finish(namespace, op_id, "refused")
+                    return "refused"
+                return None
 
-        refused = await asyncio.shield(asyncio.to_thread(admit_and_start))
-        if refused is not None:
-            await refuse(refused)
+            admission_task = asyncio.create_task(asyncio.to_thread(admit_and_start))
+            try:
+                refused = await asyncio.shield(admission_task)
+            except asyncio.CancelledError:
+                await admission_task
+                raise
+            if refused is not None:
+                await refuse(refused)
 
     def _checkpoint(self, stream: _Stream) -> None:
         if stream.cancelled or self._closed.is_set():

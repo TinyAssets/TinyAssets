@@ -232,7 +232,7 @@ def test_roll_socket_pins_broker_and_deploy_identity_and_refuses_router(rolling)
         )
     assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
     manager = rolling.manager
-    uid = manager.ensure_awake("a")
+    uid = rolling.wake("a")
     service = HostService(None, None, None, manager)
     stop = threading.Event()
     with tempfile.TemporaryDirectory(prefix="rollctl-") as directory:
@@ -252,7 +252,7 @@ role, image = int(sys.argv[1]), sys.argv[2]
 os.setgroups([1102])
 os.setgid(role)
 os.setuid(role)
-if role == 1001:
+if role in (0, 1001):
     for operation, fields in (("resolve", {"cleanup": False}),
                               ("release", {"lease": "l" * 43})):
         try:
@@ -269,26 +269,20 @@ if role == 1001:
         raise AssertionError("router gained deploy authority")
 else:
     assert request("roll", image=image) == {"uids": [300001], "asleep": 0}
-    assert request("roll", image=image, uid=300001) == {"uid": 300001, "outcome": "rolled"}
+    try:
+        request("roll", image=image, uid=300001)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("executor orchestrated owner rollout")
 '''
-            for role in (1001, 1002):
+            for role in (0, 1001, 1002):
                 result = subprocess.run([sys.executable, "-c", code, str(role), rolling.new],
                                         capture_output=True, text=True, timeout=15,
                                         env={**os.environ, "TINYASSETS_BOXES_RUN": directory})
                 assert result.returncode == 0, result.stderr
-            # The deploy caller uses the same kernel-authenticated root socket.
-            from tinyassets.boxes import daemon_control
-            previous = os.environ.get("TINYASSETS_BOXES_RUN")
-            os.environ["TINYASSETS_BOXES_RUN"] = directory
-            try:
-                assert daemon_control.request("roll", image=rolling.new) == {
-                    "uids": [uid], "asleep": 0}
-            finally:
-                if previous is None:
-                    os.environ.pop("TINYASSETS_BOXES_RUN")
-                else:
-                    os.environ["TINYASSETS_BOXES_RUN"] = previous
-            assert manager.boxes[uid].image == rolling.new
+            assert manager.boxes[uid].image == rolling.old
+
         finally:
             stop.set()
             listener.join(5)

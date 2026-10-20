@@ -131,9 +131,6 @@ class PolicyStore:
 
     def erase(self, owner: str) -> int:
         """Erase policy custody under terminal admission."""
-        from tinyassets.broker.admission import local_mutate
-
-        local_mutate(self._admissions.path, owner, "erase")
         path = self._path(owner)
         existed = path.exists()
         for suffix in ("", "-wal", "-shm", "-journal"):

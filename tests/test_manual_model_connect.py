@@ -231,13 +231,10 @@ def test_manual_full_2048_printable_key_is_accepted():
 
 
 def test_manual_deleted_account_cannot_deposit(rig):
-    from tinyassets.broker.account_erasure import ACCOUNT_SCOPE
-    from tinyassets.broker.owner_identities import _owner_request
+    from tinyassets.broker.admission import local_mutate
     from tinyassets.credential_vault import load_credential_vault
 
-    erased = _owner_request(rig, {"op": "ERASE_ACCOUNT", "principal": "owner",
-                                  "command_center": ACCOUNT_SCOPE})
-    assert erased["op"] == "ACCOUNT_ERASED"
+    local_mutate(rig / ".broker/state/owner-identities.db", "owner", "erase")
     response = deposit()
     assert response.status_code == 409
     assert load_credential_vault(rig / "u-owner") == []

@@ -18,6 +18,7 @@ import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import rpc_frames as rf
+from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.next_wake import FLOOR_SECONDS, NextWakeIndex
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.owner_reads import PlanMissing, Plans
@@ -39,7 +40,7 @@ def index(tmp_path):
             from tinyassets.broker.box_admission import provision
 
             provision(identities, tmp_path, owner, "cc-" + owner)
-    identities.retire_owner("retired")
+    local_mutate(identities.path, "retired", "erase")
     return NextWakeIndex(identities)
 
 
@@ -331,10 +332,23 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
             return path, secret_file
 
         monkeypatch.setattr(manager, "_paths", paths)
+        from tinyassets.boxes import daemon_control
+        from tinyassets.boxes.host_service import HostService
+        service = HostService(admission, manager.volumes, relays, manager)
+        def control(operation, owner=None, **fields):
+            result = service.lifecycle({"lifecycle": operation, **fields,
+                **({"owner": owner} if owner is not None else {})}, 1002)
+            if set(result) == {"error"}:
+                raise RuntimeError(result["error"])
+            return result
+        monkeypatch.setattr(daemon_control, "request", control)
+        routing = live.server.routing
+        routing.volumes.execute = control
+        monkeypatch.setattr(routing, "publish", lambda **kwargs: None)
         try:
-            manager.ensure_awake(owner)
+            routing.wake(owner)
             yield SimpleNamespace(root=tmp_path, owner=owner, uid=uid, manager=manager,
-                                  runtime=runtime, index=index, reports=reports,
+                                  runtime=runtime, index=index, reports=reports, wake=routing.wake,
                                   relays=relays, at=moment.timestamp() + 600,
                                   automation=automation)
         finally:
@@ -374,7 +388,7 @@ def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(slee
     assert not box.runtime.alive(box.uid)
     assert not (box.root / "executed").exists()
     (box.root / "clock").write_text(str(box.at))
-    waker = Waker(box.index, plan_store(box.index), wake=box.manager.ensure_awake,
+    waker = Waker(box.index, plan_store(box.index), wake=box.wake,
                   clock=lambda: box.at)
     asyncio.run(settled_tick(waker))
     await_report(box, box.at + 600)
@@ -384,7 +398,7 @@ def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(slee
     sleep_when_quiet(box)
     while not box.reports.empty():
         box.reports.get_nowait()
-    box.manager.ensure_awake(box.owner, scheduled=True)
+    box.wake(box.owner, scheduled=True)
     await_report(box, box.at + 600)
     assert (box.root / "executed").read_text().splitlines() == [box.automation.automation_id]
     with closing(sqlite3.connect(box.root / ".automations.db")) as db:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
 import threading
 import weakref
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,34 @@ def owner_lock(path, owner):
     """C5: wake and every admission/credential transition share one owner lock."""
     with transition_lock:
         return _owners.setdefault((Path(path), owner), threading.RLock())
+
+
+@asynccontextmanager
+async def channel_lock(path, owner):
+    """Hold the same thread-owned lifecycle lock across an async channel open."""
+    lock = owner_lock(path, owner)
+    loop = asyncio.get_running_loop()
+    acquired = asyncio.Event()
+    released = threading.Event()
+    finished = asyncio.Event()
+
+    def hold():
+        with lock:
+            if not released.is_set():
+                loop.call_soon_threadsafe(acquired.set)
+                released.wait()
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(finished.set)
+
+    threading.Thread(target=hold, daemon=True).start()
+    try:
+        await acquired.wait()
+        yield
+    finally:
+        released.set()
+        # A cancelled waiter must not delay withdrawal while it owns the lock.
+        if acquired.is_set():
+            await finished.wait()
 
 
 def register_authority(path, authority):

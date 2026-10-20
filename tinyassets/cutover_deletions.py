@@ -230,24 +230,19 @@ def finish(facts, shared, store, records):
     already wrote a receipt; all external effects must remain idempotent.
     """
     import hashlib
-    import secrets
     import sqlite3
     import time
     from contextlib import closing
 
     from tinyassets.box_layout_migration import _remove_tree
-    from tinyassets.broker.deletion_jobs import STEPS
+    from tinyassets.broker.deletion_jobs import STEPS, new_job
 
     previous = {job["id"]: job for job in records.records()}
     completed = 0
     for entry in facts.entries():
         key, owner = entry["digest"], entry["principal"]
-        job = previous.get(key) or {
-            "id": key, "owner": owner, "uid": None,
-            "status_token": secrets.token_urlsafe(32), "created_at": time.time(),
-            "completed_steps": [], "attempts": {}, "retry_at": 0,
-            "failed_step": None, "billing_cleanup": entry["receipt"].get("billing_cleanup", {}),
-            "results": {}, "origin": "cutover"}
+        job = previous.get(key) or new_job(owner, None, key=key)
+        job.update(origin="cutover", billing_cleanup=entry["receipt"].get("billing_cleanup", {}))
         job["completed_steps"] = []
         records.save(job)
         pending = entry["receipt"]["unfinished_phases"]
