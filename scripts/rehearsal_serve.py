@@ -232,10 +232,6 @@ def broker(directory, *, register=False):
             stop = asyncio.Event()
             from tinyassets.broker.waker import Waker
 
-            if not register:
-                # The native content venue installs its projection below. The
-                # separate registered production proof exercises actual push.
-                server.routing.publish = lambda **kwargs: None
             publication = asyncio.create_task(Waker(
                 server.next_wakes, identities.plans, wake=server.routing.wake,
                 lifecycle_tick=server.routing.tick, poll_seconds=1).run(stop))
@@ -412,7 +408,32 @@ def smoke(confirm=False):
                 raise RuntimeError("native lifecycle listener failed")
             time.sleep(.01)
         def resolve(name):
-            uid = lifecycle_request("wake", owner=name)
+            # Keep a real router receiver alive during the broker's wake and
+            # publication, just as the registered production launch does.
+            code = """
+import asyncio, sys
+from pathlib import Path
+from tinyassets.broker.owner_identities import wake_owner
+from tinyassets.broker.supervisor import BrokerSupervisor
+from tinyassets.router_credentials import serving
+from tinyassets.routing_snapshot import snapshot
+root = Path('/data')
+supervisor = BrokerSupervisor.from_boxhost(
+    root, socket_path=Path(sys.argv[1]), proof='synthetic-rehearsal-proof' * 2)
+supervisor.start()
+async def launch():
+    async with serving(root):
+        await asyncio.to_thread(wake_owner, root, principal=sys.argv[2])
+        snapshot(root).route(sys.argv[2])
+asyncio.run(launch())
+"""
+            result = subprocess.run(
+                ['setpriv', '--reuid=1001', '--regid=1001',
+                 '--groups=1100,1101,1102', '--bounding-set=-all', '--no-new-privs',
+                 sys.executable, '-c', code, str(state / 'broker.sock'), name],
+                capture_output=True, text=True, timeout=90)
+            assert result.returncode == 0, result.stderr
+            uid = next(box.uid for box in manager.boxes.values() if box.owner == name)
             return BoxRoute(run / "apps" / str(uid) / "app.sock", manager.boxes[uid].secret)
 
         from tinyassets.cutover_control import admit
@@ -710,7 +731,7 @@ print(json.dumps(key))
 
 def host_startup():
     """Production listeners with current opaque volume admission and pinned runsc."""
-    from rehearsal_launch import production_host
+    from rehearsal_launch import production_host, published_sleep
 
     runtime = Path('/run/tinyassets-boxhostd')
     state = runtime / 'broker'
@@ -718,6 +739,13 @@ def host_startup():
         process = subprocess.Popen([sys.executable, __file__, 'registered-broker', str(state)],
                                    stdout=output, stderr=output)
         try:
+            deadline = time.monotonic() + 30
+            while not (state / 'broker.sock').exists():
+                if process.poll() is not None or time.monotonic() > deadline:
+                    output.seek(0)
+                    raise RuntimeError('startup broker did not start: ' +
+                                       output.read().decode(errors='replace'))
+                time.sleep(.05)
             owners = [row['principal'] for row in json.loads(
                 Path('/data/.owner-cutover.json').read_text())['plan']]
             code = """
@@ -748,10 +776,13 @@ asyncio.run(probe())
                 output.seek(0)
                 raise RuntimeError('host startup failed: ' + result.stderr +
                                    output.read().decode(errors='replace'))
-            from tinyassets.broker.lifecycle_control import request
             for owner in owners:
-                request("sleep", owner=owner)
+                published_sleep(owner)
             print(json.dumps({'owners': len(owners)}))
+        except BaseException:
+            output.seek(0)
+            sys.stderr.write(output.read().decode(errors='replace'))
+            raise
         finally:
             process.terminate()
             process.wait(15)

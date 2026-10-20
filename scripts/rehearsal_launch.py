@@ -112,6 +112,41 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
             (installed / "harness-current").unlink()
 
 
+def published_sleep(owner_name):
+    """Prove completion, including a busy stop resumed by the existing waker."""
+    import sqlite3
+    from contextlib import closing
+
+    from tinyassets.broker.lifecycle_control import request
+
+    def snapshot():
+        with closing(sqlite3.connect('/data/.broker/state/owner-identities.db')) as db:
+            return db.execute('SELECT snapshot_id,work FROM owner_volumes WHERE principal=?',
+                              (owner_name,)).fetchone()
+
+    previous = snapshot()[0]
+    try:
+        request("sleep", owner=owner_name)
+    except RuntimeError:
+        # A busy executor leaves the broker's durable snapshot intent. Do not
+        # retry the command or bypass drain; prove the waker finishes that work.
+        reference, work = snapshot()
+        if work is None:
+            if reference != previous:
+                return
+            raise
+        if json.loads(work)["kind"] != "snapshot":
+            raise
+    deadline = time.monotonic() + 180
+    while True:
+        reference, work = snapshot()
+        if reference != previous and work is None:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("broker did not publish its pending sleep snapshot")
+        time.sleep(.05)
+
+
 def production_launch(owner_name):
     """UID1001 asks the broker to wake, using production volumes, relay and runsc."""
     import sqlite3
@@ -177,9 +212,7 @@ asyncio.run(launch())
                     check=True, stdout=output, stderr=output, timeout=30)
                 # C13: the broker coordinates sleep and publication while the
                 # executor is still available. Host shutdown only executes.
-                from tinyassets.broker.lifecycle_control import request as lifecycle_request
-
-                lifecycle_request("sleep", owner=owner_name)
+                published_sleep(owner_name)
             current_snapshot, pending = snapshot()
             assert current_snapshot != previous_snapshot and pending is None, (
                 "production shutdown did not publish its completed owner snapshot")

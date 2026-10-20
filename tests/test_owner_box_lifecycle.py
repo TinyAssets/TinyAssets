@@ -458,4 +458,3 @@ def test_erasure_refuses_broker_restart_and_host_has_no_restart_intent(fleet):
     fleet.routing.volumes.tick(fleet.wake)
     assert not fleet.runtime.live
     assert len(fleet.runtime.starts) == 1
-

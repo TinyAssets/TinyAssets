@@ -59,4 +59,3 @@ class RemoteRecords:
 
     def records(self):
         return [self.load(key) for key in self.execute("list", {})]
-
