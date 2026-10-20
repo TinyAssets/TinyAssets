@@ -10,7 +10,6 @@ import hmac
 import json
 import secrets
 import sqlite3  # noqa: F401 - the flow store's driver, patched here by tests
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -118,7 +117,6 @@ def load_preset(preset_id: str, *, require_manual_key: bool = False) -> Acquisit
 @dataclass(frozen=True)
 class PendingFlow:
     owner: str
-    universe_id: str
     preset_id: str
     preset_digest: str
     challenge: str
@@ -127,25 +125,16 @@ class PendingFlow:
     request_ref: str = ""
 
 
-@contextmanager
-def _authority(owner: str, universe_id: str):
-    """Resolve only broker admission; no owner store is available at the door."""
-    from tinyassets.api.helpers import _base_path
-
-    base = _base_path()
-    yield base
-
-
 _flows = pkce.flows_db
 _challenge = pkce.challenge_for
 is_callback_path = pkce.is_callback_path
 
 
-def begin_flow(*, owner: str, universe_id: str, preset_id: str,
+def begin_flow(*, owner: str, preset_id: str,
                challenge: str, public_resource: str, request_ref: str = "") -> dict[str, str | int]:
-    """No network; caller resolves home and empty state before durable binding."""
-    if not owner or not universe_id:
-        raise HostedAuthError("current_home_required", 409)
+    """No network; the authenticated owner selects the durable binding."""
+    if not owner:
+        raise HostedAuthError("owner_required", 409)
     if not isinstance(challenge, str) or not _HANDLE.fullmatch(challenge):
         raise HostedAuthError("invalid_pkce_challenge")
     try:
@@ -158,7 +147,9 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
     if not valid:
         raise HostedAuthError("public_callback_unavailable", 503)
     preset = load_preset(preset_id)
-    with _authority(owner, universe_id) as base, _flows(base) as (conn, now):
+    from tinyassets.api.helpers import _base_path
+
+    with _flows(_base_path()) as (conn, now):
         total, mine = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(owner_user_id = ?), 0) FROM hosted_model_flows",
             (owner,),
@@ -168,12 +159,12 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
         handle = secrets.token_urlsafe(32)
         callback_origin = f"{origin.scheme}://{origin.netloc}"
         callback = f"{callback_origin}{CALLBACK_PREFIX}{handle}"
-        conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                     (pkce.handle_digest(handle), owner, universe_id,
+        conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (pkce.handle_digest(handle), owner,
                       preset.id, preset.digest, challenge, callback_origin, now,
                       now + FLOW_TTL_SECONDS, request_ref))
     return {
-        "flow": handle, "center": universe_id,
+        "flow": handle,
         "authorize_url": preset.authorize_url + "?" + urlencode({
             **dict(preset.authorize_params),
             "callback_url": callback, "code_challenge": challenge,
@@ -184,30 +175,29 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
     }
 
 
-def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> PendingFlow:
+def take_flow(*, handle: str, owner: str, verifier: str) -> PendingFlow:
     """One terminal exchange attempt, not a retryable provider request.
 
     Invalid/foreign attempts cannot consume the owner's flow. Once taken, even
     an uncertain network outcome requires explicit reauthorization, never replay.
-    Current-home equality is necessary but callers must also recheck admin/setup.
     """
     if not isinstance(handle, str) or not _HANDLE.fullmatch(handle) or not owner:
         raise HostedAuthError("unknown_model_connection", 404)
-    with _authority(owner, universe_id) as base, _flows(base) as (conn, now):
+    from tinyassets.api.helpers import _base_path
+
+    with _flows(_base_path()) as (conn, now):
         digest = pkce.handle_digest(handle)
         row = conn.execute("SELECT * FROM hosted_model_flows WHERE handle_digest = ?",
                            (digest,)).fetchone()
         if row is None or owner != row["owner_user_id"]:
             raise HostedAuthError("unknown_model_connection", 404)
-        flow = PendingFlow(row["owner_user_id"], row["bound_home_id"], row["preset_id"],
+        flow = PendingFlow(row["owner_user_id"], row["preset_id"],
                            row["preset_digest"], row["challenge"],
                            row["callback_origin"] + CALLBACK_PREFIX + handle, row["expires_at"],
                            row["request_ref"])
         if not (row["created_at"] <= now < flow.expires_at
                 and 0 < flow.expires_at - row["created_at"] <= FLOW_TTL_SECONDS):
             raise HostedAuthError("model_connection_expired", 409)
-        if universe_id != flow.universe_id:
-            raise HostedAuthError("current_home_changed", 409)
         if not isinstance(verifier, str) or not _VERIFIER.fullmatch(verifier):
             raise HostedAuthError("invalid_pkce_verifier")
         if not hmac.compare_digest(_challenge(verifier), flow.challenge):
@@ -218,8 +208,6 @@ def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> Pe
                         (digest,)).rowcount != 1:
             raise HostedAuthError("unknown_model_connection", 404)
         return flow
-
-
 
 
 def endpoint_policy(preset: AcquisitionPreset) -> list[dict]:

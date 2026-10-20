@@ -775,6 +775,8 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
     elif fault == "connection_owner":
         with ledger._connect() as connection:
             connection.execute("UPDATE outbound_connections SET owner_user_id='acct_other'")
+            assert [row[0] for row in connection.execute(
+                "SELECT DISTINCT owner_user_id FROM outbound_connections")] == ["acct_other"]
     else:
         other_ledger = ConnectionLedger(
             tmp_path / "other" / ".broker" / "outbound.db",

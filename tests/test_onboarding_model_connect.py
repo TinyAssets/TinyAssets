@@ -6,7 +6,6 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.support.admission import drive, projection
 from tests.support.model_connect import rig  # noqa: F401 - shared real-store fixture
 from tests.test_hosted_model_auth import CHALLENGE, VERIFIER, pending
 from tinyassets import onboarding
@@ -168,21 +167,20 @@ def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
     assert not pending()
 
 
-def test_retirement_between_ingress_and_durable_begin_cannot_create_flow(monkeypatch):
-    from tests.support.admission import Plans
-    from tinyassets.broker.owner_identities import OwnerIdentities
+def test_local_center_retirement_does_not_change_owner_connection_flow(monkeypatch):
+    from tinyassets.owner_centers import Centers
     from tinyassets.storage import data_dir
 
+    centers = Centers(data_dir())
+    centers.create("u-owner")
     original = hosted.begin_flow
 
     def delayed_begin(**kwargs):
-        identities = OwnerIdentities(data_dir() / ".broker/state/owner-identities.db",
-                                     plans=Plans(data_dir()))
-        drive(identities.admission("retire", kwargs["owner"], kwargs["universe_id"],
-            routing=projection(identities.path)))
+        centers.retire("u-owner")
         return original(**kwargs)
 
     monkeypatch.setattr(hosted, "begin_flow", delayed_begin)
     response = begin()
-    assert response.status_code == 404
-    assert not (data_dir() / ".hosted-model-auth.db").exists()
+    assert response.status_code == 200
+    assert centers.active() == []
+    assert pending(response.json()["flow"])["owner_user_id"] == "owner"

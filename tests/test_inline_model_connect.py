@@ -182,7 +182,7 @@ def test_foreign_user_cannot_see_consume_or_cancel_flow(operation, monkeypatch):
         assert post(operation, {"flow": flow["flow"]}).status_code == 404
     # Also exercise storage isolation even if the caller has its own valid home.
     with pytest.raises(hosted.HostedAuthError):
-        inline.take(owner="stranger", home="u-stranger", handle=flow["flow"])
+        inline.take(owner="stranger", handle=flow["flow"])
     with inline.flows() as conn:
         assert conn.execute("SELECT status FROM inline_model_flows").fetchone()[0] == "ready"
 

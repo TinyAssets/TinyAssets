@@ -33,9 +33,9 @@ live=SimpleNamespace(socket_path=Path(data["socket"]), fence=lambda: tuple(data[
                      verify_broker=lambda _: None)
 supervisor.get_supervisor=lambda _: live
 try:
-    flow=auth.take_flow(handle=data['handle'], owner='user-a', universe_id='home-a',
+    flow=auth.take_flow(handle=data['handle'], owner='user-a',
                         verifier=data['verifier'])
-    print(json.dumps({'owner':flow.owner, 'home':flow.universe_id}))
+    print(json.dumps({'owner':flow.owner}))
 except auth.HostedAuthError as error:
     print(json.dumps({'error':error.code}))
 """
@@ -52,7 +52,7 @@ except auth.HostedAuthError as error:
 
 def test_new_process_redeems_pre_restart_binding_once():
     handle = begin()["flow"]
-    assert child_take(handle) == {"owner": "user-a", "home": "home-a"}
+    assert child_take(handle) == {"owner": "user-a"}
     with pytest.raises(auth.HostedAuthError, match="unknown_model_connection"):
         take(handle)
 
@@ -73,7 +73,7 @@ def test_stored_rows_exclude_raw_handle_verifier_code_and_key():
     with sqlite3.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(hosted_model_flows)")}
         doc = conn.execute("SELECT * FROM hosted_model_flows").fetchone()
-    assert columns == {"handle_digest", "owner_user_id", "bound_home_id", "preset_id",
+    assert columns == {"handle_digest", "owner_user_id", "preset_id",
                        "preset_digest", "challenge", "callback_origin", "created_at", "expires_at",
                        "request_ref"}
     assert handle not in doc and VERIFIER not in doc
@@ -85,16 +85,16 @@ def test_stored_rows_exclude_raw_handle_verifier_code_and_key():
 def test_pending_erasure_is_owner_scoped_even_after_home_changes():
     first = begin()["flow"]
     seed_home("user-a", "former-home-a")
-    former = begin(universe_id="former-home-a")["flow"]
-    second = begin(owner="user-b", universe_id="home-b")["flow"]
+    former = begin()["flow"]
+    second = begin(owner="user-b")["flow"]
     counts = {}
     _delete_satellite_rows(data_dir() / ".hosted-model-auth.db", principal="user-a",
                            home="new-home-a", counts=counts, label="hosted")
     assert counts == {"hosted:hosted_model_flows": 2}
     assert not pending(first)
     with pytest.raises(auth.HostedAuthError, match="unknown_model_connection"):
-        take(former, universe_id="former-home-a")
-    assert take(second, owner="user-b", universe_id="home-b").owner == "user-b"
+        take(former)
+    assert take(second, owner="user-b").owner == "user-b"
 
 
 def test_clock_rollback_rows_are_swept_without_blocking_capacity(monkeypatch):

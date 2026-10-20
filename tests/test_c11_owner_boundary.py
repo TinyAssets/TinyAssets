@@ -14,14 +14,31 @@ from tinyassets.owner_centers import Centers
 
 
 def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
+    from tests.support.admission import Plans, drive, projection
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.policy import PolicyStore
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
     shared, box = tmp_path / "shared", tmp_path / "box"
     shared.mkdir()
     box.mkdir()
-    with sqlite3.connect(shared / "identity.db") as db:
-        db.execute("CREATE TABLE owners(owner TEXT PRIMARY KEY)")
-        db.execute("INSERT INTO owners VALUES ('alice')")
-    (shared / "custody").mkdir()
-    (shared / "custody/opaque").write_bytes(b"synthetic shared state")
+    state = shared / ".broker/state"
+    state.mkdir(parents=True, mode=0o700)
+    state.parent.chmod(0o700)
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
+                                 plans=Plans(shared))
+    identities.resolve("alice", allocate=True)
+    drive(identities.admit("alice", routing=projection(identities.path)))
+    policy = PolicyStore(shared, identities)
+    policy.bootstrap()
+    assert policy.read("alice").generation == 1
+    ledger = ConnectionLedger(shared / ".broker/outbound.db", data_root=shared)
+    ledger.create_connection(connection_id="connection", owner_user_id="alice",
+        connection_class="http", connection_type="http", auth_scheme="none",
+        scopes=("GET",), provider="http", destination="synthetic",
+        credential_ref="vault://http/synthetic", allowed_endpoints=[{
+            "host": "service.invalid", "path_template": "/", "methods": ["GET"]}])
+    ledger.grant_connection(grant_id="grant", connection_id="connection", owner_user_id="alice")
     before = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))
     import os
     from types import SimpleNamespace

@@ -5626,7 +5626,7 @@
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset,
-          flow:result.flow,center:result.center,expires:Date.now()+result.expires_in*1000}));
+          center:typeof queueScope!=="undefined"?queueScope:"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(_e){
         if(epoch!==this.epoch) return;
@@ -7377,7 +7377,7 @@
           throw new Error("invalid_sign_in_response");
         }
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
-          flow:result.flow,center:result.center,expires:Date.now()+result.expires_in*1000}));
+          center:req.universe_id||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(err){
         sessionStorage.removeItem(this.storageKey);

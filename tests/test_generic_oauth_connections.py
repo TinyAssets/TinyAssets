@@ -791,7 +791,7 @@ const appendMessage=()=>{},refreshRail=async()=>{},frameTitle=r=>r.title;
 const sendTurn=(...args)=>turns.push(args);
 let historyLoaded=true;
 const fetch=async(url,o)=>{posts.push({url,body:JSON.parse(o.body)});
- return {ok:true,json:async()=>({flow:'f'.repeat(43),center:'center-a',expires_in:600,
+ return {ok:true,json:async()=>({flow:'f'.repeat(43),expires_in:600,
   authorize_url:'https://auth.tasklark.io/authorize?state='+'f'.repeat(43)})};};
 const setTimeout=()=>{};
 __SOURCE__
@@ -847,7 +847,8 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
 @pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 0)])
 def test_rail_sign_in_keeps_center_and_does_not_relay_a_chat(origin, source, turn_count):
     out = _run_rail("""
-const req={request_id:'r1',title:'Connect source',origin:__ORIGIN__,action:{type:'connect',
+const req={request_id:'r1',universe_id:'center-a',title:'Connect source',
+  origin:__ORIGIN__,action:{type:'connect',
   oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
 const b=body([]);ConnectOAuth.decorate(req,b.box,b.row,b.note);
 await b.box.children[1].onclick();

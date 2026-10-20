@@ -1,8 +1,8 @@
-"""`_connect_plan` decides exactly what main's inline connect checks decided.
+"""`_connect_plan` preserves policy conflicts with C11 owner-only grant authority.
 
 Isolation L3 (risk R6) moved `_connect_http`'s existing-policy conflict checks
 into `_connect_plan` so the broker's prepare/commit can share them. The
-original block is kept below, verbatim, as the executable specification; the
+original policy block remains below with the retired center condition removed; the
 matrix walks every field it reads, alone and in combination with the scope and
 endpoint shapes it branches on.
 """
@@ -25,7 +25,7 @@ SCHEME, CREDENTIAL_REF, GIT_HOST = "bearer", "vault://http/example-api", ""
 def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destination,
                         connection_id, grant_id, scheme, credential_ref, git_host,
                         requested_endpoints, http_scopes):
-    """origin/main `_connect_http` step 4: its code verbatim, comments dropped and
+    """Original `_connect_http` policy checks with C11 owner-only grant binding and
     the grant read injected, returning the plan instead of assigning locals."""
     legacy_scope_upgrade = False
     endpoints_extend = False
@@ -79,7 +79,6 @@ def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destinat
     if existing_grant is not None and (
         existing_grant.connection_id != connection_id
         or existing_grant.owner_user_id != actor
-        or existing_grant.universe_id != uid
         or existing_grant.revoked_at is not None
     ):
         return {"error": "connection_conflict", "resource": "grant"}
@@ -111,7 +110,7 @@ RESOURCE_FIELDS = {
     "git_host": "git.example.com",
 }
 GRANT_FIELDS = {"connection_id": "conn-other", "owner_user_id": "bob",
-                "universe_id": "cc-bob", "revoked_at": 1.0}
+                "revoked_at": 1.0}
 
 
 def _resource(scopes, stored_endpoints, **changes):
@@ -126,7 +125,7 @@ def _resource(scopes, stored_endpoints, **changes):
 
 def _grants():
     yield None
-    match = dict(connection_id=CONNECTION_ID, owner_user_id=ACTOR, universe_id=UID,
+    match = dict(connection_id=CONNECTION_ID, owner_user_id=ACTOR,
                  revoked_at=None)
     yield SimpleNamespace(**match)
     for field, value in GRANT_FIELDS.items():

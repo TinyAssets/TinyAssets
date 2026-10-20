@@ -315,7 +315,8 @@ def lifecycle(tmp_path, monkeypatch, request):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                              base_url=ORIGIN) as client:
                     return await client.post(("/app/connections" if operation == "disconnect" else
-                        "/app/model-connect/" + operation), json=body,
+                        "/app/model-connect/" + operation),
+                        json=body,
                         headers={"Origin": ORIGIN, "Cookie": "__Host-ta-owner=owner-cookie"})
         return asyncio.run(run())
 
@@ -373,6 +374,8 @@ policy_rules.classify = lambda *_: ("app.write", "POST")
 policy_rules.decide = lambda *_a, **_k: policy_rules.Decision(policy_rules.DO, None, "test_policy")
 destination = "model:openrouter_user_models_v1" if "openrouter.ai" in url else "fixture"
 grant_consent(home, sink=SINK, destination=destination, granted_by="owner")
+from tinyassets.owner_centers import Centers
+Centers(root).create("center")
 runtime = owner_runtime.start(Path(relay))
 try:
     packet = {"sink": SINK, "grant_id": grant, "connection_id": connection,
@@ -418,7 +421,7 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
             "oauth": {"scopes": ["tasks.write"]}}
     begin_op = "begin" if rig.kind == "preset" else "oauth_begin"
     foreign = rig.post(begin_op, {**body, "center": "foreign-center"})
-    assert foreign.status_code == 404
+    assert foreign.status_code == 400
     begun = rig.post(begin_op, body)
     assert begun.status_code == 200, begun.text
     if rig.kind != "preset":
@@ -426,7 +429,7 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
         assert query["client_id"] == [
             "registered-client" if rig.kind == "registered" else "public-client"]
         assert len(rig.registrations) == (rig.kind == "dcr")
-    assert begun.json()["center"] == "center"
+    assert "center" not in begun.json()
     flow = begun.json()["flow"]
     with pkce.flows_db(rig.router) as (db, _):
         table = "hosted_model_flows" if rig.kind == "preset" else "connection_oauth_flows"
@@ -530,6 +533,8 @@ root.mkdir(parents=True, exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
 os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
 owner_runtime._is_owner_mount = lambda p: p == root
+from tinyassets.owner_centers import Centers
+Centers(root).create("center")
 runtime = owner_runtime.start(Path(relay))
 try:
     data = json.loads(payload)
@@ -670,10 +675,10 @@ def test_other_auth_connect_box_call_disconnect(lifecycle):
         secret = DEPOSIT_SECRETS[rig.kind]
         if rig.kind == "url_secret":
             secret = "https://api.example.com/data/" + secret
-        body = {"center": "center", "request_ref": "box-request", "secret": secret,
+        body = {"request_ref": "box-request", "secret": secret,
                 "definition": {"destination": "fixture", "auth_scheme": rig.kind,
                                "endpoints": endpoints}}
-        assert rig.post("deposit", {**body, "center": "foreign-center"}).status_code == 404
+        assert rig.post("deposit", {**body, "center": "foreign-center"}).status_code == 400
         response = rig.post("deposit", body)
         assert response.status_code == 200, response.text
         receipt = response.json()
@@ -687,8 +692,7 @@ def test_other_auth_connect_box_call_disconnect(lifecycle):
     else:
         rows = connections(rig.router, principal="owner", command_center="center")
         incarnation = next(i for _, r, i in rows if r.connection_id == connection)
-        response = rig.post("disconnect", {"universe_id": "center",
-            "destination": "fixture", "incarnation": incarnation})
+        response = rig.post("disconnect", {"destination": "fixture", "incarnation": incarnation})
         assert response.status_code == 200, response.text
         assert response.json()["connection_removed"]
     _box_call(rig, grant, connection, succeeds=False)
@@ -731,7 +735,7 @@ def test_box_action_and_approval_link_then_ledger_completion(lifecycle):
         "request": [ref], "center": ["center"],
         "connection": [_ids(owner="owner", destination="fixture")[0]]}
     assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "pending"
-    body = {"center": "center", "request_ref": "unrelated-request",
+    body = {"request_ref": "unrelated-request",
             "secret": DEPOSIT_SECRETS["bearer"], "definition": {
                 "destination": "fixture", "auth_scheme": "bearer", "endpoints": endpoints}}
     assert rig.post("deposit", body).status_code == 200
@@ -766,7 +770,7 @@ def test_first_preset_confirm_then_default_agent_chat_in_box(lifecycle):
     assert done.status_code == 200, done.text
     receipt = done.json()
     assert receipt["model_confirmation"] == {
-        "grant_id": receipt["grant_id"], "universe_id": "center"}
+        "grant_id": receipt["grant_id"]}
     unprotected = _box_operation(rig, "model_offer_unprotected", {
         "grant_id": receipt["grant_id"]})
     assert unprotected == {"error": "interactive_approval_required", "assignment": None}

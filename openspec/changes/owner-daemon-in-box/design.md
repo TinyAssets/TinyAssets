@@ -608,7 +608,10 @@ source publication, replay and shared accounting select authenticated owners.
 The existing staged cutover drops custody with per-kind census counts, writes
 local center tables, and projects retained owner policy with its next digest
 and receipt. No credential ownership join, binding rebuild or service merge is
-implemented. Focused root integration: 152 passed. Full validation remains pending.
+implemented. Shared sign-in flow records contain only the authenticated owner
+and opaque handle, with no center column or comparison. Root owner-boundary
+proofs (real shared-store diffs and migration): 16 passed; all 35 structural
+guards: 966 passed. Full shard and archive validation remains pending.
 
 ### C12. Deploys are image-at-wake (T2)
 The research has no per-box rolling deploy. A deploy publishes the new image,

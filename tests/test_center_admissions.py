@@ -28,7 +28,7 @@ def rows(identities):
         return db.execute("SELECT * FROM owner_admission ORDER BY digest").fetchall()
 
 
-def test_admit_takes_machine_from_reservation_and_retry_is_idempotent(tmp_path):
+def test_owner_admission_retains_reserved_machine_and_secret_on_retry(tmp_path):
     identities = store(tmp_path, "alice", "bob")
     routing = projection(identities.path)
     assert drive(identities.admit("bob", routing=routing)) == OwnerIdentity(300002, 300002)
@@ -74,6 +74,8 @@ def test_missing_map_refuses_and_is_never_created(tmp_path):
     identities.path.unlink()
     with pytest.raises(sqlite3.OperationalError):
         drive(identities.admit("alice", routing=projection(identities.path)))
+    with pytest.raises(sqlite3.OperationalError):
+        identities.resolve("alice")
     assert not identities.path.exists()
 
 
@@ -87,7 +89,7 @@ def request(broker, **changes):  # noqa: F811
         return rf.read_frame_blocking(channel).control()
 
 
-def test_owner_channel_admission_retry_and_refusals(broker, tmp_path):  # noqa: F811
+def test_owner_admission_rpc_has_no_center_or_machine_selector(broker, tmp_path):  # noqa: F811
     refused = {"op": "OWNER_ADMIT_REFUSED"}
     broker.server._owner_identities = None
     assert request(broker) == refused

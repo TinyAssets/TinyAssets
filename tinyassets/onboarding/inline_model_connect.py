@@ -31,14 +31,14 @@ def return_path(request, owner):
     return hosted.CALLBACK_PREFIX + handle + "?launch=1" if row else "/app"
 
 
-def discard_hosted(handle, owner, home):
+def discard_hosted(handle, owner):
     from tinyassets.api.helpers import _base_path
     from tinyassets.connection_oauth.pkce import handle_digest
 
     with hosted._flows(_base_path()) as (conn, _):
         conn.execute("DELETE FROM hosted_model_flows WHERE handle_digest=? "
-                     "AND owner_user_id=? AND bound_home_id=?",
-                     (handle_digest(handle), owner, home))
+                     "AND owner_user_id=?",
+                     (handle_digest(handle), owner))
 
 
 @contextmanager
@@ -46,7 +46,7 @@ def flows():
     with store() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS inline_model_flows ("
-            "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, home TEXT NOT NULL, "
+            "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, "
             "sealed BLOB NOT NULL, browser_hash TEXT NOT NULL DEFAULT '', "
             "status TEXT NOT NULL, expires REAL NOT NULL)"
         )
@@ -66,19 +66,19 @@ def unseal(handle, value):
     return json.loads(AESGCM(seal_key()).decrypt(value[:12], value[12:], handle.encode()))
 
 
-def begin(*, owner, home, preset_id, resource, owner_session=None, request_ref=""):
+def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise hosted.HostedAuthError("interactive_approval_required", 403)
     verifier = secrets.token_urlsafe(32)
-    result = hosted.begin_flow(owner=owner, universe_id=home, preset_id=preset_id,
+    result = hosted.begin_flow(owner=owner, preset_id=preset_id,
                                challenge=hosted._challenge(verifier), public_resource=resource,
                                request_ref=request_ref)
     handle = result["flow"]
     with flows() as conn:
         conn.execute("INSERT INTO inline_model_flows "
-                     "(handle_hash,owner,home,sealed,status,expires) VALUES (?,?,?,?,?,?)",
-                     (hashed(handle), owner, home, seal(handle, {
+                     "(handle_hash,owner,sealed,status,expires) VALUES (?,?,?,?,?)",
+                     (hashed(handle), owner, seal(handle, {
                          "verifier": verifier, "authorize_url": result["authorize_url"],
                          "preset_id": preset_id, "owner_session": owner_session}),
                       "waiting", time.time() + result["expires_in"]))
@@ -87,18 +87,18 @@ def begin(*, owner, home, preset_id, resource, owner_session=None, request_ref="
             "expires_in": result["expires_in"]}
 
 
-def take(*, owner, home, handle, cancel=False):
+def take(*, owner, handle, cancel=False):
     """Atomic consumption. Foreign callers never learn status or change a row."""
     with flows() as conn:
         row = conn.execute("SELECT * FROM inline_model_flows WHERE handle_hash=? "
-                           "AND owner=? AND home=?", (hashed(handle), owner, home)).fetchone()
+                           "AND owner=?", (hashed(handle), owner)).fetchone()
         if row is None:
             raise hosted.HostedAuthError("model_connection_expired", 409)
         status = row["status"]
         if cancel and status in {"waiting", "ready"}:
             conn.execute("UPDATE inline_model_flows SET status='cancelled',sealed=? "
                          "WHERE handle_hash=?", (seal(handle, {}), hashed(handle)))
-            discard_hosted(handle, owner, home)
+            discard_hosted(handle, owner)
             return {"status": "cancelled"}
         if status != "ready":
             return {"status": status}
@@ -158,7 +158,7 @@ def callback(request):
                      ("ready" if valid else "cancelled", seal(handle, data if valid else {}),
                       hashed(handle)))
         if not valid:
-            discard_hosted(handle, row["owner"], row["home"])
+            discard_hosted(handle, row["owner"])
         response = HTMLResponse("You can return to chat. " + (
             "Your connection will finish there." if valid else "Sign-in was cancelled."),
             headers=HEADERS)

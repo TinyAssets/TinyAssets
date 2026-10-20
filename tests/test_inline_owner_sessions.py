@@ -151,11 +151,11 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
 
     with flows_db(tmp_path) as (conn, now):
         for owner in ("alice", "bob"):
-            conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?,?)",
-                         (owner, owner, "home", "preset", "digest", "challenge", "origin",
+            conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)",
+                         (owner, owner, "preset", "digest", "challenge", "origin",
                           now, now + 300, "opaque-request"))
-            conn.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (owner, owner, "home", "request", "digest", "challenge", "client",
+            conn.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (owner, owner, "request", "digest", "challenge", "client",
                           "redirect", now, now + 300, "{}", owner))
     with flows() as conn:
         conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
@@ -163,8 +163,8 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
                       time.time() + 300))
         for owner in ("alice", "bob"):
             for state in ("waiting", "ready"):
-                conn.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?,?)",
-                             (sessions.hashed(owner + state), owner, "home", b"sealed-code", "",
+                conn.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?)",
+                             (sessions.hashed(owner + state), owner, b"sealed-code", "",
                               state, time.time() + 300))
     sessions.revoke_owner("alice")
     sessions.revoke_owner("alice")  # Repeated logout is safe.
@@ -178,7 +178,7 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
     assert [(r[1], r[2]) for r in rows if r[0] == "alice"] == [("cancelled", b"")] * 2
     assert [(r[1], r[2]) for r in rows if r[0] == "bob"] == [
         ("waiting", b"sealed-code"), ("ready", b"sealed-code")]
-    assert take(owner="alice", home="home", handle="aliceready")["status"] == "cancelled"
+    assert take(owner="alice", handle="aliceready")["status"] == "cancelled"
 
 
 @pytest.mark.parametrize("choice", ["approve", "deny"])

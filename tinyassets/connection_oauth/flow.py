@@ -63,15 +63,15 @@ def action_digest(action: dict[str, Any]) -> str:
                           .encode("utf-8")).hexdigest()
 
 
-def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
+def begin(*, owner: str, request_id: str, challenge: str,
           public_resource: str, owner_session: dict | None = None,
           definition: dict[str, Any]) -> dict[str, Any]:
     """Start one sign-in for the offered definition. No token is involved."""
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise FlowError("interactive_approval_required", 403)
-    if not owner or not universe_id:
-        raise FlowError("current_home_required", 409)
+    if not owner:
+        raise FlowError("owner_required", 409)
     if not isinstance(challenge, str) or not pkce.HANDLE_RE.fullmatch(challenge):
         raise FlowError("invalid_pkce_challenge")
     from tinyassets.api.helpers import _base_path
@@ -105,10 +105,10 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
             raise FlowError("too_many_pending_connections", 429)
         conn.execute(
             "INSERT INTO connection_oauth_flows "
-            "(handle_digest, owner_user_id, universe_id, request_id, action_digest, challenge, "
+            "(handle_digest, owner_user_id, request_id, action_digest, challenge, "
             "client_id, redirect_uri, created_at, expires_at, approved_owner, definition_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (pkce.handle_digest(handle), owner, universe_id, request_id,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pkce.handle_digest(handle), owner, request_id,
              action_digest(definition), challenge, client_id, callback, now,
              now + pkce.FLOW_TTL_SECONDS, owner, json.dumps(definition)),
         )
@@ -122,14 +122,14 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
     if scopes:
         query["scope"] = " ".join(scopes)
     return {
-        "flow": handle, "center": universe_id,
+        "flow": handle,
         "authorize_url": offer["authorize_url"] + "?" + urlencode(query),
         "authorize_host": urlsplit(offer["authorize_url"]).hostname or "",
         "expires_in": pkce.FLOW_TTL_SECONDS,
     }
 
 
-def complete(*, owner: str, universe_id: str, handle: str, code: str,
+def complete(*, owner: str, handle: str, code: str,
              verifier: str, iss: str = "") -> dict[str, Any]:
     """Consume the flow once and ask the broker to exchange and commit custody."""
     if not isinstance(handle, str) or not pkce.HANDLE_RE.fullmatch(handle) or not owner:
@@ -150,8 +150,6 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
             raise FlowError("unknown_sign_in", 404)
         if flow["approved_owner"] != owner:
             raise FlowError("interactive_approval_required", 403)
-        if flow["universe_id"] != universe_id:
-            raise FlowError("current_home_changed", 409)
         if not hmac.compare_digest(pkce.challenge_for(verifier), flow["challenge"]):
             raise FlowError("invalid_pkce_verifier")
         # One redemption attempt: once taken, an uncertain outcome means sign
@@ -171,7 +169,7 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
         raise FlowError("issuer_missing", 409)
     from tinyassets.broker.model_connect import request
 
-    result = request(_base_path(), owner=owner, center=universe_id, document={
+    result = request(_base_path(), owner=owner, center=owner, document={
         "action": "oauth_exchange", "offer": offer, "client_id": flow["client_id"],
         "code": code, "verifier": verifier, "redirect_uri": flow["redirect_uri"],
         "request_ref": flow["request_id"], "destination": definition["destination"],

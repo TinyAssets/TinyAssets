@@ -312,3 +312,9 @@ shared layer SHALL hold no center admission table and no per-center store.
 - **WHEN** an owner creates two connections to the same service
 - **THEN** each connection's handle selects its own credential and grant
 - **AND** another owner cannot read, dispatch or revoke either connection
+
+#### Scenario: Sign-in flows bind only the authenticated owner
+- **WHEN** an owner starts and completes a connection sign-in
+- **THEN** the shared flow record is bound to that owner and an opaque flow handle, with no center column or comparison
+- **AND** a caller-supplied center field is refused, and foreign owners cannot consume the flow
+- **AND** PKCE, interactive-session proof and one-shot consumption remain required

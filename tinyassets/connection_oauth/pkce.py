@@ -54,31 +54,15 @@ def is_callback_path(path: str) -> bool:
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS hosted_model_flows ("
                  "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                 "bound_home_id TEXT NOT NULL, preset_id TEXT NOT NULL, "
-                 "preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+                 "preset_id TEXT NOT NULL, preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
                  "callback_origin TEXT NOT NULL, created_at REAL NOT NULL, "
-                 "expires_at REAL NOT NULL)")
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(hosted_model_flows)")}
-    if "request_ref" not in columns:
-        conn.execute("ALTER TABLE hosted_model_flows "
-                     "ADD COLUMN request_ref TEXT NOT NULL DEFAULT ''")
-    # request_id holds an opaque request reference. The door freezes the
-    # credential-free definition; it never resolves the box's pending row.
+                 "expires_at REAL NOT NULL, request_ref TEXT NOT NULL DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS connection_oauth_flows ("
                  "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                 "universe_id TEXT NOT NULL, request_id TEXT NOT NULL, "
-                 "action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+                 "request_id TEXT NOT NULL, action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
                  "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
-                 "created_at REAL NOT NULL, expires_at REAL NOT NULL)")
-
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(connection_oauth_flows)")}
-    if "definition_json" not in columns:
-        conn.execute("ALTER TABLE connection_oauth_flows "
-                     "ADD COLUMN definition_json TEXT NOT NULL DEFAULT '{}'")
-
-    if "approved_owner" not in columns:
-        conn.execute("ALTER TABLE connection_oauth_flows "
-                     "ADD COLUMN approved_owner TEXT NOT NULL DEFAULT ''")
+                 "created_at REAL NOT NULL, expires_at REAL NOT NULL, "
+                 "definition_json TEXT NOT NULL DEFAULT '{}', approved_owner TEXT NOT NULL)")
 
 
 @contextmanager

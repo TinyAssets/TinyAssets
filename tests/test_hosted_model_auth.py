@@ -1,4 +1,4 @@
-"""Hosted acquisition is owner/home-bound, one-shot, bounded and secret-blind."""
+"""Hosted acquisition is owner-bound, one-shot, bounded and secret-blind."""
 
 import asyncio
 import base64
@@ -50,7 +50,7 @@ def pending(handle=None):
 
 def begin(**kwargs):
     return auth.begin_flow(**{
-        "owner": "user-a", "universe_id": "home-a",
+        "owner": "user-a",
         "preset_id": "openrouter_user_models_v1", "challenge": CHALLENGE,
         "public_resource": "https://tinyassets.io/mcp", **kwargs,
     })
@@ -58,7 +58,7 @@ def begin(**kwargs):
 
 def take(handle, **kwargs):
     return auth.take_flow(**{
-        "handle": handle, "owner": "user-a", "universe_id": "home-a",
+        "handle": handle, "owner": "user-a",
         "verifier": VERIFIER, **kwargs,
     })
 
@@ -75,8 +75,8 @@ def test_authorize_url_uses_fixed_origin_and_distinct_callback():
     assert query["code_challenge"] == [CHALLENGE]
     assert query["code_challenge_method"] == ["S256"]
     assert VERIFIER not in json.dumps(result)
-    assert set(result) == {"flow", "center", "authorize_url", "display_name", "expires_in"}
-    assert result["center"] == "home-a"
+    assert set(result) == {"flow", "authorize_url", "display_name", "expires_in"}
+    assert pending(result["flow"])["owner_user_id"] == "user-a"
 
 
 @pytest.mark.parametrize("path", ["/app", "/app/model-callback/",
@@ -96,7 +96,7 @@ def test_rejects_unsafe_canonical_callback(resource):
 
 
 @pytest.mark.parametrize("changed,error", [
-    ({"owner": "user-b", "universe_id": "home-b"}, "unknown_model_connection"),
+    ({"owner": "user-b"}, "unknown_model_connection"),
     ({"verifier": "b" * 64}, "invalid_pkce_verifier"),
     ({"verifier": "é" * 64}, "invalid_pkce_verifier"),
 ])
@@ -109,9 +109,9 @@ def test_foreign_or_mismatched_attempt_does_not_consume(changed, error):
         take(handle)
 
 
-def test_foreign_center_does_not_consume_the_flow():
+def test_caller_center_selector_is_not_part_of_flow_authority():
     handle = begin()["flow"]
-    with pytest.raises(LookupError, match="center not found"):
+    with pytest.raises(TypeError, match="universe_id"):
         take(handle, universe_id="home-b")
     assert take(handle).owner == "user-a"
 
@@ -149,19 +149,19 @@ def test_pending_bounds_do_not_evict_another_owner(monkeypatch):
     first = begin()["flow"]
     with pytest.raises(auth.HostedAuthError, match="too_many_pending"):
         begin()
-    other = begin(owner="user-b", universe_id="home-b")["flow"]
+    other = begin(owner="user-b")["flow"]
     assert take(first)
-    assert take(other, owner="user-b", universe_id="home-b")
+    assert take(other, owner="user-b")
 
 
 def test_global_pending_bound_and_expiry_release_capacity(monkeypatch):
     monkeypatch.setattr(auth, "MAX_PENDING", 1)
     first = begin()["flow"]
     with pytest.raises(auth.HostedAuthError, match="too_many_pending"):
-        begin(owner="user-b", universe_id="home-b")
+        begin(owner="user-b")
     expiry = pending(first)["expires_at"]
     monkeypatch.setattr(auth.pkce.time, "time", lambda: expiry)
-    assert begin(owner="user-b", universe_id="home-b")
+    assert begin(owner="user-b")
     assert not pending(first)
 
 

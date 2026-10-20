@@ -269,19 +269,19 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             db.execute("INSERT INTO approval_handoffs VALUES (?,?,?,?,?)", (
                 owner_sessions.hashed(owner[0] * 43), owner, "request", "web", time.time() + 600))
         with inline_model_connect.flows() as db:
-            db.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?,?)", (
-                owner, owner, "home", b"secret", "browser", "ready", time.time() + 600))
+            db.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?)", (
+                owner, owner, b"secret", "browser", "ready", time.time() + 600))
         with flows_db(tmp_path) as (db, now):
             db.execute("INSERT INTO hosted_model_flows "
-                       "(handle_digest,owner_user_id,bound_home_id,preset_id,preset_digest,"
+                       "(handle_digest,owner_user_id,preset_id,preset_digest,"
                        "challenge,callback_origin,created_at,expires_at) "
-                       "VALUES (?,?,?,?,?,?,?,?,?)", (
-                owner, owner, "home", "preset", "digest", "challenge", "origin", now, now + 500))
+                       "VALUES (?,?,?,?,?,?,?,?)", (
+                owner, owner, "preset", "digest", "challenge", "origin", now, now + 500))
             db.execute("INSERT INTO connection_oauth_flows "
-                       "(handle_digest,owner_user_id,universe_id,request_id,action_digest,challenge,"
+                       "(handle_digest,owner_user_id,request_id,action_digest,challenge,"
                        "client_id,redirect_uri,created_at,expires_at,approved_owner) "
-                       "VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
-                owner, owner, "home", "request", "digest", "challenge", "client", "redirect",
+                       "VALUES (?,?,?,?,?,?,?,?,?,?)", (
+                owner, owner, "request", "digest", "challenge", "client", "redirect",
                 now, now + 500, owner))
     # Multiple live keys must all be revoked, including keys beyond the fixture key.
     extra = ApiKeyStore(tmp_path).mint("alice", name="extra", scopes=[], authority=None)
@@ -310,6 +310,7 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             assert (await client.get(revoked.json()["status_url"] + "?format=json")).json()[
                 "status"] == "deleted"
             assert read(admitted, "alice").state == "erased"
+            assert read(admitted, "bob").state == "admitted"
             assert not (boxes.roots["alice"] / "cc-alice").exists()
             assert not boxes.runtime.alive(admitted.owner_machine("alice"))
             assert boxes.runtime.alive(admitted.owner_machine("bob"))

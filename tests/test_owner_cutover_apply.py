@@ -598,6 +598,11 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         assert db.execute('SELECT id FROM author_definitions').fetchall() == [
             ('public-definition',)]
     assert not (data / '.platform/credential-vaults').exists()
+    with closing(sqlite3.connect(data / '.broker/outbound.db')) as db:
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='outbound_connections'"
+                          ).fetchall() == []
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='outbound_connection_grants'"
+                          ).fetchall() == []
     after = _fingerprint(data), _fingerprint(store)
     migration.apply(*cutover)
     assert (_fingerprint(data), _fingerprint(store)) == after
