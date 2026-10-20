@@ -778,10 +778,12 @@ def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
     it here would have been the inconsistency. Found by re-reading my own gate
     against the deposit's before sending the review out.
     """
+    from tests.support.broker_double import seed_owner_admission
     from tests.support.connection_door import rotate_http
     from tinyassets.broker.vault import write_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
+    seed_owner_admission(base, principal="alice", center="u-1")
     _login("alice")
     write_credential_vault(
         udir, [{"credential_type": "http", "service": "elsewhere",
@@ -823,11 +825,13 @@ def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):
     refusal used to arrive AFTER the owner had pasted, because the preview did not
     check it (Codex refute-review, P2 #4) — and this module's own rule is that the
     owner never sees a tab that cannot be honoured."""
+    from tests.support.broker_double import seed_owner_admission
     from tests.support.connection_door import rotate_http
     from tinyassets.broker.vault import write_credential_vault
     from tinyassets.credential_vault import load_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
+    seed_owner_admission(base, principal="alice", center="u-1")
     _login("alice")
     # A legacy deposit: an http record with no ownership row at all.
     write_credential_vault(udir, [{"credential_type": "http", "service": "acme",
