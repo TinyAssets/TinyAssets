@@ -162,7 +162,11 @@ def test_client_pkce_or_bearer_renewal_cannot_mint_owner_proof(login, grant):
     asyncio.run(run())
 
 
-def test_app_account_switch_revokes_previous_protected_session(login, monkeypatch):
+def test_app_account_switch_revokes_previous_protected_session(login, rig, monkeypatch):  # noqa: F811
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(rig, principal="other", center="u-other")
+
     async def run():
         async with browser() as client:
             await client.get("/app", params=await begin(client))

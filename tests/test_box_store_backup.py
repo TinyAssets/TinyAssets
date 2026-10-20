@@ -84,7 +84,7 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
     from tinyassets import restore_recovery as recovery
     if os.environ.get('TEST_AUTHORITIES') == 'available':
         async def recovered(*args, **kwargs):
-            return None
+            return True
         recovery.resume_deletion_jobs = recovered
         recovery.reconcile_authority = recovered
         from tinyassets import router_account_deletion as identity
@@ -100,7 +100,7 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
         server = SimpleNamespace(_data_root=root, _owner_identities=SimpleNamespace(
             _connect=lambda **kwargs: sqlite3.connect(root / '.broker/state/owner-identities.db')))
         import asyncio
-        server.routing = SimpleNamespace(changed=lambda owner: None)
+        server.routing = SimpleNamespace(changed=recovered)
         asyncio.run(recovery.platform_recovery(
             server, backup_time=layout['recovery']['backup_time'],
             now=layout['recovery']['restore_time']))

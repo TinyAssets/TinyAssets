@@ -48,7 +48,10 @@ async def probe():
     from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.owner_reads import Plans
 
-    projection = SimpleNamespace(changed=lambda owner: None)
+    async def changed(owner):
+        pass
+
+    projection = SimpleNamespace(changed=changed)
     root, store = Path("/venue"), Path("/venue/owners")
     store.mkdir(parents=True)
     disk = root / "store.img"
