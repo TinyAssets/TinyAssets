@@ -391,7 +391,7 @@ The overlapping ledger, plan, revocation and center-eligibility reader decisions
 are removed. This completes neither the b2 authority deletion nor b3 deletion job,
 b4 routing snapshot/secret persistence or b5 recovery. Those remain lane b work.
 
-**Lane b2a implementation (local validation in progress):** deletion is now a
+**Lane b2a implementation:** deletion is now a
 broker job whose authoritative records and billing receipts are transported by
 rclone to the backup destination. The router's orchestration and retry loop are
 deleted. The HTTP door returns 202 only after erased admission and ingress/egress
