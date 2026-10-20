@@ -19,6 +19,6 @@ def test_local_membership_never_calls_shared_admission(tmp_path, monkeypatch):
                        "configured_box_provider")
     assert admit_center(tmp_path, principal="alice", center="cc-a") is None
     assert Centers(tmp_path).active() == ["cc-a"]
-    retire_center("cc-a")
+    retire_center(tmp_path, center="cc-a")
     assert Centers(tmp_path).active() == []
     assert {p.name for p in tmp_path.iterdir()} == {".centers.db"}

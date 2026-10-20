@@ -307,7 +307,7 @@ def test_box_shared_channel_rechecks_owner_admission_on_every_read(box):
             "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
         from tinyassets.boxes.lifecycle import retire_center
 
-        retire_center("center")
+        retire_center(box.root, center="center")
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {
             "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
@@ -365,7 +365,7 @@ def test_local_center_retirement_and_owner_channel_do_not_share_authority(box):
 
     admit_center(box.root, principal="owner", center="retired")
     before = _fingerprint(box.shared)
-    retire_center("retired")
+    retire_center(box.root, center="retired")
     with pytest.raises(PermissionError):
         admit_center(box.root, principal="owner", center="retired")
     with pytest.raises(PermissionError):

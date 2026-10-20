@@ -53,7 +53,7 @@ def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
     for name in ("one", "two", "three"):
         admit_center(box, principal="alice", center=name)
     assert centers.active() == ["one", "three", "two"]
-    retire_center("two")
+    retire_center(box, center="two")
     assert Centers(box).active() == ["one", "three"]
     assert admitted_owner(box, center="two") == "alice"
     after = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))

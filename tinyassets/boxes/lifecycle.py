@@ -11,10 +11,6 @@ def admit_center(data_root: str | Path, *, principal: str, center: str) -> None:
     Centers(runtime.root).create(center)
 
 
-def retire_center(center: str) -> None:
-    from tinyassets.owner_runtime import current
-
-    runtime = current()
-    if runtime is None:
-        raise PermissionError("center retirement requires the owner's box")
+def retire_center(data_root: str | Path, *, center: str) -> None:
+    runtime = require(Path(data_root) / center)
     Centers(runtime.root).retire(center)

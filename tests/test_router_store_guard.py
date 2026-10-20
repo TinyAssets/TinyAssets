@@ -170,9 +170,6 @@ _ROLE_DISPATCH = {
     ('broker/client.py', 'BrokerClient.http_connect'): (
         'Router deposits secrets; boxes connect without secrets.'
     ),
-    ('broker/owner_identities.py', 'admitted_owner'): (
-        'Router selects an admitted center; boxes use bound identity RPC.'
-    ),
     ('broker/supervisor.py', 'get_supervisor'): (
         'Router owns the process supervisor; boxes receive a channel adapter.'
     ),
