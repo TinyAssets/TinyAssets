@@ -181,8 +181,10 @@ async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypat
         await writer.drain()
         assert b"200" in await reader.readuntil(b"\r\n\r\n")
         if damage == "erased":
-            from tinyassets.broker.admission import local_mutate
-            await asyncio.to_thread(local_mutate, proxy._owner_identities.path, "alice", "erase")
+            from tinyassets.broker.admission import local_mutate, owner_call
+            path = proxy._owner_identities.path
+            await owner_call(path, "alice", local_mutate, path, "alice", "erase",
+                             routing=projection(path))
             proxy.close_owner("alice")
             assert read(proxy._owner_identities, "alice").state == "erased"
         else:
