@@ -81,6 +81,7 @@ def test_unpowered_recipient_adopts_only_after_consent_with_zero_provider_calls(
     import sqlite3
 
     from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import custody_namespace
     from tinyassets.providers.router import ProviderRouter
 
     definition_id = (_legacy(home) if publication == "system" else
@@ -89,7 +90,7 @@ def test_unpowered_recipient_adopts_only_after_consent_with_zero_provider_calls(
     # Remove Bob's synthetic connected source and saved assignment. The
     # recipient has no model authority, and the background consumer is off.
     write_credential_vault(
-        home / BOB_UNIVERSE, [], owner_user_id=BOB, universe_id=BOB_UNIVERSE,
+        custody_namespace(home, BOB), [], owner_user_id=BOB,
     )
     with sqlite3.connect(db_path(home)) as conn:
         conn.execute("DELETE FROM provider_assignments WHERE universe_id=?", (BOB_UNIVERSE,))

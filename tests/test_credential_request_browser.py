@@ -278,7 +278,7 @@ def test_door_deposit_stays_with_original_login_and_center(app_url, stage, statu
         else:
             assert len(calls) == 1
             assert calls[0]["authorization"] == "Bearer original-token"
-            assert calls[0]["body"]["center"] == "original-center"
+            assert "center" not in calls[0]["body"]
             assert calls[0]["body"]["secret"] == "test-only-secret"
         browser.close()
 
@@ -323,7 +323,7 @@ def test_fieldless_connection_poll_preserves_values_and_deposits_only_at_door(ap
         assert len(deposits) == 1
         assert json.loads(deposits[0]["secret"]) == values
         assert deposits[0]["request_ref"] == "four-fields"
-        assert deposits[0]["center"] == "home"
+        assert "center" not in deposits[0]
         secret_requests = [(url, body) for url, body in sent if "test-only-api_key" in body]
         assert len(secret_requests) == 1
         assert secret_requests[0][0].endswith("/app/model-connect/deposit")

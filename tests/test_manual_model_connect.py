@@ -54,7 +54,7 @@ def deposit(key="synthetic-private-key", **kwargs):
 
 def test_manual_deposit_commits_and_resumes_broker_grant(rig, monkeypatch):
     from tinyassets.broker import acquisition
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
     async def forbidden(**kwargs):
         raise AssertionError("manual acquisition must not exchange OAuth")
@@ -68,7 +68,8 @@ def test_manual_deposit_commits_and_resumes_broker_grant(rig, monkeypatch):
     assert result["status"] == "provisioned"
     assert result["request_ref"] == "opaque-request"
     assert "synthetic-private-key" not in response.text
-    assert load_credential_vault(rig / "u-owner")[0]["token"] == "synthetic-private-key"
+    assert load_credential_vault(custody_namespace(rig, "owner"))[0]["token"] == (
+        "synthetic-private-key")
     resumed = post("resume", {"preset_id": PRESET})
     assert resumed.json()["grant_id"] == result["grant_id"]
 
@@ -171,32 +172,32 @@ def test_installed_manual_policy_participates_in_preset_digest(installed_policy)
 
 @pytest.mark.parametrize("origin", ["", "http://tinyassets.io", "https://foreign.invalid"])
 def test_manual_wrong_origin_has_no_vault(rig, origin):
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
     assert deposit(origin=origin).status_code == 403
-    assert load_credential_vault(rig / "u-owner") == []
+    assert load_credential_vault(custody_namespace(rig, "owner")) == []
 
 
 @pytest.mark.parametrize("principal", [None, "collaborator"])
 def test_manual_requires_authenticated_home_owner(rig, principal):
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
     identity = (Identity(user_id=principal, username=principal, capabilities=["write"])
                 if principal else None)
     with identity_context(identity):
         assert deposit().status_code == (404 if principal else 401)
-    assert load_credential_vault(rig / "u-owner") == []
+    assert load_credential_vault(custody_namespace(rig, "owner")) == []
 
 
 def test_manual_redeposit_uses_the_existing_broker_grant(rig):
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
     first = deposit("first-key")
     assert first.status_code == 200
     response = deposit("replacement-key")
     assert response.status_code == 200
     assert response.json()["grant_id"] == first.json()["grant_id"]
-    assert load_credential_vault(rig / "u-owner")[0]["token"] == "replacement-key"
+    assert load_credential_vault(custody_namespace(rig, "owner"))[0]["token"] == "replacement-key"
 
 
 def test_manual_unexpected_error_never_echoes_or_logs_secret(monkeypatch, caplog):
@@ -233,10 +234,10 @@ def test_manual_full_2048_printable_key_is_accepted():
 
 def test_manual_deleted_account_cannot_deposit(rig):
     from tinyassets.broker.admission import local_mutate
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
     drive(local_mutate(rig / ".broker/state/owner-identities.db", "owner", "erase",
         routing=projection(rig / ".broker/state/owner-identities.db")))
     response = deposit()
-    assert response.status_code == 409
-    assert load_credential_vault(rig / "u-owner") == []
+    assert response.status_code == 404
+    assert load_credential_vault(custody_namespace(rig, "owner")) == []

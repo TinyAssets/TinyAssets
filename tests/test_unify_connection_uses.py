@@ -106,6 +106,7 @@ def _answer(request_id, values):
 
 def _broker_proxy(base, grant_id, destination, runtime):
     """The exact production broker dispatch, in process (no child spawn)."""
+    from tinyassets.credential_vault import custody_namespace
     from tinyassets.storage.outbound_connections import _build_credential_broker_dispatch
 
     dispatch = _build_credential_broker_dispatch({
@@ -113,7 +114,7 @@ def _broker_proxy(base, grant_id, destination, runtime):
         "allow_http_connections": True,
         "ledger_db_path": str((base / ".broker" / "outbound.db").resolve()),
         "data_root": str(base.resolve()),
-        "universe_dir": str((base / UID).resolve()),
+        "universe_dir": str(custody_namespace(base, OWNER)),
         "provider": "http",
         "destination": destination,
         "connection_type": "http",

@@ -14,7 +14,7 @@ from tinyassets.broker import credential_refresh, vault
 from tinyassets.broker.client import BrokerClient
 from tinyassets.broker.ops import new_op_id
 from tinyassets.connection_oauth import tokens
-from tinyassets.credential_vault import http_credential_record
+from tinyassets.credential_vault import custody_namespace, http_credential_record
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix broker transport")
 
@@ -23,8 +23,7 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix broker transpor
 def refresh_case(discovery, monkeypatch):
     with discovery.ledger._connect() as conn:
         conn.execute("UPDATE outbound_connections SET auth_scheme='oauth2'")
-    universe = discovery.root / "cc-alice"
-    universe.mkdir()
+    universe = custody_namespace(discovery.root, "alice")
     initial = tokens.TokenBundle("old-access", "https://issuer.example/token", "client",
                                  refresh_token="single-use", expires_at=1)
     vault.write_credential_vault(universe, [http_credential_record(

@@ -73,8 +73,8 @@ def _seed_outbound(base: Path) -> Path:
             )
             conn.execute(
                 "INSERT INTO outbound_connection_grants (grant_id, connection_id, "
-                "owner_user_id, universe_id, granted_at) VALUES (?, ?, ?, ?, 1.0)",
-                (f"grant-{tag}", f"conn-{tag}", sub, home),
+                "owner_user_id, granted_at) VALUES (?, ?, ?, 1.0)",
+                (f"grant-{tag}", f"conn-{tag}", sub),
             )
             conn.execute(
                 "INSERT INTO outbound_connector_artifacts (artifact_id, owner_user_id, "
@@ -527,8 +527,8 @@ def test_a_grant_the_person_made_to_another_universe_goes_with_their_connection(
     _exec(
         outbound,
         "INSERT INTO outbound_connection_grants (grant_id, connection_id, "
-        "owner_user_id, universe_id, granted_at) VALUES ('grant-a-in-b', 'conn-a', ?, ?, 1.0)",
-        (A, HOME_B),
+        "owner_user_id, granted_at) VALUES ('grant-a-in-b', 'conn-a', ?, 1.0)",
+        (A,),
     )
 
     receipt = delete_account(base, founder_sub=A)

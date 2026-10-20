@@ -153,8 +153,8 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
 
         get_supervisor(home.parent).server._owner_identities = OwnerIdentities(
             home.parent / ".broker/state/owner-identities.db", plans=Plans(home.parent))
-        document = {"center": home.name, **(
-            {"code_challenge": "a" * 43} if door == "oauth_begin" else {"preset_id": "sample"})}
+        document = ({"code_challenge": "a" * 43} if door == "oauth_begin"
+                    else {"preset_id": "sample"})
     body = json.dumps(document).encode()
 
     async def receive():

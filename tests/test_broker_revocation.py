@@ -7,6 +7,7 @@ import pytest
 from tests.support.broker_ipc import broker, discovery  # noqa: F401
 from tests.test_broker_disconnect import operation, removal  # noqa: F401
 from tinyassets.connection_oauth.tokens import TokenBundle, encode
+from tinyassets.credential_vault import custody_namespace
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def oauth(removal, monkeypatch, tmp_path):  # noqa: F811
         bundle = TokenBundle(access_token="access-value", refresh_token="refresh-value" if refresh
                              else "", token_url=entry["token_endpoint"], client_id="public-client",
                              provider_id="fixture" if registered else "")
-        write_credential_vault(removal.root / "cc-alice",
+        write_credential_vault(custody_namespace(removal.root, "alice"),
             [http_credential_record(destination="fixture", token=encode(bundle))],
             owner_user_id="alice", universe_id="cc-alice")
         with removal.ledger._connect() as db:
@@ -70,7 +71,7 @@ def test_disconnect_revokes_current_token_then_erases(oauth, registered, refresh
                     "token_type_hint": ["refresh_token" if refresh else "access_token"],
                     **({"client_id": ["public-client"], "client_secret": ["registered-secret"]}
                        if registered else {})}
-    assert load_credential_vault(rig.root / "cc-alice") == []
+    assert load_credential_vault(custody_namespace(rig.root, "alice")) == []
     assert rig.ledger.get_connection(rig.connection) is None
     from tinyassets.storage.outbound_connections import GrantResolutionError, _broker_channel
 
@@ -105,7 +106,7 @@ def test_revocation_failure_is_recorded_without_secrets_and_local_erase_wins(
     assert "revoke it at fixture (https://service.example.com)" in result["message"]
     assert "cannot retry" in result["message"]
     assert result["connection_removed"] and result["secrets_removed"] == 1
-    assert load_credential_vault(rig.root / "cc-alice") == []
+    assert load_credential_vault(custody_namespace(rig.root, "alice")) == []
     assert rig.ledger.get_grant(rig.grant) is None
     with rig.ledger._connect() as db:
         row = dict(db.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
@@ -163,7 +164,7 @@ def _door_remove(rig, monkeypatch):
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
-    raw = json.dumps({"universe_id": "cc-alice", "destination": "fixture",
+    raw = json.dumps({"destination": "fixture",
                       "incarnation": rig.incarnation}).encode()
 
     async def receive():

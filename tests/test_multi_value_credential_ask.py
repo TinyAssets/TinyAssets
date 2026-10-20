@@ -86,10 +86,10 @@ def test_all_four_values_reach_the_deposit(base) -> None:
     out = _owner_answer("u-1", request_id=asked["request_id"], values=dict(_VALUES))
     assert out.get("status") == "answered", out
 
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
     [record] = [
-        r for r in load_credential_vault(udir)
+        r for r in _http_records(udir)
         if str(r.get("credential_type") or "").lower() == "http"
     ]
     stored = json.loads(record["token"])
@@ -113,9 +113,9 @@ def test_a_missing_box_is_refused_rather_than_deposited_short(base) -> None:
     assert "missing" in json.dumps(out).lower(), out
     assert "access_token_secret" in json.dumps(out)
 
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
-    assert load_credential_vault(udir) == [], "nothing may be deposited"
+    assert _http_records(udir) == [], "nothing may be deposited"
 
 
 def test_the_refusal_names_the_empty_box(base) -> None:
@@ -142,10 +142,10 @@ def test_a_single_box_ask_is_unchanged(base) -> None:
                   values={"secret": "ghp_" + "x" * 36})
     assert out.get("status") == "answered", out
 
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
     [record] = [
-        r for r in load_credential_vault(udir)
+        r for r in _http_records(udir)
         if str(r.get("credential_type") or "").lower() == "http"
     ]
     assert record["token"] == "ghp_" + "x" * 36, "a bare token must stay bare"
@@ -169,10 +169,10 @@ def test_the_bundle_keys_are_the_field_names(base) -> None:
     asked = _four_box_ask("u-6")
     _owner_answer("u-6", request_id=asked["request_id"], values=dict(_VALUES))
 
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
     [record] = [
-        r for r in load_credential_vault(udir)
+        r for r in _http_records(udir)
         if str(r.get("credential_type") or "").lower() == "http"
     ]
     assert sorted(json.loads(record["token"])) == sorted(f["name"] for f in _OAUTH1A)
@@ -201,9 +201,9 @@ def test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential(base) 
     for absent in ("api_secret", "access_token", "access_token_secret"):
         assert absent in blob, f"the refusal must name {absent}"
 
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
-    assert load_credential_vault(udir) == [], "a partial credential was deposited"
+    assert _http_records(udir) == [], "a partial credential was deposited"
 
 
 def test_a_legacy_request_stored_under_the_old_rules_is_refused(base) -> None:
@@ -267,6 +267,6 @@ def test_a_legacy_request_stored_under_the_old_rules_is_refused(base) -> None:
     blob = json.dumps(out)
     assert "before the current rules" in blob, out
 
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
-    assert load_credential_vault(udir) == [], "a legacy row deposited anyway"
+    assert _http_records(udir) == [], "a legacy row deposited anyway"
