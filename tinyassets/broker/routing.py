@@ -171,7 +171,12 @@ class RoutingAuthority:
 
             layout = json.loads((self.root / ".layout.json").read_text())
             if layout["state"] == "recovering":
-                report = json.loads((self.root / ".platform-recovery.json").read_text())
+                try:
+                    report = json.loads((self.root / ".platform-recovery.json").read_text())
+                except ValueError:
+                    # C3: an interrupted receipt write cannot complete startup;
+                    # retry the same idempotent phase on the existing tick.
+                    report = {}
                 expected = layout["recovery"]
                 if any(report.get(key) != value for key, value in expected.items()):
                     platform_recovery(self.server, backup_time=expected["backup_time"],

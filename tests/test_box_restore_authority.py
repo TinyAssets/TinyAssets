@@ -853,3 +853,37 @@ def test_billing_follows_stripe_and_abuse_survives(startup, monkeypatch, billing
     admission.require_admitted(a.identities, "alice")
     with pytest.raises(admission.OwnerSuspended):
         admission.require_admitted(a.identities, "bob")
+
+
+def test_recovery_tick_retries_provider_failure_and_interrupted_receipt(startup, monkeypatch):
+    a = startup
+    available = stripe._get
+    def unavailable(path):
+        raise stripe.BillingUnavailable("synthetic unavailable")
+    monkeypatch.setattr(stripe, "_get", unavailable)
+    with pytest.raises(stripe.BillingUnavailable):
+        a.server.routing.tick()
+    assert not a.identities.work_ready
+    with pytest.raises(recovery.RecoveryUnavailable):
+        recovery.finish_platform(a.root)
+    (a.root / ".platform-recovery.json").write_text('{"backup_time":')
+    monkeypatch.setattr(stripe, "_get", available)
+    a.server.routing.tick()
+    assert not a.identities.work_ready
+    assert recovery.finish_platform(a.root)["owners_reconciled"] == 2
+
+
+def test_prebackup_completed_receipt_import_never_executes_or_allocates(startup):
+    a = startup
+    admission.local_mutate(a.identities.path, "gone", "erase")
+    job = new_job("gone", None, clock=lambda: 0)
+    job.update(completed_steps=list(STEPS))
+    job["results"]["receipt"] = {"deleted": True, "completed_at": .5}
+    a.remote.save(job)
+    a.events.clear()
+    a.server.routing.tick()
+    assert a.server.deletion_jobs.records.load(job["id"]) == job
+    assert admission.read(a.identities, "gone").state == "erased"
+    assert a.identities.owner_machine("gone") is None
+    assert not set(STEPS) & set(a.events)
+    assert recovery.finish_platform(a.root)["owners_reconciled"] == 2
