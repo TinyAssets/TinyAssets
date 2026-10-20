@@ -196,7 +196,8 @@ def test_api_key_http_same_owner_centers_share_grant(base: Path) -> None:
     r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
                  model="m", ref=_GRANT_ID)
     assert r["status"] == "registered"
-    assert r["ref"] == _GRANT_ID
+    from tinyassets.providers.definition import get_definition
+    assert get_definition("u-x", r["definition_id"]).ref == _GRANT_ID
 
 
 def test_api_key_http_cross_owner_grant_hidden(base: Path) -> None:

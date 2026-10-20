@@ -111,8 +111,8 @@ async def probe():
         manager = OwnerDaemons(runtime, Admission(), volumes, relays, sockets)
         for owner in ("sleeping", "suspended"):
             uid = identities.resolve(owner, allocate=True).uid
-            await owner_call(identities.path, owner, identities.admission,
-                             "admit", owner, owner, routing=projection)
+            await owner_call(identities.path, owner, identities.admit,
+                             owner, routing=projection)
             box_admission.provision(identities, shared, owner)
             identities.box_route(owner)
             identities.plans.apply(owner, tier="paid", event_created=1)

@@ -618,9 +618,9 @@ def test_a_sign_in_connection_is_not_rotated_by_pasting(base):
     """Its secret is a token bundle naming where every refresh token is sent, so
     only the owner's own sign-in may write it."""
     from tests.support.connection_door import rotate_http
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
-    udir = _make_universe(base, "u-1", admin="alice")
+    _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _deposit("u-1")
     # Move the stored connection to the sign-in scheme the way a real sign-in
@@ -645,7 +645,7 @@ def test_a_sign_in_connection_is_not_rotated_by_pasting(base):
     direct = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
     assert direct["error"] == "rotation_not_supported", direct
-    [record] = [r for r in load_credential_vault(udir)
+    [record] = [r for r in load_credential_vault(custody_namespace(base, "alice"))
                 if r.get("credential_type") == "http"]
     assert record["token"] == SECRET, "the old secret was overwritten anyway"
 
@@ -702,15 +702,8 @@ def test_same_owner_centers_rotate_one_connection_and_foreign_owner_cannot(base)
     assert _stored_secret(base, "u-1") == SECRET
 
 
-def test_a_grant_bound_to_another_universe_is_refused(base):
-    """The grant's `universe_id` is compared, and this is the test that says so.
-
-    Codex refute-review, P2 #6: `test_another_universe_cannot_replace_this_
-    universes_key` exercises only the id DERIVATION — delete the
-    `grant.universe_id != uid` check and it still passes. This one moves the
-    grant, so the derivation resolves the connection and only the explicit
-    comparison can refuse it.
-    """
+def test_a_grant_reassigned_to_another_owner_is_refused(base):
+    """The owner comparison refuses a corrupt or stale grant before rotation."""
     from tests.support.connection_door import rotate_http
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
@@ -724,9 +717,9 @@ def test_a_grant_bound_to_another_universe_is_refused(base):
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
         connection.execute(
-            "UPDATE outbound_connection_grants SET universe_id = 'u-2' "
+            "UPDATE outbound_connection_grants SET owner_user_id = 'bob' "
             "WHERE grant_id = ?", (grant_id,))
-    assert ledger.get_grant(grant_id).universe_id == "u-2", "the fixture did not move it"
+    assert ledger.get_grant(grant_id).owner_user_id == "bob", "the fixture did not move it"
 
     refused = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
@@ -777,12 +770,13 @@ def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
     from tests.support.broker_double import seed_owner_admission
     from tests.support.connection_door import rotate_http
     from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import custody_namespace
 
-    udir = _make_universe(base, "u-1", admin="alice")
+    _make_universe(base, "u-1", admin="alice")
     seed_owner_admission(base, principal="alice", center="u-1")
     _login("alice")
     write_credential_vault(
-        udir, [{"credential_type": "http", "service": "elsewhere",
+        custody_namespace(base, "alice"), [{"credential_type": "http", "service": "elsewhere",
                 "destination": "elsewhere", "token": SECRET}],
         owner_user_id="alice", universe_id="u-1")
     _ledger_connection(base, uid="u-1", destination="acme",
@@ -811,45 +805,23 @@ def test_a_scheme_with_no_pasted_key_is_refused_in_both_places(base):
         action={"type": "rotate_http", "destination": "acme"})
     assert railed["error"] == "ask_cannot_be_granted", railed
     assert "no pasted key" in railed["detail"]
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
-    assert load_credential_vault(base / "u-1") == []
+    assert load_credential_vault(custody_namespace(base, "alice")) == []
 
 
-def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):
-    """The vault refuses to overwrite an http slot it cannot prove is yours. That
-    refusal used to arrive AFTER the owner had pasted, because the preview did not
-    check it (Codex refute-review, P2 #4) — and this module's own rule is that the
-    owner never sees a tab that cannot be honoured."""
-    from tests.support.broker_double import seed_owner_admission
-    from tests.support.connection_door import rotate_http
+def test_missing_depositor_cannot_create_custody_or_a_card(base):
     from tinyassets.broker.vault import write_credential_vault
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace
 
-    udir = _make_universe(base, "u-1", admin="alice")
-    seed_owner_admission(base, principal="alice", center="u-1")
+    _make_universe(base, "u-1", admin="alice")
     _login("alice")
-    # A legacy deposit: an http record with no ownership row at all.
-    write_credential_vault(udir, [{"credential_type": "http", "service": "acme",
-                                   "destination": "acme", "token": SECRET}])
-    _ledger_connection(base, uid="u-1", destination="acme")
-
-    railed = _ask("u-1", kind="API", title="rotate", fields=[
-        {"name": "token", "type": "secret", "label": "API token"}],
-        action={"type": "rotate_http", "destination": "acme"})
-    # Under its OWN name, not flattened into `ask_cannot_be_granted`: there is no
-    # ask to fix here. The note is what says no tab is pending.
-    assert railed["error"] == "credential_ownership_transfer_unsupported", railed
-    assert "no recorded depositor" in railed["detail"], railed
-    assert "no tab was raised" in railed["note"], railed
-    assert _rail("u-1")["count"] == 0, "a tab was raised anyway"
-
-    direct = rotate_http(universe_id="u-1", payload=json.dumps({
-        "destination": "acme", "secret": REPLACEMENT}))
-    assert direct["error"] == "credential_ownership_transfer_unsupported", direct
-    [record] = [r for r in load_credential_vault(udir)
-                if r.get("credential_type") == "http"]
-    assert record["token"] == SECRET
+    namespace = custody_namespace(base, "alice")
+    with pytest.raises(ValueError, match="invalid owner principal"):
+        write_credential_vault(namespace, [{"credential_type": "http", "service": "acme",
+                                           "destination": "acme", "token": SECRET}])
+    assert not namespace.exists()
+    assert _rail("u-1")["count"] == 0
 
 
 def test_a_rotation_that_cannot_close_its_card_says_so(base):
@@ -1060,16 +1032,15 @@ def test_every_http_record_says_when_its_secret_was_stored(base):
     )
 
     _make_universe(base, "u-1", admin="alice")
-    udir = custody_namespace(base, "alice")
     _login("alice")
     _deposit("u-1")
-    [deposited] = [r for r in load_credential_vault(udir)
+    [deposited] = [r for r in load_credential_vault(custody_namespace(base, "alice"))
                    if r.get("credential_type") == "http"]
     first = deposited[HTTP_DEPOSITED_AT]
     assert first
 
     _rotate_through_the_rail("u-1")
-    [rotated] = [r for r in load_credential_vault(udir)
+    [rotated] = [r for r in load_credential_vault(custody_namespace(base, "alice"))
                  if r.get("credential_type") == "http"]
     assert rotated["token"] == REPLACEMENT
     assert rotated[HTTP_DEPOSITED_AT] >= first

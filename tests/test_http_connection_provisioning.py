@@ -185,7 +185,7 @@ def test_owner_provisions_http_connection_round_trip(base: Path) -> None:
     assert [e.host for e in resource.allowed_endpoints] == ["api.example.com"]
     grant = ledger.get_grant(grant_id)
     assert grant is not None
-    assert grant.universe_id == "u-owner"
+    assert grant.owner_user_id == "founder"
     assert grant.connection_id == conn_id
 
 
@@ -231,7 +231,7 @@ def _seed_legacy_http_connection(
     *,
     endpoints: Any = None,
     old_secret: str = "old-secret",
-    grant_universe: str | None = None,
+    grant_owner: str | None = None,
 ) -> tuple[Path, str, str]:
     """Write a PRE-FIX http connection: the legacy ("http",) scope token + an old
     secret + a grant carrying the legacy ``http_requests`` cap (the shape a
@@ -278,6 +278,11 @@ def _seed_legacy_http_connection(
 
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
+    if grant_owner:
+        with ledger._connect() as connection:
+            connection.execute("UPDATE outbound_connection_grants SET owner_user_id=? "
+                               "WHERE grant_id=?",
+                               (grant_owner, grant_id))
     assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
     return udir, conn_id, grant_id
 
@@ -331,7 +336,7 @@ def test_legacy_scope_untouched_on_grant_conflict(base: Path) -> None:
     """A grant-conflict refusal must leave the legacy ("http",) scope UNTOUCHED —
     the upgrade is deferred past the grant-conflict check."""
     udir, conn_id, _g = _seed_legacy_http_connection(
-        base, "u-legacy-grant", grant_universe="u-OTHER-universe"
+        base, "u-legacy-grant", grant_owner="other-owner"
     )
     _login("founder")
 
@@ -909,42 +914,16 @@ def test_create_failure_does_not_deposit_and_retry_succeeds(
     assert len(recs) == 1 and recs[0]["token"] == "founder-secret-v2"
 
 
-def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
-    """An http credential deposited BEFORE http ownership was recorded (a legacy /
-    owner-less vault record with no owner row) must not be silently overwritten by
-    an owned connect_http: the universe-wide guard cannot see an owner it never
-    recorded, so the deposit fails closed and the legacy secret is preserved. A
-    second admin cannot seize it; recovery needs a dedicated flow (Codex review)."""
+def test_owner_cannot_deposit_in_another_owners_custody(base: Path) -> None:
     from tinyassets.broker.vault import write_credential_vault
     from tinyassets.credential_vault import custody_namespace
-    from tinyassets.daemon_server import grant_universe_access
 
-    udir = _make_universe(base, "u-legacy", admin="founder")
-    grant_universe_access(
-        base, universe_id="u-legacy", actor_id="coadmin",
-        permission="admin", granted_by="founder",
-    )
-    # Simulate a legacy deposit: an http vault record with NO owner row (owner-less).
-    write_credential_vault(
-        custody_namespace(base, "founder"),
-        [{
-            "credential_type": "http",
-            "service": "webhook:acme",
-            "destination": "webhook:acme",
-            "token": "legacy-secret",
-        }],
-    )
-
-    # Neither a fresh admin nor the original founder may silently rewrite it.
-    for actor in ("coadmin", "founder"):
-        _login(actor)
-        result = _connect("u-legacy", secret=f"{actor}-secret")
-        assert result["error"] == ("not_found" if actor == "coadmin"
-                                   else "credential_ownership_transfer_unsupported"), (
-            actor, result,
-        )
-        recs = _http_records(udir)
-        assert len(recs) == 1 and recs[0]["token"] == "legacy-secret"  # untouched
+    target = custody_namespace(base, "founder")
+    with pytest.raises(PermissionError, match="authenticated owner"):
+        write_credential_vault(target, [{"credential_type": "http", "service": "webhook:acme",
+                                        "destination": "webhook:acme", "token": "synthetic"}],
+                               owner_user_id="coadmin")
+    assert not target.exists()
 
 
 # --------------------------------------------------------------------------- #

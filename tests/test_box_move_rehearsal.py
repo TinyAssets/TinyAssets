@@ -480,6 +480,7 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         "unadmitted_principal",
         "unknown_center",
         "orphan_reference",
+        "center_custody_reconnect",
     }
     import gc
 

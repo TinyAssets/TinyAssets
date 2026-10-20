@@ -551,7 +551,7 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     assert resource.auth_scheme == "oauth2"
     grant = ledger.require_active_grant(grant_id)
     assert grant.owner_user_id == OWNER
-    assert grant.universe_id == UID
+    assert grant.connection_id == connection_id
     assert grant.connection_id == connection_id
     bundle = _vault_bundle(app)
     assert bundle.token_url == f"https://{TOKEN}/token"
@@ -704,7 +704,7 @@ def test_oauth2_cannot_be_pasted_and_a_bundle_is_never_sent_as_a_key(universes):
             _build_http_secret_bundle(scheme, bundle)
 
 
-def test_an_oauth_connection_is_never_usable_by_another_universe(provider, app, tmp_path):
+def test_an_oauth_connection_is_never_usable_by_another_owner(provider, app, tmp_path):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
 
@@ -715,10 +715,13 @@ def test_an_oauth_connection_is_never_usable_by_another_universe(provider, app, 
     q = dict(parse_qsl(urlsplit(provider.authorize(begun.json()["authorize_url"])).query))
 
     with _as(OTHER):
-        # Another owner can neither start a sign-in on this request...
-        assert _post("oauth_begin", {"request_id": asked["request_id"],
-                                     "code_challenge": CHALLENGE}).status_code == 404
-        # ...nor redeem this owner's returned code, even with the right verifier.
+        # A request reference is correlation, never authority. Another owner
+        # can start their own flow for the same public connection definition.
+        own = _post("oauth_begin", {"request_id": asked["request_id"],
+                                    "code_challenge": CHALLENGE}, home=OTHER_UID)
+        assert own.status_code == 200
+        assert own.json()["flow"] != begun.json()["flow"]
+        # They still cannot redeem this owner's flow with the right verifier.
         stolen = _post("oauth_exchange", {"flow": q["state"], "code": q["code"],
                                           "code_verifier": VERIFIER})
         assert stolen.status_code == 404
