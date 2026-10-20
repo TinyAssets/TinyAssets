@@ -374,10 +374,12 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         migration, "_owner_plan",
         lambda *args: [migration.OwnerMove("person", 300001, ("c1",), 2 * 1024**3)],
     )
-    monkeypatch.setattr(
-        migration.subprocess, "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
-    )
+    real_run = subprocess.run
+    def run(command, *args, **kwargs):
+        if command[0] == "rclone":
+            return real_run(command, *args, **kwargs)
+        return subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(migration.subprocess, "run", run)
 
     def copy(source, target, uid):
         if copy_fails:
@@ -537,8 +539,11 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
             ))
         return info
 
+    real_run = subprocess.run
     def run(command, *args, **kwargs):
         argv = list(command)
+        if argv and argv[0] == "rclone":
+            return real_run(command, *args, **kwargs)
         if argv and argv[0] == "rsync" and "--dry-run" not in argv:
             source = Path(argv[-2])
             target = Path(argv[-1])

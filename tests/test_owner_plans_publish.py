@@ -164,6 +164,7 @@ def test_checkout_at_door_has_only_shared_account_state(tmp_path, monkeypatch):
     from tinyassets import billing
     from tinyassets.billing import stripe_adapter
 
+    seed_owner_admission(tmp_path, principal="owner", center="checkout-home")
     Plans(tmp_path).set_plan("owner", "free", event_created=0)
     seen = []
     monkeypatch.setattr(stripe_adapter, "checkout_params", lambda **kw: kw)

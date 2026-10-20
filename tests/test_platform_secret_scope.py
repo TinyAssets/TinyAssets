@@ -499,9 +499,10 @@ def test_a_source_that_cannot_be_read_installs_nothing(tmp_path):
 
 
 @_POSIX_SHELL
-def test_broker_receives_only_registered_oauth_environment(tmp_path):
+def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
     source, daemon = tmp_path / "env", tmp_path / "daemon.env"
-    source.write_text("STRIPE_SECRET_KEY=not-for-broker\n"
+    source.write_text("STRIPE_SECRET_KEY=synthetic-billing\n"
+                      "WORKOS_API_KEY=synthetic-identity\n"
                       "TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID=client\n"
                       "TINYASSETS_OAUTH_EXAMPLE_SECRET=private-fixture\n"
                       "TINYASSETS_OAUTH_DIRECTORY=/app/providers.json\n"
@@ -517,7 +518,9 @@ def test_broker_receives_only_registered_oauth_environment(tmp_path):
     broker = tmp_path / "broker.env"
     assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
                                  "TINYASSETS_OAUTH_EXAMPLE_SECRET",
-                                 "TINYASSETS_OAUTH_DIRECTORY"}
-    assert "private-fixture" not in result.stdout + result.stderr
+                                 "TINYASSETS_OAUTH_DIRECTORY", "STRIPE_SECRET_KEY",
+                                 "WORKOS_API_KEY"}
+    assert all(secret not in result.stdout + result.stderr
+               for secret in ("private-fixture", "synthetic-billing", "synthetic-identity"))
     service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["broker"]
     assert service["env_file"] == [{"path": "/etc/tinyassets/broker.env", "required": False}]
