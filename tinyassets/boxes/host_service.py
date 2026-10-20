@@ -32,7 +32,6 @@ class HostService:
         self.broker_ready = threading.Event()
         self._slots = threading.BoundedSemaphore(32)
         self._broker_slots = threading.BoundedSemaphore(4)
-        self._erasure_slots = threading.BoundedSemaphore(32)
         # Waiting scheduled wakes cannot consume every listener worker and
         # prevent an interactive request from entering the priority queue.
         self._scheduled_slots = threading.BoundedSemaphore(8)
@@ -195,8 +194,7 @@ class HostService:
                     sock, _ = listener.accept()
                 except TimeoutError:
                     continue
-                slots = (self._erasure_slots if handler == self.erasure else
-                         self._broker_slots if peer(sock)[1] == 1002 else self._slots)
+                slots = self._broker_slots if peer(sock)[1] == 1002 else self._slots
                 if not slots.acquire(blocking=False):
                     sock.close()
                     continue

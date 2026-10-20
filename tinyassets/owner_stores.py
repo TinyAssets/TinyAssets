@@ -26,7 +26,6 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/storage/owner_fence.py",
     # Router identity state, never written by an owner's execution generation.
     "tinyassets/router_credentials.py",
-    # Root-owned monotonic erasure authority; never written by an owner generation.
     # Broker-held shared state (plans, credential-free source descriptors),
     # likewise outside every owner's box.
     "tinyassets/broker/vault.py",
