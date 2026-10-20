@@ -33,15 +33,11 @@ class Box:
 
 class OwnerDaemons:
     def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
-                 idle_seconds=900, awake_cap=6, memory_bytes=1024**3,
-                 wake_timeout=60, images=None):
-        if not 0 < idle_seconds <= 86400 or awake_cap < 1 or wake_timeout <= 0:
-            raise ValueError("positive owner lifecycle limits required")
+                 memory_bytes=1024**3, startup_timeout=60, images=None):
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
         self.directory = Path(directory)
-        self.idle_seconds, self.awake_cap = idle_seconds, awake_cap
-        self.memory_bytes, self.wake_timeout = memory_bytes, wake_timeout
+        self.memory_bytes, self.startup_timeout = memory_bytes, startup_timeout
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
         self.images = images
@@ -123,7 +119,7 @@ class OwnerDaemons:
         relay = self.relays.bind(box.owner, box.uid)
         box.secret = record["secret"]
         directory, secret = self._paths(box.uid, box.secret)
-        # Reserve capacity before touching runsc; failed cleanup keeps the slot.
+        # Mark execution started before touching runsc; uncertain cleanup stays visible.
         box.awake = True
         box.started = time.monotonic()
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
@@ -195,7 +191,7 @@ class OwnerDaemons:
     def ensure_awake(self, owner, *, scheduled=False, launch=None):
         if type(scheduled) is not bool:
             raise ValueError("scheduled must be boolean")
-        deadline = time.monotonic() + self.wake_timeout
+        deadline = time.monotonic() + self.startup_timeout
         with self.condition:
             if launch is None:
                 raise BoxAuthError("broker launch authorization is missing")
@@ -216,8 +212,6 @@ class OwnerDaemons:
                 self.runtime.stop(uid)
                 box.awake = False
                 self._failed(box, BoxError("owner daemon crashed"))
-            if sum(item.awake for item in self.boxes.values()) >= self.awake_cap:
-                raise BoxBusy("owner wake capacity deadline exceeded")
             try:
                 self._start(box, deadline, launch=record)
                 return uid
@@ -279,12 +273,8 @@ class OwnerDaemons:
                     "error": box.error if box else "",
                     "idle_seconds": time.monotonic() - box.last if activity else None,
                     "active": activity["active"] if activity else None,
-                    "idle_limit": self.idle_seconds,
                     "uptime": time.monotonic() - box.started if awake else 0,
-                    "awake_count": sum(item.awake for item in self.boxes.values()),
-                    "awake_cap": self.awake_cap, "wake_timeout": self.wake_timeout,
-                    "volume_size": size if awake else None,
-                    "image": box.image if awake else ""}
+                    "volume_size": size if awake else None}
 
     def maintain(self):
         """Observe exited processes; only the broker selects the next transition."""

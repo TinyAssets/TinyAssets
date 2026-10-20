@@ -37,13 +37,13 @@ def index(tmp_path):
     for owner in ("a", "b", "c", "retired", "reserved"):
         identities.resolve(owner, allocate=True)
         if owner != "reserved":
-            identities.admission("admit", owner, "cc-" + owner,
-                routing=projection(identities.path))
+            drive(identities.admission("admit", owner, "cc-" + owner,
+                routing=projection(identities.path)))
             from tinyassets.broker.box_admission import provision
 
             provision(identities, tmp_path, owner, "cc-" + owner)
-    local_mutate(identities.path, "retired", "erase",
-      routing=projection(identities.path))
+    drive(local_mutate(identities.path, "retired", "erase",
+      routing=projection(identities.path)))
     return NextWakeIndex(identities)
 
 
@@ -95,8 +95,8 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
         index.report("a", 0, now=0)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='b'")
-    index.identities.admission("retire", "c", "cc-c",
-      routing=projection(index.identities.path))
+    drive(index.identities.admission("retire", "c", "cc-c",
+      routing=projection(index.identities.path)))
     calls = []
     from tinyassets.broker.box_admission import owner_record
 
@@ -199,7 +199,7 @@ def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(
     plans = Plans(tmp_path)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=plans)
     identities.resolve("a", allocate=True)
-    identities.admission("admit", "a", "cc-a", routing=projection(identities.path))
+    drive(identities.admission("admit", "a", "cc-a", routing=projection(identities.path)))
     assert plans.read("a")["tier"] == "free"
     assert not (state / "plans.db").exists()
     for reason in ("billing", "abuse"):
@@ -413,8 +413,8 @@ def test_bound_report_cannot_name_another_owner(sleeping_box):
     box = sleeping_box
     await_report(box, box.at)
     victim = box.index.identities.resolve("victim", allocate=True)
-    box.index.identities.admission("admit", "victim", "cc-victim",
-        routing=projection(box.index.identities.path))
+    drive(box.index.identities.admission("admit", "victim", "cc-victim",
+        routing=projection(box.index.identities.path)))
     box.index.report("victim", box.at + 99, now=0)
     path = box.relays.bind(box.owner, box.uid)
     for field in ("owner", "principal", "uid"):

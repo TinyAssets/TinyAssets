@@ -12,7 +12,6 @@ import re
 import secrets
 import socket
 import sqlite3
-import threading
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
@@ -22,11 +21,6 @@ from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
 #: Router rows one owner may hold, so no box can grow the shared map unbounded.
 MAX_HOOKS_PER_OWNER = 200
 RELAY_UID = 0
-
-#: One router process answers every box's credential request. Serializing them
-#: means no mint can interleave with an account revocation.
-_DISPATCH = threading.Lock()
-
 
 def active_owner(owner: str, root: Path | None = None) -> bool:
     """One identity fence shared by every router authentication entry point."""
@@ -136,18 +130,15 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
         return {"revoked": True}
     from tinyassets.routing_snapshot import snapshot
 
-    projection = snapshot(root)
-    with _DISPATCH:
-        projection.route(owner)
-        return _dispatch(root, owner, request)
+    snapshot(root).route(owner)
+    return _dispatch(root, owner, request)
 
 
 def revoke_account(root: Path, owner: str):
     """Identity cleanup for the broker's fixed account-revocation operation."""
     from tinyassets.api_keys import ApiKeyStore
 
-    with _DISPATCH:
-        _revoke_account(root, owner, ApiKeyStore(root))
+    _revoke_account(root, owner, ApiKeyStore(root))
 
 
 def _revoke_account(root: Path, owner: str, keys):
@@ -185,8 +176,19 @@ def _dispatch(root: Path, owner: str, request: dict) -> dict:
     if operation == "key_mint" and set(request) == {"operation", "name", "request_ref"}:
         if not isinstance(request["request_ref"], str) or len(request["request_ref"]) > 4096:
             raise ValueError("invalid key request reference")
-        return keys.mint(owner, name=request["name"], request_ref=request["request_ref"],
-                         scopes=[], authority=None)
+        result = keys.mint(owner, name=request["name"], request_ref=request["request_ref"],
+                           scopes=[], authority=None)
+        from tinyassets.routing_snapshot import snapshot
+
+        try:
+            snapshot(root).route(owner)
+        except Exception:
+            if not result.get("already_created"):
+                with keys.db() as db:
+                    db.execute("DELETE FROM api_keys WHERE key_id=? AND owner=?",
+                               (result["key_id"], owner))
+            raise
+        return result
     if operation == "key_list" and set(request) == {"operation"}:
         return keys.list(owner, authority=None)
     if operation == "key_revoke" and set(request) == {"operation", "key_id"}:
@@ -195,7 +197,16 @@ def _dispatch(root: Path, owner: str, request: dict) -> dict:
         return keys.revoke(owner, request["key_id"], authority=None)
     if operation == "hook_mint" and set(request) == {"operation"}:
         token = secrets.token_urlsafe(32)
-        HookOwners(root).publish(hashlib.sha256(token.encode()).hexdigest(), owner)
+        hooks = HookOwners(root)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        hooks.publish(digest, owner)
+        from tinyassets.routing_snapshot import snapshot
+
+        try:
+            snapshot(root).route(owner)
+        except Exception:
+            hooks.revoke(digest, owner)
+            raise
         return {"token": token}
     if operation == "hook_revoke" and set(request) == {"operation", "token_hash"}:
         digest = request["token_hash"]
@@ -210,14 +221,11 @@ def routing_dispatch(root, request):
     from tinyassets.routing_snapshot import snapshot
 
     if request == {"operation": "routing_instance"}:
-        return {"instance": snapshot(root).instance}
+        return snapshot(root).installed()
     if (request.get("operation") == "routing_install"
             and set(request) == {"operation", "instance", "revision", "records"}):
-        # C13: a mint either precedes withdrawal or sees its installed absence.
-        # Revocation shares this lock; no per-call control-plane lookup is needed.
-        with _DISPATCH:
-            revision = snapshot(root).install(request["instance"], request["revision"],
-                                              request["records"])
+        revision = snapshot(root).install(request["instance"], request["revision"],
+                                          request["records"])
         return {"revision": revision}
     raise ValueError("invalid routing publication")
 

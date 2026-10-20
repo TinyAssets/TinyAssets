@@ -12,7 +12,7 @@ import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.test_onboarding_session_refresh import _drive, _ok
 from tests.test_workos_provider import _provider, _sign
 from tinyassets.auth import middleware
@@ -25,8 +25,8 @@ from tinyassets.router_credentials import revoke_account
 def deleted(tmp_path, monkeypatch, in_process_broker):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     live = in_process_broker.supervisor_for(tmp_path)
-    local_mutate(live.identities.path, "alice", "erase",
-        routing=projection(live.identities.path))
+    drive(local_mutate(live.identities.path, "alice", "erase",
+        routing=projection(live.identities.path)))
     revoke_account(tmp_path, "alice")
     return tmp_path
 
@@ -117,12 +117,18 @@ def test_api_key_and_hook_token_refuse_after_credential_revocation(deleted):
         assert db.execute("SELECT last_used_at FROM api_keys").fetchone()[0] is None
 
 
-def test_stored_sessions_and_provider_bearers_are_revoked(deleted, monkeypatch, keypair):
+def test_stored_sessions_and_provider_bearers_are_revoked(tmp_path, monkeypatch, keypair):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
+    handle = session_store.mint("refresh", owner="alice")
     with owner_sessions.store() as db:
         db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
             owner_sessions.hashed("old-cookie"), json.dumps({"user_id": "alice"}), time.time()+300))
-    handle = session_store.mint("refresh", owner="alice")
-    revoke_account(deleted, "alice")
+    path = tmp_path / ".broker/state/owner-identities.db"
+    drive(local_mutate(path, "alice", "erase", routing=projection(path)))
+    revoke_account(tmp_path, "alice")
     assert owner_sessions.lookup("old-cookie") is None
     monkeypatch.setattr(middleware, "_get_provider", lambda: _provider(keypair))
     assert middleware.auth_middleware(_sign(keypair, sub="alice", sid="session_old")) is None
@@ -131,10 +137,13 @@ def test_stored_sessions_and_provider_bearers_are_revoked(deleted, monkeypatch, 
 
 def test_existing_refresh_handle_and_rotation_refuse_after_revocation(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
     handle = session_store.mint("refresh", owner="alice")
     assert session_store.read(handle)[0] == "refresh"
-    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
-        routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+    drive(local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+        routing=projection(tmp_path / ".broker/state/owner-identities.db")))
     revoke_account(tmp_path, "alice")
     assert session_store.rotate(handle, "new-refresh") == ""
     assert session_store.read(handle) == ("", "")
@@ -142,9 +151,12 @@ def test_existing_refresh_handle_and_rotation_refuse_after_revocation(tmp_path, 
 
 def test_deleted_refresh_handle_is_explained_without_contacting_workos(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
     handle = session_store.mint("refresh", owner="alice")
-    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
-        routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+    drive(local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+        routing=projection(tmp_path / ".broker/state/owner-identities.db")))
     revoke_account(tmp_path, "alice")
     status, body, cookies, calls = _drive(
         {"grant_type": "refresh_token", "session_ref": handle},
@@ -171,16 +183,16 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
     challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
     code = provider.create_authorization(client, redirect, "read", "", challenge, "S256")
     if deleted_before_exchange:
-        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
-            routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+        drive(local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+            routing=projection(tmp_path / ".broker/state/owner-identities.db")))
         revoke_account(tmp_path, "alice")
     tokens = provider.exchange_code(code, client, redirect, verifier)
     if deleted_before_exchange:
         assert tokens is None
     else:
         assert provider.resolve_token(tokens["access_token"]) is not None
-        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
-            routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+        drive(local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+            routing=projection(tmp_path / ".broker/state/owner-identities.db")))
         revoke_account(tmp_path, "alice")
         assert provider.resolve_token(tokens["access_token"]) is None
     with provider._connect() as db:

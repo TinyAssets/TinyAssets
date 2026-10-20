@@ -494,17 +494,24 @@ def mint(refresh_token: str, *, owner: str) -> str:
         return ""
     if not isinstance(owner, str) or not owner:
         raise ValueError("refresh session requires a verified owner")
-    from tinyassets.router_credentials import _DISPATCH, active_owner
+    from tinyassets.router_credentials import active_owner
+    from tinyassets.routing_snapshot import snapshot
+    from tinyassets.storage import data_dir
 
-    with _DISPATCH:
-        if not active_owner(owner):
+    if not active_owner(owner):
+        raise PermissionError("Account deleted.")
+    handle = secrets.token_urlsafe(32)
+    _write_record(
+        handle,
+        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL, owner=owner),
+    )
+    try:
+        if snapshot(data_dir()).record(owner) is None:
             raise PermissionError("Account deleted.")
-        handle = secrets.token_urlsafe(32)
-        _write_record(
-            handle,
-            _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL, owner=owner),
-        )
-        return handle
+    except Exception:
+        _unlink(_record_path(handle), strict=True)
+        raise
+    return handle
 
 
 def read(handle: str) -> tuple[str, str]:

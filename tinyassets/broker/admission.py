@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import sqlite3
 from contextlib import closing
@@ -24,6 +25,8 @@ def owner_lock(path, owner):
 async def owner_call(path, owner, function, *args, **kwargs):
     """Keep serialization until a worker finishes, including on cancellation."""
     async with owner_lock(path, owner):
+        if inspect.iscoroutinefunction(function):
+            return await function(*args, **kwargs)
         return await thread_work(function, *args, **kwargs)
 
 
@@ -159,13 +162,17 @@ def local_read(root, owner):
         return admission(db, owner)
 
 
-def local_mutate(path, owner, action, *, routing, **arguments):
+async def local_mutate(path, owner, action, *, routing, **arguments):
     """Caller holds the async owner lock; database work runs on its worker."""
     if routing is None:
         raise RuntimeError("admission mutation requires routing")
+    await thread_work(_local_mutate, path, owner, action, **arguments)
+    return await routing.changed(owner)
+
+
+def _local_mutate(path, owner, action, **arguments):
     with closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
                                  timeout=30)) as db, db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         mutate(db, owner, action, **arguments)
-    routing.changed(owner)

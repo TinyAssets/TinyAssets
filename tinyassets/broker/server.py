@@ -182,9 +182,9 @@ class BrokerServer:
     @property
     def routing(self):
         if self._routing is None:
-            from tinyassets.broker.routing import RoutingAuthority
+            from tinyassets.broker.routing import BrokerLifecycle
 
-            self._routing = RoutingAuthority(self)
+            self._routing = BrokerLifecycle(self)
         return self._routing
 
     @property
@@ -535,7 +535,7 @@ class _Connection:
                 answer = await owner_call(self._server._owner_identities.path,
                                           doc["args"]["owner"], self._billing_plan, doc)
             else:
-                answer = await asyncio.to_thread(self._billing_plan, doc)
+                answer = await self._billing_plan(doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
@@ -616,7 +616,7 @@ class _Connection:
         else:
             raise rf.FrameError("unknown connection operation")
 
-    def _box_admit_center(self, doc):
+    async def _box_admit_center(self, doc):
         """A new center belongs to the relay's owner, never a supplied principal."""
         try:
             if set(doc) != {"op", "center"}:
@@ -625,7 +625,7 @@ class _Connection:
             with self._server._fence.send(
                     self._server._fence.generation, self._server._fence.token):
                 identities.box_route(self._box_owner)
-                row = identities.admission("admit", self._box_owner, doc["center"],
+                row = await identities.admission("admit", self._box_owner, doc["center"],
                                            routing=self._server.routing)
             return {"op": "BOX_RESULT", "result": {
                 "generation": row.generation, "machine": row.machine}}
@@ -640,13 +640,13 @@ class _Connection:
         if request("stop", uid=uid) != {"stopped": True}:
             raise RuntimeError("boxhostd did not acknowledge retirement")
 
-    def _box_retire_center(self, doc):
+    async def _box_retire_center(self, doc):
         try:
             if set(doc) != {"op", "center"}:
                 raise ValueError("invalid retirement")
-            row = self._server._owner_identities.admission(
+            row = await self._server._owner_identities.admission(
                 "retire", self._box_owner, doc["center"], routing=self._server.routing)
-            self._stop_owner_box(self._box_owner)
+            await asyncio.to_thread(self._stop_owner_box, self._box_owner)
             return {"op": "BOX_RESULT", "result": {
                 "generation": row.generation, "machine": row.machine}}
         except Exception:
@@ -692,7 +692,7 @@ class _Connection:
             self.abandon()
             raise
 
-    def _billing_plan(self, doc):
+    async def _billing_plan(self, doc):
         from tinyassets.broker.owner_reads import PlanMissing, Plans
 
         try:
@@ -713,8 +713,10 @@ class _Connection:
                             doc["args"]["owner"]).state not in {"admitted", "suspended"}:
                         raise PermissionError("checkout requires an account admission")
                     result = operations[doc["action"]](**doc["args"])
+                elif doc["action"] == "set_suspension":
+                    result = await operations[doc["action"]](**doc["args"])
                 else:
-                    result = operations[doc["action"]](**doc["args"])
+                    result = await asyncio.to_thread(operations[doc["action"]], **doc["args"])
                 return {"op": "BILLING_RESULT", "result": result}
         except PlanMissing:
             return {"op": "PLAN_MISSING"}
@@ -790,17 +792,17 @@ class _Connection:
         except Exception:  # noqa: BLE001 - retry completes durable partial admission
             return {"op": "CENTER_ADMISSION_REFUSED"}
 
-    def _center_admission_locked(self, doc):
+    async def _center_admission_locked(self, doc):
         if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
             raise ValueError("unsupported admission fields")
         if (not isinstance(doc["event"], str) or type(doc["generation"]) is not int
                 or not isinstance(doc["token"], str)):
             raise ValueError("invalid admission request")
         with self._server._fence.send(doc["generation"], doc["token"]):
-            row = self._server._owner_identities.admission(
+            row = await self._server._owner_identities.admission(
                 doc["event"], doc["principal"], doc["center"], routing=self._server.routing)
             if doc["event"] == "retire":
-                self._stop_owner_box(doc["principal"])
+                await asyncio.to_thread(self._stop_owner_box, doc["principal"])
             if doc["event"] == "admit" and self._server._policy_store is not None:
                 self._server._policy_store.bootstrap_owner(doc["principal"])
             if doc["event"] == "admit" and self._server._provision_box is not None:

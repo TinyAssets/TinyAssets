@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 
 #: The broker reads peer credentials off a Unix socket. Everything in this
 #: module is inert where that does not exist; the suite is proven on Linux.
@@ -96,8 +96,8 @@ def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> Non
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
                                  plans=Plans(data_root))
     identities.resolve(principal, allocate=True)
-    identities.admission("admit", principal, center,
-     routing=projection(identities.path))
+    drive(identities.admission("admit", principal, center,
+     routing=projection(identities.path)))
 
 
 def _peer_uid(sock: socket.socket) -> int:
@@ -155,7 +155,12 @@ class _InProcessBroker:
         _snapshots.setdefault(data_root, RoutingSnapshot())
         routing = self.server.routing
         routing._router = lambda request: routing_dispatch(data_root, request)
-        routing.changed = lambda owner: routing.publish()
+        async def changed(owner):
+            return await asyncio.to_thread(routing.publish)
+        routing.changed = changed
+        from tests.support.admission import bind
+
+        bind(self.identities.path, routing)
         routing.publish()
         self._loop = asyncio.new_event_loop()
         self._listener: asyncio.AbstractServer | None = None

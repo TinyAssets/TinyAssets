@@ -36,7 +36,7 @@ def delete(root):
     from tinyassets.broker.admission import local_mutate, owner_call
     path = root / ".broker/state/owner-identities.db"
     def erase():
-        local_mutate(path, OWNER, "erase", routing=projection(path))
+        drive(local_mutate(path, OWNER, "erase", routing=projection(path)))
         vault.erase_owner(root, OWNER)
     drive(owner_call(path, OWNER, erase))
 

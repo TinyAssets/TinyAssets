@@ -58,7 +58,7 @@ def fleet(tmp_path, monkeypatch):
                    "project_id INT, bhard_bytes INT)")
     for owner in "abc":
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, owner, routing=projection(identities.path))
+        drive(identities.admission("admit", owner, owner, routing=projection(identities.path)))
         box_admission.provision(identities, tmp_path, owner, owner)
     admission, runtime = Admission(identities), Runtime()
     admission.secrets = {owner: identities.box_route(owner)[1] for owner in "abc"}
@@ -66,7 +66,7 @@ def fleet(tmp_path, monkeypatch):
     relays = SimpleNamespace(bind=lambda owner, uid: tmp_path / f"{uid}.sock",
                              retire=lambda uid: None)
     manager = OwnerDaemons(runtime, admission, volumes, relays, tmp_path,
-                           idle_seconds=1, awake_cap=2, wake_timeout=2)
+                           startup_timeout=2)
 
     def paths(uid, secret):
         states[uid] = Activity()
@@ -87,7 +87,7 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "_paths", paths)
     monkeypatch.setattr(manager, "_rpc", rpc)
     from tinyassets.boxes import daemon_control
-    from tinyassets.broker.routing import RoutingAuthority
+    from tinyassets.broker.routing import BrokerLifecycle
 
     host = HostService(admission, volumes, relays, manager)
     def control(operation, owner=None, **fields):
@@ -98,7 +98,10 @@ def fleet(tmp_path, monkeypatch):
         return result
     monkeypatch.setattr(daemon_control, "request", control)
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
-    routing = RoutingAuthority(server)
+    routing = BrokerLifecycle(server)
+    routing.config.idle_limit = 1
+    routing.config.awake_cap = 2
+    routing.config.wake_timeout = 2
     routing.publish = lambda **kwargs: None
     server.routing = routing
     server.deletion_jobs = SimpleNamespace(tick=lambda: None)
@@ -171,7 +174,7 @@ def test_center_retirement_has_no_volume_operation(fleet):
 
 def test_restore_executor_accepts_only_broker_bound_uid(fleet):
     uid = fleet.wake("a")
-    snapshot = fleet.routing.volumes.sleep("a")
+    snapshot = drive(fleet.routing.volumes.sleep("a"))
     request = {"lifecycle": "restore", "uid": uid,
                "snapshot_id": snapshot["snapshot_id"], "sha256": snapshot["snapshot_sha256"]}
     service = HostService(fleet.admission, fleet.manager.volumes, None, fleet.manager)
@@ -185,7 +188,7 @@ def test_restore_executor_accepts_only_broker_bound_uid(fleet):
 def test_broker_admission_failure_refuses_wake_without_host_callback(fleet, monkeypatch, failure):
     from tinyassets.broker import box_admission
     manager = fleet.manager
-    manager.awake_cap = 3
+    fleet.routing.config.awake_cap = 3
     a, b, c = [fleet.wake(owner) for owner in "abc"]
     original = box_admission.owner_record
     def admission(identities, owner, **kwargs):
@@ -211,8 +214,8 @@ def test_suspended_owner_cannot_wake_but_broker_can_stop_bound_box(fleet, awake)
     uid = fleet.identities.owner_machine("a")
     if awake:
         fleet.wake("a")
-    local_mutate(fleet.identities.path, "a", "suspend", reason="abuse", suspended=True,
-        routing=projection(fleet.identities.path))
+    drive(local_mutate(fleet.identities.path, "a", "suspend", reason="abuse", suspended=True,
+        routing=projection(fleet.identities.path)))
     for scheduled in (False, True):
         with pytest.raises(PermissionError):
             fleet.wake("a", scheduled=scheduled)
@@ -277,16 +280,16 @@ def test_crashed_process_never_restarts_without_a_broker_wake(fleet):
 
 
 def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
-    manager = fleet.manager
     a = fleet.wake("a")
     b = fleet.wake("b")
     fleet.wake("a")  # b is now least recently used.
+    fleet.tick()  # recover supplies victim facts; wake makes no candidate RPCs.
     fleet.wake("c")
     assert b not in fleet.runtime.live and a in fleet.runtime.live
     c = fleet.admission.owner("c")["uid"]
     drive(fleet.routing.sleep("c"))
-    manager.awake_cap = 1
-    manager.wake_timeout = 5
+    fleet.routing.config.awake_cap = 1
+    fleet.routing.config.wake_timeout = 5
     result = []
 
     def scheduled():
@@ -307,13 +310,25 @@ def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
 
 
 def test_busy_boxes_are_never_evicted_and_wake_is_bounded(fleet):
-    manager = fleet.manager
     a, b = fleet.wake("a"), fleet.wake("b")
-    manager.wake_timeout = .05
+    fleet.routing.config.wake_timeout = .05
     with fleet.states[a].enter(), fleet.states[b].enter():
         with pytest.raises(BoxError, match="deadline"):
             fleet.wake("c")
     assert fleet.runtime.live == {a, b}
+
+
+@pytest.mark.parametrize("operation", ["snapshot", "restore"])
+def test_copy_operations_refuse_a_running_box_without_stopping_it(fleet, operation):
+    uid = fleet.wake("a")
+    before = list(fleet.runtime.stops)
+    arguments = {"snapshot_id": "a" * 32}
+    if operation == "restore":
+        arguments["sha256"] = "b" * 64
+    with pytest.raises(BoxError, match="stopped box"):
+        fleet.control(operation, uid=uid, **arguments)
+    assert fleet.runtime.alive(uid)
+    assert fleet.runtime.stops == before
 
 
 def test_stop_executes_only_broker_bound_uid_and_retires_old_ingress(fleet):
@@ -466,8 +481,8 @@ def test_erased_record_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, m
 def test_erasure_refuses_broker_restart_and_host_has_no_restart_intent(fleet):
     from tinyassets.broker.admission import local_mutate
     uid = fleet.wake("a")
-    local_mutate(fleet.identities.path, "a", "erase",
-      routing=projection(fleet.identities.path))
+    drive(local_mutate(fleet.identities.path, "a", "erase",
+      routing=projection(fleet.identities.path)))
     fleet.control("stop", uid=uid)
     for scheduled in (False, True):
         with pytest.raises(PermissionError):

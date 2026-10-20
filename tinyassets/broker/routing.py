@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import threading
 from contextlib import closing
 from pathlib import Path
 
@@ -17,16 +16,20 @@ from tinyassets.broker.admission import owner_call, owner_lock, read, thread_wor
 log = logging.getLogger(__name__)
 
 
-class RoutingAuthority:
+class BrokerLifecycle:
     def __init__(self, server):
         self.server = server
         self.identities = server._owner_identities
         self.root = server._data_root
+        from tinyassets.broker.lifecycle_config import LifecycleConfig
+        from tinyassets.broker.owner_volumes import awake_owners
         from tinyassets.broker.volume_lifecycle import VolumeLifecycle
 
-        self.volumes = VolumeLifecycle(self.identities)
-        # Orders revisions and delivery of the shared routing snapshot.
-        self._publication = threading.Lock()
+        self.config = LifecycleConfig()
+        self.volumes = VolumeLifecycle(self.identities, lifecycle=self)
+        # On restart, pending stops also reserve a slot until sleep acknowledges.
+        self.awake = set(awake_owners(self.identities, stopping=True))
+        self.facts = {}
         self.tasks = {}
         # Shared awake-slot reservation: scheduled waiters release this condition;
         # an interactive eviction and its replacement launch reserve one slot.
@@ -43,66 +46,73 @@ class RoutingAuthority:
         return reply["result"]
 
     def publish(self, *, only_restart=False):
-        # One sequencer orders full snapshots, including after broker restart.
-        with self._publication:
-            instance = self._router({"operation": "routing_instance"})["instance"]
-            if only_restart and instance == self._instance:
-                return
-            records = {}
-            with closing(self.identities._connect(write=True)) as db, db:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("UPDATE routing_sequence SET revision=revision+1")
-                revision = db.execute("SELECT revision FROM routing_sequence").fetchone()[0]
-                from tinyassets.broker.admission import admission, digest
+        instance = self._router({"operation": "routing_instance"})["instance"]
+        if only_restart and instance == self._instance:
+            return
+        records = {}
+        with closing(self.identities._connect(write=True)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE routing_sequence SET revision=revision+1")
+            revision = db.execute("SELECT revision FROM routing_sequence").fetchone()[0]
+            from tinyassets.broker.admission import admission, digest
 
-                run = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
-                for owner, uid, secret in db.execute(
-                        "SELECT i.principal,i.machine_id,s.secret FROM owner_identities i "
-                        "LEFT JOIN owner_box_secrets s ON s.principal=i.principal"):
-                    state = (admission(db, owner).state if self.identities.work_ready
-                             else "absent")
-                    if state not in {"admitted", "suspended"}:
-                        continue
-                    if state == "admitted" and not secret:
-                        raise RuntimeError("admitted owner is missing its ingress credential")
-                    records[digest(owner)] = {"state": state,
-                                      "socket": str(run / str(uid) / "app.sock"),
-                                      "secret": secret if state == "admitted" else None}
-            installed = self._router({"operation": "routing_install", "instance": instance,
-                                      "revision": revision, "records": records})
-            if installed != {"revision": revision}:
-                raise RuntimeError("router did not acknowledge current snapshot")
-            self._instance = instance
+            run = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
+            for owner, uid, secret in db.execute(
+                    "SELECT i.principal,i.machine_id,s.secret FROM owner_identities i "
+                    "LEFT JOIN owner_box_secrets s ON s.principal=i.principal"):
+                state = (admission(db, owner).state if self.identities.work_ready
+                         else "absent")
+                if state not in {"admitted", "suspended"}:
+                    continue
+                if state == "admitted" and not secret:
+                    raise RuntimeError("admitted owner is missing its ingress credential")
+                records[digest(owner)] = {"state": state,
+                                  "socket": str(run / str(uid) / "app.sock"),
+                                  "secret": secret if state == "admitted" else None}
+        installed = self._router({"operation": "routing_install", "instance": instance,
+                                  "revision": revision, "records": records})
+        if installed["revision"] < revision:
+            raise RuntimeError("router did not acknowledge current snapshot")
+        self._instance = instance
 
-    def changed(self, owner):
+        return {"instance": instance, "revision": revision}
+
+    def withdrawal_installed(self, receipt):
+        if not receipt:
+            return False
+        current = self._router({"operation": "routing_instance"})
+        return (current["instance"] == receipt["instance"]
+                and current["revision"] >= receipt["revision"])
+
+    async def changed(self, owner):
         from tinyassets.boxes.daemon_control import request
 
         state = read(self.identities, owner).state
         if state != "admitted":
-            asyncio.run_coroutine_threadsafe(
-                self.server.withdraw_channels(owner), self.server._loop).result(30)
+            await self.server.withdraw_channels(owner)
+        receipt = None
         try:
-            self.publish()
+            receipt = await thread_work(self.publish)
         except (OSError, RuntimeError):
             self._instance = None
             if state == "admitted":
                 raise
             log.warning("withdrawal publication pending; stopping old ingress")
         if state != "admitted":
-            # C5 permits ack after all projections install OR old ingress is
-            # unreachable. Stopping it also retires in-flight route copies.
             uid = self.identities.owner_machine(owner)
             if uid is None:
                 raise LookupError("owner lifecycle binding missing")
-            if request("stop", uid=uid) != {"stopped": True}:
+            if await thread_work(request, "stop", uid=uid) != {"stopped": True}:
                 raise RuntimeError("admission withdrawal remains pending")
+            await self.stopped(owner)
+        return receipt
 
-    def _prepare(self, owner):
+    async def _prepare(self, owner):
         from tinyassets.broker.box_admission import owner_record
 
         record = owner_record(self.identities, owner, for_wake=True)
-        self.publish()
-        return self.volumes.prepare(owner, record)
+        await thread_work(self.publish)
+        return await self.volumes.prepare(owner, record)
 
     def _launch(self, owner, record, *, scheduled=False):
         from tinyassets.boxes.daemon_control import request
@@ -113,37 +123,24 @@ class RoutingAuthority:
         return result["uid"]
 
     async def wake(self, owner, *, scheduled=False):
-        from tinyassets.broker.owner_volumes import pending
+        from tinyassets.broker.owner_volumes import awake_owners
 
         async with owner_lock(self.identities.path, owner):
-            record = await thread_work(self._prepare, owner)
+            record = await self._prepare(owner)
             victim = None
-            deadline = None
+            deadline = asyncio.get_running_loop().time() + self.config.wake_timeout
             async with self._capacity:
-                while True:
-                    status = await asyncio.to_thread(self.volumes.host, owner, "status")
-                    if deadline is None:
-                        deadline = asyncio.get_running_loop().time() + status["wake_timeout"]
-                    if status["awake"]:
-                        break
-                    # Reservations are in-flight slot use, never lifecycle intent.
-                    # The map's running/work record remains the only durable intent.
-                    reserved = len(self._reservations)
-                    for replacing in self._reservations.values():
-                        if replacing is not None:
-                            facts = await asyncio.to_thread(self.volumes.host, replacing, "status")
-                            reserved -= int(facts["awake"])
-                    if status["awake_count"] + reserved < status["awake_cap"]:
+                while owner not in self.awake:
+                    if len(self.awake | self._reservations.keys()) < self.config.awake_cap:
                         self._reservations[owner] = None
                         break
                     if not scheduled:
-                        candidates = []
-                        for candidate in await asyncio.to_thread(pending, self.identities):
-                            facts = await asyncio.to_thread(self.volumes.host, candidate, "status")
-                            if (facts["awake"] and facts["active"] == 0
-                                    and facts["idle_seconds"] is not None
-                                    and candidate not in self._reservations.values()):
-                                candidates.append((facts["idle_seconds"], candidate))
+                        candidates = [(self.facts[candidate]["idle_seconds"], candidate)
+                            for candidate in awake_owners(self.identities)
+                            if candidate != owner and candidate in self.awake
+                            and candidate not in self._reservations.values()
+                            and self.facts.get(candidate, {}).get("active") == 0
+                            and self.facts[candidate]["idle_seconds"] is not None]
                         if candidates:
                             victim = max(candidates)[1]
                             self._reservations[owner] = victim
@@ -158,15 +155,21 @@ class RoutingAuthority:
             try:
                 if victim is not None:
                     await owner_call(self.identities.path, victim, self.volumes.sleep, victim)
-                return await thread_work(self._launch, owner, record,
-                                         scheduled=scheduled)
+                # An uncertain launch still occupies its reserved slot until
+                # recover observes it stopped or a stop/sleep acknowledges it.
+                self.awake.add(owner)
+                uid = await thread_work(self._launch, owner, record, scheduled=scheduled)
+                return uid
             finally:
                 async with self._capacity:
                     self._reservations.pop(owner, None)
                     self._capacity.notify_all()
 
-    async def _capacity_changed(self):
+    async def stopped(self, owner):
+        # Only called after a completed sleep/stop or recover's stopped fact.
         async with self._capacity:
+            self.awake.discard(owner)
+            self.facts.pop(owner, None)
             self._capacity.notify_all()
 
     async def deploy(self, image):
@@ -180,44 +183,38 @@ class RoutingAuthority:
         for owner in owners:
             try:
                 async with owner_lock(self.identities.path, owner):
-                    status = await thread_work(self.volumes.host, owner, "status")
+                    status = await self.volumes.host(owner, "status")
                     if not status["awake"]:
                         counts["asleep"] += 1
                         continue
-                    await thread_work(self.volumes.sleep, owner)
+                    await self.volumes.sleep(owner)
                     counts["slept"] += 1
             except Exception:
                 counts["incomplete"] += 1
-            finally:
-                await self._capacity_changed()
         return counts
 
     async def sleep(self, owner):
-        try:
-            return await owner_call(self.identities.path, owner, self.volumes.sleep, owner)
-        finally:
-            await self._capacity_changed()
+        return await owner_call(self.identities.path, owner, self.volumes.sleep, owner)
 
     async def restore(self, owner, snapshot_id):
         return await owner_call(self.identities.path, owner, self.volumes.restore,
                                 owner, snapshot_id)
 
-    def start(self, owner, operation):
+    def start(self, owner, operation, *, recovery=False):
         """The existing tick starts at most one lifecycle task per owner."""
-        if not self.identities.work_ready:
+        if not self.identities.work_ready and not recovery:
             return
         task = self.tasks.get(owner)
         if task is not None and not task.done():
-            return
+            return task
         self.tasks[owner] = asyncio.create_task(self._work(owner, operation))
+        return self.tasks[owner]
 
     async def _work(self, owner, operation):
         try:
-            await owner_call(self.identities.path, owner, operation, owner)
+            return await owner_call(self.identities.path, owner, operation, owner)
         except Exception:
             log.exception("owner lifecycle work remains pending owner=%s", owner)
-        finally:
-            await self._capacity_changed()
 
     async def close(self):
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
@@ -251,12 +248,10 @@ class RoutingAuthority:
             await asyncio.to_thread(self.publish, only_restart=True)
         except Exception:
             self._instance = None
+            log.exception("routing snapshot publication failed")
         self.tasks = {owner: task for owner, task in self.tasks.items() if not task.done()}
         self.server.deletion_jobs.tick()
         from tinyassets.broker.owner_volumes import pending
 
         for owner in await asyncio.to_thread(pending, self.identities):
             self.start(owner, self.volumes.tick_owner)
-        # A snapshot may have stopped its process while still copying bytes.
-        # Recheck capacity on this existing clock, without waiting for that copy.
-        await self._capacity_changed()

@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tinyassets.broker import box_admission, owner_volumes
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.volume_lifecycle import VolumeLifecycle
+from tinyassets.broker.routing import BrokerLifecycle
 
 
 class Images:
@@ -108,7 +108,7 @@ def storage(tmp_path):
                    "project_id INT, bhard_bytes INT)")
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, owner, routing=projection(identities.path))
+        drive(identities.admission("admit", owner, owner, routing=projection(identities.path)))
         box_admission.provision(identities, tmp_path, owner, owner)
 
     events = []
@@ -122,7 +122,7 @@ def storage(tmp_path):
     live = set()
     manager = SimpleNamespace(condition=threading.Condition(threading.RLock()), runtime=runtime,
                               boxes={}, status=lambda uid: {"uid": uid, "awake": uid in live,
-                                  "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
+                                  "idle_seconds": 0, "active": 0, "uptime": 0,
                                   "volume_size": images.sizes.get(uid)})
     service = HostService(None, images, None, manager)
     def execute(operation, **fields):
@@ -130,14 +130,18 @@ def storage(tmp_path):
         if "error" in result:
             raise RuntimeError(result["error"])
         return result
-    lifecycle = VolumeLifecycle(identities, execute)
+    routing = BrokerLifecycle(SimpleNamespace(_owner_identities=identities, _data_root=tmp_path))
+    lifecycle = routing.volumes
+    lifecycle.execute = execute
+    runtime.alive = lambda uid: uid in live
+    runtime.shutdown = lambda uid: (events.append(("shutdown", uid)), live.discard(uid))
     return SimpleNamespace(lifecycle=lifecycle, volumes=images, admission=Admission(identities),
                            identities=identities, events=events, runtime=runtime, live=live)
 
 
 def start(storage, owner="alice"):
-    record = storage.lifecycle.prepare(
-        owner, box_admission.owner_record(storage.identities, owner, for_wake=True))
+    record = drive(storage.lifecycle.prepare(
+        owner, box_admission.owner_record(storage.identities, owner, for_wake=True)))
     uid = record["uid"]
     storage.volumes.detach(uid)
     mount = storage.volumes.attach(uid)
@@ -152,7 +156,7 @@ def sleep(storage, owner="alice"):
     storage.volumes.detach(uid)
     storage.live.discard(uid)
     try:
-        storage.lifecycle.recover(owner)
+        drive(storage.lifecycle.recover(owner))
     except (OSError, RuntimeError, PermissionError):
         pass  # Explicit retry tests inspect retained work and the prior reference.
     return storage.lifecycle.volume(owner)
@@ -186,7 +190,7 @@ def test_failed_upload_retains_reference_and_retries_without_waking(storage):
     assert "alice" in storage.admission.pending_volumes()
     storage.volumes.fail_upload = False
     storage.volumes.events.clear()
-    storage.lifecycle.recover("alice")
+    drive(storage.lifecycle.recover("alice"))
     assert storage.lifecycle.volume("alice")["snapshot_id"] == pending_id
     assert not any(event == "attach" for event, _ in storage.volumes.events)
 
@@ -199,8 +203,8 @@ def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
 
     def erase_during_upload(uid, snapshot_id):
         result = upload(uid, snapshot_id)
-        local_mutate(storage.identities.path, "alice", "erase",
-            routing=projection(storage.identities.path))
+        drive(local_mutate(storage.identities.path, "alice", "erase",
+            routing=projection(storage.identities.path)))
         return result
 
     monkeypatch.setattr(storage.volumes, "snapshot", erase_during_upload)
@@ -209,7 +213,7 @@ def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
     assert result["work"]["kind"] == "snapshot"
     assert "alice" not in storage.admission.pending_volumes()
     with pytest.raises(PermissionError, match="erased"):
-        storage.lifecycle.recover("alice")
+        drive(storage.lifecycle.recover("alice"))
 
 
 def test_interrupted_restore_commits_generation_before_next_mount(storage, monkeypatch):
@@ -229,7 +233,7 @@ def test_interrupted_restore_commits_generation_before_next_mount(storage, monke
 
     monkeypatch.setattr(storage.lifecycle, "volume", interrupt)
     with pytest.raises(OSError, match="interrupted"):
-        storage.lifecycle.restore("alice", before["snapshot_id"])
+        drive(storage.lifecycle.restore("alice", before["snapshot_id"]))
     assert storage.volumes.images[uid] == b"initial"
     assert original("alice")["volume_generation"] == before["volume_generation"]
     with pytest.raises(PermissionError, match="restore"):
@@ -248,7 +252,7 @@ def test_restore_needs_only_published_reference_not_local_catalog_or_volume(stor
     with sqlite3.connect(storage.identities.path) as db:
         db.execute("DELETE FROM owner_snapshots")
     storage.volumes.events.clear()
-    result = storage.lifecycle.restore("alice", published["snapshot_id"])
+    result = drive(storage.lifecycle.restore("alice", published["snapshot_id"]))
     assert result["volume_generation"] == published["volume_generation"] + 1
     assert storage.volumes.images[uid] == b"initial"
     assert all(owner == uid for _, owner in storage.volumes.events)
@@ -271,14 +275,16 @@ def test_restore_old_snapshot_repoints_map_and_retention_preserves_it(storage, m
     start(storage)
     first = sleep(storage)
     prune = storage.lifecycle.prune
-    monkeypatch.setattr(storage.lifecycle, "prune", lambda owner: None)
+    async def no_prune(owner):
+        pass
+    monkeypatch.setattr(storage.lifecycle, "prune", no_prune)
     for _ in range(8):
         start(storage)
         sleep(storage)
-    restored = storage.lifecycle.restore("alice", first["snapshot_id"])
+    restored = drive(storage.lifecycle.restore("alice", first["snapshot_id"]))
     assert restored["snapshot_id"] == first["snapshot_id"]
     assert restored["snapshot_sha256"] == first["snapshot_sha256"]
-    prune("alice")
+    drive(prune("alice"))
     assert len(storage.lifecycle.volume("alice", "snapshots")) == 7
     assert len(storage.volumes.remote) == 7
     assert (first["uid"], first["snapshot_id"]) in storage.volumes.remote
@@ -287,8 +293,8 @@ def test_restore_old_snapshot_repoints_map_and_retention_preserves_it(storage, m
 def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
     record, _ = start(storage)
     uid = record["uid"]
-    local_mutate(storage.identities.path, "alice", "erase",
-        routing=projection(storage.identities.path))
+    drive(local_mutate(storage.identities.path, "alice", "erase",
+        routing=projection(storage.identities.path)))
     storage.runtime.stop(uid)
     storage.volumes.delete(uid)
     assert uid not in storage.volumes.images
@@ -305,9 +311,9 @@ def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
 def test_center_retirement_preserves_account_volume_recovery(storage):
     start(storage)
     snapshot = sleep(storage)
-    storage.identities.admission("retire", "alice", "alice",
-        routing=projection(storage.identities.path))
-    restored = storage.lifecycle.restore("alice", snapshot["snapshot_id"])
+    drive(storage.identities.admission("retire", "alice", "alice",
+        routing=projection(storage.identities.path)))
+    restored = drive(storage.lifecycle.restore("alice", snapshot["snapshot_id"]))
     assert restored["uid"] == snapshot["uid"]
     assert restored["volume_generation"] == snapshot["volume_generation"] + 1
     assert restored["uid"] in storage.volumes.images
@@ -321,10 +327,10 @@ def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage
                                 "alice", "alice")
     from tinyassets.broker.admission import local_mutate
 
-    local_mutate(storage.identities.path, "alice", "erase",
-        routing=projection(storage.identities.path))
+    drive(local_mutate(storage.identities.path, "alice", "erase",
+        routing=projection(storage.identities.path)))
     with pytest.raises(PermissionError, match="erased"):
-        storage.lifecycle.recover("alice")
+        drive(storage.lifecycle.recover("alice"))
 
 
 def test_owner_generation_refuses_pre_restore_operation_ids(tmp_path):
@@ -394,10 +400,10 @@ def test_cold_eviction_restores_exact_bytes_before_attach(storage):
     storage.volumes.images[uid] = b"owner bytes\x00\xff"
     before = sleep(storage)
     age_sleep(storage, owner_volumes.COLD_AFTER - 1)
-    assert not storage.lifecycle.evict("alice")
+    assert not drive(storage.lifecycle.evict("alice"))
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
     assert "alice" in storage.admission.pending_volumes()
-    assert storage.lifecycle.evict("alice")
+    assert drive(storage.lifecycle.evict("alice"))
     assert not storage.lifecycle.volume("alice")["local"]
     assert uid not in storage.volumes.images
     storage.volumes.events.clear()
@@ -421,8 +427,8 @@ def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state
     elif state == "restore":
         storage.lifecycle.volume("alice", "restore", snapshot_id=before["snapshot_id"])
     elif state == "erased":
-        local_mutate(storage.identities.path, "alice", "erase",
-            routing=projection(storage.identities.path))
+        drive(local_mutate(storage.identities.path, "alice", "erase",
+            routing=projection(storage.identities.path)))
     elif state == "unverified":
         with sqlite3.connect(storage.identities.path) as db:
             db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL")
@@ -430,9 +436,9 @@ def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state
         start(storage)
     if state in ("erased", "unverified"):
         with pytest.raises((PermissionError, ValueError)):
-            storage.lifecycle.evict("alice")
+            drive(storage.lifecycle.evict("alice"))
     else:
-        assert not storage.lifecycle.evict("alice")
+        assert not drive(storage.lifecycle.evict("alice"))
     assert before["uid"] in storage.volumes.images
     assert storage.lifecycle.volume("alice")["local"]
 
@@ -441,7 +447,7 @@ def test_cold_restore_failure_never_creates_empty_volume(storage):
     start(storage)
     before = sleep(storage)
     age_sleep(storage, owner_volumes.COLD_AFTER + 1)
-    storage.lifecycle.evict("alice")
+    drive(storage.lifecycle.evict("alice"))
     storage.volumes.remote.clear()
     storage.volumes.events.clear()
     with pytest.raises(RuntimeError):
@@ -465,7 +471,7 @@ def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
 
     monkeypatch.setattr(storage.lifecycle, "volume", interrupted)
     with pytest.raises(OSError):
-        storage.lifecycle.evict("alice")
+        drive(storage.lifecycle.evict("alice"))
     assert before["uid"] not in storage.volumes.images
     monkeypatch.setattr(storage.lifecycle, "volume", dispatch)
     start(storage)
@@ -492,7 +498,8 @@ def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeyp
         return dispatch(owner, operation, **arguments)
 
     monkeypatch.setattr(storage.lifecycle, "volume", paused)
-    methods = {"wake": lambda owner: start(storage, owner), "evict": storage.lifecycle.evict}
+    methods = {"wake": lambda owner: start(storage, owner),
+               "evict": lambda owner: drive(storage.lifecycle.evict(owner))}
     async def exercise():
         one = asyncio.create_task(owner_call(storage.identities.path, "alice", methods[first],
                                              "alice"))
@@ -539,7 +546,7 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
     keys.revoke("alice", key["key_id"], authority=None)
     assert keys.resolve(key["key"]) is None
     other = storage.lifecycle.volume("bob")
-    restored = storage.lifecycle.restore("alice", published["snapshot_id"])
+    restored = drive(storage.lifecycle.restore("alice", published["snapshot_id"]))
     shutil.rmtree(owner)
     shutil.copytree(snapshot, owner)
     core = OwnerBoxd(owner_id="alice", owner_root=owner, state_dir=owner / ".owner-boxd",

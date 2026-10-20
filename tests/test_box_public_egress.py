@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.server import BOX_HOST, BrokerServer
@@ -32,7 +32,7 @@ def proxy(tmp_path):
     uid = identities.resolve("alice", allocate=True).uid
     from tinyassets.broker.admission import local_mutate
 
-    local_mutate(identities.path, "alice", "admit", routing=projection(identities.path))
+    drive(local_mutate(identities.path, "alice", "admit", routing=projection(identities.path)))
     identities.plans.apply("alice", tier="paid", event_created=1)
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "

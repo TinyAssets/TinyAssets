@@ -60,7 +60,8 @@ class Waker:
                 try:
                     await self.tick()
                 except Exception:
-                    log.exception("next-wake index scan failed")
+                    log.exception("next-wake index scan failed" if self.index.identities.work_ready
+                                  else "platform recovery failed")
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=self.poll_seconds)
                 except TimeoutError:

@@ -273,15 +273,17 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     from tinyassets.owner_activity import Activity
 
     def projection(path):
-        return SimpleNamespace(changed=lambda owner: None)
+        async def changed(owner):
+            pass
+        return SimpleNamespace(changed=changed)
 
     data = root / "metadata"
     broker = data / ".broker"
     broker.mkdir(parents=True, mode=0o700)
     identities = OwnerIdentities(broker / "owner-identities.db", initialize=True)
     uid = identities.resolve("proof-owner", allocate=True).uid
-    identities.admission("admit", "proof-owner", "proof-center",
-        routing=projection(identities.path))
+    asyncio.run(identities.admission("admit", "proof-owner", "proof-center",
+        routing=projection(identities.path)))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -301,8 +303,8 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         def retire(self, owner, expected_uid):
             assert identities.owner_machine(owner) == expected_uid
             from tinyassets.broker.admission import local_mutate
-            local_mutate(identities.path, owner, "erase",
-          routing=projection(identities.path))
+            drive(local_mutate(identities.path, owner, "erase",
+          routing=projection(identities.path)))
 
     runtime = GvisorRuntime(runsc=Path("/gvisor/runsc"), rootfs=rootfs,
                             state_root=root / "integrated-state",
@@ -326,11 +328,11 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     listener.bind(str(relay))
     manager = OwnerDaemons(runtime, Admission(), volumes,
                            SimpleNamespace(bind=lambda *_: relay, retire=lambda _: None),
-                           sockets, idle_seconds=1)
+                           sockets)
 
     from tinyassets.boxes import daemon_control
     from tinyassets.boxes.host_service import HostService
-    from tinyassets.broker.routing import RoutingAuthority
+    from tinyassets.broker.routing import BrokerLifecycle
 
     service = HostService(manager.admission, volumes, manager.relays, manager)
     original_request = daemon_control.request
@@ -341,7 +343,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
             raise RuntimeError(answer["error"])
         return answer
     daemon_control.request = execute
-    routing = RoutingAuthority(SimpleNamespace(_owner_identities=identities, _data_root=root))
+    routing = BrokerLifecycle(SimpleNamespace(_owner_identities=identities, _data_root=root))
     routing.publish = lambda **kwargs: None
     loop = asyncio.new_event_loop()
     worker = threading.Thread(target=loop.run_forever)
@@ -364,7 +366,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
                      timeout=30)
         with manager.condition:
             assert manager._sleep(manager.boxes[uid], idle=0)
-        routing.volumes.recover("proof-owner")
+        drive(routing.volumes.recover("proof-owner"))
         published = manager.admission.volume("proof-owner")
         assert published["snapshot_id"] and published["work"] is None
         original_bytes = digest(volumes.store / f"{uid}.img")
@@ -407,7 +409,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         assert result.stdout == "integrated"
         with manager.condition:
             assert manager._sleep(manager.boxes[uid], idle=0)
-        routing.volumes.recover("proof-owner")
+        drive(routing.volumes.recover("proof-owner"))
         published = manager.admission.volume("proof-owner")
         print("PROOF C10 sparse eviction cold-wake PASS", flush=True)
         import runpy
@@ -433,15 +435,15 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         volumes.delete(uid)
         with sqlite3.connect(identities.path) as db:
             db.execute("DELETE FROM owner_snapshots")
-        assert routing.volumes.restore("proof-owner", published["snapshot_id"])[
+        assert drive(routing.volumes.restore("proof-owner", published["snapshot_id"]))[
             "volume_generation"] == published["volume_generation"] + 1
         drive(routing.wake("proof-owner"))
         assert generations == [1, 2, 3]
         result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
         assert result.stdout == "integrated"
         from tinyassets.broker.admission import local_mutate
-        local_mutate(identities.path, "proof-owner", "erase",
-            routing=projection(identities.path))
+        drive(local_mutate(identities.path, "proof-owner", "erase",
+            routing=projection(identities.path)))
         assert execute("destroy", uid=uid) == {"destroyed": True}
         assert not runtime.alive(uid)
         volumes._detached(uid)

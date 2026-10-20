@@ -6,6 +6,7 @@ operations; only this job decides the next step.
 from __future__ import annotations
 
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ import threading
 import time
 from contextlib import closing
 
-from tinyassets.broker.admission import digest, owner_call, read
+from tinyassets.broker.admission import digest, owner_call, read, thread_work
 from tinyassets.broker.deletion_records import RemoteRecords
 
 STEPS = ("withdrawal", "volume", "snapshots", "custody", "billing",
@@ -89,7 +90,7 @@ class DeletionJobs:
         # Never held during a host operation or billing cancellation.
         self.record_lock = threading.RLock()
 
-    def _enqueue(self, owner):
+    def _load_or_create(self, owner):
         from tinyassets.broker.owner_volumes import binding
 
         key = digest(owner)
@@ -99,8 +100,12 @@ class DeletionJobs:
             record = binding(self.server._owner_identities, owner)
             job = new_job(owner, record["uid"], clock=self.clock)
             self.records.save(job)
+        return job
+
+    async def _enqueue(self, owner):
+        job = await thread_work(self._load_or_create, owner)
         try:
-            self._step(job, "withdrawal", force=True)
+            await self._step(job, "withdrawal", force=True)
         except Exception as error:
             raise WithdrawalPending(self.public(job, include_url=True)) from error
         return self.public(job, include_url=True)
@@ -132,31 +137,41 @@ class DeletionJobs:
             job["billing_cleanup"][key] = value
             self.records.save(job)
 
-    def _step(self, job, step, *, force=False):
+    def _begin_step(self, job, step, force):
         with self.record_lock:
             job.update(self.records.load(job["id"]))
             if step in job["completed_steps"] and not force:
-                return
+                return False
             job["attempts"][step] = job["attempts"].get(step, 0) + 1
             self.records.save(job)
-        try:
-            result = getattr(self, "_" + step)(job)
-            with self.record_lock:
-                job.update(self.records.load(job["id"]))
+        return True
+
+    def _finish_step(self, job, step, result=None, *, failed=False):
+        with self.record_lock:
+            job.update(self.records.load(job["id"]))
+            if failed:
+                job.update(failed_step=step,
+                           retry_at=self.clock() + min(3600, 2 ** min(job["attempts"][step], 11)))
+            else:
                 job["results"][step] = result
                 if step not in job["completed_steps"]:
                     job["completed_steps"].append(step)
                 job.update(failed_step=None, retry_at=0)
-                self.records.save(job)
+            self.records.save(job)
+
+    async def _step(self, job, step, *, force=False):
+        if not await thread_work(self._begin_step, job, step, force):
+            return
+        try:
+            operation = getattr(self, "_" + step)
+            result = (await operation(job) if inspect.iscoroutinefunction(operation)
+                      else await thread_work(operation, job))
+            await thread_work(self._finish_step, job, step, result)
         except Exception:
-            with self.record_lock:
-                job.update(self.records.load(job["id"]))
-                job.update(failed_step=step,
-                           retry_at=self.clock() + min(3600, 2 ** min(job["attempts"][step], 11)))
-                self.records.save(job)
+            await thread_work(self._finish_step, job, step, failed=True)
             raise
 
-    def _resume_loaded_job(self, loaded):
+    async def _resume_loaded_job(self, loaded):
         """b5 imports trusted off-host authority, then uses the normal job path.
 
         Ordinary restart/tick supplies local rows. Recovery supplies the newer
@@ -168,15 +183,20 @@ class DeletionJobs:
         record = binding(self.server._owner_identities, owner)
         if loaded["id"] != digest(owner) or loaded["uid"] != record["uid"]:
             raise PermissionError("deletion job must match the permanent owner binding")
-        with self.record_lock:
-            self.records.save(loaded)
-        return self._resume_owner(owner)
+        await thread_work(self.records.save, loaded)
+        return await self._resume_owner(owner)
 
-    def _resume_owner(self, owner):
+    async def _resume_owner(self, owner):
         job = self.records.load(digest(owner))
-        self._step(job, "withdrawal", force=True)
+        try:
+            installed = await thread_work(self.server.routing.withdrawal_installed,
+                                          job["results"].get("withdrawal"))
+        except (OSError, RuntimeError):
+            installed = False
+        if read(self.server._owner_identities, owner).state != "erased" or not installed:
+            await self._step(job, "withdrawal", force=True)
         for step in STEPS:
-            self._step(job, step)
+            await self._step(job, step)
         return self.public(job)
 
     async def enqueue(self, owner):
@@ -193,20 +213,22 @@ class DeletionJobs:
             if job["retry_at"] <= self.clock():
                 self.server.routing.start(job["owner"], self._resume_owner)
 
-    def _withdrawal(self, job):
+    async def _withdrawal(self, job):
         from tinyassets.broker.admission import local_mutate
 
         routing = self.server.routing
         # The admission row is the durable receipt for this mutation even if
         # the process died before writing the step's completion receipt.
         if read(self.server._owner_identities, job["owner"]).state != "erased":
-            local_mutate(self.server._owner_identities.path, job["owner"], "erase", routing=routing)
+            receipt = await local_mutate(
+                self.server._owner_identities.path, job["owner"], "erase", routing=routing)
         else:
-            routing.changed(job["owner"])
+            receipt = await routing.changed(job["owner"])
         if "snapshots" in job["completed_steps"]:
             # Recovery can restore an older map after the off-host job finished.
             # Reassert its map effect without repeating completed host deletion.
-            self._erase_snapshot_map(job)
+            await thread_work(self._erase_snapshot_map, job)
+        return receipt
 
     def _uid(self, job):
         from tinyassets.broker.owner_volumes import binding
@@ -256,6 +278,8 @@ class DeletionJobs:
     def _credentials(self, job):
         from tinyassets.router_credentials import revoke_request
 
+        if not self.server.routing.withdrawal_installed(job["results"].get("withdrawal")):
+            raise RuntimeError("router withdrawal installation remains pending")
         if revoke_request(self.server._data_root, job["owner"]) != {
                               "op": "ROUTER_CREDENTIAL_IS", "result": {"revoked": True}}:
             raise RuntimeError("router credential revocation remains pending")

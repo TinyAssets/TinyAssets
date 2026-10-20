@@ -91,6 +91,14 @@ def pending(identities):
                 if admission(db, owner).state in {"admitted", "suspended"}]
 
 
+def awake_owners(identities, *, stopping=False):
+    """Explicit running owners, not the pending-work queue (C15)."""
+    with closing(identities._connect(write=False)) as db:
+        return [row[0] for row in db.execute(
+            "SELECT principal FROM owner_volumes WHERE json_extract(work,'$.kind')='running' "
+            "OR (? AND json_extract(work,'$.kind') IN ('snapshot','restore'))", (stopping,))]
+
+
 def reference(snapshot_id, sha256):
     if (not isinstance(snapshot_id, str) or not re.fullmatch(r"[a-f0-9]{32}", snapshot_id)
             or not isinstance(sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", sha256)):

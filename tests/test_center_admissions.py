@@ -1,4 +1,5 @@
 """DA1: the broker-private, append-only center admission log and its IPC op."""
+
 import os
 import socket
 import sqlite3
@@ -6,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.test_broker_server import broker  # noqa: F401 - real Unix server fixture
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.owner_identities import AdmissionRow, OwnerIdentities
@@ -29,18 +30,18 @@ def rows(identities):
 
 def test_admit_takes_machine_from_reservation_and_retry_is_idempotent(tmp_path):
     identities = store(tmp_path, "alice", "bob")
-    first = identities.admission("admit", "bob", "bob-home",
-        routing=projection(identities.path))
+    first = drive(identities.admission("admit", "bob", "bob-home",
+        routing=projection(identities.path)))
     assert first == AdmissionRow(1, "admit", "bob", "bob-home", 300002)
-    assert identities.admission("admit", "bob", "bob-home",
-        routing=projection(identities.path)) == first
+    assert drive(identities.admission("admit", "bob", "bob-home",
+        routing=projection(identities.path))) == first
     assert identities.center_state("bob-home") == "admitted"
     assert identities.center_state("never") == "unadmitted"
-    retired = identities.admission("retire", "bob", "bob-home",
-        routing=projection(identities.path))
+    retired = drive(identities.admission("retire", "bob", "bob-home",
+        routing=projection(identities.path)))
     assert retired == AdmissionRow(2, "retire", "bob", "bob-home", 300002)
-    assert identities.admission("retire", "bob", "bob-home",
-        routing=projection(identities.path)) == retired
+    assert drive(identities.admission("retire", "bob", "bob-home",
+        routing=projection(identities.path))) == retired
     assert identities.center_state("bob-home") == "retired"
     assert rows(identities) == [(1, "admit", "bob", "bob-home", 300002),
                                 (2, "retire", "bob", "bob-home", 300002)]
@@ -53,8 +54,8 @@ def test_admit_takes_machine_from_reservation_and_retry_is_idempotent(tmp_path):
 
 def test_every_refusal_appends_nothing(tmp_path):
     identities = store(tmp_path, "alice", "bob")
-    identities.admission("admit", "alice", "shared",
-     routing=projection(identities.path))
+    drive(identities.admission("admit", "alice", "shared",
+     routing=projection(identities.path)))
     refusals = [
         (PermissionError, ("admit", "bob", "shared")),        # another principal
         (PermissionError, ("retire", "bob", "shared")),
@@ -68,12 +69,12 @@ def test_every_refusal_appends_nothing(tmp_path):
     ]
     for error, arguments in refusals:
         with pytest.raises(error):
-            identities.admission(*arguments, routing=projection(identities.path))
-    identities.admission("retire", "alice", "shared",
-      routing=projection(identities.path))
+            drive(identities.admission(*arguments, routing=projection(identities.path)))
+    drive(identities.admission("retire", "alice", "shared",
+      routing=projection(identities.path)))
     with pytest.raises(PermissionError, match="never admitted again"):
-        identities.admission("admit", "alice", "shared",
-         routing=projection(identities.path))
+        drive(identities.admission("admit", "alice", "shared",
+         routing=projection(identities.path)))
     assert len(rows(identities)) == 2
     with pytest.raises(LookupError):
         identities.resolve("carol")  # an admission never allocates
@@ -81,7 +82,7 @@ def test_every_refusal_appends_nothing(tmp_path):
 
 def test_log_is_append_only(tmp_path):
     identities = store(tmp_path, "alice")
-    identities.admission("admit", "alice", "home", routing=projection(identities.path))
+    drive(identities.admission("admit", "alice", "home", routing=projection(identities.path)))
     with sqlite3.connect(identities.path) as db:
         for statement in ("DELETE FROM center_admissions",
                           "UPDATE center_admissions SET machine=300009"):
@@ -99,8 +100,8 @@ def test_concurrent_writers_serialize_to_one_owner_per_center(tmp_path):
     def admit(job):
         principal, center = job
         try:
-            return identities.admission("admit", principal, center,
-                routing=projection(identities.path))
+            return drive(identities.admission("admit", principal, center,
+                routing=projection(identities.path)))
         except PermissionError:
             return None
 
@@ -118,8 +119,8 @@ def test_missing_map_refuses_and_is_never_created(tmp_path):
     identities = store(tmp_path, "alice")
     identities.path.unlink()
     with pytest.raises(sqlite3.OperationalError):
-        identities.admission("admit", "alice", "home",
-       routing=projection(identities.path))
+        drive(identities.admission("admit", "alice", "home",
+       routing=projection(identities.path)))
     with pytest.raises(sqlite3.OperationalError):
         identities.center_state("home")
     assert not identities.path.exists()
@@ -175,8 +176,8 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
 def test_retired_owner_rpc_cannot_mutate_admission(broker, tmp_path):  # noqa: F811
     identities = store(tmp_path, "alice", "bob")
     broker.server._owner_identities = identities
-    identities.admission("admit", "alice", "alice-home",
-        routing=projection(identities.path))
+    drive(identities.admission("admit", "alice", "alice-home",
+        routing=projection(identities.path)))
     before = rows(identities)
     for changes in ({}, {"token": "stale"}, {"uid": 300001}, {"principal": "unknown"}):
         document = {"op": "RETIRE_OWNER", "principal": "alice", **broker.state, **changes}

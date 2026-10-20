@@ -249,8 +249,8 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
         return stop(uid)
 
     monkeypatch.setattr(boxes.runtime, "stop", checked_stop)
-    admitted.admission("admit", "alice", "cc-alice-extra",
-        routing=projection(admitted.path))
+    drive(admitted.admission("admit", "alice", "cc-alice-extra",
+        routing=projection(admitted.path)))
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     monkeypatch.setenv(canary_sign_in.USER_ENV, "alice")
     with canary_sign_in._limits() as db:
@@ -783,8 +783,8 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
     alice = admitted.owner_machine("alice")
     with manager.condition:
         manager._stop(manager.boxes[alice])
-    manager.awake_cap = 1
-    manager.wake_timeout = .2
+    jobs.server.routing.config.awake_cap = 1
+    jobs.server.routing.config.wake_timeout = .2
     monkeypatch.setattr(manager, "_sleep", lambda *a, **kw: False)
     errors, results = [], []
     def wake():

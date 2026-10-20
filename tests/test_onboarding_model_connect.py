@@ -6,7 +6,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.support.model_connect import rig  # noqa: F401 - shared real-store fixture
 from tests.test_hosted_model_auth import CHALLENGE, VERIFIER, pending
 from tinyassets import onboarding
@@ -178,8 +178,8 @@ def test_retirement_between_ingress_and_durable_begin_cannot_create_flow(monkeyp
     def delayed_begin(**kwargs):
         identities = OwnerIdentities(data_dir() / ".broker/state/owner-identities.db",
                                      plans=Plans(data_dir()))
-        identities.admission("retire", kwargs["owner"], kwargs["universe_id"],
-            routing=projection(identities.path))
+        drive(identities.admission("retire", kwargs["owner"], kwargs["universe_id"],
+            routing=projection(identities.path)))
         return original(**kwargs)
 
     monkeypatch.setattr(hosted, "begin_flow", delayed_begin)

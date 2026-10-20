@@ -40,10 +40,10 @@ class Plans:
                        "WHERE json_valid(attempt) AND json_extract(attempt, '$.session_id') "
                        "IS NOT NULL")
 
-    def set_suspension(self, owner, *, reason, suspended):
+    async def set_suspension(self, owner, *, reason, suspended):
         from tinyassets.broker.admission import local_mutate
 
-        local_mutate(self.admission_path, owner, "suspend", reason=reason,
+        await local_mutate(self.admission_path, owner, "suspend", reason=reason,
                      suspended=suspended, routing=self.routing)
 
     def attach_admission(self, db):

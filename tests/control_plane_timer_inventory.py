@@ -46,8 +46,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
         "reports and the 24-hour floor; the broker reserves wake capacity",
     ),
-    "tinyassets/broker/routing.py::RoutingAuthority.wake": (
+    "tinyassets/broker/routing.py::BrokerLifecycle.wake": (
         CALL_SCOPED, "one broker wake waits for capacity notifications until its fixed deadline",
+    ),
+    "tinyassets/broker/routing.py::BrokerLifecycle.deploy": (
+        CALL_SCOPED, "one deploy awaits ordinary owner sleep operations; sleep is a host operation",
     ),
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.withdraw": (
         CALL_SCOPED, "C6 withdrawal waits at most 20 seconds for admitted work to drain",

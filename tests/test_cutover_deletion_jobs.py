@@ -1,10 +1,11 @@
 """The only legacy path cleanup is stopped one-shot cutover."""
+
 import json
 import sqlite3
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.test_broker_deletion_jobs import Remote
 from tinyassets.broker.admission import digest
 from tinyassets.broker.deletion_jobs import STEPS, load_unfinished_jobs
@@ -102,7 +103,7 @@ def test_cutover_finishes_all_pending_legacy_phases_without_volume_binding(tmp_p
     identity = shared / ".broker/state/owner-identities.db"
     identity.parent.mkdir(parents=True, mode=0o700)
     identities = OwnerIdentities(identity, initialize=True)
-    local_mutate(identity, "later", "erase", routing=projection(identity))
+    drive(local_mutate(identity, "later", "erase", routing=projection(identity)))
     plans = Plans(shared)
     plans.initialize()
     plans.set_plan("later", "free", event_created=0)

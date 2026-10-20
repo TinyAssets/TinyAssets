@@ -16,10 +16,18 @@ class Projection:
     def __init__(self, path):
         self.path = Path(path)
 
-    def changed(self, owner):
+    @property
+    def server(self):
+        return getattr(_routes.get(self.path), "server", None)
+
+    async def changed(self, owner):
         routing = _routes.get(self.path)
         if routing is not None:
-            routing.changed(owner)
+            loop = getattr(routing.server, "_loop", None)
+            if loop is not None and loop.is_running() and loop is not asyncio.get_running_loop():
+                return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(
+                    routing.changed(owner), loop))
+            return await routing.changed(owner)
 
 
 def projection(path):
@@ -34,13 +42,15 @@ class Plans(BrokerPlans):
 
 def suspend(plans, *args, **kwargs):
     plans.routing = projection(plans.admission_path)
-    return plans.set_suspension(*args, **kwargs)
+    return drive(plans.set_suspension(*args, **kwargs))
 
 
 def drive(coroutine):
     """Drive the real async API on its fixture broker's loop."""
     frame = coroutine.cr_frame.f_locals
-    server = frame.get('server') or getattr(frame.get('self'), 'server', None)
+    server = (frame.get('server') or getattr(frame.get('self'), 'server', None)
+              or getattr(frame.get('routing'), 'server', None)
+              or getattr(getattr(frame.get('self'), 'lifecycle', None), 'server', None))
     loop = getattr(server, '_loop', None)
     if loop is not None and loop.is_running():
         return asyncio.run_coroutine_threadsafe(coroutine, loop).result(60)

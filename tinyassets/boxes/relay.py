@@ -71,12 +71,11 @@ class OwnerRelays:
                 if set(doc) == {"op", "request"} and doc["op"] == "ROUTER_CREDENTIAL":
                     from tinyassets.router_credentials import relay_request
 
-                    # C13/T5: withdrawal retires this endpoint under the same
-                    # registry lock, including a mint already accepted by it.
+                    # Fixed endpoint binding; C13 post-write admission orders mints.
                     with self._lock:
                         bound_owner = self._bindings[uid]
-                        answer = relay_request(
-                            self.admission.data_root, bound_owner, doc["request"])
+                    answer = relay_request(
+                        self.admission.data_root, bound_owner, doc["request"])
                     guest.sendall(rf.control(rf.CONNECTION, answer))
                     return
                 shared = doc == {"op": "BOX_SHARED"}

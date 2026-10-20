@@ -1,4 +1,5 @@
 """Real broker catalog IPC and the daemon's capability catalog consumer."""
+
 # ruff: noqa: F811 -- imported pytest fixtures
 import asyncio
 import json
@@ -7,7 +8,7 @@ import sys
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.broker.catalog import connections
@@ -129,8 +130,8 @@ def test_actual_app_and_summary_catalogs_over_ipc(discovery, monkeypatch):
 
     identities = OwnerIdentities(root / "identities.db", initialize=True)
     identities.resolve("alice", allocate=True)
-    identities.admission("admit", "alice", "cc-alice",
-       routing=projection(identities.path))
+    drive(identities.admission("admit", "alice", "cc-alice",
+       routing=projection(identities.path)))
     discovery.broker.server._owner_identities = identities
 
     async def app():

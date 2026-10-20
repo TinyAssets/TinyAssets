@@ -185,12 +185,27 @@ def owner(root, relay, secret, socket, uid, generation, centers, inherited_mount
 
 def broker(directory, *, register=False):
     os.environ.setdefault("BACKUP_DEST", ":local:/snapshots/owner-snapshots")
+    from tinyassets.boxes import daemon_control
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore
     from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.process import _Dispatchers
     from tinyassets.broker.server import BOX_HOST, BrokerServer
+
+    host_request = daemon_control.request
+
+    def traced_host_request(operation, *args, **kwargs):
+        # Synthetic rehearsal diagnostics: preserve call boundaries without
+        # printing launch records or credentials, or changing timeout behavior.
+        owner = kwargs.get("uid", args[0] if args else "platform")
+        print(f"host begin op={operation} owner={owner}", file=sys.stderr, flush=True)
+        try:
+            return host_request(operation, *args, **kwargs)
+        finally:
+            print(f"host end op={operation} owner={owner}", file=sys.stderr, flush=True)
+
+    daemon_control.request = traced_host_request
 
     run = Path(directory)
     os.setgroups([1102])
@@ -390,7 +405,6 @@ def smoke(confirm=False):
             volumes,
             relays,
             run / "apps",
-            awake_cap=max(1, len(journal["plan"])),
         )
         import threading
 
@@ -448,18 +462,20 @@ asyncio.run(launch())
         from tinyassets.broker.admission import digest
         from tinyassets.routing_snapshot import snapshot
 
-        projection = snapshot(Path('/data'))
-        records = {}
-        for item in journal['plan']:
-            route = resolve(item['principal'])
-            uid = next(box.uid for box in manager.boxes.values() if box.owner == item['principal'])
-            record = {'uid': uid, 'secret': route.secret}
-            records[digest(item['principal'])] = {
-                'state': 'admitted', 'socket': str(run / 'apps' / str(record['uid']) / 'app.sock'),
-                'secret': record['secret']}
-        projection.install(projection.instance, 1, records)
-        router = OwnerRouter(Starlette(), resolver=resolve)
         try:
+            projection = snapshot(Path('/data'))
+            records = {}
+            for item in journal['plan']:
+                route = resolve(item['principal'])
+                uid = next(box.uid for box in manager.boxes.values()
+                           if box.owner == item['principal'])
+                record = {'uid': uid, 'secret': route.secret}
+                records[digest(item['principal'])] = {
+                    'state': 'admitted',
+                    'socket': str(run / 'apps' / str(record['uid']) / 'app.sock'),
+                    'secret': record['secret']}
+            projection.install(projection.instance, 1, records)
+            router = OwnerRouter(Starlette(), resolver=resolve)
             if confirm:
                 # The shared door adopts its real broker peer after retiring all
                 # root authority, exactly as the role launcher requires.
@@ -683,6 +699,15 @@ print(json.dumps(key))
                         counts['restore_new_operations'] = restored['new_operations']
                         counts['restore_revoked_keys'] = 1
         except BaseException:
+            import faulthandler
+            import signal
+
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            for child in children:
+                if child.poll() is None:
+                    child.send_signal(signal.SIGUSR1)
+            # Give diagnostic signal handlers time to flush, never retry work.
+            time.sleep(.1)
             # Captured by the parent harness, never included in its report.
             # Synthetic tests retain this evidence when a child fails startup.
             for stream in logs:
@@ -794,6 +819,10 @@ def reconnect(clone):
 
 
 if __name__ == "__main__":
+    import faulthandler
+    import signal
+
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     if len(sys.argv) > 1:
         {"owner": owner, "broker": broker, "door": door, "reconnect": reconnect,
          "registered-broker": lambda directory: broker(directory, register=True),

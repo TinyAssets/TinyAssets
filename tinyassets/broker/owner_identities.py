@@ -160,11 +160,13 @@ class OwnerIdentities:
         return sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
                                uri=True, timeout=30)
 
-    def admission(self, event: str, principal: str, center: str, *, routing) -> AdmissionRow:
+    async def admission(self, event: str, principal: str, center: str, *, routing) -> AdmissionRow:
         if routing is None:
             raise RuntimeError("admission mutation requires routing")
-        row = self._admission(event, principal, center)
-        routing.changed(principal)
+        from tinyassets.broker.admission import thread_work
+
+        row = await thread_work(self._admission, event, principal, center)
+        await routing.changed(principal)
         return row
 
     def _admission(self, event: str, principal: str, center: str) -> AdmissionRow:

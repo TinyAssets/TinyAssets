@@ -42,6 +42,11 @@ class RoutingSnapshot:
                 self._installed = revision, routes
             return self._installed[0]
 
+    def installed(self):
+        with self._lock:
+            return {"instance": self.instance,
+                    "revision": self._installed[0] if self._installed else 0}
+
     def record(self, owner):
         with self._lock:
             self.require_current()

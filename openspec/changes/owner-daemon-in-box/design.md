@@ -691,18 +691,15 @@ deleted. The image registry retains only `current`. No owner-content path is add
     `routing_install`, `dispatch` and `revoke_account`, and the relay registry
     lock's serialization of accepted mints with retirement.
 
-**As built (lane d, remaining C13):** the root relay sends the owner from its
-fixed binding directly to identity's credential socket. Identity authenticates
-the service UID, admits mints through its installed routing snapshot, and shares
-one credential-store lock between snapshot installation, mint and revocation.
-The relay's existing binding-registry lock serializes accepted mints with endpoint
-retirement; broker withdrawal waits for retirement, including when publication
-failed and stopping ingress is the acknowledgement path (T5/C13). The broker's
-`BOX_CREDENTIAL` handler and identity's admission IPC are deleted. Broker account
-revocation is a fixed authenticated identity operation, unavailable to a box;
-the broker credential frame cannot mint or list credentials.
-Lifecycle call direction remains broker to host; the clocks remain boxhostd's
-maintain loop, the waker and C10's host-only growth timer.
+**As built (b8, C13):** the fixed owner relay calls identity directly. Identity
+uses the installed snapshot before and after writing a credential. A failed
+post-write admission removes that credential and refuses. Snapshot install takes
+only its own atomic swap. Deletion step 6 requires an acknowledged router
+incarnation and revision at or after withdrawal; unavailable publication leaves
+it pending. `_DISPATCH` and relay mint/retirement serialization are deleted.
+The broker frame only revokes an account. No admission IPC, callback or clock is
+added. Authentication sessions retain suspended-owner sign-in and refuse absent
+owners after their write.
 
 ### C14. The broker owns each owner's lifecycle; deletion records live in the broker (T2, T5, T9)
 The round-2 structural review (2026-10-20) found that the deletion job decides in
@@ -812,6 +809,19 @@ Target:
   explicit awake-owner query, not from `pending()`. A failed publication on the
   tick is logged, not swallowed.
 
+**As built (b8, C15/C3):** `BrokerLifecycle` names the broker coordinator;
+`VolumeLifecycle` runs its existing transitions asynchronously under the owner
+lock. Capacity counts slots and in-flight reservations, with victim facts from
+recover and an explicit awake-owner query. Graceful host sleep acknowledges exit
+and detach before the broker releases the slot and asks for a copy-only snapshot.
+Snapshot and restore refuse a running or attached box. The executor cap and policy
+status fields, global publication lock and thread-to-loop notification are gone.
+Deletion repeats step 1 only for a new enqueue or missing erased/installed state.
+Recovery schedules these same per-owner tasks; its receipt attests only broker
+work. Root verifies its preparation facts in the layout document. Publication and
+recovery failures are logged with their own labels. Validation receipts are in
+the b8 report; no deployment is claimed.
+
 ### Build order and lanes
 Lane a (C1–C4) and step 1 are complete. The remaining lanes run one after
 another on `conv/c6-research-shape`, each after the previous lane has merged:
@@ -904,7 +914,7 @@ against the research), not just a test review.
 
 - Slices 2 onward change production serving, so they stay unmerged and merge together with the cutover slice as one maintenance deploy, after the `--archive` rehearsal (review of #5172).
 - Secret delivery and rotation at sandbox start: slice 4 (boxhostd mints via the broker on every start and writes the read-only secret file); slices 2–7 merge together as one stack.
-- **Credential channel (C13).** The fixed owner relay forwards `ROUTER_CREDENTIAL` directly to identity under `.runtime`. Identity authenticates the root relay service and checks its installed routing snapshot under the mint/publication/revocation lock. Relay retirement serializes with accepted mints. The broker forwarding operation is deleted; identity remains the only key/hook-map writer.
+- **Credential channel (C13).** The fixed owner relay forwards `ROUTER_CREDENTIAL` directly to identity under `.runtime`. Identity authenticates the root relay service and checks its installed routing snapshot before and after each mint. Step 6 waits for withdrawal installation; relay retirement does not wait for mints. The broker forwarding operation is deleted; identity remains the only key/hook-map writer.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
 > **Superseded by C5/C6.** The authenticated door durably enqueues the control-plane deletion job and returns 202. The job withdraws admission, completes shared cleanup and exposes durable progress through the status URL. The door does not orchestrate deletion.

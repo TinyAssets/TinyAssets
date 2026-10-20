@@ -73,6 +73,12 @@ def _drive(
     from tinyassets.auth import middleware
     from tinyassets.auth.provider import Identity
 
+    if provider is None:
+        from tests.support.broker_double import seed_owner_admission
+        from tinyassets.storage import data_dir
+
+        seed_owner_admission(data_dir(), principal="owner", center="cc-owner")
+
     monkeypatch.setattr(middleware, "_get_provider", lambda: provider or SimpleNamespace(
         resolve_token=lambda token: Identity(user_id="owner", username="owner")))
     calls: list[dict] = []

@@ -166,8 +166,8 @@ def test_deletion_cancels_every_completed_session_after_attempts_are_cleared(bil
             "subscription": "sub_" + value["session_id"],
         }}}) == {"settled": True}
     assert plans.read("alice")["attempt"] is None
-    local_mutate(plans.admission_path, "alice", "erase",
-        routing=projection(plans.admission_path))
+    drive(local_mutate(plans.admission_path, "alice", "erase",
+        routing=projection(plans.admission_path)))
     cancelled = []
 
     def get(path):
@@ -192,8 +192,8 @@ def test_deletion_cancels_every_completed_session_after_attempts_are_cleared(bil
 
 def test_tombstone_refuses_checkout_and_expires_open_session(billing, monkeypatch):
     root, plans, value = billing
-    local_mutate(plans.admission_path, "alice", "erase",
-        routing=projection(plans.admission_path))
+    drive(local_mutate(plans.admission_path, "alice", "erase",
+        routing=projection(plans.admission_path)))
     calls = []
     monkeypatch.setattr(stripe, "_get", lambda path: {
         "id": value["session_id"], "status": "open"})
@@ -252,8 +252,8 @@ def test_completed_checkout_cancels_subscription_before_settling(billing, monkey
 
 def test_late_signed_subscription_is_cancelled_and_recorded(billing, monkeypatch):
     root, plans, _ = billing
-    local_mutate(plans.admission_path, "alice", "erase",
-        routing=projection(plans.admission_path))
+    drive(local_mutate(plans.admission_path, "alice", "erase",
+        routing=projection(plans.admission_path)))
     event = _subscription_event(owner_id="alice")
     event["created"] = 90
     event["data"]["object"]["customer"] = "cus_late"
@@ -278,8 +278,8 @@ def test_completion_before_subscription_event_retains_cancellation_authority(bil
     assert plans.read("alice")["tier"] == "free"
     assert plans.read("alice")["event_created"] == 0
     assert plans.read("alice")["subscription_id"] == "sub_completed"
-    local_mutate(plans.admission_path, "alice", "erase",
-        routing=projection(plans.admission_path))
+    drive(local_mutate(plans.admission_path, "alice", "erase",
+        routing=projection(plans.admission_path)))
     monkeypatch.setattr(stripe, "_get", lambda path: {
         "id": value["session_id"], "status": "complete", "subscription": "sub_completed",
         "customer": "cus_completed"} if path.startswith("checkout/") else {
@@ -342,8 +342,8 @@ def test_erasure_preserves_inflight_checkout_until_confirmed_cleanup(billing, mo
         _start_checkout(owner="alice", origin="https://tinyassets.io")))
 
     def delete():
-        local_mutate(plans.admission_path, "alice", "erase",
-            routing=projection(plans.admission_path))
+        drive(local_mutate(plans.admission_path, "alice", "erase",
+            routing=projection(plans.admission_path)))
         deleted.set()
 
     checkout.start()

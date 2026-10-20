@@ -69,6 +69,10 @@ def _isolated_store(tmp_path, monkeypatch):
     only.
     """
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    for owner in ("alice", "owner"):
+        seed_owner_admission(tmp_path, principal=owner, center="cc-" + owner)
     monkeypatch.delenv(session_store.SEAL_KEY_ENV, raising=False)
     session_store._reset_for_tests()
     yield tmp_path

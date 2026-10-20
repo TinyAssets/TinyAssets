@@ -17,7 +17,7 @@ from urllib.error import URLError
 import httpx
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.support.broker_double import seed_owner_admission
 from tests.support.broker_ipc import broker  # noqa: F401
 from tinyassets import owner_runtime
@@ -250,8 +250,9 @@ def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
 def test_box_center_retirement_during_connect_keeps_owner_admitted(box):
     from tinyassets.storage.outbound_connections import _broker_channel
 
-    box.transport["before_connect"] = lambda: box.identities.admission("retire", "owner", "center",
-        routing=projection(box.identities.path))
+    box.transport["before_connect"] = lambda: drive(box.identities.admission(
+        "retire", "owner", "center",
+        routing=projection(box.identities.path)))
     channel = _broker_channel(box.root, principal="owner", command_center="center",
                               grant_id="grant-model", connection_id="conn-model")
     assert channel.request("GET", {"url": "https://models.example.com/v1/chat"})["status"] == 200
@@ -265,8 +266,8 @@ def test_box_account_retired_during_connect_refuses_before_credential_send(box):
     from tinyassets.broker.ops import new_op_id
 
     def retire():
-        local_mutate(box.identities.path, "owner", "erase",
-            routing=projection(box.identities.path))
+        drive(local_mutate(box.identities.path, "owner", "erase",
+            routing=projection(box.identities.path)))
 
     box.transport["before_connect"] = retire
     # Exercise the relay's broker-side protocol directly: the relay also closes
@@ -309,15 +310,15 @@ def test_box_shared_channel_rechecks_owner_admission_on_every_read(box):
         # Retirement is a broker operation; run it outside the box runtime.
         with pytest.MonkeyPatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
-            box.identities.admission("retire", "owner", "center",
-                routing=projection(box.identities.path))
+            drive(box.identities.admission("retire", "owner", "center",
+                routing=projection(box.identities.path)))
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {
             "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
         with pytest.MonkeyPatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
-            local_mutate(box.identities.path, "owner", "erase",
-                routing=projection(box.identities.path))
+            drive(local_mutate(box.identities.path, "owner", "erase",
+                routing=projection(box.identities.path)))
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
@@ -368,12 +369,12 @@ def test_center_admission_rejects_foreign_retired_and_identity_fields(box, monke
     with monkeypatch.context() as broker_context:
         broker_context.setattr(owner_runtime, "_runtime", None)
         identities.resolve("other", allocate=True)
-        identities.admission("admit", "other", "foreign",
-          routing=projection(identities.path))
-        identities.admission("admit", "owner", "retired",
-          routing=projection(identities.path))
-        identities.admission("retire", "owner", "retired",
-           routing=projection(identities.path))
+        drive(identities.admission("admit", "other", "foreign",
+          routing=projection(identities.path)))
+        drive(identities.admission("admit", "owner", "retired",
+          routing=projection(identities.path)))
+        drive(identities.admission("retire", "owner", "retired",
+           routing=projection(identities.path)))
     for center in ("foreign", "retired", "../invalid"):
         with pytest.raises(PermissionError):
             admit_center(box.root, principal="owner", center=center)
@@ -393,8 +394,8 @@ def test_retired_owner_cannot_admit_on_an_already_open_channel(box, monkeypatch)
         identities = box.broker.server._owner_identities
         with monkeypatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
-            local_mutate(identities.path, "owner", "erase",
-            routing=projection(identities.path))
+            drive(local_mutate(identities.path, "owner", "erase",
+            routing=projection(identities.path)))
         channel.sendall(rf.control(rf.CONNECTION, {"op": "ADMIT_CENTER", "center": "late"}))
         assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
     assert identities.center_state("late") == "unadmitted"

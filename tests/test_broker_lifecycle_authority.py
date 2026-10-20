@@ -1,4 +1,5 @@
 """C14/C15: broker lifecycle authority, asynchronous serialization and local jobs."""
+
 import ast
 import asyncio
 import copy
@@ -9,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tinyassets.broker import admission, box_admission, owner_volumes
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.routing import RoutingAuthority
+from tinyassets.broker.routing import BrokerLifecycle
 
 
 class Remote:
@@ -39,17 +40,20 @@ def authority(tmp_path, monkeypatch):
                    "project_id INT, bhard_bytes INT)")
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, owner, routing=projection(identities.path))
+        drive(identities.admission("admit", owner, owner, routing=projection(identities.path)))
         box_admission.provision(identities, tmp_path, owner, owner)
     events, remote, released = [], Remote(), []
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
-    server.routing = RoutingAuthority(server)
-    server.routing.publish = lambda **kwargs: None
+    server.routing = BrokerLifecycle(server)
+    from tinyassets.router_credentials import routing_dispatch
+    server.routing._router = lambda request: routing_dispatch(tmp_path, request)
+    server.routing.publish()
 
-    def changed(owner):
+    async def changed(owner):
         assert admission.read(identities, owner).state == "erased"
         assert remote.rows[admission.digest(owner)]
         events.extend(["channels_closed", "withdrawal_published"])
+        return server.routing.publish()
 
     server.routing.changed = changed
     original = admission.mutate
@@ -66,6 +70,8 @@ def authority(tmp_path, monkeypatch):
         if operation == "wake":
             events.append("wake:" + owner)
             return {"uid": fields["record"]["uid"]}
+        if operation == "sleep":
+            return {"stopped": True}
         if operation == "create":
             return {"created": True}
         if operation == "snapshot":
@@ -102,6 +108,7 @@ def test_enqueue_and_status_never_read_remote_and_erasure_mutates_once(authority
         assert (await a.jobs.enqueue("alice"))["status"] == "deleted"
         await a.server.routing.close()
         assert a.events.count("mutation") == 1
+        assert a.events.count("withdrawal_published") == 2  # once per enqueue, never resume
         assert a.events.index("mutation") < a.events.index("destroy")
         assert a.remote.reads == 0
     asyncio.run(exercise())
@@ -327,9 +334,11 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
     lifecycle = a.server.routing.volumes
     lifecycle.volume("alice", "created")
     lifecycle.volume("alice", "sleep")
+    a.server.routing.config.awake_cap = 1
+    a.server.routing.awake.add("alice")
     awake = {"alice": True, "bob": False}
     owners = {a.identities.owner_machine(owner): owner for owner in awake}
-    entered, stop, stopped, finish = (threading.Event() for _ in range(4))
+    entered, stop, stopped, copying, finish = (threading.Event() for _ in range(5))
 
     def host(operation, owner=None, **fields):
         bound = owner if owner is not None else owners[fields["uid"]]
@@ -338,11 +347,13 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
                     "awake_cap": 1, "wake_timeout": 10, "active": 0,
                     "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
                     "volume_size": 1024**3}
-        if operation == "snapshot":
+        if operation == "sleep":
             entered.set()
             assert stop.wait(10)
             awake[bound] = False
             stopped.set()
+        if operation == "snapshot":
+            copying.set()
             assert finish.wait(10)
         if operation == "wake":
             awake[bound] = True
@@ -357,13 +368,10 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
     async def exercise():
         await waker.tick()
         assert await asyncio.to_thread(entered.wait, 2)
-        async def waiting():
-            while not a.server.routing._capacity._waiters:
-                await asyncio.sleep(0)
-        await asyncio.wait_for(waiting(), 2)
         assert not waker.pending["bob"].done()
         stop.set()
         assert await asyncio.to_thread(stopped.wait, 2)
+        assert await asyncio.to_thread(copying.wait, 2)
         await waker.tick()
         await asyncio.wait_for(waker.pending["bob"], 2)
         assert awake["bob"] and not a.server.routing.tasks["alice"].done()
@@ -375,8 +383,8 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
 def test_mutation_without_routing_fails_before_changing_admission(authority):
     a = authority
     with pytest.raises(RuntimeError, match="requires routing"):
-        admission.local_mutate(a.identities.path, "alice", "erase",
-            routing=None)
+        drive(admission.local_mutate(a.identities.path, "alice", "erase",
+            routing=None))
     assert admission.read(a.identities, "alice").state == "admitted"
 
 
@@ -406,7 +414,7 @@ def test_routing_projection_contains_only_admitted_and_suspended_owners(authorit
         revision = snapshot.install(request["instance"], request["revision"], request["records"])
         return {"revision": revision}
     a.server.routing._router = receiver
-    a.server.routing.publish = RoutingAuthority.publish.__get__(a.server.routing)
+    a.server.routing.publish = BrokerLifecycle.publish.__get__(a.server.routing)
     with sqlite3.connect(a.identities.path) as db:
         admission.mutate(db, "alice", "erase")
         admission.mutate(db, "bob", "suspend", reason="billing", suspended=True)
@@ -415,3 +423,50 @@ def test_routing_projection_contains_only_admitted_and_suspended_owners(authorit
     assert snapshot.record("bob").state == "suspended"
     with pytest.raises(LookupError):
         snapshot.route("alice")
+
+
+def test_slow_status_for_one_owner_cannot_block_another_wake(authority):
+    a = authority
+    entered, release = threading.Event(), threading.Event()
+    alice = a.identities.owner_machine("alice")
+    def host(operation, owner=None, **fields):
+        if operation == "status" and fields.get("uid") == alice:
+            entered.set()
+            assert release.wait(10)
+        return a.host(operation, owner, **fields)
+    a.server.routing.volumes.execute = host
+    async def exercise():
+        first = asyncio.create_task(a.server.routing.wake("alice"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            await asyncio.wait_for(a.server.routing.wake("bob"), 2)
+            assert "wake:bob" in a.events and not first.done()
+        finally:
+            release.set()
+            await first
+    asyncio.run(exercise())
+
+
+def test_host_has_no_capacity_decision_and_capacity_wait_has_no_host_rpc():
+    root = Path(__file__).resolve().parents[1]
+    host = (root / "tinyassets/boxes/owner_daemons.py").read_text()
+    for removed in ("awake_cap", "idle_limit", "wake_timeout", "awake_count"):
+        assert removed not in host
+    tree = ast.parse((root / "tinyassets/broker/routing.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncWith) and any(
+                ast.unparse(item.context_expr) == "self._capacity" for item in node.items):
+            assert not {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)} & {
+                "host", "execute", "_launch"}
+
+
+def test_erased_installed_resume_does_not_repeat_withdrawal(authority):
+    a = authority
+    async def exercise():
+        result = await a.jobs.enqueue("alice")
+        await a.server.routing.close()
+        before = a.events.count("withdrawal_published")
+        await a.jobs.resume_loaded_job(a.jobs.records.load(admission.digest("alice")))
+        assert a.events.count("withdrawal_published") == before == 1
+        assert result["completed_steps"] == ["withdrawal"]
+    asyncio.run(exercise())

@@ -192,19 +192,32 @@ async def resume_deletion_jobs(server, *, backup_time):
     from tinyassets.broker.deletion_jobs import STEPS
 
     jobs = server.deletion_jobs
-    current = {job["id"]: job for job in jobs.records.remote.records()}
+    from tinyassets.broker.admission import thread_work
+
+    current = {job["id"]: job for job in await thread_work(jobs.records.remote.records)}
+    pending = False
     for local in jobs.records.records():
         if local["id"] not in current:
             raise RecoveryUnavailable("current off-host deletion record missing")
     for job in current.values():
-        jobs.records.save(job)
         # C3 requires every unfinished job and every completion newer than the
         # backup. Older completed receipts are already terminal at that point;
         # importing their exact progress also replaces any stale local retry.
         if (job["completed_steps"] == list(STEPS)
                 and job["results"]["receipt"]["completed_at"] <= backup_time):
+            await thread_work(jobs.records.save, job)
             continue
-        await jobs.resume_loaded_job(job)
+        task = server.routing.tasks.get(job["owner"])
+        if task is not None and task.done():
+            result = task.result()
+            if result is not None and result.get("status") == "deleted":
+                continue
+        if task is None or task.done():
+            async def resume(owner, loaded=job):
+                return await jobs._resume_loaded_job(loaded)
+            server.routing.start(job["owner"], resume, recovery=True)
+        pending = True
+    return not pending
 
 
 async def reconcile_authority(staged, now, *, routing):
@@ -245,6 +258,7 @@ def prepare_platform(staged, *, backup_time, now=None):
     layout = json.loads(marker.read_text())
     if layout.get("box_layout") != "owner-box":
         raise RecoveryUnavailable("platform recovery requires a shared-layer backup")
+    layout.pop("preparation", None)
     layout["state"] = "recovering"
     layout["recovery"] = {"backup_time": backup_time, "restore_time": now}
     write_layout(staged, layout)
@@ -257,6 +271,9 @@ def prepare_platform(staged, *, backup_time, now=None):
     report_path.write_text("{}")
     report_path.chmod(0o600)
     os.chown(report_path, 1002, 1002)
+    layout["preparation"] = {"credential_roots_reset": True,
+                             "broker_replay_cutoff_advanced": True}
+    write_layout(staged, layout)
     return layout["recovery"]
 
 
@@ -268,7 +285,8 @@ async def platform_recovery(server, *, backup_time, now=None, authority=None,
 
     staged = server._data_root
     now = time.time() if now is None else now
-    await resume_deletion_jobs(server, backup_time=backup_time)
+    if not await resume_deletion_jobs(server, backup_time=backup_time):
+        return None
     if authority is not None:
         authority(staged, now)
     else:
@@ -286,8 +304,8 @@ async def platform_recovery(server, *, backup_time, now=None, authority=None,
     report = {
         "backup_time": backup_time,
         "restore_time": now,
-        "credential_roots_reset": True,
-        "broker_replay_cutoff_advanced": True,
+        "jobs_resumed": True,
+        "billing_reconciled": True,
         "owners_reconciled": reconciled,
     }
     report_path = _safe(staged, ".platform-recovery.json")
@@ -310,8 +328,10 @@ def finish_platform(root):
     expected = layout["recovery"]
     if (layout["state"] not in {"recovering", "stable"}
             or any(report.get(key) != value for key, value in expected.items())
-            or report.get("credential_roots_reset") is not True
-            or report.get("broker_replay_cutoff_advanced") is not True):
+            or layout.get("preparation", {}).get("credential_roots_reset") is not True
+            or layout.get("preparation", {}).get("broker_replay_cutoff_advanced") is not True
+            or report.get("jobs_resumed") is not True
+            or report.get("billing_reconciled") is not True):
         raise RecoveryUnavailable("broker startup recovery has not completed")
     layout["state"] = "stable"
     write_layout(root, layout)

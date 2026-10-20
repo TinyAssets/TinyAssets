@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.test_broker_server import broker, new_op_id  # noqa: F401 -- broker socket fixture
 from tinyassets import ta_cli
 from tinyassets.broker.client import BrokerRefused
@@ -31,8 +31,8 @@ def admissions(root):
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=Plans(root))
     for owner, center in (("alice", "alpha"), ("alice", "beta"), ("bob", "gamma")):
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, center,
-     routing=projection(identities.path))
+        drive(identities.admission("admit", owner, center,
+     routing=projection(identities.path)))
     return identities
 
 
@@ -120,7 +120,7 @@ def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path):
     identities = admissions(tmp_path)
     store = PolicyStore(tmp_path, identities)
     store.bootstrap()
-    identities.admission("admit", "alice", "new", routing=projection(identities.path))
+    drive(identities.admission("admit", "alice", "new", routing=projection(identities.path)))
     legacy = _legacy(tmp_path, "new", "hand_off")
     original = legacy.read_bytes()
     assert store.decide("alice", center="new", action_class="app.write")["decision"] == "allow"
@@ -187,8 +187,8 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
 def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_path):  # noqa: F811
     cookie = "interactive-cookie-" + "h" * 32
     _session(tmp_path, "alice", cookie)
-    broker.server._owner_identities.admission("admit", "alice", "cc-alice",
-        routing=projection(broker.server._owner_identities.path))
+    drive(broker.server._owner_identities.admission("admit", "alice", "cc-alice",
+        routing=projection(broker.server._owner_identities.path)))
     store = PolicyStore(tmp_path, broker.server._owner_identities)
     store.bootstrap()
     # The inference OPEN must reach the current spend policy even when an old

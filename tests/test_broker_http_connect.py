@@ -1,11 +1,12 @@
 """Deposits retain owner/conflict checks across broker prepare and commit."""
+
 # ruff: noqa: F811 -- imported fixtures
 import socket
 import sys
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_disconnect import removal  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
@@ -52,8 +53,8 @@ def test_delayed_commit_after_erasure_writes_no_rows(removal, monkeypatch):
         pending = executor.submit(call, {**document, "action": "commit", "expected": revision})
         try:
             assert entered.wait(5)
-            local_mutate(removal.root / ".broker/state/owner-identities.db", "alice", "erase",
-                routing=projection(removal.root / ".broker/state/owner-identities.db"))
+            drive(local_mutate(removal.root / ".broker/state/owner-identities.db", "alice", "erase",
+                routing=projection(removal.root / ".broker/state/owner-identities.db")))
             local_erase(ledger, principal="alice", command_center=ACCOUNT_SCOPE,
                         erase_external_keys=False)
         finally:

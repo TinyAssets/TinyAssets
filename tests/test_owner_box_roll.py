@@ -102,7 +102,7 @@ def test_rollback_republishes_previous_image_for_every_next_wake(rolling):
 def test_failed_health_does_not_select_a_per_owner_rollback(rolling, monkeypatch):
     uid = rolling.wake("a")
     drive(rolling.routing.deploy(rolling.new))
-    rolling.manager.wake_timeout = .05
+    rolling.manager.startup_timeout = .05
     original = rolling.manager._rpc
     def rpc(box, operation="status", **body):
         if box.image == rolling.new and operation == "status":

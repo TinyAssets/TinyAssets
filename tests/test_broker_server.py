@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.support.broker_double import broker_process
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.client import BrokerClient, BrokerRefused
@@ -136,7 +136,7 @@ def broker(tmp_path, monkeypatch):
     identities = OwnerIdentities(state_dir / "owner-identities.db", initialize=True,
                                  plans=Plans(tmp_path))
     identities.resolve("alice", allocate=True)
-    local_mutate(identities.path, "alice", "admit", routing=projection(identities.path))
+    drive(local_mutate(identities.path, "alice", "admit", routing=projection(identities.path)))
     server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
                           roles={os.getuid(): OWNER}, data_root=tmp_path,
                           owner_identities=identities)

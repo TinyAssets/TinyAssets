@@ -118,7 +118,7 @@ class HostService:
                 owner_uid = document["uid"]
                 self.daemons.runtime.box_id(owner_uid)
                 fields = {
-                    "stop": set(), "destroy": set(),
+                    "stop": set(), "sleep": set(), "destroy": set(),
                     "delete_snapshots": {"snapshot_ids", "released"},
                     "status": set(), "create": {"quota"}, "snapshot": {"snapshot_id"},
                     "restore": {"snapshot_id", "sha256"}, "evict": set(),
@@ -148,13 +148,19 @@ class HostService:
                         self.volumes.delete(owner_uid)
                         return {"evicted": True}
                     box = self.daemons.boxes.get(owner_uid)
-                    if box and box.awake:
-                        self.daemons._rpc(box, "snapshot-stop")
-                        if not self.daemons._sleep(box, idle=0):
-                            raise BoxError("owner work must drain before volume operation")
-                    elif box is None:
-                        self.daemons.runtime.shutdown(owner_uid)
-                    self.volumes.detach(owner_uid)
+                    if operation == "sleep":
+                        if box and box.awake:
+                            self.daemons._rpc(box, "snapshot-stop")
+                            if not self.daemons._sleep(box, idle=0):
+                                raise BoxError("owner work must drain before volume operation")
+                        elif box is None:
+                            self.daemons.runtime.shutdown(owner_uid)
+                        self.volumes.detach(owner_uid)
+                        return {"stopped": True}
+                    if self.daemons.runtime.alive(owner_uid):
+                        raise BoxError("volume operation requires a stopped box")
+                    # snapshot/restore verify detachment themselves; neither stops
+                    # or detaches a box as a side effect (C15).
                     if operation == "snapshot":
                         snapshot_id, sha256 = self.volumes.snapshot(
                             owner_uid, document["snapshot_id"])
@@ -302,8 +308,6 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         Path("/var/lib/boxhostd/mounts"), os.environ["BACKUP_DEST"])
     daemons = OwnerDaemons(
         runtime, admission, volumes, relays, RUNTIME,
-        idle_seconds=float(os.environ.get("TINYASSETS_BOX_IDLE_SECONDS", "900")),
-        awake_cap=int(os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "6")),
         memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(1024**3))))
     daemons.images = Images(rootfs.parent, state / "images.json", rootfs)
     service = HostService(admission, volumes, relays, daemons)

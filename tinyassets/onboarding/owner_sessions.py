@@ -384,16 +384,23 @@ async def callback(request, *, completion=False):
         return refused("invalid_token_response")
     revoke(request.cookies.get(COOKIE, ""))
     session_cookie = secrets.token_urlsafe(32)
-    from tinyassets.router_credentials import _DISPATCH, active_owner
+    from tinyassets.router_credentials import active_owner
+    from tinyassets.routing_snapshot import snapshot
+    from tinyassets.storage import data_dir
 
-    with _DISPATCH:
-        if not active_owner(identity.user_id):
-            return refused("account_deleted")
-        with store() as conn:
-            conn.execute(
-                "INSERT INTO owner_sessions VALUES (?,?,?)",
-                (hashed(session_cookie), json.dumps(identity.to_dict()), time.time() + 28800),
-            )
+    if not active_owner(identity.user_id):
+        return refused("account_deleted")
+    with store() as conn:
+        conn.execute(
+            "INSERT INTO owner_sessions VALUES (?,?,?)",
+            (hashed(session_cookie), json.dumps(identity.to_dict()), time.time() + 28800),
+        )
+    try:
+        if snapshot(data_dir()).record(identity.user_id) is None:
+            raise PermissionError("Account deleted.")
+    except Exception:
+        revoke(session_cookie)
+        return refused("account_deleted")
     # No tokens/codes in callback output or browser scripts. Strip the query.
     from tinyassets.onboarding.inline_model_connect import RETURN_COOKIE, return_path
 

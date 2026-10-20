@@ -1,4 +1,5 @@
 """Connection inventory and disconnect at an empty router root, through real IPC."""
+
 import asyncio
 import json
 import os
@@ -8,7 +9,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tests.support.broker_ipc import broker, discovery  # noqa: F401
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
@@ -31,8 +32,8 @@ def door(discovery, tmp_path, monkeypatch):  # noqa: F811
     identities = OwnerIdentities(tmp_path / "admissions.db", initialize=True)
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, "cc-" + owner,
-            routing=projection(identities.path))
+        drive(identities.admission("admit", owner, "cc-" + owner,
+            routing=projection(identities.path)))
     discovery.broker.server._owner_identities = identities
     discovery.broker.server._data_root = root
     from tinyassets import router_credentials
@@ -112,16 +113,16 @@ def test_foreign_or_unknown_center_is_not_found(door, owner, center):
 
 def test_ambiguous_and_retired_admissions_never_select_another_center(door):
     call, identities, _ = door
-    identities.admission("admit", "alice", "second",
-     routing=projection(identities.path))
+    drive(identities.admission("admit", "alice", "second",
+     routing=projection(identities.path)))
     assert call().status_code == 404
     assert call(center="second").status_code == 200
-    identities.admission("retire", "alice", "cc-alice",
-        routing=projection(identities.path))
+    drive(identities.admission("retire", "alice", "cc-alice",
+        routing=projection(identities.path)))
     assert call(center="cc-alice").status_code == 404
     assert call().json()["universe_id"] == "second"
-    identities.admission("retire", "alice", "second",
-      routing=projection(identities.path))
+    drive(identities.admission("retire", "alice", "second",
+      routing=projection(identities.path)))
     assert call().status_code == 404
 
 

@@ -16,7 +16,7 @@ from tinyassets.billing import stripe_adapter as stripe
 from tinyassets.broker import admission
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs, new_job
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.routing import RoutingAuthority
+from tinyassets.broker.routing import BrokerLifecycle
 
 
 def seed(root):
@@ -100,6 +100,7 @@ def providers(monkeypatch, events):
         assert json.loads((staged / ".layout.json").read_text())["state"] == "recovering"
         assert backup_time == 1
         events.append("deletion")
+        return True
 
     monkeypatch.setattr(recovery, "resume_deletion_jobs", resume)
 
@@ -152,8 +153,11 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
         report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert fingerprint(owners) == before
     assert events == ["deletion", "billing", "identity", "revoke"]
-    assert report["credential_roots_reset"]
-    assert report["broker_replay_cutoff_advanced"]
+    assert "credential_roots_reset" not in report
+    assert "broker_replay_cutoff_advanced" not in report
+    preparation = json.loads((platform / ".layout.json").read_text())["preparation"]
+    assert preparation["credential_roots_reset"]
+    assert preparation["broker_replay_cutoff_advanced"]
     assert report["owners_reconciled"] == 1
     for relative, tables in recovery.RESET_TABLES.items():
         with sqlite3.connect(platform / relative) as db:
@@ -552,7 +556,8 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(platform, monkeypat
     assert owner_sessions.lookup("session") is None
     with sqlite3.connect(staged / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT secret FROM owner_box_secrets").fetchone()[0] != "o" * 43
-    assert report["credential_roots_reset"] and report["broker_replay_cutoff_advanced"]
+    assert "credential_roots_reset" not in report and "broker_replay_cutoff_advanced" not in report
+    assert report["jobs_resumed"] and report["billing_reconciled"]
     assert "billing" in events
 
 
@@ -737,9 +742,9 @@ def startup(tmp_path, monkeypatch):
         {"layout": 2, "box_layout": "owner-box", "state": "stable"}))
     remote, events = Remote(), []
     server = SimpleNamespace(_data_root=tmp_path, _owner_identities=identities)
-    server.routing = RoutingAuthority(server)
+    server.routing = BrokerLifecycle(server)
     server.deletion_jobs = DeletionJobs(server, records=remote)
-    def changed(owner):
+    async def changed(owner):
         if admission.read(identities, owner).state == "erased":
             events.append("withdrawal")
     monkeypatch.setattr(server.routing, "changed", changed)
@@ -751,6 +756,8 @@ def startup(tmp_path, monkeypatch):
             assert not identities.work_ready
             assert admission.read(identities, job["owner"]).state == "erased"
             events.append(step)
+            if step == "receipt":
+                return {"deleted": True, "completed_at": 4}
         monkeypatch.setattr(DeletionJobs, "_" + step, execute)
     monkeypatch.setattr("os.chown", lambda *args: None)
     monkeypatch.setenv("STRIPE_SECRET_KEY", "synthetic-key")
@@ -787,7 +794,12 @@ def test_jobs_newer_than_backup_finish_before_any_owner_is_admitted(startup, com
         assert not admits(a.root, owner)
         with pytest.raises(admission.OwnerUnadmitted):
             admission.require_admitted(a.identities, owner)
-    drive(a.server.routing.tick())
+    async def recover_jobs():
+        await a.server.routing.tick()
+        assert not a.identities.work_ready
+        await a.server.routing.close()
+        await a.server.routing.tick()
+    drive(recover_jobs())
     assert admission.read(a.identities, "alice").state == "erased"
     assert a.server.deletion_jobs.records.load(job["id"])["completed_steps"] == list(STEPS)
     assert a.events[0] == "withdrawal"
@@ -844,9 +856,9 @@ def test_billing_follows_stripe_and_abuse_survives(startup, monkeypatch, billing
     a = startup
     # Seed migration-style reasons through the sole admission writer.
     for reason in ("billing", "abuse"):
-        admission.local_mutate(a.identities.path, "bob", "suspend",
+        drive(admission.local_mutate(a.identities.path, "bob", "suspend",
                                reason=reason, suspended=True,
-              routing=projection(a.identities.path))
+              routing=projection(a.identities.path)))
     obj = _subscription_object(owner_id="bob", status="past_due" if billing else "active")
     monkeypatch.setattr(stripe, "find_active_subscription",
                         lambda owner, **kwargs: obj["id"] if owner == "bob" else None)
@@ -883,8 +895,8 @@ def test_recovery_tick_retries_provider_failure_and_interrupted_receipt(startup,
 
 def test_prebackup_completed_receipt_import_never_executes_or_allocates(startup):
     a = startup
-    admission.local_mutate(a.identities.path, "gone", "erase",
-        routing=projection(a.identities.path))
+    drive(admission.local_mutate(a.identities.path, "gone", "erase",
+        routing=projection(a.identities.path)))
     job = new_job("gone", None, clock=lambda: 0)
     job.update(completed_steps=list(STEPS))
     job["results"]["receipt"] = {"deleted": True, "completed_at": .5}
@@ -896,3 +908,47 @@ def test_prebackup_completed_receipt_import_never_executes_or_allocates(startup)
     assert a.identities.owner_machine("gone") is None
     assert not set(STEPS) & set(a.events)
     assert recovery.finish_platform(a.root)["owners_reconciled"] == 2
+
+
+def test_broker_receipt_cannot_attest_missing_root_preparation(platform, monkeypatch):
+    run_recovery(platform, backup_time=1, now=2000000000,
+                 **providers(monkeypatch, []))
+    layout_path = platform / ".layout.json"
+    layout = json.loads(layout_path.read_text())
+    del layout["preparation"]
+    layout_path.write_text(json.dumps(layout))
+    report_path = platform / ".platform-recovery.json"
+    report = json.loads(report_path.read_text())
+    report.update(credential_roots_reset=True, broker_replay_cutoff_advanced=True)
+    report_path.write_text(json.dumps(report))
+    with pytest.raises(recovery.RecoveryUnavailable):
+        recovery.finish_platform(platform)
+
+
+def test_recovery_tick_returns_while_per_owner_deletion_is_blocked(startup, monkeypatch):
+    import asyncio
+    import threading
+
+    a = startup
+    job = new_job("alice", a.identities.owner_machine("alice"), clock=lambda: 3)
+    a.remote.save(job)
+    entered, release = threading.Event(), threading.Event()
+    def volume(job):
+        entered.set()
+        assert release.wait(10)
+    monkeypatch.setattr(a.server.deletion_jobs, "_volume", volume)
+    async def exercise():
+        try:
+            await asyncio.wait_for(a.server.routing.tick(), 2)
+            assert await asyncio.to_thread(entered.wait, 2)
+            await asyncio.wait_for(a.server.routing.tick(), 2)
+            assert not a.server.routing.tasks["alice"].done()
+            assert not a.identities.work_ready
+            with pytest.raises(recovery.RecoveryUnavailable):
+                recovery.finish_platform(a.root)
+        finally:
+            release.set()
+            await a.server.routing.close()
+        await a.server.routing.tick()
+        assert recovery.finish_platform(a.root)["jobs_resumed"]
+    asyncio.run(exercise())

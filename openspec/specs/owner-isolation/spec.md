@@ -185,10 +185,12 @@ admission closed.
 - **AND** completed destructive steps are not executed again
 - **AND** reassertion removes restored snapshot catalog rows and published references through the map erase transition
 
-#### Scenario: Recovery finishes deletions before admitting anyone
-- **WHEN** the shared layer is restored and services start with admission closed
-- **THEN** unfinished deletion jobs run through the normal broker path
-- **AND** admission opens only after they complete and current billing and identities reconcile
+#### Scenario: Recovery receipt attests only the broker's work
+- **WHEN** the broker completes startup reconciliation
+- **THEN** its receipt records jobs resumed, billing reconciled and owners reconciled
+- **AND** root checks credential reset and replay cutoff preparation in its own layout document, never in the broker receipt
+- **AND** resumed deletion jobs run as ordinary per-owner broker tasks, never inline on the tick
+- **AND** recovery failures are labelled as recovery failures
 
 ### Requirement: The broker holds the only lifecycle intent
 The broker SHALL be the only component that selects or commits sleep, restore,
@@ -206,6 +208,28 @@ enqueue SHALL return after its first step; later steps SHALL run as broker tasks
 - **THEN** the call returns after the owner is erased, channels are closed and routing is withdrawn
 - **AND** destroy and snapshot deletion run afterwards as a broker task
 
+#### Scenario: Capacity is independent of slow host probes
+- **WHEN** one owner's host status is slow while another owner requests wake
+- **THEN** the second wake does not queue behind that probe under a global lock
+- **AND** the broker counts slots, selects victims from recover's facts and an explicit awake-owner query, and owns the capacity limits
+- **AND** boxhostd has no capacity decision or exported capacity constants
+
+#### Scenario: A stopped slot is free before copying finishes
+- **WHEN** graceful sleep completes drain, process exit and detachment
+- **THEN** its slot is released before the separate snapshot copy completes
+- **AND** snapshot and restore refuse a box that is still running or attached
+- **AND** forced withdrawal remains the deletion stop operation
+
+#### Scenario: Erased and installed deletion resumes after step one
+- **WHEN** a deletion resumes with erased admission and its withdrawal publication installed
+- **THEN** it does not repeat step 1
+- **AND** a missing installation or non-erased record repeats that step through the same job
+
+#### Scenario: Notifications and publications need no global bridge
+- **WHEN** the admission mutation completes
+- **THEN** its async caller awaits the change notification on the broker loop
+- **AND** database revisions and monotonic router installation order publication without a publication lock
+- **AND** a failed tick publication is logged
 
 ### Requirement: Deploys start each box on the published image at wake
 A deploy SHALL publish the new image and drain awake boxes to sleep between turns.
@@ -232,7 +256,10 @@ per-box rollback.
 The owner-bound relay SHALL forward key and hook operations directly to identity.
 Identity SHALL authenticate the relay service, take the owner only from its fixed
 binding and read admission from its installed routing snapshot. Missing admission
-SHALL deny. Mints, withdrawal and credential revocation SHALL serialize. The broker
+SHALL deny. A mint SHALL re-check installed admission after its write and delete
+its own credential and refuse if the owner is absent. Snapshot installation SHALL
+take only its atomic swap; no credential or relay lock SHALL serialize mints
+with withdrawal or revocation. The broker
 SHALL NOT forward owner mints and identity SHALL NOT query admission per mint. The broker
 credential operation SHALL only revoke an account, never mint or list credentials.
 
@@ -248,5 +275,7 @@ credential operation SHALL only revoke an account, never mint or list credential
 
 #### Scenario: Withdrawal orders a mint already in flight
 - **WHEN** a mint and owner withdrawal run concurrently
-- **THEN** the mint completes before withdrawal acknowledgement or is refused by the withdrawn projection
-- **AND** withdrawal retires the relay endpoint before acknowledgement, including when snapshot publication is unavailable
+- **THEN** a mint whose post-write check sees withdrawal deletes its own credential and refuses
+- **AND** deletion step 6 revokes only after the router acknowledges installing the withdrawal revision or a later revision
+- **AND** a mint checked before installation is revoked by step 6; no credential survives either order
+- **AND** unavailable publication keeps step 6 pending on the existing tick, and relay retirement never waits for a mint
