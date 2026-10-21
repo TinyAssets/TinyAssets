@@ -115,8 +115,12 @@ class VolumeLifecycle:
             # replace this intent; only its matching completed sleep can publish.
             result = await self.host(owner, "snapshot", snapshot_id=work["snapshot_id"])
             async with owner_lock(self.identities.path, owner):
-                if self.volume(owner, "pending")["work"] == work:
+                publish = self.volume(owner, "pending")["work"] == work
+                if publish:
                     self.volume(owner, "publish", **result)
+            if not publish:
+                await self.host(owner, "delete_snapshots",
+                                snapshot_ids=[work["snapshot_id"]], released=[])
         async with owner_lock(self.identities.path, owner):
             await self.prune(owner)
             await self.evict(owner)

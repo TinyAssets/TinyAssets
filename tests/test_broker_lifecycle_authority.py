@@ -546,13 +546,19 @@ def test_copy_releases_owner_lock_and_cannot_publish_over_new_wake(authority):
     lifecycle.volume("alice", "created")
     old = lifecycle.volume("alice", "sleep")["work"]["snapshot_id"]
     lifecycle.volume("alice", "publish", snapshot_id=old, sha256="b" * 64)
-    lifecycle.volume("alice", "sleep")
+    abandoned = lifecycle.volume("alice", "sleep")["work"]["snapshot_id"]
     entered, release = threading.Event(), threading.Event()
+    deleted = []
 
     def host(operation, **fields):
         if operation == "snapshot":
             entered.set()
             assert release.wait(10)
+        if operation == "delete_snapshots":
+            assert fields == {"uid": a.identities.owner_machine("alice"),
+                              "snapshot_ids": [abandoned], "released": []}
+            deleted.extend(fields["snapshot_ids"])
+            return {"deleted": True}
         return a.host(operation, **fields)
     lifecycle.execute = host
 
@@ -569,6 +575,7 @@ def test_copy_releases_owner_lock_and_cannot_publish_over_new_wake(authority):
         record = lifecycle.volume("alice")
         assert record["snapshot_id"] == old
         assert record["work"] == {"kind": "running"}
+        assert deleted == [abandoned]
     asyncio.run(exercise())
 
 
