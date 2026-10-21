@@ -534,3 +534,6 @@ def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
                for secret in ("private-fixture", "synthetic-billing", "synthetic-identity"))
     service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["broker"]
     assert service["env_file"] == [{"path": "/etc/tinyassets/broker.env", "required": False}]
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

@@ -42,3 +42,6 @@ def test_unfinished_or_unknown_layout_refuses(tmp_path):
     marker.write_text('{"layout": 2, "state": "stable", "box_layout": "unknown"}')
     with pytest.raises(RuntimeError, match="unrecognized"):
         entry.check_layout(tmp_path)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

@@ -119,3 +119,6 @@ def test_unreadable_admission_refuses_deposit(tmp_path, monkeypatch):
         with pytest.raises(sqlite3.DatabaseError):
             write(tmp_path / HOME)
     assert_no_credentials(tmp_path / HOME)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C6')

@@ -291,3 +291,6 @@ def test_no_mount_when_lifecycle_authority_missing(tmp_path, context):
     adapter = ExtensionCapabilities(backend(tmp_path, **context))
     assert adapter.materialize(tmp_path / "mount") is False
     assert not (tmp_path / "mount").exists()
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C10')

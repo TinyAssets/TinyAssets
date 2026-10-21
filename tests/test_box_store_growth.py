@@ -167,3 +167,6 @@ def real_growth_proof(root):
         grow.command("umount", str(mount))
         grow.command("losetup", "--detach", device)
         link.unlink()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C10')

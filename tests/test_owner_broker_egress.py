@@ -171,6 +171,7 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
         asyncio.run_coroutine_threadsafe(drain(), broker.loop).result(5)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_model_sync_and_stream_use_broker_without_box_credentials(box):
     from tinyassets.request_budget import TurnRequestBudget
 
@@ -197,6 +198,7 @@ def test_model_sync_and_stream_use_broker_without_box_credentials(box):
     assert not (box.shared / "center").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_authenticated_external_call_and_grant_revocation(box):
     from tinyassets.storage.outbound_connections import GrantResolutionError, _broker_channel
 
@@ -210,6 +212,7 @@ def test_authenticated_external_call_and_grant_revocation(box):
     assert len(box.calls) == 1
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("source", ["capability", "descriptor"])
 def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
     from tinyassets.broker.owner_sources import read
@@ -244,6 +247,7 @@ def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
     assert not box.events
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11')
 def test_box_center_retirement_during_connect_keeps_owner_admitted(box):
     from tinyassets.owner_centers import Centers
     from tinyassets.storage.outbound_connections import _broker_channel
@@ -257,6 +261,7 @@ def test_box_center_retirement_during_connect_keeps_owner_admitted(box):
 
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5', 'owner-daemon-in-box:T6')
 def test_box_account_retired_during_connect_refuses_before_credential_send(box):
     from tinyassets import rpc_frames as rf
     from tinyassets.broker.ops import new_op_id
@@ -293,6 +298,7 @@ def test_box_account_retired_during_connect_refuses_before_credential_send(box):
     assert not box.calls
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 def test_box_shared_channel_rechecks_owner_admission_on_every_read(box):
     from tinyassets import rpc_frames as rf
     from tinyassets.owner_channel import connect
@@ -319,6 +325,7 @@ def test_box_shared_channel_rechecks_owner_admission_on_every_read(box):
         assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_plan_and_catalog_are_shared_reads_not_box_databases(box):
     from tinyassets.commons_catalog import get_definition, list_definitions
     from tinyassets.storage.subscription_state import get_plan, get_tier, read_tier
@@ -331,6 +338,7 @@ def test_plan_and_catalog_are_shared_reads_not_box_databases(box):
     assert not list(box.root.rglob(".subscription_state.db"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_missing_broker_never_uses_local_provider(box, monkeypatch):
     from tinyassets.exceptions import ProviderUnavailableError
 
@@ -342,6 +350,7 @@ def test_missing_broker_never_uses_local_provider(box, monkeypatch):
     assert not box.calls
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11')
 def test_center_creation_changes_only_local_table(box):
     from tests.test_owner_cutover_census import _fingerprint
     from tinyassets.owner_centers import Centers, admitted_owner
@@ -357,6 +366,7 @@ def test_center_creation_changes_only_local_table(box):
     assert not (box.root / ".broker").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11')
 def test_local_center_retirement_and_owner_channel_do_not_share_authority(box):
     from tests.test_owner_cutover_census import _fingerprint
     from tinyassets.boxes.lifecycle import retire_center
@@ -379,6 +389,7 @@ def test_local_center_retirement_and_owner_channel_do_not_share_authority(box):
     assert Centers(box.root).active() == ["center"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_policy_source_display_and_capabilities_use_bound_channel(box):
     from tinyassets import policy_rules
     from tinyassets.providers.definition import register_definition
@@ -404,6 +415,7 @@ def test_policy_source_display_and_capabilities_use_bound_channel(box):
     assert not (box.root / "outbound.db").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("operation", ["connect", "connect_ex", "udp", "http", "sdk"])
 def test_outbound_seam_refuses_all_direct_network(box, operation):
     # HTTP clients wrap the audit hook's PermissionError; require it in the chain
@@ -434,6 +446,7 @@ def test_outbound_seam_refuses_all_direct_network(box, operation):
                for e in chain), chain
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_vault_and_provider_cli_refuse(box):
     from tinyassets.credential_vault import credential_vault_path
     with pytest.raises(PermissionError, match="raw credential custody"):
@@ -443,6 +456,7 @@ def test_vault_and_provider_cli_refuse(box):
     assert importlib.util.find_spec("tinyassets.providers.owned_process") is None
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_model_in_fresh_box_process_has_no_secret(box):
     code = """
 import asyncio, json, os, sys
@@ -498,6 +512,7 @@ finally:
     assert all(SECRET.encode() not in p.read_bytes() for p in root.rglob("*") if p.is_file())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_authenticated_effector_uses_channel_policy_and_grant(box, monkeypatch):
     from tinyassets.effectors.authenticated_external_call import (
         run_authenticated_external_call_effector,
@@ -518,6 +533,7 @@ def test_authenticated_effector_uses_channel_policy_and_grant(box, monkeypatch):
     assert len(box.calls) == 1, result
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_usage_lease_disconnect_closes_allocation(box):
     from tinyassets.request_budget import RequestBudgetExceeded, TurnRequestBudget
     from tinyassets.storage.agent_request_usage import UsageStore
@@ -536,6 +552,7 @@ def test_usage_lease_disconnect_closes_allocation(box):
                        model="model", free=True)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("name", ["OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
                                  "STRIPE_WEBHOOK_SECRET", "TINYASSETS_BILLING_ENTITLEMENT_KEY",
                                  "TINYASSETS_FCM_SERVICE_ACCOUNT_JSON"])
@@ -554,6 +571,7 @@ def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, nam
     assert owner_runtime.current() is None
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("registered", [False, True])
 def test_box_call_refreshes_only_inside_broker(box, monkeypatch, registered):
     from tinyassets.broker.process import _Dispatchers
@@ -633,6 +651,7 @@ finally:
     assert all(b"fresh-access" not in p.read_bytes() for p in root.rglob("*") if p.is_file())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("operation", ["REFRESH", "REFRESH_ACK"])
 def test_box_channel_refuses_removed_refresh_operations(box, operation):
     from tinyassets import rpc_frames as rf
@@ -645,6 +664,7 @@ def test_box_channel_refuses_removed_refresh_operations(box, operation):
         assert rf.read_frame_blocking(channel) is None
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 @pytest.mark.parametrize("proof_kind", ["valid", "foreign", "expired", "missing"])
 def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_kind):
     import hashlib
@@ -683,6 +703,7 @@ def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_
     assert not list(box.root.rglob("owner-sessions.db"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.role_split
 def test_owner_operation_has_no_host_socket_fallback(tmp_path, monkeypatch):
     from tinyassets.broker.client import BrokerClient
@@ -693,3 +714,5 @@ def test_owner_operation_has_no_host_socket_fallback(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="owner broker channel is unavailable"):
         client.owner_policy("read")
     assert not (tmp_path / "host.sock").exists()
+
+

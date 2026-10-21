@@ -601,3 +601,9 @@ def test_only_files_needs_a_marker(tmp_path):
             "--junit", str(_junit(tmp_path)), "--nodeid", "tests/a.py::t",
             "--only-files", str(_only(tmp_path, "tests/a.py")),
         ])
+
+
+pytestmark = pytest.mark.verifies(
+    'ci-linux-proof-venue:'
+    'Jail-backed tests execute in the Linux oracle, never skip',
+)

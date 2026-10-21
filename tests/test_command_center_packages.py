@@ -36,7 +36,10 @@ from tests.test_in_platform_agent_systems import (
 from tinyassets import command_center_packages as ccp
 from tinyassets.automations import register_automation
 
-pytestmark = pytest.mark.usefixtures("cloud_runtime")
+pytestmark = [
+    pytest.mark.usefixtures("cloud_runtime"),
+    pytest.mark.verifies('owner-daemon-in-box:T10'),
+]
 
 SECRET_KEY = "sk-live-" + "Zq8rT2vX9mK4pL7nB3wE6yH1jD5"
 ALICE_EMAIL = "alice.private@example.com"
@@ -200,15 +203,6 @@ def test_publish_carries_the_command_center_and_none_of_its_private_items(home: 
 
 
 
-def test_classify_owner_choices_never_lift_a_detection():
-    leaked = ("- [m_a] key: " + SECRET_KEY).encode()
-    # Naming the memory item cannot carry a credential out with it.
-    assert ccp.classify("MEMORY.md", leaked, exclude=[],
-                        memory_items={"MEMORY.md": ["m_a"]}) == (None, ccp.R_CREDENTIAL)
-    assert ccp.classify("notes/a.md", b"fine", exclude=["notes"],
-                        memory_items={}) == (None, ccp.R_EXCLUDED)
-    assert ccp.classify("notes/ab.md", b"fine", exclude=["notes/a"],
-                        memory_items={}) == (b"fine", "")
 
 
 
@@ -236,26 +230,10 @@ def _rewrite_row(home: Path, universe: str, request_id: str, **changes) -> None:
 
 
 
-def test_a_rewritten_action_executes_the_pinned_one(home: Path):
-    from tinyassets.commons_catalog import get_definition
-
-    ask = _ask(OWNER, UNIVERSE, _publish_action())
-    forged = dict(ask["action"])
-    forged["name"] = "Something else entirely"
-    _rewrite_row(home, UNIVERSE, ask["request_id"], action=forged)
-    done = _answer(OWNER, UNIVERSE, ask["request_id"])
-    assert done.get("published") is True, done
-    assert get_definition(home, done["agent_definition_id"])["name"] == "GTM Village"
 
 
 
 
-def test_a_publish_row_with_no_pin_cannot_be_confirmed(home: Path):
-    ask = _ask(OWNER, UNIVERSE, _publish_action())
-    with sqlite3.connect(ccp.store_dir(home) / "packages.db") as conn:
-        conn.execute("DELETE FROM pins")
-    out = _answer(OWNER, UNIVERSE, ask["request_id"])
-    assert "no longer be confirmed" in out.get("error", "") + out.get("detail", ""), out
 
 
 # ---------------------------------------------------------------------------

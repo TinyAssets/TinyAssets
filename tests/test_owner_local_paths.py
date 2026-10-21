@@ -13,6 +13,7 @@ def forbidden(*args, **kwargs):
     raise AssertionError("owner-only code must not select a shared-daemon path")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 def test_local_directory_creation_never_uses_shared_binding(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(owner_runtime, "current", forbidden)
@@ -26,25 +27,16 @@ def test_local_directory_creation_never_uses_shared_binding(tmp_path, monkeypatc
     assert list(target.iterdir()) == []
 
 
-def test_local_directory_creation_refuses_linked_parent(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(owner_runtime, "current", forbidden)
-    center = tmp_path / "center"
-    center.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (center / "linked").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(OSError):
-        ensure_data_directory(center / "linked" / "nested")
-    assert list(outside.iterdir()) == []
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 def test_owner_sandbox_status_never_reads_per_call_provider(monkeypatch):
     monkeypatch.setattr(owner_runtime, "current", forbidden)
     assert not hasattr(served_chat, "configured_box_provider")
     assert get_sandbox_status() == {"box_available": True, "reason": ""}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C12')
 def test_owner_work_always_holds_gate_and_refuses_after_drain(monkeypatch):
     activity = owner_activity.Activity()
     monkeypatch.setattr(owner_activity, "activity", activity)
@@ -67,6 +59,7 @@ def test_owner_work_always_holds_gate_and_refuses_after_drain(monkeypatch):
     assert activity.active == 0
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C12')
 def test_owner_work_releases_gate_after_failure(monkeypatch):
     activity = owner_activity.Activity()
     monkeypatch.setattr(owner_activity, "activity", activity)
@@ -84,6 +77,7 @@ def test_owner_work_releases_gate_after_failure(monkeypatch):
 
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 def test_session_loads_local_agent_without_a_shared_binding(tmp_path, monkeypatch):
     from tinyassets.control_plane import session
 

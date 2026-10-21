@@ -28,6 +28,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[1]
 _PKG = _ROOT / "tinyassets"
 
@@ -194,3 +196,9 @@ def test_exercising_the_owner_reads_never_loads_the_ceiling():
                          encoding="utf-8", cwd=_ROOT, timeout=240, check=False)
     assert run.returncode == 0, run.stderr[-4000:]
     assert json.loads(run.stdout.strip().splitlines()[-1]) == []
+
+
+pytestmark = pytest.mark.verifies(
+    'onboarding-web-app:'
+    "The app reads its owner's data through the owner door, complete",
+)

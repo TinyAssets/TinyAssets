@@ -485,3 +485,6 @@ def test_git_added_uses_the_pr_diff_not_untracked_files():
         patch.object(check_shapes.subprocess, "run", side_effect=git_diff_only),
     ):
         assert check_shapes.git_added() == {"tinyassets/new.py"}
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

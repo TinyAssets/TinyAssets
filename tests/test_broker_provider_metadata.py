@@ -10,8 +10,11 @@ from tests.test_broker_usage_source import source  # noqa: F401
 from tinyassets.broker.owner_sources import publish, read
 from tinyassets.storage.agent_request_usage import UsageStore
 
-pytestmark = pytest.mark.skipif(os.name != 'posix',
-                               reason='runs-in=linux-oracle: POSIX descriptors')
+pytestmark = [
+    pytest.mark.skipif(os.name != 'posix',
+                               reason='runs-in=linux-oracle: POSIX descriptors'),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
+]
 
 
 def test_published_source_needs_no_center_listing(source):  # noqa: F811

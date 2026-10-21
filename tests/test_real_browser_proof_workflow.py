@@ -17,6 +17,7 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -203,3 +204,9 @@ def test_the_whole_preview_module_runs_and_every_collected_case_is_asserted():
     artifact = _step(wf, "Upload preview junit")
     assert artifact["if"] == "always()"
     assert artifact["with"]["path"].endswith("/junit-preview.xml")
+
+
+pytestmark = pytest.mark.verifies(
+    'core-capability-assurance:'
+    'Production image acceptance before merge',
+)

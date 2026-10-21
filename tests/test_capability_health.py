@@ -271,3 +271,11 @@ def test_alert_transport_and_report_errors_never_fail_the_step(
     runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/core_capability_alert.py"),
                    run_name="__main__")
     assert "::warning::Core capability alert delivery failed:" in capsys.readouterr().out
+
+
+pytestmark = pytest.mark.verifies(
+    'core-capability-assurance:'
+    'One executable capability catalogue',
+    'core-capability-assurance:'
+    'Systemic runtime failure alarms',
+)

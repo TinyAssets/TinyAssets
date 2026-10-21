@@ -23,6 +23,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parent.parent
 _PKG = _REPO / "tinyassets"
 
@@ -450,3 +452,6 @@ def test_owner_box_callers_never_open_host_paths():
             assert (".tools.run(" in source or module.endswith("workspace_git.py"))
             assert "BoxExecutor(" not in source
             assert "run_bound(" not in source
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

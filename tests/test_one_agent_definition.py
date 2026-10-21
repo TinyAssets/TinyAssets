@@ -341,3 +341,6 @@ def test_the_guard_fails_an_adapter_that_asks_for_its_grant(
     tools, _, capabilities = _render(kind, definition, tmp_path, monkeypatch)
     assert sorted(t.key() for t in tools) != list(definition.tool_keys())
     assert capabilities != AGENT_CAPABILITIES
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C8')

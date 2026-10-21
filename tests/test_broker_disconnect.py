@@ -11,8 +11,11 @@ from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.broker.disconnect import disconnect
 from tinyassets.storage.outbound_connections import GrantResolutionError
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"), reason="Unix peer credentials")
+pytestmark = [
+    pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"), reason="Unix peer credentials"),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
+]
 
 
 @pytest.fixture

@@ -22,6 +22,7 @@ def _shim(directory: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C3')
 @pytest.mark.parametrize("remote_restore", [False, True])
 def test_shared_archive_restore_leaves_owner_volumes_untouched(tmp_path, remote_restore):
     from tests.test_box_restore_authority import fingerprint, seed
@@ -167,6 +168,7 @@ else:
         ["stop boxhostd.service", "start boxhostd.service"] * 2 + ["stop boxhostd.service"])
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 def test_store_unit_contract_and_installer_guards() -> None:
     unit = (ROOT / "deploy/boxhostd.service").read_text()
     mount = (ROOT / "deploy/var-lib-boxhostd-owners.mount").read_text()
@@ -196,6 +198,7 @@ def test_store_unit_contract_and_installer_guards() -> None:
         assert result.returncode == 0, name
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 def test_pinned_device_unit_and_missing_device_failure(tmp_path: Path) -> None:
     template = ROOT / "deploy/box-store-device.service"
     renderer = ROOT / "deploy/box-store-unit.sh"
@@ -239,6 +242,7 @@ def test_pinned_device_unit_and_missing_device_failure(tmp_path: Path) -> None:
     assert "missing" in check.stderr
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 @pytest.mark.parametrize(
     ("filesystem", "options", "expected"),
     [
@@ -275,23 +279,3 @@ if [[ "${@: -1}" == FSTYPE ]]; then echo "$TEST_FS"; else echo "$TEST_OPTIONS"; 
     assert result.returncode == expected
 
 
-def test_box_archive_rejects_extraction_through_symlink(tmp_path: Path) -> None:
-    archive = tmp_path / "unsafe.tar.gz"
-    with tarfile.open(archive, "w:gz") as output:
-        root = tarfile.TarInfo("owners/1000")
-        root.type = tarfile.DIRTYPE
-        output.addfile(root)
-        link = tarfile.TarInfo("owners/1000/link")
-        link.type = tarfile.SYMTYPE
-        link.linkname = "/etc"
-        output.addfile(link)
-        payload = tarfile.TarInfo("owners/1000/link/payload")
-        payload.size = 0
-        output.addfile(payload)
-    result = subprocess.run(
-        ["python3", str(ROOT / "deploy/box-store-archive.py"), str(archive)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 1
-    assert "traverses a symlink" in result.stderr

@@ -55,3 +55,6 @@ def test_an_unreadable_tar_fails(tmp_path):
     path.with_name(path.name + ".sha256").write_text(f"{digest}  {path.name}\n", encoding="ascii")
     with pytest.raises(SystemExit):
         verify.verify(path, 0)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C4')

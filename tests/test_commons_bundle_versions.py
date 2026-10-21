@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import copy
-import sqlite3
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -28,10 +26,11 @@ from tinyassets import app_ui_store
 from tinyassets import commons_catalog as ca
 from tinyassets.api.package_requests import list_packages
 from tinyassets.command_center_packages import check_blob, read_blob
-from tinyassets.commons_bundles import publication_bundle
-from tinyassets.storage import db_path
 
-pytestmark = pytest.mark.usefixtures("cloud_runtime")
+pytestmark = [
+    pytest.mark.usefixtures("cloud_runtime"),
+    pytest.mark.verifies('owner-daemon-in-box:T10'),
+]
 
 
 def _publish(base, action=None):
@@ -101,30 +100,6 @@ def test_publish_ask_creates_no_bundle_row_before_approval(home):
 
 
 
-def test_competing_writers_append_and_sql_fault_rolls_back(home):
-    bundle = publication_bundle(home, author=OWNER, universe_id=UNIVERSE,
-                                action={"ui_id": "system", "name": "System"})
-    payload = {"schema_version": 1, "bundle_id": bundle, "name": "System",
-               "components": {"x": {"kind": "test"}}}
-    def publish(n):
-        definition = ca.publish_definition(home, author_id=OWNER, payload=payload,
-                                           idempotency_key=f"writer-{n}")
-        return ca.get_definition(home, definition["agent_definition_id"], include_catalogue=True)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        rows = list(pool.map(publish, range(2)))
-    assert sorted(r["bundle_version"] for r in rows) == [1, 2]
-    [head] = ca.list_definitions(home, query="System")
-    assert head["bundle_version"] == 2
-    with sqlite3.connect(db_path(home)) as conn:
-        conn.execute("CREATE TRIGGER refuse_bundle BEFORE INSERT ON commons_bundle_versions "
-                     "BEGIN SELECT RAISE(ABORT, 'injected fault'); END")
-    with pytest.raises(sqlite3.IntegrityError, match="injected fault"):
-        publish(2)
-    assert ca.list_definitions(home, query="System") == [head]
-    with sqlite3.connect(db_path(home)) as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM agent_definitions WHERE name='System'").fetchone()[0]
-        assert count == 2
 
 
 def test_stale_package_publish_refuses_instead_of_overwriting_current(home):

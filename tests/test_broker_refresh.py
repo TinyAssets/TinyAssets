@@ -16,7 +16,10 @@ from tinyassets.broker.ops import new_op_id
 from tinyassets.connection_oauth import tokens
 from tinyassets.credential_vault import custody_namespace, http_credential_record
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix broker transport")
+pytestmark = [
+    pytest.mark.skipif(os.name != "posix", reason="Unix broker transport"),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
+]
 
 
 @pytest.fixture

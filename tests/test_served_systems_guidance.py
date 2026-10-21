@@ -19,6 +19,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from tinyassets import automations, graph_compiler, universe_tools
 from tinyassets.engine_mcp_server import (
     SERVED_TOOL_CHAPTERS,
@@ -163,3 +165,6 @@ def test_the_publish_ask_it_shows_is_one_the_platform_accepts() -> None:
     # And the installer's steps name only calls the served surface has.
     for call in ("browse_commons", "read_commons_shape", "remix_shape", "app_ui"):
         assert call in text, call
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C8')

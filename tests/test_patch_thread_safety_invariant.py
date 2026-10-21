@@ -222,3 +222,6 @@ def test_dispatch_shapes_retain_patch_detection(tmp_path: Path, dispatch: str) -
     assert _offenders(sample) == [
         "test_dispatch.py:2 — patch.object() inside thread target 'worker'",
     ]
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

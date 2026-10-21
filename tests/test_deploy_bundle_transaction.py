@@ -109,13 +109,16 @@ REAL_ENV_HELPER = REPO / "deploy" / "install-tinyassets-env.sh"
 
 _BASH = shutil.which("bash")
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [
+    pytest.mark.skipif(
     os.name == "nt" or _BASH is None,
     reason=(
         "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX "
         "ownership; Linux CI is the oracle for this suite"
     ),
-)
+),
+    pytest.mark.verifies('owner-daemon-in-box:C4'),
+]
 
 OLD_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
 NEW_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64

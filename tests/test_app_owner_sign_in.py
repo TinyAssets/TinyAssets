@@ -237,3 +237,6 @@ function redirectUri(){return 'https://tinyassets.io/app';}
 """, encoding="utf-8")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

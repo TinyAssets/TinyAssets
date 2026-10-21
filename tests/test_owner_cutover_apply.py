@@ -1191,3 +1191,6 @@ def test_cutover_converts_and_removes_legacy_erasure_ledger(cutover):
     job = RemoteRecords(migration._volumes(store).remote).load(digest("ledger-only"))
     assert job["completed_steps"] == list(STEPS)
     assert job["results"]["receipt"]["deleted"]
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

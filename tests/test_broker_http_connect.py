@@ -14,8 +14,11 @@ from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.broker.admission import local_mutate
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"), reason="Unix peer credentials")
+pytestmark = [
+    pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"), reason="Unix peer credentials"),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
+]
 
 FIRST = {"host": "models.example.com", "path_template": "/catalogue", "methods": ["GET"]}
 EXTRA = {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]}

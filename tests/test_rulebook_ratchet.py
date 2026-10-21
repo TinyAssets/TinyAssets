@@ -375,3 +375,6 @@ def test_pointer_files_do_not_count_toward_the_always_loaded_total(cb, tmp_path:
     always = sum(b.max_bytes for b in cb.CONFIG if b.always_loaded)
     assert combined == always
     assert not hard_busted
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

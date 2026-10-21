@@ -469,3 +469,6 @@ def test_refuses_to_start_without_the_boxhostd_owner_mount(tmp_path, monkeypatch
         owner_runtime.start(tmp_path / "relay.sock")
     assert owner_runtime.current() is None
     assert not (tmp_path / "not-a-mount").exists()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

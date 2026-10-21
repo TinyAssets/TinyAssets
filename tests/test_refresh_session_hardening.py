@@ -132,3 +132,6 @@ def test_an_expired_session_yields_nothing_and_is_removed():
     path.write_text(json.dumps(record), encoding="utf-8")
     assert onboarding._read_refresh_session(handle) == ""
     assert not path.exists()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

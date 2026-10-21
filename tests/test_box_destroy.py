@@ -68,3 +68,6 @@ def test_runtime_socket_cleanup_preserves_symlink_target(tmp_path):
     socket_tree(sockets, 300001)
     assert not root.exists()
     assert victim.read_text() == "untouched"
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C1')

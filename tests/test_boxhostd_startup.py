@@ -141,3 +141,6 @@ def test_systemd_allows_delegation_and_does_not_move_main_to_a_leaf():
     assert "DelegateSubgroup=" not in unit  # entry point owns the only evacuation path
     assert "ProtectControlGroups=yes" not in unit
     assert "ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd.py" in unit
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

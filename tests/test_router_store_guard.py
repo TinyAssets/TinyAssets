@@ -511,3 +511,6 @@ def test_d7_rejects_relative_backend_imports(tmp_path, statement):
     path.parent.mkdir(parents=True)
     path.write_text(statement, encoding="utf-8")
     assert len(_retired_backend_imports(tmp_path)) == 1
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

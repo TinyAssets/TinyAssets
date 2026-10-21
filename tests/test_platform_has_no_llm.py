@@ -513,3 +513,6 @@ def test_bug_investigation_has_no_platform_trigger_left():
         "enqueue_investigation_request",
     ):
         assert not hasattr(bug_investigation, retired), retired
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

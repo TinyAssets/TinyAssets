@@ -10,7 +10,10 @@ from tinyassets.boxes.boxd import OwnerBoxd
 from tinyassets.boxes.provider import BoxError
 from tinyassets.owner_process import OwnerProcessCancelled
 
-pytestmark = pytest.mark.role_split
+pytestmark = [
+    pytest.mark.role_split,
+    pytest.mark.verifies('owner-daemon-in-box:T8'),
+]
 
 
 @pytest.fixture

@@ -19,7 +19,10 @@ from tests.test_command_center_packages import (
 from tests.test_ui_preview import _png
 from tinyassets import ui_preview
 
-pytestmark = pytest.mark.usefixtures("cloud_runtime")
+pytestmark = [
+    pytest.mark.usefixtures("cloud_runtime"),
+    pytest.mark.verifies('owner-daemon-in-box:T10'),
+]
 _REAL_RENDER = ui_preview._render_spec
 
 

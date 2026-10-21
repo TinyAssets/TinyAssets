@@ -472,3 +472,6 @@ def test_disaster_discovery_never_assigns_another_legacy_owner(billing, monkeypa
     monkeypatch.setattr(stripe, "_get", lambda path: {"data": [obj], "has_more": False})
     assert stripe.find_active_subscription("alice", plans=plans) is None
     assert stripe.find_active_subscription("bob", plans=plans) == "sub_bob_current"
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

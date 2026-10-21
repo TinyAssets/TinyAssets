@@ -9,7 +9,10 @@ from tests.test_command_center_packages import (
 )
 from tinyassets.api.publish_requests import validate_action
 
-pytestmark = pytest.mark.usefixtures("cloud_runtime")
+pytestmark = [
+    pytest.mark.usefixtures("cloud_runtime"),
+    pytest.mark.verifies('owner-daemon-in-box:T10'),
+]
 
 
 @pytest.fixture(autouse=True)

@@ -59,3 +59,9 @@ def test_guard_allows_deferred_browser_imports(definition):
     source = ("pytestmark = pytest.mark.real_browser\n"
               f"{definition} browser():\n    from playwright.sync_api import sync_playwright\n")
     assert _collection_imports(source) == []
+
+
+pytestmark = pytest.mark.verifies(
+    'core-capability-assurance:'
+    'Production image acceptance before merge',
+)

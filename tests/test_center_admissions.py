@@ -105,3 +105,6 @@ def test_owner_admission_rpc_has_no_center_or_machine_selector(broker, tmp_path)
     assert request(broker) == expected
     assert request(broker) == expected
     assert len(rows(identities)) == 1
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C11')

@@ -35,6 +35,7 @@ def owner_box(tmp_path):
     return identities, uid
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11', 'owner-daemon-in-box:T5')
 def test_owner_public_admission_needs_no_center_and_refuses_center_fields(owner_box):
     identities, uid = owner_box
     assert resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice"}) == {
@@ -47,6 +48,7 @@ def test_owner_public_admission_needs_no_center_and_refuses_center_fields(owner_
         resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice", "center": "a"})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("column,value", [
     ("machine", 300002), ("project_id", 300002), ("machine", None),
     ("bhard_bytes", 0), ("bhard_bytes", -1024), ("bhard_bytes", 1025),
@@ -60,6 +62,7 @@ def test_owner_public_admission_refuses_unverified_box_record(owner_box, column,
         resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice"})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11', 'owner-daemon-in-box:T5')
 @pytest.mark.parametrize("document", [
     {"op": "BOX_PUBLIC", "principal": "alice", "center": "a"},
     {"op": "BOX_PUBLIC", "principal": "alice", "uid": 300001},
@@ -73,6 +76,7 @@ def test_owner_public_admission_has_an_exact_owner_keyed_request(owner_box, docu
         resolve_owner(identities, document)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 def test_owner_public_admission_refuses_missing_identity_plan_or_schema(owner_box):
     identities, _ = owner_box
     request = {"op": "BOX_PUBLIC", "principal": "alice"}
@@ -95,6 +99,7 @@ def test_owner_public_admission_refuses_missing_identity_plan_or_schema(owner_bo
         resolve_owner(identities, request)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T3')
 def test_broker_admission_requires_permanent_owner_mapping_and_migrated_quota(tmp_path):
     tmp_path.chmod(0o700)
     identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
@@ -123,6 +128,7 @@ def test_broker_admission_requires_permanent_owner_mapping_and_migrated_quota(tm
 
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T4')
 def test_box_layout_lock_excludes_migration_for_service_lifetime(tmp_path):
     lock = tmp_path / ".layout.lock"
     lock.touch()
@@ -142,6 +148,7 @@ def test_box_layout_lock_excludes_migration_for_service_lifetime(tmp_path):
             pytest.fail("incomplete layout admitted")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T3')
 def test_new_owner_box_reservation_is_canonical_idempotent_and_fail_closed(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -206,6 +213,7 @@ def allowed(call):
     return True
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6', 'owner-daemon-in-box:T5')
 @pytest.mark.parametrize("state", [
     "admitted", "billing", "abuse", "both", "center-retired", "account-retired",
     "erased", "policy-erased", "vault-erased", "absent",
@@ -285,6 +293,7 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     assert (record.state == "erased") == terminal
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6', 'owner-daemon-in-box:T9')
 def test_sources_cannot_clear_each_other_or_terminal_erasure(authority):
     plans = authority.plans
     for reason in ("billing", "abuse"):
@@ -300,6 +309,7 @@ def test_sources_cannot_clear_each_other_or_terminal_erasure(authority):
        routing=projection(authority.path)))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authority, tmp_path):
     before = authority.box_route("alice")
     from tinyassets.owner_centers import Centers
@@ -316,6 +326,7 @@ def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authorit
     assert NextWakeIndex(authority).due(now=1) == ["alice"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_retirement_writes_only_the_terminal_record(authority):
     with sqlite3.connect(authority.path) as db:
         before = {table: db.execute(f"SELECT * FROM {table}").fetchall() for table in
@@ -332,6 +343,7 @@ def test_retirement_writes_only_the_terminal_record(authority):
                 for table in before} == before
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6', 'owner-daemon-in-box:T5')
 def test_absent_record_is_not_created_by_read(authority):
     with sqlite3.connect(authority.path) as db:
         db.execute("DELETE FROM owner_admission")
@@ -340,6 +352,7 @@ def test_absent_record_is_not_created_by_read(authority):
     assert not allowed(lambda: resolve_owner(authority, {"op": "BOX_PUBLIC", "principal": "alice"}))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_runtime_restart_does_not_recreate_missing_admission_schema(authority):
     with sqlite3.connect(authority.path) as db:
         db.execute("DROP TABLE owner_admission")
@@ -348,6 +361,7 @@ def test_runtime_restart_does_not_recreate_missing_admission_schema(authority):
         read(restarted, "alice")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("damage", ["missing", "empty", "corrupt", "schema"])
 def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_path, damage):
     from tinyassets.api_keys import ApiKeyStore
@@ -376,6 +390,7 @@ def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_
     assert (authority.path.read_bytes() if authority.path.exists() else None) == before
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6', 'owner-daemon-in-box:T9')
 def test_admission_mutation_has_one_runtime_writer():
     import ast
     import re
@@ -398,6 +413,7 @@ def test_admission_mutation_has_one_runtime_writer():
     assert writers == [("broker/admission.py", "mutate")]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_suspension_write_does_not_recreate_a_missing_identity_database(authority):
     authority.path.unlink()
     with pytest.raises(sqlite3.OperationalError):
@@ -407,6 +423,7 @@ def test_suspension_write_does_not_recreate_a_missing_identity_database(authorit
 
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
     from tinyassets.api_keys import ApiKeyStore
     from tinyassets.router_credentials import revoke_account
@@ -422,6 +439,7 @@ def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
     assert not allowed(lambda: authority.box_route("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6', 'owner-daemon-in-box:T9')
 def test_concurrent_sources_keep_both_reasons(authority):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -433,6 +451,7 @@ def test_concurrent_sources_keep_both_reasons(authority):
     assert read(authority, "alice").reasons == {"billing", "abuse"}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_cutover_drops_center_revocation_and_seeds_terminal_and_source_reasons(authority, tmp_path):
     from tinyassets.box_layout_migration import _seed_owner_admission
     from tinyassets.broker.admission import digest
@@ -467,6 +486,7 @@ def test_cutover_drops_center_revocation_and_seeds_terminal_and_source_reasons(a
     assert read(authority, "alice").state == "erased"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("owner,uid", [("alice", 300002), ("unknown", 300001),
                                       ("unknown", 399999)])
 def test_deletion_resume_requires_positive_permanent_binding(authority, owner, uid):
@@ -482,3 +502,5 @@ def test_deletion_resume_requires_positive_permanent_binding(authority, owner, u
         drive(jobs.resume_loaded_job(new_job(owner, uid)))
     assert read(authority, "alice").state == "admitted"
     assert authority.owner_machine("unknown") is None
+
+

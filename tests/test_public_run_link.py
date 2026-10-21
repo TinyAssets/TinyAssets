@@ -99,3 +99,6 @@ def test_legacy_preview_is_public_and_does_not_write_at_router(tmp_path, monkeyp
     response = asyncio.run(handle_public_run(
         request("/app/run/private-ui/preview.png", "private-ui")))
     assert response.status_code == 404
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T10')

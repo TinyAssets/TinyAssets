@@ -10,7 +10,10 @@ import pytest
 
 from deploy import boxhostd
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="boxhostd is Linux-only")
+pytestmark = [
+    pytest.mark.skipif(os.name != "posix", reason="boxhostd is Linux-only"),
+    pytest.mark.verifies('owner-daemon-in-box:T4'),
+]
 
 
 def _marker(root: Path, *, box_layout: str | None = None, state: str = "stable") -> None:

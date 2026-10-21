@@ -724,3 +724,6 @@ finally:
             assert private not in output
     finally:
         subprocess.run(["docker", "image", "rm", image], capture_output=True, check=True)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

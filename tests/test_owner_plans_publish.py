@@ -121,6 +121,7 @@ def door(monkeypatch, root, owner):
                                  resolver=forbidden))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_signed_webhook_then_box_plan_and_router_status_cancel(box, monkeypatch):  # noqa: F811
     from tinyassets import billing
     from tinyassets.broker import supervisor
@@ -160,6 +161,7 @@ def test_signed_webhook_then_box_plan_and_router_status_cancel(box, monkeypatch)
     assert not list(box.root.rglob(".subscription_state.db"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_checkout_at_door_has_only_shared_account_state(tmp_path, monkeypatch):
     from tinyassets import billing
     from tinyassets.billing import stripe_adapter
@@ -192,6 +194,7 @@ def test_checkout_at_door_has_only_shared_account_state(tmp_path, monkeypatch):
     assert not list(tmp_path.rglob(".subscription_state.db"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_admission_creates_free_atomically_and_never_repairs_missing_existing_plan(tmp_path):
     from tinyassets.broker.owner_identities import OwnerIdentities
 
@@ -212,6 +215,7 @@ def test_admission_creates_free_atomically_and_never_repairs_missing_existing_pl
     assert read(identities, "owner").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T10')
 def test_box_publication_author_and_router_listing(box, monkeypatch):  # noqa: F811
     from tinyassets.commons_catalog import _list_definitions, publish_definition
 
@@ -230,6 +234,7 @@ def test_box_publication_author_and_router_listing(box, monkeypatch):  # noqa: F
     assert not (box.root / ".published").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_admission_failure_rolls_back_the_free_row(tmp_path):
     from tinyassets.broker.owner_identities import OwnerIdentities
 
@@ -251,6 +256,7 @@ def test_admission_failure_rolls_back_the_free_row(tmp_path):
     assert read(identities, "new-owner").state == "absent"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_mapped_legacy_events_and_conflicting_owner_claims(tmp_path, monkeypatch):
     from tinyassets.billing.events import apply_event
 
@@ -275,6 +281,7 @@ def test_mapped_legacy_events_and_conflicting_owner_claims(tmp_path, monkeypatch
     assert plans.read("owner")["tier"] == "free"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_stale_unmapped_subscription_cannot_replace_current_mapping(tmp_path, monkeypatch):
     from tinyassets.billing.events import apply_event
 

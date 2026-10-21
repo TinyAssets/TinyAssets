@@ -11,8 +11,10 @@ from tinyassets.credential_vault import http_credential_record
 
 # These pin the real role_modes numbers and owner labels; no double is installed.
 pytestmark = [
+
     pytest.mark.role_split,
     pytest.mark.skipif(os.name != "posix", reason="POSIX role permissions"),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
 ]
 
 

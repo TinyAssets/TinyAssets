@@ -952,3 +952,6 @@ def test_recovery_tick_returns_while_per_owner_deletion_is_blocked(startup, monk
         await a.server.routing.tick()
         assert recovery.finish_platform(a.root)["jobs_resumed"]
     asyncio.run(exercise())
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')

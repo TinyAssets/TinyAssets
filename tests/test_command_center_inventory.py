@@ -668,3 +668,6 @@ def test_the_deadline_cancels_a_value_scan_part_way_through_a_table(tmp_path, mo
         "the one row it did read is still counted -- an abandoned scan reports "
         "what it saw, it does not report a zero"
     )
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

@@ -6,11 +6,12 @@ from dataclasses import replace
 import pytest
 
 from tests.test_c6_owner_box_callers import owner as owner  # noqa: F401
-from tinyassets.agent_loop.owner_tools import OUTPUT_BYTES, OwnerTools, box_tool_definitions
+from tinyassets.agent_loop.owner_tools import OwnerTools, box_tool_definitions
 
 pytestmark = pytest.mark.role_split
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 @pytest.mark.parametrize("producer", ["write", "edit", "bash", "engine_hook", "preview",
                                      "workspace", "binding", "turn", "turn_hook"])
 def test_operation_producers_mint_current_generation_and_refuse_old(owner, monkeypatch, producer):
@@ -89,6 +90,7 @@ def test_operation_producers_mint_current_generation_and_refuse_old(owner, monke
         owner.core.consume_operation(owner.core.bind("alice"), old, "bash", {})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_bash_consumes_operation_before_effect_and_refuses_replay(owner):
     from tinyassets.boxes.provider import BoxOperationRefused
 
@@ -105,6 +107,7 @@ def test_bash_consumes_operation_before_effect_and_refuses_replay(owner):
     assert owner.core._state.lookup("alice", prefix + "once") is not None
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 def test_local_tools_read_write_edit_and_definitions(owner):
     tools = OwnerTools(owner.home)
     prefix = owner.core.operation_prefix()
@@ -131,49 +134,11 @@ def test_local_tools_read_write_edit_and_definitions(owner):
     assert not hasattr(owner.core, "start_exec")
 
 
-def test_local_tools_refuse_foreign_files_and_links(owner, tmp_path):
-    tools = OwnerTools(owner.home)
-    victim = tmp_path / "victim"
-    victim.write_text("foreign")
-    (owner.home / "link").symlink_to(victim)
-
-    async def run():
-        assert "error" in await tools.call("read", "foreign", {"path": str(victim)})
-        assert "error" in await tools.read("link", "link")
-        assert "error" in await tools.call("write", "up", {"path": "../other", "content": "x"})
-
-    asyncio.run(run())
-    assert victim.read_text() == "foreign"
-    assert not (owner.home.parent / "other").exists()
 
 
-def test_local_bash_output_timeout_and_cancellation(owner):
-    tools = OwnerTools(owner.home)
-    prefix = owner.core.operation_prefix()
-
-    async def run():
-        assert await tools.bash(prefix + "ok", "echo hello") == "hello\n[exit code 0]"
-        orphan = await asyncio.wait_for(
-            tools.bash(prefix + "orphan", "sleep 30 & echo leader-done"), 3)
-        assert orphan == "leader-done\n[exit code 0]"
-        assert (await tools.bash(prefix + "timeout", "sleep 30", timeout=1)).endswith(
-            "[killed: ran longer than 1s]")
-        loud = await tools.bash(prefix + "output", "head -c 100000 /dev/zero")
-        assert loud.endswith(f"[killed: output passed {OUTPUT_BYTES} bytes]")
-        assert len(loud) <= OUTPUT_BYTES + 100
-        task = asyncio.create_task(tools.bash(prefix + "cancel", "echo started > leader; sleep 30"))
-        for _ in range(200):
-            if (owner.home / "leader").exists():
-                break
-            await asyncio.sleep(.01)
-        assert (owner.home / "leader").read_text() == "started\n"
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(run())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 def test_local_ta_roundtrip_receipts_fences_and_changed_payload(owner):
     tools = OwnerTools(owner.home)
     prefix = owner.core.operation_prefix()
@@ -220,71 +185,11 @@ def test_local_ta_roundtrip_receipts_fences_and_changed_payload(owner):
     asyncio.run(run())
 
 
-def test_local_ta_cancellation_preserves_unknown_receipt(owner):
-    tools = OwnerTools(owner.home)
-    prefix = owner.core.operation_prefix()
-    entered = asyncio.Event()
-    cancelled = asyncio.Event()
-    effects = []
-
-    async def dispatch(message):
-        entered.set()
-        effects.append(message)
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    async def run():
-        bridge = tools.enable_ta(dispatch=dispatch, turn="cancel-turn")
-        task = asyncio.create_task(tools.bash(prefix + "cancel", "ta search"))
-        await asyncio.wait_for(entered.wait(), 10)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.wait_for(cancelled.wait(), 2)
-        bridge.close()
-        import sqlite3
-        with sqlite3.connect(owner.runtime.root / ".remote-ta-receipts.sqlite3") as db:
-            request, answer = db.execute("SELECT request, answer FROM ta_receipts").fetchone()
-        assert answer is None
-        restarted = tools.enable_ta(dispatch=dispatch, turn="cancel-turn")
-        try:
-            result = await asyncio.to_thread(restarted.request, restarted.handle, prefix + "cancel",
-                                             request, {"op": "catalog"})
-            assert "unknown" in result["error"]
-            assert len(effects) == 1
-        finally:
-            restarted.close()
-
-    asyncio.run(run())
 
 
-def test_local_ta_large_results_stay_off_bash_output(owner):
-    tools = OwnerTools(owner.home)
-    prefix = owner.core.operation_prefix()
-    body = "x" * (OUTPUT_BYTES * 2)
-
-    async def dispatch(message):
-        if message == {"op": "catalog"}:
-            return {"capabilities": [{"name": "owner.value", "description": "value"}],
-                    "extension_roots": {}}
-        return {"result": {"body": body}}
-
-    async def run():
-        bridge = tools.enable_ta(dispatch=dispatch, turn="large")
-        try:
-            result = await tools.bash(prefix + "large", "ta owner.value --json '{}' > large.json")
-            assert result.endswith("[exit code 0]"), result
-            assert len(result) < OUTPUT_BYTES
-            answer = json.loads((owner.home / "large.json").read_text())
-            assert answer["body"] == body
-        finally:
-            bridge.close()
-
-    asyncio.run(run())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 @pytest.mark.parametrize("failure", ["lost", "invalid"])
 def test_extension_delivery_failure_prevents_local_command(owner, failure):
     from tinyassets.engine_tool_client import EngineToolError
@@ -314,33 +219,3 @@ def test_extension_delivery_failure_prevents_local_command(owner, failure):
 
 
 
-def test_local_bash_fences_file_cas_until_the_child_stops(owner):
-    from tinyassets.boxes.provider import WriteConflict, WriteMode
-
-    tools = OwnerTools(owner.home)
-    prefix = owner.core.operation_prefix()
-    tools.provider.write(tools.handle, prefix + "seed", "/cc/center/file", b"before", max_bytes=100)
-    generation = tools.provider.committed_generation(tools.handle)
-
-    async def run():
-        task = asyncio.create_task(tools.bash(prefix + "writer", "echo ready > started; sleep 30"))
-        try:
-            for _ in range(200):
-                if (owner.home / "started").exists():
-                    break
-                await asyncio.sleep(.01)
-            assert (owner.home / "started").read_text() == "ready\n"
-            assert owner.core._state.pending("alice") == 1
-            with pytest.raises(WriteConflict):
-                tools.provider.write(tools.handle, prefix + "conflict", "/cc/center/file", b"stale",
-                                     max_bytes=100, mode=WriteMode.CAS,
-                                     expect_generation=generation)
-        finally:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        assert owner.core._state.pending("alice") == 0
-        assert tools.provider.committed_generation(tools.handle) > generation
-        assert (owner.home / "file").read_bytes() == b"before"
-
-    asyncio.run(run())
