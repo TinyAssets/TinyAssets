@@ -76,12 +76,20 @@ jobs:
           sudo bash scripts/live_like/make_live.sh start '${{ steps.image.outputs.ref }}'
           ! sudo grep -q '^CLOUDFLARE_TUNNEL_TOKEN=' /etc/tinyassets/daemon.env
           sudo bash scripts/live_like/make_live.sh check
+          for _ in $(seq 1 30); do
+            test "$(docker inspect -f '{{.State.Health.Status}}' tinyassets-daemon)" = healthy && break
+            sleep 2
+          done
           test "$(docker inspect -f '{{.State.Health.Status}}' tinyassets-daemon)" = healthy
       - name: Restart the workload and prove it stays live
         run: |
           sudo bash scripts/live_like/make_live.sh stop
           sudo bash scripts/live_like/make_live.sh start '${{ steps.image.outputs.ref }}'
           sudo bash scripts/live_like/make_live.sh check
+          for _ in $(seq 1 30); do
+            test "$(docker inspect -f '{{.State.Health.Status}}' tinyassets-daemon)" = healthy && break
+            sleep 2
+          done
           test "$(docker inspect -f '{{.State.Health.Status}}' tinyassets-daemon)" = healthy
       - name: Diagnose failure
         if: failure()
