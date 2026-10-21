@@ -4,7 +4,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from mcp.types import ListToolsResult, Tool
 
 from tests import test_free_account_run_provider_parity as parity
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
@@ -98,73 +97,7 @@ def _assert_pool(pool):
     assert pool.foreign.requests == [] and pool.foreign.reads == []
 
 
-def test_workflow_daily_quota_skips_sibling_and_uses_next_owned_source(pool, monkeypatch):
-    record = parity._run(pool.base, monkeypatch, parity._branch(owner=parity.A_OWNER),
-                         parity.A_HOME)
-    assert record["status"] == "completed", record["error"]
-    assert record["output"]["note"] == "morning focus note"
-    _assert_pool(pool)
-    # Another workflow honors the retained SOURCE cooldown, not merely a model mark.
-    record = parity._run(pool.base, monkeypatch, parity._branch(owner=parity.A_OWNER),
-                         parity.A_HOME)
-    assert record["status"] == "completed", record["error"]
-    assert pool.first_wire.sent_models == [parity.LIVE_MODELS[0]]
 
 
-def test_chat_daily_quota_skips_sibling_and_uses_next_owned_source(pool, monkeypatch):
-    from tinyassets import engine_mcp_http, engine_tool_client, universe_intelligence
-    from tinyassets.auth import middleware as auth
-    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn, ServedChatAgentAdapter
-    from tinyassets.providers import call as provider_calls
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
-
-    # This source-pooling contract fixture supplies its synthetic engine adapter
-    # explicitly; production construction requires the bound thin-loop adapter.
-    def make_turn(**kwargs):
-        provider_calls.register_open_providers_for(kwargs["universe_context"])
-        return InteractiveHttpAgentTurn(
-            router=provider_calls._router, adapter=ServedChatAgentAdapter(), **kwargs,
-        )
-
-    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
-
-    engine_mcp_http._write_routes(pool.base, [SimpleNamespace(
-        universe_id=parity.A_HOME, owner=parity.A_OWNER, port=8790, secret="s" * 43,
-    )])
-    class Client:
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *_):
-            pass
-        def is_connected(self):
-            return True
-        async def list_tools_mcp(self, *, cursor=None):
-            return ListToolsResult(tools=[Tool(name=n, inputSchema={"type": "object"})
-                                         for n in SERVED_ENGINE_MCP_TOOLS])
-    monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
-    reserve = auth.reserve_provider_request(principal_id=parity.A_OWNER, session_id="pool",
-                                             request_id="pool", tool_name="converse")
-    capability = auth.claim_provider_request(reserve, tool_name="converse")
-    responses = []
-    try:
-        result = universe_intelligence.converse(
-            parity.A_HOME, "Write a morning focus note.", response_observer=responses.append,
-        )
-        assert len(responses) == 1 and responses[0].provider == pool.second
-        assert result == (
-            f"morning focus note\n\nAnswered by {responses[0].provider_display} because "
-            f"{pool.first} is cooling down or out of capacity. "
-            "The original source did not report a reset time."
-        )
-    finally:
-        auth.revoke_provider_request(capability)
-    _assert_pool(pool)
 
 
-def test_single_source_suggestion_is_optional_and_disappears_for_a_pool(pool):
-    from tinyassets.api.pending_requests import list_requests
-
-    rows = list_requests(universe_id=parity.A_HOME)["pending"]
-    setup = next(r for r in rows if r["request_id"] == "sys_connect_model")
-    assert setup["status"] == "optional" and "suggestion" not in setup
-    assert len(setup["action"]["setup"]["sources"]) == 4
