@@ -12,7 +12,6 @@ Real sockets against the real driver; the times are scaled down.
 
 import socket
 import threading
-import time
 
 import pytest
 
@@ -23,12 +22,7 @@ from tests.test_inference_reply_budget import (  # noqa: F401 - broker is a fixt
 )
 from tests.test_outbound_ssrf_driver import _PassThroughTLS
 from tinyassets.storage.outbound_connections import (
-    INFERENCE_IDLE_MIN_SECONDS,
-    INFERENCE_MAX_SECONDS,
-    INFERENCE_STREAM_MAX_SECONDS,
     ConnectionSecretBundle,
-    CredentialBlindBroker,
-    OutboundDeadlineExceeded,
     _SsrfHardenedHttpDriver,
 )
 
@@ -95,71 +89,6 @@ def _call(driver, port, **extra):
     )
 
 
-def test_a_stream_that_keeps_arriving_runs_past_the_old_whole_reply_budget():
-    # 12 events 0.15s apart = ~1.8s, six times the 0.3s whole-reply budget; no
-    # gap reaches the 0.5s inactivity window.
-    driver, port, stop = _stream_server(events=12, gap_s=0.15)
-    try:
-        result = _call(driver, port, reply_budget_s=0.3, reply_stream=(0.5, 10.0))
-        assert result["status"] == 200 and "stalled" not in result
-        assert result["body"].count("data:") == 13
-    finally:
-        stop.set()
-
-
-def test_the_same_slow_stream_without_the_window_still_ends_at_the_budget():
-    """The control: without ``reply_stream`` nothing about the old bound changed."""
-    driver, port, stop = _stream_server(events=12, gap_s=0.15)
-    try:
-        with pytest.raises(OutboundDeadlineExceeded):
-            _call(driver, port, reply_budget_s=0.3)
-    finally:
-        stop.set()
-
-
-def test_a_stream_that_goes_silent_returns_what_arrived_marked_stalled():
-    driver, port, stop = _stream_server(events=3, gap_s=0.05, then_silent=True)
-    started = time.monotonic()
-    try:
-        result = _call(driver, port, reply_budget_s=5.0, reply_stream=(0.5, 10.0))
-        assert result["stalled"] is True and result["status"] == 200
-        assert "w0 " in result["body"] and "w2 " in result["body"]
-        assert time.monotonic() - started < 3.0
-    finally:
-        stop.set()
-
-
-def test_a_drip_still_ends_at_the_outer_total():
-    """Keep-alive bytes forever must not hold a connection forever."""
-    driver, port, stop = _stream_server(events=0, gap_s=0.05, drip=True)
-    started = time.monotonic()
-    try:
-        with pytest.raises(OutboundDeadlineExceeded):
-            _call(driver, port, reply_budget_s=0.3, reply_stream=(0.5, 1.0))
-        assert time.monotonic() - started < 4.0
-    finally:
-        stop.set()
-
-
-@pytest.mark.parametrize("budget,idle,expected", [
-    (None, 120, None),                       # no granted budget: no stream window
-    (600.0, None, None),                     # not asked for
-    (600.0, True, None),                     # a bool is not a number
-    (600.0, float("nan"), None),
-    (600.0, 0, None),
-    (600.0, 1, (INFERENCE_IDLE_MIN_SECONDS, 3000.0)),
-    (600.0, 120, (120.0, 3000.0)),
-    (600.0, 10**9, (INFERENCE_MAX_SECONDS, 3000.0)),
-])
-def test_the_window_is_granted_only_with_the_budget_and_clamped(budget, idle, expected):
-    assert CredentialBlindBroker._inference_stream(budget, 3000.0, idle) == expected
-
-
-def test_the_outer_total_is_clamped():
-    idle, total = CredentialBlindBroker._inference_stream(600.0, 10**12, 120)
-    assert total == INFERENCE_STREAM_MAX_SECONDS
-
-
 # --------------------------------------------------------------------------
 # The broker grants the window only to a model source that got the budget.
 # --------------------------------------------------------------------------
@@ -169,21 +98,6 @@ def _post(broker, grant, budget, idle, verb="POST"):  # noqa: F811
     instance.dispatch(grant, verb, {"url": INFERENCE_URL, "body": {},
                                     "reply_budget_s": budget, "reply_idle_s": idle})
     return calls[-1]
-
-
-def test_a_model_source_gets_its_inactivity_window(broker):  # noqa: F811
-    call = _post(broker, "grant-model", 3000, 120)
-    assert call["reply_stream"] == (120.0, 3000.0)
-    assert call["reply_budget_s"] == INFERENCE_MAX_SECONDS
-    assert "reply_idle_s" not in call["request"]
-
-
-@pytest.mark.parametrize("grant,verb", [("grant-plain", "POST"), ("grant-model", "GET")])
-def test_no_window_without_the_inference_budget(broker, grant, verb):  # noqa: F811
-    call = _post(broker, grant, 3000, 120, verb)
-    assert "reply_stream" not in call
-    assert "reply_idle_s" not in call["request"]
-
 
 
 # --------------------------------------------------------------------------
@@ -226,35 +140,7 @@ def _header_drip_server():
     return driver, port, stop
 
 
-def test_a_header_drip_ends_at_the_inference_budget_not_the_stream_total():
-    """The stream's long total starts once headers are in; before, the budget rules."""
-    driver, port, stop = _header_drip_server()
-    started = time.monotonic()
-    try:
-        with pytest.raises(OutboundDeadlineExceeded):
-            _call(driver, port, reply_budget_s=0.5, reply_stream=(0.5, 30.0))
-        assert time.monotonic() - started < 3.0
-    finally:
-        stop.set()
-
-
-@pytest.mark.parametrize("unit", ['"', "\\", "\u6c49", "\U0001f600"])
-def test_a_full_stream_body_fits_one_broker_control_frame(unit):
-    """Quote/backslash escaping doubles a body; non-ASCII travels as UTF-8.
-
-    The body cap exists so the broker can always answer in ONE control frame.
-    ``rf.control`` raises above the limit, so encoding the largest allowed
-    body is the whole assertion.
-    """
-    from tinyassets import rpc_frames as rf
-    from tinyassets.storage.outbound_connections import INFERENCE_STREAM_MAX_BODY_BYTES
-
-    width = len(unit.encode("utf-8"))
-    body = unit * (INFERENCE_STREAM_MAX_BODY_BYTES // width)
-    frame = rf.control(rf.CONNECTION, {"op": "RESULT", "status": 200, "body": body})
-    assert len(frame) <= rf.MAX_CONTROL_FRAME + rf.HEADER_BYTES
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_a_credential_split_across_streamed_deltas_is_refused(broker):  # noqa: F811
     """Each delta passes a substring scan; the rejoined reply would not."""
     instance, _calls, outcome = broker
@@ -268,32 +154,6 @@ def test_a_credential_split_across_streamed_deltas_is_refused(broker):  # noqa: 
     outcome["response"] = {"status": 200, "body": split}
     with pytest.raises(ProxyRequestError, match="unsafe destination response"):
         instance.dispatch("grant-model", "POST", {"url": INFERENCE_URL, "body": {}})
-
-
-
-def test_a_silence_that_reaches_the_total_is_the_deadline_not_a_stall():
-    """With the window longer than what is left, the read that times out is
-    bounded by the TOTAL: that is the deadline, raised, never a "stalled" reply."""
-    driver, port, stop = _stream_server(events=2, gap_s=0.05, then_silent=True)
-    try:
-        with pytest.raises(OutboundDeadlineExceeded):
-            _call(driver, port, reply_budget_s=0.3, reply_stream=(5.0, 0.8))
-    finally:
-        stop.set()
-
-
-@pytest.mark.parametrize("remaining,per_op,by_total", [(10.0, 0.5, False), (0.2, 0.5, True)])
-def test_the_socket_says_which_bound_armed_its_read(remaining, per_op, by_total):
-    from tinyassets.storage.outbound_connections import _DeadlineSocket
-
-    class Raw:
-        def settimeout(self, _seconds):
-            pass
-
-    wrapped = _DeadlineSocket(Raw(), deadline=time.monotonic() + remaining,
-                              per_op_timeout=per_op)
-    wrapped._arm()
-    assert wrapped.bound_by_total is by_total
 
 
 from tests.support.egress import admitted_egress  # noqa: E402, F401

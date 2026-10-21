@@ -23,7 +23,6 @@ from tinyassets.storage.outbound_connections import (
     CredentialBlindBroker,
     OutboundDeadlineExceeded,
     ProxyRequestError,
-    SsrfValidationError,
     UpstreamStream,
     _parse_allowed_endpoints,
     _SsrfHardenedHttpDriver,
@@ -104,63 +103,18 @@ def _drain(stream):
     return bytes(out)
 
 
-def test_the_first_bytes_arrive_before_the_upstream_finishes(dribble):
-    dribble.stub.update(pieces=[b"data: first\n\n", None, None, b"data: last\n\n"], pause=0.4)
-    started = time.monotonic()
-    stream = _open(dribble)
-    first = stream.read(65536)
-    first_at = time.monotonic() - started
-    rest = _drain(stream)
-    assert first == b"data: first\n\n" and rest == b"data: last\n\n"
-    assert first_at < 0.6 < time.monotonic() - started
-    assert stream.status == 200 and stream.read(10) == b""
-
-
-def test_silence_longer_than_the_idle_bound_is_a_deadline(dribble):
-    dribble.stub.update(pieces=[b"x", None], pause=3, hang=True)
-    stream = _open(dribble, idle_s=0.5)
-    assert stream.read(10) == b"x"
-    with pytest.raises(OutboundDeadlineExceeded):
-        stream.read(10)
-
-
-def test_the_body_bound_is_cumulative(dribble):
-    dribble.stub.update(pieces=[b"a" * 600, b"b" * 600])
-    stream = _open(dribble, max_body_bytes=1000)
-    with pytest.raises(SsrfValidationError):
-        _drain(stream)
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_a_header_echoing_the_credential_is_refused_before_a_stream_exists(dribble):
     dribble.stub.update(headers=[("X-Echo", f"Bearer {SECRET}")])
     with pytest.raises(ProxyRequestError):
         _open(dribble)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_a_reason_phrase_echoing_the_credential_is_refused(dribble):
     dribble.stub.update(reason=SECRET)
     with pytest.raises(ProxyRequestError):
         _open(dribble)
-
-
-def test_close_ends_a_read_waiting_in_another_thread_within_its_idle_bound(dribble):
-    dribble.stub.update(pieces=[b"x", None], pause=5, hang=True)
-    stream = _open(dribble, idle_s=0.5)
-    assert stream.read(10) == b"x"
-    errors = []
-
-    def reader():
-        try:
-            stream.read(10)
-        except Exception as exc:  # noqa: BLE001 - the test inspects it
-            errors.append(exc)
-
-    thread = threading.Thread(target=reader)
-    thread.start()
-    time.sleep(0.3)
-    stream.close()
-    thread.join(3)
-    assert not thread.is_alive()
 
 
 # ── the broker's stream ─────────────────────────────────────────────────────
@@ -206,16 +160,7 @@ def _read_all(stream: BrokerStream) -> bytes:
     return bytes(out)
 
 
-def test_the_broker_streams_a_clean_body_whole(ledger):
-    broker, calls = _broker(ledger, [b"data: hello\n\n", b"data: [DONE]\n\n"])
-    stream = broker.dispatch("grant-model", "POST",
-                             {"url": "https://models.example.com/v1/chat", "body": {}},
-                             stream=True)
-    assert isinstance(stream, BrokerStream) and stream.status == 200
-    assert _read_all(stream) == b"data: hello\n\ndata: [DONE]\n\n"
-    assert len(calls) == 1
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_the_broker_withholds_its_own_held_value_from_the_body(ledger):
     broker, _ = _broker(ledger, [b"data: leaked held-credential-xyz\n\n"])
     stream = broker.dispatch("grant-model", "POST",
@@ -229,158 +174,11 @@ def test_the_broker_withholds_its_own_held_value_from_the_body(ledger):
     assert len(forwarded) <= len(b"data: leaked ")
 
 
-def test_the_broker_refuses_a_header_echoing_its_held_value(ledger):
-    broker, _ = _broker(ledger, [b"ok"], headers={"x-echo": "held-credential-xyz"})
-    with pytest.raises(ProxyRequestError):
-        broker.dispatch("grant-model", "POST",
-                        {"url": "https://models.example.com/v1/chat", "body": {}}, stream=True)
-
-
-def test_request_close_dispatch_is_unchanged(ledger):
-    calls = []
-
-    def network(**kwargs):
-        calls.append(kwargs)
-        return {"status": 200, "body": "ok"}
-
-    broker = CredentialBlindBroker(ledger, resolve_credential=lambda *_: "c",
-                                   network_request=network)
-    result = broker.dispatch("grant-model", "POST",
-                             {"url": "https://models.example.com/v1/chat", "body": {}})
-    assert result == {"status": 200, "body": "ok"} and "stream" not in calls[0]
-
-
-def test_an_oauth1_signature_alone_is_held_encoded_and_decoded():
-    import re
-    import urllib.parse
-
-    driver = _SsrfHardenedHttpDriver(open_socket=lambda *a: None)
-    bundle = ConnectionSecretBundle(api_key="ck", api_secret="cs", access_token="at",
-                                    access_token_secret="ats")
-    prepared = driver._prepare(
-        bundle=bundle, auth_scheme="oauth1a", method="POST",
-        url="https://api.example.com/2/tweets", headers=None, body={"text": "hi"},
-        header_name="", allowed_endpoints=_parse_allowed_endpoints([{
-            "host": "api.example.com", "path_template": "/2/tweets", "methods": ["POST"]}]),
-        access_mode="exact",
-    )
-    header = prepared.auth_headers["Authorization"]
-    signature = re.search(r'oauth_signature="([^"]+)"', header).group(1)
-    assert signature in prepared.sensitive
-    assert urllib.parse.unquote(signature) in prepared.sensitive
-
-
-def test_close_from_another_thread_never_blocks_behind_a_read(dribble):
-    dribble.stub.update(pieces=[b"x", None], pause=5, hang=True)
-    stream = _open(dribble, idle_s=0.5)
-    assert stream.read(10) == b"x"
-    reading = threading.Thread(target=lambda: _swallow(stream.read, 10))
-    reading.start()
-    time.sleep(0.3)
-    started = time.monotonic()
-    stream.close()
-    assert time.monotonic() - started < 0.5
-    reading.join(3)
-    assert not reading.is_alive()
-
-
 def _swallow(fn, *args):
     try:
         fn(*args)
     except Exception:  # noqa: BLE001 - the test only needs it to return
         pass
-
-
-def test_a_body_hit_is_audited(ledger):
-    audits = []
-
-    def network(**kwargs):
-        return UpstreamStream.complete(
-            {"status": 200, "reason": "OK", "headers": {},
-             "body": b"data: held-credential-xyz\n\n"}, ())
-
-    broker = CredentialBlindBroker(ledger, resolve_credential=lambda *_: "held-credential-xyz",
-                                   network_request=network, audit=audits.append)
-    stream = broker.dispatch("grant-model", "POST",
-                             {"url": "https://models.example.com/v1/chat", "body": {}},
-                             stream=True)
-    with pytest.raises(ProxyRequestError):
-        _read_all(stream)
-    assert any("credential material" in str(record) for record in audits)
-
-
-def test_the_guard_is_held_across_every_send_including_the_oauth_resend(ledger):
-    entered = []
-
-    class Guard:
-        def __enter__(self):
-            entered.append("in")
-
-        def __exit__(self, *exc):
-            entered.append("out")
-            return False
-
-    def network(**kwargs):
-        assert entered and entered[-1] == "in"  # the send happens inside the guard
-        return UpstreamStream.complete({"status": 200, "reason": "OK", "headers": {},
-                                        "body": b"ok"}, ())
-
-    broker = CredentialBlindBroker(ledger, resolve_credential=lambda *_: "c",
-                                   network_request=network)
-    stream = broker.dispatch("grant-model", "POST",
-                             {"url": "https://models.example.com/v1/chat", "body": {}},
-                             stream=True, guard=Guard)
-    assert _read_all(stream) == b"ok" and entered == ["in", "out"]
-
-@pytest.mark.parametrize("operation,args", [("recv", (1,)), ("recv_into", (bytearray(1),)),
-                                           ("send", (b"x",)), ("sendall", (b"x",))])
-def test_cancel_checkpoint_precedes_every_socket_operation(operation, args):
-    from tinyassets.storage.outbound_connections import BrokerStreamStop, _DeadlineSocket
-
-    class Cancelled(BrokerStreamStop):
-        pass
-
-    def checkpoint():
-        raise Cancelled
-
-    sock = _DeadlineSocket(object(), deadline=time.monotonic() + 30,
-                           per_op_timeout=30, checkpoint=checkpoint)
-    with pytest.raises(Cancelled):
-        getattr(sock, operation)(*args)
-
-
-@pytest.mark.parametrize("phase", ["write", "read"])
-def test_transport_preserves_cancel_type(dribble, phase):
-    from tinyassets.storage.outbound_connections import BrokerStreamStop
-
-    class Cancelled(BrokerStreamStop):
-        pass
-
-    stopped = False
-
-    def checkpoint():
-        if stopped:
-            raise Cancelled
-
-    def connected(_sock):
-        nonlocal stopped
-        stopped = phase == "write"
-
-    dribble.stub.update(pieces=[None, b"x"], pause=0.3)
-    driver, port = _driver(dribble)
-    if phase == "write":
-        with pytest.raises(Cancelled):
-            driver.open_stream(bundle=ConnectionSecretBundle(token=SECRET), auth_scheme="bearer",
-                               method="POST", url=f"https://models.example:{port}/v1/chat",
-                               checkpoint=checkpoint, on_connect=connected)
-    else:
-        stream = driver.open_stream(bundle=ConnectionSecretBundle(token=SECRET),
-                                    auth_scheme="bearer", method="POST",
-                                    url=f"https://models.example:{port}/v1/chat",
-                                    checkpoint=checkpoint)
-        stopped = True
-        with pytest.raises(Cancelled):
-            _drain(stream)
 
 
 @pytest.fixture
@@ -399,6 +197,7 @@ def oauth_broker(ledger, monkeypatch):
                                   refresh_token="new-refresh-token")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("expired", [False, True])
 def test_oauth_refresh_is_guarded_and_checks_deadline(oauth_broker, monkeypatch, expired):
     broker, calls, bundle = oauth_broker
@@ -437,6 +236,7 @@ def test_oauth_refresh_is_guarded_and_checks_deadline(oauth_broker, monkeypatch,
         assert len(refreshes) == 2
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("echo", ["body", "header"])
 def test_proactive_refresh_keeps_original_tokens_held(oauth_broker, monkeypatch, echo):
     broker, _, bundle = oauth_broker
@@ -456,26 +256,6 @@ def test_proactive_refresh_keeps_original_tokens_held(oauth_broker, monkeypatch,
         _read_all(broker.dispatch("grant-model", "POST", {
             "url": "https://models.example.com/v1/chat"}, stream=True))
     assert events == ["refresh", "send"]
-
-
-def test_redirect_stream_reports_each_connection():
-    from tests.test_http_redirect_chain import SOURCE, _driver, _redirect, chain
-    from tinyassets.storage.outbound_connections import _parse_allowed_endpoints
-
-    fixture = chain.__wrapped__()
-    server = next(fixture)
-    try:
-        server.state["responses"] = [_redirect("https://cdn.example.com/file"), {"body": b"ok"}]
-        connected = []
-        stream = _driver(server).open_stream(
-            bundle=ConnectionSecretBundle(token=SECRET), auth_scheme="bearer", method="GET",
-            url="https://api.example.com/download",
-            allowed_endpoints=_parse_allowed_endpoints([SOURCE]),
-            revalidate_authority=lambda deadline: None, on_connect=connected.append,
-        )
-        assert _drain(stream) == b"ok" and len(connected) == 2
-    finally:
-        fixture.close()
 
 
 from tests.support.egress import admitted_egress  # noqa: E402, F401

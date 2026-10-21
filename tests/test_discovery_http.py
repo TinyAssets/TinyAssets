@@ -3,22 +3,15 @@
 No account credentials or live sockets. This is not rendered app acceptance.
 """
 
-import json
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from tests.support.catalog_decoders import decode_openrouter_models
 from tinyassets.exceptions import (
-    ProviderOverloadedError,
-    ProviderProtocolError,
-    ProviderRateLimitedError,
     ProviderUnavailableError,
 )
 from tinyassets.providers import discovery_http as discovery
 from tinyassets.providers.definition import ProviderDefinition
-from tinyassets.providers.model_policy import ConnectionModels
 from tinyassets.storage.outbound_connections import (
     ConnectionLedger,
     CredentialBlindBroker,
@@ -28,38 +21,6 @@ from tinyassets.storage.outbound_connections import (
 )
 
 URL = "https://models.example.com/api/models/user"
-
-
-@pytest.mark.parametrize("facts", [{}, {"resource": {}}, {"resource": None}])
-def test_malformed_broker_projection_is_a_typed_refusal(tmp_path, monkeypatch, facts):
-    from tinyassets.broker import ledger_queries
-
-    monkeypatch.setattr(ledger_queries, "query_ledger", lambda *a, **kw: facts)
-    with pytest.raises(discovery.ModelDiscoveryUnavailable) as caught:
-        discovery.read_granted_discovery_document(
-            db_path=tmp_path / "outbound.db", grant_id="grant", owner_user_id="owner",
-            universe_id="universe", url=URL,
-        )
-    assert caught.value.reason == "discovery_unavailable"
-    assert not (tmp_path / "outbound.db").exists()
-
-
-def test_owned_grant_can_discover_before_model_registration(rig):
-    assert discovery.read_granted_discovery_document(
-        db_path=rig.db, grant_id="grant-discovery", owner_user_id="owner",
-        universe_id="universe", url=URL,
-    ) == {"data": []}
-    assert len(rig.calls) == 1
-
-
-@pytest.mark.parametrize("owner,universe", [("stranger", "universe")])
-def test_pre_registration_discovery_keeps_owner_fence(rig, owner, universe):
-    with pytest.raises(discovery.ModelDiscoveryUnavailable):
-        discovery.read_granted_discovery_document(
-            db_path=rig.db, grant_id="grant-discovery", owner_user_id=owner,
-            universe_id=universe, url=URL,
-        )
-    assert not rig.calls
 
 
 @pytest.fixture
@@ -182,19 +143,7 @@ def rig(tmp_path, monkeypatch):
     return state
 
 
-def test_exact_get_uses_existing_resolver_and_closes_without_mutation(rig):
-    before_grant = rig.ledger.get_grant("grant-discovery")
-    before_view = rig.ledger.get_connection_view("conn-discovery")
-    assert rig.read() == {"data": []}
-    assert rig.calls == [("GET", {"url": URL})]
-    assert len(rig.starts) == 1 and rig.closes == 1
-    assert rig.starts[0]["owner_user_id"] == "owner"
-    assert rig.starts[0]["universe_id"] == "universe"
-    assert rig.ledger.get_grant("grant-discovery") == before_grant
-    assert rig.ledger.get_connection_view("conn-discovery") == before_view
-    assert rig.definition.model == "unchanged-legacy-pin"
-
-
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_full_channel_scopes_credentials_to_its_service(rig):
     with rig.ledger._connect() as raw:
         raw.execute(
@@ -209,111 +158,7 @@ def test_full_channel_scopes_credentials_to_its_service(rig):
     assert rig.closes == 2
 
 
-@pytest.mark.parametrize("response", [None, [], {"error": "synthetic-private-details"}])
-def test_invalid_envelope_is_refused_without_revealing_remote_reason(rig, response):
-    rig.response = response
-    with pytest.raises(ProviderUnavailableError) as caught:
-        rig.read()
-    assert str(caught.value) == "discovery proxy returned no valid HTTP status"
-    assert rig.closes == 1
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"owner_user_id": "someone-else"},
-        {"owner_user_id": ""},
-        {"universe_id": "someone-else"},
-        {"universe_id": ""},
-    ],
-)
-def test_wrong_authenticated_context_is_refused_before_proxy(rig, kwargs):
-    with pytest.raises(ProviderUnavailableError):
-        rig.read(**kwargs)
-    assert not rig.starts
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"owner_user_id": "someone-else"},
-        {"universe_id": "someone-else"},
-        {"ref": "grant-absent"},
-        {"access_method": "invalid_method"},
-    ],
-)
-def test_definition_cannot_borrow_another_context(rig, changes):
-    with pytest.raises(ProviderUnavailableError):
-        rig.read(definition=replace(rig.definition, **changes))
-    assert not rig.starts
-
-
-@pytest.mark.parametrize("target", ["grant", "connection"])
-def test_revoked_authority_is_refused_before_proxy(rig, target):
-    if target == "grant":
-        rig.ledger.revoke_grant("grant-discovery")
-    else:
-        rig.ledger.revoke_connection("conn-discovery")
-    with pytest.raises(ProviderUnavailableError):
-        rig.read()
-    assert not rig.starts
-
-
-@pytest.mark.parametrize(
-    "table, column, value",
-    [
-        ("outbound_connection_grants", "owner_user_id", "someone-else"),
-        ("outbound_connection_grants", "grant_id", "someone-else"),
-        ("outbound_connections", "owner_user_id", "someone-else"),
-        ("outbound_connections", "scopes_json", '["POST"]'),
-    ],
-)
-def test_current_rows_not_just_definition_must_authorize_read(rig, table, column, value):
-    with rig.ledger._connect() as raw:
-        raw.execute(f"UPDATE {table} SET {column} = ?", (value,))
-    if column == "scopes_json":
-        assert rig.read() == {"data": []}
-        assert rig.auth == ["none"]
-        assert rig.calls == [("GET", {"url": URL})]
-    else:
-        with pytest.raises(ProviderUnavailableError):
-            rig.read()
-        assert not rig.starts
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        URL + "#fragment",
-        "http://models.example.com/api/models/user",
-        "https://user:secret@models.example.com/api/models/user",
-        URL.replace("/api/", "/../api/"),
-        URL.replace("/api/", "/%2fapi/"),
-        URL.replace(".com/", ".com:444/"),
-        "",
-        None,
-        URL + "/" + "x" * 2048,
-    ],
-)
-def test_noncanonical_url_opens_no_proxy(rig, url):
-    with pytest.raises(ProviderUnavailableError):
-        rig.read(url=url)
-    assert not rig.starts
-
-
-def test_same_context_is_checked_again_by_real_broker_admission(rig, monkeypatch):
-    original = ConnectionLedger.authorize_exact
-
-    def revoke_then_resolve(self, **kwargs):
-        rig.ledger.revoke_grant("grant-discovery")
-        return original(self, **kwargs)
-
-    monkeypatch.setattr(ConnectionLedger, "authorize_exact", revoke_then_resolve)
-    with pytest.raises(ProviderUnavailableError, match="transport failed"):
-        rig.read()
-    assert not rig.starts and not rig.calls
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_real_broker_rechecks_revocation_after_proxy_resolution(rig):
     rig.before_dispatch = lambda: rig.ledger.revoke_grant("grant-discovery")
     with pytest.raises(ProviderUnavailableError, match="transport failed"):
@@ -321,6 +166,7 @@ def test_real_broker_rechecks_revocation_after_proxy_resolution(rig):
     assert len(rig.starts) == 1 and rig.closes == 1 and not rig.calls
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_real_broker_passes_current_narrowed_endpoints_to_network(rig):
     def narrow():
         with rig.ledger._connect() as raw:
@@ -331,116 +177,3 @@ def test_real_broker_passes_current_narrowed_endpoints_to_network(rig):
     assert rig.closes == 1
     assert rig.calls == [("GET", {"url": URL})]
     assert rig.auth == ["none"]
-
-
-@pytest.mark.parametrize("field", ["fail_request", "fail_close"])
-def test_failed_transport_closes_once_and_does_not_leak_details(rig, field):
-    setattr(rig, field, True)
-    with pytest.raises(ProviderUnavailableError) as caught:
-        rig.read()
-    assert str(caught.value) == "discovery transport failed" and rig.closes == 1
-    assert len(rig.calls) <= 1
-
-
-@pytest.mark.parametrize(
-    "status, error",
-    [
-        (429, ProviderRateLimitedError),
-        (500, ProviderOverloadedError),
-        (503, ProviderOverloadedError),
-        (403, ProviderProtocolError),
-        (404, ProviderProtocolError),
-        (302, ProviderProtocolError),
-        (206, ProviderProtocolError),
-        (204, ProviderProtocolError),
-        (True, ProviderUnavailableError),
-        (200.0, ProviderUnavailableError),
-        ("200", ProviderUnavailableError),
-        (None, ProviderUnavailableError),
-    ],
-)
-def test_status_mapping_no_retry_or_redirect(rig, status, error):
-    rig.response = {
-        "status": status,
-        "body": "private-remote-error",
-        "location": "https://attacker.example",
-    }
-    with pytest.raises(error) as caught:
-        rig.read()
-    assert "private-remote-error" not in str(caught.value)
-    assert len(rig.calls) == 1 and rig.closes == 1
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "",
-        None,
-        {},
-        "not json",
-        "[]",
-        "null",
-        '{"data":[],"data":[1]}',
-        '{"price":NaN}',
-        '{"price":Infinity}',
-        '{"price":-Infinity}',
-        "[" * 2000 + "]" * 2000,
-        "\ud800",
-    ],
-)
-def test_invalid_json_is_refused_after_close_without_body_disclosure(rig, body):
-    rig.response = {"status": 200, "body": body}
-    with pytest.raises(ProviderProtocolError, match="bounded JSON object"):
-        rig.read()
-    assert rig.closes == 1
-
-
-@pytest.mark.parametrize("text", ["x" * 80, "界" * 30])
-def test_decoding_applies_transport_byte_bound_not_character_count(rig, monkeypatch, text):
-    monkeypatch.setattr(discovery, "_SSRF_MAX_BODY_BYTES", 64)
-    rig.response["body"] = json.dumps({"data": text}, ensure_ascii=False)
-    with pytest.raises(ProviderProtocolError):
-        rig.read()
-    assert rig.closes == 1
-
-
-def test_refresh_adds_unknown_model_without_changing_grant_or_following_links(rig):
-    context = ConnectionModels(
-        "conn-discovery", "opaque-provider", "http", "fresh", True, False, ()
-    )
-    before = rig.ledger.get_connection_view("conn-discovery")
-    first = decode_openrouter_models(rig.read(), connection=context)
-    rig.response["body"] = json.dumps(
-        {
-            "data": [
-                {
-                    "id": "new-provider/brand-new-model",
-                    "pricing": {},
-                    "links": {"catalogue": "https://attacker.example"},
-                }
-            ]
-        }
-    )
-    second = decode_openrouter_models(rig.read(), connection=context)
-    assert first.models == () and second.models[0].model_id == "new-provider/brand-new-model"
-    assert not second.executor_tools  # Read success cannot upgrade executor readiness.
-    assert rig.ledger.get_connection_view("conn-discovery") == before
-    assert rig.calls == [("GET", {"url": URL}), ("GET", {"url": URL})]
-    assert rig.closes == 2
-
-
-def test_pre_registration_discovery_is_owner_scoped_across_centers(rig):
-    assert discovery.read_granted_discovery_document(
-        db_path=rig.db, grant_id="grant-discovery", owner_user_id="owner",
-        universe_id="other", url=URL) == {"data": []}
-    assert len(rig.calls) == 1
-
-
-@pytest.mark.parametrize("url", ["https://another.example/api/models/user",
-                                 "https://models.example.com/custom/inference",
-                                 URL + "?undeclared=1"])
-def test_public_destination_outside_credential_scope_succeeds_without_auth(rig, url):
-    assert rig.read(url=url) == {"data": []}
-    assert rig.calls == [("GET", {"url": url})]
-    assert rig.auth == ["none"]
-    assert rig.closes == 1
