@@ -10,6 +10,8 @@ import pytest
 from scripts.live_like import fixture, shape_profile
 from tinyassets.box_layout_migration import census
 
+pytestmark = pytest.mark.verifies("live-like-deploy-gate:G5")
+
 
 def test_redaction_drops_emails_ids_and_user_paths(tmp_path: Path) -> None:
     owner = "pat@example.com"

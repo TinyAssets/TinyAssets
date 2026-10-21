@@ -29,7 +29,10 @@ serving on the old layout, no leftover box-store `.img`/`.locks`, no candidate
 ## G5. Synthetic production-shaped workload
 
 `scripts/live_like/` builds the data (at least 3 owners and 5 centers, real
-SQLite stores, sidecar state) and keeps it live (sockets, writer, timer).
+SQLite stores, sidecar state) and keeps it live (sockets, writer, timer). Its
+shapes follow a redacted profile of production (`deploy/live_like/shape-profile.json`);
+a store or file shape the profile carries but the fixture cannot build fails the
+drift check (`profile.md`).
 
 ## Decisions (one line each)
 
