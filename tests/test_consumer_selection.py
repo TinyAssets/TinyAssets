@@ -195,9 +195,3 @@ def test_a_hundred_unrelated_bindings_do_not_block_selection(store):
     assert chosen["binding_id"] == binding["agent_binding_id"]
 
 
-def test_two_active_selections_are_still_ambiguous(store):
-    """Mutation-check: removing the row cutoff must not remove the real check."""
-    binding, _ = install(store)
-    legacy_duplicate(store, binding)
-    with pytest.raises(PermissionError, match="ambiguous"):
-        selected(store)

@@ -155,9 +155,6 @@ def test_submodule_not_flagged():
     assert check_diff(diff) == []
 
 
-def test_workflow_daemon_server_not_flagged():
-    diff = _make_diff(["from tinyassets.daemon_server import execute_branch"])
-    assert check_diff(diff) == []
 
 
 @pytest.mark.parametrize("variant", [

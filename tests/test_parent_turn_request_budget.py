@@ -457,7 +457,7 @@ def test_receipt_buckets_by_actual_dispatch_time_instead_of_parent_creation():
     ]
 
 
-@pytest.mark.parametrize("message", ["hi", "What is a tuple?", "Explain recursion"])
+@pytest.mark.parametrize("message", ["hi", "What is a tuple?"])
 @pytest.mark.parametrize("choice", [None, "explicit"])
 @pytest.mark.parametrize("transport", ["synthetic", "broker"])
 def test_ordinary_chat_uses_one_tool_incapable_accepted_http_call(

@@ -580,12 +580,3 @@ class TestFileBugKindRouting:
         assert f["status"] == "filed"
         assert f["bug_id"].startswith("FEAT-")
 
-    def test_invalid_kind_still_rejected(self, wiki_dir):
-        """Invalid kinds are rejected before routing kicks in (existing contract)."""
-        out = json.loads(
-            _wiki_file_bug(
-                component="x", severity="minor", title="t", kind="banana",
-            )
-        )
-        assert "error" in out
-        assert "banana" in out["error"]

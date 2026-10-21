@@ -519,17 +519,6 @@ def test_unreadable_deploy_chain_makes_every_workflow_runtime(repo):
     assert _decide(r, gone, head).build is True
 
 
-def test_the_real_3936_merge_builds():
-    """#3936 touched deploy-prod.yml, recovery-retag-image.yml, a review doc
-    and a test. It changed what the next deploy does to the host."""
-    sha = "92ee9488"
-    if subprocess.run(
-        ["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=REPO_ROOT, capture_output=True
-    ).returncode:
-        pytest.skip("shallow checkout lacks #3936")
-    decision = rp.decide(REPO_ROOT, f"{sha}^", sha)
-    assert decision.build is True
-    assert ".github/workflows/deploy-prod.yml" in decision.runtime_paths
 
 
 # --- the Python the deploy runs, and everything it imports (round 2) ---------

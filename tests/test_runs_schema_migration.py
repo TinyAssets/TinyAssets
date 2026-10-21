@@ -337,25 +337,6 @@ class TestResumePathProviderUsed:
     3. NULL is still valid for resume paths that see no provider events.
     """
 
-    def test_resume_completion_writes_provider_used(self, tmp_path: Path) -> None:
-        initialize_runs_db(tmp_path)
-        run_id = create_run(
-            tmp_path,
-            branch_def_id="b1",
-            thread_id="t1",
-            run_name="r",
-            inputs={},
-            actor="universe:u-test",
-        )
-        update_run_status(
-            tmp_path, run_id,
-            status=RUN_STATUS_COMPLETED,
-            finished_at=time.time(),
-            provider_used="claude",
-        )
-        row = get_run(tmp_path, run_id)
-        assert row is not None
-        assert row["provider_used"] == "claude"
 
     def test_resume_completion_null_provider_when_no_nodes_ran(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)

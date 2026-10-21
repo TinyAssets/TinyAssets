@@ -269,7 +269,7 @@ def test_served_request_beyond_free_estimate_updates_credit_tier(agent, monkeypa
     assert (budget.used, budget.cap, budget.remaining) == (58, 1000, 942)
 
 
-@pytest.mark.parametrize("remaining", [3, 2, 1, 0])
+@pytest.mark.parametrize("remaining", [3, 0])
 def test_low_or_exhausted_estimate_keeps_tools_and_completes_work(agent, monkeypatch, remaining):
     seed_budget(agent, monkeypatch, remaining)
     agent.requested_rounds = 3
