@@ -1545,6 +1545,9 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     assert "tinyassets-data:/data:ro" in preflight_call
     assert "dst=/box-store,readonly" in preflight_call
     assert calls.index(preflight_call) < calls.index("stop --time")
+    # The live writer is frozen only around the read-only preflight.
+    assert (calls.index("pause tinyassets-daemon") < calls.index(preflight_call)
+            < calls.index("unpause tinyassets-daemon") < calls.index("stop --time"))
     apply_call = next(line for line in calls.splitlines()
                       if "tinyassets.box_layout_migration apply" in line)
     assert "apply /data --store /box-store" in apply_call
