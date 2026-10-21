@@ -37,8 +37,6 @@ tests/test_llm_policy_override.py
 tests/test_mcp_instruction_surfaces.py
 tests/test_node_ref_reuse.py
 tests/test_node_reuse_discovery.py
-tests/test_outcome_gate_claims.py
-tests/test_outcome_gates.py
 tests/test_patch_branch_metadata.py
 tests/test_patch_branch_node_keys.py
 tests/test_provider_work_authority.py
@@ -47,4 +45,3 @@ tests/test_retire_cheat_loop_deploy_fence.py
 tests/test_scoped_identity_reset.py
 tests/test_universe_server_isolation.py
 tests/test_universe_visibility.py
-tests/test_writer_tools.py
