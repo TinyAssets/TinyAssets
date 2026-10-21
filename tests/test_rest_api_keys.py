@@ -22,7 +22,7 @@ def stores(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("tinyassets.daemon_server.get_founder_home", lambda *a: "home")
     keys, authority = ApiKeyStore(tmp_path), OutsideClientAuthority(tmp_path)
-    monkeypatch.setattr("tinyassets.api_keys.current_store", lambda: keys)
+    monkeypatch.setattr("tinyassets.api_keys.current_store", lambda base=None: keys)
     monkeypatch.setattr("tinyassets.outside_authority.current_store", lambda: authority)
     authority.set_enabled(True)
     return keys, authority
@@ -467,3 +467,6 @@ def test_a_busy_key_store_never_turns_a_valid_key_into_a_401(stores, monkeypatch
     monkeypatch.setattr(keys, "db", db)
     assert keys.resolve(key) is not None
     assert len(writes) == 1  # throttled: no second write inside the interval
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

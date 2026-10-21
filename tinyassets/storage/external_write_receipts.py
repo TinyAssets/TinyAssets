@@ -406,6 +406,9 @@ def try_reserve_receipt(
     Raises :class:`sqlite3.OperationalError` on lock timeout; the caller
     must surface this loudly, NOT swallow it as a miss.
     """
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     if max_failed_retries is not None and max_failed_retries < 0:
         raise ValueError("max_failed_retries must be non-negative")
     reservation_payload = json.dumps(
@@ -669,6 +672,9 @@ def finalize_receipt(
 
     Raises :class:`sqlite3.OperationalError` on lock timeout.
     """
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     if not idempotency_hint:
         return False
     initialize_receipts_db(universe_dir)
@@ -713,6 +719,9 @@ def finalize_reconciliation(
     now: float | None = None,
 ) -> bool:
     """Persist reconciliation over a prior pending intent without reclaiming it."""
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     if not idempotency_hint:
         return False
     if status not in (STATUS_SUCCEEDED, STATUS_FAILED, STATUS_HELD):
@@ -762,6 +771,9 @@ def try_record_held_receipt(
     now: float | None = None,
 ) -> dict[str, Any]:
     """Insert a held intent without overwriting any existing journal state."""
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     if not idempotency_hint:
         raise ValueError("idempotency_hint must be non-empty")
     initialize_receipts_db(universe_dir)
@@ -858,6 +870,9 @@ def try_activate_confirmed_hold(
     now: float | None = None,
 ) -> dict[str, Any]:
     """Atomically acquire a confirmed hold for one execution attempt."""
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     initialize_receipts_db(universe_dir)
     timestamp = time.time() if now is None else now
     with _connect(universe_dir) as conn:
@@ -935,6 +950,9 @@ def release_reservation(
 
     Returns True when the row was released.
     """
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     if not idempotency_hint:
         return False
     initialize_receipts_db(universe_dir)
@@ -1011,6 +1029,9 @@ def record_receipt(
 
     Empty ``idempotency_hint`` is a silent no-op.
     """
+    from tinyassets.operation_epoch import check
+
+    check(receipts_db_path(universe_dir), run_id)
     if not idempotency_hint:
         return
     initialize_receipts_db(universe_dir)

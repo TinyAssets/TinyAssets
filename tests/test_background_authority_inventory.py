@@ -253,3 +253,6 @@ def test_activity_guard_removal_fails_inventory(
     target.write_text(target.read_text(encoding="utf-8").replace(guard, replacement, 1),
                       encoding="utf-8")
     assert any("activities missing marker" in error for error in validate_inventory(tmp_path))
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

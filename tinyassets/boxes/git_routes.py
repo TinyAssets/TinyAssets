@@ -114,10 +114,6 @@ def serve(proxy, conn, raw):
         verb = f"{kind}:{repo}"
         document = {"host": connection_git_host(view), "method": method, "target": target,
                     "agent": agent, "incarnation": incarnation, "upload": method == "POST"}
-        from tinyassets.broker.git_http import target as validate
-
-        # Pure validation; no broker/vault file access in this process.
-        validate(view, verb, document)
         body = Body(conn, buffered, headers, check) if method == "POST" else None
         if body is None and (buffered or "transfer-encoding" in headers
                              or headers.get("content-length", "0") != "0"):

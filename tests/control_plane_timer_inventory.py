@@ -37,8 +37,29 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
-    "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
-        CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
+
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons._launch": (
+        CALL_SCOPED, "one broker-authorized launch waits for its bounded readiness deadline",
+    ),
+
+    "tinyassets/broker/waker.py::Waker.run": (
+        CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
+        "reports and the 24-hour floor; the broker reserves wake capacity",
+    ),
+    "tinyassets/broker/routing.py::BrokerLifecycle.wake": (
+        CALL_SCOPED, "one broker wake waits for capacity notifications until its fixed deadline",
+    ),
+    "tinyassets/broker/routing.py::BrokerLifecycle.deploy": (
+        CALL_SCOPED, "one deploy awaits ordinary owner sleep operations; sleep is a host operation",
+    ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.withdraw": (
+        CALL_SCOPED, "C6 withdrawal waits at most 20 seconds for admitted work to drain",
+    ),
+    "tinyassets/boxes/gvisor_runtime.py::GvisorRuntime.shutdown": (
+        CALL_SCOPED, "bounded SIGTERM flush wait for one stopped owner daemon",
+    ),
+    "tinyassets/owner_channel.py::UsageLease._heartbeat": (
+        CALL_SCOPED, "keeps one broker-held accounting lease alive until the caller closes it",
     ),
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/mcp_events_http.py::delivery_lifespan.run": (
@@ -47,21 +68,18 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/control_plane/tick.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
-        "the owner tick: pumps due automations and control-plane triggers, under "
-        "the owner lease; per-universe heartbeat/.pause still touch the universe "
-        "directory until the cutover (#4262) moves them to .platform/",
+        "the admitted owner daemon's tick pumps its local schedules under the owner "
+        "lease; the next-wake report is call-scoped at the end of this existing tick, "
+        "and the broker's shared waker starts sleeping daemons",
     ),
-    "tinyassets/universe_server.py::main._served_budget_lease_loop": (
+    "tinyassets/owner_runtime.py::_start_maintenance._served_budget_lease_loop": (
         CONTROL_PLANE,
         "run-file retention, admitted-run, delivery, budget-lease reconciliation "
-        "and stored presentation-policy updates under the service writer barrier",
+        "and stored presentation-policy updates inside the admitted owner's daemon",
     ),
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",
     ),
-    "tinyassets/box_process.py::run_bound.watch": (
-        CALL_SCOPED, "polls the run's cancel predicate while one bound box execution runs; "
-                     "ends when the execution finishes"),
     "tinyassets/turn_interrupt.py::LiveTurn.cancel_on_stop.watch": (
         CALL_SCOPED,
         "lives only while one stop-aware call is awaited; polls the turn's stop flag "
@@ -107,24 +125,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/broker/server.py::_Connection._refresh": (
-        CALL_SCOPED,
-        "one broker stream waits for the daemon's refresh answer only until "
-        "that stream's own deadline; nothing reschedules",
-    ),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
-        "root box host reaps idle sandboxes; no owner task or inference scheduling",
-    ),
-    "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
-        CALL_SCOPED,
-        "caller consumes one bounded host execution; ends at terminal receipt, "
-        "unknown outcome or caller deadline",
-    ),
-    "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
-        CALL_SCOPED,
-        "host-side thread for one exec; stops at leader exit, cancel, wall or "
-        "output bound, then kills/reaps the group; not an in-box scheduler",
+        "root box host observes exited processes; only the broker selects lifecycle work",
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.destroy": (
         CALL_SCOPED,
@@ -136,11 +139,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.read_many": (
         CALL_SCOPED, "one coherent read waits for pending mutations up to busy_wait_s",
-    ),
-    "tinyassets/boxes/boxd.py::BoxdCore.stream.events": (
-        CALL_SCOPED,
-        "caller-consumed iterator for one bounded exec; ends on terminal or "
-        "restore state, optional caller timeout, or iterator close",
     ),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
@@ -157,25 +155,14 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "outer response pump for one admitted stream; ends at EOF, cancel, "
         "fence refusal or the stream's absolute deadline",
     ),
-    "tinyassets/broker/server.py::_Connection._pump_body#2": (
-        CALL_SCOPED,
-        "inner credit wait for the same response; condition wait is bounded by "
-        "the remaining stream deadline and cancellation wakes it",
-    ),
-    "tinyassets/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),
-    "tinyassets/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),
+    "tinyassets/broker/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/effectors/__init__.py::EffectChain.settle": (CALL_SCOPED, "effect settle wait"),
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
-    "tinyassets/external_agents/home.py::exclusive_refresh": (
-        CALL_SCOPED, "owner/service refresh lease wait; 30-second deadline",
-    ),
     "tinyassets/universe_tools.py::_bash": (
         CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
-    ),
-    "tinyassets/workspace_provision_execution.py::_stage": (
-        CALL_SCOPED, "one box provisioning stage polls its run's cancel check until it ends",
     ),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
@@ -192,11 +179,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
-    ),
-    "tinyassets/external_agents/jsonrpc_job.py::JsonRpcJob.read": (
-        CALL_SCOPED,
-        "reads one external-agent JSON-RPC turn under idle/tool/absolute "
-        "budgets; ends with the turn's terminal notification, EOF or timeout",
     ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
@@ -224,11 +206,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),
-    "tinyassets/workflow_agent.py::WorkAgentAdapter._until_activity_stops": (
-        CALL_SCOPED,
-        "polls ONE native activity call's activity status; ends when the call "
-        "returns or is cancelled because the activity stopped",
-    ),
     "tinyassets/workspace_family.py::family_fence": (CALL_SCOPED, "fence wait"),
     "tinyassets/workspace_fs.py::_retry_transient_windows": (CALL_SCOPED, "Windows retry"),
     "tinyassets/workspace_pool.py::admit": (CALL_SCOPED, "admission wait"),
@@ -238,7 +215,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/conversation_store.py::_record_pair": (CALL_SCOPED, "bounded retry"),
     "tinyassets/conversation_store.py::backfill_once": (CALL_SCOPED, "bounded retry"),
     "tinyassets/conversation_store.py::record_turn": (CALL_SCOPED, "bounded retry"),
-    "tinyassets/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/memory/versioning.py::OutputVersionStore.save_draft": (
         CALL_SCOPED, "bounded retry",
     ),

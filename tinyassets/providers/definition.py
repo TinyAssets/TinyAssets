@@ -13,19 +13,11 @@ authority and no credential.**
 Access methods (design §3) — an executor is chosen deterministically by this field,
 with NO cross-method fallback (Hard Rule #3 evolution):
 
-- ``subscription_cli`` — references an existing CLI provider identity (e.g.
-  ``codex``); the vendor CLI adapter executes it. Subscription writers stay CLI
-  subprocesses, never an API SDK.
 - ``api_key_http`` — references a ``ConnectionLedger`` http connection (endpoint +
   credential + grant, already SSRF-validated by ``connect_http``); a protocol
   encoder executes it over the credential-blind outbound proxy — never a vendor SDK
   pointed at an arbitrary ``base_url``.
 
-The descriptor carries a ``ref`` (an indirection), never a secret: for
-``subscription_cli`` it is the provider name (``codex`` / ``claude-code``); for
-``api_key_http`` it is the ``grant_id`` of the ``ConnectionLedger`` grant that binds
-the connection to this universe (not secret — the grant is the authorization, and
-the credential lives in the vault behind the connection the grant points to). A
 ``commons`` definition is a remixable SHAPE only: remixing never carries the original
 owner's ``ref`` or credential — the remixer supplies their own.
 """
@@ -43,28 +35,21 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _universe_dir
-from tinyassets.external_agents.registry import PACKAGES
 from tinyassets.providers.wire_dialects import known_names
 
-ACCESS_METHODS = ("subscription_cli", "api_key_http")
+ACCESS_METHODS = ("api_key_http",)
 VISIBILITIES = ("private", "commons")
 
-# Protocol shapes, partitioned by the access method they are valid with. A CLI
-# protocol may only pair with subscription_cli; an HTTP protocol only with
-# api_key_http — so the descriptor cannot describe an incoherent executor.
-_CLI_PROTOCOLS = ("cli:claude-code",)
-_PACKAGE_PROTOCOLS = tuple(f"cli:{name}" for name in PACKAGES)
 # HTTP protocols are the bundled wire dialects (``providers/dialects/*.json``):
 # their structural names (``chat_messages``, ``content_blocks``) and the aliases
 # stored rows already carry (``openai_chat``, ``anthropic_messages``). A stored
 # row keeps its exact string, because the definition id content-addresses it.
 _HTTP_PROTOCOLS = known_names()
-PROTOCOLS = _CLI_PROTOCOLS + _PACKAGE_PROTOCOLS + _HTTP_PROTOCOLS
+PROTOCOLS = _HTTP_PROTOCOLS
 
 _STORE_FILENAME = "provider_definitions.json"
 
-# ``ref`` grammar: bounded ASCII, no whitespace/control. Covers both a provider
-# name (codex / claude-code) and a ConnectionLedger connection id (http_<hex>).
+# ``ref`` grammar: bounded ASCII, no whitespace/control; a connection grant id.
 _REF_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,190}$")
 # ``model`` is provider-defined free text but bounded and single-line.
 _MAX_MODEL_CHARS = 200
@@ -139,12 +124,6 @@ def _validate(
         raise ProviderDefinitionError(f"protocol must be one of {PROTOCOLS}")
     # Access-method / protocol coherence — a descriptor cannot name an executor
     # it could not run.
-    if access_method == "subscription_cli" and protocol not in (
-        *_CLI_PROTOCOLS, *_PACKAGE_PROTOCOLS
-    ):
-        raise ProviderDefinitionError(
-            "subscription_cli requires a cli:* protocol"
-        )
     if access_method == "api_key_http" and protocol not in _HTTP_PROTOCOLS:
         raise ProviderDefinitionError(
             "api_key_http requires a bundled wire dialect ("
@@ -202,11 +181,10 @@ def _write(universe_id: str, rows: list[dict[str, Any]]) -> None:
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            from tinyassets.boxes.layout import BROKER_METADATA_FILE_MODE, BROKER_READ_GID
-
-            # The broker (gid 1102 reader) resolves definitions; nobody else reads them.
-            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
-            os.fchmod(handle.fileno(), BROKER_METADATA_FILE_MODE)
+            # The broker receives its descriptor through _publish_source.
+            # This local copy belongs only to the owner, whose process has no
+            # authority to assign the retired shared broker-reader group.
+            os.fchmod(handle.fileno(), 0o600)
             handle.write(json.dumps(rows, indent=2, sort_keys=True))
             handle.flush()
             os.fsync(handle.fileno())
@@ -264,6 +242,7 @@ def register_definition(
         # sharing this id whose fields no longer content-address it (e.g. a swapped
         # ref) must fail closed, never be returned or rewritten under a trusted id.
         verified = _verified_definition(row)
+        _publish_source(verified)
         if verified.visibility != visibility:
             row["visibility"] = visibility
             _write(universe_id, rows)
@@ -282,8 +261,24 @@ def register_definition(
         created_at=now or _now_iso(),
     )
     rows.append(definition.as_dict())
+    _publish_source(definition)
     _write(universe_id, rows)
     return definition
+
+
+def _publish_source(definition: ProviderDefinition) -> None:
+    if definition.access_method != "api_key_http":
+        return
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
+
+    supervisor = get_supervisor(_store_path(definition.universe_id).parent.parent)
+    if supervisor is None:
+        raise ProviderDefinitionError("the credential broker is not running")
+    BrokerClient(supervisor.socket_path, principal=definition.owner_user_id,
+                 command_center=definition.universe_id, fence=supervisor.fence,
+                 verify_peer=supervisor.verify_broker, timeout=30).publish_model_source(
+                     definition.as_dict())
 
 
 def _verified_definition(

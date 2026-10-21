@@ -16,6 +16,7 @@ import time
 from contextlib import closing
 
 from tinyassets import agent_sessions, bound_requests, turn_interrupt
+from tinyassets.owner_activity import owner_work
 from tinyassets.owner_control import ControlUnavailable, control
 from tinyassets.policy_grants import task_is_current
 from tinyassets.singleton_lock import _lock_fd, _unlock_fd
@@ -174,6 +175,7 @@ def _run(home, payload):
         continuation_task.reset(task_token)
 
 
+@owner_work
 def tick(base):
     """Boot/runtime sweep of homes with protected request state only."""
     import logging
@@ -200,6 +202,16 @@ def tick(base):
                     "('request_wake_dedupe','request_answer_deliveries')"
                 ).fetchone():
                     continue
+            from tinyassets import owner_runtime
+
+            runtime = owner_runtime.current()
+            from tinyassets.api.pending_requests import reconcile_connections
+            from tinyassets.auth.middleware import identity_context
+            from tinyassets.auth.provider import Identity
+
+            with identity_context(Identity(user_id=runtime.principal,
+                    username=runtime.principal, capabilities=["write"])):
+                reconcile_connections(home.name, home)
             recover(home)
         except Exception:
             logging.getLogger(__name__).exception("Request continuation recovery failed")

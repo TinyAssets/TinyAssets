@@ -20,6 +20,7 @@ from typing import Any
 
 from tinyassets.branch_tasks_v2 import DESCRIPTOR_VALIDITY_SECONDS
 from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
+from tinyassets.owner_activity import owner_work
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
 )
@@ -260,7 +261,6 @@ class AssignedQueueConsumer:
         require_process_cloud_admission(surface="owner tick")
         if self._thread is not None:
             return
-        self._scavenge_orphaned_credentials()
         self._retire_fleet_controls()
         self._hold_liveness()
         self._thread = threading.Thread(
@@ -371,17 +371,6 @@ class AssignedQueueConsumer:
         return {"present": True, "alive": alive, "beat_age_s": round(age, 1),
                 "phase": phase, "consec_crashes": 0}
 
-    def _scavenge_orphaned_credentials(self) -> None:
-        """Startup reclamation of orphaned provider-launch-credential dirs a crash left
-        behind, across every serving universe (Codex #4, #2516). Never blocks boot."""
-        from tinyassets.credential_vault import scavenge_orphaned_launch_credentials
-        from tinyassets.provider_serving_binding import list_serving_universes
-
-        try:
-            for universe_id in list_serving_universes(self.base_path):
-                scavenge_orphaned_launch_credentials(self.base_path / universe_id)
-        except Exception:  # noqa: BLE001 - startup reclamation must never block boot
-            logger.exception("assigned queue consumer credential scavenge failed")
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
@@ -420,8 +409,17 @@ class AssignedQueueConsumer:
                     self._last_poll_failed = False
             self._stop.wait(self.poll_seconds)
 
+    @owner_work
     def poll_once(self) -> int:
         """Beat for serving universes, automations, and owner continuations."""
+        try:
+            return self._poll_once()
+        finally:
+            from tinyassets.control_plane.next_wake import report
+
+            report(self.base_path)
+
+    def _poll_once(self) -> int:
 
         # A copied runtime row or cached receipt cannot authorize recovery,
         # automatic work submission or publication of compatible capacity.
@@ -805,6 +803,7 @@ class AssignedQueueConsumer:
             reason,
         )
 
+    @owner_work
     def _run_automations(
         self,
         universe_id: str,

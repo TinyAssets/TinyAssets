@@ -1,0 +1,10 @@
+[Unit]
+Description=Check TinyAssets box store free space
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=box-store-grow.service
+
+[Install]
+WantedBy=timers.target

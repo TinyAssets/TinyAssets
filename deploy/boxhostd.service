@@ -6,15 +6,21 @@ After=var-lib-boxhostd-owners.mount
 ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets/boxhostd
+# BACKUP_DEST only; never the container env file, whose HOME would hide root's rclone config.
+# Optional only for the idle install before the fail-safe deploy renders it.
+EnvironmentFile=-/etc/tinyassets/boxhostd.env
 Type=simple
 ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh
 ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd.py
 Restart=on-failure
 RestartSec=5
 Delegate=yes
+# boxhostd.py moves itself into supervisor before enabling domain controllers.
+# Keep the cgroup tree writable; owner cgroups are siblings of supervisor.
 RuntimeDirectory=tinyassets-boxhostd
 RuntimeDirectoryMode=0755
-MemoryMax=3G
+MemoryMax=7G
 CPUQuota=300%
 TasksMax=5120
 

@@ -22,7 +22,6 @@ from tinyassets.ingestion.canon_names import safe_canon_filename, safe_canon_slu
 from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import (
     premise_from_soul,
-    read_legacy_premise,
     write_universe_soul,
 )
 
@@ -66,7 +65,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
     3. Clear consumed signals.
 
     Gap-filling (fallback when no signals):
-    1. Read the premise (PROGRAM.md) and user direction notes.
+    1. Read the premise (soul.md) and user direction notes.
     2. Scan existing canon files and identify missing topics.
     3. Call the LLM to generate 1-2 new canon documents.
     4. Write generated documents to ``{universe_path}/canon/``.
@@ -103,7 +102,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
     activity_log(state, "Worldbuild: starting cycle")
     update_phase(state, "enrich")
 
-    # --- 0. Auto-generate premise from canon if PROGRAM.md is missing ---
+    # --- 0. Auto-generate premise from canon if soul.md is missing ---
     auto_premise = _maybe_generate_premise(state)
 
     # --- 1. Check for creative signals ---
@@ -250,7 +249,7 @@ def worldbuild(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _maybe_generate_premise(state: dict[str, Any]) -> str:
-    """Auto-generate a premise from canon files if PROGRAM.md is missing.
+    """Auto-generate a premise from canon files if soul.md is missing.
 
     Only fires on the first worldbuild pass (version == 0).  Reads canon
     filenames and a sample of each file, then asks the LLM for a 2-3
@@ -270,7 +269,7 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
 
     universe_dir = Path(universe_path)
     # Skip if premise already exists (on disk or in state)
-    if read_legacy_premise(universe_dir).strip() or premise_from_soul(universe_dir).strip():
+    if premise_from_soul(universe_dir).strip():
         return ""
     existing_premise = state.get("premise_kernel", "")
     if existing_premise and existing_premise.strip():
@@ -331,9 +330,8 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
 
     premise = premise.strip()
 
-    # Write to PROGRAM.md as compatibility mirror and soul.md as intent profile.
+    # soul.md is the durable premise profile.
     try:
-        write_data_path(universe_dir / "PROGRAM.md", premise)
         write_universe_soul(
             universe_dir, purpose=premise, lineage="auto-generated-from-canon",
         )
@@ -342,7 +340,7 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
             len(canon_files), len(premise),
         )
     except OSError as e:
-        logger.warning("Failed to write auto-generated PROGRAM.md: %s", e)
+        logger.warning("Failed to write auto-generated soul.md: %s", e)
         return ""
 
     return premise
@@ -924,13 +922,10 @@ def _generate_canon_documents(state: dict[str, Any]) -> list[str]:
 
 
 def _read_premise(universe_dir: Path, state: dict[str, Any]) -> str:
-    """Read the story premise from PROGRAM.md, soul.md, or state.
+    """Read the story premise from soul.md or state.
 
     Falls back to ``premise_kernel`` in state if the file is missing.
     """
-    content = read_legacy_premise(universe_dir).strip()
-    if content:
-        return content
     content = premise_from_soul(universe_dir).strip()
     if content:
         return content

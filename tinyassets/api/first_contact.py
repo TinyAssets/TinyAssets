@@ -47,12 +47,9 @@ def home_is_complete(base: Path, universe_id: str) -> bool:
 def principal_is_deleted(base: Path, founder: str) -> bool:
     """Whether this principal deleted their account (account-deletion tombstone).
 
-    Read-only and fail-open on a missing table so a pre-migration database still
-    serves. The tombstone is keyed by a one-way digest of the principal, never
-    the principal itself, and is written before the deletion touches anything.
+    Storage failures propagate. The tombstone is keyed by a one-way digest,
+    never the principal itself, and is written before deletion touches anything.
     """
-    import sqlite3
-
     from tinyassets.account_deletion import principal_digest
     from tinyassets.daemon_server import _connect, initialize_author_server
     from tinyassets.principals import named_principal
@@ -60,16 +57,13 @@ def principal_is_deleted(base: Path, founder: str) -> bool:
     subject = named_principal(founder)
     if not subject:
         return False
-    try:
-        initialize_author_server(base)
-        with _connect(base) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM deleted_principals WHERE founder_sub = ?",
-                (principal_digest(subject),),
-            ).fetchone()
-        return row is not None
-    except sqlite3.OperationalError:
-        return False
+    initialize_author_server(base)
+    with _connect(base) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM deleted_principals WHERE founder_sub = ?",
+            (principal_digest(subject),),
+        ).fetchone()
+    return row is not None
 
 
 def ensure_founder_home(base: Path, founder: str) -> str:

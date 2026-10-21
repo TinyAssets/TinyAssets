@@ -9,7 +9,7 @@ name: Build and publish image
 # only when it changes something production runs:
 #
 #   1. `paths:` below is a coarse, cheap pre-filter. It must stay a SUPERSET of
-#      the runtime inputs (tests/test_runtime_paths.py enforces it), so docs,
+#      the runtime inputs, so docs,
 #      specs and tests never even start a run.
 #   2. The `decide` job asks scripts/runtime_paths.py whether the pushed head is
 #      runtime-equivalent to the sha production's receipt names -- judged on
@@ -40,8 +40,10 @@ on:
       # A list-only PR is a real behaviour change for every user on that source
       # kind, so it has to build and deploy like any other. Without this a merged
       # model addition sat in the repo and never reached anyone.
-      - 'models/**'
       - 'scripts/mcp_public_canary.py'
+      - 'scripts/owner_box_canary.py'
+      - 'scripts/roll_owner_boxes.py'
+      - 'scripts/open_router_traffic.py'
       - 'scripts/core_capability_live.py'
       - 'scripts/core_canary_provision.py'
       - 'scripts/core_capability_alert.py'
@@ -60,7 +62,6 @@ on:
       - 'deploy/**'
       # Other Dockerfile COPY sources.
       - 'scripts/_canary_common.py'
-      - 'scripts/codex_cli_smoke.py'
       - 'scripts/check_privileged_chain.py'
       # Host inputs: installed by install-host-services.yml (the RUNTIME_FILES
       # of deploy/install-host-uptime-services.sh, the deploy fence) or, for
@@ -84,6 +85,7 @@ on:
       # deploy-prod.yml runs this on the runner to derive that copy list from
       # the installer. A change to what it ships has to reach a deploy.
       - 'scripts/boxhostd_install_files.py'
+      - 'scripts/host_service_bundle.py'
       # Python the deploy-chain workflows run, and what it imports
       # (scripts/runtime_paths.py python_import_closure).
       - 'scripts/cloud_only_preflight.py'

@@ -503,6 +503,27 @@ def runtime_inputs_from(
 
     manifest = read(HOST_MANIFEST)
     host_files = host_manifest_files(manifest) if manifest is not None else None
+    if (host_files is None and manifest and files is not None
+            and "scripts/host_service_bundle.py" in manifest):
+        # Read the revision's units through the same manifest function as installers.
+        # Image trees already count in full; no need to walk their private imports.
+        try:
+            from scripts.host_service_bundle import service_bundle
+        except ModuleNotFoundError:
+            from host_service_bundle import service_bundle
+
+        services = re.search(r"^SERVICES=\(\s*\n(.*?)^\)", manifest, re.M | re.S)
+        if services:
+            root = Path.cwd()
+            try:
+                host_files = ["scripts/host_service_bundle.py", *service_bundle(
+                    root, [root / "deploy" / name for name in services[1].split()],
+                    source_files=files, read=lambda path: read(path) or "",
+                    stop=lambda path: any(path.startswith(p.rstrip("/") + "/")
+                                          for p in image_sources if not p.endswith(".py")),
+                )]
+            except (ValueError, SyntaxError):
+                host_files = None
     if host_files is None:
         # Cannot tell which scripts the host runs: all of them count.
         paths.append("scripts/")

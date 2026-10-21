@@ -187,14 +187,22 @@ class TurnRequestBudget:
         with self._lock:
             return self._stored("settle", ordinal, outcome)
 
-    def close(self):
+    def _abandon(self):
+        """Drop liveness without accounting IPC from a GC callback.
+
+        The broker reconciles a dead parent lease as closed on its next read.
+        RPC here can reenter ContextVar mutation (including SQLite tracing)
+        while GC interrupts an unrelated ContextVar.set/reset.
+        """
         with self._lock:
             self._closed = True
-            if self._borrowed:
-                return
-            if self._lease is not None:
+            if not self._borrowed and self._lease is not None:
                 self._lease.close()
-            if self._store is not None:
+
+    def close(self):
+        with self._lock:
+            self._abandon()
+            if not self._borrowed and self._store is not None:
                 return self._stored("close")
 
     def receipt(self):
@@ -324,7 +332,7 @@ class _RunRequestFamily:
         self.members = set()
         self.creator_pid = os.getpid()
 
-    def release(self, member):
+    def release(self, member, *, abandoned=False):
         # A forked child cannot close its parent process's durable allocation.
         if os.getpid() != self.creator_pid:
             return
@@ -336,7 +344,10 @@ class _RunRequestFamily:
         # GC can release an allocation while another budget lock is held.
         # Never nest the family lock with budget / persistence locks.
         if close_root:
-            self.budget.close()
+            if abandoned:
+                self.budget._abandon()
+            else:
+                self.budget.close()
 
 
 class RunRequestAllocation:
@@ -362,7 +373,7 @@ class RunRequestAllocation:
             if _parent is not None and _parent not in family.members:
                 raise ProviderAuthorityHeldError("the parent run's allocation is already released")
             family.members.add(self._member)
-        self._release = weakref.finalize(self, family.release, self._member)
+        self._release = weakref.finalize(self, family.release, self._member, abandoned=True)
 
     @property
     def budget(self):
@@ -372,7 +383,8 @@ class RunRequestAllocation:
         return RunRequestAllocation(self.budget, _family=self._family, _parent=self._member)
 
     def close(self):
-        self._release()
+        if self._release.detach() is not None:
+            self._family.release(self._member)
 
 
 def selection_is_free(selection):

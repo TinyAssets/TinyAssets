@@ -1,16 +1,16 @@
-"""DA1: the broker-private, append-only center admission log and its IPC op."""
-import os
+"""C11: the real broker admits owners without shared center state."""
+
 import socket
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from tests.test_broker_server import broker  # noqa: F401 - real Unix server fixture
+from tests.support.admission import drive, projection
+from tests.test_broker_server import broker  # noqa: F401
 from tinyassets import rpc_frames as rf
-from tinyassets.broker.owner_identities import AdmissionRow, OwnerIdentities
-
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX identity storage")
+from tinyassets.broker.admission import local_mutate, read
+from tinyassets.broker.owner_identities import OwnerIdentities, OwnerIdentity
 
 
 def store(tmp_path, *principals):
@@ -23,102 +23,65 @@ def store(tmp_path, *principals):
 
 def rows(identities):
     with sqlite3.connect(identities.path) as db:
-        return db.execute("SELECT * FROM center_admissions ORDER BY generation").fetchall()
+        assert not db.execute(
+            "SELECT name FROM sqlite_master WHERE name='center_admissions'").fetchall()
+        return db.execute("SELECT * FROM owner_admission ORDER BY digest").fetchall()
 
 
-def test_admit_takes_machine_from_reservation_and_retry_is_idempotent(tmp_path):
+def test_owner_admission_retains_reserved_machine_and_secret_on_retry(tmp_path):
     identities = store(tmp_path, "alice", "bob")
-    first = identities.admission("admit", "bob", "bob-home")
-    assert first == AdmissionRow(1, "admit", "bob", "bob-home", 300002)
-    assert identities.admission("admit", "bob", "bob-home") == first
-    assert identities.center_state("bob-home") == "admitted"
-    assert identities.center_state("never") == "unadmitted"
-    retired = identities.admission("retire", "bob", "bob-home")
-    assert retired == AdmissionRow(2, "retire", "bob", "bob-home", 300002)
-    assert identities.admission("retire", "bob", "bob-home") == retired
-    assert identities.center_state("bob-home") == "retired"
-    assert rows(identities) == [(1, "admit", "bob", "bob-home", 300002),
-                                (2, "retire", "bob", "bob-home", 300002)]
-    assert identities.admission_row(2) == retired
-    assert identities.admission_row(3) is None
-    assert identities.admissions_after(1) == [retired]
-    restarted = OwnerIdentities(identities.path)
-    assert restarted.admissions_after(0) == [first, retired]
+    routing = projection(identities.path)
+    assert drive(identities.admit("bob", routing=routing)) == OwnerIdentity(300002, 300002)
+    before = rows(identities)
+    secret = identities.box_route("bob")
+    assert drive(identities.admit("bob", routing=routing)) == OwnerIdentity(300002, 300002)
+    assert rows(identities) == before
+    assert OwnerIdentities(identities.path).box_route("bob") == secret
+    assert read(identities, "alice").state == "absent"
+    assert read(identities, "bob").state == "admitted"
 
 
-def test_every_refusal_appends_nothing(tmp_path):
-    identities = store(tmp_path, "alice", "bob")
-    identities.admission("admit", "alice", "shared")
-    refusals = [
-        (PermissionError, ("admit", "bob", "shared")),        # another principal
-        (PermissionError, ("retire", "bob", "shared")),
-        (LookupError, ("admit", "carol", "carol-home")),      # no reservation
-        (LookupError, ("retire", "alice", "never-admitted")),
-        (ValueError, ("grant", "alice", "other")),
-        (ValueError, ("admit", "alice", "../escape")),
-        (ValueError, ("admit", "alice", ".")),
-        (ValueError, ("admit", "alice", "x" * 129)),
-        (ValueError, ("admit", " alice", "other")),
-    ]
-    for error, arguments in refusals:
-        with pytest.raises(error):
-            identities.admission(*arguments)
-    identities.admission("retire", "alice", "shared")
-    with pytest.raises(PermissionError, match="never admitted again"):
-        identities.admission("admit", "alice", "shared")
-    assert len(rows(identities)) == 2
-    with pytest.raises(LookupError):
-        identities.resolve("carol")  # an admission never allocates
-
-
-def test_log_is_append_only(tmp_path):
+def test_missing_invalid_and_erased_owners_refuse_without_mutation(tmp_path):
     identities = store(tmp_path, "alice")
-    identities.admission("admit", "alice", "home")
-    with sqlite3.connect(identities.path) as db:
-        for statement in ("DELETE FROM center_admissions",
-                          "UPDATE center_admissions SET machine=300009"):
-            with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-                db.execute(statement)
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute("INSERT INTO center_admissions (event, principal, center, machine) "
-                       "VALUES ('admit', 'alice', 'home', 300001)")
+    routing = projection(identities.path)
+    for principal in ("", " alice", "never-allocated"):
+        before = rows(identities)
+        with pytest.raises((ValueError, LookupError)):
+            drive(identities.admit(principal, routing=routing))
+        assert rows(identities) == before
+    drive(identities.admit("alice", routing=routing))
+    drive(local_mutate(identities.path, "alice", "erase", routing=routing))
+    before = rows(identities)
+    with pytest.raises(PermissionError):
+        drive(identities.admit("alice", routing=routing))
+    assert rows(identities) == before
 
 
-def test_concurrent_writers_serialize_to_one_owner_per_center(tmp_path):
+def test_concurrent_writers_keep_one_record_per_owner(tmp_path):
     names = [f"user{index}" for index in range(8)]
     identities = store(tmp_path, *names)
-
-    def admit(job):
-        principal, center = job
-        try:
-            return identities.admission("admit", principal, center)
-        except PermissionError:
-            return None
-
-    jobs = [(name, f"{name}-home") for name in names] * 4 + [(name, "contested") for name in names]
+    def admit(owner):
+        return drive(identities.admit(owner, routing=projection(identities.path)))
     with ThreadPoolExecutor(max_workers=16) as pool:
-        results = list(pool.map(admit, jobs))
-    winners = {row.principal for row in results if row and row.center == "contested"}
-    assert len(winners) == 1
-    table = rows(identities)
-    assert [row[0] for row in table] == list(range(1, 10))
-    assert len({row[3] for row in table}) == 9
+        results = list(pool.map(admit, names * 4))
+    assert len(rows(identities)) == 8
+    assert len(set(results)) == 8
+    assert results[:8] == results[8:16] == results[16:24] == results[24:]
 
 
 def test_missing_map_refuses_and_is_never_created(tmp_path):
     identities = store(tmp_path, "alice")
     identities.path.unlink()
     with pytest.raises(sqlite3.OperationalError):
-        identities.admission("admit", "alice", "home")
+        drive(identities.admit("alice", routing=projection(identities.path)))
     with pytest.raises(sqlite3.OperationalError):
-        identities.center_state("home")
+        identities.resolve("alice")
     assert not identities.path.exists()
 
 
-def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argument
-    document = {"op": "CENTER_ADMISSION", "event": "admit", "principal": "alice",
-                "center": "alice-home", "generation": broker.state["generation"],
-                "token": broker.state["token"]}
+def request(broker, **changes):  # noqa: F811
+    document = {"op": "ADMIT_OWNER", "principal": "alice",
+                "generation": broker.state["generation"], "token": broker.state["token"]}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         channel.settimeout(5)
         channel.connect(str(broker.path))
@@ -126,34 +89,22 @@ def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argum
         return rf.read_frame_blocking(channel).control()
 
 
-def test_owner_channel_admission_retry_and_refusals(broker, tmp_path):  # noqa: F811
-    refused = {"op": "CENTER_ADMISSION_REFUSED"}
-    assert request(broker) == refused  # no map is never initialized at runtime
+def test_owner_admission_rpc_has_no_center_or_machine_selector(broker, tmp_path):  # noqa: F811
+    refused = {"op": "OWNER_ADMIT_REFUSED"}
+    broker.server._owner_identities = None
+    assert request(broker) == refused
     identities = store(tmp_path, "alice")
     broker.server._owner_identities = identities
+    broker.server._routing = projection(identities.path)
     for changes in ({"token": "stale"}, {"generation": True}, {"machine": 300001},
                     {"uid": 300001}, {"path": "/data/alice-home"},
-                    {"principal": "bob"}, {"center": "../x"}, {"event": 1}):
+                    {"principal": "bob"}, {"center": "x"}, {"event": "retire"}):
         assert request(broker, **changes) == refused
-    # D218 retires a tree-less center only when the log admitted it.
-    assert request(broker, event="retire") == {"op": "CENTER_ADMISSION_UNADMITTED"}
-    assert request(broker, event="retire", token="stale") == refused
     assert rows(identities) == []
-    first = {"op": "CENTER_ADMISSION_IS", "generation": 1, "machine": 300001}
-    assert request(broker) == first
-    assert request(broker) == first  # a lost acknowledgement is safe to retry
-    assert request(broker, event="retire") == dict(first, generation=2)
-    assert request(broker) == refused
+    expected = {"op": "OWNER_ADMIT_IS", "machine": 300001}
+    assert request(broker) == expected
+    assert request(broker) == expected
+    assert len(rows(identities)) == 1
 
 
-def test_client_distinguishes_a_never_admitted_retire(monkeypatch, tmp_path):
-    from tinyassets.broker import owner_identities
-
-    answers = iter([{"op": "CENTER_ADMISSION_UNADMITTED"}, {"op": "CENTER_ADMISSION_REFUSED"}])
-    monkeypatch.setattr(owner_identities, "_owner_request", lambda root, doc: next(answers))
-    with pytest.raises(owner_identities.CenterUnadmitted):
-        owner_identities.center_admission(tmp_path, event="retire", principal="alice",
-                                          center="alice-home")
-    with pytest.raises(RuntimeError, match="refused"):
-        owner_identities.center_admission(tmp_path, event="retire", principal="alice",
-                                          center="alice-home")
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C11')

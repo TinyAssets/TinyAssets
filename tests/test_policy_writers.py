@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,3 +31,6 @@ def test_policy_writers():
                     and relative != "tinyassets/onboarding/__init__.py"):
                 raise AssertionError(f"non-owner policy write: {relative}:{call.lineno}")
     assert "policy:write" not in (ROOT / "tinyassets/ta_capabilities.py").read_text()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C8')

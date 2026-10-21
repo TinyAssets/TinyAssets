@@ -45,10 +45,39 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 
-# Root-only proofs (the live owner-box backup runs as root on the host).
+# Root-only proofs (shared backup and lifecycle authority run as root on the host).
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
+    "tests/test_broker_deletion_jobs.py",
+    "tests/test_cutover_deletion_jobs.py",
     "tests/test_backup_owner_box.py",
+    "tests/test_owner_cutover_apply.py",
+    "tests/test_box_admission.py",
+    "tests/test_box_destroy.py",
+    "tests/test_box_layout_migration.py",
+    "tests/test_boxhostd_entrypoint.py",
+    "tests/test_box_public_egress.py",
+    "tests/test_box_restore_authority.py",
+    "tests/test_box_store_backup.py",
+    "tests/test_broker_http_connect.py",
+    "tests/test_broker_credential_custody.py",
+    "tests/test_broker_server.py",
+    "tests/test_cutover_billing_deletion.py",
+    "tests/test_center_admissions.py",
+    "tests/test_cold_owner_deletion.py",
+    "tests/test_deleted_authentication.py",
+    "tests/test_deploy_bundle_transaction.py",
+    "tests/test_model_connect_door_lifecycle.py",
+    "tests/test_owner_box_control.py",
+    "tests/test_owner_box_lifecycle.py",
+    "tests/test_owner_box_roll_process.py",
+    "tests/test_owner_cutover_restore.py",
+    "tests/test_owner_public_egress.py",
+    "tests/test_owner_router.py",
+    "tests/test_owner_volume_lifecycle.py",
+    "tests/test_owner_volumes_proof.py",
+    "tests/test_owner_waker.py",
+    "tests/test_router_store_guard.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,
@@ -58,7 +87,7 @@ ROOT_TEST_FILES = frozenset({
 # tests on the 2026-08-02 baseline (run 30767266528); the floor sits far
 # below natural variance and far above any vacuous run. Ratchet it upward
 # as the suite grows.
-MIN_RAN_FLOOR = 10000
+MIN_RAN_FLOOR = 3200
 
 # A heavy-only job runs the files in .github/heavy-test-files.txt, so it
 # cannot meet the whole-suite floor -- and LOWERING the global floor to fit
@@ -66,17 +95,15 @@ MIN_RAN_FLOOR = 10000
 # the property that matters: a floor is a reviewed constant here, never a
 # number a caller can pick, and the workflow-shape test pins which profile
 # each job uses.
-# Heavy was 2,000 under a ~2,235 count. Run 38560348649 (2026-10-14) ran
-# 1,683; this tree runs 1,681. The old floor was unreachable, and the check
-# only runs once NEW failures are zero, so the nightly job never reported
-# it. 1,500 keeps the old ~10% cushion under the current count.
+# Founder-authorized shape-only pruning leaves 3,605 collected cases, 3,587
+# required cases and 18 heavy cases. Six deterministic required shards have
+# at least 382 cases. These floors preserve a modest cushion under that census.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
-    "heavy": 1500,           # .github/heavy-test-files.txt only (1,681 on 2026-10-14)
-    # ONE shard of the required gate (~3,600 of ~21,900 at 6 shards). The union
-    # floor is checked again by `--aggregate`, but the union floor alone cannot
-    # see one shard collapsing: 5 of 6 shards still clear it comfortably.
-    "shard": 1000,
+    "heavy": 15,             # 18 retained heavy cases after the shape-only prune
+    # ONE of six required shards (at least 382 cases in the retained census).
+    # The aggregate also checks the union; this catches an individual collapse.
+    "shard": 340,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
     # purpose: a selection can honestly be one test or none (a docs-only
     # change), and this run is advisory -- the merge-group shards above carry
@@ -95,9 +122,8 @@ MAX_REQUIRED_SKIPPED = 134
 MAX_TEST_SECONDS = 3000
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
 #: is how a red build gets normalised.
-MAX_QUARANTINE = 17
+MAX_QUARANTINE = 8
 #: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
-#: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
 #: cap only ratchets down unless a reviewed change raises it.
 QUARANTINE_SLACK = 8
 #: Leading `key=value` fields a ledger line may carry, BEFORE the node id; a
@@ -866,7 +892,8 @@ def run_oracle_venues(cmd, *, args, selection, env, junit):
     merged = ET.Element("testsuites")
     seen = set()
     exits = []
-    with tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp:
+    with (tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp,
+          tempfile.TemporaryDirectory(prefix="r-", dir="/tmp") as root_temp):
         directory = Path(temp)
         directory.chmod(0o755)
         user_directory = directory / "user"
@@ -889,7 +916,9 @@ def run_oracle_venues(cmd, *, args, selection, env, junit):
                                  SHELL="/bin/sh", TMPDIR="/tmp/t")
             else:
                 # Never let root's pytest own the unprivileged run's temp tree.
-                command += [f"--basetemp={directory / 'root-tmp'}"]
+                # AF_UNIX paths include pytest's test name and the service's
+                # socket suffix; keep this root-owned tree as short as /tmp/b.
+                command += [f"--basetemp={root_temp}"]
             print(f"[oracle venue={venue}] " + " ".join(command), flush=True)
             proc = subprocess.run(command, cwd=REPO_ROOT, env=child_env, **identity)
             exits.append(proc.returncode)

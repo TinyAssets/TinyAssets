@@ -1,26 +1,4 @@
-"""One owner's own record of the model ids that have worked for them.
-
-PERSONAL, and personal forever. A model id an owner typed and successfully used stays
-on that owner's list and is never shared with anyone (founder, 2026-09-26). That single
-rule is what makes this store safe, and it is why it is much smaller than it was:
-
-* An account-bearing selector -- a Bedrock ARN with an account number in it, a personal
-  deployment name -- can never leak, because nothing here is ever published.
-* There is no cross-user table, no attestation, no confirmers, no pending state and no
-  threshold. Three earlier designs tried to decide whether an id was safe to share:
-  a charset (admitted ARNs, rejected real selectors), a distinct-owner threshold (two
-  colleagues share one org's private id), and attestation plus peer confirmation
-  (worked, but over-built for the problem). Sharing now happens somewhere else
-  entirely, and by people: a reviewed file in the repo, see
-  ``tinyassets/providers/public_model_lists.py``.
-
-Why it exists at all: a source with no list-models endpoint offers only what its owner
-typed, so without this an id that demonstrably worked vanished from the owner's own
-picker the moment they stopped declaring it.
-
-A row here is evidence an id WORKED FOR THIS OWNER, never permission to use it.
-Serving still requires that universe's accepted model access.
-"""
+"""Private per-owner history of models successfully called through broker HTTP."""
 
 from __future__ import annotations
 
@@ -55,9 +33,8 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_source_evidence (
 COLUMNS = ("source_kind", "provider_ref", "model_id", "owner_user_id",
            "first_verified_at")
 
-#: The source KIND a native (subscription CLI) connection reports. One definition,
-#: read by the writer and the reader, so they cannot disagree about what a kind is.
-LEARNED_SOURCE_KIND = "subscription"
+#: Model inference uses the broker HTTP connection path.
+LEARNED_SOURCE_KIND = "http"
 
 #: An id THIS owner has made work here. Distinct from a publicly listed id, because
 #: "you have run this" and "this is on the public list" are different claims and the
@@ -94,39 +71,6 @@ def _clean(value: object, field: str) -> str:
 def _stamp(now: datetime | None) -> str:
     value = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def _attribute_legacy(conn: sqlite3.Connection, owner: str) -> None:
-    """Copy attributable history without changing the old writer's four-column table."""
-    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
-
-    services = set()
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                    "AND name = 'llm_credential_deposit_owners'").fetchone():
-        services = {row[0] for row in conn.execute(
-            "SELECT DISTINCT service FROM llm_credential_deposit_owners "
-            "WHERE owner_user_id = ?", (owner,))}
-    providers = {provider for provider, service in _PROVIDER_SERVICE.items()
-                 if service in services}
-    subscription = next(iter(providers)) if len(providers) == 1 else None
-    for row in conn.execute(
-        "SELECT source_kind, model_id, first_verified_at "
-        "FROM learned_model_evidence WHERE owner_user_id = ?", (owner,)
-    ):
-        kind = row["source_kind"]
-        if kind.startswith("agent_"):
-            provider = kind.removeprefix("agent_").replace("_", "-") or None
-        elif kind == LEARNED_SOURCE_KIND:
-            provider = subscription
-        else:
-            provider = None
-        if provider is not None:
-            conn.execute(
-                "INSERT OR IGNORE INTO learned_model_source_evidence "
-                "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (kind, provider, row["model_id"], owner, row["first_verified_at"]),
-            )
 
 
 class OwnModelHistory:
@@ -172,7 +116,6 @@ class OwnModelHistory:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(_LEGACY_SCHEMA)
             conn.execute(_SCHEMA)
-            _attribute_legacy(conn, owner)
             added = conn.execute(
                 "INSERT OR IGNORE INTO learned_model_source_evidence "
                 "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
@@ -205,7 +148,6 @@ class OwnModelHistory:
                 return []
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(_SCHEMA)
-            _attribute_legacy(conn, owner)
             rows = conn.execute(
                 "SELECT source_kind, provider_ref, model_id, first_verified_at "
                 "FROM learned_model_source_evidence "

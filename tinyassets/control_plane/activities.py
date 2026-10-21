@@ -24,6 +24,7 @@ from pathlib import Path
 
 from tinyassets import activity_runner as runner
 from tinyassets import agent_activities as activities
+from tinyassets.owner_activity import owner_work
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,7 @@ def _dispatch_universe(base_path: Path, universe_id: str, budget: list[int] | No
                              universe_id, activity_id)
 
 
+@owner_work
 def dispatch_all(base_path: str | Path, *, starts: int = STARTS_PER_TICK) -> None:
     """Every universe that has an activity store, within one tick's budget."""
     base_path = Path(base_path)
@@ -187,6 +189,7 @@ def dispatch_all(base_path: str | Path, *, starts: int = STARTS_PER_TICK) -> Non
             logger.exception("activity dispatch failed universe=%s", universe_id)
 
 
+@owner_work
 def tick_in_background(base_path: str | Path) -> bool:
     """Run one ``dispatch_all`` off the caller's thread; skipped while the last
     one is still going. The consumer's tick never waits on activities."""

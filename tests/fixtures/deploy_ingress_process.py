@@ -4,6 +4,7 @@ Only this Linux fixture enables AppAcceptance. Lifespan is off: the independent
 frontend must not start the execution owner's schedulers, reconciliation or LLM.
 """
 
+import os
 import socket
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 from tests.fixtures.deploy_traffic_acceptance import SCOPE
+from tests.owner_app_fixture import create_owner_app
 from tinyassets.auth.provider import Identity
 
 
@@ -51,16 +53,25 @@ def policy(scope, payload):
 
 
 def main():
-    from tinyassets import origin_admission, universe_server
+    from tinyassets import origin_admission
     from tinyassets.auth import middleware
     from tinyassets.ingress import AppAcceptance
 
     root = Path(sys.argv[1])
+    runtime = root / "runtime"
+    os.environ["TINYASSETS_DATA_DIR"] = str(runtime)
+    from tests.support.broker_double import _Registry, seed_owner_admission
+    from tinyassets.broker import supervisor
+
+    seed_owner_admission(runtime, principal=SCOPE.principal_id, center=SCOPE.command_center_id)
+    brokers = _Registry()
+    supervisor.get_supervisor = brokers.supervisor_for
+    brokers.supervisor_for(runtime)  # C5 startup installs the snapshot before serving.
     listener = socket.socket(fileno=int(sys.argv[2]))
     middleware.set_provider(FixtureAuth())
     # Isolated observation ONLY; never an environment bypass in product code.
     origin_admission.cached_process_is_cloud_admitted = lambda: True
-    app = universe_server.create_streamable_http_app(ingress=AppAcceptance(
+    app = create_owner_app(ingress=AppAcceptance(
         root / "runtime", root / "ingress", admission_policy=policy,
     ))
 
@@ -68,7 +79,11 @@ def main():
         return HTMLResponse('<textarea id="draft"></textarea><output id="status"></output>')
 
     app.routes.insert(0, Route("/fixture-browser", page))
-    uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="info")).run(sockets=[listener])
+    try:
+        config = uvicorn.Config(app, lifespan="off", log_level="info")
+        uvicorn.Server(config).run(sockets=[listener])
+    finally:
+        brokers.close()
 
 
 if __name__ == "__main__":

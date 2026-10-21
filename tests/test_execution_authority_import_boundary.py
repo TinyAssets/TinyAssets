@@ -42,3 +42,6 @@ def test_authority_core_cannot_import_operational_adapters() -> None:
             if imported.startswith(forbidden):
                 offenders.append(f"{path.name}: {imported}")
     assert offenders == []
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

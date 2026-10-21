@@ -124,6 +124,86 @@
 #      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
 #      clears it. On `rollback_needs_restore` the daemon is left stopped.
 set -uo pipefail
+
+# The disposable archive harness calls this exact container builder. Normal
+# deployments use its fixed production defaults and never enable fault injection.
+box_migration_container() {  # $1 = check|preflight|apply, then module arguments
+  local posture=(--user 0)
+  local data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data:ro"
+  local extra=()
+  local network=none
+  if [ "$1" != "check" ]; then
+    local store_device
+    store_device="${BOX_MIGRATION_DEVICE:-$(findmnt --mountpoint "${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners}" -no SOURCE)}" || return 1
+    if [[ "$store_device" != /dev/* ]] || { [ "${BOX_MIGRATION_DISPOSABLE:-0}" != 1 ] && [ ! -b "$store_device" ]; }; then
+      err "box migration: owner store has no block device: ${store_device}"
+      return 1
+    fi
+    # Preflight only reads (DAC_OVERRIDE) and queries quotas (SYS_ADMIN);
+    # ownership and mode capabilities belong to apply alone.
+    posture=(--user 0 --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
+    extra=(--device "${store_device}:${store_device}:r")
+    if [ "$1" = "apply" ] || [ "$1" = "verify" ]; then
+      # C1/T4: this one-shot exception formats and attaches owner volumes in
+      # the container's mount namespace; application containers never do so.
+      posture=(--user 0 --privileged)
+      extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+        --mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store)
+      if [ "$1" = "apply" ]; then
+        data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
+      fi
+      if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ]; then
+        # Synthetic remote, preserved across disposable migration containers.
+        extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots" \
+          -e BACKUP_DEST=:local:/snapshots/owner-snapshots)
+      else
+        local snapshot_dest
+        snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
+        extra+=(-e "BACKUP_DEST=$snapshot_dest" \
+          -v /root/.config/rclone:/root/.config/rclone:ro)
+        [ "$1" != "apply" ] || network=bridge
+      fi
+    else
+      extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
+    fi
+  fi
+  # Override even an image-baked ENV. Only the explicit disposable entry point
+  # can forward a fault; ordinary deployment refuses it before any host action.
+  local crash=""
+  if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ] && [ "$1" = apply ]; then
+    crash="${CUTOVER_CRASH_AT:-}"
+  fi
+  extra+=(-e "CUTOVER_CRASH_AT=$crash")
+  timeout "${MIGRATION_TIMEOUT:-1800}" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
+    --security-opt no-new-privileges=true --network "$network" --memory=2g --memory-swap=2g \
+    --tmpfs /tmp:rw,size=512m,mode=1777 \
+    -v "$data_mount" ${extra[@]+"${extra[@]}"} \
+    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
+}
+if [ "${1:-}" = --box-migration-container ]; then
+  [ "$#" -ge 7 ] || exit 2
+  BOX_MIGRATION_DISPOSABLE=1
+  BOX_MIGRATION_DATA="$2" BOX_MIGRATION_STORE="$3" BOX_MIGRATION_DEVICE="$4"
+  MIGRATION_BACKUP_DIR="$5" NEW_IMAGE="$6"
+  if [ -n "${CUTOVER_CRASH_AT:-}" ]; then
+    # Faults are admitted only for the harness's generated volume family,
+    # never arbitrary host paths supplied to this shared runner.
+    if ! [[ "$BOX_MIGRATION_DATA" =~ ^ta-s6-[0-9a-f]{12}-data$ ]] ||
+       [ "$BOX_MIGRATION_STORE" != "$(docker volume inspect --format '{{ .Mountpoint }}' "${BOX_MIGRATION_DATA%-data}-store")" ] ||
+       [ "$MIGRATION_BACKUP_DIR" != "$(docker volume inspect --format '{{ .Mountpoint }}' "${BOX_MIGRATION_DATA%-data}-backup")" ]; then
+      echo 'rehearsal fault requires disposable volumes' >&2
+      exit 1
+    fi
+  fi
+  shift 6
+  box_migration_container "$@"
+  exit $?
+fi
+if [ -n "${CUTOVER_CRASH_AT:-}" ]; then
+  echo 'deploy refused: rehearsal fault injection is forbidden' >&2
+  exit 1
+fi
+unset BOX_MIGRATION_DISPOSABLE BOX_MIGRATION_DATA BOX_MIGRATION_STORE BOX_MIGRATION_DEVICE
 # Freshness of the pre-move snapshot is measured from this process, not from
 # an earlier repair. A backup whose name is older than this epoch is not proof.
 DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
@@ -373,7 +453,13 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image;
   dir="$(dirname "$marker")"
   [ -d "$dir" ] || return 1
   (
-    exec 8>>"$dir/.layout.lock" || exit 1
+    # Avoid O_CREAT on a service-owned lock under the root-sticky data root
+    # (fs.protected_regular); create only absent legacy/fresh-install locks.
+    if [[ ! -e "$dir/.layout.lock" ]]; then
+      (set -o noclobber; : > "$dir/.layout.lock") || exit 1
+    fi
+    [[ -f "$dir/.layout.lock" && ! -L "$dir/.layout.lock" ]] || exit 1
+    exec 8<"$dir/.layout.lock" || exit 1
     flock -s -n 8 || exit 1
     python3 - "$marker" "$supported" "$cutover" <<'CANDIDATE_LAYOUT_PY'
 import json
@@ -415,7 +501,7 @@ CANDIDATE_LAYOUT_PY
 refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
   local why
   if [ $# -ge 2 ]; then why="$2"; else
-    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. For pre-traffic rollback use deployment-owned cutover_control and its recorded backup/image; after traffic use independent platform recovery (deploy/RESTORE.md)"
   fi
   err "$why"
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
@@ -1645,6 +1731,18 @@ log "candidate box layout: ${BOX_CANDIDATE_LAYOUT}"
 # #4920 installs the static box harness before an owner-box move. The call is
 # below, after the canary gate and the in-flight proof, so a deploy that must
 # not move data never writes the harness. A rollback does not install it.
+extract_box_harness() {  # production image tar on stdin; $1 stage, $2 image ID
+  local stage="$1" image_id="$2"
+  tar -x -C "$stage" || return 1
+    # The box sees no platform volume roots. /home/owner and /tmp are mounted
+    # by runsc; root changes use its 256 MiB memory overlay, not the host disk.
+    rm -rf -- "$stage/data" "$stage/.broker" "$stage/.platform" "$stage/.runtime" || return 1
+    mkdir -p "$stage/home/owner" "$stage/tmp" "$stage/run/boxhostd" || return 1
+    printf '%s\n' "$image_id" > "$stage/.box-image-id" || return 1
+    find -P "$stage" -xdev \( -type d -o -type f \) -exec chmod a-w {} + || return 1
+    # mktemp creates 0700; tar exports need not contain an entry for / itself.
+    chmod 0555 "$stage" || return 1
+}
 install_box_harness() {  # $1 = immutable image; install static rootfs, no owner data
   local image="$1" image_id root target stage container target_name
   root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
@@ -1657,21 +1755,16 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
     container="$(docker create --network none --entrypoint /bin/true "$image")" || {
       rmdir "$stage"; return 1;
     }
-    if ! docker export "$container" | tar -x -C "$stage"; then
+    if ! docker export "$container" | extract_box_harness "$stage" "$image_id"; then
       docker rm "$container" >/dev/null 2>&1 || true
       rm -rf -- "$stage"
       return 1
     fi
     docker rm "$container" >/dev/null || return 1
-    # The box sees no platform volume roots. /home/owner and /tmp are mounted
-    # by runsc; root changes use its 256 MiB memory overlay, not the host disk.
-    rm -rf -- "$stage/data" "$stage/.broker" "$stage/.platform" "$stage/.runtime"
-    mkdir -p "$stage/home/owner" "$stage/tmp" "$stage/run/boxhostd"
-    printf '%s\n' "$image_id" > "$stage/.box-image-id"
-    find -P "$stage" -xdev \( -type d -o -type f \) -exec chmod a-w {} +
     mv -- "$stage" "$target" || return 1
   fi
   [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
+  chmod 0555 "$target" || return 1
   [ ! -e "$target/data" ] && [ ! -e "$target/.broker" ] && \
     [ ! -e "$target/.platform" ] && [ ! -e "$target/.runtime" ] || return 1
   ln -s "$target_name" "${root}/.harness-current.$$" || return 1
@@ -1763,8 +1856,10 @@ migration_snapshot() {  # prints the archive name backup.sh took
   fi
   printf '%s\n' "$id"
 }
-migration_restore_command() {  # the exact remedy for the snapshot this run took
-  printf 'restore it with: BACKUP_FILE=%s/%s sudo bash deploy/backup-restore.sh' "$MIGRATION_BACKUP_DIR" "$MIGRATION_SNAPSHOT"
+migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic eligibility only
+  printf 'rollback through deployment control: sudo env PYTHONPATH=%q python3 -m tinyassets.cutover_control rollback --state %q --data "$(docker volume inspect tinyassets-data --format '\''{{ .Mountpoint }}'\'')" --deploy-script %q' \
+    "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+    "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")"
 }
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
@@ -1961,38 +2056,9 @@ rm -f "$MIGRATION_DETAIL_FILE"
 # candidate does not apply the cutover: only rc 10 (stable owner-split) continues.
 # rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
 # rc 0 on that candidate is a conflict. An owner-box candidate applies on
-# rc 10 after a fresh verified paired snapshot: either the one-shot box move
-# or the one-time legacy Activities cutover within an already committed box layout.
-box_migration_container() {  # $1 = check|preflight|apply, then module arguments
-  local posture=(--user 0)
-  local data_mount="tinyassets-data:/data:ro"
-  local extra=()
-  if [ "$1" = "apply" ] || [ "$1" = "preflight" ]; then
-    local store_device
-    store_device="$(findmnt --mountpoint /var/lib/boxhostd/owners -no SOURCE)" || return 1
-    if [[ "$store_device" != /dev/* || ! -b "$store_device" ]]; then
-      err "box migration: owner store has no block device: ${store_device}"
-      return 1
-    fi
-    # Preflight only reads (DAC_OVERRIDE) and queries quotas (SYS_ADMIN);
-    # ownership and mode capabilities belong to apply alone.
-    posture=(--user 0 --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
-    extra=(--device "${store_device}:${store_device}:r")
-    if [ "$1" = "apply" ]; then
-      posture+=(--cap-add CHOWN --cap-add FOWNER --cap-add FSETID)
-      data_mount="tinyassets-data:/data"
-      extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
-        --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
-    else
-      extra+=(--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store,readonly)
-    fi
-  fi
-  timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
-    --security-opt no-new-privileges=true --network none --memory=2g --memory-swap=2g \
-    --tmpfs /tmp:rw,size=512m,mode=1777 \
-    -v "$data_mount" ${extra[@]+"${extra[@]}"} \
-    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
-}
+# rc 10 after a fresh verified paired snapshot: the single owner-daemon
+# transaction. A committed final layout is never migrated a second time.
+
 if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
   box_probe="$(box_migration_container check /data 2>&1)"
   box_probe_rc=$?
@@ -2054,16 +2120,36 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
             migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
           fi
-          log "box layout: applying one-time box or activity cutover using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
+          log "box layout: applying one-time owner-daemon cutover using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
+          box_detail="$(box_migration_container census /data 2>&1)"
+          if [ "$?" -ne 0 ]; then
+            migration_refused "check=owner_cutover_census ready=no"
+          fi
+          # The shared integrity policy reports repairable index drift in census.
+          # Apply repairs only named indexes after this stopped, verified pair,
+          # rechecks integrity and records each repair in the cutover report.
+          # C4: only this stopped, verified cutover may create eligibility.
+          # An existing directory (including an interrupted initialization)
+          # refuses: a workflow restart never recreates pre_traffic.
+          PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+            python3 -m tinyassets.cutover_control initialize \
+            --state "${BUNDLE_STATE_DIR}/cutover" \
+            --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" \
+            --old-image "$PREV_IMAGE" || migration_refused "check=cutover_eligibility"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
             --box-backup "/backup/${box_backup}" 2>&1)"
           box_apply_rc=$?
           [ -z "$box_apply" ] || printf '%s\n' "$box_apply"
           if [ "$box_apply_rc" -eq 0 ]; then
+            box_verify="$(box_migration_container verify /data --store /box-store 2>&1)"
+            box_apply_rc=$?
+          fi
+          if [ "$box_apply_rc" -eq 0 ]; then
             MIGRATION_COMMITTED=1
             log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
+            echo "cutover_admission_pending=true"
             if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
               MIGRATION_OK=0
               err "boxhostd could not start on the committed layout; $(migration_restore_command)"
@@ -2165,7 +2251,7 @@ fi
 # A committed or unverifiable move cannot safely start the previous image.
 # The snapshot step 3c took is the rollback point.
 if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
-  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
+  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command)"
 fi
 # The failed candidate may have migrated (or begun migrating) the data while it
 # booted: re-check before the previous image starts on it.

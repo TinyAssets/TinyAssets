@@ -1,56 +1,8 @@
 #!/usr/bin/env bash
-# backup.sh — nightly snapshot of the tinyassets-data named volume.
-#
-# Self-host migration Row J per
-# openspec/specs/uptime-and-alarms/spec.md.
-#
-# Two tiers per run (2026-06-10 redesign — see
-# docs/ops/backup-restore-runbook.md "Two-tier design"):
-#
-#   1. BRAIN tier (strict): wiki/, daemon_wikis/, top-level ledgers and
-#      SQLite DBs, staged to a quiesced temp dir with SQLite files copied
-#      through python3's sqlite3 backup API for transactional consistency.
-#      Small (MBs). This archive MUST succeed — it carries the
-#      irreplaceable knowledge state.
-#   2. FULL tier (best-effort): whole-volume tar including multi-GB
-#      rebuildable LanceDB indexes, taken live. GNU tar exit 1 ("file
-#      changed as we read it") is EXPECTED on a hot volume and tolerated;
-#      exit >= 2 is fatal. Before 2026-06-10 this exit-1 case failed the
-#      whole unit nightly and silently starved the offsite history.
-#
-# Retention: 7 daily + 4 weekly + 6 monthly per tier, pruned at the end
-# of each run (scripts/backup_prune.py).
-#
-# Triggered by tinyassets-backup.service (systemd oneshot) from
-# tinyassets-backup.timer (nightly 03:00 UTC).
-#
-# Required env (from /etc/tinyassets/env, sourced by the systemd unit):
-#   BACKUP_DEST   rclone destination URL, e.g.:
-#                   s3://my-do-spaces-bucket/tinyassets-backups
-#                   sftp://u123456.your-storagebox.de/tinyassets-backups
-#                 Any rclone remote URL works; rclone must already be
-#                 configured for the scheme (see docs/ops/backup-restore-runbook.md).
-#
-# Optional env:
-#   BACKUP_VOLUME          Docker volume name (default: tinyassets-data)
-#   BACKUP_RETAIN_DAILY    keep last N daily archives (default: 7)
-#   BACKUP_RETAIN_WEEKLY   keep first archive per week, last N weeks (default: 4)
-#   BACKUP_RETAIN_MONTHLY  keep first archive per month, last N months (default: 6)
-#   DRY_RUN                set to "1" — print plan, no tar/upload/prune
-#   BACKUP_LOG             append log to this file (default: /var/log/tinyassets-backup.log)
-#   GH_TOKEN               GitHub token for offsite upload to BACKUP_GH_REPO.
-#                          When set, both tarballs are also shipped as GH
-#                          release assets.
-#   BACKUP_GH_REPO         GitHub repo for offsite releases (default: Jonnyton/tinyassets-backups).
-#   BACKUP_GH_RETAIN       GH releases to keep (default: 30).
-#
-# Exit codes:
-#   0  upload + prune succeeded (or DRY_RUN=1 — no mutations).
-#   1  BACKUP_DEST not set.
-#   2  tar/staging failed (source volume missing, brain stage failed, or
-#      full tar exited >= 2).
-#   3  rclone upload failed (either tier).
-#   4  retention prune failed (non-fatal; uploads themselves succeeded).
+# Nightly C3 shared-layer backup. BACKUP_MODE=snapshot is ONLY the one-shot
+# stopped old-layout migration backup. Owner durability uses C2 volume snapshots.
+# Configuration: BACKUP_DEST, BACKUP_VOLUME; retention defaults to 7/4/6.
+# DRY_RUN=1 prints configuration without any mutation.
 
 set -euo pipefail
 
@@ -123,7 +75,16 @@ if ! command -v flock >/dev/null 2>&1; then
     log "ERROR: flock not found; refusing to read the volume without the layout lock"
     exit 2
 fi
-exec 9>>"${VOLUME_DIR}/.layout.lock"
+# O_CREAT on a service-owned lock in the sticky data root is denied even to
+# root by fs.protected_regular. Preserve existing inodes and lock read-only.
+if [[ ! -e "${VOLUME_DIR}/.layout.lock" ]]; then
+    (set -o noclobber; : > "${VOLUME_DIR}/.layout.lock")
+fi
+if [[ ! -f "${VOLUME_DIR}/.layout.lock" || -L "${VOLUME_DIR}/.layout.lock" ]]; then
+    log "ERROR: layout lock is not a regular file"
+    exit 2
+fi
+exec 9<"${VOLUME_DIR}/.layout.lock"
 # Root creates it on a fresh volume; the non-root server must still open it.
 chmod 0666 "${VOLUME_DIR}/.layout.lock" 2>/dev/null || true
 if ! flock -s -w 600 9; then
@@ -148,37 +109,24 @@ then
     exit 2
 fi
 
-# Root host receipts are part of the data member. The nightly owner-box backup
-# is live (backup-owner-box.sh); BACKUP_MODE=snapshot is the offline variant.
-OWNER_BOX=0
-if [[ -f "${VOLUME_DIR}/.layout.json" ]] && python3 - "${VOLUME_DIR}/.layout.json" <<'BOX_LAYOUT_PY'
-import json
-import sys
+# C2/C3: nightly durability is a shared-layer archive, never an owner-store copy.
+if [[ "${BACKUP_MODE:-}" != snapshot ]]; then
+    exec python3 "$(dirname "$(realpath "$0")")/backup-platform.py" "$VOLUME_DIR" "$BACKUP_DEST"
+fi
+# The one-shot old-layout migration is the only owner-content backup exception.
+if [[ -f "$VOLUME_DIR/.layout.json" ]] && python3 - "$VOLUME_DIR/.layout.json" <<'PY'
+import json, sys
 sys.exit(0 if json.load(open(sys.argv[1])).get("box_layout") == "owner-box" else 1)
-BOX_LAYOUT_PY
+PY
 then
-    OWNER_BOX=1
-    if [[ ! -d "${BOX_STORE_DIR}" || -L "${BOX_STORE_DIR}" ]]; then
-        log "ERROR: committed owner-box layout requires its mounted box store"
-        exit 2
-    fi
-    if [[ "${BACKUP_MODE:-}" != snapshot ]]; then
-        # Live backup: the shared layout lock on fd 9 is inherited and held
-        # through the copy; no service is stopped.
-        exec "$(dirname "$(realpath "$0")")/backup-owner-box.sh" \
-            "${VOLUME_DIR}" "${BOX_STORE_DIR}" "${BACKUP_DEST}"
-    fi
-    if ! flock -n -x 9 || ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            --snapshot-data "${VOLUME_DIR}" --quiescent; then
-        log "ERROR: owner-box offline snapshot needs stopped writers and an empty guest census"
-        exit 2
-    fi
+    log "ERROR: owner durability requires per-owner snapshots; old-layout backup refused"
+    exit 2
 fi
 
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 box_archive() {  # $1 = archive path; $2 = remote name
-    local path="$1" name="$2" box_root tree member box_tar_rc
+    local path="$1" name="$2" box_root tree member
     if [[ ! -e "${BOX_STORE_DIR}" ]]; then
         if [[ "${BACKUP_REQUIRE_BOX_STORE:-0}" == 1 ]]; then
             log "ERROR: required box store is absent"
@@ -332,235 +280,6 @@ INVENTORY_PY
         log "ERROR: snapshot upload failed (local copy kept)"
         exit 3
     fi
-    if [[ "$OWNER_BOX" == 1 ]]; then
-        PAIR_MANIFEST="${SNAPSHOT_DIR}/tinyassets-pair-${TS}.json"
-        if ! python3 "$(dirname "$(realpath "$0")")/backup-pair.py" create \
-                "$SNAPSHOT_PATH" "$BOX_SNAPSHOT_PATH" "$PAIR_MANIFEST" \
-                || ! rclone copyto --contimeout 60s --timeout 60s \
-                    "$PAIR_MANIFEST" "${BACKUP_DEST}/$(basename "$PAIR_MANIFEST")"; then
-            log "ERROR: owner-box snapshot manifest failed"
-            exit 3
-        fi
-    fi
     log "SNAPSHOT id=${SNAPSHOT_NAME} sha256=${sha} bytes=${bytes} names=${names}"
     exit 0
 fi
-
-# ----- 3. brain tier — consistent archive of the irreplaceable subset ---
-
-BRAIN_NAME="tinyassets-brain-${TS}.tar.gz"
-BRAIN_PATH="/tmp/${BRAIN_NAME}"
-BRAIN_STAGE="$(mktemp -d /tmp/tinyassets-brain-stage.XXXXXX)"
-trap 'rm -rf "${BRAIN_STAGE}"' EXIT
-
-log "staging brain tier (wiki, daemon_wikis, ledgers, SQLite DBs)..."
-for d in wiki daemon_wikis; do
-    if [[ -d "${VOLUME_DIR}/${d}" ]]; then
-        if ! cp -a "${VOLUME_DIR}/${d}" "${BRAIN_STAGE}/"; then
-            log "ERROR: brain stage copy failed: ${d}"
-            exit 2
-        fi
-    fi
-done
-for f in "${VOLUME_DIR}"/*.json; do
-    [[ -f "${f}" ]] && cp -a "${f}" "${BRAIN_STAGE}/"
-done
-# The D12 relocated ledger remains part of the strict brain tier. The host
-# backup holds the layout lock; this does not grant the daemon file authority.
-if [[ -L "${VOLUME_DIR}/.broker" ]]; then
-    log "ERROR: broker backup directory is a symlink"
-    exit 2
-fi
-if [[ -e "${VOLUME_DIR}/.broker" && ( ! -d "${VOLUME_DIR}/.broker" \
-        || ! -r "${VOLUME_DIR}/.broker" || ! -x "${VOLUME_DIR}/.broker" ) ]]; then
-    log "ERROR: broker backup directory is not accessible"
-    exit 2
-fi
-for db in "${VOLUME_DIR}"/*.db "${VOLUME_DIR}/.broker/outbound.db"; do
-    if [[ -L "${db}" ]]; then
-        log "ERROR: sqlite backup source is a symlink: ${db}"
-        exit 2
-    fi
-    if [[ -e "${db}" && ! -f "${db}" ]]; then
-        log "ERROR: sqlite backup source is not a regular file: ${db}"
-        exit 2
-    fi
-    [[ -f "${db}" ]] || continue
-    relative="${db#"${VOLUME_DIR}/"}"
-    if ! python3 - "${db}" "${BRAIN_STAGE}/${relative}" <<'PY'
-import os
-import sqlite3
-import stat
-import sys
-from pathlib import Path
-
-source, target = Path(sys.argv[1]), Path(sys.argv[2])
-info = source.lstat()
-if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-    raise RuntimeError("unsafe sqlite backup source")
-if source.parent.name == ".broker":
-    parent = source.parent.lstat()
-    if not stat.S_ISDIR(parent.st_mode):
-        raise RuntimeError("unsafe broker backup parent")
-    target.parent.mkdir(mode=0o700, exist_ok=True)
-    os.chown(target.parent, parent.st_uid, parent.st_gid)
-    os.chmod(target.parent, stat.S_IMODE(parent.st_mode))
-src = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
-try:
-    dst = sqlite3.connect(target)
-    try:
-        src.backup(dst)
-    finally:
-        dst.close()
-finally:
-    src.close()
-after = source.lstat()
-if (not stat.S_ISREG(after.st_mode)
-        or (after.st_dev, after.st_ino, after.st_nlink) != (info.st_dev, info.st_ino, 1)):
-    raise RuntimeError("sqlite backup source changed identity")
-if source.parent.name == ".broker":
-    after_parent = source.parent.lstat()
-    if (not stat.S_ISDIR(after_parent.st_mode)
-            or (after_parent.st_dev, after_parent.st_ino) != (parent.st_dev, parent.st_ino)):
-        raise RuntimeError("broker backup parent changed identity")
-# SQLite creates a new file; retain source ownership and privacy in the archive.
-os.chown(target, info.st_uid, info.st_gid)
-os.chmod(target, stat.S_IMODE(info.st_mode))
-PY
-    then
-        log "ERROR: consistent sqlite copy failed: $(basename "${db}")"
-        exit 2
-    fi
-done
-
-log "creating brain archive ${BRAIN_PATH}..."
-# Omit the staging root's header: its private root:root/0700 metadata must
-# never overwrite the live volume root during brain repair. Keep staging private.
-if ! find "${BRAIN_STAGE}" -mindepth 1 -maxdepth 1 -printf './%f\0' \
-        | tar -czf "${BRAIN_PATH}" --numeric-owner --acls --xattrs \
-            -C "${BRAIN_STAGE}" --null -T -; then
-    log "ERROR: brain tar failed"
-    rm -f "${BRAIN_PATH}"
-    exit 2
-fi
-log "  brain archive size: $(stat -c %s "${BRAIN_PATH}" 2>/dev/null || echo '?') bytes"
-
-log "uploading brain tier to ${BACKUP_DEST}/${BRAIN_NAME}..."
-if ! rclone copyto --contimeout 60s --timeout 900s \
-        "${BRAIN_PATH}" "${BACKUP_DEST}/${BRAIN_NAME}"; then
-    log "ERROR: brain rclone upload failed"
-    rm -f "${BRAIN_PATH}"
-    exit 3
-fi
-log "  brain upload OK"
-
-# ----- 4. full tier — whole volume, live (tar exit 1 tolerated) ---------
-
-TAR_NAME="tinyassets-data-${TS}.tar.gz"
-TAR_PATH="/tmp/${TAR_NAME}"
-
-log "creating archive ${TAR_PATH}..."
-set +e
-# Owner split: owners are numeric (300001+ have no host name) and roots carry
-# ACLs, so both survive a restore only with these flags.
-tar -czf "${TAR_PATH}" --warning=no-file-changed --numeric-owner --acls --xattrs \
-    --exclude="$(basename "${VOLUME_DIR}")/.broker/browser-vault" \
-    -C "$(dirname "${VOLUME_DIR}")" "$(basename "${VOLUME_DIR}")"
-tar_rc=$?
-set -e
-if [[ "${tar_rc}" -ge 2 ]]; then
-    log "ERROR: tar failed (rc=${tar_rc})"
-    rm -f "${TAR_PATH}" "${BRAIN_PATH}"
-    exit 2
-elif [[ "${tar_rc}" -eq 1 ]]; then
-    log "  tar rc=1 (files changed during live read) — expected on a hot volume; archive kept (brain tier carries the strict-consistency guarantee)"
-fi
-TAR_SIZE="$(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?')"
-log "  archive size: ${TAR_SIZE} bytes"
-
-log "uploading to ${BACKUP_DEST}/${TAR_NAME}..."
-if ! rclone copyto --contimeout 60s --timeout 900s \
-        "${TAR_PATH}" "${BACKUP_DEST}/${TAR_NAME}"; then
-    log "ERROR: rclone upload failed"
-    rm -f "${TAR_PATH}" "${BRAIN_PATH}"
-    exit 3
-fi
-log "  upload OK"
-
-# ----- 4b. box-store member, paired by timestamp with the data archive ---
-if [[ -e "${BOX_STORE_DIR}" ]]; then
-    BOX_NAME="tinyassets-box-store-${TS}.tar.gz"
-    BOX_TAR_PATH="$(mktemp "${TMPDIR:-/tmp}/tinyassets-box-store-${TS}.XXXXXX")"
-    if box_archive "${BOX_TAR_PATH}" "${BOX_NAME}"; then
-        rm -f -- "${BOX_TAR_PATH}"
-    else
-        box_rc=$?
-        rm -f -- "${BOX_TAR_PATH}"
-        exit "$box_rc"
-    fi
-fi
-
-# ----- 5. offsite upload (GH release assets) ----------------------------
-# Best-effort; failure is non-fatal so local backup still counts as done.
-# Activated only when GH_TOKEN is set. Ships both tiers.
-
-SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
-if [[ -n "${GH_TOKEN:-}" ]]; then
-    for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"; do
-        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
-        set +e
-        python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
-            log "  gh-ship: ${line}"
-        done
-        ship_status=$?
-        set -e
-        if [[ "${ship_status}" -ne 0 ]]; then
-            log "WARN: GH offsite ship exited ${ship_status} for $(basename "${ship_path}") (local backup succeeded)"
-        fi
-    done
-else
-    log "GH_TOKEN not set — skipping offsite GH release upload"
-fi
-
-rm -f "${TAR_PATH}" "${BRAIN_PATH}"
-
-# ----- 6. retention prune ----------------------------------------------
-
-# Keep, per tier prefix (tinyassets-data-, tinyassets-brain-):
-#   - last BACKUP_RETAIN_DAILY daily archives (most recent N)
-#   - first archive of each week for last BACKUP_RETAIN_WEEKLY weeks
-#   - first archive of each month for last BACKUP_RETAIN_MONTHLY months
-# Prune is best-effort; failure is non-fatal. backup_prune.py only ever
-# emits names matching the tier prefixes — unknown files at the
-# destination are never deleted.
-#
-# Python replaces awk here: mawk (Debian default) lacks the 3-arg match()
-# and gensub() extensions used by GNU awk. Python 3 is guaranteed present
-# on the droplet (disk_watch.py depends on it).
-log "pruning retention (daily=${BACKUP_RETAIN_DAILY} weekly=${BACKUP_RETAIN_WEEKLY} monthly=${BACKUP_RETAIN_MONTHLY})..."
-PRUNE_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_prune.py"
-set +e
-set +o pipefail
-# rclone lsf default output is filename-per-line — no --format flag needed
-# (prior --format n was invalid; 'n' isn't a valid format char and made
-# rclone exit 1, which pipefail propagated → systemd marked service failed).
-rclone lsf "${BACKUP_DEST}/" 2>/dev/null \
-    | python3 "${PRUNE_SCRIPT}" \
-        --keep-daily "${BACKUP_RETAIN_DAILY}" \
-        --keep-weekly "${BACKUP_RETAIN_WEEKLY}" \
-        --keep-monthly "${BACKUP_RETAIN_MONTHLY}" \
-    | while read -r victim; do
-        log "  prune: ${victim}"
-        rclone deletefile "${BACKUP_DEST}/${victim}" || \
-            log "    WARN: delete failed for ${victim}"
-    done
-prune_status=$?
-set -eo pipefail
-
-if [[ "${prune_status}" -ne 0 ]]; then
-    log "WARN: retention prune exited ${prune_status} (backup itself succeeded)"
-    exit 4
-fi
-
-log "backup complete."
-exit 0

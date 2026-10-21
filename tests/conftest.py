@@ -9,12 +9,10 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
-import tempfile
 from collections.abc import Sequence
 from typing import Any, Callable
 
 import pytest
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
@@ -462,23 +460,6 @@ def _stop_workspace_sweepers_between_tests():
         assert runs._stop_all_workspace_sweepers(timeout_s=2)
 
 
-@pytest.fixture(autouse=True)
-def _clear_shortlist_cache_between_tests():
-    """No test may leave a warm catalogue or a refresh thread for the next one.
-
-    ``SHORTLIST_CACHE`` is a process-global, and its refreshes run on a thread
-    pool. Both leak: a warm entry would let a later test read a catalogue it
-    never discovered, and an in-flight refresh scheduled here would run while
-    the NEXT test has ``discover_native_models_sync`` monkeypatched -- calling
-    that test's double from outside its own assertions. Same class as the
-    workspace sweepers above.
-    """
-    import sys
-
-    yield
-    module = sys.modules.get("tinyassets.providers.shortlist_refresh")
-    if module is not None:
-        module.SHORTLIST_CACHE.shutdown(wait=True)
 
 
 @pytest.fixture(autouse=True)
@@ -568,147 +549,18 @@ def _isolate_storage_backend(monkeypatch):
     _catalog.invalidate_backend_cache()
 
 
-@pytest.fixture
-def checkpointer():
-    """Yield an in-memory SqliteSaver for testing.
-
-    Uses the ``from_conn_string`` context manager pattern.
-    """
-    with SqliteSaver.from_conn_string(":memory:") as cp:
-        yield cp
 
 
-@pytest.fixture
-def connected_fantasy_model(tmp_path, monkeypatch):
-    """Exercise legacy graph helpers through an owned, receipted model source."""
-    from tests.support.fantasy_model import ConnectedFantasySource
-    from tinyassets.providers import call as provider_call
-    from tinyassets.providers.model_call import bind_model_call, owner_model_scope, text_sync
-
-    source = ConnectedFantasySource(tmp_path / "test-center")
-    monkeypatch.setattr(provider_call, "get_provider_router", lambda: source)
-    monkeypatch.setattr(provider_call, "register_open_providers_for", lambda _context: None)
-
-    def bound(prompt, system="", **kwargs):
-        kwargs.setdefault("universe_context", source.context)
-        kwargs.setdefault("operation", "run_graph")
-        return text_sync(prompt, system, **kwargs)
-
-    bound.receipts = source.receipts
-    with owner_model_scope(bind_model_call(
-        bound, source.context, operation="run_graph",
-    )):
-        yield bound
 
 
-@pytest.fixture
-def tmp_story_db():
-    """Create a temp story.db path for world state, cleaned up after test."""
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="story_test_")
-    os.close(fd)
-    os.unlink(path)  # Remove so init_db creates fresh
-    yield path
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
 
 
-@pytest.fixture
-def scene_input(tmp_story_db) -> dict[str, Any]:
-    """Minimal valid input for the Scene graph."""
-    return {
-        "universe_id": "test-universe",
-        "book_number": 1,
-        "chapter_number": 1,
-        "scene_number": 1,
-        "orient_result": {},
-        "retrieved_context": {},
-        "recent_prose": "",
-        "workflow_instructions": {},
-        "memory_context": {},
-        "search_context": {},
-        "plan_output": None,
-        "draft_output": None,
-        "commit_result": None,
-        "editorial_notes": None,
-        "second_draft_used": False,
-        "verdict": "",
-        "extracted_facts": [],
-        "extracted_promises": [],
-        "style_observations": [],
-        "quality_trace": [],
-        "quality_debt": [],
-        "_universe_path": "",
-        "_db_path": tmp_story_db,
-        "_kg_path": "",
-    }
 
 
-@pytest.fixture
-def chapter_input() -> dict[str, Any]:
-    """Minimal valid input for the Chapter graph."""
-    return {
-        "universe_id": "test-universe",
-        "book_number": 1,
-        "chapter_number": 1,
-        "scenes_completed": 0,
-        "scenes_target": 2,
-        "chapter_summary": None,
-        "consolidated_facts": [],
-        "quality_trend": {},
-        "chapter_arc": {},
-        "style_rules_observed": [],
-        "craft_cards_generated": [],
-    }
 
 
-@pytest.fixture
-def book_input() -> dict[str, Any]:
-    """Minimal valid input for the Book graph."""
-    return {
-        "universe_id": "test-universe",
-        "book_number": 1,
-        "chapters_completed": 0,
-        "chapters_target": 1,
-        "book_summary": None,
-        "book_arc": {},
-        "health": {"stuck_level": 0},
-        "cross_book_promises_active": [],
-        "quality_trace": [],
-    }
 
 
-@pytest.fixture
-def universe_input() -> dict[str, Any]:
-    """Minimal valid input for the Universe graph."""
-    return {
-        "universe_id": "test-universe",
-        "universe_path": "/tmp/test-universe",
-        "review_stage": "foundation",
-        "active_series": None,
-        "series_completed": [],
-        "selected_target_id": None,
-        "selected_intent": None,
-        "alternate_target_ids": [],
-        "current_task": None,
-        "current_execution_id": None,
-        "current_execution_ref": None,
-        "last_review_artifact_ref": None,
-        "work_targets_ref": "work_targets.json",
-        "hard_priorities_ref": "hard_priorities.json",
-        "timeline_ref": None,
-        "soft_conflicts": [],
-        "world_state_version": 0,
-        "canon_facts_count": 0,
-        "total_words": 0,
-        "total_chapters": 0,
-        "health": {},
-        "task_queue": ["write"],
-        "universal_style_rules": [],
-        "cross_series_facts": [],
-        "quality_trace": [],
-    }
 
 
 # There is no anonymous principal (founder, 2026-09-02). The dev auth provider

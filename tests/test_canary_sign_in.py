@@ -66,8 +66,9 @@ class _WorkOS:
 def rig(tmp_path, monkeypatch):
     """A configured door with fake upstreams; returns the WorkOS stub."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    monkeypatch.setenv(door.KEY_ENV, KEY)
+    (tmp_path / ".router-credentials.json").write_text(json.dumps({door.KEY_ENV: KEY}))
     monkeypatch.setenv(door.USER_ENV, CANARY)
     monkeypatch.setenv("WORKOS_API_KEY", "sk_test_placeholder")
     monkeypatch.setattr(onboarding, "app_config", lambda: {
@@ -137,7 +138,11 @@ def test_the_pinned_canary_gets_the_session_the_connector_accepts(rig):
 
 @pytest.mark.parametrize("missing", [door.KEY_ENV, door.USER_ENV, "TINYASSETS_ONBOARDING_APP"])
 def test_an_unconfigured_door_is_simply_not_there(rig, monkeypatch, missing):
-    monkeypatch.delenv(missing)
+    if missing == door.KEY_ENV:
+        from tinyassets.storage import data_dir
+        (data_dir() / ".router-credentials.json").unlink()
+    else:
+        monkeypatch.delenv(missing)
     response = knock(_ask())
     assert response.status_code == 404
     assert not rig.calls  # Nothing upstream is asked about an account.
@@ -152,7 +157,8 @@ def test_a_wrong_key_is_refused_without_naming_why_and_never_reaches_workos(rig,
 
 
 def test_a_short_configured_key_disables_the_door(rig, monkeypatch):
-    monkeypatch.setenv(door.KEY_ENV, "k" * 31)
+    from tinyassets.storage import data_dir
+    (data_dir() / ".router-credentials.json").write_text(json.dumps({door.KEY_ENV: "k" * 31}))
     assert knock(_ask(key="k" * 31)).status_code == 404
     assert door.configured() is None
 
@@ -305,3 +311,6 @@ def test_the_carve_out_is_this_exact_path_and_nothing_under_it(monkeypatch):
     assert mw._auth_challenge_path("/app/canary-sign-in") is False
     assert mw._auth_challenge_path("/app/canary-sign-in/x") is True
     assert mw._auth_challenge_path("/app/canary-sign-in/") is True
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

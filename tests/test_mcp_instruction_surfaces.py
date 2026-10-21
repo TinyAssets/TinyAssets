@@ -661,3 +661,6 @@ def test_graph_target_examples_include_semantic_companion_arguments() -> None:
                     f"{surface} needs one of {sorted(required_any[key])} in "
                     f"{example.group(0)}"
                 )
+
+
+pytestmark = pytest.mark.verifies('live-mcp-connector-surface:Canonical Advertised Handle Set')

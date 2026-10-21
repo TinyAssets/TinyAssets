@@ -295,10 +295,12 @@ jobs:
             if [ -n "${BACKUP_SOURCE}" ]; then
               name="${BACKUP_SOURCE}"
             else
-              # Timestamped names sort chronologically.
-              name=$(rclone --config "${rclone_conf}" lsf --files-only \
-                     --include 'tinyassets-data-*.tar.gz' "${OFFREGION_BACKUP_REMOTE}" \
+              # Only a published C3 manifest is a recovery point.
+              manifest=$(rclone --config "${rclone_conf}" lsf --files-only \
+                     --include 'tinyassets-platform-*.json' "${OFFREGION_BACKUP_REMOTE%/}/platform" \
                      | LC_ALL=C sort | tail -1)
+              stamp="${manifest#tinyassets-platform-}"
+              name="tinyassets-data-${stamp%.json}.tar.gz"
             fi
             if [ -z "${name}" ]; then
               echo "::error::No tinyassets-data-*.tar.gz in the off-region store"
@@ -311,6 +313,15 @@ jobs:
             fi
             rclone --config "${rclone_conf}" copyto \
                 "${OFFREGION_BACKUP_REMOTE%/}/${name}" "${backup_root}/${name}"
+            stamp="${name#tinyassets-data-}"
+            manifest="tinyassets-platform-${stamp%.tar.gz}.json"
+            rclone --config "${rclone_conf}" copyto \
+                "${OFFREGION_BACKUP_REMOTE%/}/platform/${manifest}" "${backup_root}/${manifest}"
+            snapshot=$(python3 deploy/dr-owner-restore.py reference \
+                "${backup_root}/${manifest}" "${backup_root}/${name}")
+            mkdir -p "${backup_root}/${snapshot%/*}"
+            rclone --config "${rclone_conf}" copyto \
+                "${OFFREGION_BACKUP_REMOTE%/}/${snapshot}" "${backup_root}/${snapshot}"
             rm -f "${rclone_conf}"
             candidate="${backup_root}/${name}"
           else
@@ -321,8 +332,8 @@ jobs:
               candidate=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                   "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                   "find /var/backups/tinyassets -maxdepth 1 -type f \
-                   -name 'tinyassets-data-*.tar.gz' -printf '%T@ %p\n' \
-                   | sort -nr | head -1 | cut -d' ' -f2-")
+                   -name 'tinyassets-platform-*.json' -printf '%f\n' \
+                   | sort | tail -1 | sed 's/^tinyassets-platform-/tinyassets-data-/;s/\.json$/.tar.gz/;s|^|/var/backups/tinyassets/|'")
               if [ -z "${candidate}" ]; then
                 echo "::error::No backup found on primary at /var/backups/tinyassets/"
                 exit 1
@@ -350,6 +361,8 @@ jobs:
           import stat
           import sys
           import tarfile
+          sys.path.insert(0, "/opt/tinyassets/boxhostd")
+          from tinyassets.platform_backup import validate_manifest
 
           backup_root = Path(sys.argv[2]).resolve(strict=True)
           selected = Path(sys.argv[1])
@@ -378,6 +391,15 @@ jobs:
               for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                   archive_hash.update(chunk)
 
+          stamp = selected.name.removeprefix("tinyassets-data-").removesuffix(".tar.gz")
+          manifest = backup_root / f"tinyassets-platform-{stamp}.json"
+          document = json.loads(manifest.read_text())
+          validate_manifest(manifest.name, document)
+          if document["sha256"] != archive_hash.hexdigest():
+              raise SystemExit("platform manifest archive digest mismatch")
+          if not document["snapshots"]:
+              raise SystemExit("single-owner drill needs a map-referenced snapshot")
+
           regular_members = []
           with tarfile.open(selected, "r:gz") as archive:
               for member in archive.getmembers():
@@ -389,7 +411,7 @@ jobs:
                       or parts[0] != "_data"
                       or ".." in parts
                       or (len(parts) == 1 and not member.isdir())
-                      or not (member.isdir() or member.isfile())
+                      or not (member.isdir() or member.isfile() or member.issym())
                   ):
                       raise SystemExit(f"unsafe archive member: {member.name!r}")
                   if member.isfile():
@@ -710,9 +732,60 @@ jobs:
             echo "::error::Backup checksum mismatch after transfer"
             exit 1
           fi
+          stamp="${TARBALL#tinyassets-data-}"
+          manifest="tinyassets-platform-${stamp%.tar.gz}.json"
+          # C3 manifest and C2 object travel separately; no whole box-store archive.
+          member_source="${BACKUP_PATH%/*}/${manifest}"
+          member_destination=$(printf '%q' "/var/backups/tinyassets/${manifest}")
+          if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                "cat > ${member_destination}" < "${member_source}"
+          else
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" "cat $(printf '%q' "${member_source}")" \
+                | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                    "cat > ${member_destination}"
+          fi
+          # Recovery code and its package come from this exact checkout.
+          tar -czf "${RUNNER_TEMP}/dr-recovery-code.tar.gz" tinyassets \
+              deploy/dr-owner-restore.py deploy/backup-restore.sh deploy/platform-recovery.py \
+              deploy/backup-platform.py scripts/__init__.py scripts/backup_prune.py
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes "${RUNNER_TEMP}/dr-recovery-code.tar.gz" \
+              "root@${DRILL_IP}:/tmp/dr-recovery-code.tar.gz"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+              "tar -xzf /tmp/dr-recovery-code.tar.gz -C /opt/tinyassets; apt-get install -y xfsprogs rclone"
+          snapshot=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+              "python3 /opt/tinyassets/deploy/dr-owner-restore.py reference \
+               /var/backups/tinyassets/${manifest} ${quoted_destination}")
+          [[ "$snapshot" =~ ^3[0-9]{5}/[a-f0-9]{32}\.img\.gz$ ]] || exit 1
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+              "mkdir -p /var/backups/tinyassets/${snapshot%/*}"
+          if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                "cat > /var/backups/tinyassets/${snapshot}" < "${BACKUP_PATH%/*}/${snapshot}"
+          else
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "cat /var/backups/tinyassets/${snapshot}" \
+                | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                    "cat > /var/backups/tinyassets/${snapshot}"
+          fi
           echo "Transferred and verified: ${TARBALL} (${destination_sha256})"
 
-      - name: Restore exact backup on drill Droplet
+      - name: Restore one owner from the recovered map
+        env:
+          DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          TARBALL_B64: ${{ steps.backup.outputs.tarball_b64 }}
+        run: |
+          set -euo pipefail
+          TARBALL=$(python3 -c \
+            'import base64,os; print(base64.b64decode(os.environ["TARBALL_B64"]).decode())')
+          stamp="${TARBALL#tinyassets-data-}"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+              "python3 /opt/tinyassets/deploy/dr-owner-restore.py restore \
+               /var/backups/tinyassets/tinyassets-platform-${stamp%.tar.gz}.json \
+               /var/backups/tinyassets/${TARBALL}"
+
+      - name: Disaster restore on drill Droplet
         id: restore
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
@@ -729,7 +802,11 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
               "BACKUP_FILE=${backup_file} DRY_RUN=0 \
-               bash /opt/tinyassets/deploy/backup-restore.sh" 2>&1
+               bash /opt/tinyassets/deploy/backup-restore.sh" \
+                 > "${RUNNER_TEMP}/disaster-restore.log" 2>&1 && rc=0 || rc=$?
+          cat "${RUNNER_TEMP}/disaster-restore.log"
+          # Missing current C3 authority is a failed drill, never a successful receipt.
+          test "$rc" -eq 0
 
       - name: Verify representative restored state
         env:
@@ -850,9 +927,26 @@ jobs:
       - name: Probe drill Droplet directly
         id: drillprobe
         env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
         run: |
+          set -euo pipefail
+          # Disaster recovery invalidates the former operational bearer too.
+          # Read only this drill's replacement, without emitting the secret.
+          TINYASSETS_WIKI_CANARY_TOKEN=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "root@${DRILL_IP}" "python3 -" <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+
+          mount = subprocess.check_output(
+              ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", "tinyassets-data"],
+              text=True).strip()
+          print(json.loads((Path(mount) / ".router-credentials.json").read_text())[
+              "TINYASSETS_WIKI_CANARY_TOKEN"])
+          PY
+          )
+          echo "::add-mask::${TINYASSETS_WIKI_CANARY_TOKEN}"
+          export TINYASSETS_WIKI_CANARY_TOKEN
           # compose.yml binds daemon on 127.0.0.1:8001 (loopback only).
           # External HTTP probe to ${DRILL_IP}:8001 gets connection-refused
           # regardless of daemon health. Fix via SSH port-forward: open a

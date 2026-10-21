@@ -24,11 +24,36 @@ FENCED: dict[str, str] = {
 INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/owner_lease.py",
     "tinyassets/storage/owner_fence.py",
+    # Router identity state, never written by an owner's execution generation.
+    "tinyassets/router_credentials.py",
+    # Broker-held shared state (plans, credential-free source descriptors),
+    # likewise outside every owner's box.
+    "tinyassets/broker/vault.py",
+    "tinyassets/broker/http_connect.py",
+    "tinyassets/broker/owner_reads.py",
+    # C6/T9: the broker's sole shared owner-admission writer.
+    "tinyassets/broker/admission.py",
+    # C5: broker-only persistent ingress secrets and routing publication sequence.
+    "tinyassets/broker/routing.py",
+    # C6: job-owned snapshot catalog cleanup; no owner data.
+    "tinyassets/broker/deletion_jobs.py",
+    # T4 one-shot migration consumes old deletion obligations before publication.
+    "tinyassets/cutover_deletions.py",
+    "tinyassets/broker/next_wake.py",
+    "tinyassets/broker/owner_sources.py",
+    # T3/C2: broker-only permanent volume binding and snapshot publication.
+    "tinyassets/broker/owner_volumes.py",
+    # Offline C3 recovery writes shared staging with services stopped.
+    "tinyassets/restore_recovery.py",
+    # C1/T4 one-shot cutover verifies old-layout databases inside its attachments.
+    "tinyassets/cutover_sqlite.py",
 })
 
 #: Owner-written stores not fenced yet. Safe while exactly one owner tree runs
 #: (today's deploy shape); each must move to :data:`FENCED` before C2.
 FENCE_BEFORE_C2: frozenset[str] = frozenset({
+    "tinyassets/action_policy.py",
+    "tinyassets/owner_centers.py",
     "tinyassets/account_deletion.py",
     "tinyassets/agent_activities.py",
     "tinyassets/agent_activity.py",
@@ -47,7 +72,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/connected_agents.py",
     "tinyassets/extension_state.py",
     "tinyassets/extension_hooks.py",
-    "tinyassets/external_agents/receipts.py",
     "tinyassets/authoring/store.py",
     "tinyassets/automations.py",
     "tinyassets/bound_requests.py",
@@ -138,7 +162,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/request_migration.py",
     "tinyassets/storage/run_files.py",
     "tinyassets/storage/run_input_admissions.py",
-    "tinyassets/storage/subscription_state.py",
     "tinyassets/storage/webhook_hooks.py",
     "tinyassets/storage_accounting.py",
     "tinyassets/universe_owner.py",

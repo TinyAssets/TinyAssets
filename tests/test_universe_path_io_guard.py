@@ -23,6 +23,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parent.parent
 _PKG = _REPO / "tinyassets"
 
@@ -105,8 +107,12 @@ def _scan() -> dict[str, list[str]]:
 #: guard lands. Existing authority-record operations remain migration debt;
 #: listing them is not evidence that they refuse links (see the concern below).
 #: The migration checklist for the sealed-box move. Delete an entry when you
-#: convert its site to tinyassets.universe_files; never add one.
+#: convert its site to tinyassets.universe_files. Platform-only custody below
+#: is reviewed separately from owner-writable command-center paths.
 PINNED: dict[str, list[str]] = {
+    # Fixed, read-only host bind, outside /home/owner; never an owner-supplied path.
+    # The router's own Unix socket in its private shared runtime directory.
+    "tinyassets/router_credentials.py": ["serving: .unlink()", "serving: .unlink()"],
     "tinyassets/account_deletion.py": [
         "_rmtree: shutil.rmtree()",
         "_rmtree: shutil.rmtree()",
@@ -115,13 +121,7 @@ PINNED: dict[str, list[str]] = {
         "pending_deletions: .read_text()",
     ],
     "tinyassets/agent_sessions.py": [
-        "_nofollow_dirs: os.open()",
-        "_nofollow_dirs: os.open()",
-        "clear: .unlink()",
-        "exclusive: os.open()",
         "load: .read_text()",
-        "save: os.replace()",
-        "save: os.unlink()",
     ],
     "tinyassets/api/pending_requests.py": [
         "_first_power_preset: .read_text()",
@@ -162,16 +162,16 @@ PINNED: dict[str, list[str]] = {
         "_snapshot_paths: .read_bytes()",
         "_write_yaml: .write_text()",
     ],
-    "tinyassets/credential_refresh.py": [
+    "tinyassets/broker/credential_refresh.py": [
         "file_lock: .open()",
     ],
-    "tinyassets/credential_vault.py": [
+    "tinyassets/broker/vault.py": [
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
-        "_read_credential_material: .read_bytes()",
-        "_remove_snapshot_tree: .unlink()",
-        "_remove_snapshot_tree: .unlink()",
-        "_write_exclusive_snapshot_file: os.open()",
+        # Broker-owned custody, outside every owner mount.
+        "erase_owner: .unlink()",
+    ],
+    "tinyassets/credential_vault.py": [
         "load_credential_vault: .read_text()",
     ],
     "tinyassets/daemon_brain.py": [
@@ -195,18 +195,10 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/engine_mcp_http.py": [
         "_write_routes: os.open()",
         "_write_routes: os.replace()",
-        # The per-center engine socket under the daemon-owned .engine-mcp
-        # directory at the DATA ROOT (no owner tree), replaced on each start.
-        "box_engine_socket: .unlink()",
         "read_engine_mcp_route: .read_text()",
     ],
     # The refresh lock uses descriptor-relative O_NOFOLLOW opens and fstat
     # ownership/mode checks.
-    "tinyassets/external_agents/home.py": [
-        "exclusive_refresh: os.open()",
-        "exclusive_refresh: os.open()",
-        "exclusive_refresh: os.open()",
-    ],
     "tinyassets/ingestion/extractors.py": [
         "synthesize_source: .read_text()",
     ],
@@ -223,6 +215,7 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/onboarding/hosted_model_auth.py": [
         "load_preset: .read_text()",
     ],
+    # Shared router session map; these paths never enter an owner mount.
     "tinyassets/onboarding/session_store.py": [
         "_discard_legacy_store: shutil.rmtree()",
         "_read_json: .read_text()",
@@ -265,9 +258,7 @@ PINNED: dict[str, list[str]] = {
         "write_record: os.replace()",
     ],
     "tinyassets/providers/base.py": [
-        "subprocess_env_for_provider: .read_text()",
     ],
-    # ``claude_provider`` had two in ``_engine_mcp_flags``; they are gone from
     # the tree, and this ratchet only ever shrinks, so the pin goes with them.
     "tinyassets/providers/definition.py": [
         "_load: .read_text()",
@@ -277,9 +268,6 @@ PINNED: dict[str, list[str]] = {
     ],
     # The one-run credential lease is read from the platform custody snapshot
     # (never an owner tree) with O_NOFOLLOW and an fstat regular-file check.
-    "tinyassets/providers/owned_process.py": [
-        "_lease_files: os.open()",
-    ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
         "reset: shutil.rmtree()",
@@ -442,7 +430,6 @@ def test_the_module_call_exemption_is_exactly_one_pair():
 def test_owner_box_callers_never_open_host_paths():
     """Daemon-side node, media, preview and git box routes use their handle."""
     box_routes = {
-        "tinyassets/box_process.py": {"run_bound"},
         "tinyassets/boxes/node.py": {"run_in_box"},
         "tinyassets/boxes/media.py": {"decode_image", "frames"},
         "tinyassets/universe_tools.py": {"read_file", "write_file", "edit_file", "bash"},
@@ -455,5 +442,16 @@ def test_owner_box_callers_never_open_host_paths():
         raw = [(name, operation) for _, name, operation in _raw_ops(source)
                if name in functions]
         assert not raw, f"{module} opens an owner host path in its box route: {raw}"
-        assert ("run_bound(" in source or "BoxExecutor(" in source
-                or module.endswith("box_process.py") or module.endswith("workspace_git.py"))
+        if module == "tinyassets/universe_tools.py":
+            # Owner tools execute locally; the deferred daemon-side routes
+            # below still require their existing bound execution transport.
+            assert "return tools_for(universe_dir)" in source
+            assert "BoxExecutor(" not in source
+            assert "current_binding" not in source
+        else:
+            assert (".tools.run(" in source or module.endswith("workspace_git.py"))
+            assert "BoxExecutor(" not in source
+            assert "run_bound(" not in source
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

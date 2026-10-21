@@ -16,11 +16,14 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from tinyassets.billing.lifecycle import serialized
 
 _log = logging.getLogger(__name__)
 
@@ -149,7 +152,7 @@ def _issuing_version() -> str:
 
 
 def _entitlement_claim(
-    universe_id: str, price_id: str, *, secret: str = "", version: str = ""
+    owner_id: str, price_id: str, *, secret: str = "", version: str = ""
 ) -> str:
     """Sign authority that only our checkout creator may attach to metadata.
 
@@ -165,12 +168,12 @@ def _entitlement_claim(
         if not key:
             raise BillingUnavailable("no Stripe webhook secret configured")
     message = "\0".join(
-        (version, universe_id, PRICE_LOOKUP_KEY, price_id)
+        (version, owner_id, PRICE_LOOKUP_KEY, price_id)
     ).encode("utf-8")
     return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
-def _authorized_subscription_universe(obj: object, *, secret: str = "") -> str:
+def _authorized_subscription_owner(obj: object, *, secret: str = "") -> str:
     """Return the bound universe only for a service-created subscription plan."""
     if not isinstance(obj, dict):
         return ""
@@ -187,12 +190,14 @@ def _authorized_subscription_universe(obj: object, *, secret: str = "") -> str:
     price = item.get("price")
     if not _price_matches_plan(price):
         return ""
-    universe_id = str(metadata.get("universe_id") or "")
+    # Existing subscriptions retain their original signed reference. Only an
+    # already stored customer/subscription mapping may route those deliveries.
+    owner_id = str(metadata.get("owner_id") or metadata.get("universe_id") or "")
     price_id = str(price.get("id") or "")
     claim = str(metadata.get(_ENTITLEMENT_CLAIM_KEY) or "")
     version = str(metadata.get(_ENTITLEMENT_VERSION_KEY) or "")
     if (
-        not universe_id
+        not owner_id
         or not price_id
         or not claim
         or version not in (_ENTITLEMENT_V1, _ENTITLEMENT_V2)
@@ -202,11 +207,11 @@ def _authorized_subscription_universe(obj: object, *, secret: str = "") -> str:
         # Verify against the version the subscription was SOLD under, so upgrading
         # the scheme never orphans subscriptions already in the wild.
         expected = _entitlement_claim(
-            universe_id, price_id, secret=secret, version=version
+            owner_id, price_id, secret=secret, version=version
         )
     except BillingUnavailable:
         return ""
-    return universe_id if hmac.compare_digest(expected, claim) else ""
+    return owner_id if hmac.compare_digest(expected, claim) else ""
 
 
 def _post(
@@ -215,6 +220,7 @@ def _post(
     *,
     timeout: float = 20.0,
     idempotency_key: str = "",
+    method: str = "POST",
 ) -> dict:
     key = _secret_key()
     if not key:
@@ -223,7 +229,7 @@ def _post(
     request = urllib.request.Request(
         f"{_API}/{path.lstrip('/')}",
         data=body,
-        method="POST",
+        method=method,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     # Basic auth: key as username, empty password, per Stripe.
@@ -306,7 +312,7 @@ def resolve_price_id() -> str:
 
 
 def checkout_params(
-    *, universe_id: str, success_url: str, cancel_url: str, expires_at: int
+    *, owner_id: str, success_url: str, cancel_url: str, expires_at: int
 ) -> dict:
     """The creation inputs for one attempt, resolved ONCE and then frozen.
 
@@ -326,20 +332,20 @@ def checkout_params(
         "expires_at": int(expires_at),
         "entitlement_version": version,
         "entitlement_claim": _entitlement_claim(
-            universe_id, price_id, version=version
+            owner_id, price_id, version=version
         ),
     }
 
 
 def create_checkout_session(
     *,
-    universe_id: str,
+    owner_id: str,
     attempt_id: str,
     params: dict,
 ) -> dict[str, str]:
     """Start a subscription. Returns the hosted checkout URL for the user.
 
-    ``universe_id`` rides on ``client_reference_id`` and on subscription metadata so
+    ``owner_id`` rides on ``client_reference_id`` and on subscription metadata so
     the webhook can map the resulting subscription back to a universe without us
     keeping a side table that could drift.
 
@@ -354,14 +360,14 @@ def create_checkout_session(
     so a terminal Checkout Session event can be bound back to its attempt even when
     the session id was never recorded locally.
     """
-    if not universe_id:
-        raise ValueError("universe_id is required")
+    if not owner_id:
+        raise ValueError("owner_id is required")
     if not attempt_id:
         raise ValueError("attempt_id is required")
     # Idempotency at the product level: without this, two completed sessions
     # create two live subscriptions for one universe and the user is billed
     # twice (Codex REJECT 2026-08-28 C).
-    existing = find_active_subscription(universe_id)
+    existing = find_active_subscription(owner_id)
     if existing:
         raise AlreadySubscribed(existing)
     price_id = str(params["price_id"])
@@ -391,12 +397,12 @@ def create_checkout_session(
             ("line_items[0][quantity]", "1"),
             ("success_url", str(params["success_url"])),
             ("cancel_url", str(params["cancel_url"])),
-            ("client_reference_id", universe_id),
+            ("client_reference_id", owner_id),
             # On the SESSION, so `checkout.session.completed` / `.expired` carry it.
             # That is what lets a terminal event settle an attempt whose session id we
             # never managed to record -- Stripe can deliver it before we write.
             (f"metadata[{ATTEMPT_ID_KEY}]", attempt_id),
-            ("subscription_data[metadata][universe_id]", universe_id),
+            ("subscription_data[metadata][owner_id]", owner_id),
             (
                 f"subscription_data[metadata][{_ENTITLEMENT_VERSION_KEY}]",
                 str(params["entitlement_version"]),
@@ -425,6 +431,50 @@ def create_checkout_session(
     return {"id": str(session["id"]), "url": str(session["url"])}
 
 
+async def restore_billing(root, now, *, routing):
+    """C3 startup refresh of every retained account's billing reason."""
+    from contextlib import closing
+
+    from tinyassets.billing.events import subscription_owner
+    from tinyassets.broker.admission import admission, owner_call
+    from tinyassets.broker.owner_reads import Plans
+
+    plans = Plans(root, routing=routing)
+    if not plans.path.exists():
+        raise BillingUnavailable("restore billing source unavailable")
+    if not _secret_key():
+        raise BillingUnavailable("Stripe not configured")
+    import sqlite3
+
+    with closing(sqlite3.connect(plans.admission_path.as_uri() + "?mode=ro", uri=True)) as db:
+        owners = [owner for (owner,) in db.execute("SELECT principal FROM owner_identities")
+                  if admission(db, owner).state in {"admitted", "suspended"}]
+    rows = [plans.read(owner) for owner in owners]
+    synced = 0
+    for row in rows:
+        subscription = find_active_subscription(row["owner"], plans=plans) or row["subscription_id"]
+        if not subscription:
+            if row["tier"] != "free":
+                raise BillingUnavailable("restore paid plan has no subscription mapping")
+            await owner_call(plans.admission_path, row["owner"], plans.set_suspension,
+                             row["owner"], reason="billing", suspended=False)
+            continue
+        obj = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
+        event = {"type": "customer.subscription.updated", "data": {"object": obj}}
+        state = subscription_state_from_event(event)
+        if (obj.get("id") != subscription or state is None
+                or subscription_owner(plans, obj, state[0]) != row["owner"]):
+            raise BillingUnavailable("restore billing identity mismatch")
+        plans.set_plan(row["owner"], state[1], event_created=max(now, row["event_created"] + 1),
+                       ends_at=subscription_end_from_event(event),
+                       customer_id=obj.get("customer"), subscription_id=subscription)
+        await owner_call(plans.admission_path, row["owner"], plans.set_suspension,
+                         row["owner"], reason="billing",
+                         suspended=obj.get("status") in {"unpaid", "past_due"})
+        synced += 1
+    return {"plans_synced": synced}
+
+
 def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> dict:
     """Cancel a subscription.
 
@@ -434,14 +484,18 @@ def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> d
     if not subscription_id:
         raise ValueError("subscription_id is required")
     if immediately:
-        return _post(f"subscriptions/{subscription_id}/cancel", [])
+        return _post(f"subscriptions/{urllib.parse.quote(subscription_id, safe='')}", [],
+                     method="DELETE")
     return _post(
         f"subscriptions/{subscription_id}", [("cancel_at_period_end", "true")]
     )
 
 
-def find_active_subscription(universe_id: str) -> str | None:
-    """The universe's active subscription id, or None. Used by the cancel path."""
+def find_active_subscription(owner_id: str, *, plans=None) -> str | None:
+    """Find a signed subscription, resolving migrated identities during restore."""
+    from tinyassets.billing.events import subscription_owner
+    from tinyassets.broker.owner_reads import PlanMissing
+
     if not _webhook_secret():
         raise BillingUnavailable("no Stripe webhook secret configured")
     starting_after = ""
@@ -455,10 +509,22 @@ def find_active_subscription(universe_id: str) -> str | None:
         found = _get(path)
         data = found.get("data") or []
         for sub in data:
-            if _authorized_subscription_universe(sub) != universe_id:
+            claimed_owner = _authorized_subscription_owner(sub)
+            if not claimed_owner:
                 continue
             # Terminal states are not cancellable and must not mask a live one.
             if str(sub.get("status") or "") in ("canceled", "incomplete_expired"):
+                continue
+            resolved_owner = claimed_owner
+            if plans is not None:
+                try:
+                    resolved_owner = subscription_owner(plans, sub, claimed_owner)
+                except PlanMissing:
+                    # Other accounts' legacy subscriptions may have no local mapping.
+                    continue
+                except PermissionError as exc:
+                    raise BillingUnavailable("restore billing identity mismatch") from exc
+            if resolved_owner != owner_id:
                 continue
             return str(sub["id"])
         if not found.get("has_more") or not data:
@@ -470,6 +536,134 @@ def find_active_subscription(universe_id: str) -> str | None:
     raise BillingUnavailable(
         "could not scan all active subscriptions; cancel not attempted"
     )
+
+
+def _cancel_confirmed(subscription):
+    result = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
+    if result.get("id") != subscription:
+        raise BillingUnavailable("subscription identity mismatch")
+    if result.get("status") not in {"canceled", "incomplete_expired"}:
+        result = cancel_subscription(subscription, immediately=True)
+    if result.get("id") != subscription or result.get("status") not in {
+            "canceled", "incomplete_expired"}:
+        raise BillingUnavailable("subscription cancellation not confirmed")
+
+
+def _record_deleted_billing(root, owner, key, value):
+    from tinyassets.broker.deletion_jobs import request
+    from tinyassets.broker.owner_identities import owner_admission
+
+    if owner_admission(root, owner).state == "erased":
+        request(root, "billing_receipt", owner=owner, key=key, value=value)
+
+
+@serialized
+def cancel_deleted_subscription(root, owner, subscription):
+    """Verified late deliveries never revive a tombstoned account's billing."""
+    if not subscription:
+        raise BillingUnavailable("subscription identity missing")
+    _cancel_confirmed(subscription)
+    _record_deleted_billing(root, owner, subscription, "cancelled")
+
+
+def _attempt_session(attempt):
+    session_id = attempt.get("session_id")
+    if session_id:
+        session = _get("checkout/sessions/" + urllib.parse.quote(session_id, safe=""))
+        if session.get("id") != session_id:
+            raise BillingUnavailable("checkout identity mismatch")
+        return [session]
+    # A response can be lost after session creation. Find the session by the
+    # service-generated attempt identity; never create/replay during deletion.
+    matches, after = [], ""
+    for _page in range(20):
+        page = _get("checkout/sessions?limit=100" + (
+            "&starting_after=" + urllib.parse.quote(after, safe="") if after else ""))
+        rows = page.get("data")
+        if not isinstance(rows, list):
+            raise BillingUnavailable("checkout reconciliation failed")
+        matches.extend(row for row in rows if (row.get("metadata") or {}).get(
+            ATTEMPT_ID_KEY) == attempt["attempt_id"])
+        if not page.get("has_more"):
+            if not matches and _time.time() < attempt["expires_at"]:
+                raise BillingUnavailable("checkout creation is unresolved")
+            return matches
+        if not rows:
+            break
+        after = rows[-1]["id"]
+    raise BillingUnavailable("checkout reconciliation exceeded its bound")
+
+
+@serialized
+def cancel_account_billing(root, owner: str, *, plans=None, record_cleanup=None) -> str:
+    """Deletion uses the shared owner mapping, including after admission retirement."""
+    from tinyassets.billing.plan_store import BillingPlans
+
+    plans = plans if plans is not None else BillingPlans(root)
+    record_cleanup = record_cleanup or (lambda key, value: _record_deleted_billing(
+        root, owner, key, value))
+    plan = plans.read(owner)
+    expired = False
+    cancelled = False
+    cancelled_subscriptions = set()
+    try:
+        attempt = json.loads(plan["attempt"]) if plan["attempt"] is not None else None
+        if attempt is not None:
+            expiry = attempt["expires_at"]
+            session_expiry = attempt["params"]["expires_at"]
+            if (not isinstance(attempt["attempt_id"], str) or not attempt["attempt_id"]
+                    or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
+                           for v in (expiry, session_expiry)) or expiry < session_expiry):
+                raise ValueError("invalid attempt expiry or identity")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise BillingUnavailable("checkout attempt is malformed") from exc
+    attempts = plans.checkout_settlements(owner)
+    if attempt is not None and not any(
+            item["attempt_id"] == attempt["attempt_id"] for item in attempts):
+        attempts.append(attempt)
+    for attempt in attempts:
+        for session in _attempt_session(attempt):
+            session_id = session.get("id")
+            if not session_id:
+                raise BillingUnavailable("checkout identity missing")
+            if session.get("status") == "open":
+                session = _post("checkout/sessions/" + urllib.parse.quote(
+                    session_id, safe="") + "/expire", [])
+            if session.get("id") != session_id:
+                raise BillingUnavailable("checkout identity mismatch")
+            if session.get("status") == "complete":
+                subscription = session.get("subscription")
+                if not isinstance(subscription, str) or not subscription:
+                    raise BillingUnavailable("completed checkout has no subscription mapping")
+                _cancel_confirmed(subscription)
+                cancelled_subscriptions.add(subscription)
+                record_cleanup(subscription, "cancelled")
+                plans.bind_checkout_subscription(owner, customer_id=session.get("customer"),
+                                                  subscription_id=subscription)
+                cancelled = True
+            elif session.get("status") == "expired":
+                expired = True
+            else:
+                raise BillingUnavailable("checkout expiry not confirmed")
+            record_cleanup(session_id, session["status"])
+        if not plans.settle_checkout_attempt(owner, attempt_id=attempt["attempt_id"]):
+            raise BillingUnavailable("checkout settlement not confirmed")
+    subscription = plan["subscription_id"]
+    if not subscription:
+        if plan["tier"] != "free":
+            raise BillingUnavailable("paid account has no subscription mapping")
+        return "attempt_expired" if expired else "cancelled" if cancelled else "none"
+    # Read first so an interrupted cancellation can be retried after Stripe
+    # committed it, but before either our plan or deletion receipt was saved.
+    if subscription not in cancelled_subscriptions:
+        _cancel_confirmed(subscription)
+    record_cleanup(subscription, "cancelled")
+    plans.apply_tier_event(owner, tier="free",
+                           event_created=max(_time.time(), plan["event_created"]),
+                           ends_at=None)
+    if plans.read(owner)["tier"] != "free":
+        raise BillingUnavailable("account plan cancellation not confirmed")
+    return "attempt_expired" if expired else "cancelled"
 
 
 
@@ -611,7 +805,7 @@ def subscription_end_from_event(event: dict, *, secret: str = "") -> float | Non
     if kind == "customer.subscription.deleted":
         return None
     obj = (event.get("data") or {}).get("object") or {}
-    if not _authorized_subscription_universe(obj, secret=secret):
+    if not _authorized_subscription_owner(obj, secret=secret):
         return None
     if str(obj.get("status") or "") not in ("active", "trialing"):
         return None
@@ -654,7 +848,7 @@ def checkout_settlement_from_event(event: dict) -> tuple[str, str] | None:
 def subscription_state_from_event(
     event: dict, *, secret: str = ""
 ) -> tuple[str, str] | None:
-    """Map a Stripe event to ``(universe_id, tier)``, or None if irrelevant.
+    """Map a Stripe event to ``(owner_id, tier)``, or None if irrelevant.
 
     Only subscription lifecycle events move a tier. Anything else — including a
     successful payment on its own — is ignored, because the subscription's own
@@ -670,8 +864,8 @@ def subscription_state_from_event(
         return None
 
     if kind.startswith("customer.subscription."):
-        universe_id = _authorized_subscription_universe(obj, secret=secret)
-        if not universe_id:
+        owner_id = _authorized_subscription_owner(obj, secret=secret)
+        if not owner_id:
             return None
         status = str(obj.get("status") or "")
         # `active` and `trialing` entitle; everything else (canceled, unpaid,
@@ -679,6 +873,6 @@ def subscription_state_from_event(
         tier = "paid" if status in ("active", "trialing") else "free"
         if kind == "customer.subscription.deleted":
             tier = "free"
-        return universe_id, tier
+        return owner_id, tier
 
     return None

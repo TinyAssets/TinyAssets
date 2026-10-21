@@ -1,7 +1,7 @@
 """User-facing mint/revoke/list of inbound webhook URLs (channel-agnostic inbound).
 
 These are WRITE actions on the run surface: a universe's founder mints a stable
-`https://<domain>/hooks/<token>` URL for one of THEIR OWN branches, revokes it, or lists
+`https://<domain>/hooks/inbound/<token>` URL for one of THEIR OWN branches, revokes it, or lists
 their hooks. Ownership is enforced two ways: the run surface already gates write actions
 to a universe the caller can write (per-universe), and mint additionally resolves the
 branch within that universe's graph — so a token can only ever be minted for a branch the
@@ -24,8 +24,8 @@ def _public_base_url() -> str:
 
     Validated to scheme+host only (https, a host, no path/query/fragment/userinfo)
     so a misconfigured ``TINYASSETS_PUBLIC_BASE_URL`` can never mis-mint the webhook
-    URL — e.g. an embedded path yielding ``…/mcp/mcp/hooks/<token>`` or a query that
-    places the SECRET token in a query string. Anything not a bare https origin
+    URL by duplicating the route prefix or placing the SECRET token in a query.
+    Anything not a bare https origin
     falls back to the canonical origin (Codex inbound review).
     """
     from urllib.parse import urlsplit
@@ -124,7 +124,7 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
     token = webhook_hooks.mint(
         base, universe_id=uid, branch_def_id=bid, owner_principal_id=owner
     )
-    url = f"{_public_base_url()}/mcp/hooks/{token}"
+    url = f"{_public_base_url()}/hooks/inbound/{token}"
     return json.dumps({
         "text": (
             "Inbound webhook URL created. Paste it into the channel's webhook settings "
@@ -252,7 +252,7 @@ def _action_create_source(kwargs: dict[str, Any]) -> str:
         base, universe_id=uid, branch_def_id=bid, source_id=source_id,
         owner_principal_id=owner,
     )
-    url = f"{_public_base_url()}/mcp/hooks/{token}"
+    url = f"{_public_base_url()}/hooks/inbound/{token}"
     return json.dumps({
         "text": (
             "Inbound source created. Paste this URL into the channel's webhook settings; "

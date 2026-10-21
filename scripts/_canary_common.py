@@ -100,6 +100,7 @@ def _post(
     error_factory: Callable[[int, str], Exception],
     user_agent: str,
     bearer_token: str | None = None,
+    observe_headers: Callable | None = None,
 ) -> tuple[dict | None, str | None]:
     """Send one JSON-RPC POST. Returns (parsed_response_or_None, new_sid).
 
@@ -130,6 +131,8 @@ def _post(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if observe_headers is not None:
+                observe_headers(resp.headers)
             new_sid = resp.headers.get("mcp-session-id") or sid
             body = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
@@ -157,6 +160,34 @@ def _post(
             except json.JSONDecodeError:
                 pass
     return parsed, new_sid
+
+
+def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
+    """Use the existing pinned-account router door and ordinary bearer session.
+
+    Values come from load_secrets.sh's environment (CI injects the same keys).
+    No credentials, upstream text or owner rows are included in errors.
+    """
+    names = {"key": "DOOR_KEY", "email": "EMAIL", "password": "PASSWORD"}
+    fields = {key: os.environ.get("TINYASSETS_CANARY_" + name, "")
+              for key, name in names.items()}
+    if not all(fields.values()):
+        raise RuntimeError("canary_credentials_missing")
+    request = urllib.request.Request(origin + "/app/canary-sign-in",
+                                     data=json.dumps(fields).encode(),
+                                     headers={"Content-Type": "application/json",
+                                              "Origin": origin})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            token = json.load(response)["access_token"]
+        if not isinstance(token, str) or not token:
+            raise ValueError("missing session")
+        request = urllib.request.Request(origin + "/app/me", headers={
+            "Authorization": "Bearer " + token, "Origin": origin})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return token, json.load(response), response.headers
+    except Exception:
+        raise RuntimeError("canary_sign_in_failed") from None
 
 
 def _extract_tool_text(tool_result: dict[str, Any]) -> str:

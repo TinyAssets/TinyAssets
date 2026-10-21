@@ -333,3 +333,9 @@ def test_the_public_connector_description_is_untouched_and_uncoupled():
     # The public manual is still whole: it never carried the engine's chapters,
     # and the relocation did not shrink it (measured 16,623 chars on 2026-09-25).
     assert len(public) > 16_000
+
+
+pytestmark = pytest.mark.verifies(
+    'starter-agent-out-of-plumbing:'
+    'API reference stays current while owner guidance wins',
+)

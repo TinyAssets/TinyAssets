@@ -22,6 +22,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 CANONICAL = REPO / "pyproject.toml"
 RUNTIME = (
@@ -101,3 +103,6 @@ def test_the_call_sites_this_bound_protects_still_exist() -> None:
         "nothing imports request_ctx any more - the fastmcp <4 bound may no "
         "longer be needed; re-check before deleting it"
     )
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

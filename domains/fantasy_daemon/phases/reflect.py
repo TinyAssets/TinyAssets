@@ -26,7 +26,7 @@ from tinyassets.enrichment_signals import load_enrichment_signals, state_enrichm
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
 from tinyassets.universe_files import write_data_path
-from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
+from tinyassets.universe_soul import premise_from_soul
 from tinyassets.utils.json_parsing import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -219,10 +219,7 @@ def _review_canon_quality(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_premise(universe_dir: Path, state: dict[str, Any]) -> str:
-    """Read the story premise from PROGRAM.md, soul.md, or state."""
-    content = read_legacy_premise(universe_dir).strip()
-    if content:
-        return content
+    """Read the story premise from soul.md or state."""
     content = premise_from_soul(universe_dir).strip()
     if content:
         return content

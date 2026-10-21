@@ -94,7 +94,7 @@ class Capabilities:
         self.outside_identity = current_identity_or_none()
 
     def _bound_policy_owner(self):
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
 
         try:
             return admitted_owner(self.root.parent, center=self.root.name) == self.context.owner
@@ -248,10 +248,11 @@ class Capabilities:
                 return {"error": "owner policy unavailable"}
             if arguments:
                 return {"error": "policy show takes no arguments"}
-            from tinyassets.broker.client import owner_policy_operation
+            from tinyassets.action_policy import owner_policy_operation
 
             return {"result": await asyncio.to_thread(
-                owner_policy_operation, self.root.parent, self.context.owner, "read")}
+                owner_policy_operation, self.root.parent, self.context.owner, "read",
+                center=self.root.name)}
         if name == "policy:propose":
             if not self._bound_policy_owner():
                 return {"error": "owner policy unavailable"}
@@ -259,7 +260,7 @@ class Capabilities:
                     or type(arguments["expected_generation"]) is not int
                     or not isinstance(arguments["policy"], dict)):
                 return {"error": "policy proposal requires a generation and document"}
-            from tinyassets.broker.client import owner_policy_operation
+            from tinyassets.action_policy import owner_policy_operation
 
             encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
             if len(encoded.encode()) > 12000:
@@ -286,7 +287,6 @@ class Capabilities:
                 base_path=self.root.parent, universe_id=self.context.universe,
                 owner=self.context.owner, agent_id=self.context.initiating_agent,
                 inside_activity=_session_key().startswith("activity:"),
-                box_binding=session.current_binding(),
             )
             try:
                 return {"result": await asyncio.to_thread(

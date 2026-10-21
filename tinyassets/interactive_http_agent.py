@@ -8,7 +8,6 @@ import json
 from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment import check_served_agent_tool_authority
-from tinyassets.storage.agent_native_records import NativeInput
 from tinyassets.storage.agent_turn_records import RoundInput, dump
 
 
@@ -80,23 +79,7 @@ class ServedChatAgentAdapter:
         return result.response
 
     def round_input(self, authority, reservation, config, *, owner, context,
-                    prompt, system, native_input, kind):
-        if kind == "native_agent":
-            if (authority.owner_user_id != owner
-                    or authority.universe_id != context.universe_dir.name
-                    or authority.provider != context.model_selection.connection_id
-                    or authority.selected_model is not None or native_input is None
-                    or config.agent_request is not None):
-                raise ProviderAuthorityHeldError("native agent scope changed")
-            native_prompt, native_system = native_input
-            return NativeInput(
-                authority.provider, context.model_selection.model_id,
-                authority.binding_id, reservation.reservation_id, authority.binding_generation,
-                authority.binding_digest,
-                "sha256:" + hashlib.sha256(
-                    dump({"prompt": native_prompt, "system": native_system}).encode("utf-8"),
-                ).hexdigest(),
-            )
+                    prompt, system, kind):
         if (kind != "engine_inference" or config.agent_request is None
                 or authority.owner_user_id != owner
                 or authority.universe_id != context.universe_dir.name):

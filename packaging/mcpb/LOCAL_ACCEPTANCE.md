@@ -4,7 +4,7 @@ What the local MCPB product's automated proof actually covers, and what it
 does not. The local bundle and hosted `https://tinyassets.io/mcp` are two
 products: evidence from one never satisfies the other's gate.
 
-Machine-checked by `tests/test_packaging_build.py`. Freshness: verified
+Historical test receipt (the suite was retired under the 2026-10-21 founder rule): verified
 2026-09-22 on Windows / Python 3.14.3 against this branch (36 passed; isolated test fixture,
 not cloud or desktop-install acceptance).
 Re-stamp this file when the covered behavior changes.
@@ -26,7 +26,7 @@ test fixtures confer no production serving authority.
 
 ## Proven
 
-Reproduce with `python -m pytest tests/test_packaging_build.py`:
+The historical checks covered:
 
 - **Staged artifact, not source.** `python packaging/mcpb/build_bundle.py`
   stages the live `tinyassets/` package, import-probes it in a subprocess,

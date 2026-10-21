@@ -70,8 +70,8 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
                 "LEFT JOIN connection_capabilities p ON p.connection_id=c.connection_id "
                 "AND p.capability_kind='model_discovery' "
                 "WHERE g.grant_id=? AND g.owner_user_id=? AND c.owner_user_id=? "
-                "AND g.universe_id=? AND (?='' OR c.connection_id=?)",
-                (grant_id, principal, principal, command_center, connection_id, connection_id),
+                "AND (?='' OR c.connection_id=?)",
+                (grant_id, principal, principal, connection_id, connection_id),
             ).fetchone()
             return {"recovery": None if row is None else {
                 "destination": row[0], "descriptor": json.loads(row[1]) if row[1] else None}}
@@ -79,10 +79,10 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
             rows = conn.execute(
                 "SELECT g.grant_id FROM outbound_connection_grants g "
                 "JOIN outbound_connections c ON c.connection_id=g.connection_id "
-                "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
+                "WHERE g.owner_user_id=? AND c.owner_user_id=? "
                 "AND g.connection_id=? AND g.revoked_at IS NULL AND c.revoked_at IS NULL "
                 "ORDER BY g.grant_id LIMIT 1001",
-                (principal, principal, command_center, connection_id),
+                (principal, principal, connection_id),
             ).fetchall()
             return {"grant_ids": [row[0] for row in rows]}
         if query == GIT_GRANTS:
@@ -92,10 +92,10 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
                 "SELECT g.grant_id, c.connection_id, c.scopes_json "
                 "FROM outbound_connection_grants g JOIN outbound_connections c "
                 "ON c.connection_id=g.connection_id "
-                "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
+                "WHERE g.owner_user_id=? AND c.owner_user_id=? "
                 "AND g.revoked_at IS NULL AND c.revoked_at IS NULL "
                 "ORDER BY g.grant_id LIMIT 1001",
-                (principal, principal, command_center),
+                (principal, principal),
             ).fetchall()
             if len(rows) > 1000:
                 raise ValueError("too many command center grants")
@@ -122,8 +122,8 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         grant = conn.execute(
             "SELECT connection_id, granted_at, unprompted_action_cap_json "
             "FROM outbound_connection_grants "
-            "WHERE grant_id = ? AND owner_user_id = ? AND universe_id = ? "
-            "AND revoked_at IS NULL", (grant_id, principal, command_center),
+            "WHERE grant_id = ? AND owner_user_id = ? "
+            "AND revoked_at IS NULL", (grant_id, principal),
         ).fetchone()
         if grant is None or (connection_id and grant["connection_id"] != connection_id):
             raise GrantResolutionError("outbound connection grant identity mismatch")
@@ -145,14 +145,14 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
                   "provider", "destination", "credential_ref", "revoked_at",
                   "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
-                  "git_host", "incarnation")
+                  "git_host", "incarnation", "request_ref", "committed_via")
         resource = {key: row[key] for key in fields}
         if query == GRANTED_RESOURCE:
             return {"resource": resource}
         if query == AUTHORIZED_CONNECTION:
             return {"resource": resource, "grant": {
                 "grant_id": grant_id, "connection_id": grant["connection_id"],
-                "owner_user_id": principal, "universe_id": command_center,
+                "owner_user_id": principal,
                 "granted_at": grant["granted_at"], "revoked_at": None,
                 "unprompted_action_cap": json.loads(grant["unprompted_action_cap_json"])
                 if grant["unprompted_action_cap_json"] else None,
@@ -243,7 +243,6 @@ def authorized_connection(data_root: Path, *, principal: str, command_center: st
         if not all((grant.grant_id == grant_id,
                     grant.connection_id == resource.connection_id == connection_id,
                     grant.owner_user_id == resource.owner_user_id == principal,
-                    grant.universe_id == command_center,
                     grant.revoked_at is None, resource.revoked_at is None,
                     isinstance(row.get("incarnation"), str))):
             raise ValueError("invalid authority projection")

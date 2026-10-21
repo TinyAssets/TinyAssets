@@ -143,7 +143,7 @@ framing.
     not a plausible-looking artifact. This rule overrides rule 2
     (always use tools) and rule 7 (aggressive assumption) in the
     narrow case of confirmed tool failure.
-11. Shared-account / cross-session: ask, don't assert. One Claude.ai
+11. Shared-account / cross-session: ask, don't assert. One connector
     account may be used by multiple people (household members, a host
     and a collaborator). Your memory layer is account-scoped — it cannot
     distinguish Person A's prior work from Person B's. When your memory
@@ -206,8 +206,7 @@ framing.
     name). Surfaces that should almost always carry a diagram or table:
     `read_graph target="branch" branch_id=...` (nodes + edges → mermaid flowchart),
     `read_graph target="runs"` (table by status), and
-    `read_graph target="run" run_id=...` (timeline). Mermaid renders in Claude.ai
-    and ChatGPT both;
+    `read_graph target="run" run_id=...` (timeline);
     markdown tables render everywhere. Visual-first is how the chatbot
     matches the user's mental model — prose-only is a regression.
 
@@ -262,7 +261,7 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `read_graph target="automation" automation_id=...` |
    | Connect an outbound channel    | `write_graph target="connection"`       |
    | (any HTTPS API — user-built)   | `operation="connect_http"`; `payload_json` |
-   |                                | has `destination`, `secret` (bearer), and |
+   |                                | has `destination`, `auth_scheme`, and |
    |                                | `allowed_endpoints:[{host,path_template,methods}]`; |
    |                                | then grant effector consent + a node with |
    |                                | effect `authenticated_external_call`    |
@@ -288,23 +287,11 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `action={"type":"connect_http",         |
    |                                | "destination":..., "endpoints":[        |
    |                                | {host,path_template,methods},...]}`     |
-   |                                | for a credential — the key goes         |
-   |                                | straight to the vault under exactly     |
-   |                                | those endpoints. A credential request   |
-   |                                | MUST also carry `fields`: ONE per value |
-   |                                | the service needs, every one            |
-   |                                | `type:"secret"`, `label` in the SITE'S  |
-   |                                | own words, plus `help` (where to click) |
-   |                                | and `url` (the page issuing it).        |
-   |                                | LOOK IT UP FIRST — WebFetch/WebSearch   |
-   |                                | the service, never ask from memory. An  |
-   |                                | ask with no                             |
-   |                                | fields is refused: one unlabelled box   |
-   |                                | makes the owner guess what goes where.  |
-   |                                | List EVERY call the                     |
-   |                                | flow needs in ONE request (a GitHub PR  |
-   |                                | needs git/refs + contents + pulls), so  |
-   |                                | the user pastes once. A path_template   |
+   |                                | with `fields:[]`. Return its door link. |
+   |                                | Credentials enter only at the door;     |
+   |                                | approvals accept no secret values.      |
+   |                                | A grant with its request_ref completes  |
+   |                                | the pending request. A path_template    |
    |                                | can be a PATTERN: any segment may be    |
    |                                | `{name}` and the LAST may be `{name+}`  |
    |                                | (matches the rest), each with a regex   |

@@ -108,31 +108,15 @@ def matches(home, row, condition, *, probe=None):
 
 
 def run_probe(home, row, condition):
-    import asyncio
-    import uuid
+    from tinyassets.boxes.provider import BoxError
+    from tinyassets.owner_runtime import require
 
-    from tinyassets.agent_loop.box_tools import BoxExecutor
-    from tinyassets.agent_loop.served_chat import configured_box_provider
-    from tinyassets.api.permissions import owner_run_identity
-    from tinyassets.control_plane.binding import bind_session, use_binding
-
-    # The probe is a bash command in the owner's box, bound for this wake
-    # alone: the box's own egress, limits and accounting. Never a daemon shell.
-    with owner_run_identity(home.parent, home.name, row["owner"]) as authorized:
-        if not authorized:
-            raise PermissionError("wake probe owner unavailable")
-        provider, limits = configured_box_provider()
-        if provider is None:
-            raise PermissionError("wake probe requires the owner box provider")
-        binding = bind_session(
-            provider=provider, limits=limits, universe_dir=home, owner=row["owner"],
-            execution_id=f"wake:{row['owner']}:{home.name}:{row['agent']}:{uuid.uuid4().hex}",
+    runtime = require(home, row["owner"])
+    try:
+        outcome = runtime.tools.run(
+            ["/bin/bash", "-c", condition["command"]], cwd=home,
+            wall_seconds=float(condition.get("timeout_seconds", 60)), output_bytes=64 * 1024,
         )
-        root = getattr(binding.handle, "root", None) or "/cc"
-        executor = BoxExecutor(provider, binding.handle, limits=limits, cwd=root)
-        with use_binding(binding):
-            outcome = asyncio.run(executor.run(
-                binding.operation_id("wake-probe"), ["/bin/bash", "-c", condition["command"]],
-                wall_seconds=float(condition.get("timeout_seconds", 60)),
-            ))
-    return outcome.exit_code == 0 and not outcome.killed
+    except BoxError:
+        return False
+    return outcome.returncode == 0

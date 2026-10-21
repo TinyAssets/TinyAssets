@@ -11,6 +11,7 @@ Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/deploy/hetzner-
 After=docker.service
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets-host-uptime/current
 Type=oneshot
 EnvironmentFile=/etc/tinyassets/env
 WorkingDirectory=/opt/tinyassets-host-uptime/current

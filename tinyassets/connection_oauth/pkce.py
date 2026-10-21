@@ -54,28 +54,23 @@ def is_callback_path(path: str) -> bool:
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS hosted_model_flows ("
                  "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                 "bound_home_id TEXT NOT NULL, preset_id TEXT NOT NULL, "
-                 "preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+                 "preset_id TEXT NOT NULL, preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
                  "callback_origin TEXT NOT NULL, created_at REAL NOT NULL, "
-                 "expires_at REAL NOT NULL)")
-    # The generic flow binds to ONE pending connect request and the exact
-    # action the owner was shown (its digest), plus the client the flow used.
+                 "expires_at REAL NOT NULL, request_ref TEXT NOT NULL DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS connection_oauth_flows ("
                  "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                 "universe_id TEXT NOT NULL, request_id TEXT NOT NULL, "
-                 "action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+                 "request_id TEXT NOT NULL, action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
                  "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
-                 "created_at REAL NOT NULL, expires_at REAL NOT NULL)")
-
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(connection_oauth_flows)")}
-    if "approved_owner" not in columns:
-        conn.execute("ALTER TABLE connection_oauth_flows "
-                     "ADD COLUMN approved_owner TEXT NOT NULL DEFAULT ''")
+                 "created_at REAL NOT NULL, expires_at REAL NOT NULL, "
+                 "definition_json TEXT NOT NULL DEFAULT '{}', approved_owner TEXT NOT NULL)")
 
 
 @contextmanager
 def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
     """One IMMEDIATE transaction over the flow store, expired rows swept first."""
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("oauth_pkce")
     conn = sqlite3.connect(Path(base) / _DB_NAME, timeout=5, isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:

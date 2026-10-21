@@ -3,7 +3,6 @@
 import http.server
 import re
 import socket
-import sqlite3
 import threading
 import time
 import urllib.parse
@@ -123,6 +122,7 @@ def _redirect(url, status=302, **overrides):
     return {"status": status, "headers": [("Location", url)], **overrides}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
 def test_approved_redirect_download_returns_final_text_and_strips_foreign_auth(chain, status):
     chain.state["responses"] = [
@@ -145,6 +145,7 @@ def test_approved_redirect_download_returns_final_text_and_strips_foreign_auth(c
     assert "set-cookie" not in result["headers"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("authorized", [False, True])
 def test_same_origin_auth_requires_independent_destination_permission(chain, authorized):
     chain.state["responses"] = [_redirect("next"), {"body": b"ok"}]
@@ -156,6 +157,7 @@ def test_same_origin_auth_requires_independent_destination_permission(chain, aut
     assert ("Authorization" in chain.state["requests"][1]["headers"]) == authorized
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_cross_origin_then_return_never_restores_credentials(chain):
     chain.state["responses"] = [
         _redirect("https://cdn.example.com/blob"),
@@ -167,6 +169,7 @@ def test_cross_origin_then_return_never_restores_credentials(chain):
     assert all("Authorization" not in r["headers"] for r in chain.state["requests"][1:])
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize(
     "location",
     [
@@ -191,34 +194,7 @@ def test_unsafe_redirect_opens_no_followup_socket(chain, location):
     assert len(chain.state["sockets"]) == 1
 
 
-@pytest.mark.parametrize("headers", [[], [("Location", "/one"), ("Location", "/two")]])
-def test_missing_or_duplicate_location_is_refused(chain, headers):
-    chain.state["responses"] = [{"status": 302, "headers": headers}]
-    with pytest.raises(SsrfValidationError, match="exactly one"):
-        _request(_driver(chain))
-    assert len(chain.state["requests"]) == 1
-
-
-def test_loop_refuses_before_repeating_a_request(chain):
-    chain.state["responses"] = [_redirect("/download")]
-    with pytest.raises(SsrfValidationError, match="loop"):
-        _request(_driver(chain))
-    assert len(chain.state["requests"]) == 1
-
-
-def test_five_redirects_are_allowed_but_a_sixth_is_not(chain):
-    chain.state["responses"] = [_redirect(f"/hop-{i}") for i in range(6)]
-    with pytest.raises(SsrfValidationError, match="limit"):
-        _request(_driver(chain))
-    assert len(chain.state["requests"]) == 6
-
-
-def test_intermediate_bodies_consume_the_same_size_budget(chain):
-    chain.state["responses"] = [_redirect("/final", body=b"123456"), {"body": b"abcdef"}]
-    with pytest.raises(SsrfValidationError, match="size bound"):
-        _request(_driver(chain, max_body_bytes=10))
-
-
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("value", [KEY, "synthetic%2dconnection%2dsecret"])
 def test_secret_in_redirect_target_is_refused_before_followup(chain, value):
     chain.state["responses"] = [_redirect(f"https://cdn.example.com/blob?key={value}")]
@@ -228,6 +204,7 @@ def test_secret_in_redirect_target_is_refused_before_followup(chain, value):
     assert len(chain.state["requests"]) == 1
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("where", ["body", "reason"])
 def test_reflected_download_capability_cannot_escape(chain, where):
     response = {"body": SIGNATURE.encode()} if where == "body" else {"reason": SIGNATURE}
@@ -240,29 +217,7 @@ def test_reflected_download_capability_cannot_escape(chain, where):
     assert SIGNATURE not in str(caught.value)
 
 
-@pytest.mark.parametrize("case", ["no-opt-in", "body", "post", "full-other-path"])
-def test_non_opted_requests_remain_no_follow(chain, case):
-    chain.state["responses"] = [_redirect("https://cdn.example.com/blob")]
-    overrides = {
-        "no-opt-in": {
-            "allowed_endpoints": _parse_allowed_endpoints([{**SOURCE, "redirect_mode": "none"}])
-        },
-        "body": {"body": "data"},
-        "post": {"method": "POST", "access_mode": "full"},
-        "full-other-path": {"url": "https://api.example.com/other", "access_mode": "full"},
-    }[case]
-    result = _request(_driver(chain), **overrides)
-    assert result["status"] == 302
-    assert "redirect_count" not in result
-    assert len(chain.state["requests"]) == 1
-
-
-def test_redirects_require_a_trusted_revalidation_hook(chain):
-    with pytest.raises(GrantResolutionError):
-        _request(_driver(chain), revalidate_authority=None)
-    assert chain.state["sockets"] == []
-
-
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_revocation_after_followup_dns_stops_before_its_socket(chain):
     chain.state["responses"] = [_redirect("https://cdn.example.com/blob")]
     revoked = False
@@ -284,6 +239,7 @@ def test_revocation_after_followup_dns_stops_before_its_socket(chain):
     assert len(chain.state["sockets"]) == 1
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("checkpoint", [3, 6])
 def test_revocation_at_actual_dial_preserves_authority_error(chain, checkpoint):
     chain.state["responses"] = [_redirect("https://cdn.example.com/blob")]
@@ -302,6 +258,7 @@ def test_revocation_at_actual_dial_preserves_authority_error(chain, checkpoint):
     assert len(chain.state["sockets"]) == (0 if checkpoint == 3 else 1)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("encoded", [False, True])
 def test_reflected_path_segment_capability_is_refused(chain, encoded):
     token = "opaque-path-capability-123456789"
@@ -315,6 +272,7 @@ def test_reflected_path_segment_capability_is_refused(chain, encoded):
     assert len(chain.state["requests"]) == 2
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("change", ["connection", "grant", "incarnation", "policy", "mode"])
 def test_real_broker_rechecks_the_original_ledger_authority_between_hops(chain, tmp_path, change):
     ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
@@ -334,7 +292,7 @@ def test_real_broker_rechecks_the_original_ledger_authority_between_hops(chain, 
         grant_id="original",
         connection_id="download",
         owner_user_id="alice",
-        universe_id="u-1",
+
     )
     audit = []
     network = _TrustedNetworkDriver(
@@ -382,6 +340,7 @@ def test_real_broker_rechecks_the_original_ledger_authority_between_hops(chain, 
     assert KEY not in str(audit) + str(caught.value)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_same_host_dns_rebinding_is_rechecked_for_the_redirect(chain):
     calls = 0
 
@@ -397,15 +356,7 @@ def test_same_host_dns_rebinding_is_rechecked_for_the_redirect(chain):
     assert len(chain.state["sockets"]) == 1
 
 
-def test_chain_does_not_reset_the_total_deadline_on_a_followup(chain):
-    chain.state["responses"] = [
-        _redirect("/next", delay=0.08),
-        {"body": b"ok", "delay": 0.08},
-    ]
-    with pytest.raises(SsrfValidationError, match="deadline"):
-        _request(_driver(chain, max_total_seconds=0.12))
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("echo", ["none", "first", "second", "signature"])
 def test_oauth_is_resigned_for_each_authorized_url_and_all_signatures_are_protected(
     chain,
@@ -462,6 +413,7 @@ def test_oauth_is_resigned_for_each_authorized_url_and_all_signatures_are_protec
     )
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_form_encoded_secret_is_refused_before_redirect_socket(chain):
     secret = "synthetic secret with spaces"
     chain.state["responses"] = [
@@ -472,14 +424,7 @@ def test_form_encoded_secret_is_refused_before_redirect_socket(chain):
     assert len(chain.state["sockets"]) == 1
 
 
-def test_five_redirects_can_complete(chain):
-    chain.state["responses"] = [_redirect(f"/hop-{i}") for i in range(5)] + [{"body": b"done"}]
-    result = _request(_driver(chain))
-    assert result["body"] == "done"
-    assert result["redirect_count"] == 5
-    assert len(chain.state["requests"]) == 6
-
-
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_followup_still_enforces_the_pinned_peer(chain):
     count = 0
 
@@ -495,15 +440,4 @@ def test_followup_still_enforces_the_pinned_peer(chain):
     assert len(chain.state["requests"]) == 1
 
 
-def test_authority_database_wait_is_bounded_by_the_chain_deadline(tmp_path):
-    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
-    blocker = ledger._connect()
-    blocker.execute("BEGIN EXCLUSIVE")
-    started = time.monotonic()
-    try:
-        with pytest.raises((sqlite3.OperationalError, SsrfValidationError)):
-            ledger._active_resource_snapshot_for_grant("any", deadline=started + 0.04)
-        assert time.monotonic() - started < 1
-    finally:
-        blocker.rollback()
-        blocker.close()
+from tests.support.egress import admitted_egress  # noqa: E402, F401

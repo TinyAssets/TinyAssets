@@ -1,15 +1,10 @@
-"""The daemon's account-deletion phase for broker-owned ledger rows.
+"""Broker-local custody and ledger erasure for the deletion job.
 
-Only a principal crosses this interface. No table, path, SQL or home supplied
-by a caller can expand the deletion. The daemon has already tombstoned the
-account; filesystem deletion and external identity cleanup remain its phases.
+Only a principal and the fixed account scope select this operation. A caller
+cannot provide a table, path, SQL statement or home to expand the deletion.
+The broker deletion job owns orchestration, custody and ledger writes.
 """
 from __future__ import annotations
-
-import os
-import socket
-
-from tinyassets import rpc_frames as rf
 
 ACCOUNT_SCOPE = "account-deletion"
 TABLES = frozenset({
@@ -28,7 +23,7 @@ def validate(principal, command_center):
         raise ValueError("invalid account erasure scope")
 
 
-def local_erase(ledger, *, principal, command_center):
+def local_erase(ledger, *, principal, command_center, erase_external_keys=True):
     validate(principal, command_center)
     owned_connections = "SELECT connection_id FROM outbound_connections WHERE owner_user_id=?"
     owned_artifacts = "SELECT artifact_id FROM outbound_connector_artifacts WHERE owner_user_id=?"
@@ -65,43 +60,13 @@ def local_erase(ledger, *, principal, command_center):
             count = conn.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
             if count:
                 counts[table] = count
+    from tinyassets.broker.vault import erase_owner
+
+    erase_owner(ledger._data_root, principal)
     from tinyassets.broker.browser_vault import key_path
 
     path = key_path(ledger, principal)
-    path.unlink(missing_ok=True)
+    if erase_external_keys:
+        path.unlink(missing_ok=True)
     (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
-    return counts
-
-
-def erase_account(data_root, *, principal):
-    from tinyassets.broker.supervisor import get_supervisor
-    from tinyassets.storage.outbound_connections import ProxyRequestError
-
-    validate(principal, ACCOUNT_SCOPE)
-    supervisor = get_supervisor(data_root)
-    if supervisor is None:
-        raise ProxyRequestError("the credential broker is not running")
-    generation, token = supervisor.fence()
-    document = {"op": "ERASE_ACCOUNT", "principal": principal,
-                "command_center": ACCOUNT_SCOPE, "generation": generation, "token": token}
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
-        channel.settimeout(30)
-        try:
-            channel.connect(os.fspath(supervisor.socket_path))
-            supervisor.verify_broker(channel)
-            channel.sendall(rf.control(rf.CONNECTION, document))
-            frame = rf.read_frame_blocking(channel)
-            if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
-                raise rf.FrameError("invalid account erasure reply")
-            answer = frame.control()
-        except (OSError, rf.FrameError):
-            # No automatic replay of an ambiguous mutation. A fresh explicit
-            # deletion retry may safely find zero remaining rows.
-            raise ProxyRequestError("broker account erasure outcome unavailable") from None
-    if set(answer) != {"op", "counts"} or answer["op"] != "ACCOUNT_ERASED":
-        raise ProxyRequestError("broker account erasure refused")
-    counts = answer["counts"]
-    if (not isinstance(counts, dict) or not counts.keys() <= TABLES
-            or any(type(n) is not int or n < 1 for n in counts.values())):
-        raise ProxyRequestError("invalid broker account erasure counts")
     return counts

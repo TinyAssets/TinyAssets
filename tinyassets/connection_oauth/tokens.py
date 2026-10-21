@@ -20,12 +20,7 @@ access token is used. The vault's exclusive admission is taken BEFORE the
 refresh token is spent, so a token the provider rotates can always be saved: if
 the vault cannot be held, nothing is spent and the call fails retryably.
 
-That ordering is not implemented here. It lives in
-:func:`tinyassets.credential_refresh.refresh_credential`, shared with the
-subscription bundle a CLI provider is launched with, which spends the same kind
-of single-use refresh token and needs the same five steps in the same order.
-This module supplies only the ``oauth2`` encoding: what to read, when it is
-stale, how to spend it, and what record to write.
+Refresh ordering and custody writes live in ``tinyassets.broker.tokens``.
 """
 
 from __future__ import annotations
@@ -34,7 +29,6 @@ import base64
 import json
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -159,7 +153,7 @@ def _expires_at(doc: dict[str, Any], now: float) -> float | None:
 
 def _request_token(token_url: str, client_id: str, provider_id: str,
                    form: dict[str, str], secrets: tuple[str, ...]) -> dict[str, Any]:
-    """Authenticate only at a re-pinned directory token endpoint, daemon-side."""
+    """Authenticate only at a re-pinned directory token endpoint."""
     basic_auth = None
     sensitive: tuple[str, ...] = ()
     if provider_id:
@@ -235,139 +229,3 @@ def refresh(bundle: TokenBundle) -> TokenBundle:
         expires_at=_expires_at(doc, now),
         scope=str(doc["scope"] if doc.get("scope") is not None else bundle.scope),
     )
-
-
-# --------------------------------------------------------------------------- #
-# Single-flight refresh, inside the broker.
-# --------------------------------------------------------------------------- #
-
-
-class ConnectionTokens:
-    """Current access token for one universe's oauth2 connections.
-
-    Built inside the broker child from its own config: the universe directory
-    whose vault holds the bundle and the owner the vault records it under. A
-    refresh that fails raises
-    :class:`~tinyassets.storage.outbound_connections.ConnectionAuthorizationError`,
-    an ordinary connection failure (stage ``connection``, class ``auth``) with
-    the token endpoint's own words as its detail.
-    """
-
-    def __init__(self, *, universe_dir: str | Path, owner_user_id: str,
-                 oauth_service: dict[str, Any] | None = None,
-                 allow_local_refresh: bool = True) -> None:
-        self._universe_dir = Path(universe_dir)
-        self._owner = str(owner_user_id)
-        self._oauth_service = oauth_service
-        self._allow_local_refresh = allow_local_refresh
-
-    # The vault seam: read and write the ONE record, by its destination.
-    def _read(self, destination: str) -> str:
-        from tinyassets.credential_vault import load_credential_vault
-
-        for record in load_credential_vault(self._universe_dir):
-            if (str(record.get("credential_type") or "").lower() == "http"
-                    and str(record.get("destination") or "").strip() == destination):
-                value = record.get("token")
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        raise LookupError("credential reference is unavailable")
-
-    def _write(self, destination: str, bundle: TokenBundle) -> None:
-        from tinyassets.credential_vault import (
-            http_credential_record,
-            write_credential_vault,
-        )
-
-        write_credential_vault(
-            self._universe_dir,
-            [http_credential_record(destination=destination, token=encode(bundle))],
-            owner_user_id=self._owner, universe_id=self._universe_dir.name,
-        )
-
-    @staticmethod
-    def _failed(detail: str):
-        from tinyassets.storage.outbound_connections import ConnectionAuthorizationError
-
-        return ConnectionAuthorizationError(detail)
-
-    def current(self, destination: str, credential: str, *, rejected: str = "",
-                refresh_request=None) -> TokenBundle:
-        """The bundle whose access token to send now.
-
-        ``rejected`` is an access token the service just answered 401 to; the
-        stored one is refreshed unless another holder already replaced it.
-        """
-        from tinyassets.credential_refresh import RefreshError, refresh_credential
-        from tinyassets.credential_vault import http_credential_record
-
-        try:
-            bundle = decode(credential)
-        except ValueError:
-            raise self._failed("the stored authorization is unreadable; reconnect") from None
-        if not rejected and not bundle.expiring():
-            return bundle
-        if refresh_request is not None:
-            import hashlib
-
-            refresh_request(destination, hashlib.sha256(rejected.encode()).hexdigest()
-                            if rejected else "")
-            try:
-                return decode(self._read(destination))
-            except (LookupError, ValueError):
-                raise self._failed("refreshed authorization is unreadable; reconnect") from None
-        if not self._allow_local_refresh:
-            raise self._failed("daemon refresh admission is unavailable")
-        if bundle.provider_id:
-            from tinyassets.connection_oauth import service
-
-            remote = self._oauth_service or service.inherited_config()
-            if remote:
-                try:
-                    service.call(remote, {"op": "refresh", "destination": destination,
-                                          "rejected": rejected})
-                    return decode(self._read(destination))
-                except (OAuthError, LookupError, ValueError):
-                    raise self._failed("platform authorization refresh failed; reconnect") from None
-
-        def read() -> TokenBundle:
-            # Re-read INSIDE the locks: the holder before us may have rotated it.
-            try:
-                return decode(self._read(destination))
-            except (LookupError, ValueError):
-                raise RefreshError(
-                    "the stored authorization is unreadable; reconnect") from None
-
-        def stale(current: TokenBundle) -> bool:
-            # Another holder already refreshed: use theirs, never spend the
-            # (possibly single-use) refresh token a second time.
-            now = time.time()
-            return current.expiring(now) or bool(
-                rejected and current.access_token == rejected)
-
-        def spend(current: TokenBundle) -> TokenBundle:
-            if not current.refresh_token:
-                raise RefreshError(
-                    "the provider issued no refresh token; reconnect to sign in again")
-            try:
-                return refresh(current)
-            except OAuthError as exc:
-                raise RefreshError(exc.detail or exc.code) from None
-
-        try:
-            return refresh_credential(
-                universe_dir=self._universe_dir,
-                lock_id=destination,
-                owner_user_id=self._owner,
-                universe_id=self._universe_dir.name,
-                read=read,
-                stale=stale,
-                spend=spend,
-                records=lambda fresh: [
-                    http_credential_record(destination=destination, token=encode(fresh))
-                ],
-                subject="connection",
-                wait_seconds=LOCK_WAIT_SECONDS,
-            )
-        except RefreshError as exc:
-            raise self._failed(exc.detail) from None

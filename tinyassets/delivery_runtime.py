@@ -17,6 +17,7 @@ from tinyassets.api.receiver_links import _owned_branch
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.branches import BranchDefinition
+from tinyassets.owner_activity import owner_work
 from tinyassets.run_admission_envelope import encode_admission_envelope
 from tinyassets.storage import _connect as author_connection
 from tinyassets.storage import deliveries
@@ -180,6 +181,7 @@ def _receiver_provider(base, delivery, branch, run_id):
     )
 
 
+@owner_work
 def _work(base, delivery_id, attempt):
     """Lock lifetime includes provider execution and terminal settlement."""
     with try_attempt_lock(base, delivery_id=delivery_id, attempt=attempt) as guard:
@@ -250,6 +252,7 @@ def _work(base, delivery_id, attempt):
                 deliveries.reconcile_attempt(base, guard)
 
 
+@owner_work
 def dispatch_accepted_delivery(base, *, delivery_id, attempt=1):
     """Submit one reserved attempt in a fresh context to the existing executor.
 

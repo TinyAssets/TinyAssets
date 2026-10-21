@@ -1,23 +1,9 @@
-"""The in-process owner box every non-oracle test reaches.
+"""Synthetic startup admission for Linux tests of local owner files and tools.
 
-Production has no unconfined path: every owner-scoped file read, write and
-execution goes through the session's admitted box handle, and the provider
-behind it is installed once by the owner-box frontend (gVisor through
-``boxhostd``). A test process has no host service and no owner uids, so
-without a double every owner operation would refuse.
-
-The double is the local box core (``tinyassets.boxes.boxd.BoxdCore``) over
-the test's data root: the command center directory IS the box, commands run
-unisolated in the test process's uid, and the handle, epoch, journal and file
-API are the real ones. Admission is stood in for at one seam: a center with
-no recorded owner admits whichever account asks, as the deleted cell doubles
-did for a test that wrote into a center it never created; a center the
-daemon tables attribute admits only that account.
-
-Opt out with ``pytestmark = pytest.mark.role_split`` in a module that drives
-the real host service or provider (the root oracle runs those).
-
-Linux-only, like the local box core itself.
+OwnerTools and bounded children use real OwnerBoxd cores over disposable test
+roots. Legacy file-contract tests retain a reference file driver; production
+has no configurable shared-daemon provider. Real OS boundary proofs opt out
+with role_split and run the persistent owner process in a Linux jail.
 """
 from __future__ import annotations
 
@@ -125,11 +111,6 @@ class _PermissiveBoxd:
         def call(handle, *args, **kwargs):
             original = args[0] if name == "read_many" and args else kwargs.get("paths")
             args, kwargs = _project(name, list(args), dict(kwargs))
-            if name == "start_exec":
-                # Commands run unisolated in the test's uid, so a box path in
-                # argv must name the center's host directory, as the box's own
-                # mount would.
-                args, kwargs = _host_argv(self._for(handle), handle, args, kwargs)
             result = getattr(self._for(handle), name)(handle, *args, **kwargs)
             if name == "read_many" and original is not None:
                 # The production channel hands back the caller's own keys.
@@ -187,49 +168,12 @@ def _project(name, args, kwargs):
     return args, kwargs
 
 
-def _host_argv(core, handle, args, kwargs):
-    from tinyassets.boxes.provider import BOX_ROOT
-
-    host = str(core._root / handle.command_center_id)
-
-    def mapped(value):
-        if isinstance(value, str) and (value == BOX_ROOT or value.startswith(BOX_ROOT + "/")):
-            return host + value[len(BOX_ROOT):]
-        return value
-
-    def mapped_argv(argv):
-        argv = [mapped(value) for value in argv]
-        # The box image's `python` has tinyassets installed; in a test that
-        # interpreter is the one running the suite, not whatever PATH finds.
-        if argv and argv[0] in ("python", "python3"):
-            argv[0] = sys.executable
-        return argv
-
-    if len(args) > 1:
-        args[1] = mapped_argv(args[1])
-    elif "argv" in kwargs:
-        kwargs["argv"] = mapped_argv(kwargs["argv"])
-    # The box image names its browsers (gvisor_runtime) and installs this
-    # package; here, the test host's browsers and the source tree under test.
-    import tinyassets
-
-    browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(
-        Path.home() / ".cache" / "ms-playwright")
-    kwargs["env"] = {"PLAYWRIGHT_BROWSERS_PATH": browsers,
-                     "PYTHONPATH": str(Path(tinyassets.__file__).resolve().parent.parent),
-                     **(kwargs.get("env") or {})}
-    return args, kwargs
-
-
 def install(monkeypatch):
     """Install the owner box double for one test (also usable in spawned children)."""
-    from tinyassets.agent_loop import served_chat
     from tinyassets.boxes.provider import ExecLimits
     from tinyassets.control_plane import binding as binding_module
 
     double = _PermissiveBoxd()
-    monkeypatch.setattr(served_chat, "_box_provider", double)
-    monkeypatch.setattr(served_chat, "_box_limits", ExecLimits())
     real_file_binding = binding_module.file_binding
     bindings = {}
 
@@ -241,7 +185,20 @@ def install(monkeypatch):
         """
         root = Path(os.path.abspath(root))
         current = binding_module.current_binding()
-        if (current is not None or root.name.startswith(".")
+        # Explicit handles still exercise the deferred per-call backend. The
+        # owner daemon's local tools do not use this test-only binding seam.
+        if current is not None:
+            if root == current.universe_dir:
+                current.validate(current.handle.account_id, root)
+                return current
+            if (root.is_relative_to(current.universe_dir)
+                    or (root.parent == current.universe_dir.parent
+                        and not root.name.startswith("."))):
+                from tinyassets.boxes.provider import BoxAuthError
+
+                raise BoxAuthError("owner file access differs from admitted test session")
+            return None
+        if (root.name.startswith(".")
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", root.name)):
             return real_file_binding(root)
         if not root.is_dir():
@@ -270,11 +227,158 @@ def install(monkeypatch):
     def admit_center(data_root, *, principal, center):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", center):
             raise RuntimeError("invalid command center name")
+        from tinyassets.owner_centers import Centers
+
+        Centers(data_root).create(center)
         (Path(data_root) / center).mkdir(exist_ok=True)
         return 1
 
     monkeypatch.setattr(lifecycle, "admit_center", admit_center)
+    # Owner tool calls now use the actual in-process OwnerTools/OwnerBoxd.
+    # Only startup admission is simulated; no per-call execution provider runs.
+    from contextvars import ContextVar
+
+    from tinyassets import owner_runtime
+    from tinyassets.agent_loop import owner_tools
+    from tinyassets.boxes.boxd import OwnerBoxd
+
+    admitted = ContextVar("test_owner_tool_admission", default=None)
+    original_current = owner_tools.current
+    original_tools_for = owner_tools.tools_for
+    local_cores = {}
+    local_core_lock = threading.Lock()
+    monkeypatch.setattr(owner_tools, "current", lambda: original_current() or admitted.get())
+
+    real_require = owner_runtime.require
+    real_file_scope = owner_runtime.file_scope
+
+    def local_runtime(universe_dir, principal=None):
+        root = Path(universe_dir).absolute()
+        if original_current() is not None:
+            return real_require(root, principal)
+        binding = binding_module.current_binding()
+        owner = (binding.handle.account_id if binding is not None and binding.universe_dir == root
+                 else double.admitted_owner(root.parent, root.name))
+        if principal is not None:
+            recorded = double._core(root.parent)._owner_of(root.name)
+            if recorded is not None and recorded != principal:
+                raise PermissionError("foreign owner")
+            owner = principal
+        key = (root.parent, owner)
+        with local_core_lock:
+            return admitted_runtime(key, root, owner)
+
+    def admitted_runtime(key, root, owner):
+        if key not in local_cores:
+            state = Path(double._state) / ("local-" + hashlib.sha256(str(key).encode()).hexdigest())
+            root.parent.mkdir(parents=True, exist_ok=True)
+            from tinyassets.action_policy import initialize
+
+            initialize(root.parent / ".action-policy.db")
+            core = OwnerBoxd(owner_id=owner, owner_root=root.parent, state_dir=state)
+            original_run = core.run
+
+            def run(argv, **kwargs):
+                import tinyassets
+                argv = list(argv)
+                if argv[0] in {"python", "python3"}:
+                    argv[0] = sys.executable
+                kwargs["env"] = {"PYTHONPATH": str(Path(tinyassets.__file__).parent.parent),
+                                 "PLAYWRIGHT_BROWSERS_PATH": os.environ.get(
+                                     "PLAYWRIGHT_BROWSERS_PATH",
+                                     str(Path.home() / ".cache/ms-playwright")),
+                                 **(kwargs.get("env") or {})}
+                return original_run(argv, **kwargs)
+
+            core.run = run
+            local_cores[key] = core
+        return owner_runtime.OwnerRuntime(owner, os.getuid(), root.parent,
+                                          os.getpid(), local_cores[key])
+
+    def local_tools_for(universe_dir):
+        root = Path(universe_dir).absolute()
+        token = admitted.set(local_runtime(root))
+        try:
+            return original_tools_for(root)
+        finally:
+            admitted.reset(token)
+
+    def local_file_scope(path):
+        if original_current() is not None:
+            return real_file_scope(path)
+        path = Path(path).absolute()
+        binding = binding_module.current_binding()
+        if binding is not None:
+            home = binding.universe_dir
+            path.relative_to(home)
+            runtime = local_runtime(home, binding.handle.account_id)
+        else:
+            candidates = [Path(root) for root in double._cores
+                          if path.is_relative_to(Path(root))]
+            if candidates:
+                root = max(candidates, key=lambda value: len(value.parts))
+            else:
+                from tinyassets.storage import data_dir
+                root = Path(data_dir()).absolute()
+            relative = path.relative_to(root)
+            runtime = local_runtime(root / relative.parts[0])
+        relative = path.relative_to(runtime.root)
+        if not relative.parts or ".." in relative.parts:
+            raise PermissionError("foreign path")
+        handle = runtime.tools.bind(runtime.principal, session_id="files")
+        return runtime.tools, handle, "/cc/" + relative.as_posix()
+
+    monkeypatch.setattr(owner_runtime, "require", local_runtime)
+    monkeypatch.setattr(owner_runtime, "file_scope", local_file_scope)
+    monkeypatch.setattr(owner_tools, "tools_for", local_tools_for)
+    # The fixture models several owner processes in one interpreter. Turn IDs
+    # must be minted in the same admitted runtime as the tools executing them.
+    from tinyassets import operation_epoch
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    mint = operation_epoch.new_identity
+    create_turn = AgentTurnJournal.create
+
+    def local_identity(value):
+        runtime = admitted.get()
+        return runtime.tools.new_operation(value) if runtime is not None else mint(value)
+
+    def local_create_turn(journal, owner, universe, **kwargs):
+        token = admitted.set(local_runtime(journal._ledger.base_path / universe, owner))
+        try:
+            return create_turn(journal, owner, universe, **kwargs)
+        finally:
+            admitted.reset(token)
+
+    monkeypatch.setattr(operation_epoch, "new_identity", local_identity)
+    monkeypatch.setattr(AgentTurnJournal, "create", local_create_turn)
+    previous_close = double.close
+
+    def close():
+        for core in local_cores.values():
+            core.close()
+        previous_close()
+
+    double.close = close
     return double
+
+
+@pytest.fixture
+def admitted_center():
+    """Create a synthetic center through admission before exercising local IO."""
+    def admit(root, center, principal="test-owner"):
+        from tests.support.broker_double import seed_owner_admission
+        from tinyassets.boxes.lifecycle import admit_center
+        from tinyassets.daemon_server import grant_universe_ownership
+
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        seed_owner_admission(root, principal=principal, center=center)
+        grant_universe_ownership(root, universe_id=center, owner_id=principal)
+        admit_center(root, principal=principal, center=center)
+        return root / center
+
+    return admit
 
 
 @pytest.fixture(autouse=True)

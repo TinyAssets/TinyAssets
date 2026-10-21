@@ -2,16 +2,14 @@
 
 import asyncio
 import contextlib
-import re
 import sqlite3
 
 from tinyassets import rpc_frames as rf
-from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
-from tinyassets.broker.box_admission import resolve
-
-#: Kept in step with ``engine_mcp_http``; the broker imports no daemon module.
-BOX_ENGINE_HOST = "engine.tinyassets.box"
-ENGINE_SOCKET_DIR = ".engine-mcp"
+from tinyassets.boxes.network import EgressRefused, _destination
+from tinyassets.broker.admission import owner_lock
+from tinyassets.broker.box_admission import resolve_owner
+from tinyassets.broker.egress import destination
+from tinyassets.storage.outbound_connections import SsrfValidationError
 
 
 class PublicEgress:
@@ -19,6 +17,7 @@ class PublicEgress:
         self.identities = identities
         self.data_root = data_root
         self.active = {}
+        self.channels = {}
 
     async def serve(self, reader, writer, document):
         # Called only for BOX_HOST, before any guest bytes are interpreted as
@@ -27,42 +26,34 @@ class PublicEgress:
         admitted = False
         upstream = None
         pumps = []
+        task = asyncio.current_task()
+        self.channels[task] = (owner, writer)
         try:
-            await asyncio.to_thread(resolve, self.identities,
-                                    {**document, "op": "BOX_ADMISSION"})
-            if sum(self.active.values()) >= 64 or self.active.get(owner, 0) >= 32:
-                raise EgressRefused("owner or host egress capacity reached")
-            self.active[owner] = self.active.get(owner, 0) + 1
-            admitted = True
-            writer.write(rf.control(rf.CONNECTION, {"op": "BOX_ADMITTED"}))
-            await asyncio.wait_for(writer.drain(), 30)
+            async with owner_lock(self.identities.path, owner):
+                await asyncio.to_thread(resolve_owner, self.identities, document,
+                                        data_root=self.data_root)
+                if sum(self.active.values()) >= 64 or self.active.get(owner, 0) >= 32:
+                    raise EgressRefused("owner or host egress capacity reached")
+                self.active[owner] = self.active.get(owner, 0) + 1
+                admitted = True
+                writer.write(rf.control(rf.CONNECTION, {"op": "BOX_ADMITTED"}))
+                await asyncio.wait_for(writer.drain(), 30)
             # readuntil retains body bytes, and limits are checked before DNS.
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 30)
             if len(head) > 16384:
                 raise EgressRefused("proxy header exceeds bound")
             host, port, first = _destination(head)
-            if host == BOX_ENGINE_HOST:
-                # The owner's own engine route (its command center's socket),
-                # never another center's and never the daemon's TCP listener.
-                center = document.get("center")
-                if (self.data_root is None or not isinstance(center, str)
-                        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", center)):
-                    raise EgressRefused("engine route is not admitted for this box")
-                async with asyncio.timeout(15):
-                    incoming, upstream = await asyncio.open_unix_connection(
-                        str(self.data_root / ENGINE_SOCKET_DIR / f"{center}.sock"))
-            else:
-                addresses = await asyncio.wait_for(
-                    asyncio.to_thread(_checked_addresses, host, port), 10)
-                async with asyncio.timeout(15):
-                    for address in addresses:
-                        try:
-                            incoming, upstream = await asyncio.open_connection(address, port)
-                            break
-                        except OSError:
-                            continue
-                    else:
-                        raise EgressRefused("destination unavailable")
+            addresses = await asyncio.wait_for(
+                asyncio.to_thread(destination, (self.identities, owner), host, port), 10)
+            async with asyncio.timeout(15):
+                for address in addresses:
+                    try:
+                        incoming, upstream = await asyncio.open_connection(address, port)
+                        break
+                    except OSError:
+                        continue
+                else:
+                    raise EgressRefused("destination unavailable")
             if first is None:
                 writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 await asyncio.wait_for(writer.drain(), 30)
@@ -72,7 +63,8 @@ class PublicEgress:
             pumps = [asyncio.create_task(self._pump(reader, upstream)),
                      asyncio.create_task(self._pump(incoming, writer))]
             await asyncio.gather(*pumps)
-        except (EgressRefused, ValueError, PermissionError, LookupError, OSError, sqlite3.Error,
+        except (EgressRefused, SsrfValidationError, ValueError, PermissionError,
+                LookupError, OSError, sqlite3.Error,
                 asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
             with contextlib.suppress(OSError, TimeoutError):
                 writer.write((b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n"
@@ -80,16 +72,26 @@ class PublicEgress:
                              rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
                 await asyncio.wait_for(writer.drain(), 1)
         finally:
-            for task in pumps:
-                task.cancel()
-            if pumps:
-                await asyncio.gather(*pumps, return_exceptions=True)
+            self.channels.pop(task, None)
+            for pump in pumps:
+                pump.cancel()
             if upstream is not None:
-                upstream.close()
+                if task.cancelling():
+                    upstream.transport.abort()
+                else:
+                    upstream.close()
             if admitted:
                 self.active[owner] -= 1
                 if not self.active[owner]:
                     del self.active[owner]
+            writer.close()
+            await asyncio.gather(*pumps, return_exceptions=True)
+
+    def close_owner(self, owner):
+        for task, (principal, writer) in tuple(self.channels.items()):
+            if principal == owner:
+                writer.transport.abort()
+                task.cancel()
 
     @staticmethod
     async def _pump(reader, writer):

@@ -444,7 +444,6 @@ def resolve_inactive_cloud_authority(
         exact = (
             principal_id == definition.principal_id,
             grant.owner_user_id == definition.principal_id,
-            grant.universe_id == definition.universe_id,
             connection is not None,
             connection is not None and connection.owner_user_id == definition.principal_id,
             connection is not None and connection.connection_class == "pull-request-writer",

@@ -1,23 +1,4 @@
-"""The daemon's side of one workspace git operation: authority, then a cell.
-
-Nothing here runs git, reads a credential or touches a repository. This module
-turns a workspace request into three things and then gets out of the way:
-
-1. **authority** -- the live grant for exactly this principal, command center,
-   connection and repository (``ledger_queries.authorized_connection``), with
-   the git scopes narrowed to the one verb this operation needs;
-2. **a route** -- an ephemeral rewrite on the command center's own checking
-   egress proxy (``git_egress``), so the URL the cell hands git resolves to a
-   route id that only the BROKER can turn into an authenticated request. The
-   token never leaves the broker process, and the route dies with this call;
-3. **a cell** -- the owner's ``workspace-remote`` cell
-   (``role_remote_git``), which performs every git step as the owner, inside
-   the owner's command center.
-
-What comes back is a sha, a byte count, a ref name and a fixed error class,
-validated here before any caller sees it. The request that goes out carries no
-secret and no credential reference: there is nothing to resolve any more.
-"""
+"""Owner-daemon workspace authority, broker git routes and bounded local children."""
 
 from __future__ import annotations
 
@@ -189,39 +170,10 @@ def execute_workspace_operation(
         if op not in WORKSPACE_OPS:
             raise _Refused("bad_argument", f"unknown workspace op: {op or '(none)'}")
         universe_dir = Path(_require(request, "universe_dir"))
-        from tinyassets.control_plane.binding import (
-            bind_session,
-            current_binding,
-            file_binding,
-            use_binding,
-        )
+        from tinyassets.owner_runtime import require
 
-        if current_binding() is None:
-            # Startup push reconciliation runs outside a turn. It still needs
-            # the broker-admitted owner capability before probing the remote.
-            from tinyassets.agent_loop.served_chat import configured_box_provider
-
-            provider, limits = configured_box_provider()
-            if provider is None:
-                raise _Refused("transport", "owner box provider is unavailable")
-            scope = "\0".join(str(request.get(key, "")) for key in (
-                "principal", "universe_dir", "agent", "grant_id", "connection_id",
-                "owner_repo", "remote_ref", "operation_id",
-            ))
-            import hashlib
-
-            binding = bind_session(
-                provider=provider, limits=limits, universe_dir=universe_dir,
-                owner=_require(request, "principal"),
-                execution_id="workspace:" + hashlib.sha256(scope.encode()).hexdigest(),
-            )
-            with use_binding(binding):
-                return _boxed(request, op, binding)
-
-        binding = file_binding(universe_dir)
-        if binding is None:
-            raise _Refused("transport", "workspace operation has no admitted owner box")
-        return _boxed(request, op, binding)
+        runtime = require(universe_dir, _require(request, "principal"))
+        return _boxed(request, op, runtime)
     except _Refused as refused:
         return {"ok": False, "error": refused.error, "stderr_class": refused.code}
     except Exception as exc:  # noqa: BLE001 - loud, but never leaky
@@ -231,30 +183,35 @@ def execute_workspace_operation(
                 "error": scrub_text(f"the workspace cell refused: {type(exc).__name__}: {exc}")}
 
 
-def _boxed(request, op, binding):
-    """Project one selected grant, then send the bounded operation to its box."""
+def _boxed(request, op, runtime):
+    """Run the operation locally in the persistent owner box."""
     import json
+    from contextlib import nullcontext
 
-    from tinyassets.box_process import run_bound
-    from tinyassets.boxes.git_bridge import environment
+    from tinyassets.owner_git import routes
     from tinyassets.workspace_remote_cell import MAX_REQUEST_BYTES
 
-    binding.validate(_require(request, "principal"), Path(request["universe_dir"]))
-    env = None
+    home = Path(request["universe_dir"])
+    context = nullcontext({})
     if op in ROUTED_OPS:
         agent = _require(request, "agent")
         if not _AGENT_RE.fullmatch(agent):
             raise _Refused("bad_argument", "request.agent must name the acting run")
-        env = environment([_authority(request, op)], agent)
-    payload = json.dumps(_cell_request(request, op, []), separators=(",", ":")).encode()
-    if len(payload) > MAX_REQUEST_BYTES:
-        raise _Refused("bad_argument", "workspace request exceeds its bound")
-    done = run_bound(
-        binding, f"workspace:{op}", ["python", "-m", "tinyassets.workspace_remote_cell"],
-        stdin=payload, env=env, wall_seconds=_DEFAULT_TIMEOUT_S,
-        output_bytes=64 * 1024,
-        operation_id=request.get("operation_id"),
-    )
+        context = routes(_broker_client(request, home), [_authority(request, op)], agent)
+    with context as env:
+        options = []
+        if env:
+            options += ["-c", "http.proxy=" + env["http_proxy"]]
+        for index in range(int(env.get("GIT_CONFIG_COUNT", "0"))):
+            options += ["-c", env[f"GIT_CONFIG_KEY_{index}"] + "="
+                        + env[f"GIT_CONFIG_VALUE_{index}"]]
+        payload = json.dumps(_cell_request(request, op, options), separators=(",", ":")).encode()
+        if len(payload) > MAX_REQUEST_BYTES:
+            raise _Refused("bad_argument", "workspace request exceeds its bound")
+        done = runtime.tools.run(
+            ["python", "-m", "tinyassets.workspace_remote_cell"], cwd=home,
+            stdin=payload, env=env, wall_seconds=_DEFAULT_TIMEOUT_S, output_bytes=64 * 1024,
+        )
     if done.returncode:
         raise _Refused("other", "workspace box execution failed")
     lines = done.stdout.splitlines()

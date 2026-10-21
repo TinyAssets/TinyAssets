@@ -379,7 +379,6 @@ _UNIVERSE_COSTLY_ACTIONS = frozenset({
 _UNIVERSE_ADMIN_ACTIONS = frozenset({
     "control_daemon",
     "set_tier_config",
-    "set_engine",
     "daemon_banish",
     "daemon_pause",
     "daemon_resume",
@@ -848,6 +847,9 @@ class OAuthProvider(AuthProvider):
     """
 
     def __init__(self, db_path: Path | str | None = None) -> None:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("mcp_oauth")
         if db_path is None:
             # Route through the canonical resolver so container deploys
             # get $TINYASSETS_DATA_DIR/.auth.db instead of the CWD-relative
@@ -861,6 +863,9 @@ class OAuthProvider(AuthProvider):
         self._initialize_db()
 
     def _connect(self) -> sqlite3.Connection:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("mcp_oauth")
         conn = sqlite3.connect(str(self._db_path), timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -945,6 +950,10 @@ class OAuthProvider(AuthProvider):
 
             # Resolve user identity
             user_id = row["user_id"]
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(user_id, self._db_path.parent):
+                return None
             scope = row["scope"]
             capabilities = scope.split() if scope else ["read"]
 
@@ -1032,6 +1041,10 @@ class OAuthProvider(AuthProvider):
             if not subject:
                 raise ValueError("UNIVERSE_SERVER_OAUTH_SUBJECT is not set")
 
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(subject, self._db_path.parent):
+                raise ValueError("Account deleted.")
             code = secrets.token_urlsafe(48)
             conn.execute(
                 "INSERT INTO authorization_codes "
@@ -1078,6 +1091,11 @@ class OAuthProvider(AuthProvider):
                 code_verifier, row["code_challenge"], row["code_challenge_method"],
             ):
                 logger.warning("PKCE verification failed for client %s", client_id)
+                return None
+
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(row["user_id"], self._db_path.parent):
                 return None
 
             # Mark code as used

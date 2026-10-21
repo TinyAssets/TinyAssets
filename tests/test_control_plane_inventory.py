@@ -14,6 +14,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from tests import control_plane_timer_inventory as inventory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,3 +162,6 @@ def test_the_scheduler_package_imports_nothing_from_the_jail_side():
                 continue
             for module in modules:
                 assert not forbidden & set(module.split(".")), f"{path.name} imports {module}"
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C13')

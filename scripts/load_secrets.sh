@@ -40,6 +40,9 @@ set -u
 
 _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _KEYS_FILE="${_REPO_ROOT}/scripts/secrets_keys.txt"
+if [ "${TINYASSETS_SECRETS_PROFILE:-}" = "canary" ]; then
+  _KEYS_FILE="${_REPO_ROOT}/scripts/canary_secret_keys.txt"
+fi
 _PLAINTEXT_PATH="${TINYASSETS_SECRETS_PLAINTEXT_PATH:-${HOME}/workflow-secrets.env}"
 _VENDOR="${TINYASSETS_SECRETS_VENDOR:-1password}"
 _VAULT_NAME="${TINYASSETS_SECRETS_VAULT:-workflow}"

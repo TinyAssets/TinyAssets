@@ -1,19 +1,7 @@
 """Local, founder-scoped TinyAssets MCP server for the universe-intelligence turn.
 
-Spawned as a subprocess of ``claude -p`` (the command center agent, "Tiny") via
-``--mcp-config`` + ``--strict-mcp-config``, this exposes the SAME canonical MCP
-handles the founder's browser chatbot has, so the command center agent can operate its
-OWN command center through the identical MCP surface.
-
-Founder directive 2026-08-12: *"all user functions are just mcp functions ... all
-the same mcp commands whether it's through the app or through slack or the
-browser."*
-
-Security model — this is the P0 engine-sandbox surface (2026-07-03 live-test:
-the un-sandboxed engine read platform source and ran Bash). The wiring in
-``claude_provider._engine_mcp_flags`` reaches this ONLY via ``--strict-mcp-config``
-(which admits exactly this one server and excludes the logged-in claude.ai
-account connectors — verified 2026-08-13). This module then enforces:
+The HTTP agent reaches these canonical handles through its owner-bound engine route.
+Every handler enforces:
 
   * **Identity.** Every handler call runs with ``_current_identity`` bound to the
     FOUNDER (``TINYASSETS_ENGINE_ACTOR_ID``) and a LEAST-PRIVILEGE capability set.
@@ -438,7 +426,7 @@ class RefusalsAreErrors(Middleware):
 
 
 class ModelInventory(Middleware):
-    """Native CLI discovery projection; backend capabilities remain registered."""
+    """Model tool inventory; backend capabilities remain registered."""
 
     async def on_list_tools(self, context, call_next):
         tools = await call_next(context)
@@ -449,7 +437,7 @@ class ModelInventory(Middleware):
         try:
             projected = get_http_request().query_params.get("model_inventory") == "four"
         except RuntimeError:
-            projected = os.environ.get("TINYASSETS_ENGINE_MODEL_INVENTORY") == "four"
+            return tools
         return [t for t in tools if t.name in FOUR_MODEL_TOOLS] if projected else tools
 
 
@@ -1589,127 +1577,35 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
             To connect ANY model or platform, ask with pending_request action
             type "connect": the connect_http fields plus "uses" and
             "constant_headers". An LLM is just a connection with uses.model.
-            When the provider offers OAuth (found ONLY by standard discovery on
-            the connection's own host; say what the use needs with "oauth":
-            {"scopes": [...], optional public "client_id"}; endpoints are never
-            supplied), signing in is the ask's primary action and key fields are
-            optional; the reply says primary "sign_in", or oauth_unavailable
-            with the reason.
+            Sign-in discovery runs at the shared connection door. Provide public
+            endpoints and optional OAuth scopes as data; never send a secret,
+            token, password or capability URL through a tool or approval answer.
 
-    **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
-    ANY HTTPS API with no service-specific code.** A node declaring
-    ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
-    the run, reading its instruction from one of its ``output_keys``. Prereqs, done
-    once (they carry secrets, so NOT through this chat): the owner deposits the
-    credential IN THE APP. **ASK THEM FOR IT — do not send them hunting for a
-    form.** You know the exact endpoints you are about to call, so state them:
+    **Outbound channel node.** A node declaring
+    effects: ["authenticated_external_call"] sends the request through the broker.
+    Ask for a connection with a fieldless request:
 
         write_graph target="pending_request" operation="ask" payload_json={
-          "kind": "API",                      # the tab header they will see
-          "title": "GitHub key so I can open your pull request",
-          "body":  "why you need it, in one or two sentences",
-          "action": {"type": "connect_http", "destination": "github",
+          "kind": "API", "title": "Connect the service",
+          "body": "Why this connection is needed",
+          "action": {"type": "connect_http", "destination": "service",
                      "auth_scheme": "bearer",
-                     "endpoints": [{"host": "api.github.com",
-                                    "path_template": "/repos/o/r/pulls",
-                                    "methods": ["POST"]}, ...]},
-          "fields": [                         # REQUIRED -- see below
-            {"name": "token", "type": "secret",
-             "label": "Personal access token",
-             "help": "Settings -> Developer settings -> Personal access tokens",
-             "url": "https://github.com/settings/tokens"}]}
+                     "endpoints": [{"host": "api.example.com",
+                                    "path_template": "/messages",
+                                    "methods": ["POST"]}]},
+          "fields": []}
 
-    That opens a tab in their app with the exact grant spelled out; they paste
-    the key there and it goes straight to the vault under those endpoints. List
-    EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
-    request needs the main ref, a branch ref, the file contents, and the pull).
+    The connect answer returns a secure door link carrying request, center and
+    connection identifiers. The owner enters credentials or signs in there.
+    The box learns completion from its broker grant's request_ref; the pending
+    request closes and its asking agent continues. A keyless auth_scheme "none"
+    connect commits directly on the box channel. Auth stays data: bearer, basic,
+    header, oauth1a, oauth2 and url_secret all use this same boundary.
 
-    **ONE FIELD PER CREDENTIAL, NAMED THE WAY THE SITE NAMES IT.** Never make
-    the owner work out what goes where. If a service needs four values, ask for
-    four, each labelled as that service labels it, each with the path to find it
-    and a link straight there::
-
-        "fields": [
-          {"name": "api_key", "type": "secret",
-           "label": "API Key",
-           "help": "Developer Portal -> your app -> Keys and tokens -> "
-                   "Consumer Keys -> API Key",
-           "url": "https://developer.x.com/en/portal/dashboard"},
-          {"name": "api_secret", "type": "secret",
-           "label": "API Key Secret", "help": "shown beside the API Key, once",
-           "url": "https://developer.x.com/en/portal/dashboard"},
-          ...
-        ]
-
-    The LABEL is the site's wording; the NAME is what the deposit reads. For
-    most schemes the name is yours to choose, but ``oauth1a`` has a fixed
-    four-value shape and the names must be exactly ``api_key``, ``api_secret``,
-    ``access_token``, ``access_token_secret`` -- label them however the service
-    words them, but name them these or the deposit refuses with "oauth1a secret
-    is missing". For ``basic``, name them ``username`` and ``password``.
-
-    ``label`` is the service's OWN name for it, not yours -- if the site says
-    "Consumer Key" then say "Consumer Key", because that is the words the owner
-    is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
-    ``https://`` link to the page that issues it. Up to 16 fields.
-
-    **LOOK IT UP FIRST. Do not ask from memory.** You have WebFetch and
-    WebSearch. Before you raise a credential ask, read the service's OWN current
-    documentation and build the ask from what you find there:
-
-      * WHICH values it actually needs -- and which it does not. Do not ask for
-        a value the flow will never use; every extra box is work you are giving
-        the owner for nothing.
-      * WHAT THAT SITE CALLS EACH ONE, in its own words. If the page says
-        "Consumer Key" then the label is "Consumer Key", because that is the
-        text the owner is looking at while they fill your form.
-      * WHERE each one is found -- the actual click path, today, not the one
-        from a year ago.
-      * THE LINK to the page that issues it.
-
-    Portals get reorganised and auth schemes change; a click path you remember
-    is a click path that sends the owner somewhere that no longer exists. Read
-    it, then ask.
-
-    There is no built-in list of services and there is not going to be one. A
-    site nobody has heard of gets the same ask as a famous one, because the ask
-    is built the same way both times: by going and reading.
-
-    If the docs are unclear, say so in the ask rather than guessing at a label
-    -- "their page calls this either X or Y" is honest and the owner can resolve
-    it in a second. A confidently wrong label is worse than an uncertain one.
-
-    **A WEBHOOK LINK IS NOT A TOKEN.** When the owner hands you a link whose
-    secret is IN the address — a Slack ``hooks.slack.com/services/T…/B…/<token>``,
-    a Discord ``discord.com/api/webhooks/<id>/<token>``, a Zapier catch hook, a
-    TinyAssets ``/mcp/hooks/<token>`` — there is no bearer token to ask for and
-    NOTHING about that link goes in ``path_template``. Use
-    ``"auth_scheme": "url_secret"``, write ``{secret}`` where the code is, and
-    ask for the WHOLE LINK in one field named ``capability_url``::
-
-        "action": {"type": "connect_http", "destination": "bug-reports",
-                   "auth_scheme": "url_secret",
-                   "endpoints": [{"host": "hooks.slack.com",
-                                  "path_template": "/services/{secret+}",
-                                  "methods": ["POST"]}]},
-        "fields": [{"name": "capability_url", "type": "secret",
-                    "label": "Webhook URL",
-                    "help": "the whole link they gave you, starting https://"}]
-
-    ``{secret}`` is one path segment; ``{secret+}`` is the rest of the path (use
-    it when the code is several segments, as Slack's is). It takes NO
-    ``param_patterns`` entry — the value comes from the vault. The platform
-    checks the pasted link against the host and template and pulls the code out
-    itself, so never ask the owner to "paste the part after the last slash".
-    Then the node's packet addresses the PLACEHOLDER, not the code::
-
-        "request": {"method": "POST", "path": "/services/{secret+}",
-                    "body": {"text": "..."}}
-
-    The real address only exists for the instant the call is made. That is why
-    a real code in ``path_template`` (or in a packet) is refused: a grant is
-    stored in the clear and shown to the owner, and a packet is part of the
-    graph anyone you share it with can read.
+    For a capability URL, specify auth_scheme "url_secret" and a placeholder
+    path such as "/hooks/{secret}" or "/services/{secret+}". The owner pastes
+    the whole URL only at the door; the broker inserts its secret at dispatch.
+    Packets use the placeholder. No credential belongs in a stored endpoint.
 
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
@@ -1777,8 +1673,9 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
 
         "action": {"type": "rotate_http", "destination": "github"}
 
-    with one secret field (the ``external_write_errors`` row names the
-    destination). It replaces only the key: same connection, same endpoints, same
+    with no fields (the ``external_write_errors`` row names the
+    destination). The owner follows its link to replace the key at the door.
+    It replaces only the key: same connection, same endpoints, same
     scopes, same consents, nothing to re-approve, one paste. Never use
     ``remove_http`` for this -- an owner reads a removal card as deletion, and a
     remove-then-connect pair makes them approve reach they already approved.
@@ -3358,7 +3255,7 @@ def write_graph(
             (legacy, explicit, discovered), model_ids (unique string array;
             nonempty only for explicit), cost_caps (null for free-only, or a
             nonempty cost-component object with nonnegative integer ceilings).
-            Example: {"codex":{"model_scope":"explicit",
+            Example: {"api_key_http:provdef_...":{"model_scope":"explicit",
             "model_ids":["gpt-6-astra"],"cost_caps":null}}.
             Auto-detect uses model_scope="discovered", model_ids=[].
             Native provider default uses model_scope="explicit", model_ids=[""].
@@ -3743,7 +3640,6 @@ _COMMONS_LIST_KINDS = frozenset({"agents", "branches", "goals", "packages", "sys
 #: to protect its context window as the commons grows. (Cursor pagination is a
 #: follow-up.)
 _COMMONS_BROWSE_MAX = 50
-
 
 
 def _untrusted(source: str, payload: str, *, own: object = None) -> str:
@@ -4514,7 +4410,7 @@ def connect_compute(
 
     Do NOT try to select it by writing ``llm_policy`` on a node: the runtime reads
     only ``{"preferred": {"provider": "<name>"}}`` — a provider NAME such as
-    ``codex`` or ``api_key_http``, never a bare ``provdef_...`` id — and a wrong key is
+    ``api_key_http:provdef_...``, never a bare ``provdef_...`` id — and a wrong key is
     ignored, so the run fails later with ``permission_denied:provider_not_bound``.
     A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
     uses whatever provider the command center serves.
@@ -4526,7 +4422,7 @@ def connect_compute(
     provider (or to one that is not bound), repair the pin IN PLACE rather than
     rebuilding the workflow: ``write_graph target="branch" operation="patch"``
     with payload ``[{"op":"update_node","node_id":"<node definition id>",
-    "llm_policy":{"preferred":{"provider":"codex"}}}]`` replaces it, and
+    "llm_policy":{"preferred":{"provider":"api_key_http:provdef_..."}}}]`` replaces it, and
     ``"llm_policy": null`` clears it so the node follows the command center's current
     serving provider. Omit ``llm_policy`` from an update_node op to leave the
     existing pin unchanged.
@@ -4536,22 +4432,17 @@ def connect_compute(
     pass that grant's id as ``ref``. ASK THEM FOR IT — raise a request with
     ``write_graph target="pending_request" operation="ask"`` and an
     ``action={"type":"connect_http", ...}`` naming the exact endpoints you need. It
-    appears as a tab on the right of their app, they paste the key into it, and the
-    deposit happens there (that is ``connect_http``). Never send them hunting for a
-    control: the nav button was cut on 2026-08-27 and asking is the route now.
-    For a ``subscription_cli`` provider the ``ref`` is the CLI name (``codex`` /
-    ``claude-code``) and the subscription is deposited via ``connect_llm``.
-
+    appears as a tab with a secure door link. Credentials go directly to the
+    door; matching request_ref grants complete the box's pending request.
     Args:
         access_method: ``api_key_http`` (any Kimi/OpenRouter/OpenAI-compatible
             endpoint, over an http connection already granted to this command center) or
-            ``subscription_cli`` (run a vendor CLI subscription). Required.
+            Required.
         protocol: The wire shape — ``openai_chat`` / ``anthropic_messages`` for
-            api_key_http, ``cli:codex`` / ``cli:claude-code`` for subscription_cli.
+            api_key_http.
         model: The model id to run (e.g. ``moonshotai/kimi-k2``).
         ref: For api_key_http, the grant_id of an http connection already granted to
-            this command center. For subscription_cli, the CLI name (``codex`` /
-            ``claude-code``).
+            this command center.
         visibility: ``private`` (default) or ``public`` (share the SHAPE — never a
             credential — to the commons for others to remix).
     """
@@ -4563,7 +4454,7 @@ def connect_compute(
     am = (access_method or "").strip()
     if not am:
         return json.dumps({
-            "error": "access_method is required (api_key_http or subscription_cli).",
+            "error": "access_method is required (api_key_http).",
         })
 
     from tinyassets.api.compute_connection import connect_compute as _impl
@@ -4745,7 +4636,7 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
 # ── the universe's four tools (universe-harness S1) ─────────────────────────
 # ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN command
 # center, executed inside the owner's box (``tinyassets.universe_tools`` over
-# ``agent_loop.box_tools``): public network only through the box relay, no
+# ``agent_loop.owner_tools``): public network only through the box relay, no
 # credential, resource-limited, the center at ``/u`` and nothing else. The
 # graph pin picks the center; no parameter names one, and a path outside
 # ``/u`` does not exist in the box. Every call first rechecks current
@@ -4780,17 +4671,11 @@ async def _universe_tool(op, /, **kwargs) -> str:
     if required == 'read' and PurePosixPath(str(kwargs.get('path', ''))).suffix.lower() in (
             '.png', '.jpg', '.jpeg', '.webp', '.gif'):
         capability = 'read_image'
-    from tinyassets.control_plane.binding import active_binding, use_binding
 
     try:
         udir = _universe_dir(_GRAPH_ID)
-        binding = active_binding(_ACTOR_ID, _GRAPH_ID)
-        from tinyassets.owner_runtime import current
 
-        if binding is None and current() is None:
-            return "error: no admitted session owns this command center's box"
-        with use_binding(binding):
-            result = await asyncio.to_thread(op, udir, **kwargs)
+        result = await asyncio.to_thread(op, udir, **kwargs)
         error = result_error(result)
         if error is not IGNORED:
             RATES.record(capability, failure_code(error) if error else 'ok')
@@ -4910,82 +4795,3 @@ async def run_bash(command: str, timeout: int = 0) -> str:
 # Both public and owner-pinned endpoints use the control-plane registration.
 # Construct only after all implementations exist; no handler registers itself.
 mcp = _engine_server(_sys.modules[__name__])
-
-
-if __name__ == "__main__":
-    # An engine acts for the owner that spawned it: join its tree BEFORE serving
-    # anything, so even an effect-only run is covered by the owner's death proof,
-    # and refuse to start if that owner is already gone (execution-owner-lease D2).
-    from tinyassets.owner_lease import LeaseLost as _LeaseLost
-    from tinyassets.owner_lease import join_inherited_tree as _join_inherited_tree
-    from tinyassets.storage import data_dir as _engine_data_dir
-
-    try:
-        _join_inherited_tree(_engine_data_dir())
-    except _LeaseLost as _gone:
-        raise SystemExit(f"engine MCP refuses to start: {_gone}") from None
-    # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
-    # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
-    # else stdio (spawned by claude -p via --mcp-config). Identity stays pinned
-    # to this ONE (actor, graph) via env, so the HTTP listener serves exactly one
-    # universe's own handles on loopback.
-    import os as _os2
-    _http_port = (_os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_PORT") or "").strip()
-    if _http_port:
-        # Per-request auth (Codex gate #6): the loopback listener is reachable by
-        # any in-container process, so every request must carry the shared bearer
-        # secret the launcher injected (and the provider puts in the turn's
-        # --mcp-config headers, invisible to the LLM). FAIL CLOSED: no secret ->
-        # do not serve unauthenticated.
-        import uvicorn as _uvicorn
-
-        _secret = (
-            _os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_SECRET") or ""
-        ).strip()
-        if not _secret:
-            raise SystemExit(
-                "engine MCP HTTP refuses to serve without "
-                "TINYASSETS_ENGINE_MCP_HTTP_SECRET"
-            )
-        _inner_app = mcp.http_app()
-
-        class _BearerAuth:
-            """Reject any HTTP request lacking the exact bearer secret (401).
-
-            Only ``http`` and ``lifespan`` scopes are handled; anything else
-            (e.g. a future ``websocket`` route) is refused (Codex 2026-08-19).
-            """
-
-            def __init__(self, app):
-                self.app = app
-
-            async def __call__(self, scope, receive, send):
-                stype = scope.get("type")
-                if stype == "http":
-                    headers = dict(scope.get("headers") or [])
-                    provided = headers.get(b"authorization", b"").decode(
-                        "latin-1"
-                    )
-                    if not _bearer_ok(provided, _secret):
-                        await send({
-                            "type": "http.response.start",
-                            "status": 401,
-                            "headers": [(b"content-type", b"text/plain")],
-                        })
-                        await send({
-                            "type": "http.response.body",
-                            "body": b"unauthorized",
-                        })
-                        return
-                elif stype != "lifespan":
-                    return  # refuse websocket / unknown transports
-                await self.app(scope, receive, send)
-
-        _uvicorn.run(
-            _BearerAuth(_inner_app),
-            host="127.0.0.1",
-            port=int(_http_port),
-            log_level="warning",
-        )
-    else:
-        mcp.run()  # stdio transport (default)

@@ -9,10 +9,8 @@ map is in the amendment's "Native evidence" section. Those are local fixture
 results: the production image, the installed-image row 17, the live
 healthcheck and every deployed gate remain open. No static assertion
 anywhere in this change is claimed as native runtime proof:
-`tests/test_ta_op_modes.py` proves the *table* and the *source predicates* are
-coherent, `tests/test_drop_first_exec_gate.py` proves the *gate* fires, and
-neither says anything about what the binary does on a running kernel. Only the
-rows below can do that, and all of them need Linux.
+The runtime rows below require Linux. The former table/source-only tests
+were retired under the 2026-10-21 founder rule.
 
 The driver is `deploy/native/ta_op_native_check.sh`. It runs only the rows the
 *current* privilege context can actually reach and reports every other row as
@@ -102,8 +100,7 @@ both sides.
 No container flag can set an fsuid independently of the uid (`setfsuid(2)` is
 callable only by the process itself), so the boundary is exercised by pointing
 the readback at a crafted file with the compile-time-only `TA_STATUS_PATH`
-override. The production Dockerfile never defines it, and
-`tests/test_ta_op_modes.py` asserts that.
+override. The production Dockerfile never defines it.
 
 ```
 printf 'Name:\tta-op\nUid:\t1001\t1001\t1001\t10010\nGid:\t1001\t1001\t1001\t1001\nNoNewPrivs:\t1\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\n' > /tmp/fake-status

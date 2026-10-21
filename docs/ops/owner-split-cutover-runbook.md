@@ -27,6 +27,33 @@ IMAGE=<the PR2 image tag>   # built from the cutover branch; it carries ta-migra
 ROLLBACK=/var/backups/tinyassets/cutover-runtime
 ```
 
+## Owner-daemon paired restore (slice 6)
+
+The current owner-split to owner-daemon cutover uses the paired data and box
+snapshot verified by `box_layout_migration`. Inspect its census before moving:
+`credentials` gives pseudonymous carried HTTP and dropped CLI counts; `losses`
+gives per-account dropped table/file classes; `file_patterns` masks all variable
+names. An unattributed bucket is loss without a provable account, never a
+suggested owner. When carried sources are zero the report says **every account
+reconnects a model source**: use shared-door model-connect, then confirm model
+use. Center-local vault files are dropped, never copied into owner stores.
+
+To restore after serving writes, set `CUTOVER_ACCEPT_OWNER_WRITE_LOSS=1` when
+running `deploy/backup-restore.sh` with the matching `BACKUP_FILE` and
+`BOX_BACKUP_FILE`. This deliberately loses **all post-cutover owner writes**,
+including new chats, pending requests and pause changes. The script stops
+writers and boxhostd, checks quiescence and the root-private cutover receipt,
+and restores the pre-cutover owner-split bytes from that exact pair. It does
+not restart services. Restore the matching pre-cutover runtime before serving.
+
+The option permits ingress-secret rotation and the derived wake index; it does
+not permit identity/admission/revocation, billing, deletion, custody or operation
+receipt rollback. Changed shared authority, changed source bytes or unexpected
+owner trees refuse and require forward recovery. Without the option, changed
+owner output still refuses. This is not a data merge.
+
+The sections below document the earlier owner-split cutover.
+
 ## 1. Announce
 
 Tell the testers the window and the expected downtime.

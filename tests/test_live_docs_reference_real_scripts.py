@@ -122,3 +122,6 @@ def test_detector_catches_a_planted_reference(tmp_path: Path, missing: str) -> N
     line = f"Run `python {missing}` before shipping."
     assert REF.findall(line) == [missing]
     assert not _resolves(missing)
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

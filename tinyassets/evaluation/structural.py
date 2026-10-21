@@ -887,7 +887,7 @@ def _extract_premise_terms(premise: str) -> tuple[list[str], list[str]]:
 def _check_premise_grounding(state: dict[str, Any]) -> CheckResult:
     """Check that scene prose is grounded in the universe premise.
 
-    Extracts key terms from the premise (PROGRAM.md / premise_kernel) and
+    Extracts key terms from the premise (soul.md / premise_kernel) and
     verifies:
     1. The protagonist appears in the prose or extracted facts.
     2. At least some world-specific terms appear (zero = hard fail).
@@ -895,7 +895,7 @@ def _check_premise_grounding(state: dict[str, Any]) -> CheckResult:
     This catches total premise departure and cross-universe contamination
     where the wrong story is being written.
     """
-    # Get premise from state, with PROGRAM.md disk fallback (Item 4:
+    # Get premise from state, with soul.md disk fallback (Item 4:
     # belt-and-suspenders defense against pipeline not propagating premise)
     premise = ""
     wf_instructions = state.get("workflow_instructions") or {}
@@ -904,17 +904,14 @@ def _check_premise_grounding(state: dict[str, Any]) -> CheckResult:
     if not premise:
         premise = state.get("premise_kernel", "")
     if not premise:
-        # Fallback: read PROGRAM.md or soul.md from universe directory.
+        # Fallback: read soul.md from universe directory.
         uni_path = state.get("_universe_path", "")
         if uni_path:
             from pathlib import Path as _P
 
-            from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
+            from tinyassets.universe_soul import premise_from_soul
             universe_dir = _P(uni_path)
-            premise = (
-                read_legacy_premise(universe_dir).strip()
-                or premise_from_soul(universe_dir).strip()
-            )
+            premise = premise_from_soul(universe_dir).strip()
 
     if not premise:
         return CheckResult(

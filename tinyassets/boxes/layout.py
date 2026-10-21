@@ -14,12 +14,12 @@ from contextlib import contextmanager
 DAEMON_UID = 1001
 #: The credential broker's own identity.
 BROKER_UID = 1002
-#: Daemon-written files the broker may read (vault copies, definitions).
+#: Shared publication and router runtime group; never owner definitions.
 BROKER_READ_GID = 1102
-BROKER_METADATA_FILE_MODE = 0o640
 VAULT_FILE_MODE = 0o640
 LIVENESS_DIRECTORY_MODE = 0o2750
 LIVENESS_FILE_MODE = 0o640
+OWNER_BOX_MIGRATION = "owner-daemon"
 
 #: Daemon-owned files that belong to one command center but must not live
 #: inside it (consent databases, seed locks): ``<data>/.universe-sidecars/<center>``.
@@ -43,7 +43,7 @@ def hold(data):
         with os.fdopen(marker) as stream:
             document = json.load(stream)
         if (not isinstance(document, dict) or document.get("layout") not in (1, 2)
-                or document.get("state") != "stable"
+                or document.get("state") not in {"stable", "recovering"}
                 or document.get("box_layout") != "owner-box"):
             raise RuntimeError("box service requires a committed owner-box layout")
         yield

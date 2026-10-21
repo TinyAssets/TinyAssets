@@ -103,14 +103,17 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # and hosted key exchange reads an httpx response with `client.stream()`.
     # Neither touches a compiled graph stream or grants execution authority.
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
-    CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
+    CallSite("tinyassets/broker/acquisition.py", "exchange_key", "client.stream"),
+    # The router relays opaque HTTP bytes to an admitted Unix socket; neither
+    # stream invokes a model or executes an owner's work in the shared process.
+    CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),
+    CallSite("tinyassets/owner_router.py", "forward", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
     # The public browser error beacon streams its body with a 4 KiB running
     # cap (#4662); it only writes a log line and grants no execution authority.
     CallSite("tinyassets/observability.py", "client_error", "request.stream"),
     # One admitted owner-box execution reads its output events from the box
     # provider's stream; it is the session's own handle, never a graph executor.
-    CallSite("tinyassets/box_process.py", "run_bound", "binding.stream"),
     CallSite(
         "tinyassets/universe_server.py",
         "create_streamable_http_app._hooks_endpoint",
@@ -133,16 +136,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # The assigned-queue consumer's `recover_expired()` call retired with its
     # epoch-2 claim pass (plan C2, 2026-09-28): it now runs only user-owned
     # automations and claims nothing from the queue.
-    # Reviewed 2026-10-02 (S7, change `control-plane-agent-loop`): the thin
-    # loop's box tools READ the output of a box execution through
-    # `BoxProvider.stream`, the box contract's output read (target architecture
-    # D2). It starts nothing: the execution was started by `start_exec` on a
-    # handle bound to the turn's own owner and command center, and runs no
-    # branch. The package build copies the canonical module.
-    CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
-    # Reviewed 2026-10-14 (C6): one admitted CLI process drains the provider
-    # stream already started for that handle. It starts no branch.
-    CallSite("tinyassets/boxes/cli_launcher.py", "Process._output", "self.stream"),
     # Reviewed C9: the owner-bound model proxy streams broker data after the
     # grant and usage reference are resolved; these calls create no turn root.
     CallSite("tinyassets/agent_loop/model_stream.py", "collect_stream", "proxy.stream"),

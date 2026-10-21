@@ -61,26 +61,35 @@ class OwnerRelays:
                 guest.settimeout(30)
                 first = rf.read_frame_blocking(guest)
                 if first is None or first.kind != rf.CONTROL or first.stream != rf.CONNECTION:
-                    raise BoxAuthError("relay requires a bounded center selection")
+                    raise BoxAuthError("relay requires a bounded operation")
                 doc = first.control()
                 if doc == {"op": "WHOAMI"}:
                     guest.sendall(rf.control(rf.CONNECTION, {
                         "op": "OWNER_IS", "principal": owner, "uid": uid,
                     }))
                     return
-                if set(doc) != {"op", "center"} or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}:
+                if set(doc) == {"op", "request"} and doc["op"] == "ROUTER_CREDENTIAL":
+                    from tinyassets.router_credentials import relay_request
+
+                    # Fixed endpoint binding; C13 post-write admission orders mints.
+                    with self._lock:
+                        bound_owner = self._bindings[uid]
+                    answer = relay_request(
+                        self.admission.data_root, bound_owner, doc["request"])
+                    guest.sendall(rf.control(rf.CONNECTION, answer))
+                    return
+                owner_public = doc == {"op": "BOX_PUBLIC"}
+                if not owner_public and doc != {"op": "BOX_CONNECT"}:
                     raise BoxAuthError("invalid relay operation")
-                center = doc["center"]
-                grant = self.admission.grant(owner, center, "relay")
-                if grant.uid != uid:
-                    raise BoxAuthError("foreign center on owner relay")
+                if self.admission is None:
+                    raise BoxAuthError("relay broker admission unavailable")
                 broker.settimeout(30)
                 broker.connect(str(self.admission.broker_socket))
                 if peer(broker)[1:] != (1002, 1002):
                     raise BoxAuthError("relay peer is not the broker")
-                broker.sendall(rf.control(rf.CONNECTION, {
-                    "op": "BOX_PUBLIC" if doc["op"] == "BOX_PUBLIC" else "BOX_CHANNEL",
-                    "principal": owner, "center": center}))
+                request = {"op": "BOX_PUBLIC" if owner_public else "BOX_CHANNEL",
+                           "principal": owner}
+                broker.sendall(rf.control(rf.CONNECTION, request))
                 answer = rf.read_frame_blocking(broker)
                 if answer is None or answer.control().get("op") != "BOX_ADMITTED":
                     raise BoxAuthError("broker refused box channel")
@@ -90,7 +99,7 @@ class OwnerRelays:
                 readers = [guest, broker]
                 while readers:
                     ready, _, _ = select.select(readers, [], [], 30)
-                    if not ready or not self.admission.authorize(grant, center):
+                    if not ready:
                         return
                     for source in ready:
                         data = source.recv(65536)
@@ -100,7 +109,7 @@ class OwnerRelays:
                             destination.shutdown(socket.SHUT_WR)
                         else:
                             destination.sendall(data)
-        except (OSError, ValueError, rf.FrameError):
+        except (OSError, ValueError, LookupError, rf.FrameError):
             pass  # no identity or credential details in guest errors
         finally:
             guest.close()
@@ -109,3 +118,15 @@ class OwnerRelays:
     def close(self):
         for listener in self._listeners.values():
             listener.close()
+
+    def retire(self, uid):
+        with self._lock:
+            listener = self._listeners.pop(uid, None)
+            if listener is not None:
+                try:
+                    listener.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # Already stopped; close and remove the socket below.
+                listener.close()
+            self._bindings.pop(uid, None)
+            (self.directory / f"{uid}.sock").unlink(missing_ok=True)

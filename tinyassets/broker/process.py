@@ -73,7 +73,7 @@ class _Dispatchers:
             dispatch = self._cache.get(key)
             if dispatch is None:
                 config = self.ledger_for(principal).broker_dispatch_config(
-                    grant_id=grant_id, universe_id=command_center,
+                    grant_id=grant_id,
                     provider=resource.provider, destination=resource.destination,
                     owner_user_id=resource.owner_user_id,
                     connection_type=resource.connection_type,
@@ -108,10 +108,13 @@ async def serve(args: argparse.Namespace) -> None:
     # Initialization belongs to the privileged, fenced volume migration. A
     # missing map must never silently restart allocation at the first UID.
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
 
     identity_path = state / "owner-identities.db"
-    identities = OwnerIdentities(identity_path) if identity_path.exists() else None
+    plans = Plans(Path(args.data_root))
+    identities = (OwnerIdentities(identity_path, plans=plans)
+                  if identity_path.exists() else None)
     policy_store = PolicyStore(Path(args.data_root), identities)
     policy_store.bootstrap()
     registration = None
@@ -122,8 +125,10 @@ async def serve(args: argparse.Namespace) -> None:
         from tinyassets.boxes.bootstrap import register_broker
 
         marker = json.loads((Path(args.data_root) / ".layout.json").read_text())
-        if marker.get("state") != "stable" or marker.get("box_layout") != "owner-box":
+        if (marker.get("state") not in {"stable", "recovering"}
+                or marker.get("box_layout") != "owner-box"):
             raise RuntimeError("owner-box broker requires committed migration")
+        identities.work_ready = marker["state"] == "stable"
         if args.proof_sha256:
             raise RuntimeError("owner-box broker cannot adopt legacy bootstrap")
         proof = secrets.token_urlsafe(48)
@@ -141,11 +146,12 @@ async def serve(args: argparse.Namespace) -> None:
         roles={int(args.owner_uid): OWNER, **({0: BOX_HOST} if registration else {})},
         owner_identities=identities,
         policy_store=policy_store,
-        provision_box=(lambda owner, center: provision(
-            identities, Path(args.data_root), owner, center)) if registration else None,
+        provision_box=(lambda owner: provision(
+            identities, Path(args.data_root), owner)) if registration else None,
         data_root=Path(args.data_root),
     )
     socket_path = Path(args.socket)
+    routing = server.routing if registration else None
     socket_path.unlink(missing_ok=True)
     old_umask = os.umask(0o117)  # 0660 in the role-split IPC directory
     try:
@@ -158,15 +164,27 @@ async def serve(args: argparse.Namespace) -> None:
         loop.add_signal_handler(signum, stop.set)
     async with listener:
         if registration:
-            from tinyassets.boxes.file_channel import receive, send
+            from tinyassets.boxes.control_channel import receive, send
 
             channel, identity = registration
             send(channel, {"ready": True})
             if receive(channel, identity) != {"ready": True}:
                 raise RuntimeError("host did not accept broker readiness")
+        waker_task = None
+        if registration:
+            from tinyassets.broker.waker import Waker
+
+            plans.initialize()
+            waker_task = asyncio.create_task(Waker(
+                server.next_wakes, plans, wake=routing.wake, config=routing.config,
+                poll_seconds=args.wake_poll_seconds, lifecycle_tick=routing.tick).run(stop))
         try:
             await stop.wait()
         finally:
+            stop.set()
+            if waker_task is not None:
+                await waker_task
+                await routing.close()
             if registration:
                 registration[0].close()
 
@@ -179,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner-uid", required=True, type=int)
     parser.add_argument("--proof-sha256")
     parser.add_argument("--box-host", action="store_true")
+    parser.add_argument("--wake-poll-seconds", type=float, default=30)
     parser.add_argument("--allow-test-fixtures", action="store_true")
     args = parser.parse_args(argv)
     if not args.box_host and not args.proof_sha256:

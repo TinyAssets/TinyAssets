@@ -7,7 +7,7 @@ import socket
 import struct
 from pathlib import Path
 
-from tinyassets.boxes.file_channel import receive, send
+from tinyassets.boxes.control_channel import receive, send
 from tinyassets.boxes.provider import BoxAuthError
 
 RUNTIME = Path("/run/tinyassets-boxhostd")
@@ -17,11 +17,11 @@ def peer(sock: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
 
 
-def connect(path: Path) -> tuple[socket.socket, tuple[int, int, int]]:
+def connect(path: Path, *, timeout=30) -> tuple[socket.socket, tuple[int, int, int]]:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        sock.settimeout(30)
+        sock.settimeout(timeout)
         sock.connect(str(path))
         identity = peer(sock)
         if identity[1:] != (0, 0):
@@ -41,32 +41,3 @@ def register_broker(proof: str):
         sock.close()
         raise BoxAuthError("broker registration refused")
     return sock, identity
-
-
-def daemon_bootstrap() -> dict:
-    if os.geteuid() != 1001:
-        raise BoxAuthError("only the retired daemon may bootstrap")
-    sock, identity = connect(RUNTIME / "daemon.sock")
-    with sock:
-        send(sock, {"bootstrap": True})
-        response = receive(sock, identity)
-    if (set(response) != {"proof", "broker_socket"}
-            or response["broker_socket"] != str(RUNTIME / "broker/broker.sock")
-            or not isinstance(response["proof"], str) or len(response["proof"]) < 32):
-        raise BoxAuthError("box broker bootstrap is unavailable")
-    return response
-
-
-def channel_factory(owner, center, session, *, destroying=False):
-    from tinyassets.boxes.file_channel import FileChannel
-
-    sock, identity = connect(RUNTIME / "daemon.sock")
-    try:
-        send(sock, {"admit": {"owner": owner, "center": center, "session": session,
-                              "destroying": destroying}})
-        if receive(sock, identity) != {"admitted": True}:
-            raise BoxAuthError("owner box admission refused")
-        return FileChannel(sock, host_peer=identity)
-    except BaseException:
-        sock.close()
-        raise

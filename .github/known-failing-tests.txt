@@ -7,7 +7,6 @@
 # and must carry owner= and expires=. Expiry is reported weekly and enforced only
 # on a PR that touches the test's file -- never on main or in the merge queue.
 # MAX_QUARANTINE in scripts/ci_required_tests.py caps this file and ratchets
-# down: deleting entries means lowering it (tests/test_ci_required_tests.py).
 #
 # 2026-10-02: 63 entries (72 less the 9 that #4260 restored or moved), every one in the scheduled heavy-tests job, which had
 # been red 8/8 since 09-30 so the hourly tripwire signalled nothing. They are
@@ -19,12 +18,3 @@
 # codex auth delivery, image revision label, compose sync; the unsafe-fence
 # recovery path, whose KEEP stands). Triage source: 2026-08-27-full-tests-
 # permanently-red and the concerns it links.
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_preflight_refuses_mismatched_restored_recovery_provenance_before_mutation
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_refuses_recovery_handoff_drift_without_removal[foreign_project]
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_refuses_recovery_handoff_drift_without_removal[restart_policy]
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_refuses_recovery_handoff_drift_without_removal[running]
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_replays_partial_recovery_removal_after_durable_intent
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_receipt_store_requires_one_shared_volume_and_data_relative_override
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_recover_unsafe_requires_complete_saved_restart_policies_before_wal
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_refence_rejects_extra_volume_consumer_without_mutation
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced

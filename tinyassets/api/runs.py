@@ -485,16 +485,18 @@ def recover_dead_owner_runs_now() -> int:
     if _RUNS_RECOVERY_LOCK is None:
         return 0
     try:
+        from tinyassets.owner_activity import activity
         from tinyassets.runs import (
             PROCESS_STARTED_AT,
             deliver_terminal_events,
             recover_in_flight_runs,
         )
 
-        base = Path(_base_path())
-        count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
-        deliver_terminal_events(base)
-        return count
+        with activity.enter(keep_awake=False):
+            base = Path(_base_path())
+            count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
+            deliver_terminal_events(base)
+            return count
     except Exception:
         logger.exception("dead-owner run recovery failed")
         return 0
@@ -998,12 +1000,6 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "exit code" in msg or "subprocess failure" in msg or "api likely unavailable" in msg:
-        return (
-            "provider_subprocess_failed",
-            "Provider CLI process failed; check that claude/codex binary is"
-            " installed and reachable.",
-        )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return (
             "state_mutation_conflict",
@@ -1046,7 +1042,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "provider_unavailable",
             _no_provider_advice(),
         )
-    if "call failed" in msg or "groq" in msg or "gemini" in msg or "grok" in msg:
+    if "call failed" in msg:
         return (
             "provider_error",
             "Provider returned an unexpected error; check provider logs"
@@ -2135,9 +2131,6 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         "output": outcome.output,
         "error": outcome.error,
     })
-
-
-
 
 
 def _action_query_runs(kwargs: dict[str, Any]) -> str:

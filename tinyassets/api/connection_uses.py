@@ -394,7 +394,7 @@ def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[
     if not connection_id and destination:
         from tinyassets.api.http_connection import _ids
 
-        connection_id, _ = _ids(universe_id=uid, destination=destination)
+        connection_id, _ = _ids(owner=permissions.current_actor_id(), destination=destination)
     if not connection_id:
         return {"error": "connection_setup_invalid",
                 "detail": "name the connection by destination or connection_id"}

@@ -1,18 +1,14 @@
 """The box host's own durable record: placement epochs, change generations, operation outcomes.
 
-This is the box HOST's state, not the platform's and not the box's. It answers
+OwnerBoxd owns this file journal inside the persistent owner box. It answers
 `committed_generation` while a box sleeps, refuses stale epochs, and makes every
 mutation idempotent by operation id.
 
-Three rules:
+Rules:
 
 * **One box host at a time.** The state directory is owned through an exclusive
   ``flock`` held for the host's whole life. A second host over the same state
   refuses to start while the first is alive. A crashed host's lock dies with it.
-* **A new host reaps what the old one left running.** Each exec records its
-  process group and that leader's start time. At startup, every exec still
-  ``running`` whose leader is the same process (same start time, so not a reused
-  pid) has its whole group killed. Only then is it marked unknown.
 * **Outcomes are fenced to the host incarnation that started them.** Every time
   the box host starts, it takes a new incarnation number and marks every
   operation still ``running`` as ``unknown_after_restore``. An operation records
@@ -24,7 +20,7 @@ Three rules:
   that record back instead of a second run. Only a refusal raised *before* any
   effect calls :meth:`abandon`.
 * **A generation is coherent only while nothing is pending.** Mutations and
-  running executions hold a pending count on their box. A snapshot reader
+  local child processes hold a pending count on their box. A snapshot reader
   accepts a generation only when that count was zero before and after its reads.
 """
 
@@ -34,10 +30,8 @@ import contextlib
 import hashlib
 import json
 import os
-import signal
 import sqlite3
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -61,14 +55,6 @@ _SCHEMA = (
     " incarnation INTEGER NOT NULL,"
     " outcome TEXT,"
     " PRIMARY KEY (command_center_id, op_id))",
-    "CREATE TABLE IF NOT EXISTS execs ("
-    " exec_id TEXT PRIMARY KEY,"
-    " command_center_id TEXT NOT NULL,"
-    " op_id TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS owner_destroys ("
-    " owner_id TEXT PRIMARY KEY, op_id TEXT NOT NULL, uid INTEGER NOT NULL,"
-    " center TEXT NOT NULL, epoch INTEGER NOT NULL,"
-    " entries INTEGER, state TEXT NOT NULL)",
 )
 
 
@@ -81,9 +67,8 @@ def op_digest(kind: str, payload: Any) -> str:
 class BoxHostState:
     """One SQLite file under the box host's private state directory."""
 
-    def __init__(self, path: Path, *, max_bytes: int | None = None) -> None:
+    def __init__(self, path: Path) -> None:
         self._path = Path(path)
-        self._max_bytes = max_bytes
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._pending: dict[str, int] = {}
@@ -117,12 +102,6 @@ class BoxHostState:
                 " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
                 (self.incarnation,),
             )
-            # A restart: kill whatever the old host left running, then mark it unknown.
-            for (outcome,) in conn.execute(
-                "SELECT outcome FROM ops WHERE state = 'running' AND kind = 'exec'"
-            ):
-                data = json.loads(outcome) if outcome else {}
-                _reap_survivor(data.get("pgid"), data.get("start_time"))
             # Content may have changed under an operation whose outcome is now unknown:
             # advance those boxes' generations so no cache or cas trusts the old one.
             conn.execute(
@@ -132,36 +111,28 @@ class BoxHostState:
             conn.execute(
                 "UPDATE ops SET state = 'unknown_after_restore' WHERE state = 'running'"
             )
-            # Private CLI writeback lives only in the departed host process.
-            # Its durable receipt remains for same-id diagnosis, but it can no
-            # longer hold this credential lease against every future call.
-            conn.execute(
-                "UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true'), "
-                "'$.cli_lost', json('true')) WHERE incarnation < ? "
-                "AND json_extract(outcome, '$.cli_lease') IS NOT NULL "
-                "AND coalesce(json_extract(outcome, '$.cli_restore_hold'), 0)=0 "
-                "AND coalesce(json_extract(outcome, '$.cli_ack'), 0)=0",
-                (self.incarnation,),
-            )
-
     def close(self) -> None:
         """Give up ownership of the state directory (a clean host shutdown)."""
         if self._owner_fd is not None:
             fd, self._owner_fd = self._owner_fd, None
             os.close(fd)
 
+    def verify_volume(self, generation: int, validate) -> None:
+        """C2: owner-local startup validation, before any work is admitted."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT v FROM host WHERE k='volume_generation'").fetchone()
+        if row == (generation,):
+            return
+        validate()
+        with self._conn() as conn:
+            conn.execute("INSERT INTO host (k,v) VALUES ('volume_generation',?) "
+                         "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (generation,))
+
     @contextlib.contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self._path, timeout=30.0, isolation_level=None)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            if self._max_bytes is not None:
-                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-                pages = self._max_bytes // page_size
-                actual = conn.execute(f"PRAGMA max_page_count={pages}").fetchone()[0]
-                if actual > pages:
-                    raise BoxError("host receipt store exceeds its platform bound")
-                conn.execute(f"PRAGMA journal_size_limit={self._max_bytes}")
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
@@ -198,11 +169,12 @@ class BoxHostState:
             "SELECT epoch, generation FROM boxes WHERE command_center_id = ?", (cc,)
         ).fetchone()
         if row is None:
+            epoch = 1
             conn.execute(
-                "INSERT INTO boxes (command_center_id, epoch, generation) VALUES (?, 1, 0)",
-                (cc,),
+                "INSERT INTO boxes (command_center_id, epoch, generation) VALUES (?, ?, 0)",
+                (cc, epoch),
             )
-            return 1, 0
+            return epoch, 0
         return int(row[0]), int(row[1])
 
     def epoch(self, cc: str) -> int:
@@ -231,48 +203,9 @@ class BoxHostState:
             )
             return epoch + 1
 
-    def owner_destroy(self, owner: str) -> dict | None:
-        with self._lock, self._conn() as conn:
-            row = conn.execute("SELECT op_id, uid, center, epoch, entries, state "
-                               "FROM owner_destroys WHERE owner_id=?", (owner,)).fetchone()
-        return None if row is None else dict(zip(
-            ("op_id", "uid", "center", "epoch", "entries", "state"), row))
-
-    def begin_owner_destroy(self, owner: str, op_id: str, uid: int, center: str) -> dict:
-        """Durable admission fence before any destructive IO; retries keep its epoch."""
-        with self._lock, self._conn() as conn:
-            row = conn.execute("SELECT op_id, uid, center, epoch, entries, state "
-                               "FROM owner_destroys WHERE owner_id=?", (owner,)).fetchone()
-            if row is None:
-                epoch, generation = self._row(conn, owner)
-                conn.execute("UPDATE boxes SET epoch=?, generation=? WHERE command_center_id=?",
-                             (epoch + 1, generation + 1, owner))
-                row = (op_id, uid, center, epoch + 1, None, "deleting")
-                conn.execute("INSERT INTO owner_destroys VALUES (?,?,?,?,?,?,?)", (owner, *row))
-            elif row[:3] != (op_id, uid, center):
-                raise OpIdReuse("owner destruction already has a different durable operation")
-        return dict(zip(("op_id", "uid", "center", "epoch", "entries", "state"), row))
-
-    def count_owner_destroy(self, owner: str, entries: int) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute("UPDATE owner_destroys SET entries=? WHERE owner_id=? "
-                         "AND entries IS NULL AND state='deleting'", (entries, owner))
-
-    def finish_owner_destroy(self, owner: str) -> None:
-        with self._lock, self._conn() as conn:
-            # Erase file names and execution output references; retain only the
-            # permanent epoch and minimal deletion receipt needed for retries.
-            conn.execute("DELETE FROM ops WHERE command_center_id=?", (owner,))
-            conn.execute("DELETE FROM execs WHERE command_center_id=?", (owner,))
-            changed = conn.execute("UPDATE owner_destroys SET state='done' WHERE owner_id=? "
-                                   "AND entries IS NOT NULL", (owner,)).rowcount
-            if changed != 1:
-                raise BoxError("destruction has no durable census")
-
     # -- operation outcomes ----------------------------------------------------
 
-    def begin(self, cc: str, op_id: str, kind: str, digest: str, *,
-              cli_lease: str | None = None) -> dict[str, Any] | None:
+    def begin(self, cc: str, op_id: str, kind: str, digest: str) -> dict[str, Any] | None:
         """Record ``op_id`` as running under this incarnation, or return the earlier record.
 
         The caller runs the operation only when this returns None. A returned record
@@ -296,60 +229,16 @@ class BoxHostState:
                     "state": row[2],
                     "outcome": json.loads(row[3]) if row[3] else None,
                 }
-            if cli_lease is not None and conn.execute(
-                "SELECT 1 FROM ops WHERE command_center_id=? "
-                "AND json_extract(outcome, '$.cli_lease')=? "
-                "AND coalesce(json_extract(outcome, '$.cli_ack'), 0)=0 LIMIT 1",
-                (cc, cli_lease),
-            ).fetchone():
-                raise BoxError("CLI custody has unsettled writeback; reconnect or recover it")
             conn.execute(
                 "INSERT INTO ops (command_center_id, op_id, kind, digest, state, incarnation,"
                 " outcome)"
                 " VALUES (?, ?, ?, ?, 'running', ?, ?)",
                 (cc, op_id, kind, digest, self.incarnation,
-                 json.dumps({"cli_lease": cli_lease, "cli_ack": False}) if cli_lease else None),
+                 None),
             )
             return None
 
-    def acknowledge_cli(self, owner: str, op_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true')) "
-                         "WHERE command_center_id=? AND op_id=? AND state='done'",
-                         (owner, op_id))
 
-    def sweep_cli(self, *, now: float | None = None) -> tuple[str, ...]:
-        """Retire abandoned private results after their bounded recovery window."""
-        current = time.time() if now is None else now
-        with self._lock, self._conn() as conn:
-            rows = conn.execute(
-                "SELECT e.exec_id FROM execs e JOIN ops o ON "
-                "o.command_center_id=e.command_center_id AND o.op_id=e.op_id "
-                "WHERE o.state='done' AND json_extract(o.outcome, '$.cli_lease') IS NOT NULL "
-                "AND coalesce(json_extract(o.outcome, '$.cli_restore_hold'), 0)=0 "
-                "AND coalesce(json_extract(o.outcome, '$.cli_ack'), 0)=0 "
-                "AND json_extract(o.outcome, '$.cli_deadline') <= ?",
-                (current,),
-            ).fetchall()
-            conn.execute(
-                "UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true'), "
-                "'$.cli_lost', json('true')) WHERE state='done' "
-                "AND json_extract(outcome, '$.cli_lease') IS NOT NULL "
-                "AND coalesce(json_extract(outcome, '$.cli_restore_hold'), 0)=0 "
-                "AND coalesce(json_extract(outcome, '$.cli_ack'), 0)=0 "
-                "AND json_extract(outcome, '$.cli_deadline') <= ?",
-                (current,),
-            )
-        return tuple(row[0] for row in rows)
-
-    def update(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
-        """Attach progress to an operation still running under this incarnation."""
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                "UPDATE ops SET outcome = ? WHERE command_center_id = ? AND op_id = ?"
-                " AND state = 'running' AND incarnation = ?",
-                (json.dumps(outcome), cc, op_id, self.incarnation),
-            )
 
     def finish(self, cc: str, op_id: str, outcome: dict[str, Any]) -> bool:
         """Record the outcome, only if still running under this incarnation. True if written."""
@@ -371,11 +260,6 @@ class BoxHostState:
                 (cc, op_id, self.incarnation),
             )
 
-    def unknown(self, cc: str, op_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute("UPDATE ops SET state='unknown_after_restore' "
-                         "WHERE command_center_id=? AND op_id=? AND state='running' "
-                         "AND incarnation=?", (cc, op_id, self.incarnation))
 
     def lookup(self, cc: str, op_id: str) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
@@ -387,52 +271,3 @@ class BoxHostState:
             return None
         return {"kind": row[0], "state": row[1],
                 "outcome": json.loads(row[2]) if row[2] else None}
-
-    def register_exec(self, cc: str, op_id: str, exec_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO execs (exec_id, command_center_id, op_id) VALUES (?, ?, ?)",
-                (exec_id, cc, op_id),
-            )
-
-    def forget_exec(self, cc: str, exec_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                "DELETE FROM execs WHERE exec_id = ? AND command_center_id = ?", (exec_id, cc)
-            )
-
-    def find_exec(self, cc: str, exec_id: str) -> dict[str, Any] | None:
-        """The exec's operation record, only if it belongs to this command center."""
-        with self._lock, self._conn() as conn:
-            row = conn.execute(
-                "SELECT e.op_id, o.state, o.outcome FROM execs e"
-                " JOIN ops o ON o.command_center_id = e.command_center_id AND o.op_id = e.op_id"
-                " WHERE e.exec_id = ? AND e.command_center_id = ?",
-                (exec_id, cc),
-            ).fetchone()
-        if row is None:
-            return None
-        return {"op_id": row[0], "state": row[1],
-                "outcome": json.loads(row[2]) if row[2] else {}}
-
-
-def process_start_time(pid: int) -> int | None:
-    """The kernel's start time (clock ticks since boot) for ``pid``, or None if it is gone."""
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return None
-    fields = raw[raw.rindex(")") + 2:].split()
-    return int(fields[19])  # field 22 overall: starttime
-
-
-def _reap_survivor(pgid: object, start_time: object) -> None:
-    """Kill a group the previous host left running, if its leader is still that same process."""
-    if not isinstance(pgid, int) or pgid <= 1 or not isinstance(start_time, int):
-        return
-    if process_start_time(pgid) != start_time:
-        return  # gone, or the pid now belongs to an unrelated process
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass

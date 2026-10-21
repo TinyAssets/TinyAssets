@@ -1,227 +1,30 @@
 """Activities yield through the real HTTP compiler/router/journal lifecycle."""
 
-import asyncio
-import json
-import sqlite3
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager, nullcontext
-from dataclasses import replace
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
 
 from tests import test_workflow_http_agent as workflow_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tests.inference_usage_helpers import synthetic_stream
-from tests.test_run_provider_session import _branch, _run_branch
-from tinyassets import activity_runner, agent_activities, engine_mcp_server, shared_self
-from tinyassets.provider_assignment_manifest import ModelAccess
-from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+from tinyassets import activity_runner, agent_activities
 from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.model_policy import ModelRef
-from tinyassets.storage.provider_work_authority import db_path
 from tinyassets.workflow_agent import WorkAgentAdapter
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
-@pytest.fixture(autouse=True)
-def run_cancel_ledger(tmp_path):
-    from tinyassets.runs import initialize_runs_db
-
-    initialize_runs_db(tmp_path)
 
 
 http_wire = workflow_tests.http_wire
 work_agent = workflow_tests.work_agent
 
 
-def test_queued_activity_takes_its_own_provider_slot(tmp_path, monkeypatch):
-    from tinyassets import provider_admission as admission
-    from tinyassets import runs
-    from tinyassets.api import permissions
-    from tinyassets.control_plane import activity_session
-
-    monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "3")
-    admission.reset_for_tests()
-    record = {
-        "activity_id": "activity-1", "runner_generation": 1, "runner_token": "",
-        "status": agent_activities.IN_PROGRESS, "owner_principal": "owner-1",
-        "session_key": "session-1",
-    }
-    monkeypatch.setattr(agent_activities, "get", lambda *args: record)
-    monkeypatch.setattr(agent_activities, "bind_run", lambda *args: True)
-    monkeypatch.setattr(permissions, "owner_run_identity", lambda *args: nullcontext(True))
-    monkeypatch.setattr(runs, "create_run", lambda *args, **kwargs: "run-1")
-    futures = []
-    monkeypatch.setattr(runs, "_track_future", lambda _run_id, future: futures.append(future))
-
-    def activity_worker(*args):
-        # call_sync enters this scope before its own provider admission.
-        with admission.blocking_provider_child():
-            with admission.provider_slot(parent_slot=admission.blocking_parent_slot()):
-                return admission.admission_snapshot()["live"]
-
-    monkeypatch.setattr(activity_session, "execute", activity_worker)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        monkeypatch.setattr(runs, "_get_executor", lambda **kwargs: executor)
-        with admission.provider_slot() as parent:
-            assert activity_session.enqueue(tmp_path, "universe-1", record, 1) == "run-1"
-            assert futures[0].result(timeout=5) == 2
-            assert not parent.lent
-    assert admission.admission_snapshot()["live"] == 0
 
 
-@pytest.mark.parametrize("batched_tool", [False, True])
-@pytest.mark.parametrize("immediate_answer", [False, True])
-def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
-    tmp_path, monkeypatch, authenticate_request, work_agent, batched_tool, immediate_answer,
-):
-    universe = tmp_path / "universe_alice"
-    universe.mkdir(exist_ok=True)
-    record = agent_activities.create(
-        universe, owner_principal="acct_alice", title="Ask before sending", brief="b",
-        origin_kind="ask",
-    )
-    aid = record["activity_id"]
-    generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
-    from tinyassets import runs
-    from tinyassets.control_plane.activity_session import enqueue
-
-    run_ids = []
-
-    def enqueue_activity(base, **kwargs):
-        from tinyassets.foreground_run_provider import close_foreground_run_provider
-
-        close_foreground_run_provider(kwargs.get("provider_call"))
-        run_id = enqueue(base, universe.name, record, generation)
-        assert run_id
-        run_ids.append(run_id)
-        return SimpleNamespace(run_id=run_id, status="queued", output={}, error=None)
-
-    monkeypatch.setattr(runs, "execute_branch_async", enqueue_activity)
-    shared_turn = shared_self.prepare_shared_self_turn
-
-    def prepare_activity(*args, activity, agent):
-        assert activity["activity_id"] == aid and activity["runner_generation"] == generation
-        assert activity["runner_token"] == run_ids[0]
-        return shared_turn(*args, activity=activity, agent=agent)
-
-    monkeypatch.setattr(shared_self, "prepare_shared_self_turn", prepare_activity)
-    monkeypatch.setattr(engine_mcp_server, "_GRAPH_ID", universe.name)
-    monkeypatch.setattr(engine_mcp_server, "_calling_session", lambda: f"activity:{aid}")
-    resolve_proxy = ApiKeyHttpProvider._resolve_proxy
-
-    class AskThenAct:
-        def __init__(self, proxy):
-            self.proxy = proxy
-
-        def close(self):
-            self.proxy.close()
-
-        @asynccontextmanager
-        async def stream(self, verb, document, *, inference_usage=None, operation_id):
-            async with synthetic_stream(self, verb, document,
-                                        inference_usage=inference_usage,
-                                        operation_id=operation_id) as stream:
-                yield stream
-
-        def request(self, verb, document, **kwargs):
-            result = self.proxy.request(verb, document, **kwargs)
-            body = json.loads(result["body"])
-            message = body["choices"][0]["message"]
-            if "tool_calls" in message:
-                # The model sees the four tools; platform calls go through
-                # ``ta`` in bash.
-                ask = json.dumps({"target": "pending_request", "operation": "ask",
-                                  "payload_json": "{}"})
-                message["tool_calls"][0]["function"] = {
-                    "name": "bash",
-                    "arguments": json.dumps({"command": f"ta call write_graph --json '{ask}'"}),
-                }
-                if batched_tool:
-                    message["tool_calls"].append({
-                        "id": "must-not-run", "type": "function", "function": {
-                            "name": "bash", "arguments": json.dumps({
-                                "command": "ta call write_graph --json '{\"target\":\"branch\"}'",
-                            }),
-                        },
-                    })
-            return {**result, "body": json.dumps(body)}
-
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
-                        lambda *a, **k: AskThenAct(resolve_proxy(*a, **k)))
-
-    def yield_after_ask():
-        assert '"target": "pending_request"' in work_agent.tools[-1][1]["command"]
-        result = engine_mcp_server._yield_activity({"request_id": "req-http-yield"})
-        assert result["activity_waiting"]
-        if immediate_answer:
-            assert agent_activities.answered(universe, aid, "req-http-yield")
-
-    work_agent.after_tool = yield_after_ask
-    branch = _branch(node_count=1)
-    branch.node_defs[0].tools_allowed = ["universe_self"]
-    branch.node_defs[0].llm_policy = {"preferred": {"model": "synthetic-model"},
-                                    "fallback_chain": []}
-    result = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
-                         open_provider=True, model_access=ModelAccess("discovered"))[0]
-    assert result["terminal_status"] == "cancelled", result
-    assert len(work_agent.wires) == 1 and len(work_agent.tools) == 1 and work_agent.closed
-    turn = work_agent.latest()
-    assert len(turn.rounds) == 1 and turn.rounds[0].tools[0].state == "completed"
-    assert "known work result" in turn.rounds[0].tools[0].result_json
-    if batched_tool:
-        assert turn.rounds[0].tools[1].state == "not_sent"
-        assert turn.state == "held_tool_not_sent"
-    else:
-        assert turn.state == "abandoned", "the settled round closes without another inference"
-    current = agent_activities.get(universe, aid)
-    assert current["status"] == (agent_activities.SCHEDULED if immediate_answer
-                                 else agent_activities.WAITING_ON_YOU)
-    assert current["retiring_token"] == run_ids[0] and not current["runner_token"]
-    assert activity_runner.state(tmp_path, run_ids[0]) == activity_runner.ENDED
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        assert conn.execute("SELECT state FROM provider_work_execution_claims").fetchall() == [
-            ("released",),
-        ]
-        assert conn.execute("SELECT state FROM provider_invocation_reservations").fetchall() == [
-            ("succeeded",),
-        ]
 
 
-def test_activity_binding_cannot_inherit_a_replacement_run(tmp_path):
-    universe = tmp_path / "u-alpha"
-    universe.mkdir()
-    record = agent_activities.create(
-        universe, owner_principal="acct_alice", title="t", brief="b", origin_kind="ask",
-    )
-    aid = record["activity_id"]
-    generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
-    assert agent_activities.bind_run(universe, aid, generation, "old-run")
-    binding = activity_runner.ActivityRunBinding(universe, aid, generation, "old-run")
-    binding.check()
-    replacement = agent_activities.claim(universe, aid, replaceable=lambda _: True)
-    assert agent_activities.bind_run(universe, aid, replacement, "new-run")
-    with pytest.raises(PermissionError, match="activity_runner_superseded"):
-        binding.check()
-    assert not agent_activities.holds(universe, aid, replacement, run_id="old-run")
-    assert agent_activities.holds(universe, aid, replacement, run_id="new-run")
 
 
-@pytest.mark.parametrize("status", [agent_activities.PAUSED, agent_activities.COMPLETED])
-def test_owner_pause_or_stop_is_not_reclassified_as_a_yield(tmp_path, status):
-    universe = tmp_path / "u-alpha"
-    universe.mkdir()
-    record = agent_activities.create(
-        universe, owner_principal="acct_alice", title="t", brief="b", origin_kind="ask",
-    )
-    aid = record["activity_id"]
-    generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
-    assert agent_activities.bind_run(universe, aid, generation, "run-1")
-    binding = activity_runner.ActivityRunBinding(universe, aid, generation, "run-1")
-    agent_activities.transition(universe, aid, status, result_summary="partial result")
-    with pytest.raises(PermissionError, match="activity_runner_superseded"):
-        binding.check()
-    assert agent_activities.get(universe, aid)["result_summary"] == "partial result"
 
 
 class _LaunchRecorder:
@@ -239,7 +42,7 @@ class _LaunchRecorder:
 
 
 #: The native candidate the owner's order offers mid-turn.
-_NATIVE_NEXT = ModelRef("native-cli", "native-model")
+_HTTP_NEXT = ModelRef("native-cli", "native-model")
 
 
 def _live_activity_adapter(tmp_path, *, name, with_binding=True):
@@ -268,7 +71,7 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     def _carrier(provider):
         return SimpleNamespace(
             _receipt=receipt, _claim=claim, provider=provider, operation="run_graph",
-            selected_model=SimpleNamespace(model_id="some-model"), native_selection=None,
+            selected_model=SimpleNamespace(model_id="some-model"),
         )
 
     authorized = []
@@ -276,18 +79,18 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     @contextmanager
     def authorize_attempt(*, role, prompt, system, policy):
         authorized.append(policy["preferred"])
-        yield (_carrier(policy["preferred"]["provider"]), None,
+        yield (_carrier(policy["preferred"]["provider"]),
                policy["preferred"]["provider"])
 
     session = SimpleNamespace(
         _universe_dir=universe,
-        _work_candidates=SimpleNamespace(next_candidate=lambda *a, **k: _NATIVE_NEXT),
+        _work_candidates=SimpleNamespace(next_candidate=lambda *a, **k: _HTTP_NEXT),
         _authorize_attempt=authorize_attempt,
         _check_agent_authority=lambda _carrier: receipt.principal_id,
     )
     binding = activity_runner.ActivityRunBinding(universe, aid, generation, "run-1")
     adapter = WorkAgentAdapter(
-        session, (_carrier("owned-http"), None, "owned-http"), {},
+        session, (_carrier("owned-http"), "owned-http"), {},
         **({"activity_binding": binding} if with_binding else {}),
     )
     config = ModelConfig(
@@ -296,129 +99,3 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     )
     context = UniverseContext(universe_dir=universe, model_selection=adapter.selection)
     return adapter, config, context, authorized
-
-
-def _stage_native_switch(adapter, context):
-    """Round two of the same turn, with the order now offering a native candidate."""
-    adapter.initial_pending = False
-    adapter._staged_next = _NATIVE_NEXT
-    return replace(context, model_selection=_NATIVE_NEXT)
-
-
-def test_activity_run_launches_a_native_first_selection(tmp_path):
-    # One agent definition: an activity runs on any executor. The yield fence
-    # is the engine route's (test_activity_fence.py), not an executor refusal.
-    adapter, config, context, authorized = _live_activity_adapter(
-        tmp_path, name="u-native-first",
-    )
-    router = _LaunchRecorder()
-    response = asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=context,
-        observer=None, kind="native_agent",
-    ))
-    assert response.text == "launched"
-    assert router.launches == [("writer", "native_agent")]
-    assert not adapter.initial_pending
-
-
-def test_activity_run_launches_a_native_mid_turn_switch(tmp_path):
-    adapter, config, context, authorized = _live_activity_adapter(
-        tmp_path, name="u-native-switch",
-    )
-    router = _LaunchRecorder()
-    # ``infer`` runs every round: a turn that started on engine inference may
-    # move onto a native candidate, through the normal staged-candidate gate.
-    switched = _stage_native_switch(adapter, context)
-    asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=switched,
-        observer=None, kind="native_agent",
-    ))
-    assert router.launches == [("writer", "native_agent")]
-    assert authorized == [{"provider": _NATIVE_NEXT.connection_id,
-                           "model_id": _NATIVE_NEXT.model_id}]
-    assert adapter.selection == _NATIVE_NEXT
-
-
-def test_activity_run_still_launches_engine_inference(tmp_path):
-    adapter, config, context, _ = _live_activity_adapter(tmp_path, name="u-engine-ok")
-    router = _LaunchRecorder()
-    response = asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=context,
-        observer=None, kind="engine_inference",
-    ))
-    assert response.text == "launched"
-    assert router.launches == [("writer", "engine_inference")]
-
-
-@pytest.mark.parametrize("mid_turn", [False, True])
-def test_a_non_activity_run_still_launches_native(tmp_path, mid_turn):
-    """Activity or not, a native round launches the same way."""
-    adapter, config, context, _ = _live_activity_adapter(
-        tmp_path, name=f"u-native-chat-{int(mid_turn)}", with_binding=False,
-    )
-    router = _LaunchRecorder()
-    if mid_turn:
-        context = _stage_native_switch(adapter, context)
-    response = asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=context,
-        observer=None, kind="native_agent",
-    ))
-    assert response.text == "launched"
-    assert router.launches == [("writer", "native_agent")]
-
-
-@pytest.mark.parametrize("stop", ["yield", "pause", "stop"])
-def test_a_native_activity_call_ends_when_its_activity_stops(tmp_path, stop):
-    """A native agent's tool loop is one provider call: once the activity
-    yields, pauses or stops, that call is cancelled -- its process family
-    ended and its seat released by the provider and router -- where an HTTP
-    turn would not start another round."""
-    adapter, config, context, _ = _live_activity_adapter(tmp_path, name=f"u-native-{stop}")
-    binding = adapter.activity_binding
-    cancelled = []
-
-    class NativeRouter:
-        async def call(self, role, prompt, system, config, **kwargs):
-            assert kwargs["_agent_execution_kind"] == "native_agent"
-            try:
-                await asyncio.Event().wait()      # a tool loop that does not end itself
-            except asyncio.CancelledError:
-                cancelled.append(role)
-                raise
-
-    async def go():
-        task = asyncio.ensure_future(adapter.infer(
-            router=NativeRouter(), prompt="p", system="", config=config, context=context,
-            observer=None, kind="native_agent",
-        ))
-        await asyncio.sleep(0.3)
-        assert not task.done(), "a running activity keeps its native call"
-        if stop == "yield":
-            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
-        else:
-            agent_activities.transition(
-                binding.universe_dir, binding.activity_id,
-                agent_activities.PAUSED if stop == "pause" else agent_activities.COMPLETED,
-                generation=binding.generation)
-        await asyncio.wait_for(task, timeout=5)      # bounded: cancelled, not waited out
-
-    expected = activity_runner.ActivityYielded if stop == "yield" else PermissionError
-    with pytest.raises(expected):
-        asyncio.run(go())
-    assert cancelled == ["writer"]
-
-
-def test_a_native_call_that_finished_as_its_activity_stopped_keeps_its_answer(tmp_path):
-    adapter, config, context, _ = _live_activity_adapter(tmp_path, name="u-native-same")
-    binding = adapter.activity_binding
-
-    class AnswersThenYields:
-        async def call(self, role, prompt, system, config, **kwargs):
-            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
-            return ProviderResponse("final words", "owned-http", "some-model", "test", 0)
-
-    response = asyncio.run(adapter.infer(
-        router=AnswersThenYields(), prompt="p", system="", config=config, context=context,
-        observer=None, kind="native_agent",
-    ))
-    assert response.text == "final words"

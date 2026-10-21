@@ -11,7 +11,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.test_model_bootstrap import rig  # noqa: F401
+from tests.support.model_connect import rig  # noqa: F401
 from tests.test_onboarding_model_connect import ingress, post  # noqa: F401
 from tinyassets import onboarding
 from tinyassets.auth.provider import Identity
@@ -162,7 +162,11 @@ def test_client_pkce_or_bearer_renewal_cannot_mint_owner_proof(login, grant):
     asyncio.run(run())
 
 
-def test_app_account_switch_revokes_previous_protected_session(login, monkeypatch):
+def test_app_account_switch_revokes_previous_protected_session(login, rig, monkeypatch):  # noqa: F811
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(rig, principal="other", center="u-other")
+
     async def run():
         async with browser() as client:
             await client.get("/app", params=await begin(client))
@@ -233,3 +237,6 @@ function redirectUri(){return 'https://tinyassets.io/app';}
 """, encoding="utf-8")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

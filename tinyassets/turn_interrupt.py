@@ -20,13 +20,6 @@ How a turn honours it, and why each boundary is where it is:
   engine call does not abort the engine's half; it only turns a known result into
   an unknown one. So the call completes, its result is recorded, and the turn
   stops at the next boundary. Nothing is left half-applied or unrecorded.
-* **A native CLI round (codex / claude-code) is cancelled at once.** The provider
-  adapters already end the whole owned process family on cancellation
-  (``providers/owned_process``) and the router settles its reservation on the
-  way out, so the jail, the process and the seat are released by code that
-  already runs for every other cancellation. The round is recorded
-  ``indeterminate``: a killed agent may have acted, and saying otherwise would
-  be the lie ``conversation_failure`` exists to prevent.
 * **An HTTP inference round is allowed to return.** The HTTP provider waits for
   its own request even when cancelled (``api_key_http_provider``: the synchronous
   request cannot be aborted, and its spend must be settled), so cancelling it

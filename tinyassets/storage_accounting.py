@@ -142,85 +142,9 @@ def _walk_bytes(
 
 
 def _center_bytes(root: Path, *, scope: str, exclude_top=frozenset()):
-    from tinyassets.owner_runtime import current
 
-    if current() is not None:
-        target = root / 'workspaces' if scope == 'workspaces' else root
-        return _walk_bytes(target, exclude_top=exclude_top)
-    from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
-    from tinyassets.storage import data_dir
-
-    configured = Path(data_dir()).resolve()
-    runtime_center = root.absolute().parent == configured
-    if not runtime_center:
-        try:
-            info = root.lstat()
-        except FileNotFoundError:
-            return 0
-        # An owner-labelled path outside the configured volume is never a
-        # generic utility tree, even when the caller supplied another base.
-        if OWNER_ID_FIRST <= info.st_gid <= OWNER_ID_LAST:
-            raise PermissionError('storage center is outside the admitted data root')
-        target = root / 'workspaces' if scope == 'workspaces' else root
-        return _walk_bytes(target, exclude_top=exclude_top)
-    return _box_center_bytes(root, scope=scope, exclude_top=exclude_top)
-
-
-def _box_center_bytes(root: Path, *, scope: str, exclude_top=frozenset()) -> int:
-    """Logical bytes of a command center read through its owner's box.
-
-    A runtime center lives in the owner's box, never on a daemon path: the
-    measure binds a read-only measurement session on the owner's handle and
-    sums regular-file sizes page by page. ``exclude_top`` names top-level
-    entries that are the platform's.
-    """
-    import hashlib
-
-    from tinyassets.agent_loop.served_chat import configured_box_provider
-    from tinyassets.boxes.provider import BoxNotFound
-    from tinyassets.universe_owner import owner_of
-
-    provider, _ = configured_box_provider()
-    if provider is None:
-        raise PermissionError('owner storage measure requires the owner box provider')
-    center = root.name
-    owner = owner_of(root.parent, center)
-    if not owner:
-        return 0
-    handle = provider.bind(center, account_id=owner,
-                           turn_id=hashlib.sha256(('storage-measure:' + center).encode())
-                           .hexdigest())
-    top = '/cc/workspaces' if scope == 'workspaces' else '/cc'
-    pending = [top]
-    total = 0
-    entries = 0
-    linked = set()
-    while pending:
-        directory = pending.pop()
-        cursor = None
-        while True:
-            try:
-                page = provider.list(handle, directory, cursor=cursor)
-            except (FileNotFoundError, BoxNotFound):
-                break
-            for item in page.entries:
-                entries += 1
-                if entries > 1_000_000 or item.name in ('', '.', '..') or '/' in item.name:
-                    raise PermissionError('owner storage measure exceeds its bound')
-                if directory == top and item.name in exclude_top:
-                    continue
-                if item.kind == 'dir':
-                    pending.append(directory + '/' + item.name)
-                elif item.kind == 'file':
-                    if item.links > 1:
-                        if item.inode in linked:
-                            continue
-                        linked.add(item.inode)
-                    total += max(0, item.size)
-            if page.next_cursor is None:
-                break
-            cursor = page.next_cursor
-    return total
+    target = root / 'workspaces' if scope == 'workspaces' else root
+    return _walk_bytes(target, exclude_top=exclude_top)
 
 
 def _universe_files(base: Path, universe_id: str) -> int:
@@ -646,11 +570,24 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".action-policy.db": "platform: box-local action policy, charged by owner volume quota",
+    ".centers.db": "platform: box-local center membership, charged by owner volume quota",
+    "credential-custody.db": "platform: broker credential ownership",
+    "plans.db": "platform: broker billing plan state",
+    "next-wake.db": "platform: broker next-wake index and last successful wake timestamps",
+    ".published": "platform: shared copies of explicitly published definitions",
+    ".custody.lock": "platform: broker credential publication and erasure lock",
+    ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
+    ".ordinary-admission.json": "platform: deployment's ordinary admission decision",
+    ".router-credentials.json": "platform: rotated operational credentials after disaster",
+    ".platform-recovery.json": "platform: shared-layer recovery completion report (C3)",
+    ".disaster-restore.json": "platform: acknowledged paired disaster recovery report",
     ".owner-boxd": "platform: in-box file operation generations and idempotency receipts",
     ".boxhost": "platform: root-private owner generations and idempotency receipts",
     ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
     ".layout.json": "platform: committed storage layout admission marker",
     ".layout.lock": "platform: shared service lifetime and exclusive migration lock",
+    ".locks": "platform: root-owned per-UID opaque-volume lifecycle locks",
     ".runs.db": "run_records, uploads, branches (rows attributed per table)",
     ".langgraph_runs.db": "checkpoints",
     ".run-file-custody": "uploads (blobs; sized from run_file_objects)",
@@ -679,11 +616,13 @@ ROOT_ENTRIES: dict[str, str] = {
     ".agent-turn-runners": "platform: per-turn runner liveness claims, settled with the turn",
     ".consumer_liveness": "platform: process liveness locks",
     ".owner_leases.db": "platform: execution-owner leases and fences (owner_lease)",
+    ".owner-cutover.json": "platform: root-private cutover resume and restore receipt",
+    ".cutover-shared": "platform: verified shared-store publication stage on the box store",
+    ".tinyassets.db.prebudgetrepair.bak": "platform: explicitly dropped stale database copy",
     ".owner_tree": "platform: execution-owner tree member locks (owner_lease)",
     ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     "policy.db": "platform: broker-owned account policy under .broker/accounts",
-    ".deleted": "platform: broker-owned account deletion marker under .broker/accounts",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
@@ -750,6 +689,7 @@ ROOT_ENTRIES: dict[str, str] = {
 #: Names that live INSIDE a universe directory: every byte there is counted by
 #: `universe_files` (minus `_NOT_USER_BYTES`), so these need no store of their own.
 UNIVERSE_ENTRIES: frozenset[str] = frozenset({
+    ".credential-vault.json",  # Historical center custody, read only by the cutover census.
     ".conversation_memory.db", ".conversation_attention.db",
     ".credentials", ".credentials.json",
     ".engine_mcp_config.json", ".oauth-refresh", ".pause",
@@ -767,6 +707,10 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 #: is recognized by that shape in the completeness test, so no tool's home
 #: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
+    # Immutable extracted image identity under /opt/tinyassets/boxhostd, not owner storage.
+    ".box-image-id",
+    # Ephemeral boxhostd socket exports and per-start secrets under /run, never owner data.
+    "app.sock", "secret", "secrets", "daemon.sock",
     ".git", ".agents", ".author_server.db", ".workflow.db",
     ".bin",  # Shipped npm install tree under /opt, outside the data root.
     # The box host's control-plane record (boxes/local.py), kept in the box

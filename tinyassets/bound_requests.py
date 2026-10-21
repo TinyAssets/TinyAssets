@@ -507,7 +507,7 @@ def _decide(home, data, session):
     from tinyassets.effectors.authenticated_external_call import (
         run_authenticated_external_call_effector,
     )
-    from tinyassets.onboarding.owner_sessions import store
+    from tinyassets.onboarding.owner_sessions import decision_session
 
     owner = json.loads(session["identity_json"])["user_id"]
     request_id = data.get("request_id", "")
@@ -528,18 +528,13 @@ def _decide(home, data, session):
         approval = data.get("policy_approval")
         if choice == "approve" and (
                 not isinstance(approval, str) or len(approval) < 32 or len(approval) > 512):
-            raise RequestRefused("A fresh broker approval is required.")
+            raise RequestRefused("A fresh action approval is required.")
         if current["status"] == "unresolved" and choice not in ("deny", "skip", "alternative"):
             raise RequestRefused("Check the uncertain outcome; this card cannot send it again.")
         if choice not in ("approve", "deny", "skip", "defer", "alternative"):
             raise RequestRefused("This action cannot be retried blindly; request a fresh preview.")
-        # Serialize decision admission against logout/account-switch revocation.
-        with store() as sessions:
-            sessions.execute("BEGIN IMMEDIATE")
-            if not sessions.execute(
-                "SELECT 1 FROM owner_sessions WHERE session_hash=? AND expires_at>?",
-                (session["session_hash"], time.time()),
-            ).fetchone():
+        with decision_session(session) as admitted:
+            if not admitted:
                 raise RequestRefused("Sign in again to approve.")
             conn.execute("BEGIN IMMEDIATE")
             stored = json.loads(

@@ -1,5 +1,46 @@
 # TinyAssets daemon deploy runbook (provider-neutral Debian 12 VM)
 
+## Owner-box deployment (D11; workflow held until slice 7)
+
+The founder's `disabled_manually` workflow hold remains in force. Slice 6b
+does not enable or dispatch deployment. The following is the wired path for
+the lead's cutover/live acceptance after that hold is lifted.
+
+After the shared image and public health probes pass, deploy-prod calls
+`scripts/roll_owner_boxes.py`. It first wakes the configured canary through the
+public router. Its authenticated deploy SSH caller resolves the immutable image
+digest and extracts a static rootfs without running it or mounting owner data.
+One root-authenticated broker call publishes that image for future wakes and
+uses ordinary sleep for awake owners under their existing lifecycle locks.
+
+The in-box Activity gate closes new requests and background turns atomically.
+Already admitted work finishes before flush, detach and snapshot. Busy or unknown
+activity reports an incomplete drain and stays pending on the ordinary lifecycle
+path. Incomplete drain fails acceptance. Ordinary owners remain asleep until a
+request or schedule wakes them on the current image.
+
+Root-private `/var/lib/boxhostd/state/images.json` records only the current image.
+Rollback means republishing the previous compatible image and draining again.
+There is no per-owner image history, per-box rollback or wake image override.
+Pre-cutover images are refused by the existing layout-compatibility boundary;
+cutover rollback remains the separate C4 deployment procedure.
+
+After successful drain, acceptance wakes the canary again through the public
+router, verifies its owner/home, bound UID and baked revision, and completes one
+nonce model turn through MCP. Missing credentials, model egress, provenance or the
+expected reply fail acceptance. The existing canary secret profile and CI inputs
+are unchanged. This task has not read them or invoked deployment.
+
+The existing receipt artifact contains counts of `slept`, `asleep`, `incomplete`,
+and canary/control pass/fail states. It contains no owner IDs, private error text,
+credentials or model replies. Control, drain or canary failure exits nonzero.
+Root control waits remain 600 seconds and SSH 610 seconds; a transport timeout
+never authorizes killing active owner work. The ordinary pending-work state
+continues on the existing broker clock.
+
+The lead owns independent floor review and live acceptance with the deployed SHA
+asserted. Local proofs use synthetic accounts, loopback routers and processes.
+
 Self-host migration Row D per
 `openspec/specs/uptime-and-alarms/spec.md`.
 
@@ -515,10 +556,8 @@ image succeed or fail together:
    > that reason (`"daemon.env_file is []"`, 2026-08-30 00:34Z, run
    > 33283629722) while the mocked suite was green, because the fake and the
    > validator shared one wrong belief. `env_file` is now read from a second
-   > `--no-interpolate` render. `tests/test_deploy_bundle_validator.py` pins the
-   > validator against a *capture* of the real output and needs no docker, so it
-   > runs everywhere — extend that capture, not just the fake, when Compose is
-   > upgraded or these assertions change.
+   > `--no-interpolate` render. The former validator-capture test was retired
+   > under the 2026-10-21 founder rule.
 2. **snapshot** — the *live* `/opt/tinyassets/compose.yml`,
    `/opt/tinyassets/deploy/{compose.yml,vector.yaml,vector-betterstack.yaml,vector-entrypoint.sh}`
    and `/etc/systemd/system/tinyassets-daemon.service` are copied into

@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import time
+from contextlib import closing
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -38,6 +40,7 @@ def setup(tmp_path, monkeypatch):
 
 def request(cookie="protected", origin="https://tinyassets.io"):
     return SimpleNamespace(
+        query_params={},
         cookies={sessions.COOKIE: cookie},
         headers={
             "origin": origin,
@@ -48,6 +51,7 @@ def request(cookie="protected", origin="https://tinyassets.io"):
     )
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 @pytest.mark.parametrize(
     "cookie,origin,owner",
     [
@@ -64,6 +68,7 @@ def test_bearer_origin_spoof_or_other_owner_is_not_approval(setup, cookie, origi
         sessions.require(request(cookie, origin), owner=owner)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_live_cookie_is_required_and_logout_revokes_it(setup):
     assert sessions.require(request(), owner="alice")
     sessions.revoke("protected")
@@ -71,6 +76,7 @@ def test_live_cookie_is_required_and_logout_revokes_it(setup):
         sessions.require(request(), owner="alice")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_login_pins_query_response_mode_and_keeps_verifier_in_server_custody(setup):
     req = request()
     req.headers.update({"sec-fetch-mode": "navigate", "sec-fetch-dest": "document"})
@@ -90,19 +96,21 @@ def test_login_pins_query_response_mode_and_keeps_verifier_in_server_custody(set
     assert b"copied-code" not in refused.body
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_bearer_fetch_cannot_start_interactive_login(setup):
     response = asyncio.run(sessions.begin(request()))
     assert response.status_code == 403
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_policy_bearer_write_cannot_bypass_owner_session(
         setup, monkeypatch, tmp_path):
     from tinyassets.broker.client import BrokerRefused
+    from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
 
-    admissions = SimpleNamespace(admissions_after=lambda _generation: [
-        SimpleNamespace(center="alpha", principal="alice", event="admit")])
     seed_owner_admission(tmp_path, principal="alice", center="alpha")
+    admissions = OwnerIdentities(tmp_path / ".broker/state/owner-identities.db")
     store = PolicyStore(tmp_path, admissions)
     store.bootstrap()
     current = store.read("alice")
@@ -112,7 +120,8 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
             return {"receipts": store.receipts(owner)}
         assert action == "write"
         try:
-            return store.write(owner, fields["cookie"], fields["expected_generation"],
+            assert "cookie" not in fields
+            return store.write(owner, fields["session_proof"], fields["expected_generation"],
                                fields["policy"]).projection()
         except PolicyRefused as exc:
             raise BrokerRefused("broker refused policy write") from exc
@@ -125,6 +134,7 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
     monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", broker)
     req = request(cookie="")
     req.method = "POST"
+    req.query_params = {"scope": "spend"}
     with identity_context(Identity(user_id="alice", username="alice")):
         response = asyncio.run(onboarding._handle_policy(req))
     assert response.status_code == 403
@@ -142,6 +152,7 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
     assert any(row["kind"] == "write" for row in json.loads(accepted.body)["receipts"])
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_path):
     from tinyassets.connection_oauth.pkce import flows_db
     from tinyassets.onboarding.inline_model_connect import flows, take
@@ -149,19 +160,19 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
     with flows_db(tmp_path) as (conn, now):
         for owner in ("alice", "bob"):
             conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)",
-                         (owner, owner, "home", "preset", "digest", "challenge", "origin",
-                          now, now + 300))
+                         (owner, owner, "preset", "digest", "challenge", "origin",
+                          now, now + 300, "opaque-request"))
             conn.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                         (owner, owner, "home", "request", "digest", "challenge", "client",
-                          "redirect", now, now + 300, owner))
+                         (owner, owner, "request", "digest", "challenge", "client",
+                          "redirect", now, now + 300, "{}", owner))
     with flows() as conn:
         conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
                      (sessions.hashed("bob-cookie"), json.dumps({"user_id": "bob"}),
                       time.time() + 300))
         for owner in ("alice", "bob"):
             for state in ("waiting", "ready"):
-                conn.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?,?)",
-                             (sessions.hashed(owner + state), owner, "home", b"sealed-code", "",
+                conn.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?)",
+                             (sessions.hashed(owner + state), owner, b"sealed-code", "",
                               state, time.time() + 300))
     sessions.revoke_owner("alice")
     sessions.revoke_owner("alice")  # Repeated logout is safe.
@@ -175,4 +186,105 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
     assert [(r[1], r[2]) for r in rows if r[0] == "alice"] == [("cancelled", b"")] * 2
     assert [(r[1], r[2]) for r in rows if r[0] == "bob"] == [
         ("waiting", b"sealed-code"), ("ready", b"sealed-code")]
-    assert take(owner="alice", home="home", handle="aliceready")["status"] == "cancelled"
+    assert take(owner="alice", handle="aliceready")["status"] == "cancelled"
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C8')
+@pytest.mark.parametrize("choice", ["approve", "deny"])
+@pytest.mark.parametrize("expired", [False, True])
+def test_box_approval_decision_uses_forwarded_session(tmp_path, monkeypatch, choice, expired):
+    from tinyassets import bound_requests, owner_runtime
+    from tinyassets.onboarding.inline_requests import handle_approval
+    from tinyassets.storage.pending_requests import create_request
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setattr(owner_runtime, "_runtime", owner_runtime.OwnerRuntime(
+        "alice", 1001, tmp_path, os.getpid(), None))
+    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
+    home = tmp_path / "home"
+    home.mkdir()
+    proof = {"session_hash": "a" * 64, "identity_json": json.dumps({"user_id": "alice"}),
+             "expires_at": time.time() + (-1 if expired else 300)}
+    envelope = {"subject": {"owner": "alice", "home": home.name, "agent": "main",
+                            "task_id": "task", "task_generation": 1},
+                "arguments": {"connection_id": "connection", "verb": "POST",
+                              "request": {"path": "/messages"}},
+                "destination": "https://example.com/messages", "action_class": "app.write",
+                "expires_at": time.time() + 300, "executor": "authenticated_external_call"}
+    row = create_request(home, kind="Approval", title="Send", body="", fields=[],
+                         action={"type": "approve_action", "envelope": envelope}, dedupe_key="one")
+    decision = {"token_hash": bound_requests.digest("token"), "session_hash": proof["session_hash"],
+                "expires_at": time.time() + 300, "revision": 1, "scope": "once"}
+    with closing(bound_requests.connect(home)) as db:
+        db.execute("UPDATE pending_requests SET action_sha256=?,decision_json=? WHERE request_id=?",
+                   (bound_requests.digest(envelope), json.dumps(decision), row["request_id"]))
+        db.commit()
+    # This regression exercises decision/session admission; broker egress is slice 3.
+    monkeypatch.setattr(bound_requests, "_current", bound_requests._owned)
+    monkeypatch.setattr(bound_requests, "_wake", lambda *args: None)
+    monkeypatch.setattr(
+        "tinyassets.effectors.authenticated_external_call.run_authenticated_external_call_effector",
+        lambda **kwargs: {"status": "sent"})
+    monkeypatch.setattr("tinyassets.api.pending_requests._owner_gate",
+                        lambda _: (home.name, home, None))
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    data = {"universe_id": home.name, "request_id": row["request_id"], "decision": choice,
+            "expected_revision": 1, "action_sha256": bound_requests.digest(envelope),
+            "approval_token": "token", "policy_approval": "p" * 43}
+
+    async def payload(*args, **kwargs):
+        return data
+
+    monkeypatch.setattr(onboarding, "_read_small_json", payload)
+    req = request(cookie="")
+    req.cookies = {}
+    req.path_params = {"operation": "decide"}
+    with identity_context(Identity(user_id="alice", username="alice",
+                                   metadata={"router_owner_session": proof})):
+        response = asyncio.run(handle_approval(req))
+    assert response.status_code == (403 if expired else 200), response.body
+    if not expired:
+        assert json.loads(response.body)["status"] == "answered"
+    assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C8')
+def test_box_policy_door_uses_local_policy_without_broker_or_cookie(tmp_path, monkeypatch):
+    from tinyassets import owner_runtime
+    from tinyassets.action_policy import ActionPolicyStore, initialize
+
+    initialize(tmp_path / ".action-policy.db")
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(owner_runtime, "_runtime", owner_runtime.OwnerRuntime(
+        "alice", 1001, tmp_path, os.getpid(), None))
+    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "_read_home", lambda _: "home")
+    proof = {"session_hash": "a" * 64, "identity_json": json.dumps({"user_id": "alice"}),
+             "expires_at": time.time() + 300}
+
+    def no_broker(*args, **kwargs):
+        pytest.fail("local action policy used a shared collaborator")
+
+    async def payload(_request):
+        return {"expected_generation": 1, "policy": {"entries": [
+            {"scope": "account", "table": "rules", "values": {
+                "action_class": "workspace.shell", "behaviour": "ask_first"}}]}}
+
+    monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", no_broker)
+    monkeypatch.setattr(onboarding, "_read_small_json", payload)
+    req = request(cookie="")
+    req.cookies = {}
+    req.method = "POST"
+    with identity_context(Identity(user_id="alice", username="alice",
+                                   metadata={"router_owner_session": proof})):
+        response = asyncio.run(onboarding._handle_policy(req))
+    assert response.status_code == 200, response.body
+    store = ActionPolicyStore(tmp_path / "home")
+    assert store.read("alice").generation == 2
+    assert store.decide("alice", center="home", action_class="workspace.shell")["decision"] == "ask"
+    assert (tmp_path / ".action-policy.db").is_file()
+    assert not (tmp_path / ".broker").exists()
+    assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()

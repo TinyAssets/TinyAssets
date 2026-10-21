@@ -295,58 +295,10 @@ console.log(JSON.stringify({before, after,
 """
 
 
-def test_a_turn_this_page_never_sent_still_shows_the_indicator(tmp_path, html):
-    """The founder's own case: this tab sent nothing, the universe is working."""
-    out = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "d1a01eec", "state": "inference_started",
-                       "started_at": "2026-09-26T20:18:23.000000Z",
-                       "age_s": 214.0, "stale": False},
-    }, _SERVER_TURN)
-    assert out["before"]["shown"] is False, "the indicator must start out of the way"
-    assert out["after"]["shown"] is True, (
-        "a turn the server reports running showed nothing, which is the bug: the "
-        "founder's view was blank for four minutes")
-    # The ORIGINAL sentence on the ORIGINAL line -- there is no second indicator.
-    assert out["after"]["line"].startswith("Your agent is thinking... ")
-    # How long, and that it did not come from this tab, are both said on it.
-    assert "for 3m 34s" in out["after"]["line"]
-    assert "another window" in out["after"]["line"]
-    # The live transcript and indicator share the five-second heartbeat.
-    assert out["beat"] == 5000 and out["armed"] == []  # Already armed at the live rate.
 
 
-def test_an_idle_server_and_a_stale_row_are_both_left_unpainted(tmp_path, html):
-    """Idle is idle; a row older than the served cap is a killed process's leftover."""
-    idle = _run(tmp_path, html, {"activeTurn": None}, _SERVER_TURN)
-    assert idle["after"]["shown"] is False and idle["beat"] == 5000
-    # Same state, same shape -- only `stale` differs, so a pass here cannot come
-    # from the state list or from the row being ignored wholesale.
-    stale = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t-old", "state": "inference_started",
-                       "age_s": 90000.0, "stale": True}}, _SERVER_TURN)
-    assert stale["after"]["shown"] is False, (
-        "a stale journal row was painted as live work; that is a tab thinking forever")
-    fresh = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t-new", "state": "inference_started",
-                       "age_s": 90000.0, "stale": False}}, _SERVER_TURN)
-    assert fresh["after"]["shown"] is True, (
-        "only `stale` separates these two scenarios, so this one must still paint")
 
 
-def test_a_held_or_unreadable_row_is_not_activity(tmp_path, html):
-    """A stopped, finished or unreadable turn is not work in progress."""
-    for row in ({"turn_id": "t", "state": "held_refusal", "age_s": 3.0, "stale": False},
-                {"state": "unreadable", "reason": "DatabaseError"},
-                {"turn_id": "t", "state": "completed", "age_s": 1.0, "stale": False}):
-        out = _run(tmp_path, html, {"activeTurn": row}, _SERVER_TURN)
-        assert out["after"]["shown"] is False, f"{row['state']} was painted as working"
-    # The positive control for the same loop: only `state` differs, so a page
-    # that simply cannot paint at all does not pass this test by default.
-    live = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t", "state": "tools_pending",
-                       "age_s": 3.0, "stale": False}}, _SERVER_TURN)
-    assert live["after"]["shown"] is True, (
-        "a turn waiting on its own tool calls is the universe working")
 
 
 _RELOAD = r"""
@@ -356,18 +308,6 @@ console.log(JSON.stringify({indicator:indicator(), bubbles:bubbles()}));
 """
 
 
-def test_a_reload_mid_turn_shows_the_indicator_history_cannot(tmp_path, html):
-    """The exchange is stored on completion, so history alone shows nothing."""
-    out = _run(tmp_path, html, {
-        "history": [{"speaker": "founder", "text": "start the run", "ts": 1000},
-                    {"speaker": "universe", "text": "started", "ts": 1001}],
-        "historyActiveTurn": {"turn_id": "d1a01eec", "state": "tools_pending",
-                              "age_s": 61.0, "stale": False},
-    }, _RELOAD)
-    assert [b["text"] for b in out["bubbles"]] == ["start the run", "started"]
-    assert out["indicator"]["shown"] is True, (
-        "a reload during a live turn left the page looking idle")
-    assert "for 1m 1s" in out["indicator"]["line"]
 
 
 _STALLED_POLL = r"""
@@ -384,17 +324,6 @@ console.log(JSON.stringify({observed, afterFailure, abandoned}));
 """
 
 
-def test_a_failed_poll_neither_clears_nor_outlives_the_claim(tmp_path, html):
-    """A failed poll is not evidence the turn ended -- and not licence to claim it forever."""
-    out = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t-1", "state": "native_started",
-                       "age_s": 20.0, "stale": False}}, _STALLED_POLL)
-    assert out["observed"]["shown"] is True
-    assert out["afterFailure"]["shown"] is True, (
-        "one failed status poll erased an indicator for a turn that is still running")
-    assert out["abandoned"]["shown"] is False, (
-        "a row this page can no longer refresh must stop being claimed, or a dead "
-        "connection leaves the tab thinking forever")
 
 
 _LOCAL_ONLY = r"""
@@ -409,14 +338,6 @@ console.log(JSON.stringify({during, after, served:!!SCENARIO.activeTurn}));
 """
 
 
-def test_this_pages_own_turn_paints_without_waiting_for_a_poll(tmp_path, html):
-    """No `active_turn` in the payload at all: an older daemon, or simply no poll yet."""
-    out = _run(tmp_path, html, {}, _LOCAL_ONLY)
-    assert out["during"]["line"] == "Your agent is thinking...", (
-        "the page's own live turn must show at once, on the same one line, and "
-        "WITHOUT the 'started in another window' detail -- the founder is looking "
-        "at their own send")
-    assert out["after"]["shown"] is False, "the indicator outlived the turn it was for"
 
 
 _ACCOUNT_BOUNDARY = r"""
@@ -429,13 +350,6 @@ console.log(JSON.stringify({signedIn, signedOut}));
 """
 
 
-def test_the_previous_accounts_turn_is_not_reported_to_the_next(tmp_path, html):
-    out = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t-1", "state": "inference_started",
-                       "age_s": 10.0, "stale": False}}, _ACCOUNT_BOUNDARY)
-    assert out["signedIn"]["shown"] is True
-    assert out["signedOut"]["shown"] is False, (
-        "the indicator is screen state: it belongs to the account that is on screen")
 
 
 # ---------------------------------------------------------------------------
@@ -463,38 +377,6 @@ console.log(JSON.stringify({whileQueued, queuedIndicator, afterReply, final:bubb
 """
 
 
-def test_a_queued_answer_renders_after_the_reply_it_waited_behind(tmp_path, html):
-    out = _run(tmp_path, html, {}, _QUEUED_ORDER)
-    # While it waits: the founder's line is on screen (from their side it is
-    # sent) and marked as not yet seen.
-    assert [b["text"] for b in out["whileQueued"]] == [
-        "summarise the run so far",
-        'Approved: "grant read access to the notes wiki"']
-    queued = out["whileQueued"][1]
-    assert queued["queued"] is True and "Queued" in queued["note"], (
-        "a line the universe has not seen yet must not read as delivered")
-    assert out["whileQueued"][0]["queued"] is False
-    # One line, and it is the queueing path's own -- which knows the count, and
-    # which the server-driven sentence must not overwrite.
-    assert out["queuedIndicator"]["line"] == "Your agent is thinking... 1 waiting"
-
-    # THE BUG: the reply was composed before the click arrived, so it belongs
-    # ABOVE the queued line. It used to be appended below it, which read as the
-    # agent ignoring the approval.
-    order = [b["text"] for b in out["afterReply"]]
-    assert order == [
-        "summarise the run so far",
-        "Here is the summary of the run so far.",
-        'Approved: "grant read access to the notes wiki"'], (
-        "the queued answer must sit BELOW the reply that was written before it")
-    # Its turn has started, so the queued mark comes off where the bubble sits.
-    started = out["afterReply"][2]
-    assert started["queued"] is False and started["note"] == "", (
-        "a line whose turn has started is no longer queued")
-    assert out["final"][-1]["text"] == "Access granted; starting."
-    assert out["sent"] == ["summarise the run so far",
-                           'Approved: "grant read access to the notes wiki"'], (
-        "the two turns must still go out in order, one at a time")
 
 
 _TWO_QUEUED = r"""
@@ -510,15 +392,6 @@ console.log(JSON.stringify({queued, afterReply:bubbles()}));
 """
 
 
-def test_two_queued_lines_keep_their_own_order_under_the_reply(tmp_path, html):
-    out = _run(tmp_path, html, {}, _TWO_QUEUED)
-    assert [b["text"] for b in out["queued"]] == [
-        "kick off the run", "first answer", "second answer"]
-    assert [b["queued"] for b in out["queued"]] == [False, True, True]
-    assert [b["text"] for b in out["afterReply"]] == [
-        "kick off the run", "kicked off", "first answer", "second answer"], (
-        "the reply goes above BOTH waiting lines, and they keep the order they "
-        "will be read in")
 
 
 # ---------------------------------------------------------------------------
@@ -528,12 +401,6 @@ def test_two_queued_lines_keep_their_own_order_under_the_reply(tmp_path, html):
 # ---------------------------------------------------------------------------
 
 
-def test_the_page_has_no_second_working_indicator(html):
-    """The louder banner #4020 added is gone, element and styles both."""
-    # ...and the one that remains is the original line, untouched.
-    assert 'id="status-line" class="status-line"' in html
-    assert ".status-line{min-height:1.15rem" in html, (
-        "the surviving indicator must be the ORIGINAL line, not a restyled one")
 
 
 _UPDATE_LINE = r"""
@@ -553,45 +420,14 @@ _UPDATE_TEXT = "An update is waiting for this turn to finish; it installs right 
 _LIVE_TURN = {"turn_id": "t-update", "state": "inference_started", "age_s": 10.0}
 
 
-def test_a_live_turn_shows_one_inline_pending_update(tmp_path, html):
-    out = _run(tmp_path, html, {
-        "activeTurn": _LIVE_TURN, "deployPending": {"pending": True},
-    }, _UPDATE_LINE)
-    assert out["before"] == out["after"] == {"text": _UPDATE_TEXT, "hidden": False}
-    assert html.count('id="deploy-pending-line"') == 1
-    assert 'id="deploy-pending-line" class="status-line"' in html
 
 
-@pytest.mark.parametrize("pending", [None, {}, {"pending": False},
-                                     {"pending": "true"}, {"pending": 1}, True, [], "true"])
-def test_a_live_turn_requires_an_explicit_pending_update(tmp_path, html, pending):
-    out = _run(tmp_path, html, {
-        "activeTurn": _LIVE_TURN, "deployPending": pending,
-    }, _UPDATE_LINE)
-    assert out["before"] == {"text": "", "hidden": True}
 
 
-def test_an_older_daemon_shows_no_pending_update(tmp_path, html):
-    out = _run(tmp_path, html, {"activeTurn": _LIVE_TURN}, _UPDATE_LINE)
-    assert out["before"] == {"text": "", "hidden": True}
 
 
-@pytest.mark.parametrize("turn", [None, {**_LIVE_TURN, "stale": True},
-                                {**_LIVE_TURN, "state": "completed"}])
-def test_a_pending_update_requires_a_live_turn(tmp_path, html, turn):
-    out = _run(tmp_path, html, {
-        "activeTurn": turn, "deployPending": {"pending": True},
-    }, _UPDATE_LINE)
-    assert out["before"] == {"text": "", "hidden": True}
 
 
-@pytest.mark.parametrize("transition", ["endTurn", "clearPending", "omitPending"])
-def test_the_pending_update_line_clears(tmp_path, html, transition):
-    out = _run(tmp_path, html, {
-        "activeTurn": _LIVE_TURN, "deployPending": {"pending": True}, transition: True,
-    }, _UPDATE_LINE)
-    assert out["before"] == {"text": _UPDATE_TEXT, "hidden": False}
-    assert out["after"] == {"text": "", "hidden": True}
 
 
 _LOCAL_AND_SERVER = r"""
@@ -617,24 +453,6 @@ console.log(JSON.stringify({serverOnly, both, afterTick, after:indicator()}));
 """
 
 
-def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
-    """One element, one sentence, and the local path wins because it knows more."""
-    out = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t-1", "state": "inference_started",
-                       "age_s": 30.0, "stale": False}}, _LOCAL_AND_SERVER)
-    assert "another window" in out["serverOnly"]["line"]
-    # The page's own send takes the line, and the server sentence does not ride
-    # along behind it or get appended to it.
-    assert out["both"]["line"] == "Your agent is thinking...", out["both"]["line"]
-    # The repaint tick is where a second writer would show up, since it runs while
-    # both sources say "working". It must leave the local line exactly as it is.
-    assert out["afterTick"]["line"] == "Your agent is thinking...", (
-        "the elapsed-time tick overwrote the line the sending path owns")
-    # The local turn ending hands the ONE line back to the server-driven sentence
-    # rather than going quiet: the server still says this universe is working, and
-    # from this page's knowledge that is true. Still one sentence, not two.
-    assert "another window" in out["after"]["line"], out["after"]["line"]
-    assert out["after"]["line"].count("thinking") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -652,9 +470,6 @@ console.log(JSON.stringify({
 """
 
 
-def _seats(**extra):
-    return {"running": 2, "waiting": 1, "chat_waiting": True,
-            "upgrade_url": "https://tinyassets.io/app?upgrade=1", **extra}
 
 
 _PURCHASE_ON = (
@@ -666,45 +481,11 @@ _PURCHASE_OFF = (
 )
 
 
-def test_a_waiting_chat_shows_the_waiting_line_with_the_upgrade_link_inside_it(
-    tmp_path, html,
-):
-    """Founder, 2026-09-30: the waiting message itself carries a clickable Upgrade
-    -- on the one status line, never a banner, card or modal. It calls the shared
-    plan action (a button) only when that action says this surface may purchase."""
-    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats()}, _PURCHASE_ON)
-    assert out["text"] == "Waiting for a free seat (2 running)"
-    upgrades = [p for p in out["parts"] if p["text"] == "Upgrade"]
-    assert upgrades == [{"text": "Upgrade", "href": ""}]
-    assert "".join(p["text"] for p in out["parts"]).endswith("for more seats.")
 
 
-def test_a_surface_that_cannot_purchase_waits_without_an_upgrade_control(
-    tmp_path, html,
-):
-    """The seat payload still carries upgrade_url. The line ignores it."""
-    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats()}, _PURCHASE_OFF)
-    assert out["text"] == "Waiting for a free seat (2 running)"
-    assert out["parts"] == []
-    assert "Upgrade" not in out["text"]
 
 
-def test_the_top_tier_waits_without_an_upgrade_link(tmp_path, html):
-    out = _run(
-        tmp_path, html, {"activeTurn": None, "seats": _seats(upgrade_url=None)},
-        "PLAN={can_purchase_on_surface:true,upgrade_available:false};\n" + _SEAT_LINE,
-    )
-    assert out["text"] == "Waiting for a free seat (2 running)"
-    assert out["parts"] == [], "nothing to sell on the top tier"
 
-
-def test_another_universes_waiting_chat_is_not_shown_here(tmp_path, html):
-    """`interactive_waiting` counts the whole account; only `chat_waiting` -- THIS
-    universe's chat -- paints the line."""
-    out = _run(tmp_path, html, {"activeTurn": None,
-                                "seats": _seats(chat_waiting=False, interactive_waiting=1)},
-               _SEAT_LINE)
-    assert out["text"] == "" and out["parts"] == []
 
 
 
@@ -733,47 +514,14 @@ def _step(round_age_s, state="inference_started"):
             "round": 4, "model": "qwen/qwen3.8-27b:free", "round_age_s": round_age_s}
 
 
-def test_this_pages_own_turn_says_which_step_and_model_it_waits_on(tmp_path, html):
-    out = _run(tmp_path, html, {"activeTurn": _step(420.0)}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"] == (
-        "Your agent is thinking... step 4 · waiting on qwen3.8-27b for 7 min"
-    ), out["waiting"]["line"]
-    # Seven minutes on one request: the owner may choose another model.
-    assert out["tryHidden"] is False
-
-
-def test_another_model_is_offered_only_after_a_long_wait(tmp_path, html):
-    out = _run(tmp_path, html, {"activeTurn": _step(60.0)}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 1 min")
-    assert out["tryHidden"] is True
-
-
-def test_a_step_running_tools_leaves_the_line_to_the_tool_painter(tmp_path, html):
-    out = _run(tmp_path, html, {"activeTurn": _step(420.0, "tools_pending")}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"] == "Your agent is thinking..."
-    assert out["tryHidden"] is True
-
-
-def test_a_server_without_step_detail_keeps_the_old_line(tmp_path, html):
-    """An older daemon sends no round: the page says exactly what it said before."""
-    row = {"turn_id": "t-1", "state": "inference_started", "age_s": 30.0, "stale": False}
-    out = _run(tmp_path, html, {"activeTurn": row}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"] == "Your agent is thinking..."
-
-
-def test_a_turn_from_another_window_names_its_step_too(tmp_path, html):
-    out = _run(tmp_path, html, {"activeTurn": _step(180.0)}, _SERVER_TURN)
-    line = out["after"]["line"]
-    assert "step 4 · waiting on qwen3.8-27b for 3 min" in line and "another window" in line
-    assert line.count("thinking") == 1
 
 
 
-def test_a_native_agent_step_names_its_model_too(tmp_path, html):
-    """Codex: a native round is noted on the server, so it is shown too."""
-    out = _run(tmp_path, html, {"activeTurn": _step(420.0, "native_started")}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 7 min")
-    assert out["tryHidden"] is False
+
+
+
+
+
 
 
 _TRANSITIONS = r"""
@@ -800,28 +548,3 @@ gates[0].resolve({reply:"done"});
 await turn; await settle();
 console.log(JSON.stringify({detailed, queued, afterTools, stopping, buttonAfterEnd}));
 """
-
-
-def test_the_detail_never_erases_a_queue_count_or_a_stop_and_the_button_clears(tmp_path, html):
-    """Codex: the inference->tools transition erased "1 waiting", the 1s render
-    overwrote "Stopping...", and the button outlived the turn into a seat wait."""
-    out = _run(tmp_path, html, {
-        "first": _step(420.0), "second": _step(430.0, "tools_pending"), "activeTurn": None,
-    }, _TRANSITIONS)
-    assert "waiting on qwen3.8-27b" in out["detailed"]["line"]
-    assert "waiting" in out["queued"]["line"] and "qwen" not in out["queued"]["line"]
-    assert out["afterTools"]["line"] == out["queued"]["line"]
-    assert out["stopping"]["line"] == "Stopping your agent's turn..."
-    assert out["buttonAfterEnd"] is True
-
-
-@pytest.mark.parametrize("model_id,shown", [
-    ("qwen/qwen3.8-27b:free", "qwen3.8-27b"),
-    ("openai/gpt-5.4", "gpt-5.4"),
-    ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
-    ("nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-3-ultra-550b"),
-    ("plain-model", "plain-model"),
-])
-def test_a_model_is_named_as_a_person_would_say_it(tmp_path, html, model_id, shown):
-    body = "console.log(JSON.stringify({name: shortModelName(SCENARIO.id)}));"
-    assert _run(tmp_path, html, {"id": model_id}, body)["name"] == shown

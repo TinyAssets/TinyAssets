@@ -6,12 +6,9 @@ Vendor-neutral by construction: the PLATFORM runs these tools, not a vendor
 CLI's built-ins, and every adapter sees the same four definitions over the
 per-universe engine MCP route.
 
-Every call runs inside the owner's box (ADR-022): the implementation is
-:mod:`tinyassets.agent_loop.box_tools`, and this module is the engine server's
-door to it. The engine request carries no handle; the session that admitted the
-owner's turn registered its binding (:func:`tinyassets.control_plane.binding
-.active_binding`), and a call with no admitted session is refused. ``/u`` is the
-agent's command center inside the box; a path outside it does not exist there.
+Every call runs locally inside the owner's admitted daemon (ADR-022).
+The engine uses OwnerTools directly; session handles and host execution
+providers do not participate. ``/u`` names the agent's command center.
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ import stat
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from tinyassets.agent_loop import box_tools
+from tinyassets.agent_loop import owner_tools
 from tinyassets.boxes.layout import AGENT_WORKSPACE_DIR, PLATFORM_RUNTIME_DIR
 from tinyassets.tool_images import MAX_IMAGE_SOURCE_BYTES, ToolImage, bound_image, is_image_path
 
@@ -51,10 +48,10 @@ MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
 
 logger = logging.getLogger(__name__)
 
-MAX_WRITE_BYTES = box_tools.MAX_WRITE_BYTES
-MAX_EDIT_BYTES = box_tools.MAX_EDIT_BYTES
-DEFAULT_READ_LINES = box_tools.DEFAULT_READ_LINES
-MAX_BASH_SECONDS = box_tools.MAX_BASH_SECONDS
+MAX_WRITE_BYTES = owner_tools.MAX_WRITE_BYTES
+MAX_EDIT_BYTES = owner_tools.MAX_EDIT_BYTES
+DEFAULT_READ_LINES = owner_tools.DEFAULT_READ_LINES
+MAX_BASH_SECONDS = owner_tools.MAX_BASH_SECONDS
 
 
 class UniverseToolError(RuntimeError):
@@ -83,26 +80,13 @@ def _tool_path(path: str, root: str) -> str:
     return str(candidate)
 
 
-def _box(universe_dir: Path, agent_id: str) -> tuple[box_tools.BoxTools, str]:
-    """The admitted session's tools over its handle; never a handle by path."""
-    from tinyassets.control_plane.binding import current_binding
+def _box(universe_dir: Path, agent_id: str) -> tuple[owner_tools.OwnerTools, str]:
+    """Local tools inside the startup-admitted owner box."""
+    from tinyassets.agent_loop.owner_tools import tools_for
 
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        from tinyassets.agent_loop.owner_tools import tools_for
-
-        return tools_for(universe_dir)
-    binding = current_binding()
-    if binding is None:
-        raise UniverseToolError("no admitted session owns this command center's box")
-    binding.validate(binding.handle.account_id, Path(universe_dir))
-    root = getattr(binding.handle, "root", None) or box_tools.BOX_ROOT
-    executor = box_tools.BoxExecutor(binding.provider, binding.handle,
-                                     limits=binding.limits, cwd=root)
-    return box_tools.BoxTools(executor, root=root), root
+    return tools_for(universe_dir)
 
 
 def _run(coroutine):
@@ -110,15 +94,10 @@ def _run(coroutine):
     return asyncio.run(coroutine)
 
 
-def _operation_id(purpose):
-    from tinyassets.control_plane.binding import current_binding
-    from tinyassets.owner_runtime import current
+def _operation_id(tools, purpose):
+    import uuid
 
-    if current() is not None:
-        import uuid
-
-        return uuid.uuid4().hex
-    return current_binding().operation_id(purpose)
+    return tools.provider.new_operation(f"{purpose}:{uuid.uuid4().hex}")
 
 
 def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
@@ -127,31 +106,14 @@ def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
     image path, the image itself (bounded by :mod:`tinyassets.tool_images`)."""
     tools, root = _box(universe_dir, agent_id)
     target = _tool_path(path, root)
-    op = _operation_id("tool:read")
+    op = _operation_id(tools, "tool:read")
     if is_image_path(target):
-        from tinyassets.owner_runtime import current
 
-        if current() is not None:
-            read = tools.read_content(target, MAX_IMAGE_SOURCE_BYTES)
-            if read.size > len(read.data):
-                return "error: image is too large to show"
-            return bound_image(read.data, target, universe_dir=universe_dir)
-        return _run(_read_image(tools, op, target, root, universe_dir))
+        read = tools.read_content(target, MAX_IMAGE_SOURCE_BYTES)
+        if read.size > len(read.data):
+            return "error: image is too large to show"
+        return bound_image(read.data, target, universe_dir=universe_dir)
     return _run(tools.read(op, target, offset=offset, limit=limit))
-
-
-async def _read_image(tools, op: str, target: str, root: str,
-                      universe_dir: Path) -> str | ToolImage:
-    outcome = await tools._exec.run(
-        op, ["/bin/sh", "-c", box_tools._CAT, "sh", box_tools.box_path(target, root)],
-        wall_seconds=box_tools.DEFAULT_WALL_SECONDS, output_bytes=MAX_IMAGE_SOURCE_BYTES,
-    )
-    if outcome.killed == "output_limit":
-        return f"error: {target} is over {MAX_IMAGE_SOURCE_BYTES} bytes; too large to show"
-    if outcome.killed or outcome.exit_code != 0:
-        return "error: " + box_tools._failed(outcome, box_tools.DEFAULT_WALL_SECONDS,
-                                              MAX_IMAGE_SOURCE_BYTES)
-    return bound_image(outcome.output, target, universe_dir=universe_dir)
 
 
 def write_file(universe_dir: Path, path: str, content: str, *, agent_id: str) -> str:
@@ -165,7 +127,7 @@ def write_file(universe_dir: Path, path: str, content: str, *, agent_id: str) ->
     target = _tool_path(path, root)
     if len((content or "").encode("utf-8")) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
-    return _run(tools.write(_operation_id("tool:write"), target, content))
+    return _run(tools.write(_operation_id(tools, "tool:write"), target, content))
 
 
 def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
@@ -180,7 +142,7 @@ def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
     target = _tool_path(path, root)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
-    return _run(tools.edit(_operation_id("tool:edit"), target,
+    return _run(tools.edit(_operation_id(tools, "tool:edit"), target,
                            old_text, new_text))
 
 
@@ -208,19 +170,12 @@ def bash(universe_dir: Path, command: str, timeout: float = 0, *, agent_id: str,
 
 async def _bash(tools, universe_dir: Path, command: str, timeout: float,
                 ta_dispatch, stop) -> str:
-    from tinyassets.control_plane.binding import current_binding
     from tinyassets.extension_git import for_launch
 
-    binding = current_binding()
-    from tinyassets.owner_runtime import current
-
-    local = current() is not None
-    op = _operation_id("tool:bash")
+    op = _operation_id(tools, "tool:bash")
     bridge = None
     if ta_dispatch is not None:
-        from tinyassets.agent_loop.box_ta import TurnBridge
         from tinyassets.extension_capabilities import ExtensionCapabilities, delivered
-        from tinyassets.storage import data_dir
 
         backend = getattr(ta_dispatch, "extension_backend", None)
 
@@ -233,18 +188,9 @@ async def _bash(tools, universe_dir: Path, command: str, timeout: float,
         async def deliver():
             return await asyncio.to_thread(ExtensionCapabilities(backend).bundle)
 
-        if local:
-            bridge = tools.enable_ta(
-                dispatch=dispatch, deliver=deliver if backend is not None else None,
-            )
-        else:
-            bridge = TurnBridge(
-                owner=binding.handle.account_id, center=universe_dir.name, turn=binding.session_id,
-                handle=binding.handle, database=data_dir() / ".remote-ta-receipts.sqlite3",
-                dispatch=dispatch, deliver=deliver if backend is not None else None,
-                session_id=binding.session_id,
-            )
-            tools._exec.enable_ta(bridge)
+        bridge = tools.enable_ta(
+            dispatch=dispatch, deliver=deliver if backend is not None else None,
+        )
     try:
         with for_launch(getattr(ta_dispatch, "extension_backend", None)) as git_env:
             call = asyncio.ensure_future(tools.bash(op, command, timeout, env=git_env or None))

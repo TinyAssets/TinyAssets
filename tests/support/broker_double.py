@@ -30,13 +30,28 @@ import struct
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import pytest
 
+from tests.support.admission import drive, projection
+
 #: The broker reads peer credentials off a Unix socket. Everything in this
 #: module is inert where that does not exist; the suite is proven on Linux.
 SUPPORTED = sys.platform != "win32" and hasattr(socket, "SO_PEERCRED")
+_BROKER_PROCESS = ContextVar("test_broker_process", default=False)
+
+
+@contextmanager
+def broker_process():
+    """Model the broker's separate process within a threaded protocol fixture."""
+    token = _BROKER_PROCESS.set(True)
+    try:
+        yield
+    finally:
+        _BROKER_PROCESS.reset(token)
 
 #: The proof the double's fence accepts. Startup normally mints this and hands
 #: its hash to the privileged launcher; no test may depend on the value.
@@ -51,18 +66,37 @@ def broker_ledger_path(data_root: str | Path) -> Path:
     return Path(data_root).resolve() / ".broker" / "outbound.db"
 
 
+def seed_unchecked_definition(**fields):
+    """Inject legacy/foreign metadata for runtime refusal tests, without registration.
+
+    Real registration now rejects these references before they enter the registry.
+    Keep the runtime guards exercised against already-stored untrusted rows too.
+    """
+    from tinyassets.providers.definition import ProviderDefinition, _definition_id, _load, _write
+
+    definition = ProviderDefinition(id=_definition_id(**fields), **fields,
+                                    visibility="private", created_at="now")
+    center = definition.universe_id
+    _write(center, [*_load(center), definition.as_dict()])
+    return definition
+
+
 def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> None:
     """Seed real mapper records before a fixture's in-process broker starts."""
     if not SUPPORTED:
         return  # The broker double itself is Linux-only.
     from tinyassets.broker.owner_identities import OwnerIdentities
 
-    state = Path(data_root) / ".broker"
+    state = Path(data_root) / ".broker/state"
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     state.chmod(0o700)
-    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
+    state.parent.chmod(0o700)
+    from tests.support.admission import Plans
+
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
+                                 plans=Plans(data_root))
     identities.resolve(principal, allocate=True)
-    identities.admission("admit", principal, center)
+    drive(identities.admit(principal, routing=projection(identities.path)))
 
 
 def _peer_uid(sock: socket.socket) -> int:
@@ -86,9 +120,13 @@ class _InProcessBroker:
         state = data_root / ".broker"
         state.mkdir(parents=True, exist_ok=True)
         state.chmod(0o700)
-        identity_path = state / "owner-identities.db"
-        self.identities = OwnerIdentities(identity_path) if identity_path.exists() else None
-        policy_store = PolicyStore(data_root, self.identities) if self.identities else None
+        from tests.support.admission import Plans
+
+        identity_path = state / "state/owner-identities.db"
+        seeded_admission = identity_path.exists()
+        identity_path.parent.mkdir(mode=0o700, exist_ok=True)
+        self.identities = OwnerIdentities(identity_path, initialize=True, plans=Plans(data_root))
+        policy_store = PolicyStore(data_root, self.identities) if seeded_admission else None
         if policy_store is not None:
             policy_store.bootstrap()
         # The same dispatcher factory the broker process uses, so the ledger
@@ -106,12 +144,29 @@ class _InProcessBroker:
             roles={os.getuid(): OWNER},
             owner_identities=self.identities,
             policy_store=policy_store,
+            data_root=data_root,
         )
+        # Synthetic shared processes exchange the production snapshot through
+        # the real router dispatcher; process suites exercise kernel IPC.
+        from tinyassets.router_credentials import routing_dispatch
+        from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
+
+        _snapshots.setdefault(data_root, RoutingSnapshot())
+        routing = self.server.routing
+        routing._router = lambda request: routing_dispatch(data_root, request)
+        async def changed(owner):
+            return await asyncio.to_thread(routing.publish)
+        routing.changed = changed
+        from tests.support.admission import bind
+
+        bind(self.identities.path, routing)
+        routing.publish()
         self._loop = asyncio.new_event_loop()
         self._listener: asyncio.AbstractServer | None = None
         listening = threading.Event()
         failure: list[BaseException] = []
 
+        @broker_process()
         def run() -> None:
             asyncio.set_event_loop(self._loop)
             try:
@@ -190,6 +245,10 @@ class _Registry:
         self._lock = threading.RLock()
 
     def supervisor_for(self, data_root) -> _InProcessBroker:
+        from tinyassets.owner_runtime import broker_egress, current
+
+        if current() is not None:
+            return broker_egress()
         root = Path(data_root).resolve()
         with self._lock:
             broker = self._brokers.get(root)
@@ -224,8 +283,21 @@ def in_process_broker(request, monkeypatch):
         yield None
         return
 
+    from tinyassets import owner_runtime
     from tinyassets.boxes import layout as role_modes
-    from tinyassets.broker import supervisor
+    from tinyassets.broker import server, supervisor
+
+    current = owner_runtime.current
+    monkeypatch.setattr(owner_runtime, "current",
+                        lambda: None if _BROKER_PROCESS.get() else current())
+    run_stream = server._Connection._run
+
+    @broker_process()
+    def stream(*args, **kwargs):
+        return run_stream(*args, **kwargs)
+
+    # Raw stream threads do not inherit ContextVars; asyncio.to_thread does.
+    monkeypatch.setattr(server._Connection, "_run", stream)
 
     if os.getuid() != 0:
         # The broker reads the daemon's liveness proofs and vault records
@@ -235,6 +307,23 @@ def in_process_broker(request, monkeypatch):
 
     registry = _Registry()
     monkeypatch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
+    from tinyassets import routing_snapshot
+
+    snapshot = routing_snapshot.snapshot
+
+    def started_snapshot(root):
+        root = Path(root)
+        # Concurrent synthetic router clients share one completed startup, just
+        # as they share the registry's broker. Do not expose its empty projection
+        # while the first caller is still installing the startup snapshot.
+        with registry._lock:
+            exists = root in routing_snapshot._snapshots
+            result = snapshot(root)
+            if not exists:
+                registry.supervisor_for(root)
+            return result
+
+    monkeypatch.setattr(routing_snapshot, "snapshot", started_snapshot)
     try:
         yield registry
     finally:
@@ -256,3 +345,209 @@ def broker_ledger(tmp_path):
         )
 
     return make
+
+
+@pytest.fixture(autouse=True)
+def owner_protocol_transport(request, monkeypatch, in_process_broker):
+    """Protocol units inject startup transport; process proofs use the real relay.
+
+    The unit broker uses one UID for both ends and accepts OWNER frames. Keep
+    that socket protocol fixture separate from the real BOX admission suites.
+    """
+    if in_process_broker is None:
+        return
+    install_owner_transport(
+        monkeypatch, in_process_broker,
+        patch_egress=not request.module.__name__.startswith("tests.test_owner_"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def deployed_router_app(monkeypatch, in_process_broker):
+    """Provision the synthetic platform's gate before constructing its router.
+
+    Process-boundary proofs opt out with role_split. Existing closed or damaged
+    gates are never replaced, and requests use the production reader unchanged.
+    """
+    if in_process_broker is None:
+        return
+    import json
+
+    from tinyassets import universe_server
+    from tinyassets.router_traffic import NAME
+    from tinyassets.storage import data_dir
+
+    create = universe_server.create_streamable_http_app
+
+    def deployed(*args, **kwargs):
+        root = data_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            with (root / NAME).open("x") as stream:
+                json.dump({"ordinary": True}, stream)
+        except FileExistsError:
+            pass
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(universe_server, "create_streamable_http_app", deployed)
+
+
+def install_owner_transport(monkeypatch, in_process_broker, *, patch_egress=True):
+    """Install the same broker protocol fixture in pytest and spawned probes."""
+    from tinyassets import owner_runtime
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    connect_owner = BrokerClient._connect_owner
+    lease_owner = UsageStore._lease
+    egress = owner_runtime.broker_egress
+
+    def connect(client, sock):
+        if owner_runtime.current() is not None:
+            return connect_owner(client, sock)
+        sock.connect(str(client._path))
+        if client._verify_peer:
+            client._verify_peer(sock)
+
+    class Lease:
+        def __init__(self, root, usage_id):
+            from tinyassets.process_liveness import hold_liveness, owner_token
+
+            self.owner_token = owner_token(root, broker_readable=True)
+            self.token = "request_" + usage_id
+            self.held = hold_liveness(root, self.token, broker_readable=True)
+
+        def close(self):
+            from tinyassets.singleton_lock import release_singleton_lock
+
+            if self.held is not None:
+                release_singleton_lock(self.held)
+                self.held = None
+
+    def lease(store, center, usage_id):
+        if owner_runtime.current() is not None:
+            return lease_owner(store, center, usage_id)
+        return Lease(store.base, usage_id)
+
+    def transport():
+        if owner_runtime.current() is not None:
+            return egress()
+        from tinyassets.storage import data_dir
+
+        return in_process_broker.supervisor_for(data_dir())
+
+    from tinyassets import owner_channel
+
+    channel_request = owner_channel.request
+
+    def channel(center, document):
+        if owner_runtime.current() is not None or document.get("op") != "MODEL_SOURCE":
+            return channel_request(center, document)
+        from tinyassets.broker.supervisor import get_supervisor
+        from tinyassets.storage import data_dir
+
+        live = get_supervisor(data_dir())
+        if live is None:
+            from tinyassets.storage.outbound_connections import ProxyRequestError
+
+            raise ProxyRequestError("source publication broker unavailable")
+        definition = document["definition"]
+        client = BrokerClient(live.socket_path, principal=definition["owner_user_id"],
+                              command_center=center, fence=live.fence,
+                              verify_peer=live.verify_broker)
+        return client.publish_model_source(definition)
+
+    monkeypatch.setattr(owner_channel, "request", channel)
+    monkeypatch.setattr(BrokerClient, "_connect_owner", connect)
+    monkeypatch.setattr(UsageStore, "_lease", lease)
+    if patch_egress:
+        monkeypatch.setattr(owner_runtime, "broker_egress", transport)
+
+    from tinyassets.broker import owner_reads
+    from tinyassets.control_plane import next_wake
+
+    remote = owner_reads.remote
+    report = next_wake.report
+
+    def shared(operation, **args):
+        if operation == "plan" and owner_runtime.current() is None:
+            return {"tier": "free", "ends_at": None}
+        return remote(operation, **args)
+
+    def wake(root):
+        if owner_runtime.current() is not None:
+            return report(root)
+        return next_wake.next_wake_at(root)
+
+    monkeypatch.setattr(owner_reads, "remote", shared)
+    monkeypatch.setattr(next_wake, "report", wake)
+
+
+@pytest.fixture(autouse=True)
+def local_hook_channel(request, monkeypatch, tmp_path):
+    """Hook store units inject an admitted owner and the router RPC transport.
+
+    Router writes run against a separate temp root. Real runtime and role-split
+    fixtures retain the real relay and credential socket.
+    """
+    if request.node.get_closest_marker("role_split") is not None or not SUPPORTED:
+        return
+    from contextvars import ContextVar
+    from types import SimpleNamespace
+
+    from tinyassets import owner_runtime, router_credentials
+    from tinyassets.storage import webhook_hooks
+
+    scope = ContextVar("hook_unit_admission", default=None)
+    current = owner_runtime.current
+    credential = owner_runtime.router_credential
+    mint = webhook_hooks.mint
+    routes = {}
+    shared = tmp_path / "router"
+
+    def runtime():
+        admitted = scope.get()
+        return current() or (SimpleNamespace(principal=admitted[1]) if admitted else None)
+
+    def dispatch(owner, document):
+        token = scope.set(None)
+        try:
+            return router_credentials.dispatch(shared, owner, document)
+        finally:
+            scope.reset(token)
+
+    def rpc(operation, **fields):
+        if current() is not None:
+            return credential(operation, **fields)
+        admitted = scope.get()
+        if operation == "hook_mint" and admitted:
+            shared.mkdir(exist_ok=True)
+            # The fixture promises an admitted owner: create its real mapping
+            # before exercising both production mint admission checks.
+            from tinyassets.broker.admission import digest
+
+            token = scope.set(None)
+            try:
+                seed_owner_admission(shared, principal=admitted[1],
+                                     center="hook-" + digest(admitted[1])[:16])
+            finally:
+                scope.reset(token)
+            result = dispatch(admitted[1], {"operation": operation})
+            routes[webhook_hooks._hash_token(result["token"])] = admitted[1]
+            return result
+        if operation == "hook_revoke" and fields["token_hash"] in routes:
+            return dispatch(routes[fields["token_hash"]], {"operation": operation, **fields})
+        return credential(operation, **fields)
+
+    def admitted_mint(root, **fields):
+        if current() is not None:
+            return mint(root, **fields)
+        token = scope.set((root, fields.get("owner_principal_id")))
+        try:
+            return mint(root, **fields)
+        finally:
+            scope.reset(token)
+
+    monkeypatch.setattr(owner_runtime, "current", runtime)
+    monkeypatch.setattr(owner_runtime, "router_credential", rpc)
+    monkeypatch.setattr(webhook_hooks, "mint", admitted_mint)

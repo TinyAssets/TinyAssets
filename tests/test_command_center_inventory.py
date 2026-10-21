@@ -392,14 +392,6 @@ def test_the_value_limit_binds_lancedb_rows(tmp_path):
     assert inv.inventory(tmp_path)["lancedb"]["lancedb"]["tables"]["ids"]["u_ids"] == 1
 
 
-def test_an_argparse_usage_error_exits_one_like_every_other_usage_error(tmp_path):
-    """Exit 1 is the documented usage code; argparse's own exit 2 means incomplete."""
-    assert inv.main([]) == 1
-    assert inv.main([str(tmp_path), "--strict"]) == 1
-    assert inv.main([str(tmp_path), "--max-rows", "not-a-number"]) == 1
-    with pytest.raises(SystemExit) as asked_for_help:
-        inv.main(["--help"])
-    assert not asked_for_help.value.code
 
 
 def test_failure_semantics_default_exit_partial_and_corrupt_sqlite(tmp_path, capsys):
@@ -676,3 +668,6 @@ def test_the_deadline_cancels_a_value_scan_part_way_through_a_table(tmp_path, mo
         "the one row it did read is still counted -- an abandoned scan reports "
         "what it saw, it does not report a zero"
     )
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

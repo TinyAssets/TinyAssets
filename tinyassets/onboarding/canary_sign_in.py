@@ -73,7 +73,10 @@ def configured() -> tuple[str, str] | None:
     A short key is the same as no key: a door whose only unguessable part is
     weak would be worse than the browser sign-in it replaces.
     """
-    key = os.environ.get(KEY_ENV, "").strip()
+    from tinyassets.operational_credentials import credential
+    from tinyassets.storage import data_dir
+
+    key = credential(data_dir(), KEY_ENV).strip()
     user_id = os.environ.get(USER_ENV, "").strip()
     if len(key.encode("utf-8", "ignore")) < MIN_KEY_BYTES:
         return None
@@ -91,6 +94,9 @@ def _matches(presented: str, expected: str) -> bool:
 
 @contextmanager
 def _limits():
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("canary_sign_in")
     from tinyassets.onboarding.owner_sessions import store
 
     with store() as conn:
@@ -100,6 +106,13 @@ def _limits():
         )
         conn.execute("DELETE FROM canary_door_limits WHERE expires<=?", (time.time(),))
         yield conn
+
+
+def revoke_owner(owner: str) -> None:
+    # Every counter gates the one server-pinned canary, not the caller's account.
+    if owner == os.environ.get(USER_ENV):
+        with _limits() as conn:
+            conn.execute("DELETE FROM canary_door_limits")
 
 
 def _rate_limited(request) -> bool:
@@ -138,10 +151,10 @@ async def _accepted(token: str, canary_user: str) -> bool:
     returns."""
     from starlette.concurrency import run_in_threadpool
 
-    from tinyassets.auth.middleware import _get_provider
+    from tinyassets.auth.middleware import resolve_token
 
     try:
-        identity = await run_in_threadpool(_get_provider().resolve_token, token)
+        identity = await run_in_threadpool(resolve_token, token)
     except Exception:  # noqa: BLE001 - an unusable provider refuses, loudly
         logger.exception("canary_sign_in could not validate the upstream session")
         return False

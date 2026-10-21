@@ -74,7 +74,7 @@ The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`
 
 - **WHEN** a client reads `tools/list` from the running server with middleware applied
 - **THEN** the advertised set equals `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}` and nothing else
-- **AND** `converse` is present as a user-facing handle (verified by `tests/test_universe_server_five_handles.py`)
+- **AND** `converse` is present as a user-facing handle (verified by `scripts/mcp_public_canary.py --assert-handles`)
 
 #### Scenario: A canonical handle routes to its existing API handler
 

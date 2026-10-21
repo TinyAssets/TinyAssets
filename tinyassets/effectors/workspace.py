@@ -240,9 +240,7 @@ def scratch_pool_root(universe_dir: Path) -> Path:
 
 
 def _lease_center_root(universe_dir: Path) -> Path:
-    from tinyassets.boxes.provider import BOX_ROOT
-
-    return Path(BOX_ROOT) / Path(universe_dir).name
+    return Path(universe_dir)
 
 
 def universe_workspace_root(universe_dir: Path) -> Path:
@@ -552,15 +550,15 @@ def _open_cell_lease(lease_path: Path) -> tuple[Any, Any]:
     The daemon holds no descriptor on an owner tree: the box handle is the
     capability, and every path under the lease is re-checked by the host.
     """
-    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.owner_runtime import file_scope
 
-    binding = current_binding()
-    if binding is None or not Path(lease_path).is_relative_to(
-            _lease_center_root(binding.universe_dir)):
-        raise _Refused("workspace_checkout_failed", "lease has no admitted owner box")
+    try:
+        provider, handle, _ = file_scope(lease_path)
+    except (ValueError, OSError):
+        raise _Refused("workspace_checkout_failed", "lease has no admitted owner box") from None
     for path in (lease_path, lease_path / _CONTENT_DIR):
-        info = binding.provider.stat(
-            binding.handle, _box_provider_path(path, binding.universe_dir))
+        _, _, target = file_scope(path)
+        info = provider.stat(handle, target)
         if info is None or info.kind != "dir":
             raise _Refused("workspace_checkout_failed", "owner box lease is incomplete")
     return None, None
@@ -739,22 +737,17 @@ def _provision_checkout(
             or ("node" in requested and type(requested["node"]) is not bool)
             or not (requested.get("python") or requested.get("node"))):
         return refuse("invalid_request", "provision requires a Python manifest path or node: true")
-    from tinyassets.control_plane.binding import current_binding
-
-    binding = current_binding()
-    if binding is None:
-        return refuse("invalid_request", "provisioning requires the admitted owner box")
-    universe_dir = Path(base_path) / universe_id
+    from tinyassets.owner_runtime import file_scope
 
     def read_in_box(path: str, bound: int) -> bytes:
         if not path or path.startswith("/") or any(
                 part in ("", ".", "..") for part in path.split("/")):
             raise FileNotFoundError(path)
-        target = _box_provider_path(Path(lease.path) / _CONTENT_DIR / path, universe_dir)
-        info = binding.provider.stat(binding.handle, target)
+        provider, handle, target = file_scope(Path(lease.path) / _CONTENT_DIR / path)
+        info = provider.stat(handle, target)
         if info is None or info.kind != "file":
             raise FileNotFoundError(path)
-        return binding.provider.read(binding.handle, target, max_bytes=bound).data
+        return provider.read(handle, target, max_bytes=bound).data
 
     try:
         manifests = read_provision_manifests(
@@ -1103,22 +1096,20 @@ def _require_generation_fits(lease: Any, bound: int) -> int:
 
 
 def _box_tree_bytes(root: Path, bound: int) -> int:
-    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.owner_runtime import file_scope
 
-    binding = current_binding()
-    if binding is None or not root.is_relative_to(_lease_center_root(binding.universe_dir)):
-        raise _Refused("storage_quota_exceeded", "workspace measure has no admitted owner")
-    before = binding.provider.committed_generation(binding.handle)
-    pending = [str(root)]
-    total = 0
-    entries = 0
+    try:
+        provider, handle, target = file_scope(root)
+    except (ValueError, OSError):
+        raise _Refused("storage_quota_exceeded", "measure has no admitted owner box") from None
+    before = provider.committed_generation(handle)
+    pending = [target]
+    total = entries = 0
     while pending:
         directory = pending.pop()
         cursor = None
         while True:
-            page = binding.provider.list(
-                binding.handle, _box_provider_path(Path(directory), binding.universe_dir),
-                cursor=cursor)
+            page = provider.list(handle, directory, cursor=cursor)
             for item in page.entries:
                 entries += 1
                 if entries > 100_000 or item.name in ("", ".", "..") or "/" in item.name:
@@ -1132,7 +1123,7 @@ def _box_tree_bytes(root: Path, bound: int) -> int:
             if page.next_cursor is None:
                 break
             cursor = page.next_cursor
-    if binding.provider.committed_generation(binding.handle) != before:
+    if provider.committed_generation(handle) != before:
         raise _Refused("storage_quota_exceeded", "workspace changed during measure")
     return total
 
@@ -1145,7 +1136,9 @@ def _box_provider_path(guest_path: Path, universe_dir: Path) -> str:
         raise _Refused("workspace_checkout_failed", "path is outside the guest center") from None
     if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
         raise _Refused("workspace_checkout_failed", "invalid guest workspace path")
-    return "/cc/" + relative.as_posix()
+    from tinyassets.owner_runtime import file_scope
+
+    return file_scope(guest_path)[2]
 
 
 def _publish(db: Path, lease: Any, *, universe_id: str, repo_key: str, run_id: str) -> int | None:

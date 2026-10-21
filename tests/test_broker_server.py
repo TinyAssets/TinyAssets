@@ -17,16 +17,21 @@ import time
 
 import pytest
 
+from tests.support.admission import drive, projection
+from tests.support.broker_double import broker_process
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.client import BrokerClient, BrokerRefused
 from tinyassets.broker.fence import Fence
 from tinyassets.broker.ops import OpStore
 from tinyassets.broker.server import OWNER, BrokerServer
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [
+    pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
     reason="the broker serves a Unix socket and reads peer credentials",
-)
+),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
+]
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -81,11 +86,11 @@ class Ledger:
     def __init__(self, principal):
         self.principal = principal
 
-    def authorize_exact(self, *, universe_id, grant_id, connection_id):
+    def authorize_exact(self, *, grant_id, connection_id):
         from tinyassets.storage.outbound_connections import GrantResolutionError
 
-        if grant_id in REVOKED or (self.principal, universe_id, grant_id, connection_id) != (
-            "alice", "cc-alice", "grant-a", "conn-a",
+        if grant_id in REVOKED or (self.principal, grant_id, connection_id) != (
+            "alice", "grant-a", "conn-a",
         ):
             raise GrantResolutionError("outbound connection grant identity mismatch")
         return object(), object()
@@ -99,7 +104,9 @@ def _no_revocations():
 
 
 @pytest.fixture
-def broker(tmp_path):
+def broker(tmp_path, monkeypatch):
+
+    tmp_path.chmod(0o700)  # Same-UID protocol fixture, including assignment locks.
     lease = Lease()
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
     ops = OpStore(tmp_path / "ops.db")
@@ -122,28 +129,87 @@ def broker(tmp_path):
 
         return dispatch
 
+    from tests.support.admission import Plans
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    state_dir = tmp_path / ".broker/state"
+    state_dir.mkdir(parents=True, mode=0o700)
+    state_dir.parent.chmod(0o700)
+    identities = OwnerIdentities(state_dir / "owner-identities.db", initialize=True,
+                                 plans=Plans(tmp_path))
+    identities.resolve("alice", allocate=True)
+    drive(identities.admit("alice", routing=projection(identities.path)))
     server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
-                          roles={os.getuid(): OWNER})
+                          roles={os.getuid(): OWNER}, data_root=tmp_path,
+                          owner_identities=identities)
     path = tmp_path / "b.sock"
     loop = asyncio.new_event_loop()
     started = threading.Event()
 
+    listener = None
+
+    @broker_process()
     def run():
+        nonlocal listener
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(server.serve(path))
+        listener = loop.run_until_complete(server.serve(path))
         started.set()
         loop.run_forever()
 
-    threading.Thread(target=run, daemon=True).start()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
     assert started.wait(5)
     generation, token = fence.barrier(1, "proof-1")
     state = {"generation": generation, "token": token}
     client = BrokerClient(path, principal="alice", command_center="cc-alice",
                           fence=lambda: (state["generation"], state["token"]), timeout=10)
+    async def relay_peer(reader, writer):
+        upstream = None
+        try:
+            first = await rf.read_frame(reader)
+            assert first.control() == {"op": "BOX_CONNECT"}
+            upstream_reader, upstream = await asyncio.open_unix_connection(path)
+            writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
+            await writer.drain()
+
+            async def copy(source, destination):
+                while data := await source.read(65536):
+                    destination.write(data)
+                    await destination.drain()
+                destination.write_eof()
+
+            await asyncio.gather(copy(reader, upstream), copy(upstream_reader, writer))
+        finally:
+            writer.close()
+            if upstream is not None:
+                upstream.close()
+
+    async_path = tmp_path / "r.sock"
+    relay_listener = asyncio.run_coroutine_threadsafe(
+        asyncio.start_unix_server(relay_peer, path=str(async_path)), loop).result(5)
+    from tinyassets import owner_runtime
+    from tinyassets.owner_channel import OwnerChannel
+
+    egress = owner_runtime.broker_egress
+    monkeypatch.setattr(owner_runtime, "broker_egress", lambda: (
+        egress() if owner_runtime.current() is not None else OwnerChannel(async_path)))
     yield type("B", (), dict(server=server, path=path, client=client, sent=sent, lease=lease,
                              fence=fence, ops=ops, state=state, upstreams=upstreams,
                              loop=loop))
+    async def shutdown():
+        for opened in (relay_listener, listener):
+            opened.close()
+            await opened.wait_closed()
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run_coroutine_threadsafe(shutdown(), loop).result(5)
     loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    loop.close()
 
 
 def _call(broker, op_id=None, **overrides):
@@ -234,8 +300,7 @@ def test_status_reports_an_operation_that_may_have_sent(broker):
         sock.settimeout(5)
         sock.connect(str(broker.path))
         sock.sendall(rf.control(rf.CONNECTION, {"op": "STATUS", "op_id": op,
-                                                "principal": "alice",
-                                                "command_center": "cc-alice"}))
+                                                "principal": "alice"}))
         answer = rf.read_frame_blocking(sock).control()
     assert answer["state"] == "completed" and answer["side_effect_state"] == "unknown"
 
@@ -249,7 +314,7 @@ def test_a_cancel_closes_the_upstream_and_ends_the_stream(broker):
         sock.connect(str(broker.path))
         sock.sendall(rf.control(1, {
             "op": "OPEN", "op_id": new_op_id(), "principal": "alice",
-            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+            "grant_id": "grant-a", "connection_id": "conn-a",
             "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 10,
             **broker.state,
         }))
@@ -269,7 +334,7 @@ def test_data_never_exceeds_the_credit_granted(broker):
         sock.connect(str(broker.path))
         sock.sendall(rf.control(1, {
             "op": "OPEN", "op_id": new_op_id(), "principal": "alice",
-            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+            "grant_id": "grant-a", "connection_id": "conn-a",
             "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 30,
             **broker.state,
         }))
@@ -317,7 +382,7 @@ def test_an_unmapped_uid_is_dropped_before_any_frame(broker):
 def _open_raw(broker, sock, *, credit=0, op_id=None, stream_id=1):
     sock.sendall(rf.control(stream_id, {
         "op": "OPEN", "op_id": op_id or new_op_id(), "principal": "alice",
-        "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+        "grant_id": "grant-a", "connection_id": "conn-a",
         "verb": "POST", "request": {"url": "u", "body": {}}, "credit": credit,
         **broker.state,
     }))
@@ -334,22 +399,19 @@ def _connect(broker):
 def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
     broker, monkeypatch, attempt,
 ):
-    from types import SimpleNamespace
-
     from tinyassets.broker import box_admission
     from tinyassets.broker.server import BOX_HOST
 
     broker.server._roles = {os.getuid(): BOX_HOST}
-    broker.server._owner_identities = SimpleNamespace(admitted_owner=lambda center: "alice")
 
-    def admitted(identities, request):
-        assert request == {"op": "BOX_ADMISSION", "principal": "alice", "center": "cc-alice"}
+    def admitted(identities, request, *, data_root=None):
+        assert request == {"op": "BOX_PUBLIC", "principal": "alice"}
         return {"op": "BOX_ADMITTED", "uid": 300001, "quota": 1024**3}
 
-    monkeypatch.setattr(box_admission, "resolve", admitted)
+    monkeypatch.setattr(box_admission, "resolve_owner", admitted)
     with _connect(broker) as sock:
         sock.sendall(rf.control(rf.CONNECTION, {
-            "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
+            "op": "BOX_CHANNEL", "principal": "alice"}))
         assert rf.read_frame_blocking(sock).control()["op"] == "BOX_ADMITTED"
         if attempt == "policy":
             sock.sendall(rf.control(rf.CONNECTION, {
@@ -358,7 +420,7 @@ def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
             sock.sendall(rf.control(1, {
                 "op": "OPEN", "op_id": new_op_id(),
                 "principal": "bob" if attempt == "foreign" else "alice",
-                "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+                "grant_id": "grant-a", "connection_id": "conn-a",
                 "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 8192,
                 "generation": -1, "token": "guest-cannot-choose-fence"}))
         if attempt == "valid":
@@ -387,8 +449,8 @@ def test_a_refusal_after_the_operation_sent_reports_unknown_not_none(broker):
 def test_invalid_authority_cannot_claim_a_proven_unsent_operation(broker):
     with _connect(broker) as sock:
         sock.sendall(rf.control(1, {
-            "op": "OPEN", "op_id": new_op_id(), "principal": "invalid|principal",
-            "command_center": "cc-alice", "grant_id": "grant-a",
+            "op": "OPEN", "op_id": new_op_id(), "principal": "",
+            "grant_id": "grant-a",
             "connection_id": "conn-a", "verb": "POST", "request": {"url": "u"},
             "credit": 0, **broker.state,
         }))
@@ -462,7 +524,7 @@ def test_a_stream_that_cannot_start_is_refused_and_never_sent(broker):
         _open_raw(broker, sock, op_id=op)
         end = rf.read_frame_blocking(sock).control()
     assert end["outcome"] == "refused" and end["side_effect_state"] == "none"
-    assert broker.ops.status("alice|cc-alice", op).state == "refused"
+    assert broker.ops.status("alice", op).state == "refused"
     assert broker.server._streams == {}
 
 
@@ -607,7 +669,7 @@ def test_idle_bound_cannot_be_widened_by_the_caller(broker):
     asyncio.run(scenario())
 
 
-def test_async_client_reconnects_after_broker_eof(tmp_path):
+def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
     from tinyassets.broker.aclient import AsyncBrokerClient
     from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome, ProxyRequestError
 
@@ -616,6 +678,10 @@ def test_async_client_reconnects_after_broker_eof(tmp_path):
 
         async def serve(reader, writer):
             connections.append(writer)
+            admitted = await rf.read_frame(reader)
+            assert admitted.control() == {"op": "BOX_CONNECT"}
+            writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
+            await writer.drain()
             frame = await rf.read_frame(reader)
             if len(connections) > 1:
                 writer.write(rf.control(frame.stream, {"op": "HEAD", "status": 200}))
@@ -625,6 +691,9 @@ def test_async_client_reconnects_after_broker_eof(tmp_path):
             await writer.wait_closed()
 
         path = tmp_path / "reconnect.sock"
+        from tinyassets.owner_channel import OwnerChannel
+
+        monkeypatch.setattr("tinyassets.owner_runtime.broker_egress", lambda: OwnerChannel(path))
         listener = await asyncio.start_unix_server(serve, path=str(path))
         client = AsyncBrokerClient(path, principal="alice", command_center="cc-alice",
                                    fence=lambda: (1, "token"))
@@ -657,3 +726,64 @@ def test_async_client_reconnects_after_broker_eof(tmp_path):
             await listener.wait_closed()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("damage", ["erased", "operation"])
+def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage, monkeypatch):
+    from tinyassets.broker.admission import local_mutate, owner_call
+
+    monkeypatch.setattr(broker.server.routing, "publish", lambda **kw: None)
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request",
+                        lambda operation, **fields: {"stopped": True})
+    upstream_peers = []
+
+    class Blocked(Script):
+        def __init__(self, connected):
+            super().__init__([])
+            self.socket, peer = socket.socketpair()
+            peer.settimeout(2)
+            upstream_peers.append(peer)
+            connected(self.socket)
+
+        def read(self, max_bytes):
+            return self.socket.recv(max_bytes) or None
+
+        def close(self):
+            self.socket.close()
+            super().close()
+
+    Blocked.wants_socket = True
+    broker.upstreams["next"] = Blocked
+    clients = []
+    try:
+        for index in range(2):
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            clients.append(client)
+            client.settimeout(3)
+            client.connect(str(broker.path))
+            client.sendall(rf.control(1, {
+                "op": "OPEN", "principal": "alice", "command_center": "cc-alice",
+                "grant_id": "grant-a", "connection_id": "conn-a", "verb": "POST",
+                "request": {}, "op_id": new_op_id(str(index) * 16), "credit": 1024,
+                **broker.state}))
+            assert rf.read_frame_blocking(client).control()["op"] == "ADMITTED"
+            assert rf.read_frame_blocking(client).control()["op"] == "HEAD"
+        started = time.monotonic()
+        if damage == "erased":
+            asyncio.run_coroutine_threadsafe(owner_call(
+                broker.server._owner_identities.path, "alice", local_mutate,
+                broker.server._owner_identities.path, "alice", "erase",
+                routing=broker.server.routing), broker.server._loop).result(3)
+        else:
+            asyncio.run_coroutine_threadsafe(
+                broker.server.withdraw_channels("alice"), broker.server._loop).result(3)
+        for client in clients:
+            assert client.recv(1) == b""
+        for peer in upstream_peers:
+            assert peer.recv(1) == b""
+        assert time.monotonic() - started < 1.25
+    finally:
+        for client in clients:
+            client.close()
+        for peer in upstream_peers:
+            peer.close()

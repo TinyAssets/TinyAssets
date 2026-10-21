@@ -123,9 +123,7 @@ def main() -> int:
     if not bot_token:
         raise SystemExit(
             f"No Slack bot token for connection {args.connection!r} in {universe_dir}.\n"
-            "Deposit it first:\n"
-            "  python scripts/deposit_slack_credentials.py "
-            f"--universe-dir {universe_dir} --connection {args.connection}"
+            "Provision this connection through the connection door before running this diagnostic."
         )
 
     team_id, bot_user_id, team_name = identify(bot_token)

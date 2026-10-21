@@ -1,6 +1,6 @@
 """Descriptor-safe box operations for Linux boxd and the local test driver.
 
-Paths use ``openat`` with ``O_NOFOLLOW``; exec cwd is an open descriptor.
+Paths use ``openat`` with ``O_NOFOLLOW``; local child cwd is an open descriptor.
 Owner and epoch checks, idempotent operation ids, coherent generations and
 bounded process supervision are shared. The local adapter has no kernel
 boundary and requires an explicit opt-in; production runs this core in gVisor.
@@ -13,15 +13,13 @@ import hashlib
 import os
 import re
 import secrets
-import select
-import signal
 import stat
 import subprocess
 import tarfile
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,10 +36,6 @@ from tinyassets.boxes.provider import (
     DestroyReceipt,
     DirEntry,
     DirPage,
-    ExecEvent,
-    ExecLimits,
-    ExecState,
-    ExecStatus,
     ExportProfile,
     FileRead,
     FileStat,
@@ -54,7 +48,7 @@ from tinyassets.boxes.provider import (
     WriteMode,
     box_relpath,
 )
-from tinyassets.boxes.state import BoxHostState, op_digest, process_start_time
+from tinyassets.boxes.state import BoxHostState, op_digest
 
 __all__ = ["BoxdCore", "LocalBoxProvider", "OwnerBoxd"]
 
@@ -146,9 +140,6 @@ class _Running:
     handle: BoxHandle
     cancel: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
-    input_ready: threading.Event = field(default_factory=threading.Event)
-    input_lock: threading.Lock = field(default_factory=threading.Lock)
-    replies: dict = field(default_factory=dict)
 
 
 class BoxdCore:
@@ -181,8 +172,6 @@ class BoxdCore:
         self._root = Path(boxes_root)
         self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._state_dir = Path(state_dir)
-        self._exec_dir = self._state_dir / "execs"
-        self._exec_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._state = BoxHostState(self._state_dir / "boxhost.db")
         self._owner_of = owner_of
         self._busy_wait_s = busy_wait_s
@@ -588,256 +577,6 @@ class BoxdCore:
             finally:
                 self._state.release(cc)
 
-    # -- execution ----------------------------------------------------------------------
-
-    def _exec_id(self, cc: str, op_id: str) -> str:
-        return "x" + hashlib.sha256(f"{cc}\0{op_id}".encode()).hexdigest()[:31]
-
-    def start_exec(self, handle: BoxHandle, op_id: str, argv: Sequence[str], *,
-                   stdin: bytes = b"", env: Mapping[str, str] | None = None,
-                   cwd: str = BOX_ROOT, limits: ExecLimits = ExecLimits(),
-                   interactive_stdin: bool = False) -> str:
-        if not argv or not all(isinstance(a, str) and "\0" not in a for a in argv):
-            raise ValueError("argv must be a non-empty list of strings without NULs")
-        extra = {str(k): str(v) for k, v in (env or {}).items()}
-        for key, value in extra.items():
-            if not _ENV_KEY.match(key) or "\0" in value:
-                raise ValueError(f"environment key {key!r} is not allowed")
-        stdin = bytes(stdin)
-        rel_cwd = box_relpath(cwd)
-        payload = {"argv": list(argv), "stdin": hashlib.sha256(stdin).hexdigest(),
-                   "env": extra, "cwd": rel_cwd,
-                   "limits": [limits.wall_seconds, limits.output_bytes],
-                   "interactive_stdin": interactive_stdin}
-        with self._lock(handle.command_center_id):
-            cc = self._auth_locked(handle)
-            exec_id = self._exec_id(cc, op_id)
-            if self._state.begin(cc, op_id, "exec", op_digest("exec", payload)) is not None:
-                return exec_id  # done, running or unknown: never run twice
-            out_path = self._exec_dir / f"{exec_id}.out"
-            proc = None
-            try:
-                self._state.register_exec(cc, op_id, exec_id)
-                self._state.update(cc, op_id, {"exec_id": exec_id,
-                                               "output_bytes": limits.output_bytes})
-                box = self._box_fd(cc)
-                try:
-                    cwd_fd = self._walk(box, rel_cwd, cwd, create=False)
-                finally:
-                    os.close(box)
-                try:
-                    out_path.unlink(missing_ok=True)  # leftover of a launch that never ran
-                    out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    child_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
-                                 "HOME": BOX_ROOT, **extra}
-                    try:
-                        proc = subprocess.Popen(
-                            ["/bin/sh", "-c", _CWD_SHIM, str(cwd_fd), *argv],
-                            env=child_env, stdin=subprocess.PIPE, stdout=out_fd,
-                            stderr=subprocess.STDOUT, start_new_session=True,
-                            pass_fds=(cwd_fd,), close_fds=True,
-                        )
-                    finally:
-                        os.close(out_fd)
-                finally:
-                    os.close(cwd_fd)
-            except BaseException:
-                out_path.unlink(missing_ok=True)
-                self._state.forget_exec(cc, exec_id)
-                self._state.abandon(cc, op_id)  # nothing ran
-                raise
-            held = False
-            try:
-                self._state.update(cc, op_id, {
-                    "exec_id": exec_id, "output_bytes": limits.output_bytes,
-                    "pgid": proc.pid, "start_time": process_start_time(proc.pid)})
-                running = _Running(cc, proc, handle)
-                with self._running_guard:
-                    self._running[exec_id] = running
-                self._state.hold(cc)  # a running exec may change files at any moment
-                held = True
-                threading.Thread(
-                    target=self._supervise,
-                    args=(cc, op_id, exec_id, running, stdin, limits, out_path,
-                          interactive_stdin),
-                    daemon=True, name=f"box-exec-{exec_id[:8]}",
-                ).start()
-            except BaseException as exc:
-                # It is running but cannot be supervised: kill it, then record the failure.
-                _kill_group(proc.pid)
-                proc.wait()
-                with self._running_guard:
-                    self._running.pop(exec_id, None)
-                if held:
-                    self._state.release(cc)
-                self._state.bump_generation(cc)  # it ran, however briefly
-                self._state.finish(cc, op_id, {"exec_id": exec_id, "error": str(exc),
-                                               "output_bytes": limits.output_bytes})
-                raise
-        return exec_id
-
-    def _supervise(self, cc: str, op_id: str, exec_id: str, running: _Running,
-                   stdin: bytes, limits: ExecLimits, out_path: Path,
-                   interactive_stdin: bool = False) -> None:
-        proc = running.proc
-        started = time.monotonic()
-        killed: str | None = None
-        code: int | None = None
-        try:
-            def feed():
-                try:
-                    if interactive_stdin:
-                        proc.stdin.write(stdin)
-                        proc.stdin.flush()
-                    else:
-                        _feed(proc, stdin)
-                except OSError:
-                    pass
-                finally:
-                    running.input_ready.set()
-            threading.Thread(target=feed, daemon=True).start()
-            while proc.poll() is None:
-                if running.cancel.is_set():
-                    killed = "cancelled"
-                elif time.monotonic() - started > limits.wall_seconds:
-                    killed = "timeout"
-                elif out_path.stat().st_size > limits.output_bytes:
-                    killed = "output_limit"
-                if killed:
-                    break
-                time.sleep(_POLL_S)
-            # The exec ends with its leader: kill whatever else is left in its group.
-            _kill_group(proc.pid)
-            code = proc.wait()
-            if out_path.stat().st_size > limits.output_bytes:
-                with open(out_path, "r+b") as fh:
-                    fh.truncate(limits.output_bytes)
-                killed = killed or "output_limit"
-        except BaseException:
-            _kill_group(proc.pid)  # never record completion for a child still running
-            code = proc.wait()
-            killed = killed or "supervisor_error"
-        finally:
-            if interactive_stdin and proc.stdin is not None:
-                # send_stdin retains the fd across select/write. Keep it alive
-                # until that writer releases it, before another exec can reuse it.
-                with running.input_lock:
-                    try:
-                        proc.stdin.close()
-                    except OSError:
-                        pass  # A killed child must still settle its host receipt.
-            with self._lock(cc):
-                generation = self._state.bump_generation(cc)  # the command may have changed files
-                self._state.finish(cc, op_id, {"exec_id": exec_id, "exit_code": code,
-                                               "killed": killed, "generation": generation,
-                                               "output_bytes": limits.output_bytes})
-                self._state.release(cc)
-                with self._running_guard:
-                    self._running.pop(exec_id, None)
-            running.done.set()
-
-    def send_stdin(self, handle: BoxHandle, exec_id: str, request_id: str, data: bytes) -> None:
-        """Idempotent reply on a bound running exec; never a workspace mutation.
-
-        A host restart kills these processes and reports UNKNOWN_AFTER_RESTORE;
-        partially delivered replies are never sent again onto a corrupted stream.
-        """
-        if not re.fullmatch(r"[a-f0-9]{32}", request_id) or len(data) > 8 * 1024 * 1024 + 256:
-            raise BoxError("invalid exec reply")
-        with self._lock(handle.command_center_id):
-            self._auth_locked(handle)
-            with self._running_guard:
-                running = self._running.get(exec_id)
-            if running is None or running.handle != handle:
-                raise BoxAuthError("exec reply binding refused")
-        if not running.input_ready.wait(5):
-            raise BoxError("exec input unavailable")
-        digest = hashlib.sha256(data).hexdigest()
-        with running.input_lock:
-            previous = running.replies.get(request_id)
-            if previous is not None:
-                if previous != (digest, True):
-                    raise BoxError("exec reply reused or outcome unknown")
-                return
-            if running.proc.stdin is None or running.proc.stdin.closed:
-                raise BoxError("exec input unavailable")
-            running.replies[request_id] = (digest, False)
-            fd = running.proc.stdin.fileno()
-            os.set_blocking(fd, False)
-            deadline = time.monotonic() + 5
-            remaining = memoryview(data)
-            while remaining:
-                wait = deadline - time.monotonic()
-                if wait <= 0 or not select.select([], [fd], [], wait)[1]:
-                    raise BoxError("exec reply delivery unknown")
-                try:
-                    remaining = remaining[os.write(fd, remaining[:4096]):]
-                except BlockingIOError:
-                    continue
-            running.replies[request_id] = (digest, True)
-
-    def stream(self, handle: BoxHandle, exec_id: str, *,
-               from_offset: int = 0, timeout: float | None = None) -> Iterator[ExecEvent]:
-        with self._lock(handle.command_center_id):
-            cc = self._auth_locked(handle)
-            if self._state.find_exec(cc, exec_id) is None:
-                raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
-        out_path = self._exec_dir / f"{exec_id}.out"
-        deadline = None if timeout is None else time.monotonic() + timeout
-
-        def events() -> Iterator[ExecEvent]:
-            offset = max(0, from_offset)
-            while True:
-                record = self._state.find_exec(cc, exec_id) or {}
-                state = record.get("state")
-                cap = int((record.get("outcome") or {}).get("output_bytes") or 0)
-                if out_path.exists() and offset < cap:
-                    with open(out_path, "rb") as fh:
-                        fh.seek(offset)
-                        block = fh.read(cap - offset)  # never past the output limit
-                    if block:
-                        yield ExecEvent("output", offset=offset, data=block)
-                        offset += len(block)
-                if state == "done":
-                    outcome = record.get("outcome") or {}
-                    yield ExecEvent("exit", offset=offset, exit_code=outcome.get("exit_code"),
-                                    killed=outcome.get("killed"))
-                    return
-                if state == "unknown_after_restore":
-                    yield ExecEvent("exit", offset=offset,
-                                    killed=ExecState.UNKNOWN_AFTER_RESTORE.value)
-                    return
-                if deadline is not None and time.monotonic() > deadline:
-                    return
-                time.sleep(_POLL_S)
-
-        return events()
-
-    def cancel(self, handle: BoxHandle, exec_id: str) -> None:
-        with self._lock(handle.command_center_id):
-            cc = self._auth_locked(handle)
-            if self._state.find_exec(cc, exec_id) is None:
-                raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
-            with self._running_guard:
-                running = self._running.get(exec_id)
-        if running is not None:
-            running.cancel.set()
-
-    def exec_status(self, handle: BoxHandle, op_id: str) -> ExecStatus:
-        with self._lock(handle.command_center_id):
-            cc = self._auth_locked(handle)
-            record = self._state.lookup(cc, op_id)
-        if record is None or record["kind"] != "exec":
-            raise BoxNotFound(errno.ENOENT, f"no exec operation {op_id!r} in this box")
-        outcome = record["outcome"] or {}
-        state = {"running": ExecState.RUNNING, "done": ExecState.EXITED,
-                 "unknown_after_restore": ExecState.UNKNOWN_AFTER_RESTORE}[record["state"]]
-        return ExecStatus(op_id=op_id, exec_id=outcome.get("exec_id", self._exec_id(cc, op_id)),
-                          state=state, exit_code=outcome.get("exit_code"),
-                          killed=outcome.get("killed"))
-
-    # -- whole box -------------------------------------------------------------------------
-
     def usage(self, handle: BoxHandle) -> BoxUsage:
         with self._lock(handle.command_center_id):
             cc = self._auth_locked(handle)
@@ -1012,9 +751,8 @@ class BoxdCore:
         exec will not stop, the host keeps its lock and raises, so no second host can start
         beside work that is still changing files.
         """
-        with self._locks_guard:
-            self._closing = True
         with self._running_guard:
+            self._closing = True
             victims = list(self._running.values())
         for running in victims:
             running.cancel.set()
@@ -1024,28 +762,6 @@ class BoxdCore:
         if stuck:
             raise BoxError(f"{len(stuck)} exec(s) did not stop; keeping ownership of the host")
         self._state.close()
-
-
-def _feed(proc: subprocess.Popen, stdin: bytes) -> None:
-    """Feed stdin on its own thread, so a child that never reads cannot stall supervision."""
-    if proc.stdin is None:
-        return
-    try:
-        proc.stdin.write(stdin)
-    except (BrokenPipeError, OSError):
-        pass
-    finally:
-        try:
-            proc.stdin.close()
-        except OSError:
-            pass
-
-
-def _kill_group(pgid: int) -> None:
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
 
 
 def _tar_box(box_fd: int, spool) -> None:
@@ -1109,15 +825,25 @@ LocalBoxProvider = BoxdCore
 
 
 class OwnerBoxd(BoxdCore):
-    """Run the descriptor-safe operations against one mounted owner tree.
+    """Local file tools and bounded children inside one persistent owner box.
 
-    This adapter is instantiated only *inside* the owner's sandbox. The host
-    checks owner, session, epoch and operation id before forwarding a request;
-    this class independently refuses any other owner key. Destroy and quota
-    management remain host operations, outside the untrusted box.
+    Process startup supplies identity and the mounted owner root. No host file
+    channel or per-call sandbox lifecycle exists.
     """
 
-    def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path) -> None:
+    @staticmethod
+    def _check_cc(principal: str) -> str:
+        # Here the journal key is an opaque principal, never a directory name.
+        from tinyassets.broker.owner_identities import validate_principal
+
+        validate_principal(principal)
+        return principal
+
+    def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path,
+                 relay: Path | None = None, volume_generation: int = 1) -> None:
+        if type(volume_generation) is not int or volume_generation < 1:
+            raise ValueError("positive owner volume generation required")
+        self._volume_generation = volume_generation
         self._owner_id = self._check_cc(owner_id)
         if not owner_root.is_dir() or owner_root.is_symlink():
             raise BoxPathError("owner root must be an existing directory, not a link")
@@ -1127,6 +853,15 @@ class OwnerBoxd(BoxdCore):
             owner_of=lambda key: self._owner_id if key == self._owner_id else None,
             allow_unisolated=True,
         )
+        self._public_forwarder = None
+        if relay is not None:
+            from tinyassets.owner_public_egress import OwnerPublicForwarder
+
+            try:
+                self._public_forwarder = OwnerPublicForwarder(relay)
+            except BaseException:
+                super().close()
+                raise
 
     def _box_fd(self, cc: str, *, create: bool = True) -> int:
         if cc != self._owner_id:
@@ -1136,5 +871,44 @@ class OwnerBoxd(BoxdCore):
     def bind(self, owner_id: str, *, session_id: str | None = None) -> BoxHandle:
         return super().bind(owner_id, account_id=owner_id, turn_id=session_id)
 
+    def consume_operation(self, handle: BoxHandle, op_id: str, kind: str, payload) -> None:
+        """Durably consume an execution ID before any tool side effect."""
+        with self._lock(self._owner_id):
+            self._auth_locked(handle)
+            self._begin(self._owner_id, op_id, kind, payload)
+
+    def operation_prefix(self) -> str:
+        return f"{self._volume_generation}:{self._state.epoch(self._owner_id)}:"
+
+    def new_operation(self, value: str) -> str:
+        """Bind a newly minted identity to this box, before it is journaled."""
+        return self.operation_prefix() + value
+
+    def check_operation(self, op_id: str) -> None:
+        if not isinstance(op_id, str) or not op_id.startswith(self.operation_prefix()):
+            raise BoxOperationRefused("operation predates owner volume generation; not re-run")
+
+    def _begin(self, cc: str, op_id: str, kind: str, payload: object) -> None:
+        self.check_operation(op_id)
+        previous = self._state.begin(cc, op_id, kind, op_digest(kind, payload))
+        if previous is not None:
+            raise BoxOperationRefused("consumed operation id is not re-run")
+
+    def run(self, argv, *, cwd, stdin=b"", env=None, wall_seconds, output_bytes,
+            line_handler=None, should_cancel=None):
+        """Supervise a child of this persistent owner daemon, inside its box."""
+        from tinyassets.owner_process import run
+
+        return run(self, argv, cwd=cwd, stdin=stdin, env=env, wall_seconds=wall_seconds,
+                   output_bytes=output_bytes, line_handler=line_handler,
+                   should_cancel=should_cancel)
+
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt:
         raise BoxOperationRefused("owner deletion is a fenced boxhostd operation")
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self._public_forwarder is not None:
+                self._public_forwarder.close()

@@ -20,6 +20,7 @@ After=tinyassets-daemon.service
 # Don't race the daemon's own startup at boot. Give daemon 60s to bind.
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets-host-uptime/current
 Type=oneshot
 User=tinyassets
 Group=tinyassets
