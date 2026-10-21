@@ -89,7 +89,7 @@ while True:
     time.sleep(0.1)
 '
     systemctl enable --now tinyassets-backup.timer
-    "$0" check
+    bash "$0" check
     ;;
   check)
     root="$(volume_root)"
