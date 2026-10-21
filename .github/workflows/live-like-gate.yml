@@ -474,6 +474,9 @@ jobs:
             sudo systemctl status "${u}" --no-pager -l | head -20
             sudo journalctl -u "${u}" -n 40 --no-pager
           done
+          vol="$(sudo docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')"
+          sudo ls -lan "${vol}" | head -40
+          sudo docker inspect -f '{{.Config.User}} {{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}}' tinyassets-daemon
           df -h / /var/lib/boxhostd /var/lib/boxhostd/owners
           sudo ls -la /var/lib/boxhostd/owners /opt/tinyassets/boxhostd
 
