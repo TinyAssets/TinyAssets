@@ -98,8 +98,11 @@ def build(root: Path) -> dict:
             os.chown(path, 1001, 1100)
     for base, dirs, names in os.walk(root / ".broker"):
         os.chown(base, 1002, 1102)
+        os.chmod(base, 0o700)
         for name in names:
-            os.chown(Path(base) / name, 1002, 1102)
+            path = Path(base) / name
+            os.chown(path, 1002, 1102)
+            os.chmod(path, 0o600)
     return {"volume": str(root), "owners": len(OWNERS), "centers": len(CENTERS),
             "workspace_files": files, "sqlite_stores": 5}
 
