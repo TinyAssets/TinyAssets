@@ -253,7 +253,7 @@ jobs:
       # deploy/deploy_host.sh: the step's former shell, with the ssh/scp call
       # replaced by the driver's transport. The live-like gate
       # (.github/workflows/live-like-gate.yml) runs the same phases, in this
-      # order, on a disposable host; tests/test_deploy_host_driver.py keeps the
+      # order, on a disposable host; tests/test_deploy_phase_parity.py keeps the
       # two in step. Authority (secrets, the DigitalOcean lookup, GHCR, this
       # environment) stays in this workflow.
       - name: Capture current image (for public-canary rollback)
