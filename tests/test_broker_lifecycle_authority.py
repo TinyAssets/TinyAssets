@@ -215,8 +215,8 @@ def test_host_lifecycle_has_no_broker_state_callbacks():
         "_start", "_sleep", "ensure_awake"}
 
 
-def test_restore_holds_owner_lock_until_map_commit(authority, monkeypatch):
-    action = "restore"
+@pytest.mark.parametrize("action", ["sleep", "restore"])
+def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkeypatch, action):
     a = authority
     lifecycle = a.server.routing.volumes
     lifecycle.volume("alice", "created")
@@ -227,7 +227,8 @@ def test_restore_holds_owner_lock_until_map_commit(authority, monkeypatch):
         if operation in {"snapshot", "restore"}:
             entered.set()
             assert release.wait(10)
-            assert admission.read(a.identities, "alice").state == "admitted"
+            expected = "erased" if action == "sleep" else "admitted"
+            assert admission.read(a.identities, "alice").state == expected
             return ({"snapshot_id": fields["snapshot_id"], "sha256": "b" * 64}
                     if operation == "snapshot" else {"restored": True})
         return a.host(operation, **fields)
@@ -240,15 +241,26 @@ def test_restore_holds_owner_lock_until_map_commit(authority, monkeypatch):
     monkeypatch.setattr(a.jobs, "_snapshots", lambda job: None)
 
     async def exercise():
-        first = asyncio.create_task(a.server.routing.sleep("alice") if action == "sleep"
+        if action == "sleep":
+            await a.server.routing.sleep("alice")
+        first = asyncio.create_task(lifecycle.tick_owner("alice") if action == "sleep"
                                     else a.server.routing.restore("alice", snapshot_id))
         assert await asyncio.to_thread(entered.wait, 5)
         deleting = asyncio.create_task(a.jobs.enqueue("alice"))
         await asyncio.sleep(0)
-        assert not deleting.done()
-        assert admission.read(a.identities, "alice").state == "admitted"
+        if action == "sleep":
+            await asyncio.wait_for(deleting, 2)
+            assert admission.read(a.identities, "alice").state == "erased"
+        else:
+            assert not deleting.done()
+            assert admission.read(a.identities, "alice").state == "admitted"
         release.set()
-        await asyncio.gather(first, deleting)
+        if action == "sleep":
+            with pytest.raises(PermissionError, match="erased"):
+                await first
+            assert lifecycle.volume("alice")["snapshot_id"] is None
+        else:
+            await asyncio.gather(first, deleting)
         await a.server.routing.close()
         assert a.events.count("mutation") == 1
         assert admission.read(a.identities, "alice").state == "erased"

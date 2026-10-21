@@ -37,8 +37,7 @@ class VolumeLifecycle:
                 if idle is None or (idle < self.lifecycle.config.idle_limit
                                     and status["uptime"] < 86400):
                     return record
-            record = await self.sleep(owner)
-            work = record["work"]
+            return await self.sleep(owner)
         if not work or work["kind"] == "create":
             return record
         if work["kind"] == "evict":

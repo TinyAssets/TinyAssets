@@ -483,7 +483,7 @@ def test_cold_request_uses_broker_and_keeps_credential(
     with boxes.manager.condition:
         assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
     assert not boxes.runtime.alive(uid)
-    drive(broker.server.routing.volumes.recover("alice"))
+    drive(broker.server.routing.volumes.tick_owner("alice"))
     binding = boxes.manager.admission.volume("alice")
     if pending_restore:
         boxes.manager.admission.volume("alice", "restore", snapshot_id=binding["snapshot_id"])
