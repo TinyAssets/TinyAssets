@@ -43,7 +43,7 @@ jobs:
           fi
           python scripts/test_shape.py "${coverage_args[@]}" \
             --json "$RUNNER_TEMP/shape-report.json" --prune --body "$RUNNER_TEMP/prune-body.md"
-          ruff check tests --select F401,F841 --fix
+          git diff --name-only -z -- tests | xargs -0 -r python -m ruff check --select F401 --fix
       - uses: actions/upload-artifact@v4
         with:
           name: test-shape-coverage
