@@ -86,44 +86,47 @@ final class ReviewVideoTests: XCTestCase {
         return last
     }
 
+    /// Taps Sign in and returns the system browser showing the email form.
+    /// iOS 26: SpringBoard asks "“App” Wants to Use “<site>” to Sign In" only
+    /// after the app has fetched its sign-in URL, which can take longer than a
+    /// fixed alert wait. Accept exactly that consent whenever it appears, and
+    /// find the form in SafariViewService, which hosts ASWebAuthenticationSession.
+    private func openSystemSignIn(_ signIn: XCUIElement) -> XCUIApplication {
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
+        signIn.tap()
+        var auth = safari
+        let found = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            for host in [self.springboard, self.app] {
+                let consent = host.alerts.matching(NSPredicate(
+                    format: "label CONTAINS %@ AND label CONTAINS[c] %@", "Wants to Use", "Sign In")).firstMatch
+                if consent.exists, consent.buttons["Continue"].exists { consent.buttons["Continue"].tap() }
+            }
+            for candidate in [safari, self.app] {
+                if candidate.webViews.textFields.firstMatch.exists { auth = candidate; return true }
+            }
+            return false
+        }, object: nil)], timeout: 120) == .completed
+        if !found {
+            // Nothing secret is on screen before the email is typed; the
+            // harness exports only this assertion line.
+            let tree = [springboard, app, safari].filter {
+                $0.state == .runningForeground || $0.state == .runningBackground
+            }.map(\.debugDescription).joined(separator: "\n").replacingOccurrences(of: "\n", with: " | ")
+            XCTFail("\(step): system-browser email form. Hierarchy: \(tree)")
+        }
+        return auth
+    }
+
     func testSignedOutLaunch() {
         app.terminate()
         XCTAssertTrue(app.state == .notRunning)
         app.launch()
-        XCTAssertTrue(app.buttons["Sign in"].waitForExistence(timeout: 120))
+        let signIn = app.buttons["Sign in"]
+        XCTAssertTrue(signIn.waitForExistence(timeout: 120))
         shot("01-signed-out")
-        // TEMPORARY DIAGNOSTIC: tap Sign in and dump every plausible host.
-        app.buttons["Sign in"].tap()
-        Thread.sleep(forTimeInterval: 8)
-        func emit(_ text: String) {
-            print("PROBE " + text.replacingOccurrences(of: "\n", with: " | "))
-            fflush(stdout)
-        }
-        emit("tapped Sign in")
-        let hosts = ["io.tinyassets.app", "com.apple.springboard", "com.apple.SafariViewService"]
-        func dump(_ tag: String) {
-            for id in hosts {
-                let host = XCUIApplication(bundleIdentifier: id)
-                let state = host.state
-                emit("[\(tag)] \(id) state=\(state.rawValue)")
-                if state == .runningForeground || state == .runningBackground {
-                    emit("[\(tag)] \(id) TREE " + host.debugDescription)
-                }
-            }
-        }
-        dump("t+8")
-        for id in ["com.apple.springboard", "io.tinyassets.app"] {
-            let host = XCUIApplication(bundleIdentifier: id)
-            let alert = host.alerts.firstMatch
-            if alert.exists {
-                emit("ALERT in \(id): " + alert.debugDescription)
-                let cont = alert.buttons["Continue"]
-                if cont.exists { cont.tap(); emit("tapped Continue in \(id)") }
-            }
-        }
-        Thread.sleep(forTimeInterval: 15)
-        dump("t+25")
-        XCTFail("PROBE done")
+        // Credential-free: prove the system sign-in sheet opens; type nothing.
+        step = "02-sign-in"
+        _ = openSystemSignIn(signIn)
     }
 
     func testGuideline21Journey() throws {
@@ -143,33 +146,16 @@ final class ReviewVideoTests: XCTestCase {
         shot("01-signed-out")
 
         step = "02-sign-in"
-        signIn.tap()
-        // ASWebAuthenticationSession's consent is owned by SpringBoard on some
-        // iOS versions and by the app on others. Do not auto-accept other alerts.
-        for host in [springboard, app] {
-            let consent = host.alerts.firstMatch
-            if consent.waitForExistence(timeout: 5),
-               consent.staticTexts.allElementsBoundByIndex.contains(where: {
-                   $0.label.localizedCaseInsensitiveContains("sign in")
-               }), consent.buttons["Continue"].exists {
-                consent.buttons["Continue"].tap()
-                break
-            }
-        }
+        let auth = openSystemSignIn(signIn)
         let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
-        var auth = app
-        wait("system-browser email form") {
-            for candidate in [self.app, safari, self.springboard] {
-                if candidate.webViews.textFields.firstMatch.exists { auth = candidate; return true }
-            }
-            return false
-        }
         let email = auth.webViews.textFields.firstMatch
         email.tap()
         email.typeText(username)
         let secure = auth.webViews.secureTextFields.firstMatch
         if !secure.exists {
-            let next = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Continue", "Next", "Sign in"])).firstMatch
+            // AuthKit labels its email step "Continue with email".
+            let next = auth.buttons.matching(NSPredicate(format: "label IN %@",
+                ["Continue with email", "Continue", "Next", "Sign in"])).firstMatch
             XCTAssertTrue(next.waitForExistence(timeout: 30), "email continuation missing")
             next.tap()
         }

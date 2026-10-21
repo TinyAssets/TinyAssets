@@ -131,20 +131,7 @@ def run_test(source: Path, destination: str, output: Path, launch_only: bool = F
                     stderr=subprocess.STDOUT,
                     env=env,
                     timeout=420 if launch_only else 1650,
-                ) if not launch_only else None
-                if launch_only:  # TEMPORARY PROBE
-                    try:
-                        process = subprocess.run(
-                            ["xcodebuild", "test-without-building", "-xctestrun", str(private_run),
-                             "-destination", destination, "-resultBundlePath", str(result),
-                             "-parallel-testing-enabled", "NO",
-                             f"-only-testing:ReviewUITests/ReviewVideoTests/{test}"],
-                            stdout=log, stderr=subprocess.STDOUT, env=env, timeout=900)
-                    except subprocess.TimeoutExpired:
-                        process = subprocess.CompletedProcess([], 1)
-                    for line in (private / "xcode.log").read_text(errors="replace").splitlines():
-                        if "PROBE" in line or "error:" in line or "t =" in line:
-                            print(line[:60000])
+                )
             found = export_shots(result, output, private) if result.exists() else set()
             result_code = 0 if process.returncode == 0 and found == expected_shots else 1
             # Only assertion lines, with credentials redacted, are useful publicly.
