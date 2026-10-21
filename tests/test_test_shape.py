@@ -19,10 +19,17 @@ def test_registry_distinguishes_live_retired_deleted_and_history():
 | T1 | Read no owner data; the old path is deleted. |
 ### C1. Current correction
 Delete the old shared code.
+**Deleted:** the old implementation files.
 ### C2. Old correction
 > **Superseded by C1.**
 ### C3. Superseded correction
 Old path.
+### C5. Mixed old row
+Introductory prose.
+> **Superseded by C1.**
+Old path.
+### C5. Repeated row heading
+Still historical.
 ## Superseded layout
 ### C4. Former route
 Historical.
@@ -40,6 +47,7 @@ Historical.
         "box:C1": "current",
         "box:C2": "superseded",
         "box:C3": "superseded",
+        "box:C5": "superseded",
         "box:C4": "superseded",
         "box:T2": "superseded",
         "door:Authenticate": "current",
@@ -49,12 +57,12 @@ Historical.
         "tests/test_x.py",
         """
 import pytest
-@pytest.mark.verifies("box:C2", "box:C5", "typo:C1")
+@pytest.mark.verifies("box:C2", "box:C6", "typo:C1")
 def test_old(): pass
 def test_missing(): pass
 """,
     )
-    report = shape.audit(items, rows, {"box:C5": "current"})
+    report = shape.audit(items, rows, {"box:C6": "current"})
     assert [f["state"] for f in report["unresolvable"]] == ["superseded", "deleted", "unknown"]
     assert report["untagged"] == ["tests/test_x.py::test_missing"]
 

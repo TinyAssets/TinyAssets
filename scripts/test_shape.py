@@ -77,11 +77,18 @@ def _sections(text: str):
 
 def _retired(title: str, body: str) -> bool:
     # A deletion LIST within a live correction does not retire the correction.
-    first = next((s for s in body.splitlines() if s.strip()), "")
+    # A status can follow introductory prose. Only direct text belongs to this
+    # row: a retired child must not retire all its siblings through the parent.
+    child = HEADING.search(body)
+    direct = body[: child.start()] if child else body
     return bool(
         re.search(r"\bsuperseded\b", title, re.I)
         or re.search(r"\((?:deleted|removed)\)", title, re.I)
-        or re.match(r"\s*(?:>\s*)?(?:\*\*)?(?:Superseded|Deleted|Removed)\b", first, re.I)
+        or re.search(
+            r"^[ \t]*(?:>[ \t]*)?(?:\*\*)?Superseded\b",
+            direct,
+            re.I | re.M,
+        )
     )
 
 
@@ -119,8 +126,11 @@ def registry(files: dict[str, str]) -> dict[str, str]:
             for heading, body in sections:
                 hit = re.match(r"([A-Z]\d+(?:[a-z]|\.\d+)*)(?:[. :]|$)", heading[2])
                 if hit:
-                    result[f"{namespace}:{hit[1]}"] = (
-                        "superseded" if retired_section(heading, body) else "current"
+                    key = f"{namespace}:{hit[1]}"
+                    result[key] = (
+                        "superseded"
+                        if retired_section(heading, body) or result.get(key) == "superseded"
+                        else "current"
                     )
             for row in ROW.finditer(text):
                 line = text[row.start() :].splitlines()[0]
