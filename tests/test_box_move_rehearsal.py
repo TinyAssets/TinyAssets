@@ -370,7 +370,6 @@ def test_migration_container_overrides_image_fault_default(tmp_path, mode):
         # The same config-file lookup as production; only the file's content
         # (a local "spaces" remote) is rehearsal data.
         assert f"{backup}/rclone:/root/.config/rclone:ro" in args
-        assert (backup / "rclone/rclone.conf").read_text() == "[spaces]\ntype = local\n"
         assert not any(arg.startswith("RCLONE_CONFIG_SPACES_") for arg in args)
 
 

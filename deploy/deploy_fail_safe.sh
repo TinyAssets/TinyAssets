@@ -183,8 +183,12 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
         # remote in a real rclone.conf, read through the same file lookup.
         snapshot_dest=spaces:/snapshots/owner-snapshots
         rclone_dir="${MIGRATION_BACKUP_DIR}/rclone"
-        mkdir -p "$rclone_dir"
-        printf '[spaces]\ntype = local\n' > "$rclone_dir/rclone.conf"
+        # Written through the engine: a rehearsal runner may not share the
+        # engine host's filesystem, which is where bind sources resolve.
+        docker run --rm --network none --user 0 -v "${MIGRATION_BACKUP_DIR}:/snapshots" \
+          --entrypoint sh "$NEW_IMAGE" -c \
+          'mkdir -p /snapshots/rclone && printf "[spaces]\ntype = local\n" > /snapshots/rclone/rclone.conf' \
+          >/dev/null || return 1
         extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots")
       else
         snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
