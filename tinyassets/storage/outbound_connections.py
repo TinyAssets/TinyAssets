@@ -905,18 +905,11 @@ class ScopedConnectionProxy:
     provider: str
     destination: str
     scopes: tuple[str, ...]
-    #: The mode read when the proxy opened. Defence in depth only -- the broker
-    #: re-reads the row and is the authority -- so a stale `exact` here refuses
-    #: a since-upgraded channel until the caller opens a new proxy, which is
-    #: the safe direction to be wrong in.
+    #: Connection metadata; the broker re-reads current credential authority.
     access_mode: str = ACCESS_EXACT
     _channel: _BrokerChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
     def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
-        if not _verb_within_scopes(verb, self.scopes, self.access_mode):
-            raise PermissionError(
-                f"verb {verb!r} is outside the granted connection scope"
-            )
         return self._channel.request(
             verb, request, **({"inference_usage": inference_usage}
                              if inference_usage is not None else {}),
@@ -924,8 +917,6 @@ class ScopedConnectionProxy:
 
     @asynccontextmanager
     async def stream(self, verb, request, *, inference_usage=None, operation_id):
-        if not _verb_within_scopes(verb, self.scopes, self.access_mode):
-            raise PermissionError(f"verb {verb!r} is outside the granted connection scope")
         async with self._channel.stream(
             verb, request, inference_usage=inference_usage, operation_id=operation_id,
         ) as stream:
@@ -1115,6 +1106,9 @@ class CredentialBlindBroker:
             raise ProxyRequestError(
                 "outbound request failed: credential unavailable"
             ) from None
+        if resource.connection_type == "http" and not credential:
+            resource = replace(resource, auth_scheme="none")
+            keyless = True
         if not credential and not keyless:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
@@ -1524,7 +1518,7 @@ class _GeneralVaultCredentialResolver:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
             raise RuntimeError("credential reference is unavailable")
-        raise RuntimeError("credential reference is unavailable")
+        return ""
 
 
 class _TrustedCredentialResolver:

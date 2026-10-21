@@ -308,3 +308,5 @@ def test_connection_listing_survives_a_corrupt_binding_row(tmp_path):
     with packages._db(tmp_path) as conn:
         conn.execute("UPDATE extension_bindings SET bindings_json='{\"server\": 7}'")
     assert remote_mcp_by_connection(tmp_path, owner=OWNER, universe=UID) == {}
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

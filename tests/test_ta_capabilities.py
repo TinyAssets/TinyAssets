@@ -183,12 +183,12 @@ def test_connection_uses_initiating_agents_rules_and_broker(
         loop.stop()
 
 
-def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch):
+def test_connection_requires_consent_and_scopes_only_credentials(tmp_path, monkeypatch):
     _, root, db = _setup(tmp_path, grant_consent_for=False)
     _policy_stub(monkeypatch)
     service = backend(root)
     assert call(service)["result"]["error_kind"] == "missing_consent"
-    # Scope checks run in the real broker, even if a crafted path reaches it.
+    # C7: public destinations work, with credentials scoped to their operation.
     from tinyassets.storage.effector_consents import grant_consent
 
     grant_consent(root, sink="authenticated_external_call", destination="api.example.com",
@@ -199,9 +199,9 @@ def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch
                              grant_id="grant-http", provider="http", destination="api.example.com",
                              runtime_root=tmp_path / "runtime")
     try:
-        assert call(service, path="/not-allowed")["result"]["error_kind"] == (
-            "grant_path_refused")
-        assert loop.recorded == []
+        assert call(service, path="/not-allowed")["result"]["delivered"] is True
+        assert loop.recorded[0]["path"] == "/not-allowed"
+        assert "Authorization" not in loop.recorded[0]["headers"]
     finally:
         loop.stop()
 
@@ -529,3 +529,5 @@ def test_grant_key_travels_only_on_the_private_route(tmp_path, monkeypatch):
     assert old.grant_key == ""
     signed_launch(monkeypatch, None, key=old.grant_key)
     assert through_ta(grant_engine(monkeypatch, tmp_path, []), CATALOG) is None
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

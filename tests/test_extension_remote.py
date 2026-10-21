@@ -261,3 +261,5 @@ def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, 
         http.shutdown()
         http.server_close()
         thread.join(2)
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

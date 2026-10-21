@@ -137,3 +137,39 @@ def test_git_public_destination_scopes_credential_to_service(git_server, chain, 
     assert body == b"public git response"
     assert chain.state["requests"][0]["headers"].get("Authorization") == (
         "Bearer " + git_server.secret if host == "git.test" else None)
+
+
+@pytest.mark.parametrize("missing", ["operation", "credential"])
+def test_public_operation_without_credential_authority_uses_no_secret(box, chain, missing):
+    resolved = []
+    with box.ledger._connect() as db:
+        db.execute("UPDATE outbound_connections SET scopes_json='[\"POST\"]'")
+
+    def dispatch_for(owner, center, grant, resource):
+        network = oc._TrustedNetworkDriver(
+            {"allow_test_fixtures": False, "allow_http_connections": True}, box.shared)
+        network._http = _driver(chain)
+        from tinyassets.credential_vault import custody_namespace
+
+        resolver = oc._GeneralVaultCredentialResolver(
+            universe_dir=custody_namespace(box.shared, owner))
+
+        def credential(*args):
+            resolved.append(True)
+            return resolver("vault://http/absent-record")
+
+        return oc.CredentialBlindBroker(box.ledger, resolve_credential=credential,
+                                        network_request=network).dispatch
+
+    box.broker.server._dispatch_for = dispatch_for
+    chain.state["responses"] = [{"body": b"public response"}]
+    channel = oc._broker_channel(box.root, principal="owner", command_center="center",
+                                 grant_id="grant-model", connection_id="conn-model")
+    proxy = oc.ScopedConnectionProxy(grant_id="grant-model", provider="http",
+        destination="model", scopes=("POST",), _channel=channel)
+    result = proxy.request("GET" if missing == "operation" else "POST",
+                           {"url": "https://models.example.com/v1/chat"})
+    assert result["status"] == 200
+    assert result["body"] == "public response"
+    assert resolved == ([] if missing == "operation" else [True])
+    assert "Authorization" not in chain.state["requests"][0]["headers"]

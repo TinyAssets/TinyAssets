@@ -14,7 +14,6 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from tinyassets.connection_oauth import pkce
-from tinyassets.connection_oauth.discovery import register_public_client
 from tinyassets.connection_oauth.transport import OAuthError
 
 MAX_PER_OWNER = 10
@@ -89,8 +88,15 @@ def begin(*, owner: str, request_id: str, challenge: str,
         if not offer.get("registration_url"):
             raise FlowError("registration_required", 409)
         try:
-            client_id = register_public_client(offer["registration_url"],
-                                               redirect_uri=callback)
+            from tinyassets.broker.model_connect import request
+
+            answer = request(_base_path(), owner=owner, center=owner, document={
+                "action": "oauth_offer", "requested": {"scopes": scopes},
+                "hosts": [offer["issuer"]], "callback": callback,
+                "registration_url": offer["registration_url"]})
+            if "error" in answer:
+                raise OAuthError(answer["error"])
+            client_id = answer["client_id"]
             remember_client(offer["issuer"], callback, client_id, "dcr")
         except (OAuthError, KeyError) as exc:
             code = exc.code if isinstance(exc, OAuthError) else "client_registration_failed"

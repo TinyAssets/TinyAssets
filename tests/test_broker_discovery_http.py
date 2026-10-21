@@ -118,11 +118,11 @@ def test_discovery_ipc_rechecks_authority_between_query_and_stream(discovery, mo
     assert not discovery.broker.sent
 
 
-def test_discovery_ipc_endpoint_refusal_precedes_stream(discovery):
-    with pytest.raises(ModelDiscoveryUnavailable) as caught:
-        discovery.read(url="https://models.example.com/ungranted")
-    assert caught.value.reason == "missing_discovery_scope"
-    assert not discovery.broker.sent
+def test_discovery_ipc_public_destination_reaches_stream(discovery):
+    url = "https://models.example.com/ungranted"
+    assert discovery.read(url=url) == {"data": ["alice"]}
+    assert discovery.broker.sent == [("alice", "grant-a", "GET", {"url": url})]
+    assert not (discovery.root / "outbound.db").exists()
 
 
 def test_discovery_ipc_does_not_require_a_readable_model_profile(discovery):

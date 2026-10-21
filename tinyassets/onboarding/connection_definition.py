@@ -29,7 +29,7 @@ def preset_definition(preset_id, *, manual=False):
 def oauth_definition(base, *, owner, center, definition, public_resource):
     """Discover only from the connection definition's resource endpoints."""
     from tinyassets.broker.model_connect import request
-    from tinyassets.connection_oauth.discovery import discover_offer, validate_request
+    from tinyassets.connection_oauth.discovery import validate_request
     from tinyassets.connection_oauth.flow import FlowError, redirect_uri
 
     if (not isinstance(definition, dict)
@@ -43,19 +43,17 @@ def oauth_definition(base, *, owner, center, definition, public_resource):
         raise FlowError("invalid_connection_definition")
     selected = policy(definition["endpoints"], "oauth2")
     requested = validate_request(definition.get("oauth"))
-    hosts = sorted({ep["host"] for ep in selected["endpoints"]})
-    offer = request(base, owner=owner, center=center, document={
-        "action": "oauth_offer", "requested": requested, "hosts": hosts})["offer"]
+    resources = [
+        "https://" + ep["host"] + ep["path_template"]
+        if not any(c in ep["path_template"] for c in ("{", "*")) else ep["host"]
+        for ep in selected["endpoints"]]
+    answer = request(base, owner=owner, center=center, document={
+        "action": "oauth_offer", "requested": requested,
+        "hosts": definition.get("discovery_hosts") or resources,
+        "callback": redirect_uri(public_resource), "registration_url": ""})
+    offer = answer["offer"]
     if offer is None:
-        resources = [
-            "https://" + ep["host"] + ep["path_template"]
-            if not any(c in ep["path_template"] for c in ("{", "*")) else ep["host"]
-            for ep in selected["endpoints"]]
-        offer, reason = discover_offer(
-            requested, definition.get("discovery_hosts") or resources,
-            callback=redirect_uri(public_resource))
-        if offer is None:
-            raise FlowError(reason, 409)
+        raise FlowError(answer["reason"], 409)
     return {"destination": definition["destination"], "policy": selected, "oauth": offer}
 
 

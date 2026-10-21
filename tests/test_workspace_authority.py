@@ -489,16 +489,23 @@ def test_the_verb_check_never_accepts_a_git_scope_as_a_verb() -> None:
     assert _verb_within_scopes("", scopes) is False
 
 
-def test_the_scoped_proxy_refuses_a_git_scope_as_a_verb() -> None:
+def test_the_scoped_proxy_routes_git_protocol_refusal_to_the_broker(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    ledger = _ledger(tmp_path)
+    _create(ledger, scopes=("POST", "git_read:octocat/hello"))
+    ledger.grant_connection(grant_id="grant-1", connection_id="conn-1", owner_user_id="user-1")
+    dispatched = []
+    broker = CredentialBlindBroker(ledger, resolve_credential=lambda *args: "secret",
+                                   network_request=lambda **kwargs: dispatched.append(kwargs))
     proxy = ScopedConnectionProxy(
-        grant_id="grant-1",
-        provider="http",
-        destination="github",
+        grant_id="grant-1", provider="http", destination="github",
         scopes=("POST", "git_read:octocat/hello"),
-        _channel=None,
-    )
-    with pytest.raises(PermissionError, match="outside the granted connection scope"):
+        _channel=SimpleNamespace(request=lambda verb, request: broker.dispatch(
+            "grant-1", verb, request)))
+    with pytest.raises(PermissionError, match="git requires binary broker IPC"):
         proxy.request("git_read:octocat/hello", {"url": "https://api.github.com/x"})
+    assert dispatched == []
 
 
 def test_the_broker_refuses_a_git_scope_as_a_verb(tmp_path) -> None:

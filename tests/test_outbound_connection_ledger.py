@@ -585,38 +585,26 @@ def _make_http_ledger_with_vault(tmp_path, *, credential_ref="vault://http/anthr
 def test_http_broker_composition_resolves_through_real_general_vault_resolver(
     tmp_path, monkeypatch
 ):
-    # THE real end-to-end composition (Codex FIX 4/finding 2): a credential stored
-    # in the ACTUAL vault -> ledger -> grant -> shared credential-blind broker ->
-    # _GeneralVaultCredentialResolver -> HTTP driver. NO fixture resolver, NO
-    # plaintext injection, NO fake _http. The request targets a non-allowlisted
-    # host so the real driver's allowlist refuses it — proving the credential was
-    # RESOLVED THROUGH THE REAL GENERAL RESOLVER (else the audit would record
-    # "credential unavailable", not "grant_path_refused").
+    # The actual vault -> ledger -> broker -> HTTP driver composition delivers
+    # the credential only at its authorized endpoint (C7).
+    from tests.test_authenticated_external_call_effector import _install_loopback_driver, _Loopback
+
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    loop = _Loopback()
+    _install_loopback_driver(monkeypatch, loop.port)
     ledger = _make_http_ledger_with_vault(tmp_path)
-
-    proxy = ledger.resolve_exact_scoped_proxy(
-
-        grant_id="grant-http",
-        connection_id="conn-http",
-    )
-    assert not hasattr(proxy._channel, "_process")  # shared authenticated broker channel
+    proxy = ledger.resolve_exact_scoped_proxy(grant_id="grant-http", connection_id="conn-http")
+    assert not hasattr(proxy._channel, "_process")
     try:
-        with pytest.raises(ProxyRequestError):
-            proxy.request(
-                "POST",
-                {"url": "https://not-allowed.example/v1/messages", "body": {"text": "hi"}},
-            )
+        result = proxy.request("POST", {
+            "url": "https://api.example.com/v1/messages", "body": {"text": "hi"}})
+        assert result["status"] == 200
+        assert loop.recorded[0]["headers"]["Authorization"] == "Bearer real-vault-http-token"
     finally:
         proxy.close()
-
-    audit = _JsonlDispatch(str(_runtime_log(tmp_path, "grant-http", "audit.jsonl")))
-    # Reached the driver layer via the REAL general resolver — NOT
-    # "credential unavailable" (a resolution failure) and NOT a startup crash.
-    assert [record["reason"] for record in audit.records()] == [
-        "grant_path_refused"
-    ]
-    assert "real-vault-http-token" not in json.dumps(audit.records())
+        loop.stop()
+    assert len(loop.recorded) == 1
+    assert "real-vault-http-token" not in json.dumps(result)
 
 
 def test_forged_foreign_scheme_row_never_vends_a_token_to_the_http_driver(

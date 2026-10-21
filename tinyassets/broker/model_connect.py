@@ -11,7 +11,7 @@ def validate(document):
 
     action = document.get("action")
     if action == "oauth_offer":
-        if set(document) != {"action", "requested", "hosts"}:
+        if set(document) != {"action", "requested", "hosts", "callback", "registration_url"}:
             raise ValueError("invalid offer fields")
         validate_request(document["requested"])
         hosts = document["hosts"]
@@ -50,7 +50,25 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
     validate(document)
     action = document["action"]
     if action == "oauth_offer":
-        return {"offer": directory.resolve(document["requested"], document["hosts"])}
+        from urllib.parse import urlsplit
+
+        from tinyassets.connection_oauth.discovery import discover_offer, register_public_client
+
+        if document["registration_url"]:
+            try:
+                return {"client_id": register_public_client(
+                    document["registration_url"], redirect_uri=document["callback"])}
+            except OAuthError as exc:
+                return {"error": exc.code}
+        hosts = document["hosts"]
+        directory_hosts = [urlsplit(h).hostname if h.startswith("https://") else h
+                           for h in hosts]
+        offer = directory.resolve(document["requested"], directory_hosts)
+        reason = ""
+        if offer is None:
+            offer, reason = discover_offer(document["requested"], hosts,
+                                          callback=document["callback"], use_cache=False)
+        return {"offer": offer, "reason": reason}
     if action == "preset_exchange":
         from tinyassets.onboarding.hosted_model_auth import endpoint_policy
 

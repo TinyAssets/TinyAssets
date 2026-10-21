@@ -1029,3 +1029,5 @@ def test_owner_revocation_prevents_outstanding_generic_exchange(provider, app):
                                          "code_verifier": VERIFIER}, cookie="")
     assert result.status_code == 404
     assert provider.access == {}
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

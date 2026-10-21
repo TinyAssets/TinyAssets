@@ -142,9 +142,14 @@ def test_exact_parsing_mode_does_not_widen_existing_authority(rig, change):
         rig.ledger.revoke_grant("grant-discovery")
     else:
         args["url"] = "https://another.example.com/foreign"
-    with pytest.raises(ProviderUnavailableError):
-        rig.read(**args)
-    assert not rig.starts and not rig.calls
+    if change == "endpoint":
+        assert rig.read(**args) == {"data": []}
+        assert rig.auth == ["none"]
+        assert rig.calls == [("GET", {"url": args["url"]})]
+    else:
+        with pytest.raises(ProviderUnavailableError):
+            rig.read(**args)
+        assert not rig.starts and not rig.calls
 
 
 def test_numeric_override_maxima_and_unknown_fees_remain_conservative(rig):

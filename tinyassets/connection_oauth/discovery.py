@@ -306,7 +306,7 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
 
 
 def discover_offer(requested: dict[str, Any], hosts: list[str], *,
-                   callback: str = "") -> tuple[dict[str, Any] | None, str]:
+                   callback: str = "", use_cache: bool = True) -> tuple[dict[str, Any] | None, str]:
     """Public-client discovery. Registered-client lookup belongs to the broker."""
     scopes = list(requested.get("scopes") or [])
     if not DISCOVERY_ENABLED:
@@ -327,7 +327,7 @@ def discover_offer(requested: dict[str, Any], hosts: list[str], *,
     method = "existing"
     if not client_id:
         try:
-            client_id = cached_client(metadata.issuer, callback)
+            client_id = cached_client(metadata.issuer, callback) if use_cache else ""
         except OAuthError as exc:
             return None, exc.code
         if client_id:

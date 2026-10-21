@@ -393,9 +393,12 @@ def test_concurrent_broker_refresh_spends_once(configured, provider, app):
     from tinyassets.broker.tokens import ConnectionTokens
 
     keeper = ConnectionTokens(universe_dir=custody_namespace(app, OWNER), owner_user_id=OWNER)
+    from contextvars import copy_context
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        replies = list(pool.map(lambda _: keeper.current("tasklark", keeper._read("tasklark"),
-                                rejected=original.access_token), range(4)))
+        replies = [future.result() for future in [
+            pool.submit(copy_context().run, keeper.current, "tasklark", keeper._read("tasklark"),
+                        rejected=original.access_token) for _ in range(4)]]
     assert len({reply.access_token for reply in replies}) == 1
     assert provider.refresh_calls == 1 and provider.reused == 0
 
@@ -596,3 +599,5 @@ def test_unavailable_broker_mints_no_child_oauth_capability(configured, tmp_path
         ledger.resolve_exact_scoped_proxy(
              grant_id="grant-github", connection_id="conn-github")
     assert set(service._bindings) == before
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

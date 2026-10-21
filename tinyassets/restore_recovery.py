@@ -130,10 +130,6 @@ def reset_credentials(staged, now):
     ):
         for path in staged.glob(pattern):
             _safe(staged, path.relative_to(staged)).unlink()
-    for path in staged.glob(".broker/accounts/*/policy.db"):
-        _read(staged, path.relative_to(staged))
-        with closing(sqlite3.connect(path)) as db, db:
-            db.execute("DELETE FROM once_approvals")
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV
     from tinyassets.onboarding.canary_sign_in import KEY_ENV
 

@@ -498,9 +498,15 @@ owner's retained policy document; account rules and spend controls stay.
 lookup and pinned public-address resolution for model and connector HTTPS,
 public HTTP/CONNECT and git. Redirect hops call the same function. The shared
 credential endpoint matcher selects injection only; an unmatched endpoint uses
-no credential. Git expresses repository operations in that same matcher.
+no credential. Missing credential records likewise inject nothing. The scoped
+adapter and discovery reader no longer independently refuse HTTP operations;
+the broker uses operation scope solely for credential selection. Git expresses
+repository operations in that same matcher.
 The separate public resolver, git target gate, HTTP endpoint destination gate
 and policy egress mode are deleted. Cutover removes retained egress sections.
+OAuth metadata discovery and public-client registration also run through the
+existing broker OAuth-offer operation and the same owner-bound transport;
+the router retains only public registration caching and browser flow state.
 
 ### C8. The owner's own action policy moves into the box (T8)
 `broker/policy.py:29` decides `workspace.files`, `workspace.shell`, workflows and

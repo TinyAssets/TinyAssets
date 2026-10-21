@@ -12,7 +12,11 @@ from tests.test_broker_upstream_stream import _driver
 from tinyassets.broker.aclient import AsyncBrokerClient
 from tinyassets.broker.ops import new_op_id
 from tinyassets.mcp_remote import Binding, RemoteEndpoint, RemoteMcp, SignInRequired
-from tinyassets.storage.outbound_connections import BrokerStream, ConnectionSecretBundle
+from tinyassets.storage.outbound_connections import (
+    BrokerStream,
+    ConnectionSecretBundle,
+    _parse_allowed_endpoints,
+)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
@@ -100,7 +104,9 @@ async def test_local_standard_server_through_real_broker(broker, encoding):  # n
         request = broker.sent[-1][3]
         stream = driver.open_stream(
             bundle=ConnectionSecretBundle(token="synthetic-test-secret"), auth_scheme="bearer",
-            method="POST", url=request["url"], headers=request["headers"], body=request["body"])
+            method="POST", url=request["url"], headers=request["headers"], body=request["body"],
+            allowed_endpoints=_parse_allowed_endpoints([{
+                "host": "mcp.example", "path_template": "/mcp", "methods": ["POST"]}]))
         return BrokerStream(stream, ("synthetic-test-secret",))
 
     broker.upstreams["next"] = upstream
@@ -139,3 +145,5 @@ async def test_local_standard_server_through_real_broker(broker, encoding):  # n
         http.shutdown()
         http.server_close()
         thread.join(2)
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

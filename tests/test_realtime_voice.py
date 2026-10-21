@@ -448,7 +448,7 @@ def test_capability_disclosure_changes_when_bound_service_changes(monkeypatch, t
     assert second != first
 
 
-def test_capability_refuses_session_url_outside_connection_policy(monkeypatch, tmp_path):
+def test_capability_accepts_public_session_url_outside_credential_scope(monkeypatch, tmp_path):
     _enable(monkeypatch)
     universe = _seed_binding(tmp_path, monkeypatch)
     with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
@@ -460,12 +460,14 @@ def test_capability_refuses_session_url_outside_connection_policy(monkeypatch, t
                 "service_name": "Owner Voice Bridge",
             }),),
         )
-    assert rv.voice_capability(universe, "user_owner") == {
-        "available": False,
-        "state": "incompatible",
-        "reason": "voice_capability_invalid",
-        "remediation": "existing_connection_surface",
-    }
+    capability = rv.voice_capability(universe, "user_owner")
+    assert capability["available"] is True
+    assert capability["state"] == "ready"
+    assert capability["resource"] == "user_bound_voice_connection"
+    assert capability["disclosure_id"] == sha256("\0".join((
+        _CONNECTION_ID, rv.VOICE_PROTOCOL, "https://bridge.example/not-allowed",
+        "Owner Voice Bridge", "")).encode()).hexdigest()
+
 
 
 def test_invalid_stored_capability_fails_closed(monkeypatch, tmp_path):

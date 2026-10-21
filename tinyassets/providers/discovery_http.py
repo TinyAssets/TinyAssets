@@ -29,7 +29,6 @@ from tinyassets.storage.outbound_connections import (
     _canonical_request_url,
     _parse_canonical_https_url,
     _resource_from_row,
-    _verb_within_scopes,
 )
 
 
@@ -135,8 +134,6 @@ def read_granted_discovery_document(
         or view.connection_type != "http"
     ):
         raise ModelDiscoveryUnavailable("source_revoked")
-    if not _verb_within_scopes("GET", view.scopes, view.access_mode):
-        raise ModelDiscoveryUnavailable("missing_discovery_scope")
     try:
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError("invalid URL")

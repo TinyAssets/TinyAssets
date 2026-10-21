@@ -1058,3 +1058,5 @@ def test_one_builder_writes_every_http_credential_record():
         source = inspect.getsource(module)
         assert '"credential_type": "http"' not in source, module.__name__
         assert "http_credential_record(" in source, module.__name__
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

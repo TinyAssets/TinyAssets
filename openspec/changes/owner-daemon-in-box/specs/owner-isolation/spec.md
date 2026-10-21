@@ -188,6 +188,11 @@ connections from a box SHALL be impossible.
 - **WHEN** a request carrying an owner's connection is redirected to another host
 - **THEN** the proxy does not inject the credential at the new host
 
+#### Scenario: Public access needs no credential authority
+- **WHEN** a public request has no matching credential operation or its credential record is absent
+- **THEN** the proxy sends the request with no credential
+- **AND** no adapter or discovery reader independently refuses the destination or operation
+
 ### Requirement: Owner action policy belongs to the box
 The owner box SHALL store and decide workspace file, shell and workflow rules,
 private app reads and writes, action classifications and action approvals. The
@@ -326,7 +331,7 @@ enqueue SHALL return after its first step; later steps SHALL run as broker tasks
 - **AND** a failed tick publication is logged
 
 ### Requirement: The shared layer is keyed by owner, not center
-The shared layer SHALL key admission, credential custody, grants, egress policy
+The shared layer SHALL key admission, credential custody, grants, credential scope
 and relay channels by owner. An owner's centers SHALL be a table inside
 the owner's box, and creating or retiring a center SHALL be a box operation. The
 shared layer SHALL hold no center admission table and no per-center store.

@@ -522,3 +522,5 @@ def test_unlisted_mcp_through_connect_card(
     assert calls == ["initialize", "notifications/initialized", "tools/list", "tools/call"]
     if discovery_route == "challenge":
         assert (API, "/.well-known/oauth-protected-resource/tenants/a/mcp") not in fetched
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401
