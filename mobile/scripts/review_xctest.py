@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import quote, quote_plus
 
 CREDENTIALS = ("APP_STORE_REVIEW_USERNAME", "APP_STORE_REVIEW_PASSWORD")
 SHOTS = {
@@ -46,6 +47,28 @@ def inject_environment(document: dict, credentials: dict[str, str]) -> int:
     if len(targets) != 1:
         raise ValueError("Expected exactly one review test target")
     return len(targets)
+
+
+def redact(line: str, secrets) -> str:
+    """Remove credentials as typed, any case, URL-encoded, or truncated.
+
+    XCTest element descriptions shorten long values to a prefix plus "...",
+    so a bare exact-match replace would leak the start of the username.
+    """
+    for secret in secrets:
+        if not secret:
+            continue
+        forms = {secret, quote(secret, safe=""), quote(secret, safe="@"), quote_plus(secret)}
+        for form in sorted(forms, key=len, reverse=True):
+            line = re.sub(re.escape(form), "[REDACTED]", line, flags=re.IGNORECASE)
+        for size in range(len(secret) - 1, 3, -1):
+            line = re.sub(
+                re.escape(secret[:size]) + r"(?:\.\.\.|…)",
+                "[REDACTED]",
+                line,
+                flags=re.IGNORECASE,
+            )
+    return line
 
 
 def export_shots(result: Path, output: Path, private: Path) -> set[str]:
@@ -138,10 +161,7 @@ def run_test(source: Path, destination: str, output: Path, launch_only: bool = F
             errors = []
             for line in (private / "xcode.log").read_text(errors="replace").splitlines():
                 if re.search(r"ReviewVideoTests.swift:\d+: error:|xcodebuild: error:", line):
-                    for value in credentials.values():
-                        if value:
-                            line = line.replace(value, "[REDACTED]")
-                    errors.append(line)
+                    errors.append(redact(line, credentials.values()))
             summary = {
                 "passed": result_code == 0,
                 "scope": "signed-out launch only" if launch_only else "six-step review journey",

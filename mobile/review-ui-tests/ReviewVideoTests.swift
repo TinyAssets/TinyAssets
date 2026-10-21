@@ -110,19 +110,40 @@ final class ReviewVideoTests: XCTestCase {
             return false
         }
         if !found {
-            // Nothing secret is on screen before the email is typed; the
-            // harness exports only this assertion line.
-            var tree: [String] = []
-            for host: XCUIApplication in [springboard, app, safari] {
-                let state = host.state
-                if state == .runningForeground || state == .runningBackground {
-                    tree.append(host.debugDescription)
-                }
-            }
-            let flat = tree.joined(separator: "\n").replacingOccurrences(of: "\n", with: " | ")
-            XCTFail("\(step): system-browser email form. Hierarchy: \(flat)")
+            XCTFail("\(step): system-browser email form. Hierarchy: \(hierarchy([springboard, app, safari]))")
         }
         return auth
+    }
+
+    /// One-line accessibility tree for a failure message (the harness exports
+    /// only assertion lines). Element values are omitted, so typed text never
+    /// appears, and every string in `secrets` is replaced as well.
+    private func hierarchy(_ hosts: [XCUIApplication], redacting secrets: [String] = []) -> String {
+        var lines: [String] = []
+        for host in hosts {
+            let state = host.state
+            guard state == .runningForeground || state == .runningBackground else { continue }
+            for line in host.debugDescription.components(separatedBy: "\n") {
+                if let cut = line.range(of: ", value: ") {
+                    lines.append(String(line[..<cut.lowerBound]) + ", value: [omitted]")
+                } else {
+                    lines.append(line)
+                }
+            }
+        }
+        var flat = lines.joined(separator: " | ")
+        // Whole secrets first, then their pieces: a keyboard suggestion bar can
+        // show an email's local part or domain on its own.
+        let pieces = secrets.flatMap { $0.components(separatedBy: CharacterSet(charactersIn: "@.+")) }
+            .filter { $0.count >= 4 }
+        for secret in secrets + pieces where !secret.isEmpty {
+            flat = flat.replacingOccurrences(of: secret, with: "[REDACTED]", options: .caseInsensitive)
+            let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+            if let encoded = secret.addingPercentEncoding(withAllowedCharacters: unreserved) {
+                flat = flat.replacingOccurrences(of: encoded, with: "[REDACTED]", options: .caseInsensitive)
+            }
+        }
+        return flat
     }
 
     func testSignedOutLaunch() {
@@ -166,8 +187,20 @@ final class ReviewVideoTests: XCTestCase {
                 ["Continue with email", "Continue", "Next", "Sign in"])).firstMatch
             XCTAssertTrue(next.waitForExistence(timeout: 30), "email continuation missing")
             next.tap()
+            // If the tap did not submit (keyboard accessory, autofill bar),
+            // the email page is still up: submit with the keyboard's Go key.
+            if !poll(timeout: 15, { secure.exists }), next.exists {
+                let go = auth.keyboards.buttons.matching(NSPredicate(format: "label IN %@",
+                    ["Go", "go", "Continue", "continue", "Return", "return", "Done", "done"])).firstMatch
+                if go.exists { go.tap() }
+            }
         }
-        XCTAssertTrue(secure.waitForExistence(timeout: 60), "masked password field required")
+        if !secure.waitForExistence(timeout: 60) {
+            // The username is typed, the password is not. Values are omitted
+            // and the username is redacted; the harness redacts it again.
+            XCTFail("\(step): masked password field required. Hierarchy: "
+                + hierarchy([auth, springboard], redacting: [username]))
+        }
         XCTAssertTrue(secure.elementType == .secureTextField, "never type password in a plain field")
         secure.tap()
         // Per-key typing can expose the last character in iOS password fields.
