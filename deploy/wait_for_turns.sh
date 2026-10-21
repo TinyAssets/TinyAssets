@@ -52,10 +52,20 @@ case "${DATA_VOLUME}" in *[!A-Za-z0-9_.-]*|'') echo "::error::bad DATA_VOLUME"; 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 probe="${here}/../scripts/turns_in_flight.py"
 host="${DO_SSH_USER}@${DO_DROPLET_HOST}"
-SSH_OPTS=(-i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=15
+SSH_OPTS=(-i "${DEPLOY_SSH_KEY:-$HOME/.ssh/do_deploy}" -o BatchMode=yes -o ConnectTimeout=15
           -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
 
-remote() { timeout "${CHECK_TIMEOUT_S}" ssh "${SSH_OPTS[@]}" "${host}" "$@"; }
+# DEPLOY_TARGET=local (the live-like gate, deploy/deploy_host.sh) runs the same
+# remote command strings on this machine; production keeps ssh.
+if [ "${DEPLOY_TARGET:-ssh}" = local ]; then
+  remote() { timeout "${CHECK_TIMEOUT_S}" bash -c "$*"; }
+  ship_probe() { timeout "${CHECK_TIMEOUT_S}" cp "${probe}" "${remote_probe}"; }
+  prefetch() { timeout "${budget}" bash -c "$1" >/dev/null; }
+else
+  remote() { timeout "${CHECK_TIMEOUT_S}" ssh "${SSH_OPTS[@]}" "${host}" "$@"; }
+  ship_probe() { timeout "${CHECK_TIMEOUT_S}" scp "${SSH_OPTS[@]}" "${probe}" "${host}:${remote_probe}"; }
+  prefetch() { timeout "${budget}" ssh "${SSH_OPTS[@]}" "${host}" "$1" >/dev/null; }
+fi
 
 # The cap counts from here, so the prefetch below spends it rather than adding
 # to it: the step's own timeout must never fire before the cap does.
@@ -67,7 +77,7 @@ deadline=$(( start + TURN_WAIT_CAP_S ))
 # file (an empty `python3 -` exits 0, which is "idle").
 remote_probe="/tmp/turns_in_flight.${GITHUB_RUN_ID:-local}.${GITHUB_RUN_ATTEMPT:-0}.py"
 probe_sha="$(sha256sum "${probe}" | cut -d' ' -f1)"
-timeout "${CHECK_TIMEOUT_S}" scp "${SSH_OPTS[@]}" "${probe}" "${host}:${remote_probe}" \
+ship_probe \
   || echo "::warning::could not ship the in-flight probe; polls will report unknown"
 
 if [ -n "${IMAGE_REF:-}" ]; then
@@ -77,8 +87,7 @@ if [ -n "${IMAGE_REF:-}" ]; then
   [ "${budget}" -gt 900 ] && budget=900
   if [ "${budget}" -le 0 ]; then
     echo "prefetch skipped: no time left under the cap"
-  elif timeout "${budget}" ssh "${SSH_OPTS[@]}" "${host}" \
-       "sudo docker pull -q $(printf '%q' "${IMAGE_REF}")" >/dev/null; then
+  elif prefetch "sudo docker pull -q $(printf '%q' "${IMAGE_REF}")"; then
     echo "prefetched ${IMAGE_REF}"
   else
     echo "::warning::prefetch of ${IMAGE_REF} failed; the fail-safe pulls it itself"

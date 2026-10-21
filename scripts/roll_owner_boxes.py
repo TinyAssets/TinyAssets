@@ -105,6 +105,9 @@ def main(argv=None):
     parser.add_argument("--control", action="store_true")
     parser.add_argument("--ssh-target")
     parser.add_argument("--ssh-key")
+    parser.add_argument("--local", action="store_true",
+                        help="the host is this machine (live-like gate); run the control "
+                             "step through sudo instead of SSH")
     parser.add_argument("--expected-sha")
     parser.add_argument("--origin", default="https://tinyassets.io")
     parser.add_argument("--receipt", type=Path)
@@ -116,17 +119,22 @@ def main(argv=None):
         except Exception:
             print('{"error":"image_drain_failed"}')
             return 1
-    if not all((args.ssh_target, args.ssh_key, args.expected_sha, args.receipt)):
-        parser.error("deploy mode needs SSH target/key, expected SHA and receipt path")
+    if not all((args.expected_sha, args.receipt)) or (
+            not args.local and not all((args.ssh_target, args.ssh_key))):
+        parser.error("deploy mode needs SSH target/key (or --local), expected SHA and receipt path")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from scripts.owner_box_canary import probe, wake
 
     def control():
         command = ["sudo", "python3", "-", "--control",
                    "--image-ref", args.image_ref]
+        if args.local:
+            transport = command
+        else:
+            transport = ["ssh", "-i", args.ssh_key, "-o", "BatchMode=yes",
+                         "-o", "ConnectTimeout=10", args.ssh_target, shlex.join(command)]
         result = subprocess.run(
-            ["ssh", "-i", args.ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-             args.ssh_target, shlex.join(command)],
+            transport,
             input=Path(__file__).read_text(encoding="utf-8"),
             check=True, capture_output=True, text=True, timeout=610)
         return json.loads(result.stdout)

@@ -1776,6 +1776,10 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
   [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
   target_name="harness-${image_id#sha256:}"
   target="${root}/${target_name}"
+  # What `harness-current` named before this run, so a refusal can put it
+  # back; the C6 attempts each left a 2.4 GB candidate rootfs behind
+  # (five refusals filled the disk past the low-water mark).
+  HARNESS_PREVIOUS_LINK="$(readlink "${root}/harness-current" 2>/dev/null || true)"
   if [ ! -d "$target" ]; then
     stage="$(mktemp -d "${root}/.harness-stage.XXXXXXXX")" || return 1
     container="$(docker create --network none --entrypoint /bin/true "$image")" || {
@@ -1788,6 +1792,7 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
     fi
     docker rm "$container" >/dev/null || return 1
     mv -- "$stage" "$target" || return 1
+    HARNESS_INSTALLED_THIS_RUN="$target_name"
   fi
   [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
   chmod 0555 "$target" || return 1
@@ -1795,6 +1800,30 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
     [ ! -e "$target/.platform" ] && [ ! -e "$target/.runtime" ] || return 1
   ln -s "$target_name" "${root}/.harness-current.$$" || return 1
   mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" || return 1
+}
+HARNESS_INSTALLED_THIS_RUN=""
+HARNESS_PREVIOUS_LINK=""
+discard_candidate_harness() {  # a refused or rolled-back run keeps only the harness it started with
+  local root name
+  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
+  name="$HARNESS_INSTALLED_THIS_RUN"
+  [ -n "$name" ] || return 0
+  [ "$MIGRATION_COMMITTED" != "1" ] || return 0  # the committed layout runs on it
+  HARNESS_INSTALLED_THIS_RUN=""
+  if [ -n "$HARNESS_PREVIOUS_LINK" ] && [ -d "${root}/${HARNESS_PREVIOUS_LINK}" ]; then
+    ln -s "$HARNESS_PREVIOUS_LINK" "${root}/.harness-current.$$" \
+      && mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" \
+      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 0; }
+  elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
+    rm -f -- "${root}/harness-current"
+  fi
+  case "$name" in
+    harness-[0-9a-f]*)
+      # extract_box_harness made the tree read-only; writable again before rm.
+      chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
+      rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
+        || err "could not remove candidate harness ${name}" ;;
+  esac
 }
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
@@ -1898,6 +1927,7 @@ migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon 
     err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
     }
   fi
+  discard_candidate_harness
   if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     recover_from_failed_install migration_refused
   fi
@@ -2304,6 +2334,7 @@ if [ "$VECTOR_CHANGED" = "1" ] && ! recreate_logs; then
 fi
 if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
+  discard_candidate_harness
   finish rolled_back "$PREV_IMAGE" 2
 fi
 
