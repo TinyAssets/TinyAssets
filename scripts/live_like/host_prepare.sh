@@ -74,15 +74,21 @@ fi
 usermod -aG docker tinyassets
 log "tinyassets resolves to uid $(id -u tinyassets) gid $(getent group tinyassets | cut -d: -f3)"
 
-# --- /opt/tinyassets: the runtime bundle, laid out as deploy_fail_safe.sh's
-#     BUNDLE_MAP installs it --------------------------------------------------
-install -d -m 0755 -o tinyassets -g tinyassets /opt/tinyassets /opt/tinyassets/deploy
-install -m 0644 -o tinyassets -g tinyassets "$repo/deploy/compose.yml" /opt/tinyassets/compose.yml
-for f in compose.yml vector.yaml vector-betterstack.yaml; do
-  install -m 0644 -o tinyassets -g tinyassets "$repo/deploy/$f" "/opt/tinyassets/deploy/$f"
+# --- /opt/tinyassets: the runtime bundle the live image was deployed with
+#     (BASE_REVISION's), laid out as deploy_fail_safe.sh's BUNDLE_MAP installs it
+: "${BASE_REVISION:?}"
+bundle="$(mktemp -d)"
+trap 'rm -rf -- "$bundle"' EXIT
+for f in compose.yml vector.yaml vector-betterstack.yaml vector-entrypoint.sh tinyassets-daemon.service; do
+  git -C "$repo" show "${BASE_REVISION}:deploy/$f" > "$bundle/$f"
 done
-install -m 0755 -o tinyassets -g tinyassets "$repo/deploy/vector-entrypoint.sh" /opt/tinyassets/deploy/vector-entrypoint.sh
-install -m 0644 -o root -g root "$repo/deploy/tinyassets-daemon.service" /etc/systemd/system/tinyassets-daemon.service
+install -d -m 0755 -o tinyassets -g tinyassets /opt/tinyassets /opt/tinyassets/deploy
+install -m 0644 -o tinyassets -g tinyassets "$bundle/compose.yml" /opt/tinyassets/compose.yml
+for f in compose.yml vector.yaml vector-betterstack.yaml; do
+  install -m 0644 -o tinyassets -g tinyassets "$bundle/$f" "/opt/tinyassets/deploy/$f"
+done
+install -m 0755 -o tinyassets -g tinyassets "$bundle/vector-entrypoint.sh" /opt/tinyassets/deploy/vector-entrypoint.sh
+install -m 0644 -o root -g root "$bundle/tinyassets-daemon.service" /etc/systemd/system/tinyassets-daemon.service
 
 # --- /etc/tinyassets ------------------------------------------------------
 install -d -m 0750 -o root -g tinyassets /etc/tinyassets

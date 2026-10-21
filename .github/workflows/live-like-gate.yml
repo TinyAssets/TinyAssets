@@ -153,6 +153,7 @@ jobs:
         id: inputs
         env:
           BASE_IMAGE: ${{ steps.live_base.outputs.image_ref }}
+          BASE_REVISION: ${{ steps.live_base.outputs.revision }}
         run: |
           set -euo pipefail
           umask 077
@@ -163,6 +164,7 @@ jobs:
           f="${RUNNER_TEMP}/caller-inputs.env"
           {
             echo "TINYASSETS_IMAGE=${BASE_IMAGE}"
+            echo "BASE_REVISION=${BASE_REVISION}"
             echo "CLOUDFLARE_TUNNEL_TOKEN=${tunnel_token}"
             echo "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=$(b64)"
             echo "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=$(b64)"
@@ -172,8 +174,11 @@ jobs:
             echo "TINYASSETS_APP_INGRESS_HMAC_KEY=$(b64)"
           } > "$f"
           while IFS='=' read -r key value; do
+            case "${key}" in
+              TINYASSETS_IMAGE|BASE_REVISION) continue ;;
+            esac
             echo "::add-mask::${value}"
-            [ "${key}" = TINYASSETS_IMAGE ] || echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "${key}=${value}" >> "$GITHUB_ENV"
           done < "$f"
           echo "file=${f}" >> "$GITHUB_OUTPUT"
           # The expected droplet identity: a synthetic id, in the typed file
