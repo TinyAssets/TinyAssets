@@ -2182,6 +2182,8 @@ def _durable_tree(root: Path, *, exclude=()) -> dict[str, str]:
                 continue
             if path.is_symlink():
                 manifest[key] = "link:" + os.readlink(path)
+            elif stat.S_ISSOCK(path.lstat().st_mode):
+                continue  # A live runtime socket has no bytes and cannot be opened.
             else:
                 with path.open("rb") as stream:
                     manifest[key] = hashlib.file_digest(stream, "sha256").hexdigest()
