@@ -37,13 +37,15 @@ access_key_id = livegateaccess
 secret_access_key = livegatesecret12345
 endpoint = http://${gateway}:${port}
 acl = private
-no_check_bucket = true
+no_check_bucket = false
 EOF
     )
     for _ in $(seq 1 60); do
       if rclone mkdir "spaces:${bucket}" --retries 1 --low-level-retries 1 >/dev/null 2>&1 \
           && rclone lsd spaces: --retries 1 --low-level-retries 1 2>/dev/null \
             | awk '{print $NF}' | grep -Fxq "$bucket"; then
+        sed -i 's/no_check_bucket = false/no_check_bucket = true/' "$config"
+        chmod 0600 "$config"
         printf 'BACKUP_DEST=spaces:%s/workflow-backups\n' "$bucket"
         exit 0
       fi
