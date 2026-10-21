@@ -88,7 +88,6 @@ jobs:
           #
           # No fallback: the step above refuses an empty secret, and after
           # enrolling the step checks that a USER armed or queued the PR.
-          # Pinned by tests/test_auto_enroll_merge_workflow.py.
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}

@@ -107,7 +107,6 @@ on:
       - "tinyassets/providers/base.py"
       # The universe agent's four tools, the engine surface that serves them
       # and the served turn that indexes its skills.
-      - "tests/test_agent_wakes.py"
       - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
       - "tests/test_owner_box_process_boundary.py"
@@ -186,7 +185,6 @@ on:
       - "tinyassets/providers/base.py"
       # The universe agent's four tools, the engine surface that serves them
       # and the served turn that indexes its skills.
-      - "tests/test_agent_wakes.py"
       - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
       - "tests/test_owner_box_process_boundary.py"

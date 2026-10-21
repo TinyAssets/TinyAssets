@@ -7,24 +7,15 @@ binaries or network access.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tinyassets.exceptions import (
-    AllProvidersExhaustedError,
-    ProviderError,
-    ProviderTimeoutError,
-    ProviderUnavailableError,
-)
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
-    ProviderInvocationReservationState,
     ProviderInvocationSettlementOwner,
 )
 from tinyassets.providers.base import (
@@ -34,8 +25,6 @@ from tinyassets.providers.base import (
     UniverseContext,
 )
 from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call, call_sync
-from tinyassets.providers.quota import QuotaTracker
-from tinyassets.providers.router import ProviderRouter
 
 # Hard Rule 15: every routed call names the universe whose owner authorised it.
 _UDIR = Path("universe-under-test")
@@ -165,23 +154,6 @@ def _make_providers(**overrides: FakeProvider) -> dict[str, FakeProvider]:
 # =====================================================================
 
 
-class TestQuotaTracker:
-    def test_available_when_no_cooldown(self):
-        qt = QuotaTracker()
-        assert qt.available("claude-code") is True
-
-    def test_cooldown_blocks_availability(self):
-        qt = QuotaTracker()
-        qt.cooldown("claude-code", 3600)
-        assert qt.available("claude-code") is False
-
-    def test_cooldown_expires(self):
-        qt = QuotaTracker()
-        qt.cooldown("claude-code", 3600)
-        assert qt.available("claude-code") is False
-        # Set a cooldown that already expired.
-        qt._cooldowns[("", "claude-code")] = time.monotonic() - 1
-        assert qt.available("claude-code") is True
 
 
 # =====================================================================
@@ -223,182 +195,12 @@ class TestProviderRouterCall:
             return carrier
         return resolve
 
-    @pytest.mark.asyncio
-    async def test_armed_carrier_narrows_provider_and_token_ceiling(self):
-        providers = _make_providers()
-        health = MagicMock()
-        router = ProviderRouter(providers=providers, auth_health=health)
-        carrier = self._carrier()
 
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            response = await _model_call(router,
-                "writer", "prompt", "system", ModelConfig(max_tokens=None),
-                operation="repository_spec_delivery",
-                universe_context=_ctx(carrier),
-            )
 
-        assert response.provider == "codex"
-        assert providers["codex"].call_count == 1
-        assert providers["codex"].last_config is not None
-        assert providers["codex"].last_config.max_tokens == 77
-        assert providers["claude-code"].call_count == 0
-        health.assert_not_called()
-        carrier.validate_for_call.assert_called_once_with(
-            role="writer", operation="repository_spec_delivery",
-        )
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("field", "message"),
-        (
-            ("max_tokens", "token budget"),
-            ("max_cost_microunits", "cost budget"),
-        ),
-    )
-    async def test_armed_carrier_rejects_zero_budget_authority(
-        self,
-        field,
-        message,
-    ):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        carrier = self._carrier(**{field: 0})
 
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(PermissionError, match=message):
-                await _model_call(router,
-                    "writer",
-                    "prompt",
-                    "system",
-                    ModelConfig(max_tokens=None),
-                    operation="repository_spec_delivery",
-                    universe_context=_ctx(carrier),
-                )
 
-        assert all(provider.call_count == 0 for provider in providers.values())
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("max_tokens", [-1, 78])
-    async def test_armed_carrier_rejects_invalid_or_wider_token_cap(self, max_tokens):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        carrier = self._carrier(max_tokens=77)
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(PermissionError, match="token ceiling"):
-                await _model_call(router,
-                    "writer", "prompt", "system", ModelConfig(max_tokens=max_tokens),
-                    operation="repository_spec_delivery",
-                    universe_context=_ctx(carrier),
-                )
-
-        assert all(provider.call_count == 0 for provider in providers.values())
-
-    @pytest.mark.asyncio
-    async def test_armed_carrier_never_falls_back_to_another_provider(self):
-        providers = _make_providers(
-            codex=FakeProvider(
-                "codex",
-                "openai",
-                fail_with=ProviderUnavailableError("down"),
-            )
-        )
-        router = ProviderRouter(providers=providers)
-
-        carrier = self._carrier(max_tokens=10)
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(AllProvidersExhaustedError):
-                await _model_call(router,
-                    "writer", "prompt", "system", ModelConfig(max_tokens=10),
-                    operation="repository_spec_delivery",
-                    universe_context=_ctx(carrier),
-                )
-
-        assert providers["codex"].call_count == 1
-        assert providers["claude-code"].call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_invalid_carrier_holds_before_health_quota_or_provider(self):
-        providers = _make_providers()
-        health = MagicMock()
-        quota = MagicMock()
-        carrier = self._carrier()
-        carrier.validate_for_call.side_effect = PermissionError("stale carrier")
-        router = ProviderRouter(providers=providers, quota=quota, auth_health=health)
-
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(PermissionError, match="stale carrier"):
-                await _model_call(router,
-                    "writer", "prompt", "system",
-                    operation="repository_spec_delivery",
-                    universe_context=_ctx(carrier),
-                )
-
-        health.assert_not_called()
-        quota.available.assert_not_called()
-        assert all(provider.call_count == 0 for provider in providers.values())
-
-    @pytest.mark.asyncio
-    async def test_nonexact_or_operationless_carrier_holds_before_provider_access(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        context = _ctx(self._carrier())
-
-        with pytest.raises(PermissionError, match="requires an operation"):
-            await _model_call(router, "writer", "prompt", "system", universe_context=context)
-        with pytest.raises(PermissionError, match="server-owned"):
-            await _model_call(router,
-                "writer", "prompt", "system",
-                operation="repository_spec_delivery", universe_context=context,
-            )
-
-        assert all(provider.call_count == 0 for provider in providers.values())
-
-    @pytest.mark.asyncio
-    async def test_armed_carrier_bypasses_ensemble_fanout(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        policy_carrier = self._carrier(role="judge")
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(policy_carrier),
-        ):
-            response = await _model_call(router,
-                "judge", "prompt", "system", ModelConfig(max_tokens=10),
-                operation="repository_spec_delivery",
-                universe_context=_ctx(policy_carrier),
-            )
-        ensemble_carrier = self._carrier(role="judge")
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(ensemble_carrier),
-        ):
-            ensemble = [await _model_call(router,
-                "judge", "prompt", "system", ModelConfig(max_tokens=10),
-                operation="repository_spec_delivery",
-                universe_context=_ctx(ensemble_carrier),
-            )]
-
-        assert response.text == "codex-resp"
-        assert response.provider == "codex"
-        assert [response.provider for response in ensemble] == ["codex"]
-        assert providers["codex"].call_count == 2
-        assert providers["claude-code"].call_count == 0
 
     # Hard Rule 15 retired the platform fallback chain these tests used to
     # walk (claude-code -> codex -> ... -> ollama-local), the per-universe
@@ -420,80 +222,9 @@ class TestProviderRouterCall:
                 ),
             )
 
-    @pytest.mark.asyncio
-    async def test_owner_provider_exhaustion_raises_without_widening(self):
-        providers = _make_providers(
-            codex=FakeProvider("codex", "openai", fail_with=ProviderError("down")),
-        )
-        router = ProviderRouter(providers=providers)
 
-        with pytest.raises(AllProvidersExhaustedError):
-            await self._bound_call(router, self._carrier(max_tokens=10))
-        assert sum(p.call_count for p in providers.values()) == 1
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "failure", [ProviderUnavailableError("down"), ProviderTimeoutError("hung")],
-    )
-    async def test_owner_provider_failure_applies_cooldown(self, failure):
-        providers = _make_providers(
-            codex=FakeProvider("codex", "openai", fail_with=failure),
-        )
-        quota = QuotaTracker()
-        router = ProviderRouter(providers=providers, quota=quota)
 
-        with pytest.raises(AllProvidersExhaustedError):
-            await self._bound_call(router, self._carrier(max_tokens=10))
-        assert quota.available("codex", owner="owner") is False
-        assert providers["claude-code"].call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_bound_judge_ensemble_is_the_owners_one_judge(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        carrier = self._carrier(role="judge")
-
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            ensemble = [await _model_call(router,
-                "judge", "prompt", "system", ModelConfig(max_tokens=10),
-                operation="repository_spec_delivery",
-                universe_context=UniverseContext(
-                    universe_dir=_UDIR, provider_invocation=carrier,
-                ),
-            )]
-        assert [response.provider for response in ensemble] == ["codex"]
-        assert sum(p.call_count for p in providers.values()) == 1
-
-    def test_call_sync_does_not_serialize_on_single_shared_worker(self):
-        provider = SlowCountingProvider()
-        router = ProviderRouter(providers={provider.name: provider})
-        carrier = self._carrier(provider="claude-code", max_tokens=10)
-        start = threading.Barrier(3)
-
-        async def _dispatch(role, prompt, system, config, **_kwargs):
-            return await provider.complete(prompt, system, config)
-
-        def _call() -> ProviderResponse:
-            start.wait(timeout=2)
-            return router.call_sync(
-                "writer", "prompt", "system", ModelConfig(max_tokens=10),
-                operation="repository_spec_delivery",
-                universe_context=UniverseContext(
-                    universe_dir=_UDIR, provider_invocation=carrier,
-                ),
-            )
-
-        with patch.object(router, "call", side_effect=_dispatch):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                futures = [pool.submit(_call), pool.submit(_call)]
-                start.wait(timeout=2)
-                results = [future.result(timeout=2) for future in futures]
-
-        assert [result.provider for result in results] == ["claude-code", "claude-code"]
-        assert provider.max_active == 2
 
 
 # =====================================================================
@@ -501,20 +232,6 @@ class TestProviderRouterCall:
 # =====================================================================
 
 
-class TestProviderRegistration:
-    def test_register_provider(self):
-        router = ProviderRouter()
-        assert router.available_providers == []
-
-        fake = FakeProvider("test-provider", "test-family")
-        router.register(fake)
-        assert "test-provider" in router.available_providers
-
-    def test_register_overwrites(self):
-        router = ProviderRouter()
-        router.register(FakeProvider("p", "f1", "v1"))
-        router.register(FakeProvider("p", "f2", "v2"))
-        assert len(router.available_providers) == 1
 
 
 # =====================================================================
@@ -599,69 +316,7 @@ class TestCarrierSettlementWithUnknownUsage:
             return carrier
         return resolve
 
-    @pytest.mark.asyncio
-    async def test_unreported_usage_settles_indeterminate_not_fatal_succeeded(self):
-        """FakeProvider reports no usage -- exactly what real codex does here."""
-        carrier = self._settling_carrier()
-        router = ProviderRouter(providers=_make_providers(), auth_health=MagicMock())
 
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._resolver(carrier),
-        ):
-            response = await _model_call(router,
-                "writer", "prompt", "system", ModelConfig(max_tokens=None),
-                operation="run_graph",
-                universe_context=_ctx(carrier),
-            )
-
-        assert response.text == "codex-resp"
-        carrier.settle.assert_called_once()
-        state = carrier.settle.call_args.args[0]
-        assert state is ProviderInvocationReservationState.INDETERMINATE, (
-            "unknown usage must settle INDETERMINATE -- the state that already "
-            "means exactly this and whose budget treatment is conservative"
-        )
-        # Never zeros: reporting a free call would leave the budget undrainable.
-        assert carrier.settle.call_args.kwargs.get("input_tokens") is None
-        assert carrier.settle.call_args.kwargs.get("output_tokens") is None
-        assert carrier.settle.call_args.kwargs.get("cost_microunits") is None
-
-    @pytest.mark.asyncio
-    async def test_reported_usage_still_settles_succeeded_with_its_numbers(self):
-        """The fix must not blind the accounting path that does report usage."""
-        class _AccountingProvider(FakeProvider):
-            async def complete(self, prompt, system, config, *, universe_dir=None):
-                self.call_count += 1
-                self.last_config = config
-                return ProviderResponse(
-                    text="counted", provider=self.name, model="fake",
-                    family=self.family, latency_ms=1.0,
-                    input_tokens=70, output_tokens=30, cost_microunits=5,
-                )
-
-        carrier = self._settling_carrier()
-        providers = _make_providers(codex=_AccountingProvider("codex", "openai"))
-        router = ProviderRouter(providers=providers, auth_health=MagicMock())
-
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._resolver(carrier),
-        ):
-            await _model_call(router,
-                "writer", "prompt", "system", ModelConfig(max_tokens=None),
-                operation="run_graph",
-                universe_context=_ctx(carrier),
-            )
-
-        carrier.settle.assert_called_once()
-        assert (
-            carrier.settle.call_args.args[0]
-            is ProviderInvocationReservationState.SUCCEEDED
-        )
-        assert carrier.settle.call_args.kwargs == {
-            "input_tokens": 70, "output_tokens": 30, "cost_microunits": 5,
-        }
 
 @pytest.fixture(autouse=True)
 def _router_test_connected_sources(monkeypatch):

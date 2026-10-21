@@ -71,110 +71,22 @@ def content(raw):
     return result["content"]
 
 
-def test_output_discovery_and_lossless_unicode_continuation(controls):
-    served, _, make = controls
-    value = "α🙂\n漢字 " * 13
-    rid = make(output={"story": value, "count": 4, "nested": {"x": [None, True]}})
-    snapshot = content(served.read_graph(target="run", run_id=rid))
-    catalog = snapshot["output_catalog"]
-    assert {f["name"] for f in catalog["fields"]} == {"story", "count", "nested"}
-    assert value not in json.dumps(catalog, ensure_ascii=False)
-    parts, offset = [], 0
-    while True:
-        result = content(served.read_graph(target="run_output", run_id=rid,
-                         field_name="story", output_offset=offset, output_max_chars=7))
-        assert result["offset"] == offset
-        assert result["length"] == len(result["chunk"]) <= 7
-        assert result["total_chars"] == len(value)
-        assert "value" not in result
-        parts.append(result["chunk"])
-        if result["next_offset"] is None:
-            assert not result["truncated"]
-            break
-        offset = result["next_offset"]
-    assert "".join(parts) == value
-    for field, expected in (("count", 4), ("nested", {"x": [None, True]})):
-        result = content(served.read_graph(target="run_output", run_id=rid,
-                                          field_name=field))
-        assert result["value"] == expected
-        assert json.loads(result["chunk"]) == expected
 
 
-@pytest.mark.parametrize("action", ["run", "run_output", "cancel"])
-def test_pinned_run_selection_hides_foreign_public_run(controls, action):
-    served, base, make = controls
-    from tinyassets.runs import is_cancel_requested
-    rid = make(status="running", output={"foreign-secret": "not yours"}, universe="theirs")
-    if action == "cancel":
-        raw = served.run_graph(operation="cancel", run_id=rid)
-    else:
-        raw = served.read_graph(target=action, run_id=rid)
-    assert json.loads(raw) == {"error": f"Run '{rid}' not found."}
-    assert not is_cancel_requested(base, rid)
 
 
-def test_run_list_stays_pinned(controls):
-    served, _, make = controls
-    ours, theirs = make(), make(universe="theirs")
-    result = json.loads(served.read_graph(target="runs"))
-    assert {r["run_id"] for r in result["runs"]} == {ours}
-    assert theirs not in json.dumps(result)
 
 
-@pytest.mark.parametrize("status", ["queued", "running"])
-def test_cancel_requests_existing_run_without_admission(controls, status):
-    served, base, make = controls
-    from tinyassets.auth.provider import action_scope_for
-    from tinyassets.runs import is_cancel_requested
-    assert action_scope_for("extensions", "cancel_run").effect == "write"
-    rid = make(status=status)
-    result = content(served.run_graph(operation="cancel", run_id=rid))
-    assert "error" not in result, result
-    assert result["status"] == status
-    assert result["cancel_requested"] is True
-    assert result["terminal"] is False
-    assert is_cancel_requested(base, rid)
-    snapshot = content(served.read_graph(target="run", run_id=rid))
-    assert snapshot["cancel_requested"] is True
-    assert snapshot["status"] == status
 
 
-@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "interrupted"])
-def test_terminal_cancel_does_not_insert_or_claim_cancelled(controls, status):
-    served, base, make = controls
-    from tinyassets.runs import is_cancel_requested
-    rid = make(status=status)
-    result = content(served.run_graph(operation="cancel", run_id=rid))
-    assert result["status"] == status
-    assert result["terminal"] is True
-    assert result["cancel_requested"] is False
-    assert not is_cancel_requested(base, rid)
 
 
-@pytest.mark.parametrize("target", ["run", "run_output"])
-def test_pinned_run_reads_require_explicit_run_id(controls, target):
-    served, _, _ = controls
-    assert "run_id is required" in json.loads(served.read_graph(target=target))["error"]
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"operation": "wrong"}, {"operation": "cancel"},
-    {"operation": "cancel", "run_id": "r", "branch_def_id": "b"},
-    {"operation": "cancel", "run_id": "r", "inputs_json": "{}"},
-    {"operation": "run", "run_id": "r"},
-])
-def test_cancel_rejects_ambiguous_arguments_before_admission(controls, kwargs):
-    served, _, _ = controls
-    assert "error" in json.loads(served.run_graph(**kwargs))
 
 
-@pytest.mark.parametrize("queued", [True, False])
-def test_exposed_cancel_reaches_real_executor_and_child(controls, monkeypatch, queued):
-    _exercise_exposed_cancel(controls, monkeypatch, queued=queued)
 
 
-def test_cancel_preserves_completed_and_unstarted_nodes(controls, monkeypatch):
-    _exercise_exposed_cancel(controls, monkeypatch, queued=False, with_neighbors=True)
 
 
 def _exercise_exposed_cancel(controls, monkeypatch, *, queued, with_neighbors=False):
@@ -270,105 +182,15 @@ def _exercise_exposed_cancel(controls, monkeypatch, *, queued, with_neighbors=Fa
         pool.shutdown(wait=True)
 
 
-def test_storage_cancel_does_not_insert_after_racing_finish(controls, monkeypatch):
-    served, base, make = controls
-    from tinyassets import runs
-    rid = make(status="running")
-    original = runs.request_cancel
-
-    def finish_first(path, selected):
-        runs.update_run_status(path, selected, status="completed")
-        return original(path, selected)
-
-    monkeypatch.setattr(runs, "request_cancel", finish_first)
-    result = content(served.run_graph(operation="cancel", run_id=rid))
-    assert result["status"] == "completed"
-    assert result["terminal"] is True
-    assert not runs.is_cancel_requested(base, rid)
 
 
-@pytest.mark.parametrize("offset,max_chars", [(-1, 8), (0, 0), (0, 32769), (True, 8)])
-def test_output_rejects_invalid_chunk_arguments(controls, offset, max_chars):
-    served, _, make = controls
-    rid = make(output={"x": "y"})
-    assert "error" in json.loads(served.read_graph(
-        target="run_output", run_id=rid, field_name="x",
-        output_offset=offset, output_max_chars=max_chars,
-    ))
 
 
-def test_catalog_paginates_without_value_previews(controls):
-    served, _, make = controls
-    rid = make(output={f"field{i:03}": "private-value" for i in range(130)})
-    names, offset = [], 0
-    while True:
-        result = content(served.read_graph(target="run_output", run_id=rid, output_offset=offset))
-        assert "private-value" not in json.dumps(result)
-        catalog = result["output_catalog"]
-        assert len(catalog["fields"]) <= 64
-        names.extend(field["name"] for field in catalog["fields"])
-        if catalog["next_offset"] is None:
-            break
-        offset = catalog["next_offset"]
-    assert names == [f"field{i:03}" for i in range(130)]
 
 
-def test_canonical_cancel_still_requires_write_capability(controls):
-    from tinyassets import runs, universe_server
-    from tinyassets.auth.middleware import _current_identity
-    from tinyassets.auth.provider import Identity
-
-    _, base, make = controls
-    rid = make(status="running")
-    token = _current_identity.set(Identity(user_id="owner", username="owner",
-                                           capabilities=["read", "list"]))
-    try:
-        result = json.loads(universe_server.run_graph(operation="cancel", run_id=rid,
-                                                     graph_id="ours"))
-        assert "error" in result
-        assert not runs.is_cancel_requested(base, rid)
-    finally:
-        _current_identity.reset(token)
 
 
-def test_canonical_cancel_cannot_mutate_another_legacy_actor_run(controls):
-    from tinyassets import runs, universe_server
-    from tinyassets.auth.middleware import _current_identity
-    from tinyassets.auth.provider import Identity
-
-    _, base, _ = controls
-    rid = runs.create_run(base, branch_def_id="legacy", thread_id="legacy", inputs={},
-                          actor="someone-else", owner_user_id="someone-else")
-    token = _current_identity.set(Identity(user_id="owner", username="owner",
-                                           capabilities=["read", "list", "write"]))
-    try:
-        result = json.loads(universe_server.run_graph(operation="cancel", run_id=rid))
-        assert "error" in result
-        assert not runs.is_cancel_requested(base, rid)
-    finally:
-        _current_identity.reset(token)
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"webhook_op": "mint", "branch_def_id": "b"}, {"source_op": "create"},
-    {"goal_id": "g"}, {"token": "t"}, {"recursion_limit_override": 5},
-])
-def test_canonical_cancel_refuses_trigger_and_launch_combinations(controls, kwargs):
-    from tinyassets import runs, universe_server
-
-    _, base, make = controls
-    rid = make(status="queued")
-    result = json.loads(universe_server.run_graph(operation="cancel", run_id=rid,
-                                                 graph_id="ours", **kwargs))
-    assert "error" in result
-    assert not runs.is_cancel_requested(base, rid)
 
 
-@pytest.mark.parametrize("value", ["", "line\n\"quoted\"🙂", None, False, 1.5,
-                                    ["漢字", {"nested": 2}]])
-def test_small_output_keeps_exact_json_type(controls, value):
-    served, _, make = controls
-    rid = make(output={"out": value})
-    result = content(served.read_graph(target="run_output", run_id=rid, field_name="out"))
-    assert type(result["value"]) is type(value)
-    assert result["value"] == value

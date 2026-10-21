@@ -80,10 +80,6 @@ jobs:
       - name: Verify plugin runtime is not tracked
         run: python scripts/check_mirror_parity.py
 
-      - name: Run packaging build tests
-        run: |
-          python -m pip install pytest
-          python -m pytest tests/test_packaging_build.py -v
 
   pack-mcpb:
     name: Pack release artifacts

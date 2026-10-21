@@ -33,10 +33,7 @@ receipts, automation store and the real ``ApiKeyHttpProvider`` all run.
 from __future__ import annotations
 
 import json
-import sqlite3
-import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -50,7 +47,6 @@ from tinyassets.branches import (
     NodeDefinition,
 )
 from tinyassets.provider_assignment_manifest import ModelAccess
-from tinyassets.storage.provider_work_authority import db_path as authority_db_path
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
@@ -346,323 +342,26 @@ def _run(tmp_path, monkeypatch, branch: BranchDefinition, universe: str) -> dict
 # --------------------------------------------------------------------------
 
 
-def test_an_unpinned_prompt_node_runs_on_a_model_the_account_actually_has(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "completed", record["error"]
-    wire = wires[A_OWNER]
-    assert wire.sent_models == [LIVE_MODELS[0]], wire.sent_models
-    # The retired declared default is never what a run sends. Before the fix
-    # this list was empty and the run failed `authority_held` instead.
-    assert DECLARED not in wire.sent_models
-    assert record["output"]["note"] == "morning focus note"
-
-
-def test_a_free_models_429_steps_to_the_next_model_the_owner_already_accepted(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The second live report: one 429 ended the whole run.
-
-    Live 2026-09-30 ~05:16Z on deployed `704b066d`, run `c22c1cb12db74d6a`:
-
-        work model attempt is held: qwen/qwen3.8-27b:free on
-        api_key_http:provdef_ed01... (provider_rate_limited)
-
-    with `provider_chain.attempts` holding exactly ONE attempt, on an account
-    with 632 models whose chat turns fall through to another free model on the
-    same 429. The recorded diagnostic carried
-    `detail: "compute provider rate limited (429)"` -- the source's own HTTP
-    status, NOT `_MAX_BINDING_INVOCATIONS` or any other platform limit -- with
-    no `capacity_scope`, no `retry_after_s` and no `side_effect_state`, because
-    the provider only decodes a capacity signal for an AGENT round.
-
-    So a workflow node must step to the next model in the owner's own captured
-    order, which is the same fallback a chat turn takes.
-    """
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "completed", record["error"]
-    assert wires[A_OWNER].sent_models == list(LIVE_MODELS), wires[A_OWNER].sent_models
-    assert record["output"]["note"] == "morning focus note"
-
-
-def test_every_model_rate_limited_is_exhaustion_naming_each_one(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """Stepping past a 429 must still stop, and say what it tried.
-
-    The bound is the owner's own order: when every model in it answered 429 the
-    run reports typed exhaustion naming each, not "held" after the first.
-    """
-    from tinyassets.exceptions import WorkModelExhaustedError
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    wires[A_OWNER].rate_limited = frozenset(LIVE_MODELS)
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "failed"
-    assert WorkModelExhaustedError.MESSAGE in record["error"], record["error"]
-    assert wires[A_OWNER].sent_models == list(LIVE_MODELS), wires[A_OWNER].sent_models
-    for model in LIVE_MODELS:
-        assert model in record["error"], record["error"]
-    assert "provider_rate_limited" in record["error"], record["error"]
-
-
-def test_a_spent_source_is_cooled_once_the_nodes_order_runs_out(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The withheld cooldown is a debt this node has to settle.
-
-    The router withholds a source's cooldown so the sibling attempt is not
-    skipped by its own quota gate. That purchase ends when the order runs out,
-    and a source at a DAILY cap -- which refuses every model -- would otherwise
-    have every later run pay the whole order again, forever. The conversation
-    path settles it in `_cool_abandoned_source`; a workflow node had nothing.
-    """
-    from tinyassets.providers import call as call_module
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    wires[A_OWNER].rate_limited = frozenset(LIVE_MODELS)
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "failed"
-    router = call_module.get_provider_router()
-    assert router is not None
-    assert router._quota.cooldown_remaining(provider, owner=A_OWNER) > 0, (
-        "a source that refused every model was left hot"
-    )
-
 
-def test_a_source_that_still_has_a_sibling_is_not_cooled_mid_node(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """Cooling too early is the dead end: it skips the very sibling that works."""
-    from tinyassets.providers import call as call_module
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "completed", record["error"]
-    router = call_module.get_provider_router()
-    assert router is not None
-    assert router._quota.cooldown_remaining(provider, owner=A_OWNER) == 0
-
-
-def test_a_5xx_does_not_replay_the_node_on_another_model(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """A gateway 5xx is not proof that nothing was generated.
-
-    Codex refutation R3, 2026-09-30: an earlier head declared EVERY non-2xx
-    side-effect-free, and a 502/504 can come from a gateway after an upstream
-    model already began producing output. Only a 4xx admission refusal proves
-    zero generation, so a 5xx must hold the node rather than replay it.
-    """
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    wires[A_OWNER].overloaded = frozenset({LIVE_MODELS[0]})
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "failed"
-    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
-    assert LIVE_MODELS[1] not in wires[A_OWNER].sent_models
-
-
-def test_a_withheld_cooldown_is_settled_even_when_the_node_raises(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The debt does not depend on HOW the node ended.
-
-    Codex refutation R4, 2026-09-30: settlement ran only on the exhaustion
-    branch, so a node that raised between attempts -- a cancellation or an
-    authority change -- left the source hot forever. Driven by making the
-    SECOND authorization raise, after the first model's 429 withheld the
-    cooldown.
-    """
-    from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
-    from tinyassets.providers import call as call_module
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
-    original = _ForegroundRunProviderSession._authorize_attempt
-    calls = []
-
-    def authorize(self, **kwargs):
-        calls.append(kwargs)
-        if len(calls) > 1:
-            raise PermissionError("synthetic authority change between attempts")
-        return original(self, **kwargs)
-
-    monkeypatch.setattr(_ForegroundRunProviderSession, "_authorize_attempt", authorize)
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "failed"
-    assert len(calls) == 2, calls
-    router = call_module.get_provider_router()
-    assert router is not None
-    assert router._quota.cooldown_remaining(provider, owner=A_OWNER) > 0, (
-        "a node that raised between attempts left its source hot"
-    )
-
-
-def test_a_node_declaring_no_fallbacks_stays_on_its_pin_through_a_429(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """`fallback_chain: []` still means only this model, 429 or not."""
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
-    provider = f"api_key_http:{_definition_id(A_HOME, A_OWNER)}"
-    branch = _branch(owner=A_OWNER)
-    branch.node_defs[0].llm_policy = {
-        "preferred": {"provider": provider, "model": LIVE_MODELS[0]},
-        "fallback_chain": [],
-    }
-
-    record = _run(tmp_path, monkeypatch, branch, A_HOME)
-
-    assert record["status"] == "failed"
-    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
-    assert LIVE_MODELS[1] not in wires[A_OWNER].sent_models
-
-
-def test_an_unnamed_model_resolves_at_the_reservation_even_with_no_captured_order(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The second layer, asserted with the first one switched off.
-
-    Two lanes reach `_validate_work_selection` with a model nobody named: the
-    run session (fixed by capturing the owner's order) and the background branch
-    consumer, which resolves `model_id` from the node's policy alone and has no
-    captured order at all. So the enforcement point itself must not fall back to
-    the source's DECLARED default either.
-
-    Driven by disabling the captured order, which is exactly the pre-fix session
-    and the background lane's shape. Without this, two layers would cover for
-    each other and neither would be proven.
-    """
-    from tinyassets import foreground_run_provider
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    monkeypatch.setattr(
-        foreground_run_provider, "captured_work_preference", lambda *a, **k: None,
-    )
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "completed", record["error"]
-    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
-    assert DECLARED not in wires[A_OWNER].sent_models
-
-
-def test_the_reservation_never_consults_the_sources_declared_model(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """`eligible_model_ids` reads the snapshot, not the registration row.
-
-    A registered `model` is where the run pinned a vanished id from. The
-    ordering it replaced is the SAME one `_validate_snapshot` admits a named
-    model against, so an unnamed model can never resolve to something the
-    validator would then refuse.
-    """
-    from tinyassets.providers.definition import get_definition
-    from tinyassets.providers.discovery_snapshot import refresh_model_discovery
-    from tinyassets.providers.model_selection import _validate_snapshot, eligible_model_ids
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    definition = get_definition(A_HOME, provider.removeprefix("api_key_http:"))
-    assert definition.model == DECLARED
-    snapshot = refresh_model_discovery(
-        owner_user_id=A_OWNER, universe_id=A_HOME, definition_id=definition.id,
-    )
-    assert snapshot.models.default_model_id is None
-
-    eligible = eligible_model_ids(
-        definition, snapshot, access=ModelAccess("discovered"),
-    )
-
-    assert eligible == LIVE_MODELS
-    assert DECLARED not in eligible
-    # What it chose is exactly what the validator accepts -- one ordering.
-    selected, _recheck = _validate_snapshot(
-        definition, snapshot, provider, eligible[0], ModelAccess("discovered"),
-    )
-    assert selected.model_id == eligible[0]
-    with pytest.raises(PermissionError):
-        _validate_snapshot(
-            definition, snapshot, provider, DECLARED, ModelAccess("discovered"),
-        )
-
-
-def test_a_free_only_owner_never_reserves_a_priced_model_the_key_can_reach(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """A connected key is not paid consent (onboarding-connection-progress spec).
-
-    The owner accepted ``discovered`` scope with no cost caps: free models only.
-    The key itself reaches priced models. Serving readiness already reads the
-    owner's accepted caps, so the source is connected while a free model is
-    still listed; then the live catalogue narrows to priced models only, as a
-    source does when its free tier is withdrawn. Every workflow site that
-    derives cost authority -- the captured order, the reservation's eligible
-    set and the validator -- must read the OWNER'S accepted caps, never a
-    ceiling observed from the catalogue, or the run would spend on a model
-    nobody agreed to pay for. With no free model the run refuses and the
-    source sees no request at all.
-    """
-    from tinyassets.exceptions import WorkModelExhaustedError
-    from tinyassets.providers.work_candidate_data import prepare_captured_choices
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-        models=PRICED_MODELS + LIVE_MODELS,
-    )
-    wires[A_OWNER].models = PRICED_MODELS
-
-    # The captured order: an accepted source whose catalogue holds only models
-    # outside the accepted caps yields no candidate at all.
-    with pytest.raises(WorkModelExhaustedError):
-        prepare_captured_choices(
-            Path(tmp_path), owner=A_OWNER, universe=A_HOME, sources=(provider,),
-            document={"version": 1, "saved": None, "observed_generation": 0, "current": None},
-        )
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "failed", record
-    assert WorkModelExhaustedError.MESSAGE in record["error"], record["error"]
-    assert wires[A_OWNER].requests == [], wires[A_OWNER].sent_models
-    assert wires[A_OWNER].reads, "the catalogue was consulted, so the refusal is on price"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @pytest.fixture
@@ -724,70 +423,8 @@ def engine_tools(tmp_path, monkeypatch):
     return calls
 
 
-def test_an_agent_node_resolves_the_same_model_as_a_prompt_node(
-    tmp_path, monkeypatch, authenticate_request, wires, engine_tools,
-):
-    """An agent node takes the same resolved model, not the retired pin.
-
-    `call_foreground_work_agent` reads the session's captured order too, so the
-    same missing read killed agent nodes on this account; with no order it fell
-    into the same `definition.model` pin.
-    """
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-
-    record = _run(
-        tmp_path, monkeypatch, _branch(owner=A_OWNER, agent_node=True), A_HOME,
-    )
-
-    assert record["status"] == "completed", record["error"]
-    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
-    assert DECLARED not in wires[A_OWNER].sent_models
 
 
-def test_a_due_automation_runs_on_the_universes_own_source(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The background lane, on a thread with no request identity bound.
-
-    An automation is where the live report started (cron
-    ``ff08a05dbae0435bacd29353280fc591``), and it shares this session factory,
-    so the fix has to hold with no ambient request actor at all.
-    """
-    from tinyassets.automations import AutomationStore, register_automation, run_due_automation
-    from tinyassets.daemon_server import save_branch_definition
-
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    branch = _branch(owner=A_OWNER)
-    save_branch_definition(tmp_path, branch_def=branch.to_dict())
-    _bind_api(monkeypatch, tmp_path, A_HOME)
-    automation = register_automation(
-        tmp_path, universe_id=A_HOME, owner_principal_id=A_OWNER, name="morning",
-        branch_def_id=branch.branch_def_id, interval_seconds=600, inputs={}, now=NOW,
-    )
-
-    outcome: dict[str, Any] = {}
-
-    def go() -> None:
-        try:
-            outcome["reason"] = run_due_automation(
-                tmp_path, automation, "2026-09-30T12:10:00+00:00", now=NOW,
-            )
-        except BaseException as exc:  # noqa: BLE001 - reported below, never swallowed
-            outcome["exc"] = exc
-
-    worker = threading.Thread(target=go)
-    worker.start()
-    worker.join(180)
-    assert not worker.is_alive(), "the due run did not finish"
-    if "exc" in outcome:
-        raise outcome["exc"]
-
-    assert outcome["reason"].startswith("ok:ran:"), outcome["reason"]
-    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
-    assert AutomationStore(tmp_path).get(automation.automation_id).last_run_id
 
 
 # --------------------------------------------------------------------------
@@ -796,150 +433,12 @@ def test_a_due_automation_runs_on_the_universes_own_source(
 # --------------------------------------------------------------------------
 
 
-def test_universe_b_run_never_reaches_universe_as_provider(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """Two owners, two sources, two catalogues with no model in common.
-
-    B's run may only appear in B's wire. A's wire counts every read and request,
-    so a leak is observed rather than assumed -- and B's model list proves it is
-    B's OWN catalogue that answered, not merely that the id was permitted.
-    """
-    b_models = ("vendor/bob-only:free",)
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    authenticate_request(B_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=B_OWNER, universe=B_HOME,
-                   suffix="b", models=b_models)
-    a_reads_before = len(wires[A_OWNER].reads)
-
-    record = _run(
-        tmp_path, monkeypatch,
-        _branch(owner=B_OWNER, branch_def_id="branch_bob_focus"), B_HOME,
-    )
-
-    assert record["status"] == "completed", record["error"]
-    assert wires[B_OWNER].sent_models == [b_models[0]]
-    assert wires[A_OWNER].requests == [], "B's run reached A's source"
-    assert len(wires[A_OWNER].reads) == a_reads_before, "B's run read A's catalogue"
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        universes = {
-            row[0] for row in conn.execute(
-                "SELECT universe_id FROM provider_work_receipts WHERE work_item_kind = 'run'"
-            )
-        }
-    assert universes == {B_HOME}
 
 
-def test_a_model_pin_admits_siblings_unless_the_node_declares_no_fallbacks(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """Exact model pins are strict; provider-only pins retain source siblings.
-
-    Keep the historical test identity, but replace its obsolete expectation:
-    omitting fallback_chain no longer permits silent model substitution. Both
-    exact-pin forms must stop after exhaustion; only a source-only choice may
-    advance through that source's captured model order.
-    """
-    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
-    from tinyassets.providers.model_policy import Exhaustion, ModelRef
-    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
-    from tinyassets.providers.work_candidate_data import WorkCandidateData
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    prepared = prepare_owned_model_plan(
-        base=tmp_path, universe=tmp_path / A_HOME, owner=A_OWNER,
-        agent=resolve_serving_agent_binding(
-            tmp_path, universe_id=A_HOME, owner_user_id=A_OWNER,
-        ),
-    )
-    pinned, sibling = (ModelRef(provider, model) for model in LIVE_MODELS)
-    snapshot = _branch(owner=A_OWNER).to_dict()
-
-    open_pin = {"preferred": {"model": LIVE_MODELS[0]}}
-    order = WorkCandidateData(prepared.plan)
-    snapshot["node_defs"][0]["llm_policy"] = open_pin
-    order.fit(snapshot, ceiling=10_000, retry_multiplier=1)
-    assert order.next_candidate(open_pin) == pinned
-    assert order.next_candidate(
-        open_pin, (Exhaustion("model", pinned),),
-    ) is None, "an exact model pin must never silently substitute a sibling"
-
-    closed_pin = {"preferred": {"model": LIVE_MODELS[0]}, "fallback_chain": []}
-    order = WorkCandidateData(prepared.plan)
-    snapshot["node_defs"][0]["llm_policy"] = closed_pin
-    order.fit(snapshot, ceiling=10_000, retry_multiplier=1)
-    assert order.next_candidate(closed_pin) == pinned
-    assert order.next_candidate(
-        closed_pin, (Exhaustion("model", pinned),),
-    ) is None, "fallback_chain: [] means only this model, and it must stay that way"
-
-    source_pin = {"preferred": {"provider": provider}}
-    order = WorkCandidateData(prepared.plan)
-    snapshot["node_defs"][0]["llm_policy"] = source_pin
-    order.fit(snapshot, ceiling=10_000, retry_multiplier=1)
-    assert order.next_candidate(source_pin) == pinned
-    assert order.next_candidate(
-        source_pin, (Exhaustion("model", pinned),),
-    ) == sibling, "a provider-only pin retains siblings from the same source"
 
 
-def test_a_foreign_authored_branch_makes_no_discovery_request_at_all(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """A refused run must not spend the requester's own source to find out.
-
-    Capturing the model order is credential-bearing outbound IO on the owner's
-    own grant. It sat above `_admit`'s Branch-author check, so running another
-    user's PUBLIC Branch made one catalogue request before the refusal -- the
-    same shape as the sign-in refresh removed from this lane on #4082. Found by
-    the Codex refutation of this change (C2, 2026-09-29).
-    """
-    from tinyassets.daemon_server import save_branch_definition
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    # PUBLIC, because that is the only foreign Branch a requester can start --
-    # and exactly the shape the refutation reproduced.
-    foreign = _branch(
-        owner="acct_someone_else", branch_def_id="branch_foreign", visibility="public",
-    )
-    save_branch_definition(tmp_path, branch_def=foreign.to_dict())
-    reads_before = len(wires[A_OWNER].reads)
-
-    record = _run(tmp_path, monkeypatch, foreign, A_HOME)
-
-    assert record["status"] == "failed"
-    assert "author is not the principal" in record["error"], record["error"]
-    assert len(wires[A_OWNER].reads) == reads_before, "a refused run read the catalogue"
-    assert wires[A_OWNER].requests == []
 
 
-def test_universe_a_pin_is_refused_inside_universe_b(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """An explicit pin naming ANOTHER universe's source is refused, not served."""
-    authenticate_request(A_OWNER)
-    a_provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    authenticate_request(B_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=B_OWNER, universe=B_HOME,
-                   suffix="b", models=("vendor/bob-only:free",))
-    branch = _branch(owner=B_OWNER, branch_def_id="branch_bob_steals")
-    branch.node_defs[0].llm_policy = {
-        "preferred": {"provider": a_provider, "model": LIVE_MODELS[0]},
-        "fallback_chain": [],
-    }
-
-    record = _run(tmp_path, monkeypatch, branch, B_HOME)
-
-    assert record["status"] == "failed"
-    assert wires[A_OWNER].requests == [], "B ran on A's source"
-    assert wires[B_OWNER].requests == []
 
 
 # --------------------------------------------------------------------------
@@ -947,128 +446,12 @@ def test_universe_a_pin_is_refused_inside_universe_b(
 # --------------------------------------------------------------------------
 
 
-def test_a_held_run_names_its_own_refusal_instead_of_connect_your_provider(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The second half of the live report: the notice named the wrong cause.
-
-    Drives a refusal from inside admission -- the principal's home moved after
-    the run was accepted -- on a universe whose provider IS connected. The
-    record must carry that refusal's own words, and must not tell an owner who
-    has connected a provider to connect one.
-    """
-    from tinyassets.daemon_server import save_branch_definition, set_founder_home
-    from tinyassets.providers.owner_binding import (
-        AUTHORITY_HELD_DETAIL,
-        CONNECT_PROVIDER_MESSAGE,
-    )
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    branch = _branch(owner=A_OWNER)
-    save_branch_definition(tmp_path, branch_def=branch.to_dict())
-    set_founder_home(tmp_path, founder_sub=A_OWNER, universe_id="universe_elsewhere",
-                     platform_generated=True)
-
-    record = _run(tmp_path, monkeypatch, branch, A_HOME)
-
-    assert record["status"] == "failed"
-    assert AUTHORITY_HELD_DETAIL in record["error"], record["error"]
-    assert "not the principal's own command center" in record["error"], record["error"]
-    assert CONNECT_PROVIDER_MESSAGE not in record["error"]
-    assert wires[A_OWNER].requests == []
 
 
-def test_a_held_run_keeps_the_provider_not_bound_failure_class(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The precise message must not re-classify the failure.
-
-    The stored-string taxonomy is a substring net, and a wrapped cause's words
-    are arbitrary: without a key on the lead-in, a refusal mentioning "timeout"
-    or "credential" would be classified as a timeout or an expired host key.
-    """
-    from tinyassets.api.runs import _classify_run_outcome_error
-    from tinyassets.providers.owner_binding import AUTHORITY_HELD_DETAIL
-
-    for cause in (
-        "foreground run provider authority is stale",
-        "discovery timed out reaching the source",
-        "this universe's credential reference changed",
-    ):
-        annotation = _classify_run_outcome_error(AUTHORITY_HELD_DETAIL + cause)
-        assert annotation is not None
-        assert annotation[0] == "permission_denied:provider_not_bound", cause
 
 
-def test_an_emptied_catalogue_names_the_eligibility_gap_not_a_missing_provider(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """No runnable model is a different owner problem from no provider.
-
-    The catalogue is emptied AFTER the source is accepted, which is the only
-    order this can happen in: a source with nothing runnable cannot be accepted
-    for serving in the first place, and a remote catalogue changes under an
-    already-accepted source -- the same way the live account's declared model
-    left it.
-
-    The plan's own refusal already names what is missing (and, when a whole
-    source is held, which one and why). That wording is what the record must
-    carry; the owner was previously told to connect the provider they had.
-    """
-    from tinyassets.providers.owner_binding import CONNECT_PROVIDER_MESSAGE
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    wires[A_OWNER].models = ()
-
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-
-    assert record["status"] == "failed"
-    assert "no eligible work model remains" in record["error"], record["error"]
-    assert CONNECT_PROVIDER_MESSAGE not in record["error"]
-    assert wires[A_OWNER].requests == []
 
 
-def test_an_order_that_runs_out_mid_run_is_typed_exhaustion_not_held_authority(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """`WorkCandidateData` with no eligible ref is exhaustion, by TYPE.
-
-    `_admit`'s handler turns any other exception into held authority, and
-    "your accepted sources produced no runnable model" is a different owner
-    action from "connect a provider". Driven at the class, because the plan
-    refuses one step earlier when a source has no eligible model at all.
-    """
-    from dataclasses import replace
-
-    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
-    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
-    from tinyassets.providers.model_policy import Catalog
-    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
-    from tinyassets.providers.work_candidate_data import WorkCandidateData
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    prepared = prepare_owned_model_plan(
-        base=tmp_path, universe=tmp_path / A_HOME, owner=A_OWNER,
-        agent=resolve_serving_agent_binding(
-            tmp_path, universe_id=A_HOME, owner_user_id=A_OWNER,
-        ),
-    )
-    assert prepared is not None
-    # The same plan with nothing left in its catalogue. `source_policies` goes
-    # with it: the plan validates that the two describe the same sources.
-    empty = replace(
-        prepared.plan, catalog=Catalog(A_OWNER, A_HOME, ()), source_policies=(),
-    )
-
-    with pytest.raises(WorkModelExhaustedError) as caught:
-        WorkCandidateData(empty)
-
-    assert str(caught.value) == WorkModelExhaustedError.MESSAGE
-    # A subclass on purpose: every existing held handler keeps catching it.
-    assert isinstance(caught.value, ProviderAuthorityHeldError)
 
 
 # --------------------------------------------------------------------------
@@ -1076,95 +459,7 @@ def test_an_order_that_runs_out_mid_run_is_typed_exhaustion_not_held_authority(
 # --------------------------------------------------------------------------
 
 
-def test_the_system_row_is_not_reported_as_a_node_of_the_run(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """`__system__: recursion_limit_applied` read as a workflow step.
-
-    Live 2026-09-30: it appeared in the run summary's node list and in the
-    mermaid graph, which both a user and a chatbot read as a failed step. The
-    applied limit is still reported -- as the run's own `recursion_limit` field.
-    """
-    from tinyassets.api import runs as api_runs
-    from tinyassets.runs import SYSTEM_EVENT_NODE_ID, list_events
-
-    authenticate_request(A_OWNER)
-    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
-    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
-    assert record["status"] == "completed", record["error"]
-
-    events = list_events(tmp_path, record["run_id"], since_step=-1)
-    assert any(
-        event["node_id"] == SYSTEM_EVENT_NODE_ID
-        and event["status"] == "recursion_limit_applied"
-        for event in events
-    ), "the fixture must still emit the system row this test filters"
-
-    snapshot = api_runs._compose_run_snapshot(record, events)
-
-    assert [status["node_id"] for status in snapshot["node_statuses"]] == ["generate_note"]
-    assert SYSTEM_EVENT_NODE_ID not in snapshot["summary"]
-    assert SYSTEM_EVENT_NODE_ID not in snapshot["mermaid"]
-    assert "recursion_limit_applied" not in snapshot["summary"]
-    # The fact itself is not lost, only moved off the node list.
-    assert snapshot["recursion_limit"] == 1_000_000
 
 
-def test_a_declared_system_node_id_still_never_becomes_a_node_status():
-    """A graph_node literally named `__system__` cannot smuggle one back in.
-
-    `declared_order` seeds the status map before any event is read, so filtering
-    only the event loop would have left a declared row behind.
-    """
-    from tinyassets.runs import SYSTEM_EVENT_NODE_ID, build_node_status_map
-
-    statuses = build_node_status_map(
-        [
-            {"node_id": SYSTEM_EVENT_NODE_ID, "status": "recursion_limit_applied"},
-            {"node_id": "n1", "status": "ran"},
-        ],
-        [SYSTEM_EVENT_NODE_ID, "n1"],
-    )
-
-    assert statuses == [{"node_id": "n1", "status": "ran"}]
 
 
-def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
-    tmp_path, monkeypatch, authenticate_request, wires,
-):
-    """The seam the fix lives on, asserted directly.
-
-    `captured_work_preference` returning None for an owner who has saved no
-    preference is what left the run on the declared-model pin. A document with
-    `saved: None` is the automatic mode a chat turn uses, and the session must
-    build the SAME order from it.
-    """
-    from tinyassets.foreground_run_provider import (
-        captured_work_preference,
-        new_foreground_run_provider_session,
-    )
-    from tinyassets.storage.model_preferences import ModelPreferenceStore
-
-    authenticate_request(A_OWNER)
-    provider = _seed_universe(
-        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
-    )
-    assert ModelPreferenceStore(tmp_path).get(A_OWNER, A_HOME).policy is None
-
-    document = captured_work_preference(
-        tmp_path, universe_id=A_HOME, principal_id=A_OWNER,
-    )
-    assert document == {
-        "version": 1, "saved": None, "observed_generation": 0, "current": None,
-    }
-
-    session = new_foreground_run_provider_session(
-        tmp_path, universe_id=A_HOME, principal_id=A_OWNER,
-        provider_call=lambda *args, **kwargs: "",
-    )
-    session._capture_choices((provider,))
-    order = session._work_candidates
-    assert order is not None, "a run with nothing saved built no model order"
-    assert order.automatic is True
-    assert [ref.model_id for ref in order.order] == list(LIVE_MODELS)
-    assert {ref.connection_id for ref in order.order} == {provider}

@@ -128,7 +128,6 @@ MAX_TEST_SECONDS = 3000
 #: is how a red build gets normalised.
 MAX_QUARANTINE = 8
 #: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
-#: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
 #: cap only ratchets down unless a reviewed change raises it.
 QUARANTINE_SLACK = 8
 #: Leading `key=value` fields a ledger line may carry, BEFORE the node id; a

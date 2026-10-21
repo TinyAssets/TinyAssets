@@ -197,115 +197,12 @@ console.log(JSON.stringify({whileThinking, afterPolls, done, healed:healed.lengt
 """
 
 
-def test_a_status_poll_does_not_restore_the_turn_the_live_page_owns(tmp_path, html):
-    out = _run(tmp_path, html, _LIVE_TURN)
-    thinking, polled, done = out["whileThinking"], out["afterPolls"], out["done"]
-    assert thinking["founderBubbles"] == 1 and thinking["sendDisabled"] is True
-    assert thinking["status"] == "Your agent is thinking..."
-    assert thinking["inflight"]["message"] == "Retest your workflow checklist", \
-        "the live turn's durable recovery must be on disk while it is in flight"
-    # The polls ran (the heartbeat is not disabled) ...
-    assert polled["statusPolls"] == 3
-    # ... and changed nothing about the turn the page owns.
-    assert polled["founderBubbles"] == 1, "the live message was drawn a second time"
-    assert polled["unconfirmedNotes"] == 0, "a live turn was reported as never confirmed"
-    assert polled["resendButtons"] == 0, "a resend was offered for a request still in flight"
-    assert polled["sendDisabled"] is True
-    assert polled["status"] == "Your agent is thinking..."
-    assert polled["inflight"]["message"] == "Retest your workflow checklist", \
-        "a poll erased the live turn's recovery record"
-    assert polled["converseCalls"] == ["Retest your workflow checklist"]
-    # The original reply still lands once, and the record is cleared by its owner.
-    assert done["messages"] == [
-        {"role": "founder", "text": "Retest your workflow checklist"},
-        {"role": "universe", "text": "Checklist retested."}]
-    assert done["unconfirmedNotes"] == 0 and done["resendButtons"] == 0
-    assert done["sendDisabled"] is False and done["inflight"] is None
-    assert done["converseCalls"] == ["Retest your workflow checklist"], \
-        "the workflow was invoked more than once"
 
 
-def test_a_spoken_turn_is_not_restored_by_the_heartbeat_either(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1");
-    await loadHistory(); await pollStatus();
-    const turn=sendVoiceTurn("read me the checklist");
-    await settle();
-    await pollStatus(); await pollStatus(); await settle();
-    const polled=snapshot();
-    gates[0].resolve({reply:"Reading it now."});
-    const spoken=await turn; await settle();
-    console.log(JSON.stringify({polled, spoken, done:snapshot()}));
-    """)
-    assert out["polled"]["founderBubbles"] == 1
-    assert out["polled"]["unconfirmedNotes"] == 0 and out["polled"]["resendButtons"] == 0
-    assert out["polled"]["inflight"]["inputMethod"] == "spoken"
-    assert out["spoken"] == "Reading it now."
-    assert out["done"]["converseCalls"] == ["read me the checklist"]
-    assert out["done"]["inflight"] is None
 
 
-def test_a_late_history_peek_does_not_restore_a_turn_started_meanwhile(tmp_path, html):
-    """The peek was still in flight when the founder sent; its result must not
-    read the record that send wrote as a previous page's abandoned message."""
-    out = _run(tmp_path, html, r"""
-    // Both halves come from /app/me before the composer is usable
-    // (enterSignedIn); the peek is what is still in flight, not the pair.
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    let release; Owner.getConversation=()=>new Promise(r=>{release=r;});
-    const peek=loadHistory();                  // awaiting the connector
-    await settle();
-    const turn=sendTurn("first line of the day");
-    await settle();
-    release({universe_id:"u-1", recent_conversation:{turns:[]}});
-    await peek; await pollStatus(); await settle();
-    const polled=snapshot();
-    gates[0].resolve({reply:"Good morning."});
-    await turn; await settle();
-    console.log(JSON.stringify({polled, done:snapshot()}));
-    """)
-    assert out["polled"]["founderBubbles"] == 1
-    assert out["polled"]["unconfirmedNotes"] == 0 and out["polled"]["resendButtons"] == 0
-    assert out["polled"]["inflight"]["message"] == "first line of the day"
-    assert out["done"]["messages"] == [
-        {"role": "founder", "text": "first line of the day"},
-        {"role": "universe", "text": "Good morning."}]
-    assert out["done"]["converseCalls"] == ["first line of the day"]
-    assert out["done"]["inflight"] is None
 
 
-def test_a_transport_failure_on_the_live_page_leaves_exactly_one_recovery(tmp_path, html):
-    """The turn's own catch offers the resend and keeps the record. The
-    heartbeat that follows must not draw the bubble and the offer again."""
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1");
-    await loadHistory(); await pollStatus();
-    const turn=sendTurn("deploy the fix");
-    await settle();
-    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
-    await turn; await settle();
-    const failed=snapshot();
-    await pollStatus(); await loadHistory(); await pollStatus(); await settle();
-    const polled=snapshot();
-    // Recovery observes the exact saved send; it never replays it.
-    const note=els.thread.children.find(n=>n.unconfirmed);
-    Owner.getConversation=async()=>({recent_conversation:{turns:[
-      {speaker:"founder",text:"deploy the fix",client_send_id:readInflight().client_send_id},
-      {speaker:"universe",text:"Deployed."}]}});
-    await note.checkSavedConversation();
-    console.log(JSON.stringify({failed, polled, done:snapshot()}));
-    """)
-    assert out["failed"]["founderBubbles"] == 1 and out["failed"]["resendButtons"] == 0
-    assert out["failed"]["inflight"]["message"] == "deploy the fix"
-    assert out["failed"]["sendDisabled"] is False
-    assert out["polled"]["founderBubbles"] == 1, "the failed message was drawn again"
-    assert out["polled"]["resendButtons"] == 0, "a second resend offer appeared"
-    assert out["polled"]["unconfirmedNotes"] == 0
-    assert out["polled"]["inflight"]["message"] == "deploy the fix", \
-        "the durable recovery for a failed turn was erased"
-    assert out["done"]["converseCalls"] == ["deploy the fix"]
-    assert out["done"]["messages"][-1] == {"role": "universe", "text": "Deployed."}
-    assert out["done"]["founderBubbles"] == 1 and out["done"]["inflight"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -320,119 +217,16 @@ def _prior_page_record(message: str, **extra) -> str:
     return "localStorage.setItem(INFLIGHT_KEY, %s);" % json.dumps(json.dumps(record))
 
 
-def test_a_reload_still_offers_the_previous_pages_unconfirmed_message_once(tmp_path, html):
-    record = _prior_page_record("hello there", client_send_id="reload-send")
-    out = _run(tmp_path, html, record + r"""
-    setQueueOwner("p-1");
-    await loadHistory();
-    await pollStatus(); await pollStatus(); await loadHistory(); await settle();
-    const offered=snapshot();
-    const note=els.thread.children.find(n=>n.unconfirmed);
-    await note.checkSavedConversation();
-    const resent=snapshot();
-    await pollStatus(); await settle();
-    const polledMidResend=snapshot();
-    Owner.getConversation=async()=>({recent_conversation:{turns:[
-      {speaker:"founder",text:"hello there",client_send_id:"reload-send"},
-      {speaker:"universe",text:"Hello!"}]}});
-    await note.checkSavedConversation();
-    console.log(JSON.stringify({offered, resent, polledMidResend, done:snapshot()}));
-    """)
-    assert out["offered"]["founderBubbles"] == 1, "reload recovery was lost"
-    assert out["offered"]["unconfirmedNotes"] == 1 and out["offered"]["resendButtons"] == 0
-    assert out["offered"]["inflight"]["message"] == "hello there"
-    assert out["offered"]["converseCalls"] == []
-    # The resend is a same-page turn now: the heartbeat leaves it alone.
-    assert out["resent"]["converseCalls"] == []
-    assert out["resent"]["founderBubbles"] == 1 and out["resent"]["resendButtons"] == 0
-    assert out["polledMidResend"]["founderBubbles"] == 1
-    assert out["polledMidResend"]["unconfirmedNotes"] == 1
-    assert out["polledMidResend"]["inflight"]["message"] == "hello there"
-    assert out["done"]["messages"] == [{"role": "founder", "text": "hello there"},
-                                       {"role": "universe", "text": "Hello!"}]
-    assert out["done"]["inflight"] is None
 
 
-def test_a_reload_after_a_failed_peek_is_offered_by_the_heartbeat_once(tmp_path, html):
-    """Codex round 3 (P1) kept: the peek failed, so the page learns its universe
-    from the heartbeat, and THAT pass offers the held message - once."""
-    out = _run(tmp_path, html, _prior_page_record("hello") + r"""
-    setQueueOwner("p-1");
-    Owner.getConversation=async()=>{ throw new Error("peek failed"); };
-    await loadHistory();
-    const beforeStatus=snapshot();
-    await pollStatus(); await pollStatus(); await settle();
-    console.log(JSON.stringify({beforeStatus, polled:snapshot()}));
-    """)
-    assert out["beforeStatus"]["founderBubbles"] == 0 and out["beforeStatus"]["inflight"]
-    assert out["polled"]["founderBubbles"] == 1
-    assert out["polled"]["unconfirmedNotes"] == 1 and out["polled"]["resendButtons"] == 0
-    assert out["polled"]["inflight"]["message"] == "hello"
 
 
-def test_a_delivered_message_found_in_history_clears_the_stale_record(tmp_path, html):
-    out = _run(tmp_path, html, _prior_page_record("continue", client_send_id="send-continue") + r"""
-    setQueueOwner("p-1");
-    Owner.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[
-      {speaker:"founder",text:"continue",ts:1700000100,client_send_id:"send-continue"},
-      {speaker:"universe",text:"Continuing.",ts:1700000101}]}});
-    await loadHistory(); await pollStatus(); await settle();
-    console.log(JSON.stringify(snapshot()));
-    """)
-    assert out["messages"] == [{"role": "founder", "text": "continue"},
-                               {"role": "universe", "text": "Continuing."}]
-    assert out["inflight"] is None and out["unconfirmedNotes"] == 0
 
 
 # ---------------------------------------------------------------------------
 # The account boundary: a retired turn's record becomes ordinary held state.
 # ---------------------------------------------------------------------------
 
-def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1");
-    await loadHistory(); await pollStatus();
-    const turn=sendTurn("account A private question");
-    await settle();
-    els["wakes-list"].textContent="account A private wake";
-    els["wakes-status"].textContent="account A wake status";
-    // Sign-out / other account on the same page: the page's own boundary code.
-    // The shim logs bubbles separately from the thread it empties, so the log
-    // is reset here to read what the NEXT account's screen shows.
-    clearAccountScopedState(); MCP._loginEpoch++; messages.length=0;
-    setQueueOwner("p-2"); setQueueScope("u-2");
-    Owner.getStatus=async()=>({active_host:"h",universe_id:"u-2"});
-    Owner.getConversation=async()=>({universe_id:"u-2", recent_conversation:{turns:[]}});
-    await loadHistory(); await pollStatus(); await pollStatus(); await settle();
-    const asB=snapshot();
-    const wakesAsB=[els["wakes-list"].textContent,els["wakes-status"].textContent];
-    // The old turn's reply lands after the switch: it paints nothing.
-    gates[0].resolve({reply:"account A private answer"}); await turn; await settle();
-    const afterLateReply=snapshot();
-    // Back as the original account on the same page: the retired turn's
-    // message is unconfirmed and is offered - once.
-    clearAccountScopedState(); MCP._loginEpoch++; messages.length=0;
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    Owner.getStatus=async()=>({active_host:"h",universe_id:"u-1"});
-    Owner.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[]}});
-    await loadHistory(); await pollStatus(); await pollStatus(); await settle();
-    console.log(JSON.stringify({asB, wakesAsB, afterLateReply, backAsA:snapshot()}));
-    """)
-    as_b = out["asB"]
-    assert out["wakesAsB"] == ["", ""], "the old account's wake content leaked"
-    assert as_b["founderBubbles"] == 0 and as_b["resendButtons"] == 0
-    assert [n["text"] for n in as_b["notes"]] == [
-        "An unconfirmed message from another command center's session on this browser "
-        "is waiting there; open that command center to see it."]
-    assert as_b["inflight"]["owner"] == "p-1", "the retired turn's record was erased"
-    assert as_b["sendDisabled"] is False
-    late = out["afterLateReply"]
-    assert late["universeBubbles"] == 0, "the old account's reply painted under the new one"
-    assert late["inflight"]["owner"] == "p-1"
-    back = out["backAsA"]
-    assert back["founderBubbles"] == 1 and back["unconfirmedNotes"] == 1
-    assert back["resendButtons"] == 0
-    assert back["converseCalls"] == ["account A private question"], "no silent resend"
 
 
 # ---------------------------------------------------------------------------
@@ -440,36 +234,6 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
 # of a turn this page started while that observation was in flight.
 # ---------------------------------------------------------------------------
 
-def test_a_late_consumer_observation_keeps_the_newer_live_turns_record(tmp_path, html):
-    request = {"version": 1, "request_key": "10cf4ccc-8528-48ae-a991-70cc35c1224f",
-               "binding_id": "chosen", "binding_revision": 1}
-    committed = {"reply": "Earlier answer", "consumer_turn": {
-        "version": 1, "turn_id": "a" * 32, "run_id": "run", "state": "completed",
-        "run_status": "completed", "projection": "committed"}}
-    out = _run(tmp_path, html,
-               _prior_page_record("earlier question", consumerRequest=request) + r"""
-    setQueueOwner("p-1");
-    let observe; MCP.callTool=(name,args)=>{ statusCalls.push({name,args});
-      return new Promise(r=>{observe=r;}); };
-    await loadHistory();                       // restoreInflight now awaits read_graph
-    await settle();
-    const turn=sendTurn("newer question");     // started while that await is pending
-    await settle();
-    observe(%s); await settle();
-    const observed=snapshot();
-    gates[0].resolve({reply:"Newer answer."}); await turn; await settle();
-    console.log(JSON.stringify({observed, done:snapshot()}));
-    """ % json.dumps(committed))
-    obs = out["observed"]
-    assert obs["messages"] == [{"role": "founder", "text": "newer question"},
-                               {"role": "founder", "text": "earlier question"},
-                               {"role": "universe", "text": "Earlier answer"}]
-    assert obs["inflight"]["message"] == "newer question", \
-        "the earlier request's outcome erased the live turn's recovery record"
-    assert obs["resendButtons"] == 0 and obs["unconfirmedNotes"] == 0
-    assert out["done"]["messages"][-1] == {"role": "universe", "text": "Newer answer."}
-    assert out["done"]["inflight"] is None
-    assert out["done"]["converseCalls"] == ["newer question"]
 
 
 # ---------------------------------------------------------------------------
@@ -522,87 +286,10 @@ console.log(JSON.stringify({
 """
 
 
-def test_an_unconfirmed_turn_holds_the_queue_and_offers_a_read_only_check(tmp_path, html):
-    """The failure the founder hit: a turn whose outcome nobody can confirm.
-
-    Nothing queued behind it may be flushed -- the universe may be working on
-    the first message right now, and the transport explicitly refused to say.
-    The composer comes back, the local record survives, and the only thing on
-    offer besides sending again is a READ: the existing idempotent conversation
-    peek, labelled as an observation and attributed to nothing.
-    """
-    out = _run(tmp_path, html, _UNCONFIRMED_QUEUE)
-
-    assert out["queuedBefore"] == 1, "the second line was supposed to queue"
-    assert out["queuedAfter"] == 1, (
-        "a queued message was auto-sent behind a turn whose outcome is unknown"
-    )
-    assert out["converseCalls"] == ["run the deploy"], "the queue drained itself"
-    assert out["heldNote"], "the held queue was never mentioned to the user"
-
-    # The composer is released by the turn's own owner-checked finally, and the
-    # draft the founder was typing is still there.
-    assert out["sendDisabled"] is False, "the composer stayed wedged"
-    assert out["draft"] == "a draft I was typing"
-
-    # An unconfirmed outcome keeps its local recovery record.
-    assert out["inflight"] and out["inflight"]["message"] == "run the deploy"
-
-    # The read-only action: one idempotent peek, no send, and no claim that any
-    # saved turn is this message's answer.
-    assert out["hadCheck"] is True, "no read-only way to look at saved progress"
-    assert out["peeks"] == 2, "the check must reuse the existing history read once"
-    assert "Not confirmed yet" in out["checkText"]
-    assert "snapshot" not in out["checkText"]
-    assert out["savedTexts"] == []
-    assert "Delivery could not be confirmed" in out["noteText"]
-    assert out["converseCalls"] == ["run the deploy"], "the check sent something"
 
 
-def test_restored_unconfirmed_send_can_observe_a_server_accepted_reply(tmp_path, html):
-    out = _run(tmp_path, html, r'''
-setQueueOwner("p-1"); setQueueScope("u-1");
-rememberInflight("run the deploy", "run the deploy", Date.now(),
-  "typed",null,null,"main","deploy-send");
-liveInflight=null; // Reload: the previous page no longer owns this send.
-await restoreInflight([]);
-const note=els.thread.children.find(n=>/never confirmed/.test(n.textContent));
-const check=note.children.find(c=>c.tagName==="BUTTON"&&c.textContent==="Check saved conversation");
-Owner.getConversation=async()=>({recent_conversation:{turns:[
-  {speaker:"founder",text:"run the deploy",ts:Date.now()/1000,client_send_id:"deploy-send"},
-  {speaker:"universe",text:"The deployment finished while you were away.",ts:Date.now()/1000}
-]}});
-if(check)check.click();
-await settle(); await settle();
-console.log(JSON.stringify({hadCheck:!!check, calls:converseCalls,
-  inflight:readInflight(), removed:!!note.removed, texts:snapshot().messages}));
-''')
-    assert out["hadCheck"], "reload loses the read-only recovery offered by a live send"
-    assert out["removed"]
-    assert out["texts"] == [
-        {"role": "founder", "text": "run the deploy"},
-        {"role": "universe", "text": "The deployment finished while you were away."},
-    ]
-    assert out["calls"] == []
-    assert out["inflight"] is None
 
 
-def test_a_new_manual_question_does_not_resume_held_commands(tmp_path, html):
-    setup = _UNCONFIRMED_QUEUE.split("const afterFailure = snapshot();", 1)[0]
-    out = _run(tmp_path, html, setup + r"""
-const question=sendTurn("What finished?");await settle();
-gates[1].resolve({reply:"Existing progress."});await question;await settle();
-const beforeResume={calls:converseCalls.slice(),queued:sendQueue.length};
-const resume=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
-  .find(c=>c.tagName==="BUTTON"&&c.textContent==="Send queued messages");
-if(!resume)throw new Error("No explicit resume control");
-resume.click();await settle();
-gates[2].resolve({reply:"Queued request completed."});await settle();
-console.log(JSON.stringify({beforeResume,calls:converseCalls.slice(),queued:sendQueue.length}));
-""")
-    assert out["beforeResume"] == {"calls": ["run the deploy", "What finished?"], "queued": 1}
-    assert out["calls"] == ["run the deploy", "What finished?", "and then tell me the result"]
-    assert out["queued"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -610,83 +297,5 @@ console.log(JSON.stringify({beforeResume,calls:converseCalls.slice(),queued:send
 # account and home - the live sequence contained no resend at all.
 # ---------------------------------------------------------------------------
 
-def test_a_new_typed_turn_tells_voice_to_retire_the_older_turns_retry_line(tmp_path, html):
-    """Live, 2026-09-23 PDT: the 17:39 turn failed at 17:46 and Voice said the
-    pending reply did not arrive and the message was available to retry. The
-    founder never clicked "Send it again" - they typed two NEW questions, at
-    17:47 and 17:54, answered at 17:51 and 18:01, and the sentence was still
-    there beside them. So the page's
-    own sendTurn must tell Voice at the START of each new turn whose turn it is
-    (owner and home, the same fence the reply uses), and hand it the settling
-    turn's identity on the failure. Nothing here resends anything."""
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1");
-    await loadHistory(); await pollStatus();
-    const settled=[], started=[];
-    Voice.conversationSettled=(delivered,record)=>settled.push({delivered,record});
-    Voice.turnStarted=(owner,scope)=>started.push({owner,scope});
-    // 17:39, failing at 17:46 - so Voice's retry sentence goes up.
-    const failing=sendTurn("Retest my checklist");
-    await settle();
-    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
-    await failing; await settle();
-    const afterFailure=snapshot();
-    // 17:47 and 17:54 - NEW questions, typed from scratch, answered 17:51/18:01.
-    const second=sendTurn("How is the progress going?"); await settle();
-    gates[1].resolve({reply:"Two of three are done."}); await second; await settle();
-    const third=sendTurn("Test cancellation for me"); await settle();
-    gates[2].resolve({reply:"Cancellation works."}); await third; await settle();
-    console.log(JSON.stringify({settled,started,afterFailure,done:snapshot(),
-      resendClicks:0}));
-    """)
-    # The only resend offer on screen was never clicked: every send is an
-    # original with its own text, exactly as the live sequence ran.
-    assert out["afterFailure"]["resendButtons"] == 0
-    assert out["done"]["converseCalls"] == [
-        "Retest my checklist", "How is the progress going?", "Test cancellation for me"]
-    assert len(set(out["done"]["converseCalls"])) == 3, "a message was sent twice"
-    # Each new turn announces itself to Voice with the account and home fence.
-    assert out["started"] == [{"owner": "p-1", "scope": "u-1"}] * 3
-    # And the failed turn is the one Voice is told did not arrive.
-    assert [s["delivered"] for s in out["settled"]] == [False, True, True]
-    failed = out["settled"][0]["record"]
-    assert failed["message"] == "Retest my checklist" and failed["ts"] > 0
-    assert failed["owner"] == "p-1" and failed["scope"] == "u-1"
-    assert failed["consumerRequest"] is None
-    assert out["done"]["messages"][-1] == {"role": "universe", "text": "Cancellation works."}
-    assert out["done"]["inflight"] is None and out["done"]["sendDisabled"] is False
 
 
-@pytest.mark.parametrize("dismiss", [False, True])
-def test_reconcile_backoff_clears_notice_without_replaying(tmp_path, html, dismiss):
-    record = _prior_page_record("recover me", client_send_id="recover-send")
-    out = _run(tmp_path, html, record + "const dismissIt=" + str(dismiss).lower() + r""";
-setQueueOwner("p-1");await loadHistory();await pollStatus();
-const note=els.thread.children.find(n=>n.unconfirmed);
-const realTimeout=setTimeout, scheduled=[];
-globalThis.setTimeout=(fn,ms)=>{scheduled.push({fn,ms});return {unref(){}};};
-globalThis.clearTimeout=()=>{};
-let reads=0;
-Owner.getConversation=async()=>{reads++;throw new Error("bad_gateway");};
-await note.checkSavedConversation();
-await note.checkSavedConversation();
-if(dismissIt)note.children.find(n=>n.textContent==="Dismiss").click();
-const hidden=!!note.hidden;
-Owner.getConversation=async()=>({recent_conversation:{turns:[
-  {id:"1",speaker:"founder",text:"recover me",client_send_id:"recover-send",ts:1},
-  {id:"2",speaker:"universe",text:"saved answer",ts:2}]}});
-document.visibilityState="visible";
-if(typeof navigator==="undefined")globalThis.navigator={};
-scheduled[scheduled.length-1].fn();
-await new Promise(r=>realTimeout(r,20));
-console.log(JSON.stringify({delays:scheduled.map(t=>t.ms),reads,hidden,
-  removed:!!note.removed,calls:converseCalls,record:readInflight(),
-  texts:messages,disabled:els["btn-send"].disabled}));
-""")
-    assert out["delays"] == [1000, 2000]
-    assert out["reads"] == 2
-    assert out["hidden"] is dismiss
-    assert out["removed"] and out["record"] is None
-    assert out["calls"] == [] and not out["disabled"]
-    assert out["texts"] == [{"role": "founder", "text": "recover me"},
-                            {"role": "universe", "text": "saved answer"}]

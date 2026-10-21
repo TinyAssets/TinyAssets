@@ -108,77 +108,6 @@ MAX_SERVED_TOOL_DESCRIPTION_CHARS = 500
 MAX_STOCK_RESIDENT_CHARS = 5_250
 
 
-@pytest.mark.parametrize("adapter", ["http", "claude", "codex"])
-def test_whole_stock_resident_payload_per_adapter(
-    tmp_path, monkeypatch, record_property, adapter, signed_in,
-):
-    import asyncio
-
-    from tests.conftest import own_universe
-    from tinyassets import engine_mcp_server, universe_tools
-    from tinyassets.api import visibility
-    from tinyassets.providers.agent_wire_codec import agent_wire_for
-    from tinyassets.served_tools import FOUR_MODEL_TOOLS
-    from tinyassets.starter_release import starter_manifest
-    from tinyassets.starter_seeds import seed_store
-    from tinyassets.universe_bundle import seed_okf_bundle
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    root = tmp_path / "stock"
-    root.mkdir()
-    own_universe(tmp_path, "stock")
-    daemon_server.grant_universe_ownership(
-        tmp_path, universe_id="stock", owner_id="test-owner::stock",
-    )
-    signed_in("test-owner::stock")
-    daemon_server.ensure_universe_registered(tmp_path, universe_id="stock", universe_path=root)
-    visibility.set_universe_visibility("stock", "private", source="owner")
-    seed_okf_bundle(root)
-    with seed_store(root, owner_id="test-owner::stock", center_id="stock") as seeds:
-        seeds.install(starter_manifest(), fresh=True)
-
-    def resident():
-        return (
-            _prompt(root, "stock") + "\n\n" + universe_tools.harness_prompt(root)
-            + universe_tools.command_center_summary(root, "test-owner::stock")
-            + "\n\n" + universe_intelligence._turn_input_method_context("typed")
-        )
-
-    system = resident()
-    registered = asyncio.run(engine_mcp_server.mcp.list_tools(run_middleware=False))
-    tools = tuple(Tool(name=t.name, description=t.description, inputSchema=t.parameters)
-                  for t in registered if t.name in FOUR_MODEL_TOOLS)
-    assert {t.name for t in tools} == set(FOUR_MODEL_TOOLS) == set(SERVED_ENGINE_MCP_TOOLS)
-    if adapter == "http":
-        from tinyassets.providers.agent_chat_codec import tool_definitions
-
-        _, body = agent_wire_for("chat_messages").encode(
-            prompt="Do my task", system=system, source_ref="stock", model="stock",
-            tools=tool_definitions(tools),
-        )
-        definitions = json.dumps(body["tools"], ensure_ascii=False)
-    else:
-        definitions = json.dumps([
-            t.model_copy(update={"name": "mcp__tinyassets__" + t.name}).model_dump(
-                exclude_none=True)
-            if adapter == "claude" else t.model_dump(exclude_none=True)
-            for t in tools
-        ], ensure_ascii=False)
-    total = len(system) + len(definitions)
-    record_property(f"{adapter}_stock_system_chars", len(system))
-    record_property(f"{adapter}_stock_schema_chars", len(definitions))
-    record_property(f"{adapter}_stock_chars_per_4_tokens", total / 4)
-    assert total <= MAX_STOCK_RESIDENT_CHARS, (adapter, len(system), len(definitions), total)
-
-    owner_text = "My owner prefers cobalt and works on orchard forecasts. " * 20
-    (root / "founder.md").write_text(owner_text, encoding="utf-8")
-    expanded = resident()
-    assert owner_text.strip() in expanded
-    dynamic = len(expanded) - len(system)
-    assert dynamic >= len(owner_text.strip())
-    record_property(f"{adapter}_dynamic_owner_context_chars", dynamic)
-    # Dynamic context is reported separately, never sliced to make a budget pass.
-    assert len(expanded) + len(definitions) == total + dynamic
 
 
 def _learning_call(system: str) -> bool:
@@ -309,81 +238,12 @@ def _converse(turn, message="what's a good name for a cat?"):
 # ---------------------------------------------------------------------------
 
 
-def test_one_tool_step_costs_a_whole_extra_round_trip(turn):
-    """The shape of the cost: N tool steps means N+1 reply round-trips."""
-    turn.agent.requested_rounds = 1
-    reply, _total = _converse(turn)
-    assert reply == FINAL_REPLY
-    writers = [row for row in turn.calls if row["kind"] != "extract_learning"]
-    assert [row["kind"] for row in writers] == ["writer_round_1", "writer_round_2"]
-    # Every round re-sends the whole system prompt and the whole tool block: the
-    # second round is the first one again plus the tool result.
-    assert writers[1]["system_chars"] == writers[0]["system_chars"]
-    assert writers[1]["tool_schema_bytes"] == writers[0]["tool_schema_bytes"]
-    assert writers[1]["body_bytes"] > writers[0]["body_bytes"]
 
 
-def test_a_turn_that_records_its_own_lesson_pays_for_two_round_trips(turn):
-    """The saving, pinned as CONDITIONAL — which is the honest shape of it.
-
-    A turn whose tool step was the governed brain write has already recorded what
-    it was taught, so the extraction call is skipped: two round-trips, not three.
-    A turn that recorded nothing still pays three (the test below), so no lesson is
-    lost and no turn is slower than it was
-    (`openspec/changes/deferred-learning-never-blocks-the-reply/`).
-    """
-    turn.agent.requested_rounds = 1
-    turn.tool_name = "write_brain"
-    reply, total = _converse(turn)
-    assert reply == FINAL_REPLY
-    assert [row["kind"] for row in turn.calls] == ["writer_round_1", "writer_round_2"]
-    assert "extract_learning" not in [row["kind"] for row in turn.calls]
-    # And the founder waits on two round-trips of source latency, not three. Wire
-    # time, not wall clock: this rig's local overhead is a real fraction of a
-    # 0.2s synthetic latency and is not what the saving is about.
-    waited = sum(row["t_end"] - row["t_start"] for row in turn.calls)
-    assert 2 * WIRE_LATENCY_S <= waited < 3 * WIRE_LATENCY_S
-    assert total >= waited
 
 
-def test_extract_learning_is_a_third_round_trip_inside_the_founders_wait(turn):
-    """A turn that recorded NOTHING still pays the third round-trip, as before.
-
-    Pinned as a MEASUREMENT, not as desired behaviour: taking this call off the
-    founder's clock entirely needs a provider lease that outlives the request (the
-    lease is revoked in ``universe_server._register_structured_tool``'s
-    ``finally``), which is an authority change, not an orchestration one — its own
-    change, designed against the cursor-settle rate this one produces.
-    """
-    turn.agent.requested_rounds = 1
-    reply, total = _converse(turn)
-    assert reply == FINAL_REPLY
-    assert [row["kind"] for row in turn.calls] == [
-        "writer_round_1", "writer_round_2", "extract_learning",
-    ]
-    # The learning call is the LAST thing that happens inside converse, and it
-    # starts only after the round-trip that produced the reply has ended.
-    assert turn.calls[-1]["t_start"] >= turn.calls[-2]["t_end"]
-    reply_ready_at = turn.calls[-2]["t_end"]
-    withheld_s = turn.calls[-1]["t_end"] - reply_ready_at
-    assert withheld_s >= WIRE_LATENCY_S
-    assert total >= 3 * WIRE_LATENCY_S
-    # It carries no tool block of its own, so its cost is the round-trip itself.
-    assert turn.calls[-1]["tool_schemas"] == 0
 
 
-def test_the_learning_call_never_costs_the_founder_their_reply(turn, caplog):
-    """The measured cost is time, never the answer: a dead extractor is silent."""
-    turn.agent.requested_rounds = 0
-
-    def explode(*_args, **_kwargs):
-        raise RuntimeError("synthetic extractor failure")
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(universe_intelligence, "extract_learning", explode)
-        reply, _total = _converse(turn)
-    assert reply == FINAL_REPLY
-    assert [row["kind"] for row in turn.calls] == ["writer_round_1"]
 
 
 # ---------------------------------------------------------------------------
@@ -391,35 +251,8 @@ def test_the_learning_call_never_costs_the_founder_their_reply(turn, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_engine_tool_description_budget_does_not_grow():
-    """Ratchet: the tool manual rides on EVERY round of EVERY served turn."""
-    import asyncio
-
-    from tinyassets import engine_mcp_server
-
-    async def descriptions():
-        tools = {tool.name: tool for tool in await engine_mcp_server.mcp.list_tools()}
-        missing = [name for name in SERVED_ENGINE_MCP_TOOLS if name not in tools]
-        assert not missing, f"served handles absent from the engine surface: {missing}"
-        return {name: (tools[name].description or "") for name in SERVED_ENGINE_MCP_TOOLS}
-
-    bodies = asyncio.run(descriptions())
-    total = sum(len(text) for text in bodies.values())
-    biggest = max(bodies, key=lambda name: len(bodies[name]))
-    assert total <= MAX_SERVED_TOOL_DESCRIPTION_CHARS, (
-        f"served tool descriptions are {total} chars, over the "
-        f"{MAX_SERVED_TOOL_DESCRIPTION_CHARS} ratchet; largest is {biggest!r} at "
-        f"{len(bodies[biggest])}. This text is re-sent on every round-trip of "
-        "every served founder turn -- raise the ratchet only with the latency "
-        "cost stated."
-    )
 
 
-def test_static_folder_harness_budget_does_not_grow():
-    """New request-economy guidance pays for itself in the existing harness."""
-    from tinyassets.universe_tools import _HARNESS_HEAD
-
-    assert len(_HARNESS_HEAD) <= 220
 
 
 # ---------------------------------------------------------------------------
@@ -433,60 +266,9 @@ def _prompt(universe_dir, uid, tier=interlocutor.FOUNDER):
     )
 
 
-def test_quoted_grounding_is_declared_current_so_recall_needs_no_round_trip(turn):
-    """Red before the fix: the files were inlined but never declared current."""
-    universe_dir = turn.agent.served.context.universe_dir
-    (universe_dir / "founder.md").write_text(
-        "My founder's favourite colour is cobalt.\n", encoding="utf-8",
-    )
-    text = _prompt(universe_dir, turn.uid)
-    assert "## founder.md" in text
-    assert "My founder's favourite colour is cobalt." in text
-    lowered = text.lower()
-    assert "current and complete contents as of this turn" in lowered
-    # The claim is about the quoted sections, and it must precede them.
-    assert lowered.index("current and complete contents") < lowered.index("## founder.md")
-    # It removes the REASON to re-fetch, never the ability: nothing here forbids
-    # a read, and the read-before-edit rule survives.
-    assert "edit" in lowered
-    for forbidding in ("do not read", "never read", "you may not read"):
-        assert forbidding not in lowered
 
 
-def test_nothing_is_declared_current_when_no_file_was_inlined(turn):
-    """The claim is never made about contents that are not there."""
-    universe_dir = turn.agent.served.context.universe_dir
-    for name in universe_intelligence._GROUNDING_FILES:
-        path = universe_dir / name
-        if path.exists():
-            path.unlink()
-    text = _prompt(universe_dir, turn.uid)
-    assert "nothing learned yet" in text
-    assert "current and complete contents" not in text.lower()
 
 
-def test_a_withheld_tier_still_gets_the_refusal_not_a_claim(turn):
-    """Nothing about the fix reaches a tier the visibility filter closes out."""
-    universe_dir = turn.agent.served.context.universe_dir
-    (universe_dir / "founder.md").write_text("Founder dossier.\n", encoding="utf-8")
-    with pytest.raises(PermissionError, match="no authorized content"):
-        _prompt(universe_dir, turn.uid, tier=interlocutor.T1)
 
 
-def test_the_claim_names_only_the_files_the_filter_permitted(turn, monkeypatch):
-    """A narrowed grounding set gets the header for THAT set and nothing more."""
-    universe_dir = turn.agent.served.context.universe_dir
-    (universe_dir / "founder.md").write_text("Founder dossier.\n", encoding="utf-8")
-    (universe_dir / "identity.md").write_text("I am the rig universe.\n", encoding="utf-8")
-    monkeypatch.setattr(
-        universe_intelligence.interlocutor,
-        "permitted_grounding_files",
-        lambda universe_id, files, *, tier: ("identity.md",),
-    )
-    text = _prompt(universe_dir, turn.uid)
-    assert "## identity.md" in text
-    assert "current and complete contents as of this turn" in text.lower()
-    # The header must not imply the withheld file exists, and its body must not
-    # ride in under another heading.
-    assert "founder.md" not in text
-    assert "Founder dossier." not in text

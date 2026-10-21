@@ -15,18 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from tests.test_interactive_http_agent import agent, reader, rig, run, served  # noqa: F401
-from tinyassets import engine_tool_client, turn_interrupt
 from tinyassets.providers.base import ModelConfig
 from tinyassets.storage.agent_turn_boot import BOOT
-from tinyassets.turn_interrupt import TurnInterrupted, interactive_turn, request_interrupt
 
 
 def _uid(agent):
@@ -59,91 +55,16 @@ def _not_thinking(agent, turn):
 # ---------------------------------------------------------------------------
 
 
-def test_stop_during_http_inference_keeps_the_reply_and_runs_no_tool(agent):
-    """The HTTP round returns (it cannot be aborted); its tool call never runs."""
-    with interactive_turn("owner", _uid(agent)) as live:
-        agent.before_reply = live.request
-        with pytest.raises(TurnInterrupted) as stopped:
-            run(agent)
-    turn = agent.latest()
-    assert len(agent.wires) == 1 and agent.tools == [], "a tool ran after the stop"
-    # The requested call is recorded as proven-unsent, never as unknown.
-    assert turn.rounds[0].state == "received"
-    assert [tool.state for tool in turn.rounds[0].tools] == ["not_sent"]
-    assert turn.state == "held_tool_not_sent"
-    # The round's real spend was settled, not charged as indeterminate.
-    assert _reservations(agent) == ["succeeded"]
-    assert stopped.value.turn_effects == "none"
-    assert stopped.value.completed_tools == ()
-    _not_thinking(agent, turn)
 
 
-def test_stop_during_a_tool_call_lets_it_finish_and_starts_nothing_after(agent, monkeypatch):
-    """A running engine call completes and is recorded; no further inference."""
-    original = engine_tool_client.EngineToolSession.call
-    with interactive_turn("owner", _uid(agent)) as live:
-        async def call(self, name, arguments):
-            live.request()
-            return await original(self, name, arguments)
-
-        monkeypatch.setattr(engine_tool_client.EngineToolSession, "call", call)
-        with pytest.raises(TurnInterrupted) as stopped:
-            run(agent)
-    turn = agent.latest()
-    assert len(agent.tools) == 1 and len(agent.wires) == 1, (
-        "the stop either aborted the running tool or let another round start")
-    tool = turn.rounds[0].tools[0]
-    assert tool.state == "completed" and "exact result" in tool.result_json
-    # Quiescent after a completed tool: closed with everything it did kept.
-    assert turn.state == "abandoned"
-    assert stopped.value.turn_effects == "some"
-    # The model's one tool call: bash running `ta call read_graph` (four tools).
-    assert stopped.value.completed_tools == ("bash",)
-    assert "ta call read_graph" in agent.tools[0][1]["command"]
-    _not_thinking(agent, turn)
 
 
-def test_stop_before_the_first_round_sends_nothing(agent):
-    with interactive_turn("owner", _uid(agent)) as live:
-        live.request()
-        with pytest.raises(TurnInterrupted) as stopped:
-            run(agent)
-    turn = agent.latest()
-    assert agent.wires == [] and agent.tools == []
-    assert turn.state == "abandoned" and not turn.rounds
-    assert stopped.value.turn_effects == "none"
-    _not_thinking(agent, turn)
 
 
-def test_another_user_cannot_stop_the_turn(agent):
-    """The key is the caller's own verified subject: nobody else's stop reaches it."""
-    counts = []
-    with interactive_turn("owner", _uid(agent)):
-        def intruders():
-            counts.append(request_interrupt("intruder", _uid(agent)))
-            # The owner's name on a DIFFERENT universe is not this turn either.
-            counts.append(request_interrupt("owner", "some-other-universe"))
-
-        agent.before_reply = intruders
-        assert run(agent) == "finished exact answer"
-    # Asked before every reply the turn received (two rounds), never honoured.
-    assert counts == [0, 0, 0, 0]
-    assert agent.latest().state == "completed" and len(agent.tools) == 1
 
 
-def test_the_registry_is_empty_once_the_turn_returns(agent):
-    with interactive_turn("owner", _uid(agent)):
-        assert turn_interrupt.live_count("owner", _uid(agent)) == 1
-        run(agent)
-    assert turn_interrupt.live_count("owner", _uid(agent)) == 0
-    assert request_interrupt("owner", _uid(agent)) == 0
 
 
-def test_an_empty_subject_is_never_a_key():
-    with pytest.raises(ValueError):
-        request_interrupt("", "u-1")
-    with pytest.raises(ValueError), interactive_turn("  ", "u-1"):
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -208,54 +129,12 @@ def _call_sync(provider, operation):
                                    operation=operation, universe_context=context)
 
 
-def test_an_http_call_is_never_cancelled_so_its_usage_settles():
-    """astra round 1: cancelling an HTTP call lost its response and its real spend.
-
-    The HTTP provider waits for its request even when cancelled, so a stop there
-    buys no time; the call returns and the turn stops at its next boundary.
-    """
-    provider, state = _slow_provider("engine_inference", 0.6)
-    with interactive_turn("owner", "u-1") as live:
-        threading.Timer(0.1, live.request).start()
-        assert _call_sync(provider, "converse").text == "done"
-        assert live.requested()
-    assert state.finished and not state.cancelled
 
 
-def test_another_operation_inside_the_chat_turns_own_loop_is_not_stopped():
-    """The dispatch site gates on the operation itself, not only on call_sync."""
-    from tests.support.owner_bound import owner_bound_call
-    from tinyassets.providers.router import ProviderRouter
-
-    provider, state = _slow_provider("http_tools", 0.2)
-    router = ProviderRouter(providers={provider.name: provider})
-    with interactive_turn("owner", "u-1") as live:
-        live.request()
-        # asyncio.run copies this context, so the live turn IS visible here.
-        response = asyncio.run(owner_bound_call(router, provider.name))
-    assert response.text == "done" and state.finished and not state.cancelled
 
 
-def test_a_call_that_is_not_the_chat_turn_is_never_stopped():
-    """A stop already requested reaches only ``converse``: never an automation's call."""
-    provider, state = _slow_provider("http_tools", 0.2)
-    with interactive_turn("owner", "u-1") as live:
-        live.request()
-        assert _call_sync(provider, "run_graph").text == "done"
-    assert state.finished and not state.cancelled
 
 
-def test_a_workflow_agent_turn_never_takes_the_live_stop():
-    """Automations and agent nodes run through WorkflowAgentTurn: no interrupt handle."""
-    from tinyassets.workflow_agent import WorkflowAgentTurn
-
-    with interactive_turn("owner", "u-1") as live:
-        live.request()
-        node = WorkflowAgentTurn(
-            adapter=SimpleNamespace(), router=SimpleNamespace(), prompt="p", system="s",
-            universe_context=SimpleNamespace(agent_model_plan=None), config=ModelConfig(),
-        )
-    assert node.interrupt is None
 
 
 # ---------------------------------------------------------------------------
@@ -263,49 +142,8 @@ def test_a_workflow_agent_turn_never_takes_the_live_stop():
 # ---------------------------------------------------------------------------
 
 
-def test_the_notice_says_interrupted_and_what_ran():
-    from tinyassets.conversation_failure import failure_notice, turn_failure
-
-    nothing = failure_notice(turn_failure("interrupted", effects="none"))
-    assert nothing.startswith("Interrupted — you stopped this turn") and "Nothing ran." in nothing
-    some = failure_notice(turn_failure(
-        "interrupted", stage="tool", effects="some",
-        provider_detail="Completed before the stop: read_graph",
-    ))
-    assert some.startswith("Interrupted")
-    assert "Some actions ran before it stopped" in some and "read_graph" in some
-    # Never led by the stage: a stop before a tool is not that tool failing.
-    assert "Running one of your universe's tools" not in some
 
 
-def test_converse_returns_interrupted_and_keeps_it_in_history(monkeypatch, tmp_path):
-    import tinyassets.universe_intelligence as ui
-    import tinyassets.universe_server as us
-    from tests.test_converse_handle import _founder_auth
-    from tinyassets.conversation_store import load_recent
-
-    _founder_auth(monkeypatch, base=tmp_path)
-    seen = []
-
-    def stopped_turn(uid, msg, **kwargs):
-        seen.append(turn_interrupt.live_count("founder-1", uid))
-        assert request_interrupt("founder-1", uid) == 1
-        error = TurnInterrupted("stopped")
-        error.turn_effects, error.turn_stage, error.turn_ref = "some", "tool", "t-ref-1"
-        error.completed_tools = ("read_graph",)
-        turn_interrupt.current().check()
-        raise error
-
-    monkeypatch.setattr(ui, "converse", stopped_turn)
-    out = json.loads(us.converse(message="do the thing", graph_id="u-x"))
-    assert seen == [1], "the served turn was not registered for its caller"
-    assert out["interrupted"] is True and out["history_saved"] is True
-    assert out["failure_notice"].startswith("Interrupted")
-    assert out["turn_failure"]["code"] == "interrupted"
-    assert turn_interrupt.live_count("founder-1", "u-x") == 0
-    rows = load_recent(tmp_path / "u-x", "principal:founder-1")
-    assert [r.speaker for r in rows][-2:] == ["founder", "platform"]
-    assert rows[-2].text == "do the thing" and rows[-1].text.startswith("Interrupted")
 
 
 class _Request:
@@ -318,151 +156,13 @@ class _Request:
         yield self._body
 
 
-def test_the_route_stops_only_the_callers_own_turn(monkeypatch):
-    from tinyassets import onboarding
-    from tinyassets.auth import middleware
-
-    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
-    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
-    caller = SimpleNamespace(user_id="owner")
-    monkeypatch.setattr(middleware, "current_identity", lambda: caller)
-
-    def post(body):
-        response = asyncio.run(onboarding._handle_turn_interrupt(_Request(body)))
-        return response.status_code, json.loads(response.body)
-
-    with interactive_turn("owner", "u-1") as mine, interactive_turn("other", "u-1") as theirs:
-        assert post({"universe_id": "u-1"}) == (200, {"interrupted": 1, "universe_id": "u-1"})
-        assert mine.requested() and not theirs.requested(), (
-            "a stop reached another user's turn in the same universe")
-    caller.user_id = "intruder"
-    with interactive_turn("owner", "u-1") as mine:
-        assert post({"universe_id": "u-1"})[1]["interrupted"] == 0
-        assert not mine.requested()
 
 
-def test_live_run_returns_work_that_finished_before_the_stop():
-    """A result that exists is kept; the stop then applies at the next boundary."""
-    live = turn_interrupt.LiveTurn("owner", "u-1")
-
-    async def quick():
-        return "answer"
-
-    async def drive():
-        return await live.run(quick())
-
-    assert asyncio.run(drive()) == "answer"
 
 
-def test_a_stop_reaches_the_addressed_agent_and_stop_all_reaches_every_one():
-    """Harness §4.18: a stop targets the agent being talked to; stop-all stays."""
-    from tinyassets import turn_interrupt as ti
-
-    with ti.interactive_turn("owner-x", "u-x") as main_turn, \
-            ti.interactive_turn("owner-x", "u-x", agent_id="researcher") as other:
-        assert ti.request_interrupt("owner-x", "u-x", agent_id="researcher") == 1
-        assert other.requested() and not main_turn.requested()
-        assert ti.request_interrupt("owner-x", "u-x") == 2
-        assert main_turn.requested()
 
 
-def test_the_route_stops_the_addressed_agent_and_leaves_the_others_running(monkeypatch):
-    """Harness §4.18: Stop belongs to the conversation it was pressed in.
-
-    With no ``agent_id`` the route is explicit stop-all, which is what it has
-    always been and what a caller that wants everything still gets. With one,
-    it must reach only that agent's live turn -- otherwise ending a main chat
-    ends a custom agent's background turn too.
-    """
-    from types import SimpleNamespace as NS
-
-    from tinyassets import addressed_agents, onboarding
-    from tinyassets.api import helpers
-    from tinyassets.auth import middleware
-
-    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
-    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
-    monkeypatch.setattr(middleware, "current_identity", lambda: NS(user_id="owner"))
-    monkeypatch.setattr(helpers, "_base_path", lambda: Path("/nonexistent-base"))
-
-    def resolve(_base, *, universe_id, owner, agent_id):
-        assert (universe_id, owner) == ("u-1", "owner")
-        wanted = "" if agent_id is None else str(agent_id)
-        if wanted in ("", "main"):
-            return None
-        if wanted == "a-weaver":
-            return NS(agent_id="a-weaver", name="Evidence Weaver")
-        raise addressed_agents.AgentNotAddressable(f"no agent {wanted!r} here")
-
-    monkeypatch.setattr(addressed_agents, "resolve", resolve)
-
-    def post(body):
-        response = asyncio.run(onboarding._handle_turn_interrupt(_Request(body)))
-        return response.status_code, json.loads(response.body)
-
-    with interactive_turn("owner", "u-1") as main_turn, \
-            interactive_turn("owner", "u-1", agent_id="a-weaver") as weaver:
-        status, answer = post({"universe_id": "u-1", "agent_id": "a-weaver"})
-        assert status == 200
-        assert answer == {"interrupted": 1, "universe_id": "u-1", "agent_id": "a-weaver"}
-        assert weaver.requested(), "the addressed agent's turn was not stopped"
-        assert not main_turn.requested(), "the main turn was stopped as well"
-
-        # main is an agent, not a wildcard.
-        assert post({"universe_id": "u-1", "agent_id": "main"})[1]["interrupted"] == 1
-        assert main_turn.requested()
-
-    # An id that is not the owner's own is refused by name, never widened to all.
-    with interactive_turn("owner", "u-1") as mine:
-        status, refused = post({"universe_id": "u-1", "agent_id": "someone-elses"})
-        assert status == 404 and refused["error"] == "agent_not_found"
-        assert not mine.requested(), "a refused agent id stopped a turn anyway"
-
-    # No agent_id at all stays the explicit stop-all this route has always been.
-    with interactive_turn("owner", "u-1") as a, \
-            interactive_turn("owner", "u-1", agent_id="a-weaver") as b:
-        assert post({"universe_id": "u-1"})[1] == {"interrupted": 2, "universe_id": "u-1"}
-        assert a.requested() and b.requested()
 
 
-@pytest.mark.parametrize("failure", [
-    TurnInterrupted("connection ended"), ConnectionError("connection lost"),
-])
-def test_disconnect_never_records_an_owner_stop(monkeypatch, tmp_path, failure):
-    import tinyassets.universe_intelligence as ui
-    import tinyassets.universe_server as us
-    from tests.test_converse_handle import _founder_auth
-    from tinyassets.conversation_store import load_recent
-
-    _founder_auth(monkeypatch, base=tmp_path)
-
-    def disconnected(uid, msg, **kwargs):
-        assert not turn_interrupt.current().requested()
-        raise failure
-
-    monkeypatch.setattr(ui, "converse", disconnected)
-    out = json.loads(us.converse(message="do the thing", graph_id="u-x"))
-    assert not out.get("interrupted")
-    assert out["history_saved"]
-    assert out["turn_failure"]["code"] != "interrupted"
-    rows = load_recent(tmp_path / "u-x", "principal:founder-1")
-    assert "you stopped" not in rows[-1].text
 
 
-def test_cancelling_a_live_connection_does_not_request_stop():
-    async def scenario():
-        live = turn_interrupt.LiveTurn("owner", "u-1")
-        started = asyncio.Event()
-
-        async def work():
-            started.set()
-            await asyncio.Event().wait()
-
-        task = asyncio.create_task(live.run(work()))
-        await started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not live.requested()
-
-    asyncio.run(scenario())

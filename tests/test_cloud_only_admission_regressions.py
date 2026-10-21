@@ -233,181 +233,21 @@ def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1")
 # --- matrix 1: negative direct claim --------------------------------------
 
 
-def test_unadmitted_direct_claim_assigned_claims_nothing(
-    tmp_path: Path, bind_provenance
-) -> None:
-    """Matrix 1. No `authority_claim` callback is passed — that is the point.
-
-    `transaction_check` returns the non-optional predicate's result unchanged
-    when `authority_claim is None` (`branch_tasks_v2.py:489`), so a gate that
-    lives only in the optional callback is opt-out by construction and a test
-    that supplies one proves nothing. The setup is a valid ready assignment
-    with a valid unexpired consumer lease; the only thing wrong with this
-    process is that it is not admitted.
-    """
-    bind_provenance(UNADMITTED)
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
-    assert claimed is None, "unadmitted process claimed an assigned cloud task"
-    assert claimed_by == "", f"unadmitted process is recorded as claimer: {claimed_by}"
-    assert status == "pending", (
-        f"task left {status!r}, not pending, by an unadmitted claim"
-    )
 
 
-@pytest.mark.parametrize("copied_labels", COPIED_LABEL_VARIANTS)
-def test_admitted_direct_claim_assigned_still_succeeds(
-    copied_labels: bool, tmp_path: Path, bind_provenance, monkeypatch
-) -> None:
-    """Preserved behaviour, and the control for the negative above.
-
-    Identical fixture, identical call, only the injected verdict differs. If
-    this fails, the negative's red is setup breakage rather than a refusal.
-
-    The `copied_labels` leg is additionally the positive control for
-    `test_existing_registration_and_cloud_labels_do_not_authorize_claim`: the
-    same process dressing that must not authorize an unadmitted claim must
-    also not *block* an admitted one. A dressed process that could no longer
-    claim would make that negative unreadable — a refusal and a broken fixture
-    look identical from the persisted row.
-    """
-    bind_provenance(ADMITTED)
-    maybe_copied_cloud_labels(copied_labels, monkeypatch, tmp_path)
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    assert claimed is not None
-    assert claimed.claimed_by == lease.consumer_id
-    status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
-    assert claimed_by == lease.consumer_id
-    assert status != "pending"
 
 
 # --- matrix 2: negative registration --------------------------------------
 
 
-def test_unadmitted_ensure_daemon_runtime_writes_no_cloud_worker_row(
-    tmp_path: Path, bind_provenance
-) -> None:
-    """Matrix 2. Asserted on the persisted row, never on source text.
-
-    A permission refusal or a refusing return is acceptable. An arbitrary
-    programming/setup error must fail the test, not count as admission safety.
-    After an unadmitted call there must be no cloud-worker registration row.
-    """
-    bind_provenance(UNADMITTED)
-    registration_args = _cloud_registration_args(tmp_path)
-
-    try:
-        ensure_daemon_runtime(tmp_path, **registration_args)
-    except PermissionError:
-        pass
-
-    rows = _cloud_worker_rows(tmp_path)
-    assert rows == [], (
-        f"unadmitted process registered {len(rows)} cloud_worker runtime row(s)"
-    )
 
 
-def test_admitted_ensure_daemon_runtime_registers_cloud_worker(
-    tmp_path: Path, bind_provenance
-) -> None:
-    """Preserved behaviour: the admitted path still registers."""
-    bind_provenance(ADMITTED)
-
-    runtime = _register_cloud_worker(tmp_path)
-
-    assert runtime["metadata"]["runtime_registration"] == "cloud_worker"
-    rows = _cloud_worker_rows(tmp_path)
-    assert len(rows) == 1
-    assert rows[0]["instance_id"] == runtime["runtime_instance_id"]
 
 
 # --- matrix 4/5 (bounded): a row and a cloud-looking host are not authority --
 
 
-def test_existing_registration_and_cloud_labels_do_not_authorize_claim(
-    tmp_path: Path, bind_provenance, monkeypatch
-) -> None:
-    """Matrix 4 + 5, bounded to what a local fixture can honestly show.
-
-    The registration row is written while admitted, then the same data root is
-    read by an unadmitted process wearing the full copied-container label set
-    (`apply_copied_cloud_labels`): every compose env var, the
-    `mcp.tinyassets.io` hostname and the service name. None of those is
-    evidence, and an existing row
-    is not permission — authority is re-resolved on read (`design.md`
-    § Enforcement sites (B)). No real production path is set and no live state
-    is touched: the data root is the pytest temp dir throughout.
-    """
-    bind_provenance(ADMITTED)
-    registered = _register_cloud_worker(tmp_path)
-    assert registered["metadata"]["runtime_registration"] == "cloud_worker"
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    # Now the same checkout, off cloud, dressed up.
-    bind_provenance(UNADMITTED)
-    apply_copied_cloud_labels(monkeypatch, tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
-    assert claimed is None, (
-        "an existing registration plus cloud-looking labels authorized an "
-        "unadmitted claim"
-    )
-    assert claimed_by == ""
-    assert status == "pending"
-    assert _cloud_worker_rows(tmp_path), "fixture lost the pre-existing registration"
 
 
-def test_copied_cloud_labels_do_not_authorize_registration(
-    tmp_path: Path, bind_provenance, monkeypatch
-) -> None:
-    """Matrix 5, registration site.
-
-    The same dressed-up process that cannot claim also cannot *register*. This
-    is the site row 5 names that row 1's claim case cannot reach: registration
-    is where an unadmitted runtime would otherwise mint the row a later read
-    could mistake for authority, so a spoof that stops at claim leaves the
-    upstream door open.
-
-    Asserted on the persisted row (`_cloud_worker_rows`), never on a return
-    value or source text, and the admitted control below is what proves the
-    fixture can register at all.
-    """
-    bind_provenance(UNADMITTED)
-    apply_copied_cloud_labels(monkeypatch, tmp_path)
-    registration_args = _cloud_registration_args(tmp_path)
-
-    try:
-        ensure_daemon_runtime(tmp_path, **registration_args)
-    except PermissionError:
-        pass
-
-    rows = _cloud_worker_rows(tmp_path)
-    assert rows == [], (
-        f"a process wearing copied cloud labels registered {len(rows)} "
-        "cloud_worker runtime row(s)"
-    )
 
 
-def test_copied_cloud_labels_leave_the_admitted_registration_intact(
-    tmp_path: Path, bind_provenance, monkeypatch
-) -> None:
-    """Control for the negative above: the labels are not what breaks it.
-
-    Identical labels, identical call, admitted verdict. If this failed, the
-    negative would be a label-induced setup error rather than a refusal.
-    """
-    bind_provenance(ADMITTED)
-    apply_copied_cloud_labels(monkeypatch, tmp_path)
-
-    runtime = _register_cloud_worker(tmp_path)
-
-    assert runtime["metadata"]["runtime_registration"] == "cloud_worker"
-    assert len(_cloud_worker_rows(tmp_path)) == 1

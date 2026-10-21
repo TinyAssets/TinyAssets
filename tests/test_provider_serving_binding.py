@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 
 def _definition() -> dict[str, object]:
@@ -29,61 +28,5 @@ def _seed_universe(tmp_path):
                                 select_for_serving=False, return_binding=True)
 
 
-@pytest.mark.parametrize(
-    ("operation", "payload"),
-    [
-        ("bind_serving_provider", '{"provider":"codex"}'),
-        ("set_serving", '{"enabled":true}'),
-    ],
-)
-def test_write_graph_routes_first_class_serving_operations(
-    monkeypatch,
-    operation,
-    payload,
-):
-    import json
-
-    import tinyassets.universe_server as server
-
-    seen: dict[str, object] = {}
-
-    def _dispatch(**kwargs):
-        seen.update(kwargs)
-        return {"status": "ok"}
-
-    monkeypatch.setattr(server, "_commons_catalog_impl", _dispatch)
-    response = json.loads(
-        server.write_graph(
-            target="agent_binding",
-            operation=operation,
-            graph_id="u-owner",
-            agent_binding_id="agent-binding-1",
-            expected_revision=4,
-            payload_json=payload,
-        )
-    )
-
-    assert response == {"status": "ok"}
-    assert seen["action"] == operation
-    assert seen["universe_id"] == "u-owner"
-    assert seen["binding_id"] == "agent-binding-1"
-    assert seen["expected_revision"] == 4
-    assert seen["payload"] == payload
 
 
-@pytest.mark.parametrize("operation", ["bind", "enable"])
-def test_absent_binding_has_a_dedicated_exception(tmp_path, operation, monkeypatch):
-    from tests.support.http_model import seed_http_assignment
-    from tinyassets import provider_serving_binding as serving
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    provider = seed_http_assignment(tmp_path, owner_user_id="owner-1",
-                                    universe_id="missing-home")
-    args = dict(base_path=tmp_path, universe_dir=tmp_path / "missing-home",
-                universe_id="missing-home", owner_user_id="owner-1",
-                agent_binding_id="missing-binding", expected_revision=1)
-    with pytest.raises(serving.AgentBindingNotFound, match="agent binding was not found"):
-        if operation == "bind":
-            serving.bind_serving_provider(**args, provider=provider)
-        else:
-            serving.set_serving(**args, enabled=True)

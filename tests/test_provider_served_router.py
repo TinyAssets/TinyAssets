@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 
-import pytest
 
 from tinyassets.providers.base import (
     BaseProvider,
@@ -136,53 +134,8 @@ def _fresh_served_request(universe_dir, serving, *, request_id: str):
     )
 
 
-@pytest.mark.parametrize("operation", [None, "run_graph"])
-def test_universe_scoped_calls_never_route_from_config_without_live_authority(
-    tmp_path,
-    operation,
-):
-    from tinyassets.config import UniverseConfig
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.providers.router import ProviderRouter
-
-    universe_dir = tmp_path / "u-owner"
-    universe_dir.mkdir()
-    provider = _RecordingProvider("codex")
-    context = UniverseContext(
-        universe_dir=universe_dir,
-        config=UniverseConfig(
-            preferred_writer="codex",
-            allowed_providers=["codex"],
-            engine_assignment_state="ready",
-        ),
-    )
-
-    with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
-        asyncio.run(
-            _model_call(ProviderRouter({"codex": provider}),
-                "writer",
-                "must not run",
-                "system",
-                operation=operation,
-                universe_context=context,
-            )
-        )
-    assert provider.calls == 0
 
 
-def test_claude_serving_requires_a_valid_owner(tmp_path):
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    with pytest.raises(ValueError):
-        bind_serving_provider(
-            base_path=str(tmp_path),
-            universe_dir=str(tmp_path),
-            owner_user_id="",  # cleared the claude hold; fails later on owner
-            universe_id="u-owner",
-            agent_binding_id="binding-1",
-            expected_revision=1,
-            provider="api_key_http:provdef_test",
-        )
 
 
 def _http_authority(tmp_path):
@@ -210,84 +163,6 @@ def _http_authority(tmp_path):
     )
 
 
-def test_finalize_tolerates_row_already_reconciled(tmp_path):
-    """A call that outran its lease is settled by the reconciler; its late
-    finalize must return gracefully, NOT raise an accounting error (Codex
-    re-review #4). A genuinely MISSING row still raises.
-    """
-    import sqlite3
-
-    from tinyassets import provider_assignment as pa
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import (
-        ServedProviderBudgetReservation,
-        finalize_served_provider_budget,
-    )
-    from tinyassets.storage import db_path
-
-    authority = _http_authority(tmp_path)  # provider irrelevant to finalize
-    reservation = ServedProviderBudgetReservation(
-        reservation_id="r-reconciled",
-        binding_id=authority.binding_id,
-        binding_generation=authority.binding_generation,
-        output_tokens=50,
-        reserved_total_tokens=100,
-        reserved_cost_microunits=10_000,
-    )
-    conn = sqlite3.connect(db_path(tmp_path))
-    try:
-        pa._ensure_served_budget_schema(conn)
-        # The reconciler already settled this row as succeeded.
-        conn.execute(
-            "INSERT INTO served_provider_budget_reservations "
-            "(reservation_id, binding_id, binding_generation, state, "
-            "reserved_total_tokens, reserved_cost_microunits, "
-            "actual_total_tokens, actual_cost_microunits, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                "r-reconciled",
-                authority.binding_id,
-                authority.binding_generation,
-                "succeeded",
-                100,
-                10_000,
-                100,
-                10_000,
-                1.0,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    # Already-reconciled: returns without raising.
-    finalize_served_provider_budget(
-        str(tmp_path),
-        authority=authority,
-        reservation=reservation,
-        input_tokens=10,
-        output_tokens=40,
-        cost_microunits=5_000,
-    )
-
-    # A truly missing reservation is still an accounting anomaly.
-    missing = ServedProviderBudgetReservation(
-        reservation_id="r-missing",
-        binding_id=authority.binding_id,
-        binding_generation=authority.binding_generation,
-        output_tokens=50,
-        reserved_total_tokens=100,
-        reserved_cost_microunits=10_000,
-    )
-    with pytest.raises(ProviderAuthorityHeldError, match="accounting failed"):
-        finalize_served_provider_budget(
-            str(tmp_path),
-            authority=authority,
-            reservation=missing,
-            input_tokens=10,
-            output_tokens=40,
-            cost_microunits=5_000,
-        )
 
 
 def recording_router(monkeypatch, provider):

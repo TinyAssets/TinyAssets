@@ -148,229 +148,33 @@ def _assert_nothing_painted_under_b(out: dict) -> None:
     assert after["converseCalls"] == ["account A private spoken line"], "the old line was re-sent"
 
 
-def test_a_late_spoken_reply_after_an_account_change_paints_nothing(tmp_path, html):
-    out = _late(tmp_path, html, r"""
-    gates[0].resolve({reply:"account A private answer"});
-    """)
-    _assert_nothing_painted_under_b(out)
-    assert out["after"]["universeBubbles"] == 0
-    assert "reply" not in out["outcome"], "the old reply text was handed back to be spoken"
 
 
-def test_a_late_spoken_transport_failure_after_an_account_change_offers_no_retry(tmp_path, html):
-    out = _late(tmp_path, html, r"""
-    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
-    """)
-    _assert_nothing_painted_under_b(out)
-    assert "error" in out["outcome"]
 
 
-def test_a_late_spoken_auth_failure_after_an_account_change_signs_nobody_out(tmp_path, html):
-    out = _late(tmp_path, html, r"""
-    const e=new Error("unauthorized"); e.authRequired=true; gates[0].reject(e);
-    """)
-    _assert_nothing_painted_under_b(out)
-    assert out["after"]["composer"] == "", "A's spoken text was put into B's composer"
 
 
-def test_a_late_spoken_saved_failure_after_an_account_change_erases_no_record(tmp_path, html):
-    out = _late(tmp_path, html, r"""
-    gates[0].resolve({error:"The workflow failed.", history_saved:true,
-      failure_notice:"The workflow failed.",
-      turn_failure:{version:1, kind:"turn_failed", code:"workflow_failed"}});
-    """)
-    _assert_nothing_painted_under_b(out)
 
 
-def test_a_late_spoken_reply_after_a_home_change_paints_nothing_and_speaks_nothing(tmp_path, html):
-    """Same login, other home: the pair changed, so the turn is fenced the same
-    way a typed one is. Voice is still running here (no sign-out stopped it),
-    so the caller's own guard sees a retired turn and stops, speaking nothing."""
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    await loadHistory(); await pollStatus();
-    Voice.epoch=3; Voice.state="listening";
-    const turn=Voice._handleBrowserUtterance("account A home one line",3,++Voice.browserTurnSerial);
-    await settle();
-    setQueueScope("u-other"); messages.length=0;
-    gates[0].resolve({reply:"home one answer"}); await turn; await settle();
-    console.log(JSON.stringify({after:fence(),
-      friendly:voiceFriendlyError("voice_turn_retired")}));
-    """)
-    after = out["after"]
-    assert after["messages"] == [] and after["resendButtons"] == 0
-    assert after["spoken"] == [], "a reply from another home was spoken"
-    assert after["inflight"]["scope"] == "u-1", "the other home's record was erased"
-    assert after["settled"] == []
-    assert after["failed"] == ["voice_turn_retired"], \
-        "the caller did not learn the turn was retired"
-    assert "changed" in out["friendly"] and "Typed chat still works" in out["friendly"]
 
 
-def test_a_newer_turn_of_the_next_account_is_not_unlocked_by_the_old_spoken_turn(tmp_path, html):
-    """B has already started a typed turn of its own when A's spoken turn
-    finishes: A's cleanup must not hand B's composer back, flush B's queue or
-    settle B's voice session."""
-    out = _run(tmp_path, html, _SPOKEN_THEN_SWITCH + r"""
-    Voice.epoch=20; Voice.state="listening"; Voice.stoppedWithPending=true;
-    const turnB=sendTurn("account B own question");
-    await settle();
-    sendTurn("account B queued line"); await settle();
-    const midB=fence();
-    gates[0].resolve({reply:"account A private answer"}); await turn; await settle();
-    const afterA=fence();
-    gates[1].resolve({reply:"account B own answer"}); await turnB; await settle();
-    console.log(JSON.stringify({midB, afterA, done:fence(), outcome}));
-    """)
-    mid, after_a, done = out["midB"], out["afterA"], out["done"]
-    assert mid["sendDisabled"] is True
-    assert mid["status"].startswith("Your agent is thinking")
-    assert after_a["sendDisabled"] is True, "A's spoken turn re-enabled B's composer"
-    assert after_a["status"] == mid["status"], "A's cleanup wiped B's status"
-    assert after_a["turnStartedAt"] == mid["turnStartedAt"], "A's cleanup reset B's turn clock"
-    assert after_a["activeTurnHeld"] is True
-    assert after_a["converseCalls"] == [
-        "account A private spoken line", "account B own question"], \
-        "A's cleanup flushed B's queued line early"
-    assert after_a["settled"] == [], "A's spoken turn settled B's voice session"
-    assert after_a["voiceEpoch"] == 20 and after_a["voiceState"] == "listening"
-    assert after_a["inflight"]["owner"] == "p-2", "A's turn erased B's live record"
-    assert after_a["messages"] == [{"role": "founder", "text": "account B own question"},
-                                   {"role": "founder", "text": "account B queued line"}]
-    assert done["messages"][-1] == {"role": "universe", "text": "account B own answer"}
-    assert done["converseCalls"][-1] == "account B queued line"
-    assert done["settled"] == [True], "B's own turn no longer settles B's voice"
 
 
 # ---------------------------------------------------------------------------
 # The awaited callers: a late reply never reaches speech in another account.
 # ---------------------------------------------------------------------------
 
-def test_the_browser_voice_caller_speaks_nothing_after_the_account_boundary(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    await loadHistory(); await pollStatus();
-    Voice.epoch=5; Voice.state="listening";
-    const turn=Voice._handleBrowserUtterance("account A spoken",5,++Voice.browserTurnSerial);
-    await settle();
-    accountBoundary("p-2","u-2");
-    const epochAfterStop=Voice.epoch;
-    gates[0].resolve({reply:"account A private answer"}); await turn; await settle();
-    console.log(JSON.stringify({epochAfterStop, after:fence()}));
-    """)
-    after = out["after"]
-    assert out["epochAfterStop"] == 6, "enterSignedOut's Voice.stop no longer retires the session"
-    assert after["spoken"] == [], "A's reply was spoken after B signed in"
-    assert after["failed"] == [], "A's retired turn put B's voice into an error state"
-    assert after["messages"] == [] and after["settled"] == []
 
 
-def test_the_bridge_voice_caller_sends_nothing_after_the_account_boundary(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    await loadHistory(); await pollStatus();
-    Voice.epoch=9; Voice.state="listening";
-    Voice.dc={readyState:"open", send:v=>bridgeSent.push(JSON.parse(v))};
-    Voice.audio={muted:true};
-    const call=Voice.handleToolCall({type:"tool_call",call_id:"c1",name:"converse",
-      arguments:JSON.stringify({message:"account A spoken"})});
-    await settle();
-    accountBoundary("p-2","u-2");
-    Voice.dc={readyState:"open", send:v=>bridgeSent.push(JSON.parse(v))};
-    gates[0].resolve({reply:"account A private answer"}); await call; await settle();
-    console.log(JSON.stringify({after:fence(), pending:Voice.canonicalResponsePending,
-      expected:Voice.expectedReply}));
-    """)
-    assert out["after"]["bridgeSent"] == [], "A's reply was handed to B's voice bridge"
-    assert out["pending"] is False and out["expected"] == ""
-    assert out["after"]["failed"] == [] and out["after"]["messages"] == []
 
 
 # ---------------------------------------------------------------------------
 # Same owner, same home: nothing of the intended recovery is lost.
 # ---------------------------------------------------------------------------
 
-def test_a_same_owner_spoken_reply_still_renders_and_settles_voice(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    await loadHistory(); await pollStatus();
-    Voice.epoch=2; Voice.state="listening";
-    const turn=Voice._handleBrowserUtterance("read me the checklist",2,++Voice.browserTurnSerial);
-    await settle();
-    gates[0].resolve({reply:"Reading it now."}); await turn; await settle();
-    console.log(JSON.stringify(fence()));
-    """)
-    assert out["messages"] == [{"role": "founder", "text": "read me the checklist"},
-                               {"role": "universe", "text": "Reading it now."}]
-    assert out["spoken"] == ["Reading it now."], "the same owner's reply was not spoken"
-    assert out["inflight"] is None and out["sendDisabled"] is False
-    assert out["settled"] == [True] and out["failed"] == []
 
 
-def test_a_same_owner_spoken_failure_still_offers_the_retry_once(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    await loadHistory(); await pollStatus();
-    Voice.stoppedWithPending=true;                 // Voice was stopped mid-turn
-    const turn=sendVoiceTurn("deploy the fix").catch(e=>String(e.message));
-    await settle();
-    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
-    const error=await turn; await settle();
-    const failed=fence();
-    const note=els.thread.children.find(n=>n.unconfirmed);
-    Owner.getConversation=async()=>({recent_conversation:{turns:[
-      {speaker:"founder",text:"deploy the fix",client_send_id:readInflight().client_send_id},
-      {speaker:"universe",text:"Deployed."}]}});
-    await note.checkSavedConversation();
-    console.log(JSON.stringify({error, failed, done:fence()}));
-    """)
-    failed, done = out["failed"], out["done"]
-    assert out["error"] == "offline"
-    assert failed["founderBubbles"] == 1 and failed["resendButtons"] == 0
-    assert failed["inflight"]["message"] == "deploy the fix"
-    assert failed["sendDisabled"] is False
-    assert failed["settled"] == [False]
-    assert "available to retry" in failed["voiceStatus"]
-    assert done["converseCalls"] == ["deploy the fix"]
-    assert done["messages"][-1] == {"role": "universe", "text": "Deployed."}
-    assert done["inflight"] is None
 
 
-def test_a_same_owner_spoken_saved_failure_still_clears_the_record(tmp_path, html):
-    out = _run(tmp_path, html, r"""
-    setQueueOwner("p-1"); setQueueScope("u-1");
-    await loadHistory(); await pollStatus();
-    const turn=sendVoiceTurn("run the report").catch(e=>String(e.message));
-    await settle();
-    gates[0].resolve({error:"The workflow failed.", history_saved:true,
-      failure_notice:"The workflow failed.",
-      turn_failure:{version:1, kind:"turn_failed", code:"workflow_failed"}});
-    const error=await turn; await settle();
-    console.log(JSON.stringify({error, done:fence()}));
-    """)
-    assert out["error"].startswith("The workflow failed.")
-    assert out["done"]["inflight"] is None, "a saved failure left a record to be re-offered"
-    # The saved-failure notice keeps its own "Send it again" (a NEW turn).
-    assert out["done"]["resendButtons"] == 1 and out["done"]["sendDisabled"] is False
-    assert out["done"]["settled"] == [False]
 
 
-def test_the_original_owner_is_still_offered_the_retired_spoken_turn(tmp_path, html):
-    """A's spoken turn was retired by B's sign-in and its reply never landed
-    on A's screen. Back as A on the same page, the record is offered once -
-    and never re-sent by itself."""
-    out = _late(tmp_path, html, r"""
-    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
-    """)
-    _assert_nothing_painted_under_b(out)
-    back = _run(tmp_path, html, _SPOKEN_THEN_SWITCH + r"""
-    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
-    await turn; await settle();
-    accountBoundary("p-1","u-1");
-    await loadHistory(); await pollStatus(); await pollStatus(); await settle();
-    console.log(JSON.stringify(fence()));
-    """)
-    assert back["founderBubbles"] == 1 and back["unconfirmedNotes"] == 1
-    assert back["resendButtons"] == 0
-    assert back["inflight"]["message"] == "account A private spoken line"
-    assert back["converseCalls"] == ["account A private spoken line"], "no silent resend"

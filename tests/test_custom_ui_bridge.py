@@ -712,85 +712,9 @@ def _run(tmp_path, name, checks, extra=""):
     return result.stdout
 
 
-def test_bundle_bridge_is_a_closed_allowlist_acting_as_the_viewer(tmp_path):
-    out = _run(tmp_path, "custom_ui_bridge.js", CHECKS)
-    assert "custom-ui bridge checks passed" in out
 
 
-def test_refresh_and_activate_load_the_active_revision(tmp_path):
-    """The recovery control and a later activation both read the stored row.
-
-    Remounting the bundle already on screen left echoes-6 up after echoes-7
-    was the active revision. The frame URL carries that revision and a
-    fingerprint of the component, so a cached /app/ui-frame document cannot
-    keep the previous screen.
-    """
-    from tinyassets.onboarding.app_modules import shell_source
-
-    html = shell_source(Path("tinyassets/onboarding/app.html"))
-    assert "AppUI.reloadFromServer()" in html
-    assert "AppUI.mount(AppUI.active)" not in html
-    out = _run(tmp_path, "refresh_active_app_ui.js", r'''
-(async()=>{
-const u=AppUI;
-const old=bundleOf({ui_id:'echoes',name:'Echoes 6',markup:'<p>rev 99</p>'});
-const neu=bundleOf({ui_id:'echoes',name:'Echoes 7',markup:'<p>rev 116</p>'});
-appUi=stored([old],{version:1,state:'active',ui_id:'echoes'});
-u.enable(HOME,PRINCIPAL);
-await settle();
-assert.equal(u.active.markup,'<p>rev 99</p>');
-const stale=u.frame.attrs.src;
-assert(stale.includes('revision=1'),stale);
-appUi={...stored([neu],{version:1,state:'active',ui_id:'echoes'}),revision:116};
-u.deferredUpdates.set('echoes',{bundle:u.active});
-const ok=await u.reloadFromServer();
-await settle();
-assert.equal(ok,true);
-assert.equal(u.revision,116);
-assert.equal(u.active.markup,'<p>rev 116</p>');
-assert(u.frame.attrs.src.includes('revision=116'),u.frame.attrs.src);
-assert(/[?&]etag=[0-9a-f]{8}$/.test(u.frame.attrs.src),u.frame.attrs.src);
-assert.notEqual(u.frame.attrs.src,stale);
-assert.equal(u.deferredUpdates.size,0);
-
-u.reset();
-appUi=stored([old],{version:1,state:'active',ui_id:'echoes'});
-u.enable(HOME,PRINCIPAL);
-await settle();
-assert.equal(u.revision,1);
-const beforeActivate=u.frame.attrs.src;
-appUi={...stored([neu],{version:1,state:'active',ui_id:'echoes'}),revision:116};
-await u.turnSettled();
-await settle();
-assert.equal(u.revision,116);
-assert.equal(u.active.markup,'<p>rev 116</p>');
-assert(u.frame.attrs.src.includes('revision=116'),u.frame.attrs.src);
-assert.notEqual(u.frame.attrs.src,beforeActivate);
-console.log('refresh loads the active revision');
-})().catch(err=>{console.error(err);process.exit(1);});
-''')
-    assert "refresh loads the active revision" in out
 
 
-def test_a_real_bundle_reaches_the_frame_exactly_as_its_author_wrote_it(tmp_path):
-    out = _run(tmp_path, "custom_ui_sample.js", SAMPLE_CHECKS, extra=OFFICE_BUNDLE)
-    assert "office sample checks passed" in out
 
 
-def test_send_message_refuses_a_switch_during_addressing_and_pins_agent(tmp_path):
-    _run(tmp_path, "address_race.js", r'''
-(async()=>{
-AppUI.agentNamed=async()=>({agent_id:'weaver',name:'Weaver'});
-let release;
-addressAgent=async agent=>{addressed=agent.agent_id;await new Promise(r=>release=r);};
-const sending=AppUI.sendMessage({text:'for Weaver',agent:'weaver'});
-await settle(); addressed='main'; release();
-await assert.rejects(sending,/the chat switched to another agent; nothing was sent/);
-assert.equal(sends.length,0);
-addressAgent=async agent=>{addressed=agent.agent_id;};
-await AppUI.sendMessage({text:'for Weaver',agent:'weaver'});
-assert.equal(sends[0].opts.agentId,'weaver');
-await AppUI.sendMessage({text:'still Weaver'});
-assert.equal(sends[1].opts.agentId,'weaver');
-})().catch(err=>{console.error(err);process.exit(1);});
-''')

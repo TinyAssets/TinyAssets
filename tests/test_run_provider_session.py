@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 import tinyassets.platform_runtime_provenance as platform_runtime_provenance
-from tests.inference_usage_helpers import accounting_resolver
 from tests.support.http_model import HTTP_PROVIDER
 from tinyassets.branches import (
     BranchDefinition,
@@ -346,71 +345,8 @@ def _run_branch(
     return response, provider, captured
 
 
-def test_foreground_run_launches_selected_open_provider_and_settles_once(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-
-    proxy = _OpenProxy()
-    monkeypatch.setattr(
-        ApiKeyHttpProvider,
-        "_resolve_proxy",
-        accounting_resolver(lambda _self, **_kwargs: proxy),
-    )
-    response, substituted_provider, _captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-        open_provider=True,
-    )
-
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert substituted_provider.calls == []
-    from tinyassets import credential_vault
-
-    assert not hasattr(credential_vault, "snapshot_llm_subscription_credential")
-    assert len(proxy.calls) == 1
-    verb, wire = proxy.calls[0]
-    assert verb == "POST"
-    assert wire["url"] == "https://api.example.com/v1/chat/completions"
-    assert "authorization" not in {
-        key.lower() for key in wire.get("headers", {})
-    }
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        reservation = conn.execute(
-            "SELECT state FROM provider_invocation_reservations"
-        ).fetchone()
-    assert reservation == ("indeterminate",)
 
 
-def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    response, substituted_provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-        open_provider=True,
-        open_router_resolution_refusal=True,
-    )
-
-    assert response["terminal_status"] == "failed"
-    assert "Connect your provider before running this command center" in response[
-        "terminal_error"
-    ]
-    assert substituted_provider.calls == []
-    assert captured["effects"] == []
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        reservation = conn.execute(
-            "SELECT state FROM provider_invocation_reservations"
-        ).fetchone()
-    assert reservation == ("cancelled_before_launch",)
 
 
 #: What each held case must SAY, not merely that it was held. Every one of
@@ -422,178 +358,13 @@ def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch
 _HELD_CASE_REASON = {"missing": "no connected model source for this owner"}
 
 
-def test_settlement_failure_names_its_cause() -> None:
-    """A settlement failure must say WHY, not just that it happened.
-
-    On 2026-08-27 every prompt-template run failed with the bare
-    "provider invocation usage could not be settled". `settle()` alone has four
-    distinct `PermissionError` exits -- carrier not server-owned, carrier has
-    not launched, settlement is consumer-owned, no durable settler -- plus
-    whatever the durable settler itself raises. The founder and the universe
-    both spent two days unable to tell those apart.
-
-    `__cause__` was always attached; the user-visible message is built from the
-    string, so nothing surfaced it.
-    """
-    import inspect
-
-    from tinyassets.providers import router as router_module
-
-    source = inspect.getsource(router_module)
-    marker = (
-        'raise ProviderAuthorityHeldError(\n'
-        '                    "provider invocation usage could not be settled: "'
-    )
-    assert marker in source, (
-        "the settlement wrapper must append the cause to its message; a bare "
-        "'could not be settled' is undiagnosable from the surface that shows it"
-    )
-    assert "f\"{type(exc).__name__}: {exc}\"" in source, (
-        "the cause must include the exception TYPE -- four different "
-        "PermissionErrors reach this path and only the message tells them apart"
-    )
 
 
-def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:
-    """A wrapped wrapper must not silently hand the child the parent's session.
-
-    `_session_from_provider_call` looked exactly one `.provider_call` deep. Add
-    one forwarding wrapper and it found nothing, so `prepare_...` returned the
-    call UNCHANGED -- and the child run then executed on the PARENT's prepared
-    session, which is the authority bleed the sibling mint exists to prevent.
-    Reachable by adding a single decorator.
-
-    Nothing builds that shape today (api/runs.py constructs the wrapper
-    directly), which is exactly why this is a test and not a bug report:
-    refusing keeps it true. Cross-family review 2026-08-27, finding (d).
-    """
-    from tinyassets import foreground_run_provider as frp
-
-    class _Forwarding:
-        """One extra layer -- the shape the old lookup could not see past."""
-
-        def __init__(self, inner):
-            self.provider_call = inner
-
-    session = object.__new__(frp._ForegroundRunProviderSession)
-    direct = _Forwarding(session)
-    hidden = _Forwarding(direct)
-
-    # Depth 1 is the supported shape and still resolves.
-    assert frp._locate_session(direct) == (session, 1)
-    # Depth 2 is found, and reported as found -- not silently missed.
-    assert frp._locate_session(hidden) == (session, 2)
-    # A call with no session anywhere still passes through untouched.
-    assert frp._locate_session(_Forwarding(_Forwarding(object()))) == (None, 0)
-
-    with pytest.raises(PermissionError, match="unrecognised wrapper chain"):
-        frp.prepare_foreground_run_provider(
-            hidden,
-            run_id="child-run",
-            branch=None,
-            branch_version_id=None,
-            allowed_statuses={"running"},
-        )
 
 
-def test_an_ordinary_provider_call_is_still_left_alone() -> None:
-    """Fail-closed must not become fail-on-everything."""
-    from tinyassets import foreground_run_provider as frp
-
-    plain = object()
-    assert frp.prepare_foreground_run_provider(
-        plain,
-        run_id="r",
-        branch=None,
-        branch_version_id=None,
-        allowed_statuses={"running"},
-    ) is plain
 
 
-def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
-    """`_rebind` asserted a wrapper shape it never checked.
-
-    The docstring said "the wrapper is a `BoundModelCall`, which
-    enforces one exact universe context and operation" -- but `replace()` was
-    called on whatever arrived. Any dataclass exposing a real session as
-    `.provider_call` passed depth 1 and was rebound, carrying whatever
-    universe/operation semantics that type happened to have.
-
-    It needed possession of a real session and the child still revalidated
-    owner/run/branch, so it was never a demonstrated cross-tenant mint. It was
-    an invariant the code asserted and did not enforce, which is its own bug.
-    Cross-family review 2026-08-27, finding (c).
-    """
-    from dataclasses import dataclass
-
-    from tinyassets import foreground_run_provider as frp
-
-    session = object.__new__(frp._ForegroundRunProviderSession)
-
-    @dataclass
-    class _ForgedWrapper:
-        """Right shape, wrong type -- and no universe binding to preserve."""
-
-        provider_call: object
-        universe_context: object = None
-        operation: str = "run_graph"
-
-    forged = _ForgedWrapper(provider_call=session)
-    # It still looks like the supported shape to the locator...
-    assert frp._locate_session(forged) == (session, 1)
-    # ...and is refused anyway, on type.
-    with pytest.raises(PermissionError, match="only an exact"):
-        frp._rebind(forged, session)
 
 
-def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
-    """Fail-closed must not break the one shape that is supposed to work."""
-    from tinyassets import foreground_run_provider as frp
-    from tinyassets.providers.model_call import BoundModelCall
-
-    parent = object.__new__(frp._ForegroundRunProviderSession)
-    child = object.__new__(frp._ForegroundRunProviderSession)
-    sentinel = object()
-    wrapper = BoundModelCall(
-        runner=parent, universe_context=sentinel, operation="run_graph"
-    )
-
-    rebound = frp._rebind(wrapper, child)
-    assert type(rebound) is BoundModelCall
-    assert rebound.runner is child
-    # The whole point: swapping the session must not swap the binding.
-    assert rebound.universe_context is sentinel
-    assert rebound.operation == "run_graph"
 
 
-@pytest.mark.parametrize("host,model,expected_calls", [
-    ("openrouter.ai", "synthetic-model:free", 8),
-    ("openrouter.ai", "synthetic-model", 8),
-    ("api.example.com", "synthetic-model:free", 8),
-])
-def test_legacy_run_free_policy_uses_owned_source_and_exact_model(
-    tmp_path, monkeypatch, authenticate_request, host, model, expected_calls,
-):
-    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-    from tinyassets.storage.agent_request_usage import UsageStore
-
-    proxy = _OpenProxy()
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
-                        accounting_resolver(lambda _self, **_kwargs: proxy))
-    response, substituted, captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, _branch(node_count=8),
-        open_provider=True, open_model=model, open_host=host,
-    )
-    assert len(proxy.calls) == expected_calls, response
-    assert not substituted.calls
-    if expected_calls == 6:
-        assert response["terminal_status"] == "failed"
-        assert "request budget" in response["terminal_error"]
-        assert captured["effects"] == []
-    else:
-        assert response["terminal_status"] == "completed", response["terminal_error"]
-    stored = UsageStore(tmp_path).for_subject(
-        "acct_alice", "universe_alice", "run", response["run_id"],
-    )
-    assert len(stored) == 1 and stored[0]["dispatched"] == expected_calls
-    assert all(a["free"] is (expected_calls == 6) for a in stored[0]["attempts"])

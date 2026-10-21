@@ -7,7 +7,6 @@
 # and must carry owner= and expires=. Expiry is reported weekly and enforced only
 # on a PR that touches the test's file -- never on main or in the merge queue.
 # MAX_QUARANTINE in scripts/ci_required_tests.py caps this file and ratchets
-# down: deleting entries means lowering it (tests/test_ci_required_tests.py).
 #
 # 2026-10-02: 63 entries (72 less the 9 that #4260 restored or moved), every one in the scheduled heavy-tests job, which had
 # been red 8/8 since 09-30 so the hourly tripwire signalled nothing. They are
