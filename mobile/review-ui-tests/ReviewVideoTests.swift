@@ -92,6 +92,36 @@ final class ReviewVideoTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Sign in"].waitForExistence(timeout: 120))
         shot("01-signed-out")
+        // TEMPORARY DIAGNOSTIC: tap Sign in and dump every plausible host.
+        app.buttons["Sign in"].tap()
+        Thread.sleep(forTimeInterval: 8)
+        var parts: [String] = []
+        let hosts = ["com.apple.springboard", "io.tinyassets.app", "com.apple.SafariViewService",
+                     "com.apple.mobilesafari", "com.apple.AuthenticationServicesCore.AuthenticationServicesAgent",
+                     "com.apple.AuthenticationServicesUI", "com.apple.SafariServices"]
+        func dump(_ tag: String) {
+            for id in hosts {
+                let host = XCUIApplication(bundleIdentifier: id)
+                parts.append("[\(tag)] \(id) state=\(host.state.rawValue)")
+                if host.state == .runningForeground || host.state == .runningBackground {
+                    parts.append(host.debugDescription)
+                }
+            }
+        }
+        dump("t+8")
+        for id in ["com.apple.springboard", "io.tinyassets.app"] {
+            let host = XCUIApplication(bundleIdentifier: id)
+            let alert = host.alerts.firstMatch
+            if alert.exists {
+                parts.append("ALERT in \(id): " + alert.debugDescription)
+                let cont = alert.buttons["Continue"]
+                if cont.exists { cont.tap(); parts.append("tapped Continue in \(id)") }
+            }
+        }
+        Thread.sleep(forTimeInterval: 20)
+        dump("t+30")
+        let flat = parts.joined(separator: "\n").replacingOccurrences(of: "\n", with: " | ")
+        XCTFail("PROBE " + flat)
     }
 
     func testGuideline21Journey() throws {
