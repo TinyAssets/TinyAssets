@@ -31,6 +31,9 @@ PUBLIC_APP_PATHS = {
     "/app",              # the SPA shell, loads before sign-in
     "/app/token",        # its same-origin PKCE exchange
     "/app/owner-sign-in",  # document navigation begins interactive owner PKCE
+    # The phone apps start system-browser sign-in signed out; it returns only a
+    # flow ref, and the session still comes from the PKCE exchange at /app/token.
+    "/app/native-sign-in",
     "/app/billing/webhook",  # Stripe POSTs with no bearer
     # The OAuth return lands in the browser with no bearer; only the shell is
     # open and the authenticated exchange after it is still challenged.
