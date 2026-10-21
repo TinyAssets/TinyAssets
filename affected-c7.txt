@@ -453,7 +453,6 @@ tests/test_discovery_snapshot.py
 tests/test_disk_autoprune.py
 tests/test_disk_health.py
 tests/test_disk_watch.py
-tests/test_distributed_execution_authority.py
 tests/test_dns_canary.py
 tests/test_dns_canary_workflow.py
 tests/test_do_api_request.py

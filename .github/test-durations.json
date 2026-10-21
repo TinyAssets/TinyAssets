@@ -396,7 +396,6 @@
 "tests/test_discovery_snapshot.py": 0.5,
 "tests/test_disk_autoprune.py": 0.1,
 "tests/test_disk_watch.py": 0.1,
-"tests/test_distributed_execution_authority.py": 0.1,
 "tests/test_dns_canary.py": 0.2,
 "tests/test_dns_canary_workflow.py": 0.1,
 "tests/test_do_api_request.py": 0.0,
