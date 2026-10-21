@@ -20,4 +20,3 @@
 # Measured: every file whose tests totalled >3.0s in CI run 30780762657
 # (12991 tests / 34.0 min). Regenerate after a big suite change.
 tests/test_mcp_instruction_surfaces.py
-tests/test_scoped_identity_reset.py

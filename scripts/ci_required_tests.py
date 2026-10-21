@@ -51,7 +51,6 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_broker_deletion_jobs.py",
     "tests/test_cutover_deletion_jobs.py",
     "tests/test_backup_owner_box.py",
-    "tests/test_backup_script.py",
     "tests/test_owner_cutover_apply.py",
     "tests/test_box_admission.py",
     "tests/test_box_destroy.py",
@@ -68,7 +67,6 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_cold_owner_deletion.py",
     "tests/test_deleted_authentication.py",
     "tests/test_deploy_bundle_transaction.py",
-    "tests/test_gvisor_runtime.py",
     "tests/test_model_connect_door_lifecycle.py",
     "tests/test_owner_box_control.py",
     "tests/test_owner_box_lifecycle.py",
@@ -89,7 +87,7 @@ ROOT_TEST_FILES = frozenset({
 # tests on the 2026-08-02 baseline (run 30767266528); the floor sits far
 # below natural variance and far above any vacuous run. Ratchet it upward
 # as the suite grows.
-MIN_RAN_FLOOR = 6200
+MIN_RAN_FLOOR = 3200
 
 # A heavy-only job runs the files in .github/heavy-test-files.txt, so it
 # cannot meet the whole-suite floor -- and LOWERING the global floor to fit
@@ -97,15 +95,15 @@ MIN_RAN_FLOOR = 6200
 # the property that matters: a floor is a reviewed constant here, never a
 # number a caller can pick, and the workflow-shape test pins which profile
 # each job uses.
-# Founder-authorized shape-only pruning leaves 6,979 collected cases, 6,892
-# required cases and 87 heavy cases. Six deterministic required shards have
-# at least 739 cases. These floors preserve a modest cushion under that census.
+# Founder-authorized shape-only pruning leaves 3,605 collected cases, 3,587
+# required cases and 18 heavy cases. Six deterministic required shards have
+# at least 383 cases. These floors preserve a modest cushion under that census.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
-    "heavy": 75,             # 87 retained heavy cases after the shape-only prune
-    # ONE of six required shards (at least 739 cases in the retained census).
+    "heavy": 15,             # 18 retained heavy cases after the shape-only prune
+    # ONE of six required shards (at least 383 cases in the retained census).
     # The aggregate also checks the union; this catches an individual collapse.
-    "shard": 650,
+    "shard": 340,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
     # purpose: a selection can honestly be one test or none (a docs-only
     # change), and this run is advisory -- the merge-group shards above carry

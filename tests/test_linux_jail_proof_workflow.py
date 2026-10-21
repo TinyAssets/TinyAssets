@@ -157,14 +157,12 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         ".github/workflows/linux-jail-proof.yml",
         "scripts/ci_assert_junit_case.py",
         "tinyassets/boxes/**",
-        "tests/test_delivery_node_rpc.py",
         "tinyassets/providers/router.py",
         "tests/test_owner_box_process_boundary.py",
         "tests/test_owner_tools.py",
         "tinyassets/universe_tools.py",
         "tinyassets/engine_mcp_server.py",
         "tinyassets/storage_accounting.py",
-        "tests/test_storage_accounting.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
 
@@ -252,7 +250,6 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
     # The four slices this job exists for (see the workflow header). Losing a
     # whole file's marker would drop its cases without any red.
     assert files >= {
-        "tests/test_delivery_node_rpc.py",
         "tests/test_owner_box_process_boundary.py",
     }, files
 

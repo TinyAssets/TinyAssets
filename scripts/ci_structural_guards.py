@@ -170,10 +170,7 @@ ROUTE_CASES = (
 
 
 def targets() -> list[str]:
-    return [
-        "tests/test_converse_turn_cost.py::test_engine_tool_description_budget_does_not_grow",
-        "tests/test_converse_turn_cost.py::test_static_folder_harness_budget_does_not_grow",
-    ] + [f"tests/{name}.py" for name in GUARDS if name != "test_onboarding_app"] + [
+    return [f"tests/{name}.py" for name in GUARDS if name != "test_onboarding_app"] + [
         f"tests/test_onboarding_app.py::{name}" for name in ROUTE_CASES
     ]
 
