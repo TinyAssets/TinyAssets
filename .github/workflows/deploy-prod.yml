@@ -748,6 +748,15 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo python3 -" < scripts/open_router_traffic.py
 
+      - name: Take the first platform backup of the new layout
+        # Review follow-up: without this the new shared layer has no off-host
+        # copy until the nightly timer. Same oneshot unit the timer starts.
+        if: steps.deploy.outputs.cutover_admission_pending == 'true'
+        timeout-minutes: 20
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo systemctl start tinyassets-backup.service"
+
       - name: Save owner-box roll receipt
         if: ${{ always() && steps.owner_boxes.outcome != 'skipped' }}
         timeout-minutes: 2
