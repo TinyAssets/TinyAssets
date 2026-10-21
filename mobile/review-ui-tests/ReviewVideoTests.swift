@@ -224,11 +224,17 @@ final class ReviewVideoTests: XCTestCase {
         let submit = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Sign in", "Continue", "Log in"])).firstMatch
         XCTAssertTrue(submit.waitForExistence(timeout: 30), "password submit missing")
         submit.tap()
-        wait("tinyassets callback returned to signed-in app", timeout: 180) {
+        let signedIn = poll(timeout: 180) {
             self.app.state == .runningForeground && (
                 self.app.buttons["Command center menu"].exists ||
                 self.app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open the chat with your agent")).firstMatch.exists
             )
+        }
+        if !signedIn {
+            // A page after the password (code, consent) or the app's sign-in
+            // notice. Values are omitted; both credentials are redacted.
+            XCTFail("\(step): tinyassets callback returned to signed-in app. Hierarchy: "
+                + hierarchy([app, auth, springboard], redacting: [username, password]))
         }
         shot("02-signed-in")
 
