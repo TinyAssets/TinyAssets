@@ -37,16 +37,18 @@ lines = [line for line in path.read_text().splitlines() if not line.startswith('
 path.write_text('\n'.join(lines + [f'TINYASSETS_IMAGE={image}']) + '\n')
 PY
     fi
-    for name in daemon.env agent-interchange.env request-idempotency.env app-ingress.env broker.env; do
+    for name in agent-interchange.env request-idempotency.env app-ingress.env broker.env; do
       test -f "/etc/tinyassets/$name" || install -m 0640 /dev/null "/etc/tinyassets/$name"
     done
     test -f /etc/tinyassets/broker-rclone.conf || install -m 0644 /dev/null /etc/tinyassets/broker-rclone.conf
-    # Keep the daemon environment in step with the generated host source.
-    cp "$env_file" /etc/tinyassets/daemon.env
-    chown root:tinyassets /etc/tinyassets/{env,daemon.env,agent-interchange.env,request-idempotency.env,app-ingress.env}
-    chmod 0640 /etc/tinyassets/{env,daemon.env,agent-interchange.env,request-idempotency.env,app-ingress.env}
+    chown root:tinyassets "$env_file" /etc/tinyassets/{agent-interchange.env,request-idempotency.env,app-ingress.env}
+    chmod 0640 "$env_file" /etc/tinyassets/{agent-interchange.env,request-idempotency.env,app-ingress.env}
+    # Use the installed production renderer so platform secrets never reach the daemon.
+    command -v tinyassets-env >/dev/null
+    tinyassets-env render-daemon-env
     # These are the actual production service definitions and Compose flags.
-    # The external Cloudflare tunnel has no PR credentials; gate probes loopback.
+    # The external Cloudflare tunnel cannot connect with synthetic credentials;
+    # this gate proves the loopback workload, not Cloudflare edge connectivity.
     services=(daemon logs)
     if docker compose --env-file "$env_file" -f "$compose" config --services | grep -qx broker; then
       services=(broker daemon logs)

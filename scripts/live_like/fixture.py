@@ -10,6 +10,8 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from tinyassets.storage import platform_state_move as psm
+
 OWNERS = (("alice", 300001), ("bob", 300002), ("carol", 300003))
 CENTERS = (("a1", "alice"), ("a2", "alice"), ("b1", "bob"),
            ("b2", "bob"), ("c1", "carol"))
@@ -38,8 +40,10 @@ def sql(path: Path, statements: str, rows: list[tuple] = ()) -> None:
 def build(root: Path) -> dict:
     if any(root.iterdir()):
         raise RuntimeError(f"fixture volume must be empty: {root}")
-    (root / ".layout.json").write_text(
-        json.dumps({"layout": 2, "split": "owner-split", "state": "stable"}), encoding="utf-8")
+    (root / ".layout.json").write_text(json.dumps({
+        "layout": 2, "split": "owner-split", "state": "stable",
+        psm.MOVES: {psm.CONSENTS: psm.DONE},
+    }), encoding="utf-8")
     (root / "platform-expected-instance.json").write_text(json.dumps({
         "schema": "platform_expected_instance", "version": 1,
         "expected_instance_id": "123456789",
