@@ -95,16 +95,19 @@ final class ReviewVideoTests: XCTestCase {
         // TEMPORARY DIAGNOSTIC: tap Sign in and dump every plausible host.
         app.buttons["Sign in"].tap()
         Thread.sleep(forTimeInterval: 8)
-        var parts: [String] = []
-        let hosts = ["com.apple.springboard", "io.tinyassets.app", "com.apple.SafariViewService",
-                     "com.apple.mobilesafari", "com.apple.AuthenticationServicesCore.AuthenticationServicesAgent",
-                     "com.apple.AuthenticationServicesUI", "com.apple.SafariServices"]
+        func emit(_ text: String) {
+            print("PROBE " + text.replacingOccurrences(of: "\n", with: " | "))
+            fflush(stdout)
+        }
+        emit("tapped Sign in")
+        let hosts = ["io.tinyassets.app", "com.apple.springboard", "com.apple.SafariViewService"]
         func dump(_ tag: String) {
             for id in hosts {
                 let host = XCUIApplication(bundleIdentifier: id)
-                parts.append("[\(tag)] \(id) state=\(host.state.rawValue)")
-                if host.state == .runningForeground || host.state == .runningBackground {
-                    parts.append(host.debugDescription)
+                let state = host.state
+                emit("[\(tag)] \(id) state=\(state.rawValue)")
+                if state == .runningForeground || state == .runningBackground {
+                    emit("[\(tag)] \(id) TREE " + host.debugDescription)
                 }
             }
         }
@@ -113,15 +116,14 @@ final class ReviewVideoTests: XCTestCase {
             let host = XCUIApplication(bundleIdentifier: id)
             let alert = host.alerts.firstMatch
             if alert.exists {
-                parts.append("ALERT in \(id): " + alert.debugDescription)
+                emit("ALERT in \(id): " + alert.debugDescription)
                 let cont = alert.buttons["Continue"]
-                if cont.exists { cont.tap(); parts.append("tapped Continue in \(id)") }
+                if cont.exists { cont.tap(); emit("tapped Continue in \(id)") }
             }
         }
-        Thread.sleep(forTimeInterval: 20)
-        dump("t+30")
-        let flat = parts.joined(separator: "\n").replacingOccurrences(of: "\n", with: " | ")
-        XCTFail("PROBE " + flat)
+        Thread.sleep(forTimeInterval: 15)
+        dump("t+25")
+        XCTFail("PROBE done")
     }
 
     func testGuideline21Journey() throws {
