@@ -53,8 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # rollback joins once the fail-safe's fault hook lands.
-        case: [cutover]
+        case: [cutover, rollback]
     env:
       LIVE_LIKE_HOST: '1'
       DEPLOY_TARGET: local
@@ -193,6 +192,11 @@ jobs:
           printf '%s\n' "${out}"
           dest="$(printf '%s\n' "${out}" | awk -F= '/^BACKUP_DEST=/{print substr($0, index($0,"=")+1)}' | tail -1)"
           [[ "${dest}" == spaces:*/workflow-backups ]]
+          # The droplet's Space exists before any deploy (created at the
+          # provider); `no_check_bucket` stops rclone creating it, so make it here.
+          bucket="${dest#spaces:}"; bucket="${bucket%%/*}"
+          sudo rclone mkdir "spaces,no_check_bucket=false:${bucket}"
+          sudo rclone lsf "spaces:${bucket}" --max-depth 1 >/dev/null
           echo "BACKUP_DEST=${dest}" >> "${{ steps.inputs.outputs.file }}"
           echo "backup_dest=${dest}" >> "$GITHUB_OUTPUT"
 
@@ -200,7 +204,12 @@ jobs:
         run: sudo LIVE_LIKE_HOST=1 bash scripts/live_like/host_prepare.sh "${{ steps.inputs.outputs.file }}"
 
       - name: Fill the data volume with synthetic production-shaped data
-        run: sudo "$(command -v python)" scripts/live_like/fixture.py build --volume tinyassets-data
+        run: |
+          set -euo pipefail
+          # The label marks the synthetic volume family, the only place the
+          # fail-safe admits a forced fault.
+          sudo docker volume create --label io.tinyassets.live-like=synthetic tinyassets-data >/dev/null
+          sudo "$(command -v python)" scripts/live_like/fixture.py build --volume tinyassets-data
 
       - name: Start the live image and make it live
         env:
@@ -309,12 +318,6 @@ jobs:
         timeout-minutes: 8
         run: bash deploy/deploy_host.sh install-boxhostd
 
-      - name: Arm the forced-rollback fault (rollback case only)
-        if: ${{ matrix.case == 'rollback' }}
-        run: |
-          echo "::error::the forced-rollback fault hook is not wired yet"
-          exit 1
-
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -323,6 +326,9 @@ jobs:
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
           DEPLOY_STARTED_EPOCH: ${{ steps.run_clock.outputs.epoch }}
           CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
+          # Fails right after durable cutover eligibility is published: past
+          # the one-shot window, before traffic (tinyassets/cutover_control.py).
+          CUTOVER_ROLLBACK_FAULT: ${{ matrix.case == 'rollback' && 'after_initialize' || '' }}
         # The rollback case expects the fail-safe to refuse; its verdict is the
         # assertion step below, not this exit code.
         continue-on-error: ${{ matrix.case == 'rollback' }}

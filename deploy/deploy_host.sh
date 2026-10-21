@@ -405,9 +405,17 @@ phase_fail_safe_deploy() {
   copy_to \
       scripts/verify_deploy_backup.py \
       "${verifier}"
+  # CUTOVER_ROLLBACK_FAULT: the live-like gate's forced rollback. Production
+  # never sets it; tinyassets/cutover_control.py admits it only on a volume
+  # labelled io.tinyassets.live-like=synthetic.
+  fault=""
+  if [ -n "${CUTOVER_ROLLBACK_FAULT:-}" ]; then
+    [[ "${CUTOVER_ROLLBACK_FAULT}" =~ ^[a-z_]+$ ]] || { echo "::error::bad CUTOVER_ROLLBACK_FAULT"; exit 1; }
+    fault="CUTOVER_ROLLBACK_FAULT='${CUTOVER_ROLLBACK_FAULT}' "
+  fi
   set +e
   out="$(remote \
-        "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${DEPLOY_STARTED_EPOCH}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${CORE_CANARY_PROVISIONED}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+        "sudo ${fault}HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${DEPLOY_STARTED_EPOCH}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${CORE_CANARY_PROVISIONED}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
   rc=$?
   set -e
   echo "${out}"
