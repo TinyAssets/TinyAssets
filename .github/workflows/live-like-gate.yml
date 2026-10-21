@@ -218,10 +218,15 @@ jobs:
         id: capture
         run: bash deploy/deploy_host.sh capture-current-image
 
+      - name: Core canary provisioning (WorkOS, production only)
+        id: core_canary_provision
+        # The real canary signs in through WorkOS with production credentials.
+        # Not provisioned here; the gate resolves the canary gate as the
+        # founder waiver does, so the fail-safe still runs its data move.
+        run: echo "provisioned=0" >> "$GITHUB_OUTPUT"
+
       - name: Resolve the core canary gate (founder waiver)
         id: canary_gate
-        # The real canary signs in through WorkOS, which only production holds.
-        # The gate runs the fail-safe as a provisioned canary would.
         run: echo "provisioned=1" >> "$GITHUB_OUTPUT"
 
       - name: Live preflight (read-only)
@@ -322,6 +327,11 @@ jobs:
         # assertion step below, not this exit code.
         continue-on-error: ${{ matrix.case == 'rollback' }}
         run: bash deploy/deploy_host.sh fail-safe-deploy
+
+      - name: Core user capabilities (WorkOS, production only; not run)
+        id: core_canary
+        if: ${{ false }}
+        run: exit 1
 
       - name: Public MCP canary (--assert-handles)
         id: canary

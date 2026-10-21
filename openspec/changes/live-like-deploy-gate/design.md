@@ -1,4 +1,4 @@
-## Shape
+## G1. One driver, phase parity
 
 One host-side driver, `deploy/deploy_host.sh <phase>`, holds every host step of
 `deploy-prod.yml`. Each production step keeps its name, id, order, `if:`,
@@ -12,6 +12,24 @@ and with the same wiring, on a GitHub runner prepared as a droplet-like host
 (`DEPLOY_TARGET=local`). It binds no environment and reads no secret.
 `tests/test_deploy_phase_parity.py` enforces the parity and names every
 production step the gate does not run, with its reason.
+
+## G2. The gate host runs the production branch live
+
+The runner becomes a droplet-like host and the image production serves starts
+live on synthetic data (owners, centers, SQLite writers, engine sockets, a
+timer); the cutover then runs through the non-disposable code paths with a
+root rclone `spaces` remote, never `BOX_MIGRATION_DISPOSABLE`.
+
+## G4. Forced rollback leaves the host as the next attempt needs it
+
+A fault after the one-shot window rolls back with no manual step: the old image
+serving on the old layout, no leftover box-store `.img`/`.locks`, no candidate
+`harness-<digest>`, and the next read-only preflight passes.
+
+## G5. Synthetic production-shaped workload
+
+`scripts/live_like/` builds the data (at least 3 owners and 5 centers, real
+SQLite stores, sidecar state) and keeps it live (sockets, writer, timer).
 
 ## Decisions (one line each)
 
@@ -28,7 +46,7 @@ production step the gate does not run, with its reason.
 - Rollback case: a matrix case; the deploy step is `continue-on-error` there and post-deploy success-path steps carry `matrix.case == 'cutover'`, which the parity test strips before comparing.
 - Trigger: `merge_group`, manual, and `pull_request` for this branch only; non-required until green.
 
-## Read-only live preflight
+## G3. Read-only live preflight
 
 `live-preflight` runs before the first host mutation in both callers:
 `scripts/live_preflight.py` refuses on leftover box-store `.img`/`.locks`, disk

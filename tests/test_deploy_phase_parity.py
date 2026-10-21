@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,3 +131,6 @@ def test_gate_binds_no_environment_and_reads_no_secret():
     jobs = yaml.safe_load(text)["jobs"]
     assert all("environment" not in job for job in jobs.values())
     assert "secrets." not in text
+
+
+pytestmark = pytest.mark.verifies('live-like-deploy-gate:G1')
