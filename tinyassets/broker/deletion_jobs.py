@@ -233,15 +233,8 @@ class DeletionJobs:
             await thread_work(self._erase_snapshot_map, job)
         return receipt
 
-    def _uid(self, job):
-        from tinyassets.broker.owner_volumes import binding
-
-        return binding(self.server._owner_identities, job["owner"])["uid"]
-
-    def _volume(self, job):
-        from tinyassets.boxes.daemon_control import request
-
-        if request("destroy", uid=self._uid(job)) != {"destroyed": True}:
+    async def _volume(self, job):
+        if await self.server.routing.volumes.host(job["owner"], "destroy") != {"destroyed": True}:
             raise RuntimeError("owner volume deletion remains pending")
 
     def _erase_snapshot_map(self, job):
@@ -250,12 +243,10 @@ class DeletionJobs:
         return dispatch(self.server._owner_identities, {
             "op": "BOX_VOLUME", "principal": job["owner"], "action": "erase", "arguments": {}})
 
-    def _snapshots(self, job):
-        from tinyassets.boxes.daemon_control import request
-
+    async def _snapshots(self, job):
         record = self._erase_snapshot_map(job)
-        if request("delete_snapshots", uid=record["uid"], snapshot_ids=None,
-                   released=record["work"]["released"]) != {"deleted": True}:
+        if await self.server.routing.volumes.host(job["owner"], "delete_snapshots",
+                snapshot_ids=None, released=record["work"]["released"]) != {"deleted": True}:
             raise RuntimeError("owner snapshot deletion remains pending")
 
     def _custody(self, job):

@@ -912,18 +912,21 @@ Target:
   that `owner_record` overrides, and boxhostd's router-side `status` operation,
   which has no production caller.
 
-**As built (b8, C15/C3):** `BrokerLifecycle` names the broker coordinator;
-`VolumeLifecycle` runs its existing transitions asynchronously under the owner
-lock. Capacity counts slots and in-flight reservations, with victim facts from
-recover and an explicit awake-owner query. Graceful host sleep acknowledges exit
-and detach before the broker releases the slot and asks for a copy-only snapshot.
-Snapshot and restore refuse a running or attached box. The executor cap and policy
-status fields, global publication lock and thread-to-loop notification are gone.
-Deletion repeats step 1 only for a new enqueue or missing erased/installed state.
-Recovery schedules these same per-owner tasks; its receipt attests only broker
-work. Root verifies its preparation facts in the layout document. Publication and
-recovery failures are logged with their own labels. Validation receipts are in
-the b8 report; no deployment is claimed.
+**As built (b9, C15 round-5 items 1–3):** the existing map work slot records
+sleep debt. Wake changes pending snapshot work to running without replacing the
+published restore point. Graceful sleep records debt and releases capacity;
+deploy completes after those sleeps. The tick copies outside the broker owner
+lock, then publishes only if that sleep is still pending under the lock. Restore
+and eviction keep their existing serialization and verified-reference rules.
+boxhostd uses its per-UID execution lock for launch, probes, drain and shutdown;
+the registry lock only accesses registry rows. All broker lifecycle host calls,
+including deletion, use the existing capacity condition and one configured
+connection count. The waker uses that configuration, and boxhostd sends an
+explicit excess-connection error. Registration does not consume a lifecycle
+execution slot. The copy-on-prepare/recover path, snapshot wake refusal, serial
+deploy copies, registry-lock I/O spans and independent waker bound are deleted.
+Round-4 publication, deletion ordering, routing and recovery receipts remain as
+built in b8. This note claims no deployment; round-5 items 4–6 belong to lane c.
 
 ### Build order and lanes
 Lane a (C1â€“C4) and step 1 are complete. The remaining lanes run one after

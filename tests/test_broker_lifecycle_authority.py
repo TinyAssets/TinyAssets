@@ -215,8 +215,8 @@ def test_host_lifecycle_has_no_broker_state_callbacks():
         "_start", "_sleep", "ensure_awake"}
 
 
-@pytest.mark.parametrize("action", ["sleep", "restore"])
-def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkeypatch, action):
+def test_restore_holds_owner_lock_until_map_commit(authority, monkeypatch):
+    action = "restore"
     a = authority
     lifecycle = a.server.routing.volumes
     lifecycle.volume("alice", "created")
@@ -479,4 +479,145 @@ def test_erased_installed_resume_does_not_repeat_withdrawal(authority):
         await a.jobs.resume_loaded_job(a.jobs.records.load(admission.digest("alice")))
         assert a.events.count("withdrawal_published") == before == 1
         assert result["completed_steps"] == ["withdrawal"]
+    asyncio.run(exercise())
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_first_wake_after_host_crash_precedes_slow_copy(authority, monkeypatch, pending):
+    a = authority
+    routing, lifecycle = a.server.routing, a.server.routing.volumes
+    lifecycle.volume("alice", "created")
+    old = lifecycle.volume("alice", "sleep")["work"]["snapshot_id"]
+    lifecycle.volume("alice", "publish", snapshot_id=old, sha256="b" * 64)
+    lifecycle.volume("alice", "wake")
+    routing.awake.add("alice")
+    if pending:
+        lifecycle.volume("alice", "sleep")
+    copying, finish = threading.Event(), threading.Event()
+    events = []
+
+    def host(operation, owner=None, **fields):
+        events.append(operation)
+        if operation == "snapshot":
+            copying.set()
+            assert finish.wait(10)
+        return a.host(operation, owner, **fields)
+
+    lifecycle.execute = host
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
+
+    async def exercise():
+        uid = await asyncio.wait_for(routing.wake("alice"), 2)
+        assert uid == a.identities.owner_machine("alice")
+        assert not copying.is_set()
+        assert lifecycle.volume("alice")["snapshot_id"] == old
+        assert lifecycle.volume("alice")["work"] == {"kind": "running"}
+        await routing.sleep("alice")
+        assert not copying.is_set()
+        copying_task = asyncio.create_task(lifecycle.tick_owner("alice"))
+        try:
+            assert await asyncio.to_thread(copying.wait, 2)
+            assert events.index("wake") < events.index("snapshot")
+            assert lifecycle.volume("alice")["snapshot_id"] == old
+            assert not copying_task.done()
+            assert not await lifecycle.evict("alice")
+        finally:
+            finish.set()
+            await copying_task
+        after = lifecycle.volume("alice")
+        assert after["snapshot_id"] != old and after["work"] is None
+    asyncio.run(exercise())
+
+
+def test_copy_releases_owner_lock_and_cannot_publish_over_new_wake(authority):
+    a = authority
+    lifecycle = a.server.routing.volumes
+    lifecycle.volume("alice", "created")
+    old = lifecycle.volume("alice", "sleep")["work"]["snapshot_id"]
+    lifecycle.volume("alice", "publish", snapshot_id=old, sha256="b" * 64)
+    lifecycle.volume("alice", "sleep")
+    entered, release = threading.Event(), threading.Event()
+
+    def host(operation, **fields):
+        if operation == "snapshot":
+            entered.set()
+            assert release.wait(10)
+        return a.host(operation, **fields)
+    lifecycle.execute = host
+
+    async def exercise():
+        task = asyncio.create_task(lifecycle.tick_owner("alice"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            # Models a wake winning publication after the UID copy completes.
+            await asyncio.wait_for(admission.owner_call(a.identities.path, "alice",
+                lifecycle.volume, "alice", "wake"), 2)
+        finally:
+            release.set()
+            await task
+        record = lifecycle.volume("alice")
+        assert record["snapshot_id"] == old
+        assert record["work"] == {"kind": "running"}
+    asyncio.run(exercise())
+
+
+def test_deploy_completes_after_sleep_without_copy(authority, monkeypatch):
+    a = authority
+    routing, lifecycle = a.server.routing, a.server.routing.volumes
+    lifecycle.volume("alice", "created")
+    lifecycle.volume("alice", "wake")
+    alice = a.identities.owner_machine("alice")
+    calls = []
+
+    def host(operation, owner=None, **fields):
+        calls.append(operation)
+        if operation == "select_image":
+            return {"selected": fields["image"]}
+        if operation == "status":
+            return {"awake": fields["uid"] == alice}
+        if operation == "snapshot":
+            pytest.fail("deploy waited for durability copy")
+        return a.host(operation, owner, **fields)
+    lifecycle.execute = host
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
+    assert asyncio.run(routing.deploy("image")) == {"slept": 1, "asleep": 1, "incomplete": 0}
+    assert calls == ["select_image", "status", "sleep", "status"]
+    assert lifecycle.volume("alice")["work"]["kind"] == "snapshot"
+
+
+@pytest.mark.parametrize("bound", [1, 4])
+def test_broker_never_exceeds_configured_host_connection_bound(authority, bound):
+    import queue
+
+    routing = authority.server.routing
+    routing.config.volume_concurrency = bound
+    release = threading.Event()
+    entered = queue.Queue()
+    active = peak = 0
+    lock = threading.Lock()
+
+    def host():
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        entered.put(True)
+        try:
+            assert release.wait(10)
+        finally:
+            with lock:
+                active -= 1
+
+    async def exercise():
+        tasks = [asyncio.create_task(routing.host_call(host)) for _ in range(bound + 2)]
+        try:
+            for _ in range(bound):
+                await asyncio.to_thread(entered.get, timeout=2)
+            await asyncio.sleep(.05)
+            assert entered.empty()
+            assert active == peak == routing._host_calls == bound
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+        assert active == routing._host_calls == 0
+        assert peak == bound
     asyncio.run(exercise())

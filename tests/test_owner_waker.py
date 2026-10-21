@@ -23,7 +23,7 @@ from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.next_wake import NextWakeIndex
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.owner_reads import PlanMissing
-from tinyassets.broker.waker import MAX_PENDING, Waker
+from tinyassets.broker.waker import Waker
 
 
 @pytest.fixture
@@ -155,7 +155,10 @@ def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ac
     asyncio.run(exercise())
 
 
-def test_slow_wakes_do_not_block_the_timer_and_are_bounded(index):
+@pytest.mark.parametrize("bound", [1, 2, 3])
+def test_slow_wakes_do_not_block_the_timer_and_are_bounded(index, bound):
+    from tinyassets.broker.lifecycle_config import LifecycleConfig
+
     release = threading.Event()
     entered = queue.Queue()
 
@@ -163,15 +166,17 @@ def test_slow_wakes_do_not_block_the_timer_and_are_bounded(index):
         entered.put(owner)
         assert release.wait(10)
 
-    waker = Waker(index, plan_store(index), wake=async_call(wake))
+    config = LifecycleConfig(volume_concurrency=bound)
+    waker = Waker(index, plan_store(index), wake=async_call(wake), config=config)
+    assert waker.config is config
 
     async def exercise():
         try:
             await waker.tick()
-            for _ in range(MAX_PENDING):
+            for _ in range(waker.config.volume_concurrency):
                 await asyncio.to_thread(entered.get, timeout=5)
             await waker.tick()
-            assert len(waker.pending) == MAX_PENDING
+            assert len(waker.pending) == waker.config.volume_concurrency
             assert entered.empty()
         finally:
             release.set()

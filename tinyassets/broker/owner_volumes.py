@@ -153,7 +153,7 @@ def dispatch(identities, document):
             record["local"] = False
             work = None
         elif action == "wake":
-            if work not in (None, {"kind": "running"}) or not record["local"]:
+            if (work and work["kind"] not in {"running", "snapshot"}) or not record["local"]:
                 raise PermissionError("volume must be local and committed before wake")
             work = {"kind": "running"}
             db.execute("UPDATE owner_volumes SET asleep_at=NULL WHERE principal=?", (owner,))

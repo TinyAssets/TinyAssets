@@ -319,6 +319,28 @@ enqueue SHALL return after its first step; later steps SHALL run as broker tasks
 - **AND** snapshot and restore refuse a box that is still running or attached
 - **AND** forced withdrawal remains the deletion stop operation
 
+#### Scenario: Crash recovery copies are durability debt
+- **WHEN** boxhostd has stopped a sandbox but its map row is still running, or its sleep copy is pending
+- **THEN** a wake arriving before the copy starts the local image without waiting for snapshot upload
+- **AND** the last verified published snapshot remains the restore point until a later completed sleep is copied
+- **AND** the tick pays pending copies outside the broker owner lock under the executor UID lock, publishing only the matching pending sleep
+- **AND** local eviction refuses any owner whose copy is owed
+
+#### Scenario: Deployment completes before durability copies
+- **WHEN** every awake box has completed graceful sleep on a deployment drain
+- **THEN** the drain is complete and the tick pays the copies as ordinary per-owner work
+
+#### Scenario: Host registry mutation never spans owner execution
+- **WHEN** one owner's launch, readiness poll, drain or status probe is slow
+- **THEN** another owner's wake and sleep proceed independently
+- **AND** the executor UID lock serializes owner execution while the registry lock covers only registry access
+
+#### Scenario: Broker lifecycle work has one configured concurrency bound
+- **WHEN** lifecycle connections reach the broker-configured concurrency bound
+- **THEN** the broker starts no additional host operation until capacity is released
+- **AND** boxhostd explicitly refuses an excess connection instead of silently closing it
+- **AND** the waker derives its pending bound from that same broker configuration
+
 #### Scenario: Erased and installed deletion resumes after step one
 - **WHEN** a deletion resumes with erased admission and its withdrawal publication installed
 - **THEN** it does not repeat step 1
