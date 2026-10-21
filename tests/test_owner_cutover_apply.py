@@ -391,6 +391,27 @@ def test_knowledge_stores_move_verbatim_with_counted_legacy_disposition(cutover,
         assert not (contents(store) / "300001/knowledge.db").exists()
 
 
+def test_live_runtime_socket_never_blocks_or_enters_the_owner_box(cutover):
+    # Live production keeps engine sidecar sockets under .universe-sidecars;
+    # backups never contain them, so only a live cutover meets them.
+    import socket
+
+    data, store, *_ = cutover
+    sidecars = data / ".universe-sidecars" / "a1"
+    sidecars.mkdir(parents=True, exist_ok=True)
+    (sidecars / "state.json").write_text("{}")
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(sidecars / "engine-1.sock"))
+    try:
+        migration.apply(*cutover)
+        migration.verify(data, store)
+    finally:
+        listener.close()
+    owner = contents(store) / "300001"
+    assert any(path.name == "state.json" for path in owner.rglob("*"))
+    assert not any(path.name == "engine-1.sock" for path in contents(store).rglob("*"))
+
+
 @pytest.mark.parametrize('drop_blob', [False, True])
 def test_round6_apply_resumes_hard_crash_between_verified_history_splits(cutover, drop_blob):
     data, store, *_ = cutover

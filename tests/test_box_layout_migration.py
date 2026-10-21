@@ -114,6 +114,28 @@ def test_special_owner_inodes_refuse_before_copy(tmp_path, kind):
             listener.close()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="owner inode preflight requires Linux")
+def test_live_runtime_socket_is_regenerated_not_moved(tmp_path):
+    # Production's live engine sidecar keeps a Unix socket here; backups never
+    # contain sockets, so only a live cutover meets it.
+    data, _ = _cutover_root(tmp_path)
+    sidecars = data / ".universe-sidecars" / "c1"
+    sidecars.mkdir(parents=True)
+    (sidecars / "state.json").write_text("{}")
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(sidecars / "engine-1.sock"))
+    try:
+        migration._owner_inode_preflight(
+            data, [migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+        target = tmp_path / "copied"
+        target.mkdir()
+        migration._copy(sidecars, target, os.getuid())
+        assert (target / "state.json").is_file()
+        assert not (target / "engine-1.sock").exists()
+    finally:
+        listener.close()
+
+
 
 
 
