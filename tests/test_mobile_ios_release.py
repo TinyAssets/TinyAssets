@@ -142,9 +142,30 @@ def test_ios_configuration_installer_adds_release_keys_idempotently(
     assert first.count(f"<string>{installer.MICROPHONE_PURPOSE}</string>") == 1
     assert first.count("<key>ITSAppUsesNonExemptEncryption</key>") == 1
     assert "<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>" in first
+    assert first.count("<key>CFBundleDisplayName</key>\n\t<string>TinyAssets</string>") == 1
 
     assert installer.install_configuration(info_plist) == 0
     assert info_plist.read_text(encoding="utf-8") == first
+
+
+def test_ios_configuration_installer_renames_the_template_app(tmp_path: Path) -> None:
+    # The Capacitor template ships "App", which App Review sees in the system
+    # sign-in prompt and under the home-screen icon.
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        "<plist>\n<dict>\n"
+        "\t<key>CFBundleDisplayName</key>\n"
+        "\t<string>App</string>\n"
+        "</dict>\n</plist>\n",
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 0
+    text = info_plist.read_text(encoding="utf-8")
+    assert "<string>App</string>" not in text
+    assert text.count("<key>CFBundleDisplayName</key>") == 1
+    assert "<key>CFBundleDisplayName</key>\n\t<string>TinyAssets</string>" in text
 
 
 def test_ios_configuration_installer_rejects_conflicting_microphone_copy(
