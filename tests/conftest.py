@@ -13,7 +13,6 @@ from collections.abc import Sequence
 from typing import Any, Callable
 
 import pytest
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
@@ -550,37 +549,8 @@ def _isolate_storage_backend(monkeypatch):
     _catalog.invalidate_backend_cache()
 
 
-@pytest.fixture
-def checkpointer():
-    """Yield an in-memory SqliteSaver for testing.
-
-    Uses the ``from_conn_string`` context manager pattern.
-    """
-    with SqliteSaver.from_conn_string(":memory:") as cp:
-        yield cp
 
 
-@pytest.fixture
-def connected_fantasy_model(tmp_path, monkeypatch):
-    """Exercise legacy graph helpers through an owned, receipted model source."""
-    from tests.support.fantasy_model import ConnectedFantasySource
-    from tinyassets.providers import call as provider_call
-    from tinyassets.providers.model_call import bind_model_call, owner_model_scope, text_sync
-
-    source = ConnectedFantasySource(tmp_path / "test-center")
-    monkeypatch.setattr(provider_call, "get_provider_router", lambda: source)
-    monkeypatch.setattr(provider_call, "register_open_providers_for", lambda _context: None)
-
-    def bound(prompt, system="", **kwargs):
-        kwargs.setdefault("universe_context", source.context)
-        kwargs.setdefault("operation", "run_graph")
-        return text_sync(prompt, system, **kwargs)
-
-    bound.receipts = source.receipts
-    with owner_model_scope(bind_model_call(
-        bound, source.context, operation="run_graph",
-    )):
-        yield bound
 
 
 

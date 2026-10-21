@@ -15,17 +15,6 @@ from tests.test_delivery_attempts import reserved  # noqa: F401
 from tests.test_delivery_reservations import delivery_env  # noqa: F401
 from tests.test_receiver_links import env as management_env  # noqa: F401
 from tinyassets.auth.middleware import current_identity_or_none
-from tinyassets.storage import deliveries
-
-
-def _attempt(base, receipt):
-    with deliveries.transaction(base) as conn:
-        return dict(conn.execute(
-            "SELECT * FROM graph_delivery_attempts WHERE delivery_id=?",
-            (receipt["delivery_id"],),
-        ).fetchone())
-
-
 
 
 @pytest.fixture

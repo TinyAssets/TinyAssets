@@ -5,9 +5,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-import tinyassets.platform_runtime_provenance as platform_runtime_provenance
 from tests.support.http_model import HTTP_PROVIDER
 from tinyassets.branches import (
     BranchDefinition,
@@ -17,7 +14,6 @@ from tinyassets.branches import (
 )
 from tinyassets.platform_runtime_provenance import (
     CLOUD,
-    ProcessProvenanceObservation,
     RuntimeProvenance,
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
@@ -33,34 +29,6 @@ _ADMITTED_PROVENANCE = RuntimeProvenance(
 )
 
 
-@pytest.fixture(autouse=True)
-def _module_local_cloud_admission(monkeypatch):
-    """Admit this module's process, through the real observation seam.
-
-    Every test in this file drives the cloud provider lane, which now requires
-    an admitted cloud runtime (`cloud-only-runtime-admission`, enforcement site
-    (C)). With no verdict these processes are unobserved, and unobserved is a
-    refusal -- so without this each test would be asserting the admission gate
-    instead of the behaviour it was written for.
-
-    Deliberately module-local and NOT in `tests/conftest.py`: a suite-wide
-    autouse admission would silently admit the negative regressions in
-    `tests/test_cloud_only_admission_regressions.py` and
-    `tests/test_cloud_only_provider_admission_regressions.py` as well, and
-    those tests are the whole point. Those files bind their own verdict per
-    test through the same seam.
-
-    The seam is the production one -- a `ProcessProvenanceObservation` with an
-    injected resolver -- not an env var, not a flag and not a tests-only branch
-    in production code. No metadata socket is opened, and a green run here
-    establishes no cloud fact and no production authority.
-    """
-    observation = ProcessProvenanceObservation(resolver=lambda: _ADMITTED_PROVENANCE)
-    observation.observe()
-    monkeypatch.setattr(
-        platform_runtime_provenance, "_PROCESS_OBSERVATION", observation
-    )
-    return observation
 
 
 class _CountingProvider(BaseProvider):
@@ -95,24 +63,6 @@ class _CountingProvider(BaseProvider):
         )
 
 
-class _OpenProxy:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    def close(self) -> None:
-        pass
-
-    def request(self, verb: str, wire: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append((verb, wire))
-        return {
-            "status": 200,
-            "body": json.dumps(
-                {
-                    "choices": [{"message": {"content": "foreground-open-ok"}}],
-                    "usage": {"prompt_tokens": 9, "completion_tokens": 4},
-                }
-            ),
-        }
 
 
 def _branch(

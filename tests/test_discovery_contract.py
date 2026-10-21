@@ -5,7 +5,6 @@ No connection publication, network authority or live provider claims.
 
 from copy import deepcopy
 
-
 from tests.test_discovery_catalogue_shapes import (
     BENCHMARK,
     CATALOGUE,

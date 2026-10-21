@@ -19,7 +19,5 @@
 #
 # Measured: every file whose tests totalled >3.0s in CI run 30780762657
 # (12991 tests / 34.0 min). Regenerate after a big suite change.
-tests/test_branch_tasks_v2.py
-tests/test_host_uptime_installers.py
 tests/test_mcp_instruction_surfaces.py
 tests/test_scoped_identity_reset.py

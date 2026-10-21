@@ -142,10 +142,6 @@ def _rail(uid):
     return out
 
 
-def _raw_rail(uid):
-    from tinyassets.api.pending_requests import list_requests
-
-    return list_requests(universe_id=uid)
 
 
 # --------------------------------------------------------------------------- #
@@ -155,8 +151,43 @@ def _raw_rail(uid):
 
 
 
+def test_a_secret_field_requires_a_deposit_action(base):
+    """THE boundary: otherwise composing requests freely becomes a way to ask
+    for a password and land it in readable storage."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    out = _ask("u-1", kind="Login", title="What is your password?",
+               action={"type": "answer"},
+               fields=[{"name": "pw", "label": "Password", "type": "secret"}])
+
+    assert out["error"] == "request_invalid"
+    assert "only allowed on a connect_http request" in out["detail"]
+    assert _rail("u-1")["count"] == 0
 
 
+def test_a_credential_ask_records_no_answer_at_all(base):
+    """The guarantee got STRONGER, so this test did too.
+
+    It used to pair a secret field with a `text` one and assert the secret was
+    not recorded while the text was. Every field on a credential ask must now be
+    a secret, because a non-secret answer is persisted and relayed into chat and
+    an ask could label a token `text` (Codex, Q1). So nothing is recorded for a
+    credential ask -- there is no longer a field whose value could be.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1", fields=[
+        {"name": "secret", "label": "Key", "type": "secret"},
+    ])
+
+    _owner_answer("u-1", request_id=asked["request_id"],
+            values={"secret": "ghp_" + "x" * 36})
+
+    answered = _rail("u-1")["recently_answered"][0]
+    # Empty or absent; both mean the same thing and neither holds a value.
+    assert not (answered.get("answer") or {})
+    assert "ghp_" not in json.dumps(answered)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +197,42 @@ def _raw_rail(uid):
 
 
 
+def test_answering_deposits_under_the_policy_on_the_request(base):
+    """A caller cannot substitute a different endpoint at answer time."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1")
+
+    out = _owner_answer("u-1", request_id=asked["request_id"],
+                  values={"secret": "ghp_" + "x" * 36},
+                  host="api.evil.example", path_template="/steal",
+                  destination="evil")
+
+    assert out["status"] == "answered"
+    assert out["destination"] == "github"
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
+                              verify_authenticated_principal=lambda: "alice")
+    resource = ledger._get_connection_resource(out["connection_id"])
+    assert [e.host for e in resource.allowed_endpoints] == ["api.github.com"]
+
+
+@pytest.mark.parametrize("over", [
+    {"action": dict(_CRED["action"], path_template="")},
+    {"action": dict(_CRED["action"], path_template="/{rest+}")},
+    {"action": dict(_CRED["action"], host="https://api.github.com")},
+    # Every verb the egress layer knows is askable now (founder 2026-09-02, on
+    # limits); a verb it does not know is still refused.
+    {"action": dict(_CRED["action"], methods=["GET", "OPTIONS"])},
+    {"action": dict(_CRED["action"], destination="GitHub PR")},
+])
+def test_a_tab_the_deposit_could_not_honour_never_reaches_the_user(base, over):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    assert "error" in _ask("u-1", **over)
+    assert _rail("u-1")["count"] == 0
 
 
 
@@ -180,8 +247,14 @@ def _raw_rail(uid):
 
 
 
+def test_a_failed_deposit_leaves_the_tab_open(base):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1")
 
-
+    assert "error" in _owner_answer("u-1", request_id=asked["request_id"],
+                              values={"secret": "   "})
+    assert _rail("u-1")["count"] == 1
 
 
 
@@ -220,8 +293,46 @@ def _raw_rail(uid):
 # --------------------------------------------------------------------------- #
 
 
+def test_codex_an_undeclared_key_cannot_smuggle_a_secret_into_storage(base):
+    """Excluding known secret NAMES was not enough — an undeclared key persisted
+    verbatim. Only values for declared non-secret fields are recorded."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    # An APPROVAL ask, not a credential one: every field on a credential ask
+    # must now be a secret, and the property under test -- an undeclared key is
+    # never recorded -- belongs to every ask, not just that one.
+    asked = _ask("u-1", action={"type": "answer"}, fields=[
+        {"name": "note", "label": "Note", "type": "text"},
+    ])
+
+    _answer("u-1", request_id=asked["request_id"], values={
+        "shadow": "ghp_REPRO_SECRET_123456789",   # never declared
+        "note": "fine",
+    })
+
+    answered = _rail("u-1")["recently_answered"][0]
+    assert answered["answer"] == {"note": "fine"}
+    assert "ghp_" not in json.dumps(answered)
 
 
+@pytest.mark.parametrize("mode", ["answer", "dismiss"])
+def test_codex_feedback_cannot_carry_a_credential(base, mode):
+    """Feedback is free text stored in the clear; Codex put the key there."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1")
+
+    doc = {"request_id": asked["request_id"],
+           "feedback": "ghp_REPRO_SECRET_123456789"}
+    if mode == "dismiss":
+        doc["dismiss"] = True
+    else:
+        doc["values"] = {"secret": "ghp_" + "x" * 36}
+    out = _owner_answer("u-1", **doc)
+
+    assert out["error"] == "request_invalid"
+    assert "credential" in out["detail"]
+    assert "ghp_REPRO" not in json.dumps(_rail("u-1"))
 
 
 
@@ -238,16 +349,6 @@ def _raw_rail(uid):
 # --------------------------------------------------------------------------- #
 
 
-def _seed_connection(uid, destination="github", path="/repos/o/r/pulls"):
-    """A deposited connection, as if the user had already pasted once."""
-    from tests.support.connection_door import connect_http
-
-    return connect_http(universe_id=uid, payload=json.dumps({
-        "destination": destination, "secret": "ghp_" + "x" * 36,
-        "auth_scheme": "bearer",
-        "allowed_endpoints": [{"host": "api.github.com",
-                               "path_template": path, "methods": ["POST"]}],
-    }))
 
 
 
@@ -256,6 +357,17 @@ def _seed_connection(uid, destination="github", path="/repos/o/r/pulls"):
 
 
 
+def test_an_extend_request_cannot_carry_a_secret_field(base):
+    """A secret field belongs only where a secret is deposited."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    out = _ask("u-1", kind="API", title="sneaky",
+               action={"type": "extend_http", "destination": "github",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/x", "methods": ["PUT"]}]},
+               fields=[{"name": "secret", "label": "Key", "type": "secret"}])
+    assert out["error"] == "request_invalid"
+    assert "only allowed on a connect_http request" in out["detail"]
 
 
 

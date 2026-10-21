@@ -4,22 +4,6 @@ import importlib
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-from tinyassets.background_branch_authority import (
-    BackgroundBranchAttempt,
-    BackgroundBranchAttemptLifecycle,
-    BackgroundBranchBinding,
-    BackgroundBranchBindingStatus,
-    BackgroundBranchChildDelegation,
-    BackgroundBranchExecutorAudience,
-    BackgroundBranchExecutorClass,
-    BackgroundBranchOperation,
-    BackgroundBranchProvenance,
-    BackgroundBranchReceiptRefs,
-    BackgroundBranchSourceKind,
-    BackgroundBranchTargetMode,
-)
-from tinyassets.evaluation.scenario_runner import AcceptanceScenario
 from tinyassets.provider_work_authority import (
     ProviderWorkBindingSeed,
 )
@@ -71,27 +55,6 @@ def _definition_payload() -> dict[str, object]:
     }
 
 
-def _scenario(**overrides: object) -> AcceptanceScenario:
-    payload: dict[str, object] = {
-        "scenario_id": "scenario:repo-spec-baseline-v1",
-        "target_surface": "session_trace_summary",
-        "user_story": (
-            "A repository owner needs a deterministic preflight that checks "
-            "immutable repository and OpenSpec evidence before any provider "
-            "or GitHub effect is authorized. The preflight must be safe for "
-            "multi-tenant cloud execution and preserve exact evidence."
-        ),
-        "allowed_tools": [],
-        "evaluator_chain": ["evaluator:coding-trajectory-v1"],
-        "artifact_requirements": [{"kind": "content_digest", "required": True}],
-        "pass_threshold": {"min_score": 1.0},
-        "cost_budget": {"max_tokens": 0, "max_wall_time_seconds": 10},
-        "privacy_scope": "universe_only",
-        "idempotency_key_constructor": "scenario+candidate+artifact-digests",
-        "setup": [],
-    }
-    payload.update(overrides)
-    return AcceptanceScenario(**payload)  # type: ignore[arg-type]
 
 
 def _cloud_authority_fixture(
@@ -166,97 +129,6 @@ def _cloud_authority_fixture(
     return definition, provider_store, ledger
 
 
-def _binding_and_attempt() -> tuple[BackgroundBranchBinding, BackgroundBranchAttempt]:
-    receipts = BackgroundBranchReceiptRefs(
-        b2_execution_grant_id=None,
-        provider_work_receipt_id="pwr_01",
-        provider_attempt_receipt_id="pat_01",
-        payment_receipt_id=None,
-        effect_receipt_id="eff_01",
-    )
-    binding = BackgroundBranchBinding(
-        schema_version=1,
-        binding_id="bnd_01",
-        status=BackgroundBranchBindingStatus.ACTIVE,
-        generation=3,
-        binding_digest=f"sha256:{'f' * 64}",
-        authorizing_principal_id="acct_alice",
-        universe_id="universe_alice",
-        branch_def_id="branch_repo_spec_loop",
-        operation=BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
-        source_kind=BackgroundBranchSourceKind.REQUEST_ADMISSION,
-        source_id="request_17",
-        source_revision="4",
-        source_digest=f"sha256:{'1' * 64}",
-        revocation_generation=0,
-        target_mode=BackgroundBranchTargetMode.PINNED_VERSION,
-        pinned_branch_version_id="branch_repo_spec_loop@abc12345",
-        permitted_executor_classes=(BackgroundBranchExecutorClass.CLOUD,),
-        daemon_id=None,
-        runtime_id=None,
-        expires_at=None,
-        max_attempts=2,
-        remaining_depth=0,
-        remaining_count=1,
-        remaining_cost_microunits=5_000_000,
-        child_delegation=BackgroundBranchChildDelegation(
-            allowed_branch_def_ids=(),
-            allowed_operations=(),
-            max_depth=0,
-            max_count=0,
-            max_cost_microunits=0,
-        ),
-    )
-    audience = BackgroundBranchExecutorAudience(
-        executor_class=BackgroundBranchExecutorClass.CLOUD,
-        daemon_id=None,
-        runtime_id="runtime_cloud_1",
-        worker_id="worker_1",
-    )
-    provenance = BackgroundBranchProvenance(
-        authorizing_principal_id="acct_alice",
-        source_kind=BackgroundBranchSourceKind.REQUEST_ADMISSION,
-        source_id="request_17",
-        executor_class=BackgroundBranchExecutorClass.CLOUD,
-        daemon_id=None,
-        runtime_id="runtime_cloud_1",
-        worker_id="worker_1",
-        parent_attempt_id=None,
-        origin_attempt_id="att_01",
-        audit_correlation_ids=("trace:17",),
-        receipt_refs=receipts,
-    )
-    attempt = BackgroundBranchAttempt(
-        schema_version=1,
-        attempt_id="att_01",
-        logical_attempt_key="request:17:g4",
-        binding_id=binding.binding_id,
-        binding_digest=binding.binding_digest,
-        binding_generation=binding.generation,
-        authorizing_principal_id="acct_alice",
-        universe_id="universe_alice",
-        branch_def_id="branch_repo_spec_loop",
-        branch_version_id="branch_repo_spec_loop@abc12345",
-        branch_content_digest=f"sha256:{'b' * 64}",
-        operation=BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
-        source_kind=BackgroundBranchSourceKind.REQUEST_ADMISSION,
-        source_id="request_17",
-        source_generation=4,
-        executor_audience=audience,
-        claim_generation=2,
-        lease_generation=5,
-        lease_expires_at="2026-07-31T00:00:00Z",
-        remaining_depth=0,
-        remaining_count=1,
-        remaining_cost_microunits=5_000_000,
-        lifecycle=BackgroundBranchAttemptLifecycle.CLAIMED,
-        hold_reason=None,
-        terminal_reason=None,
-        created_at="2026-07-30T20:00:00Z",
-        updated_at="2026-07-30T20:01:00Z",
-        provenance=provenance,
-    )
-    return binding, attempt
 
 
 

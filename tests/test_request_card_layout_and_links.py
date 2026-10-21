@@ -29,7 +29,6 @@ import re
 import shutil
 import subprocess
 
-
 from tests.app_sheet_harness import rail_source
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
@@ -37,9 +36,6 @@ from tinyassets.onboarding import render_app_html
 _NODE = shutil.which("node")
 
 
-def _css() -> str:
-    html, _csp = render_app_html()
-    return html[html.index("<style"):html.index("</style>")]
 
 
 #: Comments have to go before the rules are read. This stylesheet is heavily
@@ -51,20 +47,6 @@ def _css() -> str:
 _CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 
 
-def _rule(css: str, selector: str) -> str:
-    """Every declaration that applies to ``selector``, from all its rules.
-
-    A property can be set in a shared rule (``.rtab-grant`` is listed in the
-    wrapping rule alongside six siblings) as easily as in its own, so reading
-    only the first match asserts nothing about the page.
-    """
-    found = []
-    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", _CSS_COMMENT_RE.sub(" ", css)):
-        selectors = [part.strip() for part in match.group(1).split(",")]
-        if selector in selectors:
-            found.append(" ".join(match.group(2).split()))
-    assert found, f"no CSS rule for {selector!r}"
-    return ";".join(found)
 
 
 
@@ -104,15 +86,6 @@ console.log(JSON.stringify(out));
 """
 
 
-def _render_links(urls):
-    html, _ = render_app_html()
-    script = (_LINK_HARNESS
-              .replace("__SOURCE__", _js_function(html, "railFieldLink"))
-              .replace("__URLS__", json.dumps(urls)))
-    run = subprocess.run([_NODE], input=script, capture_output=True, text=True,
-                         encoding="utf-8", timeout=30, check=False)
-    assert run.returncode == 0, run.stderr
-    return json.loads(run.stdout)
 
 
 

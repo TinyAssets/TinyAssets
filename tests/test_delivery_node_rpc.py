@@ -86,41 +86,10 @@ def _send(base, source, link, occurrence="one", outputs=None, cancel=lambda: Fal
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+@pytest.mark.real_jail
+def test_real_linux_jail_transports_delivery_rpc(node_env, monkeypatch):
+    base, _, _, link, branch, _ = node_env
+    outcome = _execute(base, branch, link)
+    assert outcome.status == "completed", outcome.error
+    assert len(_rows(base)) == 2
 

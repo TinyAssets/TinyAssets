@@ -7,7 +7,6 @@ and run under Node with storage and the DOM replaced.
 """
 from __future__ import annotations
 
-
 from tests.test_app_browser_notifications import functions, run_js
 
 PURE = ("cloudViewportClass", "cloudStorageKey", "cloudClamp", "cloudDefaultState",

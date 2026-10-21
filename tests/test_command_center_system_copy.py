@@ -1,7 +1,6 @@
 """Legacy public systems use pinned component copies, never invented file packages."""
 from __future__ import annotations
 
-
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401

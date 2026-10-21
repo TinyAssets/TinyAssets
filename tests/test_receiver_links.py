@@ -5,7 +5,6 @@ These prove management only; no public route, provider or delivery is invoked.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from contextlib import contextmanager
@@ -14,8 +13,6 @@ from pathlib import Path
 import pytest
 
 from tinyassets.api import receiver_links as api
-from tinyassets.auth.middleware import identity_context
-from tinyassets.auth.provider import Identity
 from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 from tinyassets.daemon_server import (
     grant_universe_access,
@@ -183,24 +180,6 @@ def _resolve(base, link, owner="sender", universe="u-sender"):
 
 
 
-def _process_generation_update(base, receiver_id, ready, start, results):
-    """A separate Python process, no shared connection or in-memory lock."""
-    os.environ["TINYASSETS_DATA_DIR"] = str(base)
-    initialize_author_server(base)
-    ready.put(True)
-    if not start.wait(20):
-        raise RuntimeError("test did not start its competing processes")
-    with identity_context(
-        Identity(
-            user_id="receiver",
-            username="fixture",
-            capabilities=["tinyassets.extensions.write"],
-        )
-    ):
-        try:
-            results.put(_save(receiver_id=receiver_id, expected_generation=1)["generation"])
-        except store.ReceiverConflict as exc:
-            results.put(str(exc))
 
 
 

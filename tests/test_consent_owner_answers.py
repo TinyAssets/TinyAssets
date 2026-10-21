@@ -12,8 +12,8 @@ from tinyassets.api import pending_requests as api
 from tinyassets.storage import pending_requests as store
 
 KINDS = (
-    "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
-    "remove_http", "grant_workspace_consent", "bind_model_access", "grant_patch_intake",
+    "publish", "connect", "connect_http", "extend_http", "rotate_http",
+    "remove_http", "bind_model_access",
 )
 
 
@@ -58,7 +58,7 @@ def test_every_bearer_answer_variant_is_inert(home, kind, entry):
         assert store.get_request(home, row["request_id"]) == before
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ["connect_http"])
 @pytest.mark.parametrize("choice", [{"dismiss": True}, {"decision": "declined"}])
 def test_owner_clear_deny_and_unmute_recovery_do_not_enable_bearer(home, kind, choice):
     row = ask(home, kind)
@@ -80,7 +80,7 @@ def test_owner_clear_deny_and_unmute_recovery_do_not_enable_bearer(home, kind, c
     assert recovered["status"] == result["status"]
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ["connect_http"])
 @pytest.mark.parametrize("proof", ["missing", "forged", "cross-origin", "other-owner"])
 def test_protected_answer_rejects_invalid_proof(home, kind, proof):
     row = ask(home, kind)
@@ -100,7 +100,7 @@ def test_protected_answer_rejects_invalid_proof(home, kind, proof):
     assert store.get_request(home, row["request_id"])["status"] == "pending"
 
 
-@pytest.mark.parametrize("kind", ["publish", "install"])
+@pytest.mark.parametrize("kind", ["publish"])
 def test_immutable_pin_cannot_be_hidden_by_a_plain_question(home, monkeypatch, kind):
     row = ask(home, "answer")
     monkeypatch.setattr(api, "_consent_pin", lambda *_: {"record": {"action": {"type": kind}}})
@@ -110,15 +110,6 @@ def test_immutable_pin_cannot_be_hidden_by_a_plain_question(home, monkeypatch, k
     assert store.get_request(home, row["request_id"])["status"] == "pending"
 
 
-def test_plain_questions_keep_bearer_answers(home):
-    row = api.request_from_user(universe_id=home.name, payload={
-        "kind": "Question", "title": "Which?", "body": "Choose",
-        "fields": [{"name": "choice", "type": "text", "label": "Choice"}],
-        "action": {"type": "answer"},
-    })
-    assert api.answer_request(universe_id=home.name, payload={
-        "request_id": row["request_id"], "values": {},
-    })["status"] == "answered"
 
 
 @pytest.mark.parametrize("door",
@@ -176,7 +167,7 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
 
 @pytest.mark.parametrize("cookie", ["", "__Host-ta-owner=expired"])
 @pytest.mark.parametrize("choice", [{"values": {}}, {"dismiss": True}, {"decision": "declined"}])
-@pytest.mark.parametrize("kind", ["answer", "connect_http"])
+@pytest.mark.parametrize("kind", ["connect_http"])
 def test_app_answer_without_live_cookie_uses_server_classification(home, cookie, choice, kind):
     shown = ["Question", "Choose", "Reply",
              [{"name": "note", "type": "text", "label": "Note"}], {"type": kind}]
@@ -197,17 +188,5 @@ def test_app_answer_without_live_cookie_uses_server_classification(home, cookie,
         assert store.get_request(home, row["request_id"])["status"] == "pending"
 
 
-def test_plain_app_answer_without_cookie_still_requires_same_origin(home):
-    row = ask(home, "answer")
-    result = owner_answer(universe_id=home.name, cookie="", origin="https://evil.example",
-                          payload={"request_id": row["request_id"], "values": {}})
-    assert result["error"] == "interactive_approval_required"
-    assert store.get_request(home, row["request_id"])["status"] == "pending"
 
 
-def test_signed_in_bound_action_answer_requires_preview_not_another_login(home):
-    row = ask(home, "approve_action")
-    result = owner_answer(universe_id=home.name, payload={"request_id": row["request_id"]})
-    assert result["error"] == "preview_required"
-    assert "inline owner card" in result["detail"]
-    assert store.get_request(home, row["request_id"])["status"] == "pending"

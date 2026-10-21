@@ -18,7 +18,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
 
 # Have Codex fix something in a worktree (write mode):
 python scripts/peer_agent.py codex --model sol --out output/codex-fix.md \
-    --prompt "Fix the failing test in tests/test_knowledge_graph.py and run it" \
+    --prompt "Fix the failing test in tests/test_owner_router.py and run it" \
     --cwd ../wf-bug126 --write
 
 # Quick foreground question (prints to stdout, no file):

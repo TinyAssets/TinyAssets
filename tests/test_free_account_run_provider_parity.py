@@ -364,63 +364,6 @@ def _run(tmp_path, monkeypatch, branch: BranchDefinition, universe: str) -> dict
 
 
 
-@pytest.fixture
-def engine_tools(tmp_path, monkeypatch):
-    """The universe's own engine-tool surface, with a synthetic MCP transport.
-
-    An agent node needs `engine_tools_authorized`; without a route it is refused
-    for a reason unrelated to model resolution. The route, the ACL and the
-    admission are real; only the MCP client is synthetic.
-    """
-    from types import SimpleNamespace
-
-    from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
-
-    from tinyassets import engine_mcp_http, engine_tool_client
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
-
-    calls: list[tuple[str, dict[str, Any]]] = []
-    engine_mcp_http._write_routes(tmp_path, [SimpleNamespace(
-        universe_id=A_HOME, owner=A_OWNER, port=8791, secret="s" * 43,
-    )])
-    # Persona generation is not this test's subject. The adapter overwrites
-    # these deliberately wrong identities with the run's own.
-    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args, **kwargs: (
-        args[3], "work system", ModelConfig(
-            engine_mcp_enabled=True, engine_mcp_actor_id="wrong-owner",
-            engine_mcp_graph_id="wrong-universe", max_tokens=2048, absolute_cap_s=120,
-        ),
-    ))
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        def is_connected(self):
-            return True
-
-        async def list_tools_mcp(self, *, cursor=None):
-            return ListToolsResult(tools=[
-                Tool(name=name, inputSchema={"type": "object"})
-                for name in SERVED_ENGINE_MCP_TOOLS
-            ])
-
-        async def call_tool_mcp(self, name, arguments):
-            calls.append((name, arguments))
-            return CallToolResult(
-                content=[TextContent(type="text", text="known work result")]
-            )
-
-    def make_client(route, timeout):
-        assert route.actor_id == A_OWNER and route.graph_id == A_HOME
-        return Client()
-
-    monkeypatch.setattr(engine_tool_client, "_make_client", make_client)
-    return calls
 
 
 

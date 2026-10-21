@@ -114,11 +114,6 @@ def _as(name: str):
     return identity_context(Identity(user_id=name, username=name, capabilities=["write"]))
 
 
-def _op(universe: str, operation: str, payload: dict) -> dict:
-    from tinyassets.universe_server import write_graph
-
-    return json.loads(write_graph(target="app_ui", operation=operation, graph_id=universe,
-                                  payload_json=json.dumps(payload)))
 
 
 def _rows(base) -> list[tuple[str, str]]:

@@ -18,26 +18,12 @@ environment bypass, no tests-only production helper, and no production edit.
 
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
-
 import pytest
 
-import tinyassets.platform_runtime_provenance as provenance
-from tests.test_branch_tasks_v2 import _activation_subject, _commit, _MutableClock
-from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTaskAdapter
-from tinyassets.daemon_registry import create_daemon, ensure_daemon_runtime
-from tinyassets.daemon_server import initialize_author_server, list_runtime_instances
 from tinyassets.platform_runtime_provenance import (
     CLOUD,
     NOT_CLOUD,
-    ProcessProvenanceObservation,
     RuntimeProvenance,
-)
-from tinyassets.storage import db_path
-from tinyassets.storage.automation_activations import (
-    AutomationActivationExecutor,
-    AutomationActivationStore,
 )
 
 NOW = "2026-07-24T08:01:00+00:00"
@@ -56,25 +42,6 @@ ADMITTED = RuntimeProvenance(
 )
 
 
-@pytest.fixture
-def bind_provenance(monkeypatch):
-    """Install one process observation carrying an injected verdict.
-
-    This drives the real seam a runtime guard has to read: the module-level
-    `_PROCESS_OBSERVATION` that both `observe_platform_runtime_provenance()`
-    and the non-mutating `peek_platform_runtime_provenance()` resolve through.
-    The cache is warmed once here so a guard reading either accessor sees the
-    same immutable verdict, exactly as a real process does after startup
-    resolution. No metadata socket is opened: the resolver is a callable.
-    """
-
-    def _bind(verdict: RuntimeProvenance) -> ProcessProvenanceObservation:
-        observation = ProcessProvenanceObservation(resolver=lambda: verdict)
-        observation.observe()
-        monkeypatch.setattr(provenance, "_PROCESS_OBSERVATION", observation)
-        return observation
-
-    return _bind
 
 
 # --- matrix 5: the copied-container label set (shared by every site) -------
@@ -113,25 +80,6 @@ _COPIED_CONTAINER_PATH_ENV = {
 }
 
 
-def apply_copied_cloud_labels(monkeypatch, data_root: Path) -> None:
-    """Apply the explicit non-secret compose environment and copied labels.
-
-    Paths are deliberately rerooted into isolated pytest storage. This does
-    not claim literal /data equivalence or reproduce secret env_file values.
-    Admission comes from the injected process observation; paired admitted
-    controls establish that these settings do not simply break the fixture.
-    No real metadata request, provider child or production authority is used.
-    """
-    for name, value in _COPIED_CONTAINER_ENV.items():
-        monkeypatch.setenv(name, value)
-    for name, relative in _COPIED_CONTAINER_PATH_ENV.items():
-        target = data_root if relative is None else data_root / relative
-        monkeypatch.setenv(name, str(target))
-    monkeypatch.setenv("HOSTNAME", _COPIED_CONTAINER_HOSTNAME)
-    monkeypatch.setenv("TINYASSETS_CONTAINER", _COPIED_CONTAINER_NAME)
-    monkeypatch.setenv("CONTAINER_NAME", _COPIED_CONTAINER_NAME)
-    monkeypatch.setattr("socket.gethostname", lambda: _COPIED_CONTAINER_HOSTNAME)
-    monkeypatch.setattr("socket.getfqdn", lambda *_a: _COPIED_CONTAINER_HOSTNAME)
 
 
 #: Parameters for a positive control that must hold **both** bare and dressed.
@@ -148,86 +96,16 @@ COPIED_LABEL_VARIANTS = [
 ]
 
 
-def maybe_copied_cloud_labels(copied_labels: bool, monkeypatch, data_root: Path) -> None:
-    """Apply the copied-container label set only on the dressed leg."""
-    if copied_labels:
-        apply_copied_cloud_labels(monkeypatch, data_root)
 
 
-def _ready_cloud_assignment(tmp_path: Path):
-    """A valid, ready, pending `cloud` epoch-2 task plus a valid consumer lease.
-
-    Same shape as the baseline single-winner claim test in
-    `tests/test_branch_tasks_v2.py`, so the setup itself is known-claimable.
-    """
-    initialize_author_server(tmp_path)
-    activations = AutomationActivationStore(tmp_path)
-    active = activations.activate(
-        expected=activations.create_stopped(
-            universe_id="universe-a", automation_id="automation-a"
-        ),
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=_activation_subject("branch-version-a"),
-        lease_id="activation-lease-a",
-    )
-    assert active is not None
-    committed = _commit(tmp_path, automation_activation=active)
-    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=_MutableClock(NOW))
-    candidate = adapter.get(committed["branch_task_id"])
-    assert candidate is not None
-    assert candidate.automation_executor_class == "cloud"
-    lease = AssignedConsumerLease(
-        consumer_id="assigned-consumer:boot-a",
-        lease_id="lease-a",
-        expires_at="2026-07-24T08:02:00+00:00",
-    )
-    return adapter, candidate, lease
 
 
-def _claimed_row(tmp_path: Path, branch_task_id: str) -> tuple[str, str]:
-    """Read the persisted claim state, not the return value."""
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        row = conn.execute(
-            "SELECT status, COALESCE(claimed_by, ?) FROM branch_tasks_v2 "
-            "WHERE branch_task_id = ?",
-            ("", branch_task_id),
-        ).fetchone()
-    assert row is not None
-    return str(row[0]), str(row[1])
 
 
-def _cloud_worker_rows(tmp_path: Path) -> list[dict]:
-    return [
-        row
-        for row in list_runtime_instances(tmp_path)
-        if (row.get("metadata") or {}).get("runtime_registration") == "cloud_worker"
-    ]
 
 
-def _cloud_registration_args(tmp_path: Path, *, worker_id: str = "worker-cloud-1"):
-    initialize_author_server(tmp_path)
-    daemon = create_daemon(
-        tmp_path,
-        display_name="Admission regression daemon",
-        created_by="acct_alice",
-        soul_mode="soul",
-        soul_text="Own one bounded cloud registration.",
-    )
-    return dict(
-        daemon_id=str(daemon["daemon_id"]),
-        universe_id="universe-a",
-        provider_name="codex",
-        model_name="gpt-5",
-        created_by="cloud-worker",
-        worker_id=worker_id,
-        metadata={"automation_executor_class": "cloud"},
-    )
 
 
-def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1"):
-    return ensure_daemon_runtime(
-        tmp_path, **_cloud_registration_args(tmp_path, worker_id=worker_id)
-    )
 
 
 # --- matrix 1: negative direct claim --------------------------------------

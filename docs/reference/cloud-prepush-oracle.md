@@ -17,7 +17,7 @@ git diff <base_sha> -- tinyassets/ tests/ scripts/ > candidate.patch
 
 # 2. validate locally and build the dispatch inputs (exit 2 = rejected)
 python scripts/cloud_prepush_oracle.py prepare --base <base_sha> \
-    --patch candidate.patch --out inputs.json -- tests/test_provider_stream_and_classify.py::test_init_and_aggregate_model_are_not_answer_evidence
+    --patch candidate.patch --out inputs.json -- tests/test_owner_next_wake.py
 
 # 3. dispatch by hand; nothing in the helper dispatches for you
 gh workflow run cloud-prepush-oracle.yml --json < inputs.json
@@ -71,8 +71,6 @@ the compressed transport. If still over the cap, use a nearer already-pushed
 base where possible; never omit required code or tests to make a proof fit.
 Oversized, truncated, corrupt, trailing-data or multi-member gzip is rejected,
 never retried as raw input.
-
-Contract test: `tests/test_cloud_prepush_oracle.py`.
 
 ## Trust boundary
 

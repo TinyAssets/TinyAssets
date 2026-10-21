@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import functools
 import os
-import re
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
-import yaml
 
 from scripts.host_service_bundle import service_bundle
 
@@ -56,52 +53,6 @@ def _is_wsl_bash() -> bool:
     return probe.returncode == 0
 
 
-def _require_meaningful_mode_checks(where: Path) -> None:
-    """Skip unless this host can exercise the installer's mode comparison.
-
-    Two preconditions, both real and both satisfied on Linux CI:
-
-    * ``flock`` must exist. Git Bash ships none, and the installer refuses to
-      start without it.
-    * ``stat -c %a`` must report real mode bits **on the filesystem the test
-      installs into**. Under WSL the Windows drive is DrvFs, which answers
-      ``777`` for every file whatever ``chmod`` did. The installer compares
-      installed modes to decide whether a release is already exact, so there
-      that comparison can never match -- for a reason that has nothing to do
-      with the installer.
-
-    ``where`` must be the test's own ``tmp_path``: probing anywhere else
-    measures the wrong filesystem. An earlier version of this probed the
-    directory holding this file, which under WSL reported DrvFs even when
-    ``tmp_path`` was real ext4, and skipped tests that would have run.
-    """
-    if not _BASH:
-        pytest.skip("bash unavailable")
-    probe = where / ".mode-probe"
-    probe.write_text("x\n", encoding="utf-8")
-    try:
-        quoted = shlex.quote(_bash_path(probe))
-        result = subprocess.run(
-            [
-                _BASH,
-                "-lc",
-                f"command -v flock >/dev/null || exit 3; "
-                f"chmod 644 {quoted} && stat -c %a {quoted}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    finally:
-        probe.unlink(missing_ok=True)
-    if result.returncode == 3:
-        pytest.skip("flock is unavailable, so the installer refuses to start")
-    if result.stdout.strip() != "644":
-        pytest.skip(
-            "the install filesystem does not report real mode bits "
-            f"(stat -c %a said {result.stdout.strip()!r}); DrvFs under WSL"
-        )
 
 
 def _bash_path(path: Path) -> str:
@@ -145,425 +96,24 @@ def _bash_path_env(fake_bin: Path) -> str:
     return f"{_bash_path(fake_bin)}:/usr/local/bin:/usr/bin:/bin"
 
 
-def _backup_state_script() -> str:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    backup_step = next(
-        step
-        for step in workflow["jobs"]["install"]["steps"]
-        if step.get("name") == "Ensure off-host backup configuration"
-    )
-    run = backup_step["run"]
-    marker = "<<'BACKUP_STATE'\n"
-    assert marker in run
-    body = run.split(marker, 1)[1]
-    terminator = "\nBACKUP_STATE\n"
-    assert terminator in body
-    return body.split(terminator, 1)[0]
 
 
-def _backup_cleanup_function() -> str:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    backup_step = next(
-        step
-        for step in workflow["jobs"]["install"]["steps"]
-        if step.get("name") == "Ensure off-host backup configuration"
-    )
-    run = backup_step["run"]
-    marker = "cleanup() {\n"
-    assert marker in run
-    body = run.split(marker, 1)[1]
-    terminator = "\ntrap cleanup EXIT"
-    assert terminator in body
-    return f"cleanup() {{\n{body.split(terminator, 1)[0]}"
 
 
-def _backup_diagnostic_script() -> str:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    backup_step = next(
-        step
-        for step in workflow["jobs"]["install"]["steps"]
-        if step.get("name") == "Ensure off-host backup configuration"
-    )
-    run = backup_step["run"]
-    marker = "<<'DIAGNOSTIC_PY'\n"
-    assert marker in run
-    body = run.split(marker, 1)[1]
-    terminator = "\nDIAGNOSTIC_PY\n"
-    assert terminator in body
-    return body.split(terminator, 1)[0]
 
 
-def _backup_remote_install_script() -> str:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    backup_step = next(
-        step
-        for step in workflow["jobs"]["install"]["steps"]
-        if step.get("name") == "Ensure off-host backup configuration"
-    )
-    run = backup_step["run"]
-    marker = "<<'BACKUP_REMOTE'\n"
-    assert marker in run
-    body = run.split(marker, 1)[1]
-    terminator = "\nBACKUP_REMOTE\n"
-    assert terminator in body
-    return body.split(terminator, 1)[0]
 
 
-def _backup_exercise_script() -> str:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    backup_step = next(
-        step
-        for step in workflow["jobs"]["install"]["steps"]
-        if step.get("name") == "Exercise and verify two-tier backup"
-    )
-    run = backup_step["run"]
-    marker = "<<'BACKUP_EXERCISE'\n"
-    assert marker in run
-    body = run.split(marker, 1)[1]
-    terminator = "\nBACKUP_EXERCISE\n"
-    assert terminator in body
-    return body.split(terminator, 1)[0]
 
 
-def _run_backup_exercise(
-    tmp_path: Path,
-    *,
-    emit_warning: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    if not _BASH:
-        pytest.skip("bash unavailable")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_sudo = fake_bin / "sudo"
-    harness = tmp_path / "backup-exercise.sh"
-    rclone_calls = tmp_path / "rclone-calls"
-    journal_query = tmp_path / "journal-query"
-    invocation_id = "0123456789abcdef0123456789abcdef"
-    fake_sudo.write_text(
-        f"""#!/usr/bin/env bash
-set -euo pipefail
-case "$1" in
-  rclone)
-    count="$(cat "${{RCLONE_CALLS}}" 2>/dev/null || printf '0')"
-    count=$((count + 1))
-    printf '%s' "${{count}}" > "${{RCLONE_CALLS}}"
-    if [[ "${{count}}" -le 2 ]]; then
-      printf '%s\\n' \
-        tinyassets-brain-2026-07-22T00-00-00Z.tar.gz \
-        tinyassets-data-2026-07-22T00-00-00Z.tar.gz
-    else
-      printf '%s\\n' \
-        tinyassets-brain-2026-07-24T00-00-00Z.tar.gz \
-        tinyassets-data-2026-07-24T00-00-00Z.tar.gz
-    fi
-    ;;
-  systemctl)
-    if [[ "$*" == *"--property=Result"* ]]; then
-      printf 'success\\n'
-    elif [[ "$*" == *"--property=InvocationID"* ]]; then
-      printf '{invocation_id}\\n'
-    fi
-    ;;
-  journalctl)
-    printf '%s\\n' "$*" > "${{JOURNAL_QUERY}}"
-    [[ "$2" == "_SYSTEMD_INVOCATION_ID={invocation_id}" ]]
-    if [[ "${{EMIT_WARNING:-0}}" == "1" ]]; then
-      printf '%s\\n' 'WARN: retention failed'
-    fi
-    printf '%s\\n' \
-      '  brain upload OK' \
-      '  upload OK' \
-      '  gh-ship: [backup-ship] uploaded: brain-asset' \
-      '  gh-ship: [backup-ship] uploaded: full-asset' \
-      'backup complete.'
-    ;;
-  *)
-    exit 99
-    ;;
-esac
-""",
-        encoding="utf-8",
-        newline="\n",
-    )
-    harness.write_text(
-        _backup_exercise_script(),
-        encoding="utf-8",
-        newline="\n",
-    )
-    command = " ".join(
-        (
-            f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
-            f"RCLONE_CALLS={shlex.quote(_bash_path(rclone_calls))}",
-            f"JOURNAL_QUERY={shlex.quote(_bash_path(journal_query))}",
-            f"EMIT_WARNING={int(emit_warning)}",
-            f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
-            "bash",
-            shlex.quote(_bash_path(harness)),
-        )
-    )
-    return subprocess.run(
-        [_BASH, "-lc", command],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
 
 
-def _run_backup_remote_install(
-    tmp_path: Path,
-    *,
-    succeed_on_probe: int,
-) -> subprocess.CompletedProcess[str]:
-    if not _BASH:
-        pytest.skip("bash unavailable")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_sudo = fake_bin / "sudo"
-    harness = tmp_path / "backup-remote.sh"
-    remote_stage = tmp_path / "remote-stage"
-    remote_stage.mkdir()
-    (remote_stage / "rclone.conf").write_text(
-        "[spaces]\ntype = s3\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    counter = tmp_path / "probe-count"
-    delays = tmp_path / "probe-delays"
-    fake_sudo.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-case "$1" in
-  install)
-    exit 0
-    ;;
-  bash)
-    cat >/dev/null
-    exit 0
-    ;;
-  rclone)
-    count="$(cat "${PROBE_COUNTER}" 2>/dev/null || printf '0')"
-    count=$((count + 1))
-    printf '%s' "${count}" > "${PROBE_COUNTER}"
-    [[ "${count}" -ge "${SUCCEED_ON_PROBE}" ]]
-    ;;
-  *)
-    exit 99
-    ;;
-esac
-""",
-        encoding="utf-8",
-        newline="\n",
-    )
-    harness.write_text(
-        (
-            'sleep() { printf \'%s\\n\' "$1" >> "${PROBE_DELAYS}"; }\n'
-            + _backup_remote_install_script()
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    destination = "spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
-    command = " ".join(
-        (
-            f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
-            f"PROBE_COUNTER={shlex.quote(_bash_path(counter))}",
-            f"PROBE_DELAYS={shlex.quote(_bash_path(delays))}",
-            f"SUCCEED_ON_PROBE={succeed_on_probe}",
-            f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
-            "bash",
-            shlex.quote(_bash_path(harness)),
-            shlex.quote(_bash_path(remote_stage)),
-            shlex.quote(destination),
-        )
-    )
-    return subprocess.run(
-        [_BASH, "-lc", command],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
 
 
-def _run_backup_diagnostic(
-    tmp_path: Path,
-    response: str,
-) -> subprocess.CompletedProcess[str]:
-    script = tmp_path / "diagnostic.py"
-    response_file = tmp_path / "response.json"
-    script.write_text(
-        _backup_diagnostic_script(),
-        encoding="utf-8",
-        newline="\n",
-    )
-    response_file.write_text(response, encoding="utf-8", newline="\n")
-    return subprocess.run(
-        [sys.executable, str(script), str(response_file)],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
 
 
-def _run_backup_cleanup(
-    tmp_path: Path,
-    *,
-    delete_status: str,
-    transport_rc: int,
-) -> subprocess.CompletedProcess[str]:
-    if not _BASH:
-        pytest.skip("bash unavailable")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_curl = fake_bin / "curl"
-    harness = tmp_path / "cleanup-harness.sh"
-    fake_curl.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s' {shlex.quote(delete_status)}\n"
-        f"exit {transport_rc}\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    temp_files = [tmp_path / name for name in ("response", "credentials", "rclone", "header")]
-    for path in temp_files:
-        path.write_text("fixture\n", encoding="utf-8", newline="\n")
-    assignments = "\n".join(
-        (
-            f"response_file={shlex.quote(_bash_path(temp_files[0]))}",
-            f"credentials_file={shlex.quote(_bash_path(temp_files[1]))}",
-            f"rclone_file={shlex.quote(_bash_path(temp_files[2]))}",
-            f"api_header_file={shlex.quote(_bash_path(temp_files[3]))}",
-            'remote_stage=""',
-            'created_access_key="ACCESSKEY12345678"',
-            'DO_SSH_USER="fixture"',
-            'DO_DROPLET_HOST="fixture"',
-        )
-    )
-    harness.write_text(
-        f"set -uo pipefail\n{assignments}\n{_backup_cleanup_function()}\n"
-        "false\ncleanup\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    command = (
-        f"chmod +x {shlex.quote(_bash_path(fake_curl))} && "
-        f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin "
-        f"bash {shlex.quote(_bash_path(harness))}"
-    )
-    return subprocess.run(
-        [_BASH, "-lc", command],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
 
 
-def _run_backup_state(
-    tmp_path: Path,
-    *,
-    env_text: str | None,
-    config_kind: str,
-    config_mode: str = "600",
-    rclone_rc: int = 0,
-) -> subprocess.CompletedProcess[str]:
-    if not _BASH:
-        pytest.skip("bash unavailable")
-    state_script = tmp_path / "backup-state.sh"
-    env_file = tmp_path / "tinyassets.env"
-    config = tmp_path / "rclone.conf"
-    real_config = tmp_path / "rclone.real.conf"
-    fake_rclone = tmp_path / "rclone"
-    state_script.write_text(
-        _backup_state_script(),
-        encoding="utf-8",
-        newline="\n",
-    )
-    if env_text is not None:
-        env_file.write_text(env_text, encoding="utf-8", newline="\n")
-    if config_kind == "regular":
-        config.write_text(
-            "[spaces]\ntype = s3\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-    elif config_kind == "symlink":
-        real_config.write_text(
-            "[spaces]\ntype = s3\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-    elif config_kind != "absent":
-        raise AssertionError(f"unknown config kind: {config_kind}")
-    fake_rclone.write_text(
-        f"#!/usr/bin/env bash\nexit {rclone_rc}\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-
-    setup = [f"chmod +x {shlex.quote(_bash_path(fake_rclone))}"]
-    if config_kind == "regular":
-        setup.append(f"chmod {config_mode} {shlex.quote(_bash_path(config))}")
-    elif config_kind == "symlink":
-        setup.extend(
-            (
-                f"chmod {config_mode} {shlex.quote(_bash_path(real_config))}",
-                (
-                    f"ln -s {shlex.quote(_bash_path(real_config))} "
-                    f"{shlex.quote(_bash_path(config))}"
-                ),
-            )
-        )
-    subprocess.run(
-        [_BASH, "-lc", " && ".join(setup)],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=True,
-    )
-    identity_target = real_config if config_kind == "symlink" else config
-    if config_kind == "absent":
-        expected_identity = "root:root 600"
-    else:
-        actual_identity = subprocess.run(
-            [
-                _BASH,
-                "-lc",
-                f"stat -c '%U:%G %a' {shlex.quote(_bash_path(identity_target))}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        ).stdout.strip()
-        if config_mode == "600":
-            expected_identity = actual_identity
-        else:
-            owner_group = actual_identity.rsplit(" ", 1)[0]
-            expected_identity = f"{owner_group} 600"
-
-    args = (
-        "spaces:workflow-backups-jonnyton-sfo3/workflow-backups",
-        _bash_path(env_file),
-        _bash_path(config),
-        _bash_path(fake_rclone),
-        expected_identity,
-    )
-    command = " ".join(
-        (
-            "bash",
-            shlex.quote(_bash_path(state_script)),
-            *(shlex.quote(arg) for arg in args),
-        )
-    )
-    return subprocess.run(
-        [_BASH, "-lc", command],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
 
 
 def _assert_current_release(runtime_root: Path) -> Path:
@@ -600,42 +150,8 @@ def _bash_readlink(path: Path) -> str:
     return result.stdout.strip()
 
 
-def _bash_path_exists(path: Path) -> bool:
-    result = subprocess.run(
-        [
-            _BASH,
-            "-lc",
-            (
-                f"test -e {shlex.quote(_bash_path(path))} || "
-                f"test -L {shlex.quote(_bash_path(path))}"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    return result.returncode == 0
 
 
-@pytest.fixture(autouse=True)
-def _clean_wsl_current_links(tmp_path):
-    yield
-    if _is_wsl_bash() and tmp_path.exists():
-        subprocess.run(
-            [
-                _BASH,
-                "-lc",
-                (
-                    f"find {shlex.quote(_bash_path(tmp_path))} "
-                    "-type l -name current -delete"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
 
 
 def _run_installer(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -663,25 +179,6 @@ def _run_installer(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _popen_installer(env: dict[str, str]) -> subprocess.Popen[str]:
-    if _is_wsl_bash():
-        assignments = " ".join(
-            f"{key}={shlex.quote(value)}" for key, value in env.items()
-        )
-        command = f"/usr/bin/env {assignments} {shlex.quote(_bash_path(INSTALLER))}"
-        return subprocess.Popen(
-            [_BASH, "-lc", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    return subprocess.Popen(
-        [_BASH, str(INSTALLER)],
-        env={**os.environ, **env},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
 
 
 def _copy_source(tmp_path: Path) -> Path:
@@ -835,89 +332,6 @@ def _install_env(tmp_path: Path, source: Path | None = None) -> dict[str, str]:
 # the floor, not polish. Found by cross-family review of #3989 round 1.
 
 
-def _sudoers_file(tmp_path: Path) -> Path:
-    return tmp_path / "sudoers" / "tinyassets-watchdog"
-
-
-def _installed_unit(tmp_path: Path, name: str) -> Path:
-    return tmp_path / "systemd" / name
-
-
-def _symlink_or_skip(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target)
-    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform
-        pytest.skip(f"symlink creation is unavailable here: {exc}")
-
-
-def _drift_sudoers_world_writable(tmp_path: Path) -> None:
-    _sudoers_file(tmp_path).chmod(0o666)
-
-
-def _drift_sudoers_becomes_a_symlink(tmp_path: Path) -> None:
-    path = _sudoers_file(tmp_path)
-    elsewhere = tmp_path / "sudoers-elsewhere"
-    elsewhere.write_bytes(path.read_bytes())  # byte-identical on purpose
-    elsewhere.chmod(0o440)
-    path.unlink()
-    _symlink_or_skip(path, elsewhere)
-
-
-def _drift_root_unit_world_writable(tmp_path: Path) -> None:
-    _installed_unit(tmp_path, "daemon-watchdog.service").chmod(0o666)
-
-
-def _drift_current_points_outside_releases(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime"
-    release = runtime / _bash_readlink(runtime / "current")
-    rogue = tmp_path / "rogue-release"
-    shutil.copytree(release, rogue)  # identical content, unmanaged location
-    (runtime / "current").unlink()
-    _symlink_or_skip(runtime / "current", rogue)
-
-
-def _repoint_current(tmp_path: Path, target: str) -> None:
-    current = tmp_path / "runtime" / "current"
-    current.unlink()
-    _symlink_or_skip(current, Path(target))
-
-
-def _drift_current_points_at_the_releases_dir(tmp_path: Path) -> None:
-    # `releases/.` is made entirely of "safe-looking" characters, so a character
-    # class accepts it -- and it resolves to the releases directory itself.
-    _repoint_current(tmp_path, "releases/.")
-
-
-def _drift_current_points_above_the_releases_dir(tmp_path: Path) -> None:
-    # `releases/..` likewise, resolving to RUNTIME_ROOT.
-    _repoint_current(tmp_path, "releases/..")
-
-
-def _drift_timer_stopped_but_still_enabled(tmp_path: Path) -> None:
-    (tmp_path / "state" / f"{TIMERS[0]}.active").unlink()
-
-
-def _repair_sudoers_is_an_exact_regular_file(tmp_path: Path) -> None:
-    path = _sudoers_file(tmp_path)
-    assert not path.is_symlink()
-    assert oct(path.stat().st_mode & 0o777) == "0o440"
-
-
-def _repair_unit_is_not_world_writable(tmp_path: Path) -> None:
-    unit = _installed_unit(tmp_path, "daemon-watchdog.service")
-    assert oct(unit.stat().st_mode & 0o777) == "0o644"
-
-
-def _repair_current_points_at_a_release_id(tmp_path: Path) -> None:
-    # The exact shape, not merely the prefix: `releases/.` and `releases/..` both
-    # start with "releases/", so a prefix check would call either of them
-    # repaired.
-    target = _bash_readlink(tmp_path / "runtime" / "current")
-    assert re.fullmatch(r"releases/[0-9a-f]{40}-[0-9a-f]{16}", target), target
-
-
-def _repair_timer_is_active_again(tmp_path: Path) -> None:
-    assert (tmp_path / "state" / f"{TIMERS[0]}.active").exists()
 
 
 
@@ -932,17 +346,34 @@ def _repair_timer_is_active_again(tmp_path: Path) -> None:
 
 
 
-def _change_runtime_content(source: Path) -> None:
-    """Give the next install something to do.
 
-    Since the idempotence gate (#3989), a repeat install of byte-identical
-    content exits "already current" before it ever reads service state, so a
-    test of the service-state refusal must change the bundle first -- the
-    refusal only guards a run that would mutate the host.
-    """
-    (source / "scripts" / "watchdog.py").write_text(
-        "WATCH = 2\n", encoding="utf-8", newline="\n"
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1254,10 +685,6 @@ def _run_watchdog(
 
 
 
-def _minutes_ago(minutes: float) -> str:
-    """Docker's RFC3339 `State.StartedAt` form, that many minutes in the past."""
-    started = time.gmtime(time.time() - minutes * 60)
-    return time.strftime("%Y-%m-%dT%H:%M:%S.000000000Z", started)
 
 
 

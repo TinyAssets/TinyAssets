@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from tests.test_receiver_links import _link, _save
 from tests.test_receiver_links import env as management_env  # noqa: F401
-from tinyassets import runs
 from tinyassets.storage import deliveries
 
 
@@ -48,12 +45,6 @@ def _read(conn, receipt, *, principal="sender", universe="u-sender"):
     )
 
 
-def _counts(base):
-    with deliveries.transaction(base) as conn:
-        return tuple(
-            conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-            for table in ("graph_deliveries", "graph_delivery_attempts", "runs")
-        )
 
 
 
@@ -80,33 +71,9 @@ def _counts(base):
 
 
 
-def _process_accept(base, link, ready, start, results):
-    with deliveries.transaction(base):
-        pass
-    ready.put(True)
-    if not start.wait(20):
-        raise RuntimeError("test did not start competing acceptance")
-    with deliveries.transaction(base) as conn:
-        results.put(_accept(conn, link))
 
 
 
 
-def _process_crash_at_acceptance(base, link, point):
-    insert = runs._insert_run_in_transaction
-
-    def crash_insert(*args, **kwargs):
-        if point == "after_run":
-            insert(*args, **kwargs)
-        os._exit(73)
-
-    if point in {"after_intent", "after_run"}:
-        runs._insert_run_in_transaction = crash_insert
-    with deliveries.transaction(base) as conn:
-        _accept(conn, link)
-        if point == "after_attempt":
-            os._exit(73)
-    # The sender never receives its response after this committed acceptance.
-    os._exit(73)
 
 

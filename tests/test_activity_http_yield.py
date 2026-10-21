@@ -13,11 +13,6 @@ from tinyassets.providers.model_policy import ModelRef
 from tinyassets.workflow_agent import WorkAgentAdapter
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
-@pytest.fixture(autouse=True)
-def run_cancel_ledger(tmp_path):
-    from tinyassets.runs import initialize_runs_db
-
-    initialize_runs_db(tmp_path)
 
 
 http_wire = workflow_tests.http_wire

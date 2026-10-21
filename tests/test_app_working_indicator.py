@@ -470,9 +470,6 @@ console.log(JSON.stringify({
 """
 
 
-def _seats(**extra):
-    return {"running": 2, "waiting": 1, "chat_waiting": True,
-            "upgrade_url": "https://tinyassets.io/app?upgrade=1", **extra}
 
 
 _PURCHASE_ON = (

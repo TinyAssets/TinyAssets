@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta, timezone
 
-
 from tests.support.catalog_decoders import (
     decode_openrouter_benchmarks,
     decode_openrouter_models,

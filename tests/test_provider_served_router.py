@@ -1,30 +1,11 @@
 from __future__ import annotations
 
-
-
 from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
     ProviderResponse,
     UniverseContext,
 )
-from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
-
-
-async def _model_call(router, role, prompt, system, config=None, *, operation=None,
-                      universe_context=None):
-    context = universe_context
-    if context is None or not any((context.provider_request, context.served_provider,
-                                   context.provider_invocation)):
-        return await router.call(role, prompt, system, config, operation=operation,
-                                 universe_context=context)
-    result = await call(ModelCall(
-        model=None, fallbacks=(), context=ModelContext(
-            role=role, prompt=prompt, system=system, config=config,
-            operation=operation, universe_context=context, router=router,
-        ),
-    ), Parent(owner="", command_center=context.universe_dir.name))
-    return result.response
 
 
 class _RecordingProvider(BaseProvider):
@@ -138,29 +119,6 @@ def _fresh_served_request(universe_dir, serving, *, request_id: str):
 
 
 
-def _http_authority(tmp_path):
-    from tinyassets.provider_assignment import ServedProviderAuthority
-
-    return ServedProviderAuthority(
-        authority_kind="connection_grant",
-        provider="api_key_http:provdef_test",
-        max_invocations=10,
-        request_max_invocations=2,
-        max_tokens=1000,
-        max_cost_microunits=100_000,
-        owner_user_id="o",
-        universe_id="u",
-        agent_binding_id="b",
-        binding_revision=1,
-        binding_id="bid",
-        binding_generation=1,
-        binding_digest="d",
-        credential_reference_id="c",
-        credential_reference_generation=1,
-        credential_reference_digest="cd",
-        credential_service="http",
-        request_capability=object(),
-    )
 
 
 

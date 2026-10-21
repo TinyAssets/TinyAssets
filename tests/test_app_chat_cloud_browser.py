@@ -84,13 +84,6 @@ def _box(page, selector):
     return page.locator(selector).bounding_box()
 
 
-def _drag(page, selector, dx, dy, *, at=(0.5, 0.5)):
-    box = _box(page, selector)
-    x, y = box["x"] + box["width"] * at[0], box["y"] + box["height"] * at[1]
-    page.mouse.move(x, y)
-    page.mouse.down()
-    page.mouse.move(x + dx, y + dy, steps=10)
-    page.mouse.up()
 
 
 

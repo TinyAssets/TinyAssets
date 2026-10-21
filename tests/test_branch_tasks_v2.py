@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +14,6 @@ from tinyassets.branch_tasks_v2 import (
 )
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
-from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
     AutomationActivationExecutor,
@@ -135,14 +133,6 @@ def _descriptor(
     )
 
 
-def _request_status(base_path: Path, request_id: str) -> str:
-    with sqlite3.connect(db_path(base_path)) as conn:
-        row = conn.execute(
-            "SELECT status FROM user_requests WHERE request_id = ?",
-            (request_id,),
-        ).fetchone()
-    assert row is not None
-    return str(row[0])
 
 
 @pytest.fixture

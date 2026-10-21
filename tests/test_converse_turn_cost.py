@@ -38,7 +38,6 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from tests import test_interactive_http_agent as integration
 from tests.inference_usage_helpers import accounting_resolver
 from tinyassets import daemon_server, engine_tool_client, universe_intelligence
-from tinyassets.api import interlocutor
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
@@ -260,10 +259,6 @@ def _converse(turn, message="what's a good name for a cat?"):
 # ---------------------------------------------------------------------------
 
 
-def _prompt(universe_dir, uid, tier=interlocutor.FOUNDER):
-    return universe_intelligence._build_persona_system_prompt(
-        universe_dir, universe_id=uid, tier=tier,
-    )
 
 
 

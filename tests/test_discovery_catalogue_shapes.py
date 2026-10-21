@@ -2,7 +2,6 @@
 
 from datetime import datetime, timezone
 
-
 from tinyassets.providers.model_policy import ConnectionModels
 
 CATALOGUE = {
