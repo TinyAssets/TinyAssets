@@ -10,6 +10,9 @@ from tinyassets import capability_health as health
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Shared disk refusal has a stable failure code'
+)
 def test_shared_disk_refusal_is_logged_and_drives_rate_alarm(monkeypatch, caplog):
     from tinyassets.universe_tools import UniverseToolError
 
@@ -24,6 +27,9 @@ def test_shared_disk_refusal_is_logged_and_drives_rate_alarm(monkeypatch, caplog
     assert "capability_failure capability=bash code=shared_disk_full" in caplog.text
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_rates_detect_total_failure_and_spikes_without_retaining_user_material():
     now = [0]
     rates = health.CapabilityRates(lambda: now[0])
@@ -56,6 +62,9 @@ def test_rates_detect_total_failure_and_spikes_without_retaining_user_material()
     assert not rates.buckets
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     rates = health.CapabilityRates()
     monkeypatch.setattr(health, "RATES", rates)
@@ -104,6 +113,9 @@ def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     assert rates.snapshot()["capability_successes"]["chat_stream"] == 1
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:One executable capability catalogue'
+)
 def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():
     rows = [
         dict(
@@ -128,6 +140,9 @@ def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():
             ]
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Production image acceptance before merge'
+)
 def test_capability_image_keeps_real_execution_seams():
     import ast
 
@@ -149,6 +164,9 @@ def test_capability_image_keeps_real_execution_seams():
                 assert not substitutions(node.value), (name, node.lineno)
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_one_broken_owner_and_low_volume_never_alarm():
     rates = health.CapabilityRates()
     for _ in range(100):
@@ -161,6 +179,9 @@ def test_one_broken_owner_and_low_volume_never_alarm():
     assert "broken-key" not in json.dumps(rates.snapshot())
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tmp_path, capsys):
     from scripts import core_capability_live as live
 
@@ -187,6 +208,9 @@ def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tm
     assert report["warnings"][0]["code"] == "deployment_in_progress"
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
 def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     from scripts import core_capability_live as live
 
@@ -205,6 +229,9 @@ def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     assert {row["capability"] for row in report["warnings"]} == {"chat_stream", "read_image"}
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
 def test_live_platform_failure_fails_the_step_and_model_rows_do_not(monkeypatch, tmp_path):
     from scripts import core_capability_live as live
 
@@ -236,6 +263,9 @@ def test_live_platform_failure_fails_the_step_and_model_rows_do_not(monkeypatch,
     assert live.main(["--report", str(tmp_path / "crash.json")]) == 1
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
 @pytest.mark.parametrize("failure", ["github", "pushover", "report"])
 def test_alert_transport_and_report_errors_never_fail_the_step(
     tmp_path, monkeypatch, capsys, failure
@@ -271,11 +301,3 @@ def test_alert_transport_and_report_errors_never_fail_the_step(
     runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/core_capability_alert.py"),
                    run_name="__main__")
     assert "::warning::Core capability alert delivery failed:" in capsys.readouterr().out
-
-
-pytestmark = pytest.mark.verifies(
-    'core-capability-assurance:'
-    'One executable capability catalogue',
-    'core-capability-assurance:'
-    'Systemic runtime failure alarms',
-)
