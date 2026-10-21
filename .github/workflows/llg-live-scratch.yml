@@ -1,0 +1,56 @@
+name: Live workload scratch proof
+on:
+  push:
+    branches: [conv/llg-live]
+  workflow_dispatch:
+jobs:
+  workload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare disposable host
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+          sudo groupadd -o -g 1001 tinyassets
+          sudo groupadd -o -g 1100 ta-work
+          sudo install -d /opt/tinyassets/deploy /opt/tinyassets-host-uptime /etc/tinyassets
+          git show 644811edf6e5:deploy/compose.yml | sudo tee /opt/tinyassets/compose.yml >/dev/null
+          sudo cp deploy/vector.yaml deploy/vector-betterstack.yaml deploy/vector-entrypoint.sh /opt/tinyassets/deploy/
+          sudo ln -s "$GITHUB_WORKSPACE" /opt/tinyassets-host-uptime/current
+          sudo cp deploy/tinyassets-backup.service deploy/tinyassets-backup.timer /etc/systemd/system/
+          sudo systemctl daemon-reload
+      - name: Resolve pre-cutover serving image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image=ghcr.io/tinyassets/tinyassets-daemon:644811edf6e5
+          digest="$(docker buildx imagetools inspect "$image" | awk '/^Digest:/ {print $2; exit}')"
+          test -n "$digest"
+          echo "ref=ghcr.io/tinyassets/tinyassets-daemon@$digest" >> "$GITHUB_OUTPUT"
+      - name: Build fixture and make it live
+        run: |
+          sudo bash scripts/live_like/s3_remote.sh up
+          sudo python3 scripts/live_like/fixture.py build --volume tinyassets-data
+          sudo bash scripts/live_like/make_live.sh start '${{ steps.image.outputs.ref }}'
+          sudo bash scripts/live_like/make_live.sh check
+      - name: Diagnose failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs tinyassets-daemon --tail 100 || true
+          docker logs tinyassets-broker --tail 100 || true
+          sudo journalctl -u tinyassets-backup.timer --no-pager --lines 50 || true
+      - name: Stop disposable workload
+        if: always()
+        run: |
+          sudo bash scripts/live_like/make_live.sh stop || true
+          sudo bash scripts/live_like/s3_remote.sh down || true
