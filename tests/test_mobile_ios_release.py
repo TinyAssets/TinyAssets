@@ -142,9 +142,49 @@ def test_ios_configuration_installer_adds_release_keys_idempotently(
     assert first.count(f"<string>{installer.MICROPHONE_PURPOSE}</string>") == 1
     assert first.count("<key>ITSAppUsesNonExemptEncryption</key>") == 1
     assert "<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>" in first
+    assert first.count("<key>CFBundleDisplayName</key>\n\t<string>TinyAssets</string>") == 1
+    assert first.count("<key>CFBundleName</key>\n\t<string>TinyAssets</string>") == 1
 
     assert installer.install_configuration(info_plist) == 0
     assert info_plist.read_text(encoding="utf-8") == first
+
+
+def test_ios_configuration_installer_renames_the_template_bundle_name(tmp_path: Path) -> None:
+    # After `cap add ios` the display name is already appName, but CFBundleName
+    # is still $(PRODUCT_NAME) = "App" -- the name the system sign-in prompt
+    # shows App Review ("App" Wants to Use ...).
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        "<plist>\n<dict>\n"
+        "\t<key>CFBundleDisplayName</key>\n"
+        "\t<string>TinyAssets</string>\n"
+        "\t<key>CFBundleName</key>\n"
+        "\t<string>$(PRODUCT_NAME)</string>\n"
+        "</dict>\n</plist>\n",
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 0
+    text = info_plist.read_text(encoding="utf-8")
+    assert "$(PRODUCT_NAME)" not in text
+    for key in ("CFBundleDisplayName", "CFBundleName"):
+        assert text.count(f"<key>{key}</key>") == 1
+        assert f"<key>{key}</key>\n\t<string>TinyAssets</string>" in text
+
+
+def test_ios_configuration_installer_fills_an_empty_name(tmp_path: Path) -> None:
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        "<plist>\n<dict>\n\t<key>CFBundleName</key>\n\t<string/>\n</dict>\n</plist>\n",
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 0
+    text = info_plist.read_text(encoding="utf-8")
+    assert text.count("<key>CFBundleName</key>") == 1
+    assert "<string/>" not in text
 
 
 def test_ios_configuration_installer_rejects_conflicting_microphone_copy(
