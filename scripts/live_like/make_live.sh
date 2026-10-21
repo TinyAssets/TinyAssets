@@ -40,7 +40,11 @@ PY
     chmod 0640 /etc/tinyassets/{env,daemon.env,agent-interchange.env,request-idempotency.env,app-ingress.env}
     # These are the actual production service definitions and Compose flags.
     # The external Cloudflare tunnel has no PR credentials; gate probes loopback.
-    docker compose --env-file "$env_file" -f "$compose" up -d --timeout 20 broker daemon logs
+    services=(daemon logs)
+    if docker compose --env-file "$env_file" -f "$compose" config --services | grep -qx broker; then
+      services=(broker daemon logs)
+    fi
+    docker compose --env-file "$env_file" -f "$compose" up -d --timeout 20 "${services[@]}"
     for _ in $(seq 1 90); do
       if curl --fail --silent --max-time 2 http://127.0.0.1:8001/mcp >/dev/null; then
         break
@@ -77,7 +81,9 @@ while True:
   check)
     root="$(volume_root)"
     test "$(docker inspect -f '{{.State.Running}}' "$container")" = true
-    test "$(docker inspect -f '{{.State.Running}}' tinyassets-broker)" = true
+    if docker container inspect tinyassets-broker >/dev/null 2>&1; then
+      test "$(docker inspect -f '{{.State.Running}}' tinyassets-broker)" = true
+    fi
     curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8001/mcp >/dev/null
     test -S "$root/.universe-sidecars/a1/engine.sock"
     test -f "$state/sidecar.pid"
@@ -97,7 +103,8 @@ while True:
       kill "$(cat "$state/sidecar.pid")" 2>/dev/null || true
     fi
     rm -rf "$state"
-    docker compose --env-file "$env_file" -f "$compose" stop daemon broker logs 2>/dev/null || true
+    docker compose --env-file "$env_file" -f "$compose" stop daemon logs 2>/dev/null || true
+    docker stop tinyassets-broker >/dev/null 2>&1 || true
     systemctl disable --now tinyassets-backup.timer 2>/dev/null || true
     ;;
   *) echo 'usage: make_live.sh start <image>|check|stop' >&2; exit 2 ;;
