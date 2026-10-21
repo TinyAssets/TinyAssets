@@ -13,7 +13,7 @@ for platform in iphonesimulator iphoneos; do
     -sdk "$platform" -destination "$destination" \
     -derivedDataPath "$RUNNER_TEMP/review-$platform" CODE_SIGNING_ALLOWED=NO \
     build-for-testing > "$RUNNER_TEMP/review-build-$platform.log" 2>&1 || {
-      grep -E "error:" "$RUNNER_TEMP/review-build-$platform.log" | head -20; tail -80 "$RUNNER_TEMP/review-build-$platform.log"; exit 1;
+      grep -E "error:" "$RUNNER_TEMP/review-build-$platform.log" | head -20 || true; tail -80 "$RUNNER_TEMP/review-build-$platform.log"; exit 1;
     }
   runner="$RUNNER_TEMP/review-$platform/Build/Products/Debug-$platform/ReviewUITests-Runner.app"
   python3 - "$runner/Info.plist" <<'PY'
