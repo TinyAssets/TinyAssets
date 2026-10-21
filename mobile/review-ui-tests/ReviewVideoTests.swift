@@ -21,12 +21,15 @@ final class ReviewVideoTests: XCTestCase {
         try Data(contentsOf: sample).write(to: documents.appendingPathComponent(sample.lastPathComponent))
     }
 
+    private func poll(timeout: TimeInterval, _ condition: @escaping () -> Bool) -> Bool {
+        let predicate = NSPredicate { _, _ in condition() }
+        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)],
+                              timeout: timeout) == .completed
+    }
+
     private func wait(_ description: String, timeout: TimeInterval = 120,
                       _ condition: @escaping () -> Bool) {
-        let predicate = NSPredicate { _, _ in condition() }
-        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)],
-                                   timeout: timeout)
-        XCTAssertTrue(result == .completed, "\(step): \(description)")
+        XCTAssertTrue(poll(timeout: timeout, condition), "\(step): \(description)")
     }
 
     private func shot(_ name: String) {
@@ -95,7 +98,7 @@ final class ReviewVideoTests: XCTestCase {
         let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
         signIn.tap()
         var auth = safari
-        let found = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        let found = poll(timeout: 120) {
             for host in [self.springboard, self.app] {
                 let consent = host.alerts.matching(NSPredicate(
                     format: "label CONTAINS %@ AND label CONTAINS[c] %@", "Wants to Use", "Sign In")).firstMatch
@@ -105,7 +108,7 @@ final class ReviewVideoTests: XCTestCase {
                 if candidate.webViews.textFields.firstMatch.exists { auth = candidate; return true }
             }
             return false
-        }, object: nil)], timeout: 120) == .completed
+        }
         if !found {
             // Nothing secret is on screen before the email is typed; the
             // harness exports only this assertion line.
