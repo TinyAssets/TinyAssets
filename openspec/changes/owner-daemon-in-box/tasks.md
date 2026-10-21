@@ -163,7 +163,7 @@ Nothing deploys until slice 7.
             and cutover rollback as the old system's restore; the migration writes
             each owner into their own volume.
       - [ ] Lane b: C5–C6, thin router and the deletion job, with admission as one map record.
-      - [ ] Lane c: C7–C9, one public-egress check with scoped credentials, action policy in
+      - [x] Lane c: C7–C9, one public-egress check with scoped credentials, action policy in
             the box, and a two-column wake index.
       - [ ] Real-data census and rehearsal on both copies; CI green.
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
