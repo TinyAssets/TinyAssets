@@ -63,6 +63,7 @@ const showView=v=>{if(v==='chat')chatCount++;};
 const openConnectRequest=g=>{opened.push(g||'');if(g)HostedModelConnect.status(g);};
 const refreshRail=()=>{},appendMessage=(who,text)=>system.push(text);
 const startHeartbeat=()=>{},warmSession=()=>{},loadPlan=()=>{},loadHistory=()=>{};
+const offerFirstRunWalkthrough=()=>{};
 // Sign-in reports the browser's IANA zone (`automation-schedule-timezone`), so
 // a cron automation runs in the owner's clock and not the container's. Stubbed
 // like the collaborators above; the real one POSTs and is not awaited.

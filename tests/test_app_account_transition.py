@@ -587,6 +587,7 @@ function startHeartbeat(){ LOG.push(["heartbeat"]); }
 function warmSession(){}
 function loadPlan(){ LOG.push(["loadPlan"]); }
 function loadHistory(){ LOG.push(["loadHistory",queueOwner,queueScope]); }
+function offerFirstRunWalkthrough(){ loadHistory(); }
 function sessionExpired(){ LOG.push(["expired"]); }
 // Sign-in reports the browser's IANA zone so a cron automation can run in the
 // owner's clock rather than the container's (`automation-schedule-timezone`).
