@@ -878,6 +878,40 @@ Target:
   explicit awake-owner query, not from `pending()`. A failed publication on the
   tick is logged, not swallowed.
 
+**Round-5 amendments (2026-10-20, from the round-5 structural review).**
+- **A pending copy is durability debt, never a wake precondition.** After an
+  unclean stop, a `running` row whose box is not awake is a completed sleep with
+  its copy still owed. The tick records it and pays the copy as ordinary
+  per-owner work. A wake that arrives first starts the box from its local image
+  and the copy is owed again at the next completed sleep. The last published
+  snapshot stays the restore point until then. Hot/cold eviction (C10) still
+  requires a verified snapshot that is not owed. The owner lock covers the
+  graceful `sleep` and the map transitions; the copy runs outside it, under
+  boxhostd's per-UID lock. A deploy drain is complete when every box has slept,
+  and its copies are owed like any other. **Deleted:** the copy inside
+  `prepare` → `recover`, the `wake` refusal of a row whose work is `snapshot`,
+  and the serial copies in `deploy`.
+- **boxhostd's registry lock covers row mutation only.** It is never held across
+  `runsc` start, a readiness poll, a drain loop or an in-box probe; the per-UID
+  lock serializes one owner's execution. One owner's slow launch never delays
+  another owner's operation.
+- **One concurrency bound, in the broker.** The broker bounds concurrent volume
+  work in its lifecycle configuration. boxhostd refuses a connection over its
+  limit with an explicit error, never a silent close, and the waker's pending
+  bound derives from the broker's configuration, not from boxhostd's.
+- **Two policy documents (C8).** The box owns the owner's action rules. The
+  broker keeps one document per owner with `spend` only (C7 deleted the egress
+  section), and its own digest. The C11 migration receipt digests the broker
+  document. `policy.decide` loses its `center` field.
+- **The wake index's missing row (C9).** A missing row is due once. The waker
+  inserts `(owner, null)` before that wake, and the box's report replaces it. A
+  null row is never due. **Deleted:** `woken()`.
+- **C11 residue.** **Deleted:** the `command_center` owner alias in the broker
+  API and the dispatch cache key, the `universe_id` custody column, the `center`
+  field in policy request digests, the XFS-quota column names in `box_records`
+  that `owner_record` overrides, and boxhostd's router-side `status` operation,
+  which has no production caller.
+
 **As built (b8, C15/C3):** `BrokerLifecycle` names the broker coordinator;
 `VolumeLifecycle` runs its existing transitions asynchronously under the owner
 lock. Capacity counts slots and in-flight reservations, with victim facts from
@@ -898,7 +932,8 @@ another on `conv/c6-research-shape`, each after the previous lane has merged:
 - **(b) C5, C6, C14:** the routing-only router, one admission record, the
   deletion job, then (b6) broker-owned lifecycle serialization with no callbacks,
   and (b5) recovery's startup mode, then (b7) C15, then (b8) C15's round-4
-  amendments and C3's receipt rule, after lane d. b6 also takes C13's "one call direction" for
+  amendments and C3's receipt rule, after lane d, then (c) C7–C9, then (b9)
+  the round-5 amendments. b6 also takes C13's "one call direction" for
   lifecycle and volumes (sleep snapshots, pending-work recovery, cold restore,
   eviction), because one broker lock over wake, publication and restore cannot
   coexist with boxhostd calling back into the broker. The broker learns results
