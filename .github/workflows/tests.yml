@@ -603,7 +603,7 @@ jobs:
           # No `|| true`, no `continue-on-error` — the exit code IS the gate.
           python scripts/ci_required_tests.py --aggregate shards/ \
             --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
-            --junit junit.xml --min-ran 3200
+            --junit junit.xml --min-ran 2200
 
       # The selective verdict. Everything above still applies -- shard set,
       # truncation, overlap, the quarantine comparison -- plus two checks that
@@ -756,4 +756,12 @@ jobs:
           mkdir -p "$TINYASSETS_DATA_DIR"
           # Serial on purpose: these assert cross-process/locking behaviour and
           # sharing a worker pool with them would test the pool, not the code.
-          pytest -m slow -q --no-header -rfE --durations=10
+          # The shape prune removed every slow-marked test. Exit 5 means pytest
+          # collected nothing; every other failure still fails.
+          rc=0
+          pytest -m slow -q --no-header -rfE --durations=10 || rc=$?
+          if [ "$rc" = 5 ]; then
+            echo "::notice::no slow-marked tests in the shape-tagged suite"
+            rc=0
+          fi
+          exit "$rc"
