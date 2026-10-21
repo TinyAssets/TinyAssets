@@ -672,11 +672,13 @@ def _auth_challenge_path(path: str) -> bool:
         # stricter than the bearer this carve-out skips. Exactly one path, by
         # equality (tinyassets/onboarding/canary_sign_in.py).
         return False
-    if path in {"/app", "/app/token", "/app/owner-sign-in"}:
+    if path in {"/app", "/app/token", "/app/owner-sign-in", "/app/native-sign-in"}:
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
         # load before sign-in, and /app/token is its same-origin PKCE
         # token-exchange proxy — both run BEFORE any bearer exists, so neither may
         # be swept into the /mcp bearer 401 (mirrors the .well-known carve-out).
+        # /app/native-sign-in starts the phone apps' system-browser sign-in, so
+        # it too runs signed out; it issues only a flow ref, never a session.
         # Their own authenticated /mcp tool calls are still challenged; the dark
         # flag still returns a bare 404 when the app is off.
         return False
