@@ -127,6 +127,31 @@ set -uo pipefail
 
 # The disposable archive harness calls this exact container builder. Normal
 # deployments use its fixed production defaults and never enable fault injection.
+# Preflight reads the live volume with readonly_db, which refuses a store that
+# changes during its snapshot. The old daemon writes between turns, so freeze
+# its writers for the read-only check only; apply re-checks after they stop.
+FROZEN_WRITERS=()
+freeze_writers() {
+  FROZEN_WRITERS=()
+  local container
+  for container in "$DAEMON_CONTAINER" tinyassets-broker; do
+    if [ -n "$(docker ps -q --filter "name=^${container}\$" 2>/dev/null)" ] \
+        && docker pause "$container" >/dev/null 2>&1; then
+      FROZEN_WRITERS+=("$container")
+    fi
+  done
+}
+thaw_writers() {
+  local container
+  for container in "${FROZEN_WRITERS[@]+"${FROZEN_WRITERS[@]}"}"; do
+    if ! docker unpause "$container" >/dev/null 2>&1; then
+      err "could not unpause ${container}; restarting it"
+      docker restart "$container" >/dev/null 2>&1 || err "restart of ${container} failed"
+    fi
+  done
+  FROZEN_WRITERS=()
+}
+
 box_migration_container() {  # $1 = check|preflight|apply, then module arguments
   local posture=(--user 0)
   local data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data:ro"
@@ -744,6 +769,7 @@ ensure_state_dir() {
 # The private copy is scratch, and it holds a full bundle. Remove it on EVERY
 # exit path, including the refusals that exit before the install.
 cleanup_bundle_work() {
+  thaw_writers
   if [ -n "$BUNDLE_WORK" ] && [ -d "$BUNDLE_WORK" ]; then
     rm -rf "$BUNDLE_WORK" 2>/dev/null || true
   fi
@@ -2103,8 +2129,10 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # The live source can change while writers run. Apply repeats these
           # checks under the layout lock after the daemon stops and the paired
           # snapshot is verified; mount/device/tooling drift is also rechecked.
+          freeze_writers
           box_preflight="$(box_migration_container preflight /data --store /box-store 2>&1)"
           box_preflight_rc=$?
+          thaw_writers
           if [ "$box_preflight_rc" -ne 0 ]; then
             preflight_line="$(printf '%s\n' "$box_preflight" | one_line)"
             [ -n "$preflight_line" ] || preflight_line="<none>"

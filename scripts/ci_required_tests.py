@@ -87,7 +87,9 @@ ROOT_TEST_FILES = frozenset({
 # tests on the 2026-08-02 baseline (run 30767266528); the floor sits far
 # below natural variance and far above any vacuous run. Ratchet it upward
 # as the suite grows.
-MIN_RAN_FLOOR = 3200
+# After the C6 cutover merge (prune, tag-at-merge and b9) the required suite is
+# about 2,608 cases; 2,200 keeps a cushion and still catches a collapse.
+MIN_RAN_FLOOR = 2200
 
 # A heavy-only job runs the files in .github/heavy-test-files.txt, so it
 # cannot meet the whole-suite floor -- and LOWERING the global floor to fit
@@ -101,9 +103,9 @@ MIN_RAN_FLOOR = 3200
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
     "heavy": 15,             # 18 retained heavy cases after the shape-only prune
-    # ONE of six required shards (at least 382 cases in the retained census).
-    # The aggregate also checks the union; this catches an individual collapse.
-    "shard": 340,
+    # ONE of six required shards. The smallest ran 322 cases in the first merge
+    # queue run after the C6 cutover; the aggregate also checks the union.
+    "shard": 260,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
     # purpose: a selection can honestly be one test or none (a docs-only
     # change), and this run is advisory -- the merge-group shards above carry
