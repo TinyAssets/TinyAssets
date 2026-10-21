@@ -365,7 +365,3 @@ def _consumer_with_inline_executor(tmp_path: Path, *, max_concurrency: int = 2):
 
 
 # -- 7. The real path ---------------------------------------------------------
-
-
-
-

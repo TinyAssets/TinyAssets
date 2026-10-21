@@ -92,4 +92,3 @@ def test_real_linux_jail_transports_delivery_rpc(node_env, monkeypatch):
     outcome = _execute(base, branch, link)
     assert outcome.status == "completed", outcome.error
     assert len(_rows(base)) == 2
-

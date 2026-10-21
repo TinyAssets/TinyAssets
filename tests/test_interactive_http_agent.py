@@ -266,27 +266,3 @@ def _with_fallback(agent, monkeypatch, *, empty=False):
     )
     agent.served.context = replace(agent.served.context, agent_model_plan=plan)
     return alternate
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

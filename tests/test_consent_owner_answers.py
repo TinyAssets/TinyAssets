@@ -186,7 +186,3 @@ def test_app_answer_without_live_cookie_uses_server_classification(home, cookie,
         assert result["error"] == "interactive_approval_required"
         assert "approval sheet in the app" in result["detail"]
         assert store.get_request(home, row["request_id"])["status"] == "pending"
-
-
-
-

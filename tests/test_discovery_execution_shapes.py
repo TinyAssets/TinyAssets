@@ -25,29 +25,3 @@ def validate(body):
 
 def body(model="unseen-source/model-2030"):
     return {"model": model, "messages": [{"role": "user", "content": "hello"}]}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

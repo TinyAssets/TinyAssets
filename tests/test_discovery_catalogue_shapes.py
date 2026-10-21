@@ -43,27 +43,3 @@ def payload():
         "owner_filtered": True, "executor_tools": True,
         "authenticated_account_id": "invented", "source_kind": "subscription",
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

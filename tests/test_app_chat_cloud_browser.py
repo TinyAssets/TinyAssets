@@ -82,25 +82,3 @@ def _enter_chat(page, url, *, layout=False):
 
 def _box(page, selector):
     return page.locator(selector).bounding_box()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

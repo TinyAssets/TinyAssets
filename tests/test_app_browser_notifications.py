@@ -21,23 +21,3 @@ def run_js(source):
 def functions(*names):
     html, _ = render_app_html()
     return "\n".join(_js_function(html, name) for name in names)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

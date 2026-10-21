@@ -41,15 +41,3 @@ def _send(link, value="exact input 🍉", *, occurrence="one", graph="u-sender")
         inputs_json=json.dumps({"link_id": link["link_id"], "occurrence_id": occurrence,
                                "outputs": {"result": value}}),
     ))
-
-
-
-
-
-
-
-
-
-
-
-

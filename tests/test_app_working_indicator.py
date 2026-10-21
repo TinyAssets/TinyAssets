@@ -548,7 +548,3 @@ gates[0].resolve({reply:"done"});
 await turn; await settle();
 console.log(JSON.stringify({detailed, queued, afterTools, stopping, buttonAfterEnd}));
 """
-
-
-
-

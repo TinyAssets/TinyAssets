@@ -257,13 +257,3 @@ def _converse(turn, message="what's a good name for a cat?"):
 # ---------------------------------------------------------------------------
 # The fix: the prompt stops inviting a round-trip it already answered
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-

@@ -377,11 +377,3 @@ def test_an_extend_request_cannot_carry_a_secret_field(base):
 # request for that will remain be present intil that is added and it will be
 # already in expanded view."
 # --------------------------------------------------------------------------- #
-
-
-
-
-
-
-
-

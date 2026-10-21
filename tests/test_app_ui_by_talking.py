@@ -188,9 +188,3 @@ assert.equal(u.revision,appUi.revision);
 console.log('turn settled checks passed');
 })().catch(err=>{console.error(err);process.exit(1);});
 '''
-
-
-
-
-
-

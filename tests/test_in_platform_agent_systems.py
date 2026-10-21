@@ -198,5 +198,3 @@ def _answer(request_id: str, *, actor: str = OWNER, **extra):
 # ---------------------------------------------------------------------------
 # 4. A second user installs: every copy is theirs and private
 # ---------------------------------------------------------------------------
-
-

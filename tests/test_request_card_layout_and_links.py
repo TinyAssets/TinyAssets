@@ -206,19 +206,3 @@ console.log(JSON.stringify(result));
                          encoding="utf-8", timeout=30, check=False)
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

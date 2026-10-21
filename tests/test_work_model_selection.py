@@ -68,9 +68,3 @@ def http_wire(tmp_path, monkeypatch):
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
                         accounting_resolver(lambda *a, **k: Proxy()))
     return reads, writes, errors
-
-
-
-
-
-

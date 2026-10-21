@@ -123,9 +123,3 @@ COPIED_LABEL_VARIANTS = [
 
 
 # --- matrix 4/5 (bounded): a row and a cloud-looking host are not authority --
-
-
-
-
-
-

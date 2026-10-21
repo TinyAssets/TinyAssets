@@ -36,33 +36,3 @@ def descriptor():
     document["extension_quantities"]["/samples"] = ["output_tokens"]
     document["quantity_model"]["quantities"]["output_tokens"]["output"] = 8
     return document
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

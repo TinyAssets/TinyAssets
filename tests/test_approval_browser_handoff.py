@@ -90,15 +90,3 @@ def login(browser, flow, path="/app/owner-sign-in?app=1"):
     assert owner_sessions.COOKIE in browser.cookies
     assert len(flow.exchanges) == 1
     return callback
-
-
-
-
-
-
-
-
-
-
-
-

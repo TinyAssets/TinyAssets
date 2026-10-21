@@ -57,11 +57,3 @@ def rig(tmp_path, monkeypatch):
 def prepare(rig):
     return prepare_candidate(base=rig[0], uid="u-owner", owner="owner", grant_id="bootstrap-grant",
                              preset=load_preset("openrouter_user_models_v1"))
-
-
-
-
-
-
-
-

@@ -23,25 +23,3 @@ def reserved(delivery_env):  # noqa: F811
 
 def _lock(base, receipt):
     return delivery_lock.try_attempt_lock(base, delivery_id=receipt["delivery_id"], attempt=1)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

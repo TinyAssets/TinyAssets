@@ -99,5 +99,3 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     )
     context = UniverseContext(universe_dir=universe, model_selection=adapter.selection)
     return adapter, config, context, authorized
-
-

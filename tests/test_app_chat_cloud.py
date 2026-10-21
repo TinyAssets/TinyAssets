@@ -123,21 +123,3 @@ const SERVER={v:1,mode:'open',open:{x:300,y:120,w:500,h:400},bubble:{x:10,y:10}}
 
 def sync(body: str):
     return run_js(functions(*SYNC) + CONSTS + DOM + NET + "(async()=>{" + body + "})();")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

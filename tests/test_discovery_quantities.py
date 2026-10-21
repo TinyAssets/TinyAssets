@@ -13,25 +13,3 @@ STANDARD = {"version": 1, "quantities": {
 
 def caps(input=0, output=0, request=0):
     return tuple(zip(UNITS, (input, output, request)))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

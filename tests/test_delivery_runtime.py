@@ -42,19 +42,3 @@ def provider_probe(monkeypatch):
 
     monkeypatch.setattr("tinyassets.api.runs._bind_run_provider_call", bind)
     return calls
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

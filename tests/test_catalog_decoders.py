@@ -73,27 +73,3 @@ def score(key="brand/opaque-v99", **overrides):
         "intelligence_index": 71.2,
         **overrides,
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

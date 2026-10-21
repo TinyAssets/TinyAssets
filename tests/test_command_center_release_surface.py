@@ -16,17 +16,3 @@ def action(**release):
     value = _publish_action()
     del value["package"]
     return {**value, "release": {"summary": "Initial release", **release}}
-
-
-
-
-
-
-
-
-
-
-
-
-
-

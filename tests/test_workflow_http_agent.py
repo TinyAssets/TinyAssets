@@ -133,19 +133,3 @@ def run(tmp_path, monkeypatch, authenticate_request):
                                     "fallback_chain": []}
     return _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
                        open_provider=True, model_access=ModelAccess("discovered"))[0]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
