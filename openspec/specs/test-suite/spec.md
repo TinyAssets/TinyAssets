@@ -1,5 +1,10 @@
 # Test suite
 
+## Purpose
+
+Keep tests tied to the current researched architecture and remove checks that
+are obsolete or already covered by a retained test or structural guard.
+
 ## Requirements
 
 ### Requirement: Every test verifies a current piece of the shape we are building
