@@ -259,6 +259,26 @@ SHALL permit neither rollback nor opening traffic.
 - **WHEN** a deploy workflow is re-run after ordinary admission has opened
 - **THEN** old-layout rollback is refused
 
+#### Scenario: A failed apply restores the paired store on its own device
+- **WHEN** this deploy entered apply and fails before acceptance with unused eligibility
+- **THEN** deployment control restores the verified stopped pair under the host lock
+- **AND** store extraction and rename remain on the store filesystem, preserving numeric ownership and hardlinks
+- **AND** old-image acceptance returns rollback status 2; explicit bundle restore returns 0
+
+#### Scenario: Initialization fails before apply
+- **WHEN** this deploy created eligibility but never invoked apply
+- **THEN** the EXIT handler retires that attempt's eligibility and restarts the old image without restoring data
+- **AND** refusal does not start a writable daemon before the handler owns recovery
+- **AND** an existing attempt's directory is never adopted by a new run
+
+#### Scenario: An accepted committed deploy cannot clear its dirty marker
+- **WHEN** an accepted deploy reports marker_clear_failed
+- **THEN** automatic rollback is disarmed and the committed data and running service remain intact
+
+#### Scenario: Rollback fault injection is inadmissible on production volumes
+- **WHEN** CUTOVER_ROLLBACK_FAULT is set without the exact synthetic volume label
+- **THEN** initialization refuses before publishing any eligibility
+
 ### Requirement: The broker serializes each owner's lifecycle and boxhostd only executes
 The broker SHALL hold a per-owner lock that serializes admission changes, wake,
 channel open, snapshot publication, restore and deletion for that owner.
