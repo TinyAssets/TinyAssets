@@ -103,6 +103,16 @@ def build(root: Path) -> dict:
             path = Path(base) / name
             os.chown(path, 1002, 1102)
             os.chmod(path, 0o600)
+    for center, owner in CENTERS:
+        machine = dict(OWNERS)[owner]
+        for tree in (root / center, root / ".universe-sidecars" / center):
+            for base, dirs, names in os.walk(tree):
+                os.chown(base, 1001, machine)
+                os.chmod(base, 0o770)
+                for name in names:
+                    path = Path(base) / name
+                    os.chown(path, 1001, machine)
+                    os.chmod(path, 0o660)
     return {"volume": str(root), "owners": len(OWNERS), "centers": len(CENTERS),
             "workspace_files": files, "sqlite_stores": 5}
 

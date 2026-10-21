@@ -49,6 +49,11 @@ PY
       if curl --fail --silent --max-time 2 http://127.0.0.1:8001/mcp >/dev/null; then
         break
       fi
+      if test "$(docker inspect -f '{{.RestartCount}}' "$container")" -ge 2; then
+        docker logs "$container" --tail 30 >&2
+        echo 'daemon restarted repeatedly before it served the fixture' >&2
+        exit 1
+      fi
       sleep 2
     done
     curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8001/mcp >/dev/null
