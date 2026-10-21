@@ -197,11 +197,6 @@ jobs:
           printf '%s\n' "${out}"
           dest="$(printf '%s\n' "${out}" | awk -F= '/^BACKUP_DEST=/{print substr($0, index($0,"=")+1)}' | tail -1)"
           [[ "${dest}" == spaces:*/workflow-backups ]]
-          # The droplet's Space exists before any deploy (created at the
-          # provider); `no_check_bucket` stops rclone creating it, so make it here.
-          bucket="${dest#spaces:}"; bucket="${bucket%%/*}"
-          sudo rclone mkdir "spaces,no_check_bucket=false:${bucket}"
-          sudo rclone lsf "spaces:${bucket}" --max-depth 1 >/dev/null
           echo "BACKUP_DEST=${dest}" >> "${{ steps.inputs.outputs.file }}"
           echo "backup_dest=${dest}" >> "$GITHUB_OUTPUT"
 

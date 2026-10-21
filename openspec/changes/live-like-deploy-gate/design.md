@@ -60,3 +60,8 @@ what to remove and removes nothing.
 - The Cloudflare tunnel's edge connection (a synthetic token keeps `cloudflared` running, unconnected) and the Access 403 check.
 - The droplet's attached block volume (the loop store is the production fallback path).
 - DigitalOcean metadata identity (synthetic expected instance file).
+
+## Findings (recorded, not fixed here)
+
+- Layout marker mode under 6aa7dd1: `tinyassets/storage_layout.py:149` rewrites `.layout.json` through `mkstemp`, so the marker lands 0600 owned by the writing uid (1001). A later start as root with every capability dropped cannot bypass file permissions, cannot read the marker, and crash-loops on `Permission denied: /data/.layout.json`. The gate avoids it by seeding the move production already finished; production hits it on any marker rewrite by uid 1001.
+- `deploy-prod.yml`: `steps.deploy.outputs.rc == '0'` is true when the deploy step never ran (GitHub compares `''` and `'0'` as numbers), so candidate-evidence steps can run with nothing deployed.
