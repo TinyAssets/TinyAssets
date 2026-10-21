@@ -45,6 +45,7 @@ PY
     chmod 0640 "$env_file" /etc/tinyassets/{agent-interchange.env,request-idempotency.env,app-ingress.env}
     # Use the installed production renderer so platform secrets never reach the daemon.
     command -v tinyassets-env >/dev/null
+    printf 'alice' | tinyassets-env set UNIVERSE_SERVER_DEV_USER
     tinyassets-env render-daemon-env
     # These are the actual production service definitions and Compose flags.
     # The external Cloudflare tunnel cannot connect with synthetic credentials;
