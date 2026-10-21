@@ -15,9 +15,9 @@ artifact instead of a manual submission-time memory.
 iOS needs no loopback foreground-service (unlike Android's dataSync service):
 ASWebAuthenticationSession + the custom scheme carry the sign-in return natively.
 
-It also names the app. The Capacitor template's display name is "App", which
-App Review sees in the system sign-in prompt ("App" Wants to Use ...) and under
-the home-screen icon.
+It also names the app. `cap add ios` sets CFBundleDisplayName from appName but
+leaves CFBundleName as $(PRODUCT_NAME), i.e. "App", and the system sign-in
+prompt App Review sees reads that ("App" Wants to Use ...). Both keys are set.
 
 Idempotent.
 """
@@ -56,11 +56,17 @@ MICROPHONE_BLOCK = f"""\t<key>NSMicrophoneUsageDescription</key>
 EXPORT_COMPLIANCE_BLOCK = """\t<key>ITSAppUsesNonExemptEncryption</key>
 \t<false/>
 """
-DISPLAY_NAME = "TinyAssets"
-DISPLAY_NAME_ENTRY = re.compile(r"(<key>CFBundleDisplayName</key>\s*<string>)[^<]*(</string>)")
-DISPLAY_NAME_BLOCK = f"""\t<key>CFBundleDisplayName</key>
-\t<string>{DISPLAY_NAME}</string>
-"""
+APP_NAME = "TinyAssets"
+NAME_KEYS = ("CFBundleDisplayName", "CFBundleName")
+
+
+def _name_entry(key: str) -> re.Pattern[str]:
+    # A string value, including the empty <string/> form.
+    return re.compile(rf"(<key>{key}</key>\s*)<string(?:>[^<]*</string>|\s*/>)")
+
+
+def _name_values(text: str, key: str) -> list[str]:
+    return re.findall(rf"<key>{key}</key>\s*<string>([^<]*)</string>", text)
 
 
 def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
@@ -68,7 +74,9 @@ def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
         print(f"Info.plist not found at {info_plist} — run `npx cap add ios` first.")
         return 1
     original = info_plist.read_text(encoding="utf-8")
-    text = DISPLAY_NAME_ENTRY.sub(rf"\g<1>{DISPLAY_NAME}\g<2>", original, count=1)
+    text = original
+    for key in NAME_KEYS:
+        text = _name_entry(key).sub(rf"\g<1><string>{APP_NAME}</string>", text, count=1)
     microphone_key = "<key>NSMicrophoneUsageDescription</key>"
     microphone_value = f"<string>{MICROPHONE_PURPOSE}</string>"
     export_key = "<key>ITSAppUsesNonExemptEncryption</key>"
@@ -85,8 +93,9 @@ def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
         additions.append(MICROPHONE_BLOCK)
     if export_key not in text:
         additions.append(EXPORT_COMPLIANCE_BLOCK)
-    if not DISPLAY_NAME_ENTRY.search(text):
-        additions.append(DISPLAY_NAME_BLOCK)
+    for key in NAME_KEYS:
+        if not _name_entry(key).search(text):
+            additions.append(f"\t<key>{key}</key>\n\t<string>{APP_NAME}</string>\n")
     if not additions and text == original:
         print("TinyAssets iOS release configuration already registered — nothing to do.")
         return 0
@@ -114,10 +123,10 @@ def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
     if f"{export_key}\n\t<false/>" not in check:
         print("::error:: failed to register exempt export-compliance declaration")
         return 1
-    names = re.findall(r"<key>CFBundleDisplayName</key>\s*<string>([^<]*)</string>", check)
-    if names != [DISPLAY_NAME]:
-        print("::error:: failed to name the app TinyAssets")
-        return 1
+    for key in NAME_KEYS:
+        if check.count(f"<key>{key}</key>") != 1 or _name_values(check, key) != [APP_NAME]:
+            print(f"::error:: failed to set {key} to {APP_NAME}")
+            return 1
     print("registered TinyAssets iOS release configuration in Info.plist")
     return 0
 
