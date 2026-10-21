@@ -1,6 +1,7 @@
 """Lane C: execute the rollback transaction with real archives on root Linux."""
 
 import json
+import os
 import shutil
 import subprocess
 import tarfile
@@ -23,6 +24,29 @@ from tests.test_owner_cutover_census import source as source
 from tests.test_owner_cutover_restore import cutover as cutover
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C4')
+
+
+@pytest.fixture
+def xfs_store(tmp_path):
+    """Production has a separate owner-store device, with real numeric owners."""
+    backing = tmp_path / "store.xfs"
+    with backing.open("wb") as stream:
+        stream.truncate(512 * 1024 * 1024)
+    subprocess.run(["mkfs.xfs", "-f", str(backing)], check=True, capture_output=True)
+    loop = subprocess.check_output(
+        ["losetup", "--find", "--show", str(backing)], text=True).strip()
+    store = tmp_path / "owners"
+    store.mkdir()
+    mounted = False
+    try:
+        subprocess.run(["mount", loop, str(store)], check=True)
+        mounted = True
+        assert store.stat().st_dev != store.parent.stat().st_dev
+        yield store
+    finally:
+        if mounted:
+            subprocess.run(["umount", str(store)], check=True)
+        subprocess.run(["losetup", "--detach", loop], check=True)
 
 
 def test_explicit_restore_retries_requested_image_and_returns_zero(box):
@@ -57,14 +81,16 @@ def test_explicit_restore_never_falls_back_to_the_failed_candidate(box):
 
 
 @pytest.mark.parametrize("staged", [False, True])
-@pytest.mark.parametrize("failure", ["apply", "after_initialize", "restore_transient", "reused"])
+@pytest.mark.parametrize("failure", ["apply", "after_initialize", "restore_transient", "reused",
+                                     "accepted_marker"])
 def test_failed_one_shot_automatically_restores_data_store_and_harness(box, source, staged,
-                                                                   failure):
+                                                                   failure, xfs_store):
     volume, env, _, harness = _owner_box_cutover(box)
     shutil.copytree(source, volume, dirs_exist_ok=True)
+    os.chown(volume / "a1/notes.txt", 300001, 300001)
     before = _fingerprint(volume)
-    store = box.root / "owners"
-    store.mkdir()
+    before_inode = (volume / "a1/notes.txt").stat().st_ino
+    store = xfs_store
     env["BOX_STORE_DIR"] = str(store)
     env["FAKE_DOCKER_BOX_STORE_DIR"] = str(store)
     if failure == "reused":
@@ -103,6 +129,9 @@ def test_failed_one_shot_automatically_restores_data_store_and_harness(box, sour
     if argv[:2] == ["volume", "inspect"] and "Labels" in argv[-1]:
         print("synthetic")
         return 0
+    if argv[:1] == ["start"]:
+        open(os.path.join(os.environ["FAKE_DOCKER_VOLUME_DIR"], "accepted-write"),
+             "w").write("old daemon accepted this write")
     if argv[:1] == ["create"]:'''))
     elif failure == "restore_transient":
         docker.write_text(body.replace('    if argv[:1] == ["create"]:', '''
@@ -112,14 +141,33 @@ def test_failed_one_shot_automatically_restores_data_store_and_harness(box, sour
         return 1
     if argv[:1] == ["create"]:'''))
     box.set_docker_state(box_migration_apply="fail")
-    if staged:
+    if failure == "accepted_marker":
+        box.set_docker_state(box_migration_apply="commit")
+        env["FAKE_RM_FAIL_MATCH"] = str(box.state_dir / "bundle-dirty")
+    if staged or failure == "accepted_marker":
         box.stage_bundle()
     result = box.run(NEW_IMAGE, **env)
+    if failure == "accepted_marker":
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert _result(result) == "marker_clear_failed", result.stdout + result.stderr
+        assert _deployed_image(result) == NEW_IMAGE
+        assert (volume / "a1/notes.txt").read_text() == "mutated candidate bytes"
+        assert (volume / "a1/notes.txt").stat().st_uid == 300001
+        assert json.loads((volume / ".layout.json").read_text())["box_layout"] == "owner-box"
+        assert (store / "300001.img").read_bytes() == b"failed candidate"
+        receipt = json.loads((box.state_dir / "cutover/state.json").read_text())
+        assert receipt["state"] == "pre_traffic"
+        assert box.docker_state_json()["containers"]["tinyassets-daemon"]["status"] == "running"
+        return
     assert result.returncode == 2, result.stdout + result.stderr
     assert _result(result) == "rolled_back", result.stdout + result.stderr
     assert _deployed_image(result) == OLD_IMAGE
+    assert "start tinyassets-daemon" not in box.docker_calls_text()
     assert _fingerprint(volume) == before
+    if failure == "after_initialize":
+        assert (volume / "a1/notes.txt").stat().st_ino == before_inode
     assert list(store.iterdir()) == []
+    assert (volume / "a1/notes.txt").stat().st_uid == 300001
     assert not list(harness.glob("harness-*"))
     assert not (box.state_dir / "cutover").exists()
     receipts = list(box.state_dir.glob("cutover-rolled-back-*/state.json"))
@@ -144,7 +192,7 @@ def test_another_attempt_cannot_replay_pretraffic_authority(cutover, tmp_path):
                  stop_new=lambda: pytest.fail("stopped"), install_old=None, start_old=None)
 
 
-@pytest.mark.parametrize("label", ["", "synthetic"])
+@pytest.mark.parametrize("label", ["", "production", "Synthetic", "synthetic"])
 def test_fault_is_only_admitted_on_labeled_synthetic_volume(source, tmp_path, monkeypatch, label):
     from tests.test_box_layout_migration import _archive
     from tinyassets.cutover_control import CutoverRefused, initialize
@@ -155,9 +203,10 @@ def test_fault_is_only_admitted_on_labeled_synthetic_volume(source, tmp_path, mo
     monkeypatch.setattr(subprocess, "run", lambda *a, **k:
                         subprocess.CompletedProcess(a, 0, label + "\n", ""))
     control = tmp_path / "control"
-    with pytest.raises(CutoverRefused, match="injected" if label else "synthetic volume"):
+    synthetic = label == "synthetic"
+    with pytest.raises(CutoverRefused, match="injected" if synthetic else "synthetic volume"):
         initialize(control, backup=backup, old_image=OLD_IMAGE)
-    assert control.exists() == bool(label)
+    assert control.exists() == synthetic
 
 
 @pytest.mark.parametrize("damage", ["digest", "traversal", "attached", "mounted"])
@@ -191,7 +240,7 @@ def test_store_restore_refuses_before_removing_anything(cutover, tmp_path, monke
     assert image.read_bytes() == b"must remain"
 
 
-def test_store_restore_retains_archived_legacy_bytes_links_and_modes(cutover, tmp_path):
+def test_store_restore_retains_archived_legacy_bytes_links_and_modes(cutover, tmp_path, xfs_store):
     from tests.test_box_layout_migration import _archive
     from tinyassets.cutover_control import _restore_box_store
 
@@ -203,17 +252,20 @@ def test_store_restore_retains_archived_legacy_bytes_links_and_modes(cutover, tm
     original.chmod(0o640)
     (legacy / "link").symlink_to("notes")
     (legacy / "hardlink").hardlink_to(original)
+    os.chown(legacy, 300001, 300001)
+    os.chown(original, 300001, 300001)
     archive = backup.with_name(backup.name.replace("snapshot", "box-store"))
     with tarfile.open(archive, "w:gz") as stream:
         stream.add(legacy.parent, arcname="owners")
     _archive(archive, archive.read_bytes())
-    store = tmp_path / "owners"
-    store.mkdir()
+    store = xfs_store
     (store / ".locks").mkdir()
     _restore_box_store(backup, store)
     restored = store / "300001/notes"
     assert restored.read_bytes() == original.read_bytes()
     assert restored.stat().st_mode & 0o777 == 0o640
+    assert (restored.stat().st_uid, restored.stat().st_gid) == (300001, 300001)
+    assert (store / "300001").stat().st_uid == 300001
     assert (store / "300001/link").readlink() == Path("notes")
     assert (store / "300001/hardlink").stat().st_ino == restored.stat().st_ino
     assert not (store / ".locks").exists()

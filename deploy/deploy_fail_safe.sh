@@ -860,6 +860,11 @@ clear_dirty() {
 # printed because the image DID change and the operator has to know which.
 finish() {
   local result="$1" image="$2" code="$3"
+  # Acceptance is terminal even if dirty-marker cleanup failed. Reporting that
+  # bookkeeping error must never restore a snapshot over the accepted system.
+  if [ "$result" = deployed ]; then
+    trap cleanup_bundle_work EXIT
+  fi
   if [ "$MARKER_STALE" = "1" ]; then
     err "the run reached '${result}' but ${BUNDLE_DIRTY} is still present"
     [ -n "$image" ] && echo "deployed_image=${image}"
@@ -1706,16 +1711,27 @@ recover_from_failed_install() {
       fi
       return "$status"
     fi
+    # Never adopt a previous run's eligibility after taking a new backup.
+    [ "${CUTOVER_INITIALIZE_STARTED:-0}" = 1 ] || return "$status"
     # Keep fd 9's host lock throughout the stopped restore AND convergence.
     # A nested deploy would deadlock on that lock; only startup is deferred.
-    data_root="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')" || return 3
-    old_image="$(PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
-      python3 -m tinyassets.cutover_control rollback --state "${BUNDLE_STATE_DIR}/cutover" \
-      --data "$data_root" --store "${BOX_STORE_DIR:-/var/lib/boxhostd/owners}" \
-      --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" --defer-start)" || {
-      err "automatic pre-traffic restore refused or failed; consumed authority is never replayed"
-      return 3
-    }
+    if [ "${CUTOVER_APPLY_STARTED:-0}" != 1 ]; then
+      # No apply, no restore. Retire authority before restarting writers.
+      PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+        python3 -m tinyassets.cutover_control cancel-initialization \
+        --state "${BUNDLE_STATE_DIR}/cutover" \
+        --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" || return 3
+      old_image="$PREV_IMAGE"
+    else
+      data_root="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')" || return 3
+      old_image="$(PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+        python3 -m tinyassets.cutover_control rollback --state "${BUNDLE_STATE_DIR}/cutover" \
+        --data "$data_root" --store "${BOX_STORE_DIR:-/var/lib/boxhostd/owners}" \
+        --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" --defer-start)" || {
+        err "automatic pre-traffic restore refused or failed; consumed authority is never replayed"
+        return 3
+      }
+    fi
     MIGRATION_COMMITTED=0
     MIGRATION_COMMIT_UNVERIFIED=0
     CUTOVER_RESTORED=1
@@ -1949,6 +1965,8 @@ HARNESS_PREVIOUS_LINK=""
 MIGRATION_OK=1
 MIGRATION_COMMITTED=0
 MIGRATION_COMMIT_UNVERIFIED=0
+CUTOVER_INITIALIZE_STARTED=0
+CUTOVER_APPLY_STARTED=0
 MIGRATION_SNAPSHOT=""
 MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
@@ -2014,7 +2032,7 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  if [ "${2:-}" != "pre_stop" ]; then
+  if [ "${2:-}" != "pre_stop" ] && [ ! -d "${BUNDLE_STATE_DIR}/cutover" ]; then
     start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
     start_line="$(printf '%s\n' "$start_out" | one_line)"
     [ -n "$start_line" ] || start_line="<none>"
@@ -2285,11 +2303,21 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # C4: only this stopped, verified cutover may create eligibility.
           # An existing directory (including an interrupted initialization)
           # refuses: a workflow restart never recreates pre_traffic.
+          if [ -e "${BUNDLE_STATE_DIR}/cutover" ]; then
+            migration_refused "check=cutover_eligibility existing=yes" pre_stop
+          fi
+          CUTOVER_INITIALIZE_STARTED=1
           PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
             python3 -m tinyassets.cutover_control initialize \
             --state "${BUNDLE_STATE_DIR}/cutover" \
             --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" \
-            --old-image "$PREV_IMAGE" || migration_refused "check=cutover_eligibility"
+            --old-image "$PREV_IMAGE" || {
+              if [ -d "${BUNDLE_STATE_DIR}/cutover" ]; then
+                migration_refused "check=cutover_eligibility" pre_stop
+              fi
+              migration_refused "check=cutover_eligibility"
+            }
+          CUTOVER_APPLY_STARTED=1
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
             --box-backup "/backup/${box_backup}" 2>&1)"

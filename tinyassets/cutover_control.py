@@ -146,6 +146,22 @@ def open_admission(directory, *, open_ordinary):
         open_ordinary()
 
 
+def cancel_initialization(directory, *, backup):
+    """Retire this attempt's authority without restoring unchanged data.
+
+    The lock-holding deploy caller may use this only before invoking apply.
+    Initialization can fail before state publication; that grants no authority.
+    """
+    _root()
+    directory = Path(directory)
+    if not (directory / "state.json").exists():
+        return
+    with _locked(directory) as (directory, state):
+        if Path(state["backup"]) != Path(backup).resolve():
+            raise CutoverRefused("cutover authority belongs to another deploy attempt")
+        _write(directory / "state.json", {**state, "state": "consumed"})
+
+
 def rollback(directory, *, stop_new, install_old, start_old, expected_backup=None):
     """Only the recorded old image and verified stopped backup may be restored."""
     from tinyassets.box_layout_migration import _verified_archive
@@ -211,18 +227,20 @@ def _restore_box_store(backup, store):
                                 "--output", "NAME"], check=True, capture_output=True, text=True)
         if loops.stdout.strip():
             raise CutoverRefused("box store still has attached owner images")
-    with tempfile.TemporaryDirectory(prefix=".cutover-store-", dir=store.parent) as staging:
+    # The store is a separate XFS mount. Extract and rename on that device:
+    # cross-device shutil.move silently copies, losing numeric owners/hardlinks.
+    with tempfile.TemporaryDirectory(prefix=".cutover-store-", dir=store) as staging:
         subprocess.run(["tar", "-xzf", str(archive), "-C", staging,
                         "--numeric-owner", "--acls", "--xattrs"], check=True)
         for entry in store.iterdir():
-            if entry.name == "lost+found":
+            if entry.name == "lost+found" or entry == Path(staging):
                 continue
             if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
         for entry in (Path(staging) / "owners").iterdir():
-            shutil.move(str(entry), str(store / entry.name))
+            os.rename(entry, store / entry.name)
         _fsync_directory(store)
 
 
@@ -279,7 +297,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("initialize", "admit", "rollback"))
+    parser.add_argument("action", choices=(
+        "initialize", "cancel-initialization", "admit", "rollback"))
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--backup", type=Path)
     parser.add_argument("--old-image")
@@ -293,6 +312,10 @@ def main():
         if args.backup is None or args.old_image is None:
             parser.error("initialization requires the verified backup and old image")
         initialize(args.state, backup=args.backup, old_image=args.old_image)
+    elif args.action == "cancel-initialization":
+        if args.backup is None:
+            parser.error("cancellation requires this attempt's backup")
+        cancel_initialization(args.state, backup=args.backup)
     else:
         if args.data is None:
             parser.error("admission and rollback require the shared data root")
