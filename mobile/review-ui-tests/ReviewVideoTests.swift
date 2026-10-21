@@ -178,22 +178,32 @@ final class ReviewVideoTests: XCTestCase {
         let auth = openSystemSignIn(signIn)
         let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
         let email = auth.webViews.textFields.firstMatch
-        email.tap()
-        email.typeText(username)
         let secure = auth.webViews.secureTextFields.firstMatch
-        if !secure.exists {
-            // AuthKit labels its email step "Continue with email".
-            let next = auth.buttons.matching(NSPredicate(format: "label IN %@",
-                ["Continue with email", "Continue", "Next", "Sign in"])).firstMatch
+        // AuthKit labels its email step "Continue with email".
+        let next = auth.buttons.matching(NSPredicate(format: "label IN %@",
+            ["Continue with email", "Continue", "Next", "Sign in"])).firstMatch
+        let go = auth.keyboards.buttons.matching(NSPredicate(format: "label IN %@",
+            ["Go", "go", "Continue", "continue", "Return", "return", "Done", "done"])).firstMatch
+        // The page can re-render after the first keystrokes and drop them, and
+        // a submit can land on the keyboard accessory instead. While the email
+        // page is up, make the field hold exactly the username (compared here,
+        // never reported), then submit with the button and then the Go key.
+        for _ in 0..<4 where !secure.exists {
+            var typed = email.value as? String ?? ""
+            if typed == email.placeholderValue { typed = "" }
+            if typed.caseInsensitiveCompare(username) != .orderedSame {
+                // Tap the right edge so the cursor sits after any existing text.
+                email.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+                if !typed.isEmpty {
+                    email.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: typed.count))
+                }
+                email.typeText(username)
+            }
             XCTAssertTrue(next.waitForExistence(timeout: 30), "email continuation missing")
             next.tap()
-            // If the tap did not submit (keyboard accessory, autofill bar),
-            // the email page is still up: submit with the keyboard's Go key.
-            if !poll(timeout: 15, { secure.exists }), next.exists {
-                let go = auth.keyboards.buttons.matching(NSPredicate(format: "label IN %@",
-                    ["Go", "go", "Continue", "continue", "Return", "return", "Done", "done"])).firstMatch
-                if go.exists { go.tap() }
-            }
+            if poll(timeout: 15, { secure.exists }) { break }
+            if go.exists { go.tap() }
+            if poll(timeout: 10, { secure.exists }) { break }
         }
         if !secure.waitForExistence(timeout: 60) {
             // The username is typed, the password is not. Values are omitted
