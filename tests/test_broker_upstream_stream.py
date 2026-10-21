@@ -440,13 +440,22 @@ def test_oauth_refresh_is_guarded_and_checks_deadline(oauth_broker, monkeypatch,
 @pytest.mark.parametrize("echo", ["body", "header"])
 def test_proactive_refresh_keeps_original_tokens_held(oauth_broker, monkeypatch, echo):
     broker, _, bundle = oauth_broker
-    monkeypatch.setattr(CredentialBlindBroker, "_oauth_bundle", lambda *args, **kwargs: bundle)
-    broker._network_request = lambda **kwargs: UpstreamStream.complete({
-        "status": 200, "body": b"old-access-token" if echo == "body" else b"ok",
-        "headers": {"x-echo": "old-refresh-token"} if echo == "header" else {},
-    }, ())
+    events = []
+    monkeypatch.setattr(CredentialBlindBroker, "_oauth_bundle",
+                        lambda *args, **kwargs: events.append("refresh") or bundle)
+
+    def network(**kwargs):
+        events.append("send")
+        return UpstreamStream.complete({
+            "status": 200, "body": b"old-access-token" if echo == "body" else b"ok",
+            "headers": {"x-echo": "old-refresh-token"} if echo == "header" else {},
+        }, ())
+
+    broker._network_request = network
     with pytest.raises(ProxyRequestError):
-        _read_all(broker.dispatch("grant-model", "POST", {}, stream=True))
+        _read_all(broker.dispatch("grant-model", "POST", {
+            "url": "https://models.example.com/v1/chat"}, stream=True))
+    assert events == ["refresh", "send"]
 
 
 def test_redirect_stream_reports_each_connection():

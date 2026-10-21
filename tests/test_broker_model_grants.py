@@ -121,11 +121,12 @@ def test_model_classification_is_recorded_at_grant_and_survives_metadata_removal
 
     broker = CredentialBlindBroker(reopened, resolve_credential=credential, network_request=network)
     if source in {"ordinary", "compute"}:
-        assert broker.dispatch("grant", "POST", {"path": "/chat"})["status"] == 200
+        assert broker.dispatch("grant", "POST", {
+            "url": "https://models.example.com/chat"})["status"] == 200
         assert events == ["credential", "send"]
     else:
         with pytest.raises(InferenceUsageRequired):
-            broker.dispatch("grant", "POST", {"path": "/chat"})
+            broker.dispatch("grant", "POST", {"url": "https://models.example.com/chat"})
         assert events == []
 
 
