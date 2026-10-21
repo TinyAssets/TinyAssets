@@ -735,19 +735,17 @@ jobs:
           stamp="${TARBALL#tinyassets-data-}"
           manifest="tinyassets-platform-${stamp%.tar.gz}.json"
           # C3 manifest and C2 object travel separately; no whole box-store archive.
-          for member in "${manifest}"; do
-            member_source="${BACKUP_PATH%/*}/${member}"
-            member_destination=$(printf '%q' "/var/backups/tinyassets/${member}")
-            if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
-                  "cat > ${member_destination}" < "${member_source}"
-            else
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" "cat $(printf '%q' "${member_source}")" \
-                  | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
-                      "cat > ${member_destination}"
-            fi
-          done
+          member_source="${BACKUP_PATH%/*}/${manifest}"
+          member_destination=$(printf '%q' "/var/backups/tinyassets/${manifest}")
+          if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                "cat > ${member_destination}" < "${member_source}"
+          else
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" "cat $(printf '%q' "${member_source}")" \
+                | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                    "cat > ${member_destination}"
+          fi
           # Recovery code and its package come from this exact checkout.
           tar -czf "${RUNNER_TEMP}/dr-recovery-code.tar.gz" tinyassets \
               deploy/dr-owner-restore.py deploy/backup-restore.sh deploy/platform-recovery.py \
