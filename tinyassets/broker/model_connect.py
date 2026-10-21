@@ -16,7 +16,7 @@ def validate(document):
         validate_request(document["requested"])
         hosts = document["hosts"]
         if (not isinstance(hosts, list) or not 1 <= len(hosts) <= 8
-                or any(not isinstance(h, str) or len(h) > 253 for h in hosts)):
+                or any(not isinstance(h, str) or len(h) > 2048 for h in hosts)):
             raise ValueError("invalid offer hosts")
         return
     required = {"action", "code", "verifier", "redirect_uri", "request_ref"}

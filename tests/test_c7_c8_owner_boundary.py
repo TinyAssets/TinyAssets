@@ -193,3 +193,14 @@ def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch)
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         opened[0].execute("SELECT 1")
+
+
+def test_oauth_offer_accepts_a_bounded_resource_url():
+    from tinyassets.broker.model_connect import validate
+
+    resource = "https://public.example/" + "x" * (2048 - len("https://public.example/"))
+    document = {"action": "oauth_offer", "requested": {}, "hosts": [resource],
+                "callback": "https://door.example/callback", "registration_url": ""}
+    assert validate(document) is None
+    with pytest.raises(ValueError, match="invalid offer hosts"):
+        validate({**document, "hosts": [resource + "x"]})
