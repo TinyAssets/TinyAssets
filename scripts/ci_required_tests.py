@@ -97,11 +97,11 @@ MIN_RAN_FLOOR = 3200
 # each job uses.
 # Founder-authorized shape-only pruning leaves 3,605 collected cases, 3,587
 # required cases and 18 heavy cases. Six deterministic required shards have
-# at least 383 cases. These floors preserve a modest cushion under that census.
+# at least 382 cases. These floors preserve a modest cushion under that census.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
     "heavy": 15,             # 18 retained heavy cases after the shape-only prune
-    # ONE of six required shards (at least 383 cases in the retained census).
+    # ONE of six required shards (at least 382 cases in the retained census).
     # The aggregate also checks the union; this catches an individual collapse.
     "shard": 340,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
