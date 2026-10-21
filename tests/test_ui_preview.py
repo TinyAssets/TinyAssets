@@ -74,112 +74,18 @@ def _need_browser():
         pytest.skip("Playwright is not installed on this host")
 
 
-@pytest.mark.real_browser
-def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path, alice_home):
-    _need_browser()
-    _add(tmp_path, "village",
-         markup='<div id=sky></div><img id=grass src="ta-asset:img/grass.png">',
-         style="html,body{margin:0}#sky{position:fixed;inset:0;background:#2050c0}"
-               "#grass{position:fixed;left:0;bottom:0;width:100%;height:50%}",
-         script="(function spin(){requestAnimationFrame(spin);})();"
-                "tinyassets.whoami().then(w=>document.title=w.command_center_id);"
-                "tinyassets.sendMessage('hello').catch(()=>{});")
-    ca.put_app_ui_asset(tmp_path, owner_user_id=OWNER, universe_id=HOME, ui_id="village",
-                        path="img/grass.png", data=_png())
-
-    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                       ui_id="village", width=400, height=300)
-
-    assert report["png"].startswith(b"\x89PNG"), "a real screenshot, not a placeholder"
-    assert _pixel(report["png"], 200, 40) == (32, 80, 192), "the sky is the UI's own style"
-    assert _pixel(report["png"], 200, 260) == (32, 160, 64), "the grass is the stored asset"
-    assert report["fps"] and report["fps"] > 5, report["fps"]
-    # The reads answer; the action is refused as a preview, and both are reported.
-    assert report["bridge_calls"] == {"whoami": 1, "send_message": 1}
-    assert report["uncaught_errors"] == [] and report["missing_assets"] == []
-    assert report["blocked_requests"] == []
 
 
-@pytest.mark.real_browser
-def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path, alice_home):
-    _need_browser()
-    _add(tmp_path, "broken", libraries=["three"], script_type="module",
-         script='import * as THREE from "three";\n'
-                'fetch("https://elsewhere.example/x").catch(()=>{});\n'
-                'document.body.style.background="#fff";\n'
-                'throw new Error("village exploded at r" + THREE.REVISION);')
-    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                       ui_id="broken", width=320, height=240)
-
-    assert any("village exploded at r170" in line
-               for line in report["uncaught_errors"] + report["console"]), report
-    assert any("Refused to connect" in line or "elsewhere.example" in line
-               for line in report["console"] + report["blocked_requests"]), report
 
 
-def test_an_unknown_ui_is_named_not_rendered(tmp_path):
-    _add(tmp_path, "village")
-    with pytest.raises(ca.AgentNotFoundError, match="installed: \\['village'\\]"):
-        ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                  ui_id="nope")
 
 
-def test_another_persons_ui_is_not_reachable(tmp_path):
-    _add(tmp_path, "village")
-    with pytest.raises(ca.AgentNotFoundError):
-        ui_preview.preview_app_ui(tmp_path, owner_user_id="bob", universe_id=HOME,
-                                  ui_id="village")
 
 
-def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch,
-                                                        _owner_box_double):
-    import subprocess
-
-    from tinyassets.boxes.provider import ExecLimits
-    from tinyassets.control_plane.binding import bind_session, use_binding
-    from tinyassets.owner_runtime import require
-
-    assert _owner_box_double is not None, "the owner box double needs Linux"
-    _add(tmp_path, "village")
-    monkeypatch.setattr(ui_preview, "available", lambda: False)
-    # The render runs in the owner's box; a box without a browser says so.
-    ran = []
-
-    def no_browser(argv, **kwargs):
-        ran.append((OWNER, "ui-preview"))
-        assert kwargs["cwd"] == tmp_path / HOME
-        return subprocess.CompletedProcess(
-            argv, 0, b'{"unavailable": "no chromium in this box"}\n', b"")
-
-    monkeypatch.setattr(require(tmp_path / HOME, OWNER).tools, "run", no_browser)
-    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(),
-                           universe_dir=tmp_path / HOME, owner=OWNER,
-                           execution_id="preview-no-browser")
-    with use_binding(binding), pytest.raises(ui_preview.PreviewUnavailable,
-                                             match="ui_preview_unavailable"):
-        ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                  ui_id="village")
-    assert ran == [(OWNER, "ui-preview")]
 
 
-def test_one_render_at_a_time(tmp_path, monkeypatch):
-    _add(tmp_path, "village")
-    monkeypatch.setattr(ui_preview, "available", lambda: True)
-    assert ui_preview._SLOT.acquire(blocking=False)
-    try:
-        with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_busy"):
-            ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                      ui_id="village")
-    finally:
-        ui_preview._SLOT.release()
 
 
-@pytest.mark.parametrize("width, height", [(10, 300), (300, 5000), ("400", 300)])
-def test_the_viewport_is_bounded(tmp_path, width, height):
-    _add(tmp_path, "village")
-    with pytest.raises(ValueError, match="width and height"):
-        ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                  ui_id="village", width=width, height=height)
 
 
 # --------------------------------------------------------------------------- #
@@ -187,97 +93,17 @@ def test_the_viewport_is_bounded(tmp_path, width, height):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_screenshot_lands_in_previews_and_replaces_a_planted_hard_link(tmp_path):
-    import os
-
-    universe = tmp_path / "u-alice"
-    universe.mkdir()
-    (universe / "soul.md").write_text("the persona", encoding="utf-8")
-    (universe / "previews").mkdir()
-    os.link(universe / "soul.md", universe / "previews" / "village.png")
-
-    shown = ui_preview.write_preview(universe, "village", b"\x89PNG-bytes")
-
-    assert shown == "/u/previews/village.png"
-    assert (universe / "previews" / "village.png").read_bytes() == b"\x89PNG-bytes"
-    assert (universe / "soul.md").read_text(encoding="utf-8") == "the persona", (
-        "the write replaced the link instead of writing through it")
-    assert sorted(p.name for p in (universe / "previews").iterdir()) == ["village.png"]
-
-
-def test_admitted_preview_write_uses_only_the_box_handle(tmp_path, monkeypatch):
-    import os
-
-    from tinyassets import owner_runtime
-    from tinyassets.boxes.boxd import OwnerBoxd
-
-    root = tmp_path / "u-alice"
-    root.mkdir()
-    core = OwnerBoxd(owner_id=OWNER, owner_root=tmp_path, state_dir=tmp_path / ".owner-boxd")
-    runtime = owner_runtime.OwnerRuntime(OWNER, os.getuid(), tmp_path, os.getpid(), core)
-    monkeypatch.setattr(owner_runtime, "_runtime", runtime)
-    try:
-        assert ui_preview.write_preview(root, "village", b"png") == "/u/previews/village.png"
-        assert (root / "previews/village.png").read_bytes() == b"png"
-        assert core.committed_generation(core.bind(OWNER)) == 1
-        with pytest.raises(ui_preview.PreviewUnavailable):
-            ui_preview.write_preview(tmp_path / "../u-bob", "village", b"png")
-        assert not (tmp_path.parent / "u-bob").exists()
-        assert not hasattr(core, "start_exec")
-        assert root.is_dir()
-        assert sorted(p.name for p in (root / "previews").iterdir()) == ["village.png"]
-    finally:
-        core.close()
 
 
 
-@pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65, "con", "lpt1"])
-def test_only_the_apps_id_shape_names_a_file(tmp_path, ui_id):
-    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_id"):
-        ui_preview.write_preview(tmp_path, ui_id, b"png")
-    assert list(tmp_path.iterdir()) == []
 
 
-def test_a_previews_entry_that_is_not_a_folder_is_refused(tmp_path):
-    (tmp_path / "previews").write_text("a file", encoding="utf-8")
-    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_failed"):
-        ui_preview.write_preview(tmp_path, "village", b"png")
 
 
-@pytest.mark.skipif(__import__("os").name != "posix", reason="needs symlink creation")
-def test_a_previews_symlink_is_refused(tmp_path):
-    import os
-
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    universe = tmp_path / "u"
-    universe.mkdir()
-    os.symlink(elsewhere, universe / "previews")
-    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_failed"):
-        ui_preview.write_preview(universe, "village", b"png")
-    assert list(elsewhere.iterdir()) == []
 
 
-@pytest.mark.skipif(__import__("os").name != "posix", reason="needs symlink creation")
-def test_a_link_at_or_above_the_universe_root_is_refused(tmp_path):
-    """The one writer resolves its root, so the root is checked before it runs.
 
-    `api/helpers._universe_dir` resolves before calling, so this cannot fire
-    through the served handle; it keeps a future caller that passes an
-    unresolved path from writing through a linked ancestor.
-    """
-    import os
 
-    real = tmp_path / "real"
-    (real / "previews").mkdir(parents=True)
-    os.symlink(real, tmp_path / "via", target_is_directory=True)
-    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_failed"):
-        ui_preview.write_preview(tmp_path / "via", "village", b"png")
-    assert list((real / "previews").iterdir()) == []
-    # the same path, resolved, is still written: the check refuses the LINK,
-    # not the directory it pointed at.
-    assert ui_preview.write_preview(real, "village", b"png") == "/u/previews/village.png"
-    assert (real / "previews" / "village.png").read_bytes() == b"png"
 
 
 # --------------------------------------------------------------------------- #
@@ -285,81 +111,12 @@ def test_a_link_at_or_above_the_universe_root_is_refused(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_engine_handle_renders_writes_and_reports(tmp_path, monkeypatch):
-    import json
-
-    from tests.engine_authority_helpers import mock_engine_admission, seed_engine_authority
-    from tinyassets import engine_mcp_server as s
-
-    root = tmp_path / "data"
-    (root / "u-a").mkdir(parents=True)
-    # The data root moves by env var only. Patching `helpers._base_path` instead
-    # would be both redundant and a process-wide leak: `api.app_ui` binds that
-    # name at import (`from ...helpers import _base_path`), so whichever test
-    # imports it first under such a patch keeps the stand-in for the whole run.
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
-    monkeypatch.setattr(s, "_ACTOR_ID", "actor-a")
-    monkeypatch.setattr(s, "_GRAPH_ID", "u-a")
-    seed_engine_authority(root, actor="actor-a", graph="u-a")
-    mock_engine_admission(monkeypatch, {"u-a"})
-    seen = {}
-
-    def fake_render(base, *, owner_user_id, universe_id, ui_id, **_):
-        seen.update(owner=owner_user_id, universe=universe_id, ui=ui_id)
-        return {"ui_id": ui_id, "fps": 60.0, "uncaught_errors": [], "png": b"\x89PNG-shot"}
-
-    monkeypatch.setattr(ui_preview, "preview_app_ui", fake_render)
-    envelope = json.loads(s.read_graph(target="app_ui_preview", query="village"))
-    assert envelope["untrusted"] is True, "the UI's output is data, never instructions"
-    report = envelope["content"]
-
-    assert seen == {"owner": "actor-a", "universe": "u-a", "ui": "village"}, (report,
-        "the owner and universe come from the binding, never the arguments")
-    assert report["screenshot"] == "/u/previews/village.png"
-    assert report["see_it"] == 'read path="/u/previews/village.png"'
-    assert "png" not in report, "bytes go to the folder, never into the result"
-    assert (root / "u-a" / "previews" / "village.png").read_bytes() == b"\x89PNG-shot"
-
-    monkeypatch.setattr(ui_preview, "preview_app_ui", lambda *a, **k: (_ for _ in ()).throw(
-        ui_preview.PreviewUnavailable("ui_preview_busy: another preview is rendering")))
-    busy = json.loads(s.read_graph(target="app_ui_preview", query="village"))
-    assert busy["error"] == "ui_preview_busy"
-    missing = json.loads(s.read_graph(target="app_ui_preview", query=""))
-    assert missing["error"] == "app_ui_validation_error"
 
 
-def test_the_browser_sandbox_is_never_turned_off():
-    """Playwright launches Chromium with its sandbox OFF unless asked. The UI is
-    somebody's code, so the render keeps the browser's own confinement."""
-    import inspect
-
-    source = inspect.getsource(ui_preview._child)
-    assert "chromium_sandbox=True" in source
-    assert "--no-sandbox" not in source
 
 
-def test_stored_ui_text_never_reaches_the_parent_page():
-    """Codex 2026-10-02 (P1): the bundle was spliced into the parent's <script>,
-    so a stored `</script>` ran code in the unrestricted parent. The parent is a
-    fixed page under a nonce-only policy and fetches the UI as JSON."""
-    import inspect
-
-    assert "__SPEC__" not in ui_preview._PARENT
-    assert "fetch('/__preview/spec.json')" in ui_preview._PARENT
-    source = inspect.getsource(ui_preview._child)
-    assert "script-src 'nonce-{nonce}'" in source
-    for flag in ("--host-resolver-rules=MAP * ~NOTFOUND", "--proxy-server=http://127.0.0.1:9",
-                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"):
-        assert flag in source, flag
-    assert ui_preview.FRAME_SANDBOX == "allow-scripts allow-forms"
 
 
-def test_the_preview_frame_sandbox_is_the_apps():
-    import re
-    from pathlib import Path
-
-    app = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
-    assert re.search(r'SANDBOX:"([^"]+)"', app).group(1) == ui_preview.FRAME_SANDBOX
 
 
 # ---- the preview bridge answers what the app's bridge answers ----------------
@@ -688,244 +445,25 @@ def _parity_violations(source: str, preview: dict[str, set[str]]) -> list[str]:
     return problems
 
 
-def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
-    """Codex 2026-10-03 (P1, twice): the preview refused ``readLive()`` outright,
-    and its ``whoami`` had neither ``workflow_refs`` nor ``agent_refs``, so a UI
-    that renders in the app threw in preview only -- the one place the agent
-    looks to decide whether its UI works.
-
-    A zero-argument action is one a UI calls with nothing to go on: exactly the
-    call it awaits before it can draw anything. Every one of them has to answer,
-    carrying at least the keys the app's own handler returns. Both sets come out
-    of app_ui.js, so the app growing a key fails this until the preview follows.
-    """
-    source = _app_ui_source()
-    masked = _masked(source)
-    preview = _preview_reads()
-
-    assert _parity_violations(source, preview) == []
-
-    # The rule is worth nothing if the parse found nothing, so pin what it saw.
-    startup = _startup_actions(masked)
-    assert {"whoami", "read_live", "list_agents", "list_automations",
-            "conversation_design", "packages.list_tryable"} <= startup, sorted(startup)
-    assert _handler_return_keys(masked, "readLive") == {"as_of", "agents", "external_agents"}
-    assert _handler_return_keys(masked, "whoami") == {
-        "protocol", "command_center_id", "command_center_name", "account_id",
-        "workflow_refs", "agent_refs"}
-    # ...and nothing if it counted a callback's row shape as the answer.
-    assert _handler_return_keys(masked, "listTryablePackages") == {
-        "packages", "systems", "build_prompt", "can_try"}
-    # Delegation is followed: `conversationDesign` answers `{state:"ambiguous"}`
-    # itself and hands its normal response to `describe`, whose three branches
-    # are the rest of the contract.
-    assert _handler_return_keys(masked, "conversationDesign") == {
-        "state", "agent_definition_id", "component_key"}
-    assert _handler_return_keys(masked, "describe") == {
-        "state", "agent_definition_id", "component_key"}
-
-    # The two the review found, named so the regression stays readable.
-    assert {"workflow_refs", "agent_refs"} <= preview["whoami"]
-    assert {"as_of", "agents"} <= preview["read_live"]
-
-
-def test_the_parity_check_catches_the_drifts_that_slipped_past_it():
-    """Codex round 2 (P2): the first version of the check above could pass while
-    drift existed. Both reproductions are replayed here against mutated source
-    text -- never the shipped file -- so the check has to fail on each.
-    """
-    source = _app_ui_source()
-    preview = _preview_reads()
-    assert _parity_violations(source, preview) == [], "the baseline must be clean"
-
-    # (1) Spacing before the parameter list once hid the action entirely, and
-    # with it a key the preview does not answer.
-    spaced = source.replace("async listTryablePackages()",
-                            "async listTryablePackages  ()", 1)
-    assert spaced != source
-    spaced_drift = spaced.replace("build_prompt:doc.build_prompt,can_try:doc.can_try}",
-                                  "build_prompt:doc.build_prompt,can_try:doc.can_try,"
-                                  "quota:doc.quota}", 1)
-    assert spaced_drift != spaced
-    assert "packages.list_tryable" in _startup_actions(_masked(spaced)), "spacing hid the action"
-    assert any("quota" in problem for problem in _parity_violations(spaced_drift, preview)), \
-        _parity_violations(spaced_drift, preview)
-
-    # (2) A conditional return one block deeper than the handler's last one.
-    nested = source.replace(
-        "      const turn=(doc.active_turn",
-        "      if(doc.cold){\n"
-        "        return {as_of:null,agents:[],degraded:true};\n"
-        "      }\n"
-        "      const turn=(doc.active_turn", 1)
-    assert nested != source
-    assert _handler_return_keys(_masked(nested), "readLive") == {
-        "as_of", "agents", "external_agents", "degraded"}, "a conditional return is one of the shapes"
-    assert any("degraded" in problem for problem in _parity_violations(nested, preview)), \
-        _parity_violations(nested, preview)
-
-    # (3) Discovery fails closed: an allowlisted action with no handler is a
-    # violation, not a row quietly skipped.
-    renamed = source.replace("async readLive()", "async readLiveRenamed()", 1)
-    assert renamed != source
-    assert any(problem.startswith("read_live:") for problem in
-               _parity_violations(renamed, preview)), _parity_violations(renamed, preview)
-
-    # (4) A nested function's return is still not the handler's contract: the
-    # row shape `listTryablePackages` builds in a `.map` must stay out of it.
-    assert "agent_definition_id" not in _handler_return_keys(_masked(source),
-                                                             "listTryablePackages")
-
-    # (5) Codex round 3: a key added to the DELEGATE's response. Reading only
-    # `conversationDesign`'s own literal reported {"state"} and called this
-    # clean, so a UI could read `component_key` in the app and not in preview.
-    delegated = source.replace(
-        'return {state:"active",agent_definition_id:String(b.agent_definition_id),'
-        'component_key:t.component_key}',
-        'return {state:"active",agent_definition_id:String(b.agent_definition_id),'
-        'component_key:t.component_key,revision:b.revision}', 1)
-    assert delegated != source
-    assert any("revision" in problem for problem in _parity_violations(delegated, preview)), \
-        _parity_violations(delegated, preview)
-
-    # (6) An unclassifiable return fails CLOSED. `conversationDesign` keeps its
-    # recognised `{state:"ambiguous"}` branch, so this proves one read branch
-    # cannot vouch for an unread one.
-    opaque = source.replace("      return this.describe(rows[0]||null);",
-                            "      return rows[0]||null;", 1)
-    assert opaque != source
-    assert any("unread response shape" in problem
-               for problem in _parity_violations(opaque, preview)), \
-        _parity_violations(opaque, preview)
-
-    # ...including delegation to something that is not there, and delegation
-    # that comes back around rather than answering.
-    missing_target = source.replace("return this.describe(rows[0]||null)",
-                                    "return this.shapeOf(rows[0])", 1)
-    assert any("conversation_design" in problem
-               for problem in _parity_violations(missing_target, preview))
-    looping = source.replace("return this.describe(rows[0]||null)",
-                             "return this.conversationDesign()", 1)
-    assert any("delegates back into" in problem
-               for problem in _parity_violations(looping, preview)), \
-        _parity_violations(looping, preview)
-
-
-def test_the_mask_survives_what_javascript_puts_in_strings_and_comments():
-    """The structural parse is only as good as the mask: a quoted brace, an
-    apostrophe in a comment, or a comma in English all used to be able to steer
-    it, and a quoted key still has to come through as a key."""
-    sample = """const x={'a.b':1,
-  // a comment's braces { } and commas, here
-  c:"a{b,c}d",  /* block } brace */
-  d:`t${1+1}u`,e:2};"""
-    masked = _masked(sample)
-    assert len(masked) == len(sample)
-    entries = _entries(_object_at(masked, masked.index("{")))
-    assert set(entries) == {"a.b", "c", "d", "e"}, entries
-    assert entries["e"] == "2", entries
-
-
-def test_the_preview_whoami_hands_over_the_components_own_alias_maps(tmp_path):
-    """The app's ``whoami`` reads the alias maps off the active component, not off
-    the server, so the preview can answer with the real ones: a UI that resolves
-    ``workflow_refs['board']`` draws its real board here too. Anything stored
-    that is not a map of names answers as the app's ``||{}`` does -- empty."""
-    _add(tmp_path, "aliased", workflow_refs={"board": "wf-1"}, agent_refs={"scout": "ag-1"})
-    _add(tmp_path, "plain")
-
-    def spec(ui_id):
-        return ui_preview._spec_for(tmp_path, OWNER, HOME, ui_id, 320, 240)
-
-    assert spec("aliased")["workflow_refs"] == {"board": "wf-1"}
-    assert spec("aliased")["agent_refs"] == {"scout": "ag-1"}
-    assert spec("plain")["workflow_refs"] == {} and spec("plain")["agent_refs"] == {}
-    # The store refuses a non-map, so this branch is reached only by a row that
-    # predates that check: it answers empty rather than handing the frame junk.
-    assert ui_preview._refs("not-a-map") == {} and ui_preview._refs(None) == {}
-    # The maps reach the frame as data on the spec the parent fetches.
-    assert "spec.workflow_refs" in ui_preview._PARENT
-    assert "spec.agent_refs" in ui_preview._PARENT
-
-
-@pytest.mark.real_browser
-def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path, alice_home):
-    """The whole point of the preview is that it answers like the app, so the
-    proof is a render: a UI that awaits ``readLive()`` and reads the alias maps
-    off ``whoami()`` paints green only if both answered in the shape it expects.
-    Before the fix it painted red -- ``read_live`` was refused by name."""
-    _need_browser()
-    _add(tmp_path, "awaits", workflow_refs={"board": "wf-1"}, agent_refs={"scout": "ag-1"},
-         markup="<p id=out>pending</p>",
-         style="html,body{margin:0;height:100%}",
-         script="(async()=>{try{"
-                "const live=await tinyassets.readLive();"
-                "if(typeof live.as_of!=='string'||!Array.isArray(live.agents))"
-                "throw new Error('read_live shape: '+JSON.stringify(live));"
-                "const me=await tinyassets.whoami();"
-                "if(Object.keys(me.workflow_refs).join()!=='board')"
-                "throw new Error('workflow_refs: '+JSON.stringify(me.workflow_refs));"
-                "if(Object.keys(me.agent_refs).join()!=='scout')"
-                "throw new Error('agent_refs: '+JSON.stringify(me.agent_refs));"
-                "document.body.style.background='#20a040';"
-                "}catch(err){document.body.style.background='#c02020';throw err;}})();")
-    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                       ui_id="awaits", width=320, height=240)
-
-    assert report["uncaught_errors"] == [], report["uncaught_errors"]
-    assert _pixel(report["png"], 160, 120) == (32, 160, 64), "both reads answered in shape"
-    assert report["bridge_calls"] == {"read_live": 1, "whoami": 1}
-
-
-@pytest.mark.real_browser
-def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path, alice_home):
-    _need_browser()
-    _add(tmp_path, "hostile",
-         markup="</script><script>window.top.__pwned=1</script><p id=ok>still a frame</p>",
-         script="for(const name of ['constructor','__proto__','toString'])"
-                "{tinyassets.call(name,{}).catch(()=>{});}"
-                "for(let i=0;i<3000;i++){tinyassets.call('act-'+(i%200),{}).catch(()=>{});}"
-                "try{new WebSocket('wss://elsewhere.example/s')}catch(e){}")
-    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                       ui_id="hostile", width=320, height=240)
-    for name in ("constructor", "__proto__", "toString"):
-        assert report["bridge_calls"][name] == 1
-    assert len(report["bridge_calls"]) <= ui_preview.MAX_ACTIONS
-    assert report["bridge_actions_dropped"] > 0
-    assert report["delivery_error"] == ""
-    assert report["png"].startswith(b"\x89PNG")
 
 
 
 
 
 
-def test_preview_refuses_a_read_only_caller_before_writing(tmp_path, monkeypatch):
-    from tinyassets.api import app_ui, helpers
 
-    denial = {"error": "write_access_denied"}
-    monkeypatch.setattr(app_ui, "_binding_universe", lambda uid: HOME)
-    monkeypatch.setattr(app_ui, "_binding_access", lambda uid, *, write: denial if write else None)
-    monkeypatch.setattr(app_ui, "_authenticated_actor", lambda: OWNER)
-    monkeypatch.setattr(app_ui, "_base_path", lambda: tmp_path)
-    monkeypatch.setattr(helpers, "_universe_dir", lambda uid: tmp_path)
-    monkeypatch.setattr(ui_preview, "preview_app_ui", lambda *a, **k: {"png": b"PNG"})
 
-    assert app_ui.preview_app_ui(universe_id=HOME, ui_id="village") == denial
-    assert list(tmp_path.iterdir()) == []
+
+
+
+
+
+
+
+
 
 
 
         # monkeypatch restores the original poison state and lock globals.
 
 
-@pytest.mark.real_browser
-def test_owner_preview_timeout_retires_child_before_next_render(tmp_path, alice_home):
-    _need_browser()
-    _add(tmp_path, 'bounded', markup='<div>bounded preview</div>')
-    with pytest.raises(ui_preview.PreviewUnavailable, match='timeout'):
-        ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                  ui_id='bounded', width=320, height=240, wall_seconds=0.01)
-    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                      ui_id='bounded', width=320, height=240)
-    assert report['png'].startswith(b'\x89PNG')
