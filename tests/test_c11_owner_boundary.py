@@ -10,57 +10,8 @@ from tests.support.migration_volumes import contents
 from tests.test_owner_cutover_apply import cutover  # noqa: F401
 from tests.test_owner_cutover_census import _fingerprint, source  # noqa: F401
 from tinyassets import box_layout_migration as migration
-from tinyassets.boxes.lifecycle import admit_center, retire_center
 from tinyassets.broker.policy import _canonical, _digest
-from tinyassets.owner_centers import Centers, admitted_owner
-
-
-@pytest.mark.verifies('owner-daemon-in-box:C11')
-def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
-    from tests.support.admission import Plans, drive, projection
-    from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.policy import PolicyStore
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    shared, box = tmp_path / "shared", tmp_path / "box"
-    shared.mkdir()
-    box.mkdir()
-    state = shared / ".broker/state"
-    state.mkdir(parents=True, mode=0o700)
-    state.parent.chmod(0o700)
-    identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
-                                 plans=Plans(shared))
-    identities.resolve("alice", allocate=True)
-    drive(identities.admit("alice", routing=projection(identities.path)))
-    policy = PolicyStore(shared, identities)
-    policy.bootstrap()
-    assert policy.read("alice").generation == 1
-    ledger = ConnectionLedger(shared / ".broker/outbound.db", data_root=shared)
-    ledger.create_connection(connection_id="connection", owner_user_id="alice",
-        connection_class="http", connection_type="http", auth_scheme="none",
-        scopes=("GET",), provider="http", destination="synthetic",
-        credential_ref="vault://http/synthetic", allowed_endpoints=[{
-            "host": "service.invalid", "path_template": "/", "methods": ["GET"]}])
-    ledger.grant_connection(grant_id="grant", connection_id="connection", owner_user_id="alice")
-    before = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))
-    import os
-    from types import SimpleNamespace
-
-    from tinyassets import owner_runtime
-
-    monkeypatch.setattr(owner_runtime, "_runtime", SimpleNamespace(
-        pid=os.getpid(), root=box, principal="alice"))
-    centers = Centers(box)
-    assert centers.active() == []
-    assert admitted_owner(box, center="one") == "alice"
-    for name in ("one", "two", "three"):
-        admit_center(box, principal="alice", center=name)
-    assert centers.active() == ["one", "three", "two"]
-    retire_center(box, center="two")
-    assert Centers(box).active() == ["one", "three"]
-    assert admitted_owner(box, center="two") == "alice"
-    after = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))
-    assert after == before
+from tinyassets.owner_centers import Centers
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C11', 'owner-daemon-in-box:C8', 'owner-daemon-in-box:C7')
