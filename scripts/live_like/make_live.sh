@@ -26,6 +26,21 @@ case "${1:-}" in
     test -f "$compose"
     root="$(volume_root)"
     test -f "$root/.layout.json"
+    if test ! -f "$root/release-state.json"; then
+      docker pull -q "$image" >/dev/null
+      revision="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
+      [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+      python3 - "$root/release-state.json" "$revision" "$image" <<'PY'
+import datetime, json, pathlib, sys
+path, revision, image = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+path.write_text(json.dumps({
+    "git_sha": revision, "image_tag": revision[:12], "image_ref": image,
+    "deployed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}) + "\n", encoding="utf-8")
+PY
+      chown 1001:1100 "$root/release-state.json"
+      chmod 0664 "$root/release-state.json"
+    fi
     install -d -m 0755 "$state" /etc/tinyassets /run/tinyassets-boxhostd/broker
     if test ! -f "$env_file"; then
       printf 'TINYASSETS_IMAGE=%s\nTINYASSETS_MCP_CANARY_URL=http://127.0.0.1:8001/mcp\nUNIVERSE_SERVER_DEV_USER=alice\nBACKUP_DEST=spaces:tinyassets-live-like/workflow-backups\n' "$image" > "$env_file"
@@ -37,16 +52,19 @@ lines = [line for line in path.read_text().splitlines() if not line.startswith('
 path.write_text('\n'.join(lines + [f'TINYASSETS_IMAGE={image}']) + '\n')
 PY
     fi
-    for name in daemon.env agent-interchange.env request-idempotency.env app-ingress.env broker.env; do
+    for name in agent-interchange.env request-idempotency.env app-ingress.env broker.env; do
       test -f "/etc/tinyassets/$name" || install -m 0640 /dev/null "/etc/tinyassets/$name"
     done
     test -f /etc/tinyassets/broker-rclone.conf || install -m 0644 /dev/null /etc/tinyassets/broker-rclone.conf
-    # Keep the daemon environment in step with the generated host source.
-    cp "$env_file" /etc/tinyassets/daemon.env
-    chown root:tinyassets /etc/tinyassets/{env,daemon.env,agent-interchange.env,request-idempotency.env,app-ingress.env}
-    chmod 0640 /etc/tinyassets/{env,daemon.env,agent-interchange.env,request-idempotency.env,app-ingress.env}
+    chown root:tinyassets "$env_file" /etc/tinyassets/{agent-interchange.env,request-idempotency.env,app-ingress.env}
+    chmod 0640 "$env_file" /etc/tinyassets/{agent-interchange.env,request-idempotency.env,app-ingress.env}
+    # Use the installed production renderer so platform secrets never reach the daemon.
+    command -v tinyassets-env >/dev/null
+    printf 'alice' | tinyassets-env set UNIVERSE_SERVER_DEV_USER
+    tinyassets-env render-daemon-env
     # These are the actual production service definitions and Compose flags.
-    # The external Cloudflare tunnel has no PR credentials; gate probes loopback.
+    # The external Cloudflare tunnel cannot connect with synthetic credentials;
+    # this gate proves the loopback workload, not Cloudflare edge connectivity.
     services=(daemon logs)
     if docker compose --env-file "$env_file" -f "$compose" config --services | grep -qx broker; then
       services=(broker daemon logs)

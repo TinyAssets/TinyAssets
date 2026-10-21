@@ -29,7 +29,11 @@ case "${1:-}" in
       docker rm -f "$name" >/dev/null
       exit 1
     fi
-    (umask 077; cat > "$config" <<EOF
+    # Create the bucket through S3 before installing the production-shaped
+    # remote, whose no_check_bucket setting assumes the bucket already exists.
+    bootstrap="$(mktemp /root/.config/rclone/bootstrap.XXXXXX)"
+    trap 'rm -f "$bootstrap"' EXIT
+    (umask 077; cat > "$bootstrap" <<EOF
 [spaces]
 type = s3
 provider = Minio
@@ -37,11 +41,15 @@ access_key_id = livegateaccess
 secret_access_key = livegatesecret12345
 endpoint = http://${gateway}:${port}
 acl = private
-no_check_bucket = true
+no_check_bucket = false
 EOF
     )
     for _ in $(seq 1 60); do
-      if rclone mkdir "spaces:${bucket}" --retries 1 --low-level-retries 1 >/dev/null 2>&1; then
+      if rclone --config "$bootstrap" mkdir "spaces:${bucket}" --retries 1 --low-level-retries 1 >/dev/null 2>&1 \
+          && rclone --config "$bootstrap" lsd spaces: --retries 1 --low-level-retries 1 2>/dev/null \
+            | awk '{print $NF}' | grep -Fxq "$bucket"; then
+        sed 's/no_check_bucket = false/no_check_bucket = true/' "$bootstrap" > "$config"
+        chmod 0600 "$config"
         printf 'BACKUP_DEST=spaces:%s/workflow-backups\n' "$bucket"
         exit 0
       fi
