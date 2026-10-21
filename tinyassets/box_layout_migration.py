@@ -1766,6 +1766,9 @@ def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
                 for name in (".", *dirs, *files):
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     path = Path(directory) if name == "." else Path(directory) / name
+                    if (stat.S_ISSOCK(info.st_mode)
+                            and source.parent.name in {".agent-sessions", ".universe-sidecars"}):
+                        continue  # A live runtime socket: census "regenerated", never copied.
                     if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
                             or stat.S_ISLNK(info.st_mode)):
                         raise RuntimeError(f"unsupported owner inode (FIFO/socket/device): {path}")
@@ -1811,7 +1814,7 @@ def _atomic_json(path: Path, value: dict) -> None:
 def _copy(source: Path, target: Path, uid: int) -> None:
     command = [
         "rsync", "-aH", "--delete", "--delete-excluded", "--xattrs",
-        "--one-file-system", "--numeric-ids",
+        "--one-file-system", "--numeric-ids", "--no-specials",
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
     command[-2:-2] = [f"--exclude=/{name}" for name in
@@ -1821,9 +1824,12 @@ def _copy(source: Path, target: Path, uid: int) -> None:
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
         check=True, capture_output=True, text=True,
     )
-    if result.stdout.strip():
+    # --no-specials reports each skipped runtime socket; nothing else may differ.
+    differences = [line for line in result.stdout.splitlines()
+                   if line.strip() and not line.startswith("skipping non-regular file ")]
+    if differences:
         raise RuntimeError(
-            f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
+            f"rsync verification differs for {source}: {chr(10).join(differences)[:2000]}")
 
 
 def _volumes(store: Path):
