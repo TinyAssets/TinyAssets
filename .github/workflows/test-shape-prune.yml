@@ -1,0 +1,52 @@
+name: Prune tests against current shape
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: test-shape-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Collect per-test CI coverage in the disposable Linux oracle
+        run: |
+          mkdir -p "$RUNNER_TEMP/shape-coverage"
+          python scripts/linux_oracle.py --as-root --out "$RUNNER_TEMP/shape-coverage" -- \
+            -q --cov=tinyassets --cov=scripts --cov-context=test \
+            --cov-report=json:/out/coverage.json -o cache_dir=/tmp/pytest-cache
+      - name: Report subsets and delete orphaned tests
+        run: |
+          python -m pip install pytest pyyaml ruff
+          python scripts/test_shape.py --coverage "$RUNNER_TEMP/shape-coverage/coverage.json" \
+            --json "$RUNNER_TEMP/shape-report.json" --prune --body "$RUNNER_TEMP/prune-body.md"
+          ruff check tests --select F401,F841 --fix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-shape-coverage
+          path: |
+            ${{ runner.temp }}/shape-coverage/coverage.json
+            ${{ runner.temp }}/shape-report.json
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/test-shape-prune
+          title: 'test: prune orphaned and coverage-subset checks'
+          body-path: ${{ runner.temp }}/prune-body.md
+          draft: true
+          commit-message: |
+            test: prune orphaned and coverage-subset checks
+
+            Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

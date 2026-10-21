@@ -65,6 +65,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_inventory as inv  # noqa: E402  (one definition of a marker)
+import test_shape  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAX_EXPIRY_DAYS = 180
@@ -90,6 +91,7 @@ class Finding:
 
 @dataclass
 class Delta:
+    shape: list[Finding] = field(default_factory=list)
     tampering: list[Finding] = field(default_factory=list)
     unexplained_markers: list[Finding] = field(default_factory=list)
     expired: list[Finding] = field(default_factory=list)
@@ -450,6 +452,21 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     delta = Delta()
     base = merge_base(base, head, root)
     changes = changed_files(base, head, root)
+    shape_files = test_shape.sources(root, head)
+    rows = test_shape.registry(shape_files)
+    old_rows = test_shape.registry(test_shape.sources(root, base))
+    changed_tests = {new for _, _, new in changes if collectable(new)}
+    retired = {row for row, state in old_rows.items()
+               if state == "current" and rows.get(row) != "current"}
+    for test in test_shape.inventory(shape_files):
+        if test.node.split("::")[0] in changed_tests:
+            if not test.ids:
+                delta.shape.append(Finding(test.node, "test has no verifies id"))
+            for claim in sorted(test.ids):
+                if rows.get(claim) != "current":
+                    delta.shape.append(Finding(test.node, f"unresolvable verifies id: {claim}"))
+        for claim in sorted(test.ids & retired):
+            delta.shape.append(Finding(test.node, f"spec retires an id still named: {claim}"))
 
     for status, old, new in changes:
         path = new or old or ""
@@ -561,7 +578,7 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
 
 
 def evaluate(delta: Delta, body: str) -> list[str]:
-    failures = []
+    failures = [f"{f.where} {f.what}" for f in delta.shape]
     if delta.tampering:
         listed = "; ".join(f"{f.where} ({f.what})" for f in delta.tampering[:20])
         reason = REMOVAL_RE.search(body or "")
