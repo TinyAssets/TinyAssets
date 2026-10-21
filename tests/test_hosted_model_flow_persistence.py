@@ -154,3 +154,6 @@ def test_exchange_after_take_uses_epoch_expiry_not_monotonic(monkeypatch):
     with pytest.raises(auth.HostedAuthError, match="model_connection_expired"):
         asyncio.run(acquisition.exchange_key(flow=flow, code="synthetic-code", verifier=VERIFIER,
                                      client_factory=forbidden))
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

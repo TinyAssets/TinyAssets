@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.real_jail, pytest.mark.role_split]
+pytestmark = [
+    pytest.mark.real_jail, pytest.mark.role_split,
+    pytest.mark.verifies('owner-daemon-in-box:T8'),
+]
 
 SERVER = r'''
 import asyncio, json, os, sys

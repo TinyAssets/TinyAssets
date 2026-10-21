@@ -119,3 +119,6 @@ def test_every_owner_poll_reports_even_on_failure_and_report_failure_is_loud(tmp
             consumer.poll_once()
     finally:
         consumer.stop()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T7')

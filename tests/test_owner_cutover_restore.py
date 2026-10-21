@@ -265,3 +265,6 @@ def test_paired_restore_after_half_move_is_byte_exact(source, tmp_path, interrup
     assert json.loads((restored / ".layout.json").read_text())["state"] == "stable"
 
     assert json.loads((volume / ".layout.json").read_text())["state"] == "migrating"
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C4')

@@ -1125,3 +1125,6 @@ def test_discarded_http_slots_need_no_connection_ownership_join(source):
     assert report["center_custody_drops"]["credentials"] == 4
     assert report["center_custody_drops"]["connections"] == 0
     assert _fingerprint(source) == before
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

@@ -876,3 +876,6 @@ def test_a_real_child_process_does_not_inherit_the_key(monkeypatch):
         check=False,
     )
     assert out.stdout.strip() == "False", out
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

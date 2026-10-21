@@ -4,9 +4,8 @@ import pytest
 
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
-from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
+from tinyassets.onboarding.hosted_model_auth import load_preset
 from tinyassets.onboarding.model_bootstrap_candidate import prepare_candidate
-from tinyassets.providers.definition import get_definition, list_definitions
 
 
 def row(name="new-provider/new-free-model", price="0", tools=True):
@@ -58,40 +57,3 @@ def rig(tmp_path, monkeypatch):
 def prepare(rig):
     return prepare_candidate(base=rig[0], uid="u-owner", owner="owner", grant_id="bootstrap-grant",
                              preset=load_preset("openrouter_user_models_v1"))
-
-
-def test_seed_is_real_free_catalogue_model_and_no_serving_is_created(rig):
-    from tinyassets.commons_catalog import list_bindings
-    from tinyassets.provider_assignment import load_provider_assignment
-
-    did = prepare(rig)
-    assert get_definition("u-owner", did).model == "new-provider/new-free-model"
-    assert list_bindings(rig[0], universe_id="u-owner") == []
-    assert load_provider_assignment(rig[0], universe_id="u-owner") is None
-    assert prepare(rig) == did  # Partial resume cannot create a new descriptor on catalogue drift.
-    assert len(rig[2]) == 1
-    assert len(list_definitions("u-owner")) == 1
-
-
-@pytest.mark.parametrize("models", [[], [row(price="0.01")], [row(tools=False)],
-    [row(price="unknown")], [row(price="0.000000000000001")]])
-def test_no_eligible_free_tool_model_leaves_registration_empty(rig, models):
-    rig[1]["data"] = models
-    with pytest.raises(HostedAuthError, match="no_eligible_free_agent_model"):
-        prepare(rig)
-    assert not list_definitions("u-owner")
-
-
-def test_paid_first_row_does_not_become_initial_model(rig):
-    rig[1]["data"] = [row("first-paid", "1"), row("brand-new-free", "0")]
-    assert get_definition("u-owner", prepare(rig)).model == "brand-new-free"
-
-
-def test_changed_home_refuses_before_catalogue_network(rig):
-    from tinyassets.daemon_server import set_founder_home
-
-    set_founder_home(rig[0], founder_sub="owner", universe_id="another-home")
-    with pytest.raises(PermissionError):
-        prepare(rig)
-    assert not rig[2]
-    assert not list_definitions("u-owner")

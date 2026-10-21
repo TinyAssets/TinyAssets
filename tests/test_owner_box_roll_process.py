@@ -5,6 +5,7 @@ import asyncio
 import threading
 
 import httpx
+import pytest
 
 from tests.support.admission import drive
 from tests.test_broker_server import broker  # noqa: F401
@@ -81,3 +82,6 @@ def test_deploy_drains_real_request_then_router_wakes_published_image(
     assert boxes.runtime.processes[uid].pid != original.pid
     assert manager.boxes[uid].image == new.name
     assert not manager.boxes[other_uid].awake
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')

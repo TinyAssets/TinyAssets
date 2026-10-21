@@ -129,3 +129,6 @@ def test_daemon_auth_inventory_has_only_the_audited_readers():
             if path.name != "platform_secrets.py" and name in path.read_text(encoding="utf-8")
         }
         assert found == readers, name
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

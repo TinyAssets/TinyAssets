@@ -131,3 +131,6 @@ def test_deploy_and_timer_ship_and_run_before_image_prune() -> None:
     assert "ExecStartPre=/usr/bin/python3 /opt/tinyassets-host-uptime/current/" \
            "scripts/backup_snapshot_retention.py --apply" in service
     assert "'scripts/backup_snapshot_retention.py'" in build
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C4')

@@ -161,3 +161,6 @@ subprocess.run(['xfs_growfs', str(mount_root / str(uid))])
 def test_lifecycle_guard_rejects_the_retired_shared_tree_roots(root):
     assert violations(f"(self.{root} / str(uid)).stat()",
                       roots=ROOT_NAMES | {"owner_store", "_owner_tree"})
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

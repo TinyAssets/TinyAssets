@@ -252,3 +252,6 @@ def test_the_same_rule_covers_compute(vendor):
     compute provider, no per-provider code, no allowlist -- so the count is the
     distance between the promise and the tree."""
     assert vendor in _module().VENDORS
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

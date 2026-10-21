@@ -194,3 +194,6 @@ def test_door_keeps_failed_cleanup_reachable_without_owner_disconnection_store(d
     assert row["cleanup_pending"]
     monkeypatch.setattr(vault, "forget_credential", original)
     assert call(body=body).json()["connection_removed"]
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

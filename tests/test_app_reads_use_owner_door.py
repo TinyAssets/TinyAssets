@@ -210,3 +210,9 @@ def test_a_custom_ui_run_list_says_when_older_runs_exist():
     assert "limit:limit+1" in body and "has_more:doc.runs.length>limit" in body
     # A bundle is untrusted: one request stays bounded, and the cut is SAID.
     assert "Math.min(args.limit,this.MAX_LIST_RUNS)" in body
+
+
+pytestmark = pytest.mark.verifies(
+    'onboarding-web-app:'
+    "The app reads its owner's data through the owner door, complete",
+)

@@ -121,3 +121,6 @@ def test_cutover_finishes_all_pending_legacy_phases_without_volume_binding(tmp_p
     assert job["completed_steps"] == list(STEPS)
     assert finish(collect(source, store_root=store), shared, store, records) == 1
     assert identity_calls == ["later", "later"]
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

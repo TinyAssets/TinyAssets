@@ -124,3 +124,6 @@ def test_erasure_has_no_outward_or_unavailable_broker_client():
     from tinyassets.broker import account_erasure
     assert not hasattr(account_erasure, "erase_account")
     assert not hasattr(account_erasure, "close_channels")
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C6')

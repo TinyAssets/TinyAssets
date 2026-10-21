@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 SESSION = "tinyassets/control_plane/session.py"
 
@@ -94,3 +96,6 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path, _owner_bo
         session.start("scout", "hi", session.ChildOf(
             base_path=tmp_path, universe_id="u", owner="o", agent_id="main",
             inside_activity=True))
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C8')

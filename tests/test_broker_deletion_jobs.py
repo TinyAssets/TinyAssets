@@ -90,6 +90,7 @@ def jobs(boxes, broker, admitted, tmp_path, monkeypatch):  # noqa: F811
     return SimpleNamespace(service=service, remote=remote, server=server)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_202_status_survives_revoked_credentials_and_restart(router, boxes, admitted, jobs,
                                                            tmp_path, monkeypatch):
     from tinyassets.onboarding import app_config
@@ -140,6 +141,7 @@ def test_202_status_survives_revoked_credentials_and_restart(router, boxes, admi
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("step", STEPS)
 def test_each_effect_replays_after_crash_before_offhost_completion(jobs, admitted,
                                                                  tmp_path, monkeypatch, step):
@@ -168,6 +170,7 @@ def test_each_effect_replays_after_crash_before_offhost_completion(jobs, admitte
     assert read(admitted, "bob").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_offhost_failure_never_withdraws_admission(jobs, admitted, monkeypatch):
     def unavailable(job):
         raise OSError("remote unavailable")
@@ -178,6 +181,7 @@ def test_offhost_failure_never_withdraws_admission(jobs, admitted, monkeypatch):
     assert read(admitted, "alice").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("step", STEPS)
 def test_failure_records_retry_and_never_runs_a_later_step(jobs, tmp_path, monkeypatch, step):
     original = getattr(jobs.service, "_" + step)
@@ -196,12 +200,14 @@ def test_failure_records_retry_and_never_runs_a_later_step(jobs, tmp_path, monke
     assert drive(jobs.service.resume_loaded_job(job))["status"] == "deleted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_broker_request_cannot_override_job_box(jobs, admitted, tmp_path):
     with pytest.raises(RuntimeError):
         request(tmp_path, "enqueue", owner="alice", uid=admitted.owner_machine("bob"))
     assert read(admitted, "alice").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_remote_records_and_namespace_erasure_are_idempotent(tmp_path):
     remote = Remote(tmp_path / "remote")
     job = {"id": "a" * 64, "completed_steps": []}
@@ -219,6 +225,7 @@ def test_remote_records_and_namespace_erasure_are_idempotent(tmp_path):
     assert json.loads((tmp_path / "remote/deletion-jobs" / ("a" * 64 + ".json")).read_text()) == job
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_door_deletion_removes_only_bound_owners_data_and_router_state(
     router, boxes, admitted, jobs, tmp_path, monkeypatch,
 ):
@@ -365,6 +372,7 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
         assert not (root / ".runtime" / "owner-sessions.db").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("failure", [None, "stop", "owner_tree", "relay", "socket",
                                      "broker_egress", "billing", "plan", "credentials", "identity"])
 def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
@@ -485,6 +493,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
     assert jobs.remote.load(digest("alice"))["completed_steps"] == list(STEPS)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("asleep", [False, True])
 def test_suspended_owner_deletion_sweeps_real_box_and_expires_checkout(
     router, boxes, admitted, jobs, tmp_path, monkeypatch, asleep,
@@ -537,6 +546,7 @@ def test_suspended_owner_deletion_sweeps_real_box_and_expires_checkout(
     assert boxes.runtime.alive(admitted.owner_machine("bob"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 @pytest.mark.parametrize("timeout", [False, True])
 def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
     router, boxes, admitted, jobs, tmp_path, timeout,
@@ -602,6 +612,7 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
     assert not boxes.runtime.alive(uid)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 def test_worker_restart_retries_from_local_rows_on_existing_waker_tick(jobs, monkeypatch):
     original = jobs.service._volume
     monkeypatch.setattr(jobs.service, "_volume", lambda job: (_ for _ in ()).throw(OSError()))
@@ -618,6 +629,7 @@ def test_worker_restart_retries_from_local_rows_on_existing_waker_tick(jobs, mon
     assert restarted.status(digest("alice"), token)["completed_steps"] == list(STEPS)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_corrupt_private_metadata_cannot_block_opaque_deletion(jobs, boxes):
     import sqlite3
 
@@ -631,6 +643,7 @@ def test_corrupt_private_metadata_cannot_block_opaque_deletion(jobs, boxes):
     assert boxes.roots["bob"].exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_session_revocation_failure_retries(jobs, monkeypatch):
     from tinyassets.onboarding import session_store
 
@@ -645,6 +658,7 @@ def test_session_revocation_failure_retries(jobs, monkeypatch):
     assert not session_store.read(handle)[0]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C3')
 @pytest.mark.parametrize("entry", ["resume", "enqueue"])
 def test_historical_platform_backup_resumes_current_offhost_job(jobs, admitted, tmp_path, entry,
                                                                monkeypatch):
@@ -672,6 +686,7 @@ def test_historical_platform_backup_resumes_current_offhost_job(jobs, admitted, 
     assert read(admitted, "bob").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2', 'owner-daemon-in-box:C14')
 def test_snapshot_cannot_publish_after_erasure(jobs, admitted):
     from tinyassets.broker.owner_volumes import dispatch
 
@@ -683,6 +698,7 @@ def test_snapshot_cannot_publish_after_erasure(jobs, admitted):
             "snapshot_id": record["work"]["snapshot_id"], "sha256": "a" * 64}})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_actual_rclone_local_remote_survives_restart_and_preserves_other_uid(tmp_path):
     remote = tmp_path / "remote"
     remote.mkdir()
@@ -717,6 +733,7 @@ def test_actual_rclone_local_remote_survives_restart_and_preserves_other_uid(tmp
     assert records.load(job["id"]) == job
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5', 'owner-daemon-in-box:T5')
 @pytest.mark.parametrize("operation", ["BOX_CHANNEL", "BOX_PUBLIC"])
 def test_withdrawal_closes_inflight_open_before_ack(jobs, boxes, monkeypatch, operation):
     import socket
@@ -758,6 +775,7 @@ def test_withdrawal_closes_inflight_open_before_ack(jobs, boxes, monkeypatch, op
         assert channel.recv(1) == b""
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5', 'owner-daemon-in-box:T5')
 def test_withdrawal_closes_existing_channels_and_public_streams_before_ack(jobs, boxes):
     import socket
     from contextlib import ExitStack
@@ -778,6 +796,7 @@ def test_withdrawal_closes_existing_channels_and_public_streams_before_ack(jobs,
         assert all(channel.recv(1) == b"" for channel in channels)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5', 'owner-daemon-in-box:T5')
 def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeypatch):
     import threading
     manager = boxes.manager
@@ -808,6 +827,7 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
         drive(jobs.server.routing.wake("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C6')
 def test_custody_step_erases_shared_secrets_without_owner_content_access(jobs, boxes, tmp_path,
                                                                        monkeypatch):
     from tinyassets.credential_vault import credential_vault_path, custody_namespace
@@ -831,6 +851,7 @@ def test_custody_step_erases_shared_secrets_without_owner_content_access(jobs, b
     assert vaults["bob"].read_text() == "synthetic secret bob"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14', 'owner-daemon-in-box:T9')
 @pytest.mark.parametrize("paid", [False, True])
 def test_full_job_including_custody_mutates_admission_exactly_once(jobs, monkeypatch, paid):
     from tinyassets.broker import admission

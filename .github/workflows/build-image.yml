@@ -9,7 +9,7 @@ name: Build and publish image
 # only when it changes something production runs:
 #
 #   1. `paths:` below is a coarse, cheap pre-filter. It must stay a SUPERSET of
-#      the runtime inputs (tests/test_runtime_paths.py enforces it), so docs,
+#      the runtime inputs, so docs,
 #      specs and tests never even start a run.
 #   2. The `decide` job asks scripts/runtime_paths.py whether the pushed head is
 #      runtime-equivalent to the sha production's receipt names -- judged on

@@ -271,3 +271,6 @@ def test_preset_authorize_params_name_the_key_without_overriding_the_flow(monkey
 def test_preset_authorize_params_are_validated(value):
     with pytest.raises(auth.HostedAuthError):
         auth._authorize_params(value)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

@@ -25,10 +25,13 @@ from tinyassets.broker.fence import Fence
 from tinyassets.broker.ops import OpStore
 from tinyassets.broker.server import OWNER, BrokerServer
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [
+    pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
     reason="the broker serves a Unix socket and reads peer credentials",
-)
+),
+    pytest.mark.verifies('owner-daemon-in-box:T6'),
+]
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 

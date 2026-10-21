@@ -300,3 +300,6 @@ def test_turn_hooks_run_in_the_turns_owner_box(world, tmp_path, monkeypatch):
     assert (root / "turn-hook.log").read_text() == "start\n"
     # The hook ran in the box, not the platform's local jail.
     assert not (root / ".agent-workspace" / "turn-hook.log").exists()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

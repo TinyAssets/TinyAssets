@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,3 +102,6 @@ def test_volume_refuses_other_attachment() -> None:
         assert "another droplet" in str(error)
     else:
         raise AssertionError("other attachment was accepted")
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C10')

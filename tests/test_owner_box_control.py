@@ -295,3 +295,6 @@ for operation, fields in (("roll", {"image": image}), ("drain", {"uid": 300001})
             stop.set()
             listener.join(5)
             assert not listener.is_alive()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')

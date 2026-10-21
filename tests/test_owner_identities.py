@@ -7,7 +7,10 @@ import pytest
 
 from tinyassets.broker.owner_identities import OWNER_ID_LAST, OwnerIdentities
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX identity storage")
+pytestmark = [
+    pytest.mark.skipif(os.name != "posix", reason="POSIX identity storage"),
+    pytest.mark.verifies('owner-daemon-in-box:T3'),
+]
 
 
 def store(tmp_path):

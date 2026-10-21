@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from tinyassets import owner_stores
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -59,3 +61,6 @@ def test_fenced_writers_actually_check_the_fence():
     for module in owner_stores.FENCED:
         source = (_REPO / module).read_text(encoding="utf-8")
         assert "check_fence(" in source, module
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

@@ -1,10 +1,13 @@
 """Cold account destruction on real XFS, with the pinned runsc and zero launches."""
+
 import asyncio
 import json
 import os
 import subprocess
 import uuid
 from pathlib import Path
+
+import pytest
 
 
 def test_sleeping_and_suspended_deletion_without_box_starts():
@@ -157,3 +160,6 @@ async def probe():
 
 if __name__ == "__main__":
     asyncio.run(probe())
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C6')

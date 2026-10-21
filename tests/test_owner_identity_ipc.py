@@ -8,7 +8,10 @@ from tests.test_broker_server import broker  # noqa: F401 - real Unix server fix
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.owner_identities import OwnerIdentities
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix identity broker")
+pytestmark = [
+    pytest.mark.skipif(os.name != "posix", reason="Unix identity broker"),
+    pytest.mark.verifies('owner-daemon-in-box:T3'),
+]
 
 
 def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argument

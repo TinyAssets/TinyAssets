@@ -80,3 +80,6 @@ def test_drill_refuses_unverified_or_substituted_recovery_reference(recovery_poi
     select = runpy.run_path(str(ROOT / "deploy/dr-owner-restore.py"))["select"]
     with pytest.raises(ValueError, match="digest mismatch|map-referenced snapshot"):
         select(manifest, archive, work)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')

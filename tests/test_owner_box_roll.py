@@ -157,3 +157,6 @@ def test_deploy_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
     assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
     assert not rolling.runtime.stops and rolling.runtime.live == {uid}
     assert rolling.manager.boxes[uid].image == rolling.old
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')

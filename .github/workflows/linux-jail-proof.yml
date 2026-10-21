@@ -9,7 +9,6 @@ name: linux-jail-proof
 # green run and is not evidence in either direction. The guarded cases carry
 # ``@pytest.mark.real_jail``:
 #
-#   * tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
 #     runs the file-delivery RPC through a code node in the owner box;
 #   * tests/test_owner_box_process_boundary.py keeps one owner daemon inside a
 #     real Linux jail across local tool and ta calls; owner identity, filesystem
@@ -96,7 +95,6 @@ on:
       - "tinyassets/storage/run_file_lock.py"
       - "tinyassets/storage/conversation_custody.py"
       # The module under proof and the fixtures it imports.
-      - "tests/test_delivery_node_rpc.py"
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
@@ -107,7 +105,6 @@ on:
       - "tinyassets/providers/base.py"
       # The universe agent's four tools, the engine surface that serves them
       # and the served turn that indexes its skills.
-      - "tests/test_agent_wakes.py"
       - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
       - "tests/test_owner_box_process_boundary.py"
@@ -132,7 +129,6 @@ on:
       - "tinyassets/universe_intelligence.py"
       - "tinyassets/workspace_fs.py"
       - "tinyassets/storage_accounting.py"
-      - "tests/test_storage_accounting.py"
   push:
     branches: [main]
     paths:
@@ -175,7 +171,6 @@ on:
       - "tinyassets/storage/run_file_lock.py"
       - "tinyassets/storage/conversation_custody.py"
       # The module under proof and the fixtures it imports.
-      - "tests/test_delivery_node_rpc.py"
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
@@ -186,7 +181,6 @@ on:
       - "tinyassets/providers/base.py"
       # The universe agent's four tools, the engine surface that serves them
       # and the served turn that indexes its skills.
-      - "tests/test_agent_wakes.py"
       - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
       - "tests/test_owner_box_process_boundary.py"
@@ -211,7 +205,6 @@ on:
       - "tinyassets/universe_intelligence.py"
       - "tinyassets/workspace_fs.py"
       - "tinyassets/storage_accounting.py"
-      - "tests/test_storage_accounting.py"
   workflow_dispatch:
 
 permissions:

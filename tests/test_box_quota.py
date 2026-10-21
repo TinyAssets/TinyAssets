@@ -58,3 +58,6 @@ def test_outer_store_requires_reflink(tmp_path, monkeypatch):
         lambda *args: SimpleNamespace(stdout="reflink=0")))
     with pytest.raises(VolumeError, match="reflink"):
         OwnerVolumes(tmp_path / "store", tmp_path / "mounts", "proof:synthetic")
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C1')

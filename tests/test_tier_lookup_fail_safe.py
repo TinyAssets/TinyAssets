@@ -67,3 +67,6 @@ def test_missing_plan_fails_loudly(tmp_path, monkeypatch, reader):
     monkeypatch.setattr("tinyassets.broker.owner_reads.remote", missing)
     with pytest.raises(PlanMissing, match="missing bound plan"):
         getattr(subscription_state, reader)(tmp_path)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

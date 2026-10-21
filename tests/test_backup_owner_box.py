@@ -81,6 +81,7 @@ else:
     return root, remote, owners, binary
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C3')
 def test_installed_service_publishes_shared_backup_without_owner_bytes(shared_backup, tmp_path):
     from tests.test_host_uptime_installers import _install_env, _run_installer
 
@@ -114,6 +115,7 @@ def test_installed_service_publishes_shared_backup_without_owner_bytes(shared_ba
     assert backup.pinned_snapshots(str(remote)) == {(300001, "a" * 32)}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C3')
 @pytest.mark.parametrize("failure", ["FAIL_UPLOAD", "CORRUPT_READBACK"])
 def test_failed_or_unverified_platform_backup_is_not_published(shared_backup, monkeypatch, failure):
     root, remote, _, _ = shared_backup
@@ -123,6 +125,7 @@ def test_failed_or_unverified_platform_backup_is_not_published(shared_backup, mo
     assert backup.manifests(str(remote)) == {}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     root, remote, _, _ = shared_backup
     backup.publish(root, str(remote))
@@ -144,6 +147,7 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     assert snapshot.read_bytes() == b"retained snapshot"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
     root, remote, _, _ = shared_backup
     snapshot = remote / "300001" / ("a" * 32 + ".img.gz")
@@ -179,6 +183,7 @@ def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
     assert snapshot.read_bytes() == b"snapshot being captured"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_platform_retention_releases_only_withdrawn_map_pins(shared_backup):
     root, remote, _, _ = shared_backup
     document = backup.publish(root, str(remote))
@@ -201,6 +206,7 @@ def test_platform_retention_releases_only_withdrawn_map_pins(shared_backup):
 
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C3')
 def test_shared_sqlite_copy_is_consistent_and_failure_is_fatal(shared_backup, monkeypatch):
     root, remote, _, _ = shared_backup
     with sqlite3.connect(root / "live.db") as db:
@@ -225,6 +231,7 @@ def test_shared_sqlite_copy_is_consistent_and_failure_is_fatal(shared_backup, mo
         backup.publish(root, str(remote))
     assert backup.manifests(str(remote)) == {}
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_erasure_preserves_a_pin_not_explicitly_released(shared_backup, monkeypatch):
     root, remote, _, _ = shared_backup
     backup.publish(root, str(remote))

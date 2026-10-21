@@ -40,6 +40,7 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -999,3 +1000,9 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
                         assert "pytest" not in code
                         assert "ci_required_tests.py" not in code
                         assert "linux_oracle.py" not in code
+
+
+pytestmark = pytest.mark.verifies(
+    'ci-linux-proof-venue:'
+    'The required shards run the unchanged gate runner',
+)

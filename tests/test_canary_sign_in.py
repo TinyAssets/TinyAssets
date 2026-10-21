@@ -311,3 +311,6 @@ def test_the_carve_out_is_this_exact_path_and_nothing_under_it(monkeypatch):
     assert mw._auth_challenge_path("/app/canary-sign-in") is False
     assert mw._auth_challenge_path("/app/canary-sign-in/x") is True
     assert mw._auth_challenge_path("/app/canary-sign-in/") is True
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

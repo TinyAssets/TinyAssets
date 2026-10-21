@@ -144,3 +144,6 @@ def test_deposit_is_written_in_broker_process(tmp_path, monkeypatch, scheme, sec
             process.join(5)
         parent.close()
     assert process.exitcode == 0
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

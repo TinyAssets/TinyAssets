@@ -175,3 +175,6 @@ def test_staged_repair_preserves_text_hardlinks_but_refuses_database_hardlinks(s
     with pytest.raises(ValueError, match="private regular file"):
         _repair_staged_databases(source)
     assert database.read_bytes() == before
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

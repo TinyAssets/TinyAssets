@@ -393,3 +393,6 @@ def test_a_lock_file_another_user_created_can_still_be_locked(tmp_path):
     finally:
         layout.release_for_tests()
         (tmp_path / layout.LOCK).chmod(0o644)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C4')

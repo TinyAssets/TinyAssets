@@ -578,3 +578,9 @@ def test_box_preflight_guard_rejects(case):
 def test_box_preflight_guard_accepts_unrelated_edits(case):
     old, new = _BOX_MUST_PASS[case]
     assert box_preflight_problems(_mutate(_box_text(), old, new)) == [], case
+
+
+pytestmark = pytest.mark.verifies(
+    'uptime-and-alarms:'
+    'Digest-Pinned Deploy Admission Rollback And Receipt',
+)

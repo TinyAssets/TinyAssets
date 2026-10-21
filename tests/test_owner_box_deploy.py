@@ -286,3 +286,6 @@ def test_workflow_requires_box_acceptance_after_health_and_keeps_failure_local()
     artifact = next(step for step in steps if step.get("with", {}).get("name") == "owner-box-roll")
     assert "always()" in artifact["if"]
     assert "runner.temp" in artifact["with"]["path"]
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')

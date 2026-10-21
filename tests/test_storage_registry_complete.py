@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from tinyassets import storage_accounting as sa
 from tinyassets.box_layout_migration import RETIRED_STORES
 
@@ -88,3 +90,6 @@ def test_the_production_root_listing_is_classified():
         ".universe-tool-slots", ".active_universe", ".scoped-reset.barrier",
     }
     assert production <= set(sa.ROOT_ENTRIES), production - set(sa.ROOT_ENTRIES)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

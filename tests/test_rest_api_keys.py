@@ -467,3 +467,6 @@ def test_a_busy_key_store_never_turns_a_valid_key_into_a_401(stores, monkeypatch
     monkeypatch.setattr(keys, "db", db)
     assert keys.resolve(key) is not None
     assert len(writes) == 1  # throttled: no second write inside the interval
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

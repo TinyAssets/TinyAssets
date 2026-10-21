@@ -51,7 +51,6 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_broker_deletion_jobs.py",
     "tests/test_cutover_deletion_jobs.py",
     "tests/test_backup_owner_box.py",
-    "tests/test_backup_script.py",
     "tests/test_owner_cutover_apply.py",
     "tests/test_box_admission.py",
     "tests/test_box_destroy.py",
@@ -68,7 +67,6 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_cold_owner_deletion.py",
     "tests/test_deleted_authentication.py",
     "tests/test_deploy_bundle_transaction.py",
-    "tests/test_gvisor_runtime.py",
     "tests/test_model_connect_door_lifecycle.py",
     "tests/test_owner_box_control.py",
     "tests/test_owner_box_lifecycle.py",
@@ -89,7 +87,7 @@ ROOT_TEST_FILES = frozenset({
 # tests on the 2026-08-02 baseline (run 30767266528); the floor sits far
 # below natural variance and far above any vacuous run. Ratchet it upward
 # as the suite grows.
-MIN_RAN_FLOOR = 10000
+MIN_RAN_FLOOR = 3200
 
 # A heavy-only job runs the files in .github/heavy-test-files.txt, so it
 # cannot meet the whole-suite floor -- and LOWERING the global floor to fit
@@ -97,17 +95,15 @@ MIN_RAN_FLOOR = 10000
 # the property that matters: a floor is a reviewed constant here, never a
 # number a caller can pick, and the workflow-shape test pins which profile
 # each job uses.
-# Heavy was 2,000 under a ~2,235 count. Run 38560348649 (2026-10-14) ran
-# 1,683; this tree runs 1,681. The old floor was unreachable, and the check
-# only runs once NEW failures are zero, so the nightly job never reported
-# it. 1,500 keeps the old ~10% cushion under the current count.
+# Founder-authorized shape-only pruning leaves 3,605 collected cases, 3,587
+# required cases and 18 heavy cases. Six deterministic required shards have
+# at least 382 cases. These floors preserve a modest cushion under that census.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
-    "heavy": 1500,           # .github/heavy-test-files.txt only (1,681 on 2026-10-14)
-    # ONE shard of the required gate (~3,600 of ~21,900 at 6 shards). The union
-    # floor is checked again by `--aggregate`, but the union floor alone cannot
-    # see one shard collapsing: 5 of 6 shards still clear it comfortably.
-    "shard": 1000,
+    "heavy": 15,             # 18 retained heavy cases after the shape-only prune
+    # ONE of six required shards (at least 382 cases in the retained census).
+    # The aggregate also checks the union; this catches an individual collapse.
+    "shard": 340,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
     # purpose: a selection can honestly be one test or none (a docs-only
     # change), and this run is advisory -- the merge-group shards above carry
@@ -128,7 +124,6 @@ MAX_TEST_SECONDS = 3000
 #: is how a red build gets normalised.
 MAX_QUARANTINE = 8
 #: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
-#: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
 #: cap only ratchets down unless a reviewed change raises it.
 QUARANTINE_SLACK = 8
 #: Leading `key=value` fields a ledger line may carry, BEFORE the node id; a

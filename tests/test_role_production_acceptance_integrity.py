@@ -46,3 +46,9 @@ def test_production_copy_never_substitutes_broker_box_host_or_relay():
 def test_guard_catches_execution_substitutions(module, seam):
     source = f'import tinyassets.{module} as boundary\nboundary.{seam} = replacement\n'
     assert substitutions(source) == ['boundary.' + seam]
+
+
+pytestmark = pytest.mark.verifies(
+    'core-capability-assurance:'
+    'Production image acceptance before merge',
+)

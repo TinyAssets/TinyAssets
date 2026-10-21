@@ -339,3 +339,6 @@ def test_only_terminal_session_events_identify_a_settlement(kind, settles):
     assert (got is not None) is settles
     if settles:
         assert got == ("cs_1", "a")
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

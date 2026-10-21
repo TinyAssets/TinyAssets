@@ -64,3 +64,6 @@ def test_public_bearer_still_resolves_on_the_exact_message(monkeypatch):
         assert auth.current_mcp_message_identity() is owner
     with message(headers=[(b"authorization", b"Bearer valid")] * 2):
         assert auth.current_mcp_message_identity() is None
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T1')

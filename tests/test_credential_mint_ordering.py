@@ -93,3 +93,6 @@ def test_step_six_denies_until_the_withdrawal_revision_is_installed(tmp_path, mo
         jobs._credentials({"owner": "alice", "results": {
             "withdrawal": {"instance": projection.instance, "revision": 2}}})
     assert calls == []
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C13')

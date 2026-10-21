@@ -199,3 +199,6 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
         for table in ("authorization_codes", "access_tokens", "refresh_tokens"):
             assert db.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE user_id='alice'").fetchone()[0] == 0
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C15')

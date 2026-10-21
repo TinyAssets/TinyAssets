@@ -177,3 +177,6 @@ def _door_remove(rig, monkeypatch):
         response = asyncio.run(handle_connections(request))
     assert response.status_code == 200, response.body
     return json.loads(response.body)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

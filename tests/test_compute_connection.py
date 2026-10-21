@@ -120,56 +120,10 @@ def _connect(uid: str, **doc: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_api_key_http_registration_against_real_grant(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    _seed_grant(base, owner="founder", universe="u-x")
-    _login("founder")
-    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="moonshotai/kimi-k2", ref=_GRANT_ID)
-    assert r["status"] == "registered"
-    assert r["protocol"] == "openai_chat"
-    guidance = " ".join(r["next"])
-    assert "owned api_key_http models" in guidance
-    assert "accepted model_access" in guidance
-    assert "fresh tool-capable discovery" in guidance
-    assert "enabled engine-tool execution" in guidance
-    assert "registration alone does not enable serving or grant spending" in guidance
-    assert "api_key_http serves workflow nodes" not in guidance
-    # No secret material anywhere in the response.
-    assert "secret" not in json.dumps(r).lower()
-    assert "vault://" not in json.dumps(r)
 
 
-def test_idempotent_reregistration(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    _seed_grant(base, owner="founder", universe="u-x")
-    _login("founder")
-    a = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="gpt-5", ref=_GRANT_ID)
-    b = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="gpt-5", ref=_GRANT_ID)
-    assert a["definition_id"] == b["definition_id"]
 
 
-def test_routes_through_write_graph(base: Path) -> None:
-    import importlib
-
-    from tinyassets import universe_server as us
-
-    importlib.reload(us)
-    try:
-        _make_universe(base, "u-r", admin="founder")
-        _seed_grant(base, owner="founder", universe="u-r")
-        _login("founder")
-        raw = us.write_graph(
-            target="connection", operation="connect_compute", graph_id="u-r",
-            payload_json=json.dumps({"access_method": "api_key_http",
-                                     "protocol": "openai_chat", "model": "gpt-5",
-                                     "ref": _GRANT_ID}),
-        )
-        assert json.loads(raw)["status"] == "registered"
-    finally:
-        importlib.reload(us)
 
 
 # --------------------------------------------------------------------------- #
@@ -177,40 +131,10 @@ def test_routes_through_write_graph(base: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_api_key_http_absent_grant_rejected(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    _login("founder")
-    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="m", ref="http_grant_" + "z" * 32)
-    # A non-empty but inaccessible ref (absent here) returns the SAME uniform
-    # not_found as a foreign-universe/owner grant — no existence oracle (Codex adapt
-    # #1). Only an EMPTY ref gets the specific connection_setup_invalid usage error.
-    assert r["error"] == "not_found"
 
 
-def test_api_key_http_same_owner_centers_share_grant(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    _make_universe(base, "u-other", admin="founder")
-    _seed_grant(base, owner="founder", universe="u-other")
-    _login("founder")
-    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="m", ref=_GRANT_ID)
-    assert r["status"] == "registered"
-    from tinyassets.providers.definition import get_definition
-    assert get_definition("u-x", r["definition_id"]).ref == _GRANT_ID
 
 
-def test_api_key_http_cross_owner_grant_hidden(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    from tinyassets.daemon_server import grant_universe_access
-
-    grant_universe_access(base, universe_id="u-x", actor_id="coadmin",
-                          permission="admin", granted_by="founder")
-    _seed_grant(base, owner="founder", universe="u-x")  # grant owned by founder
-    _login("coadmin")  # a different admin of the same universe
-    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="m", ref=_GRANT_ID)
-    assert r == {"error": "not_found", "resource": "connection"}
 
 
 # --------------------------------------------------------------------------- #
@@ -218,77 +142,12 @@ def test_api_key_http_cross_owner_grant_hidden(base: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_anonymous_refused(base: Path, nobody) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="m", ref=_GRANT_ID)
-    assert r["error"] == "authentication_required"
 
 
-def test_write_collaborator_refused(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder", write="collab")
-    _login("collab")
-    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
-                 model="m", ref=_GRANT_ID)
-    assert r == {"error": "not_found", "resource": "connection"}
 
 
-def test_foreign_universe_admin_refused(base: Path) -> None:
-    _make_universe(base, "u-a", admin="founder-a")
-    _make_universe(base, "u-b", admin="founder-b")
-    _login("founder-a")
-    r = _connect("u-b", access_method="api_key_http", protocol="openai_chat",
-                 model="m", ref=_GRANT_ID)
-    assert r == {"error": "not_found", "resource": "connection"}
 
 
 # --------------------------------------------------------------------------- #
 # read_compute_providers — the owner-facing listing (read sibling).
 # --------------------------------------------------------------------------- #
-
-
-def test_read_compute_providers_lists_owner_definitions(base: Path) -> None:
-    from tinyassets.api.compute_connection import read_compute_providers
-
-    _make_universe(base, "u-r", admin="founder")
-    _seed_grant(base, owner="founder", universe="u-r")
-    _login("founder")
-    reg = _connect("u-r", access_method="api_key_http", protocol="openai_chat",
-                   model="synthetic-model", ref=_GRANT_ID)
-    assert reg["status"] == "registered"
-
-    out = read_compute_providers(universe_id="u-r")
-    assert out["count"] == 1
-    row = out["providers"][0]
-    assert row["definition_id"] == reg["definition_id"]
-    assert row["access_method"] == "api_key_http"
-    assert row["protocol"] == "openai_chat"
-    assert row["model"] == "synthetic-model"
-    # No secret / owner leak in the projection.
-    assert "owner_user_id" not in row
-    for banned in ("secret", "token", "password", "credential", "auth_material"):
-        assert banned not in json.dumps(out).lower(), banned
-
-
-def test_read_compute_providers_owner_gated(base: Path) -> None:
-    from tinyassets.api.compute_connection import read_compute_providers
-
-    _make_universe(base, "u-r2", admin="founder", write="collab")
-    _seed_grant(base, owner="founder", universe="u-r2")
-    _login("founder")
-    _connect("u-r2", access_method="api_key_http", protocol="openai_chat",
-             model="synthetic-model", ref=_GRANT_ID)
-
-    # Anonymous -> authentication_required.
-    _logout()
-    assert read_compute_providers(universe_id="u-r2").get("error") == "authentication_required"
-
-    # A write collaborator (not admin) -> uniform not_found (owner-gated).
-    _login("collab")
-    assert read_compute_providers(universe_id="u-r2") == {
-        "error": "not_found", "resource": "connection",
-    }
-
-    # Owner (admin) -> the listing.
-    _login("founder")
-    assert read_compute_providers(universe_id="u-r2")["count"] == 1

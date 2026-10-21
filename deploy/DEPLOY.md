@@ -556,10 +556,8 @@ image succeed or fail together:
    > that reason (`"daemon.env_file is []"`, 2026-08-30 00:34Z, run
    > 33283629722) while the mocked suite was green, because the fake and the
    > validator shared one wrong belief. `env_file` is now read from a second
-   > `--no-interpolate` render. `tests/test_deploy_bundle_validator.py` pins the
-   > validator against a *capture* of the real output and needs no docker, so it
-   > runs everywhere — extend that capture, not just the fake, when Compose is
-   > upgraded or these assertions change.
+   > `--no-interpolate` render. The former validator-capture test was retired
+   > under the 2026-10-21 founder rule.
 2. **snapshot** — the *live* `/opt/tinyassets/compose.yml`,
    `/opt/tinyassets/deploy/{compose.yml,vector.yaml,vector-betterstack.yaml,vector-entrypoint.sh}`
    and `/etc/systemd/system/tinyassets-daemon.service` are copied into

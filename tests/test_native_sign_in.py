@@ -304,3 +304,6 @@ def test_legacy_android_callback_has_bounded_package_pinned_compatibility(
             assert expired.status_code == 410 and "Update" in expired.text
 
     asyncio.run(run())
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

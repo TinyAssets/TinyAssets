@@ -96,3 +96,6 @@ def test_render_orders_by_severity_then_newest_and_escapes_pipes(tmp_path: pathl
         "b.md", "c.md", "a.md", "d.md",
     ]
     assert "x \\| y" in rows[1]
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')
