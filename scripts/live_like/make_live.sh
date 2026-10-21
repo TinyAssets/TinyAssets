@@ -8,6 +8,13 @@ compose=/opt/tinyassets/compose.yml
 volume=tinyassets-data
 container=tinyassets-daemon
 
+probe_mcp() {
+  # Anonymous MCP must answer with the application's auth refusal, not a proxy
+  # or an open unauthenticated endpoint.
+  test "$(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' \
+      http://127.0.0.1:8001/mcp)" = 401
+}
+
 volume_root() {
   docker volume inspect "$volume" --format '{{ .Mountpoint }}'
 }
@@ -46,7 +53,7 @@ PY
     fi
     docker compose --env-file "$env_file" -f "$compose" up -d --timeout 20 "${services[@]}"
     for _ in $(seq 1 90); do
-      if curl --fail --silent --max-time 2 http://127.0.0.1:8001/mcp >/dev/null; then
+      if probe_mcp; then
         break
       fi
       if test "$(docker inspect -f '{{.RestartCount}}' "$container")" -ge 2; then
@@ -56,11 +63,11 @@ PY
       fi
       sleep 2
     done
-    curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8001/mcp >/dev/null
+    probe_mcp
     # A held engine-style socket under the runtime directory reproduces the
     # special inode that stopped the first C6 backup snapshot.
     socket="$root/.universe-sidecars/a1/engine.sock"
-    python3 - "$socket" <<'PY' > "$state/sidecar.log" 2>&1 &
+    cat > "$state/sidecar.py" <<'PY'
 import pathlib, signal, socket, sys, time
 path = pathlib.Path(sys.argv[1])
 path.unlink(missing_ok=True)
@@ -71,7 +78,8 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 while True:
     time.sleep(1)
 PY
-    echo "$!" > "$state/sidecar.pid"
+    systemd-run --unit=tinyassets-live-like-sidecar --property=Restart=on-failure \
+      /usr/bin/python3 "$state/sidecar.py" "$socket"
     docker exec -d "$container" /opt/venv/bin/python -B -c '
 import sqlite3, time
 db = sqlite3.connect("/data/.tinyassets.db", timeout=10)
@@ -81,7 +89,7 @@ while True:
     time.sleep(0.1)
 '
     systemctl enable --now tinyassets-backup.timer
-    "$0" check
+    bash "$0" check
     ;;
   check)
     root="$(volume_root)"
@@ -89,10 +97,9 @@ while True:
     if docker container inspect tinyassets-broker >/dev/null 2>&1; then
       test "$(docker inspect -f '{{.State.Running}}' tinyassets-broker)" = true
     fi
-    curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8001/mcp >/dev/null
+    probe_mcp
     test -S "$root/.universe-sidecars/a1/engine.sock"
-    test -f "$state/sidecar.pid"
-    kill -0 "$(cat "$state/sidecar.pid")"
+    systemctl is-active --quiet tinyassets-live-like-sidecar.service
     systemctl is-active --quiet tinyassets-backup.timer
     systemctl is-enabled --quiet tinyassets-backup.timer
     # A live writer must advance the database's WAL or main file.
@@ -104,9 +111,7 @@ while True:
     ;;
   stop)
     test "$(id -u)" -eq 0
-    if test -f "$state/sidecar.pid"; then
-      kill "$(cat "$state/sidecar.pid")" 2>/dev/null || true
-    fi
+    systemctl stop tinyassets-live-like-sidecar.service 2>/dev/null || true
     rm -rf "$state"
     docker compose --env-file "$env_file" -f "$compose" stop daemon logs 2>/dev/null || true
     docker stop tinyassets-broker >/dev/null 2>&1 || true
