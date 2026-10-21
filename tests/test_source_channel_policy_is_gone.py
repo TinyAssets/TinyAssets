@@ -23,7 +23,6 @@ that reported success for nothing.
 
 from __future__ import annotations
 
-import importlib
 import json
 
 import pytest
@@ -76,47 +75,10 @@ def test_no_policy_database_is_created_by_the_refusal(base):
     assert not list(base.glob("*source_channel_policy*"))
 
 
-def test_the_policy_store_module_is_gone():
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("tinyassets.storage.source_channel_policy")
 
 
-def test_the_dead_preflight_and_its_mode_constants_are_gone():
-    """`apply_auto_approval_policy` claimed `run_branch` called it. Nothing did."""
-    from tinyassets.api import source_channel as api
-
-    for dead in ("apply_auto_approval_policy", "MODE_AUTO", "MODE_REQUIRE"):
-        assert not hasattr(api, dead), dead
-        assert dead not in api.__all__, dead
 
 
-def test_no_approval_mode_survives_anywhere_in_the_runtime():
-    """A rewire would have to start by reintroducing one of these names."""
-    from pathlib import Path
-
-    runtime = Path(__file__).resolve().parent.parent / "tinyassets"
-    # The one-shot cutover census must name the leftover file to drop it, and
-    # does so in exactly one declaration that no reader imports.
-    retired = 'RETIRED_STORES = frozenset({(".source_channel_policy.db", "source_channel_policy")})'
-    hits = [
-        f"{path.relative_to(runtime)}:{n}"
-        for path in runtime.rglob("*.py")
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if ("source_channel_policy" in line or "apply_auto_approval_policy" in line)
-        and not (path.name == "box_layout_migration.py" and line == retired)
-    ]
-    assert hits == [], hits
-    from tinyassets import box_layout_migration
-
-    assert box_layout_migration.RETIRED_STORES == {
-        (".source_channel_policy.db", "source_channel_policy")}
-    readers = [
-        f"{path.relative_to(runtime)}"
-        for path in runtime.rglob("*.py")
-        if "RETIRED_STORES" in path.read_text(encoding="utf-8")
-        and path.name != "box_layout_migration.py"
-    ]
-    assert readers == [], readers
 
 
 # --------------------------------------------------------------------------

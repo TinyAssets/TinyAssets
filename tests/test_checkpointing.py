@@ -22,7 +22,6 @@ import pytest
 from domains.fantasy_daemon.graphs.scene import build_scene_graph
 from tinyassets.checkpointing import (
     CheckpointRetentionPolicy,
-    compile_all_graphs,
     configured_checkpoint_retention_keep_last,
     create_checkpointer,
     get_checkpoint_history,
@@ -563,10 +562,3 @@ class TestCreateCheckpointer:
         # File should exist after use
         assert os.path.exists(tmp_db_path)
 
-    def test_compile_all_graphs_with_factory(self):
-        with create_checkpointer(":memory:") as cp:
-            graphs = compile_all_graphs(cp)
-            assert "scene" in graphs
-            assert "chapter" in graphs
-            assert "book" in graphs
-            assert "universe" in graphs

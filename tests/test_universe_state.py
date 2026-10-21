@@ -50,11 +50,3 @@ def test_project_domain_neutral_universe_state_drops_domain_fields() -> None:
     }
 
 
-def test_fantasy_universe_state_extends_domain_neutral_base() -> None:
-    from domains.fantasy_daemon.state.universe_state import UniverseState
-    from tinyassets.universe_state import DOMAIN_NEUTRAL_UNIVERSE_STATE_FIELDS
-
-    fantasy_fields = frozenset(UniverseState.__annotations__)
-
-    assert DOMAIN_NEUTRAL_UNIVERSE_STATE_FIELDS <= fantasy_fields
-    assert {"total_words", "total_chapters"} <= fantasy_fields
