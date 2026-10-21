@@ -32,6 +32,7 @@ def command(*args, **kwargs):
     return result.stdout.strip()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_migration_container_finds_spaces_with_non_root_image_home():
     """The production container flags must defeat the image-baked HOME."""
     assert sys.platform == "linux" and os.geteuid() == 0, "root Linux oracle required"
