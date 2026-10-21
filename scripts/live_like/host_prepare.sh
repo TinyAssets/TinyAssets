@@ -138,5 +138,6 @@ TINYASSETS_SOURCE_ROOT="$repo" TINYASSETS_SOURCE_SHA="$(git -C "$repo" rev-parse
 cfg=/root/.config/rclone/rclone.conf
 [ -f "$cfg" ] && [ "$(stat -c '%U:%G %a' "$cfg")" = "root:root 600" ] \
   || { echo "host_prepare: ${cfg} must be root:root 600 (s3_remote.sh up writes it)" >&2; exit 1; }
-rclone lsf "$BACKUP_DEST" --max-depth 1 >/dev/null
+# The bucket must answer; the prefix appears with the first upload.
+rclone lsf "${BACKUP_DEST%/*}" --max-depth 1 >/dev/null
 log "host ready: image ${TINYASSETS_IMAGE}, backups at ${BACKUP_DEST}"
