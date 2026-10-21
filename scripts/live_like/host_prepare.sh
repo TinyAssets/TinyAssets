@@ -48,6 +48,41 @@ fi
 docker compose version >/dev/null
 systemctl is-system-running >/dev/null 2>&1 || systemctl is-system-running || true
 
+# --- what a droplet kernel and network give the daemon --------------------
+# Owner boxes need unprivileged user namespaces (Ubuntu 24.04 restricts them).
+sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0 kernel.unprivileged_userns_clone=1
+# The DigitalOcean metadata service the daemon's admission reads
+# (tinyassets/platform_runtime_provenance.py), answering this host's synthetic
+# droplet id. Reachable from containers through docker0, as on the droplet.
+: "${LIVE_LIKE_INSTANCE_ID:?}"
+[[ "$LIVE_LIKE_INSTANCE_ID" =~ ^[0-9]+$ ]]
+ip addr show docker0 | grep -q 'inet 169.254.169.254/' || ip addr add 169.254.169.254/32 dev docker0
+install -d -m 0755 /opt/tinyassets-live-like
+cat > /opt/tinyassets-live-like/metadata.py <<'PY'
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+INSTANCE_ID = os.environ["LIVE_LIKE_INSTANCE_ID"].encode()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/metadata/v1/id":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(INSTANCE_ID)
+
+
+ThreadingHTTPServer(("169.254.169.254", 80), Handler).serve_forever()
+PY
+systemctl is-active --quiet tinyassets-live-like-metadata \
+  || systemd-run --unit=tinyassets-live-like-metadata --property=Restart=on-failure \
+       --setenv=LIVE_LIKE_INSTANCE_ID="$LIVE_LIKE_INSTANCE_ID" /usr/bin/python3 /opt/tinyassets-live-like/metadata.py
+curl --noproxy '*' -fsS --retry 10 --retry-connrefused --retry-delay 1 \
+  http://169.254.169.254/metadata/v1/id | grep -qx "$LIVE_LIKE_INSTANCE_ID"
+
 # --- the tinyassets service account (uid/gid 1001, as on the droplet) ----
 # A GitHub runner's own account already holds 1001. The droplet's names must
 # resolve, so tinyassets is added as a second name for 1001 and listed first

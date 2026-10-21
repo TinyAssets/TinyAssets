@@ -153,9 +153,13 @@ jobs:
           tunnel_secret="$(b64)"
           tunnel_token="$(printf '{"a":"%s","t":"%s","s":"%s"}' "$(hex 16)" "$(cat /proc/sys/kernel/random/uuid)" "${tunnel_secret}" | base64 -w0)"
           f="${RUNNER_TEMP}/caller-inputs.env"
+          # scripts/live_like/fixture.py records this id in the volume, as an
+          # earlier deploy would have.
+          instance_id=123456789
           {
             echo "TINYASSETS_IMAGE=${BASE_IMAGE}"
             echo "BASE_REVISION=${BASE_REVISION}"
+            echo "LIVE_LIKE_INSTANCE_ID=${instance_id}"
             echo "CLOUDFLARE_TUNNEL_TOKEN=${tunnel_token}"
             echo "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=$(b64)"
             echo "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=$(b64)"
@@ -166,16 +170,17 @@ jobs:
           } > "$f"
           while IFS='=' read -r key value; do
             case "${key}" in
-              TINYASSETS_IMAGE|BASE_REVISION) continue ;;
+              TINYASSETS_IMAGE|BASE_REVISION|LIVE_LIKE_INSTANCE_ID) continue ;;
             esac
             echo "::add-mask::${value}"
             echo "${key}=${value}" >> "$GITHUB_ENV"
           done < "$f"
           echo "file=${f}" >> "$GITHUB_OUTPUT"
-          # The expected droplet identity: a synthetic id, in the typed file
+          # The expected droplet identity: the synthetic id this host's
+          # metadata service answers, in the typed file
           # scripts/prepare_expected_instance_state.py writes.
-          python -c 'import json,sys; sys.path.insert(0,"scripts"); from prepare_expected_instance_state import build_state; print(json.dumps(build_state("424242424"), indent=2))' \
-            > "${RUNNER_TEMP}/platform-expected-instance.json"
+          python -c 'import json,sys; sys.path.insert(0,"scripts"); from prepare_expected_instance_state import build_state; print(json.dumps(build_state(sys.argv[1]), indent=2))' \
+            "${instance_id}" > "${RUNNER_TEMP}/platform-expected-instance.json"
           echo "DEPLOY_EXPECTED_INSTANCE_FILE=${RUNNER_TEMP}/platform-expected-instance.json" >> "$GITHUB_ENV"
 
       - name: Install the droplet's host packages
