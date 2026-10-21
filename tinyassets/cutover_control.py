@@ -80,6 +80,16 @@ def initialize(directory, *, backup, old_image):
     from tinyassets.box_layout_migration import _verified_archive
 
     _root()
+    fault = os.environ.get("CUTOVER_ROLLBACK_FAULT", "")
+    if fault:
+        import subprocess
+
+        label = subprocess.run(
+            ["docker", "volume", "inspect", "tinyassets-data", "--format",
+             '{{ index .Labels "io.tinyassets.live-like" }}'],
+            check=True, capture_output=True, text=True).stdout.strip()
+        if fault != "after_initialize" or label != "synthetic":
+            raise CutoverRefused("rollback fault requires the gate's synthetic volume")
     backup = Path(backup).resolve(strict=True)
     digest = _verified_archive(backup)
     if not isinstance(old_image, str) or not old_image:
@@ -91,6 +101,8 @@ def initialize(directory, *, backup, old_image):
         "state": "pre_traffic", "backup": str(backup),
         "sha256": digest, "old_image": old_image,
     })
+    if fault:
+        raise CutoverRefused("injected failure after cutover eligibility initialization")
 
 
 @contextmanager
@@ -134,12 +146,14 @@ def open_admission(directory, *, open_ordinary):
         open_ordinary()
 
 
-def rollback(directory, *, stop_new, install_old, start_old):
+def rollback(directory, *, stop_new, install_old, start_old, expected_backup=None):
     """Only the recorded old image and verified stopped backup may be restored."""
     from tinyassets.box_layout_migration import _verified_archive
 
     with _locked(directory) as (directory, state):
         backup = Path(state["backup"])
+        if expected_backup is not None and backup != Path(expected_backup).resolve():
+            raise CutoverRefused("cutover authority belongs to another deploy attempt")
         if _verified_archive(backup, fresh=False) != state["sha256"]:
             raise CutoverRefused("pre-cutover backup changed")
         stop_new()
@@ -150,7 +164,70 @@ def rollback(directory, *, stop_new, install_old, start_old):
         start_old(state["old_image"])
 
 
-def rollback_live(directory, root, *, deploy_script):
+def _restore_box_store(backup, store):
+    """Restore the paired pre-cutover store, only while every writer is stopped."""
+    import shutil
+    import subprocess
+    import tarfile
+    from pathlib import PurePosixPath
+
+    from tinyassets.box_layout_migration import _verified_pair
+
+    archive = backup.with_name(backup.name.replace("tinyassets-snapshot-",
+                                                  "tinyassets-box-store-", 1))
+    _verified_pair(backup, archive, fresh=False)
+    with tarfile.open(archive, "r:gz") as stream:
+        members = stream.getmembers()
+        links = {m.name.rstrip("/") for m in members if m.issym()}
+        if not members or not stream.getmember("owners").isdir():
+            raise CutoverRefused("box-store archive has no owners root")
+        for member in members:
+            path = PurePosixPath(member.name)
+            if (path.is_absolute() or not path.parts or path.parts[0] != "owners"
+                    or ".." in path.parts
+                    or any(str(p) in links for p in path.parents)
+                    or (len(path.parts) > 1 and not path.parts[1].isdecimal())
+                    or (len(path.parts) <= 2 and not member.isdir())
+                    or not (member.isdir() or member.isfile() or member.issym()
+                            or member.islnk())):
+                raise CutoverRefused("unsafe box-store archive member")
+            if member.islnk():
+                target = PurePosixPath(member.linkname)
+                if (target.is_absolute() or ".." in target.parts
+                        or target.parts[:2] != path.parts[:2]
+                        or len(target.parts) < 3 or str(target) in links
+                        or any(str(p) in links for p in target.parents)):
+                    raise CutoverRefused("unsafe box-store archive hardlink")
+    # Never unlink an attached backing file or traverse a nested mount. The
+    # migration's mount namespace disappears when its one-shot container exits.
+    from tinyassets.boxes.volumes import OwnerVolumes
+
+    store = store.resolve(strict=True)
+    if any(Path(target).is_relative_to(store) and Path(target) != store
+           for target, _ in OwnerVolumes._mounts()):
+        raise CutoverRefused("box store still has mounted owner trees")
+    for image in store.glob("*.img"):
+        loops = subprocess.run(["losetup", "--associated", str(image), "--noheadings",
+                                "--output", "NAME"], check=True, capture_output=True, text=True)
+        if loops.stdout.strip():
+            raise CutoverRefused("box store still has attached owner images")
+    with tempfile.TemporaryDirectory(prefix=".cutover-store-", dir=store.parent) as staging:
+        subprocess.run(["tar", "-xzf", str(archive), "-C", staging,
+                        "--numeric-owner", "--acls", "--xattrs"], check=True)
+        for entry in store.iterdir():
+            if entry.name == "lost+found":
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        for entry in (Path(staging) / "owners").iterdir():
+            shutil.move(str(entry), str(store / entry.name))
+        _fsync_directory(store)
+
+
+def rollback_live(directory, root, *, deploy_script, store=None, start_old=None,
+                  expected_backup=None):
     """Stopped, one-shot old-layout install. Owner volumes are not an input."""
     import shutil
     import subprocess
@@ -158,7 +235,11 @@ def rollback_live(directory, root, *, deploy_script):
     from tinyassets.cutover_restore import restore_old_layout
 
     def run(*args):
-        return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
+        completed = subprocess.run(args, capture_output=True, text=True)
+        if completed.returncode:
+            raise CutoverRefused(f"{args[0]} failed ({completed.returncode}): "
+                                 f"{completed.stdout}\n{completed.stderr}")
+        return completed.stdout.strip()
 
     def stop_new():
         run("systemctl", "stop", "tinyassets-daemon.service", "boxhostd.service")
@@ -171,6 +252,8 @@ def rollback_live(directory, root, *, deploy_script):
     def install_old(backup):
         parent = Path(tempfile.mkdtemp(prefix=".cutover-rollback-", dir=root.parent))
         restored = restore_old_layout(backup, parent / "restored")
+        if store is not None:
+            _restore_box_store(backup, store)
         os.rename(root, parent / "displaced")
         try:
             os.rename(restored, root)
@@ -181,8 +264,15 @@ def rollback_live(directory, root, *, deploy_script):
         shutil.rmtree(parent)
         _fsync_directory(root.parent)
 
-    rollback(directory, stop_new=stop_new, install_old=install_old,
-             start_old=lambda image: run("bash", str(deploy_script), "--restore-bundle", image))
+    rollback(directory, stop_new=stop_new, install_old=install_old, expected_backup=expected_backup,
+             start_old=start_old or (
+                 lambda image: run("bash", str(deploy_script), "--restore-bundle", image)))
+    if start_old is None:
+        import time
+
+        directory = Path(directory)
+        directory.rename(directory.with_name(f"{directory.name}-rolled-back-{time.time_ns()}"))
+        _fsync_directory(directory.parent)
 
 
 def main():
@@ -194,6 +284,9 @@ def main():
     parser.add_argument("--backup", type=Path)
     parser.add_argument("--old-image")
     parser.add_argument("--data", type=Path)
+    parser.add_argument("--store", type=Path, default=Path("/var/lib/boxhostd/owners"))
+    parser.add_argument("--defer-start", action="store_true",
+                        help="the lock-holding deploy caller starts the recorded image")
     parser.add_argument("--deploy-script", type=Path, default=Path("/tmp/deploy_fail_safe.sh"))
     args = parser.parse_args()
     if args.action == "initialize":
@@ -206,7 +299,9 @@ def main():
         if args.action == "admit":
             admit(args.state, args.data)
         else:
-            rollback_live(args.state, args.data, deploy_script=args.deploy_script)
+            rollback_live(args.state, args.data, deploy_script=args.deploy_script,
+                          store=args.store, start_old=print if args.defer_start else None,
+                          expected_backup=args.backup)
 
 
 if __name__ == "__main__":
