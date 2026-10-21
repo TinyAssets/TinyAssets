@@ -314,7 +314,6 @@
 "tests/test_control_plane_duty.py": 1.4,
 "tests/test_control_plane_inventory.py": 4.8,
 "tests/test_control_plane_scheduler.py": 0.6,
-"tests/test_control_station_degraded_mode.py": 0.1,
 "tests/test_conversation_attention.py": 0.4,
 "tests/test_conversation_custody.py": 3.0,
 "tests/test_conversation_execution_history.py": 0.2,

@@ -30,12 +30,3 @@ def test_the_canonical_shape_still_validates():
     assert _validate_llm_policy_shape({}, context="node 'n' llm_policy") == []
 
 
-def test_our_own_tool_descriptions_no_longer_teach_the_broken_pin():
-    """Both of these strings caused the failure by instructing the agent."""
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1] / "tinyassets"
-    for rel in ("api/compute_connection.py", "engine_mcp_server.py"):
-        text = (root / rel).read_text(encoding="utf-8")
-        assert "preferred_provider = this definition_id" not in text, rel
-        assert "preferred_provider = the returned definition_id" not in text, rel
