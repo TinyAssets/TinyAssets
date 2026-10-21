@@ -348,10 +348,11 @@ def local_action_policy(tmp_path, monkeypatch):
     import os
 
     from tinyassets import owner_runtime
-    from tinyassets.action_policy import ActionPolicyStore
+    from tinyassets.action_policy import ActionPolicyStore, initialize
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
 
+    initialize(tmp_path / ".action-policy.db")
     runtime = owner_runtime.OwnerRuntime("alice", os.getuid(), tmp_path, os.getpid(), None)
     monkeypatch.setattr(owner_runtime, "_runtime", runtime)
     proof = {"session_hash": "a" * 64}

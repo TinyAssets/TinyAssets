@@ -1059,11 +1059,11 @@ def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
         owner_user_id="user-1",
     )
 
-    sent = []
+    sent, resolved = [], []
 
     broker = CredentialBlindBroker(
         ledger,
-        resolve_credential=lambda _ref, _ctype=None: "ghp_" + "x" * 30,
+        resolve_credential=lambda _ref, _ctype=None: resolved.append(_ref) or "ghp_" + "x" * 30,
         network_request=lambda **kw: (
             sent.append((kw["verb"], kw["auth_scheme"])) or {"status": 200}),
     )
@@ -1071,6 +1071,7 @@ def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
     # C7: an operation outside credential scope reaches the public web without auth.
     broker.dispatch("grant-1", "POST", {"url": "https://api.github.com/x"})
     assert sent == [("POST", "none")]
+    assert resolved == []
 
     endpoints_json, scopes_json = ledger.policy_json("conn-1")
     assert ledger.set_access_mode(
@@ -1085,6 +1086,7 @@ def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
     # ...and the same POST now reaches the network.
     broker.dispatch("grant-1", "POST", {"url": "https://api.github.com/x"})
     assert sent == [("POST", "none"), ("POST", "bearer")]
+    assert resolved == ["vault://http/github"]
 
     # A git scope is still not an HTTP verb, whatever the mode.
     with pytest.raises(PermissionError, match="outside the granted"):

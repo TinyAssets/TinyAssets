@@ -24,6 +24,7 @@ OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.writ
 
 def initialize(path, document=None):
     """Initialize one box-local policy; cutover is the sole shared caller."""
+    fresh = not Path(path).exists()
     with sqlite3.connect(path) as db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS policy (
@@ -40,8 +41,9 @@ def initialize(path, document=None):
                 expires_at REAL NOT NULL, consumed_at REAL);
         """)
         document = document if document is not None else {"entries": []}
-        db.execute("INSERT OR IGNORE INTO policy VALUES (1,1,?,?)",
-                   (_digest(document), _canonical(document)))
+        if fresh:
+            db.execute("INSERT INTO policy VALUES (1,1,?,?)",
+                       (_digest(document), _canonical(document)))
 
 
 class ActionPolicyStore(PolicyStore):
@@ -52,7 +54,6 @@ class ActionPolicyStore(PolicyStore):
 
         self.runtime = require(Path(home))
         self.path = self.runtime.root / ".action-policy.db"
-        initialize(self.path)
 
     def _path(self, owner):
         if owner != self.runtime.principal:
@@ -60,7 +61,8 @@ class ActionPolicyStore(PolicyStore):
         return self.path
 
     def _connect(self, owner):
-        db = sqlite3.connect(self._path(owner), timeout=30, isolation_level=None)
+        db = sqlite3.connect(self._path(owner).as_uri() + "?mode=rw", uri=True,
+                             timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         return db

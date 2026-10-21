@@ -244,8 +244,9 @@ def test_box_approval_decision_uses_forwarded_session(tmp_path, monkeypatch, cho
 
 def test_box_policy_door_uses_local_policy_without_broker_or_cookie(tmp_path, monkeypatch):
     from tinyassets import owner_runtime
-    from tinyassets.action_policy import ActionPolicyStore
+    from tinyassets.action_policy import ActionPolicyStore, initialize
 
+    initialize(tmp_path / ".action-policy.db")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(owner_runtime, "_runtime", owner_runtime.OwnerRuntime(
