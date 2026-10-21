@@ -409,6 +409,8 @@ def smoke(confirm=False):
         )
         import threading
 
+        from rehearsal_launch import published_sleep
+
         from tinyassets.boxes.host_service import HostService
         from tinyassets.broker.lifecycle_control import request as lifecycle_request
 
@@ -689,7 +691,7 @@ print(json.dumps(key))
                             return answer.json()
 
                         operations = proof('restore_prepare')
-                        snapshot = lifecycle_request('sleep', owner=owner_name)['snapshot_id']
+                        snapshot = published_sleep(owner_name)
                         proof('restore_mutate', operations=operations)
                         router_key('revoke', key)
                         lifecycle_request('restore', owner=owner_name, snapshot_id=snapshot)
@@ -698,12 +700,10 @@ print(json.dumps(key))
                         counts['restore_replay_refusals'] = restored['replay_refusals']
                         counts['restore_new_operations'] = restored['new_operations']
                         counts['restore_revoked_keys'] = 1
-            # C2/C13: finish the venue's ordinary sleep and publish its map
-            # before stopping the broker and cloning shared state for reconnect.
-            # Killing a running fixture leaves crash-recovery snapshot work on
-            # the next wake, whose deadline is deliberately not a copy deadline.
+            # C15: this restore/reconnect proof needs a new verified reference;
+            # ordinary sleep alone leaves its copy owed to the next tick.
             for item in journal['plan']:
-                lifecycle_request('sleep', owner=item['principal'])
+                published_sleep(item['principal'])
         except BaseException:
             import faulthandler
             import signal

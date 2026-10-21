@@ -133,7 +133,7 @@ def published_sleep(owner_name):
         reference, work = snapshot()
         if work is None:
             if reference != previous:
-                return
+                return reference
             raise
         if json.loads(work)["kind"] != "snapshot":
             raise
@@ -141,7 +141,7 @@ def published_sleep(owner_name):
     while True:
         reference, work = snapshot()
         if reference != previous and work is None:
-            return
+            return reference
         if time.monotonic() >= deadline:
             raise RuntimeError("broker did not publish its pending sleep snapshot")
         time.sleep(.05)
