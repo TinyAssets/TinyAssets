@@ -149,14 +149,12 @@ def test_compute_proxy_preserves_access_mode(compute, mode):
     with compute.ledger._connect() as conn:
         conn.execute("UPDATE outbound_connections SET access_mode=?, scopes_json='[\"GET\"]' "
                      "WHERE connection_id='conn-alice'", (mode,))
-    if mode == "exact":
-        with pytest.raises(PermissionError, match="outside the granted connection scope"):
-            compute.provider._complete_sync("hello", "", config(),
-                                            universe_dir=compute.root / "cc-alice")
-        assert not compute.sent
-    else:
-        assert compute.provider._complete_sync("hello", "", config(),
-                    universe_dir=compute.root / "cc-alice").text == "broker answer"
+    # C7: the broker selects credential eligibility; the compute adapter routes
+    # public requests in either mode, including operations outside key scope.
+    assert compute.provider._complete_sync("hello", "", config(),
+                universe_dir=compute.root / "cc-alice").text == "broker answer"
+    assert [call[0] for call in compute.sent] == ["POST"]
+    assert compute.sent[0][1]["url"] == "https://models.example.com/chat"
     assert compute.closed == [True]
 
 
