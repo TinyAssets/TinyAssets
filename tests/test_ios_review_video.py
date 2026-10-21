@@ -27,6 +27,19 @@ xc = load("review_xctest")
 farm = load("devicefarm_review")
 
 
+def test_exported_error_lines_redact_credentials_in_every_form():
+    user, password = "Review.Bot+ios@example.com", "pa ss&word"
+    line = (
+        "ReviewVideoTests.swift:170: error: failed - TextField, value: review.bot+ios@exa... | "
+        "URL email=Review.Bot%2Bios%40example.com | label: REVIEW.BOT+IOS@EXAMPLE.COM | "
+        "pw pa+ss%26word pa%20ss%26word pa ss&w…"
+    )
+    redacted = xc.redact(line, [user, password, ""])
+    for leak in ("review.bot", "Review.Bot", "%40example", "ss&w", "ss%26word"):
+        assert leak.lower() not in redacted.lower()
+    assert redacted.startswith("ReviewVideoTests.swift:170: error: failed - TextField")
+
+
 def test_runtime_environment_reaches_v1_and_v2_targets():
     secret = {
         "APP_STORE_REVIEW_USERNAME": "fixture-user",
