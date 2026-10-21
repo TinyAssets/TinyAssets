@@ -132,7 +132,11 @@ final class ReviewVideoTests: XCTestCase {
             }
         }
         var flat = lines.joined(separator: " | ")
-        for secret in secrets where !secret.isEmpty {
+        // Whole secrets first, then their pieces: a keyboard suggestion bar can
+        // show an email's local part or domain on its own.
+        let pieces = secrets.flatMap { $0.components(separatedBy: CharacterSet(charactersIn: "@.+")) }
+            .filter { $0.count >= 4 }
+        for secret in secrets + pieces where !secret.isEmpty {
             flat = flat.replacingOccurrences(of: secret, with: "[REDACTED]", options: .caseInsensitive)
             let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
             if let encoded = secret.addingPercentEncoding(withAllowedCharacters: unreserved) {
