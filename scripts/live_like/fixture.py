@@ -8,8 +8,10 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tinyassets.storage import platform_state_move as psm
 
 OWNERS = (("alice", 300001), ("bob", 300002), ("carol", 300003))
