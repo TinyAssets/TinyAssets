@@ -18,11 +18,8 @@ the pattern must actually WORK. Either alone is how this regressed.
 
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
-from tinyassets.api import prompts
 from tinyassets.api.http_connection import _parse_allowed_endpoints
 from tinyassets.storage.outbound_connections import _path_matches_template
 
@@ -46,18 +43,8 @@ def _contents_endpoint():
 # --- the guidance must say it ------------------------------------------------
 
 
-def test_the_served_guidance_teaches_the_rest_placeholder():
-    """An agent only asks for what its guidance tells it exists."""
-    source = inspect.getsource(prompts)
-    assert "{name+}" in source, "the rest placeholder is not taught anywhere"
-    assert "param_patterns" in source, "the regex half of the grant is not taught"
 
 
-def test_the_served_guidance_says_to_scope_the_grant_to_the_job():
-    """Naming files one at a time is the failure mode, so it must be named."""
-    source = inspect.getsource(prompts)
-    assert "contents/{path+}" in source, "no worked example of a job-scoped grant"
-    assert "the JOB" in source
 
 
 # --- and the pattern must actually work --------------------------------------

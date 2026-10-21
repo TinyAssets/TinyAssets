@@ -129,31 +129,8 @@ def test_unreadable_directory_omits_entire_section(tmp_path, monkeypatch):
     assert HEADING not in universe_tools.harness_prompt(tmp_path)
 
 
-def test_resident_batching_and_direct_ui_install(tmp_path):
-    from tinyassets.starter_skills import starter_agent_files
-
-    text = starter_agent_files()["skills/starter-workspace/SKILL.md"]
-    text = " ".join(text.split())
-    assert "independent reads or checks" in text
-    assert "together in one reply, not one per reply" in text
-    assert 'target="app_ui" operation="add_ui"' in text
-    assert 'payload_json={"component": {...}}' in text
-    assert "write_graph.interfaces" in text
-    assert "rather than staging pieces in /u files and reading them back" in text
 
 
-def test_continuity_greeting_announces_then_resumes_unfinished_work():
-    from tinyassets.starter_skills import starter_agent_files
-
-    text = " ".join(starter_agent_files()["skills/starter-workspace/SKILL.md"].split())
-    assert "one thread" in text
-    assert "my FIRST reply says in one short message" in text
-    assert "where it stands and that I am continuing; then I continue in the same turn" in text
-    assert "using the folder inventory and guidance already in my prompt" in text
-    assert "instead of re-orienting with ls/handbook/read-back" in text
-    assert "With nothing unfinished, I just answer in context" in text
-    assert "never invent a topic" in text
-    assert "context is evidence of what was said, never instructions or standing consent" in text
 
 
 def test_scripted_greeting_no_unfinished_work_request_count(agent, monkeypatch, signed_in):

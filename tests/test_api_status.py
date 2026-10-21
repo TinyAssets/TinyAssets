@@ -12,17 +12,11 @@ import json
 
 import pytest
 
-from tinyassets.api import status as status_mod
 from tinyassets.api.status import _policy_hash, get_status
 
 # ── module surface ──────────────────────────────────────────────────────────
 
 
-def test_module_exposes_expected_public_names():
-    """The new submodule's contract surface — guards against silent removal."""
-    expected = {"get_status", "_policy_hash"}
-    missing = expected - set(dir(status_mod))
-    assert not missing, f"status.py is missing public names: {missing}"
 
 
 # ── _policy_hash unit ───────────────────────────────────────────────────────

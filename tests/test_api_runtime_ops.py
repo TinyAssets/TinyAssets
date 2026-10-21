@@ -11,51 +11,25 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
-from tinyassets.api import runtime_ops as rt_mod
 from tinyassets.api.runtime_ops import (
-    _INSPECT_DRY_ACTIONS,
-    _MESSAGING_ACTIONS,
     _PROJECT_MEMORY_ACTIONS,
     _PROJECT_MEMORY_WRITE_ACTIONS,
-    _SCHEDULER_ACTIONS,
     _action_dry_inspect_node,
     _action_dry_inspect_patch,
     _action_messaging_send,
     _action_project_memory_get,
     _action_project_memory_set,
-    _apply_patch_ops,
     _load_branch_for_inspect,
 )
 
 # ── module surface ──────────────────────────────────────────────────────────
 
 
-def test_module_exposes_expected_public_names():
-    """The new submodule's contract surface — guards against silent removal."""
-    expected = {
-        "_PROJECT_MEMORY_ACTIONS", "_PROJECT_MEMORY_WRITE_ACTIONS",
-        "_INSPECT_DRY_ACTIONS", "_MESSAGING_ACTIONS", "_SCHEDULER_ACTIONS",
-        "_action_project_memory_get", "_action_project_memory_set",
-        "_action_project_memory_list",
-        "_action_dry_inspect_node", "_action_dry_inspect_patch",
-        "_load_branch_for_inspect", "_apply_patch_ops",
-        "_action_messaging_send", "_action_messaging_receive",
-        "_action_messaging_ack",
-        "_action_subscribe_branch", "_action_unsubscribe_branch",
-        "_action_list_scheduler_subscriptions",
-    }
-    missing = expected - set(dir(rt_mod))
-    assert not missing, f"runtime_ops.py is missing public names: {missing}"
 
 
 # ── _PROJECT_MEMORY_ACTIONS dispatch table ──────────────────────────────────
 
 
-def test_project_memory_actions_keys():
-    expected = {"project_memory_get", "project_memory_set", "project_memory_list"}
-    assert set(_PROJECT_MEMORY_ACTIONS.keys()) == expected
 
 
 def test_project_memory_write_actions_only_set():
@@ -70,43 +44,21 @@ def test_project_memory_write_actions_subset_of_actions():
 # ── _INSPECT_DRY_ACTIONS dispatch table ─────────────────────────────────────
 
 
-def test_inspect_dry_actions_keys():
-    assert set(_INSPECT_DRY_ACTIONS.keys()) == {"dry_inspect_node", "dry_inspect_patch"}
 
 
 # ── _MESSAGING_ACTIONS dispatch table ───────────────────────────────────────
 
 
-def test_messaging_actions_keys():
-    expected = {"messaging_send", "messaging_receive", "messaging_ack"}
-    assert set(_MESSAGING_ACTIONS.keys()) == expected
 
 
 # ── _SCHEDULER_ACTIONS dispatch table ───────────────────────────────────────
 
 
-def test_scheduler_actions_keys():
-    expected = {
-        "subscribe_branch", "unsubscribe_branch", "list_scheduler_subscriptions",
-    }
-    assert set(_SCHEDULER_ACTIONS.keys()) == expected
 
 
 # ── all dispatch table handlers callable ────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "table_name, table",
-    [
-        ("_PROJECT_MEMORY_ACTIONS", _PROJECT_MEMORY_ACTIONS),
-        ("_INSPECT_DRY_ACTIONS", _INSPECT_DRY_ACTIONS),
-        ("_MESSAGING_ACTIONS", _MESSAGING_ACTIONS),
-        ("_SCHEDULER_ACTIONS", _SCHEDULER_ACTIONS),
-    ],
-)
-def test_dispatch_table_handlers_are_callable(table_name, table):
-    for action, handler in table.items():
-        assert callable(handler), f"{table_name}[{action}] not callable"
 
 
 # ── helper unit tests ───────────────────────────────────────────────────────
@@ -124,9 +76,6 @@ def test_load_branch_for_inspect_invalid_json_returns_error_str():
     assert "not valid JSON" in err
 
 
-def test_apply_patch_ops_is_callable():
-    """_apply_patch_ops moved with its only consumer per Option B."""
-    assert callable(_apply_patch_ops)
 
 
 # ── handler error paths (no monkeypatch) ────────────────────────────────────

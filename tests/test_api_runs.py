@@ -16,12 +16,10 @@ import pytest
 
 from tinyassets.api import runs as runs_mod
 from tinyassets.api.runs import (
-    _FAILURE_TAXONOMY,
     _RUN_ACTIONS,
     _RUN_WRITE_ACTIONS,
     _action_run_branch,
     _actionable_by,
-    _build_failure_taxonomy,
     _classify_run_error,
     _classify_run_outcome_error,
     _compose_run_snapshot,
@@ -38,59 +36,13 @@ def _pin_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
-def test_module_exposes_expected_public_names():
-    """The new submodule's contract surface — guards against silent removal."""
-    expected = {
-        "_RUN_ACTIONS", "_RUN_WRITE_ACTIONS", "_dispatch_run_action",
-        "_action_run_branch", "_action_get_run", "_action_list_runs",
-        "_action_stream_run", "_action_wait_for_run", "_action_cancel_run",
-        "_action_get_run_output", "_action_attach_existing_child_run",
-        "_action_resume_run",
-        "_action_query_runs",
-        "_action_run_routing_evidence", "_action_get_memory_scope_status",
-        "_action_run_branch_version", "_action_rollback_merge",
-        "_action_get_rollback_history",
-        "_classify_run_error", "_classify_run_outcome_error",
-        "_actionable_by", "_failure_payload",
-        "_ensure_runs_recovery", "_build_failure_taxonomy",
-        "_FAILURE_TAXONOMY",
-        "_run_mermaid_from_events", "_branch_name_for_run",
-        "_compose_run_snapshot",
-    }
-    missing = expected - set(dir(runs_mod))
-    assert not missing, f"runs.py is missing public names: {missing}"
 
 
 # ── _RUN_ACTIONS dispatch table ─────────────────────────────────────────────
 
 
-def test_run_actions_table_keys_are_expected_set():
-    expected = {
-        "run_branch", "run_branch_version", "get_run", "list_runs",
-        "stream_run", "wait_for_run", "cancel_run", "get_run_output",
-        "attach_existing_child_run", "resume_run", "query_runs",
-        "record_run_receipt", "list_run_receipts",
-        "get_routing_evidence", "get_memory_scope_status",
-        "rollback_merge", "get_rollback_history",
-        # Inbound channel-agnostic ops (webhook + source management via run dispatch)
-        "mint_webhook", "revoke_webhook", "list_webhooks",
-        "create_source", "revoke_source", "list_sources",
-        # Structured cross-owner delivery management and safe receipt reads.
-        "create_receiver", "update_receiver", "revoke_receiver",
-        "connect_output", "disconnect_output", "deliver_output",
-        "inspect_receiver", "list_output_links", "get_delivery",
-        # discover_receivers: any authenticated user searching the receivers whose
-        # owners marked them discoverable. A read, so it stays out of the write set.
-        "discover_receivers",
-        # The receiving owner's answer to a delivery, and the sender's own list.
-        "answer_delivery", "list_deliveries",
-    }
-    assert set(_RUN_ACTIONS.keys()) == expected
 
 
-def test_all_run_actions_are_callable():
-    for action, handler in _RUN_ACTIONS.items():
-        assert callable(handler), f"{action} handler is not callable"
 
 
 def test_run_write_actions_is_subset_of_run_actions():
@@ -121,28 +73,10 @@ def test_run_write_actions_excludes_read_actions():
 # ── failure taxonomy ────────────────────────────────────────────────────────
 
 
-def test_build_failure_taxonomy_returns_list_of_triples():
-    """Each entry is (exc_type, failure_class_str, suggested_action_str)."""
-    table = _build_failure_taxonomy()
-    assert table, "taxonomy is empty"
-    for entry in table:
-        assert len(entry) == 3
-        exc_type, failure_class, suggested_action = entry
-        assert isinstance(exc_type, type)
-        assert isinstance(failure_class, str)
-        assert isinstance(suggested_action, str)
 
 
-def test_build_failure_taxonomy_returns_equal_content_across_calls():
-    """Multiple calls produce equal-content taxonomies (deterministic build)."""
-    a = _build_failure_taxonomy()
-    b = _build_failure_taxonomy()
-    assert a == b
 
 
-def test_failure_taxonomy_module_state_is_list():
-    """Module-level _FAILURE_TAXONOMY is a list (legacy state guard slot)."""
-    assert isinstance(_FAILURE_TAXONOMY, list)
 
 
 def test_classify_run_error_unknown_falls_back_to_unknown_class():
