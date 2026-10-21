@@ -358,6 +358,25 @@ def test_database_validation_is_owner_local_and_retried_after_failure(tmp_path):
         state.close()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_owner_scratch_named_like_a_store_never_blocks_startup(tmp_path):
+    # Real production data held agent scratch text named .effector_consents.db
+    # deep under a center's .tmp; the box must still start.
+    from tinyassets.owner_centers import Centers
+    from tinyassets.owner_runtime import validate_databases
+
+    root = tmp_path / "owner"
+    root.mkdir()
+    Centers(root).create("c1")
+    scratch = root / "c1" / ".tmp" / "a" / "b"
+    scratch.mkdir(parents=True)
+    (scratch / ".effector_consents.db").write_text("not a database")
+    validate_databases(root)
+    with sqlite3.connect(root / "history.db") as db:
+        db.execute("CREATE TABLE history (value TEXT)")
+    validate_databases(root)
+
+
 @pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("arguments", [{"uid": 300002}, {"path": "/other"},
                                        {"volume_generation": 8}])

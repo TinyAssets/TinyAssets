@@ -138,16 +138,24 @@ def start(relay: Path) -> OwnerRuntime:
 
 
 def validate_databases(root: Path) -> None:
-    """C2 consistency checks run solely inside this owner's mounted boundary."""
+    """C2 consistency checks run solely inside this owner's mounted boundary.
+
+    The platform's stores live at the volume root and at the top of each active
+    center. Deeper files (runs, workspaces, the agent's scratch) are the owner's
+    content: whatever opens them checks them, and a stray file there must never
+    keep the owner's box from starting.
+    """
     import sqlite3
     from contextlib import closing
 
+    from tinyassets.owner_centers import Centers
     from tinyassets.sqlite_integrity import check
 
-    for path in root.rglob("*"):
-        if path.is_file() and path.suffix in {".db", ".sqlite", ".sqlite3"}:
-            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
-                check(db)
+    for directory in [root, *(root / center for center in Centers(root).active())]:
+        for path in sorted(directory.iterdir()) if directory.is_dir() else ():
+            if path.is_file() and path.suffix in {".db", ".sqlite", ".sqlite3"}:
+                with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+                    check(db)
 
 
 def router_credential(operation: str, **fields):
