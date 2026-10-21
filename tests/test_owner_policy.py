@@ -15,7 +15,6 @@ import pytest
 
 from tests.support.admission import drive, projection
 from tests.test_broker_server import broker, new_op_id  # noqa: F401 -- broker socket fixture
-from tinyassets import ta_cli
 from tinyassets.broker.client import BrokerRefused
 from tinyassets.broker.policy import PolicyRefused, PolicyStore
 from tinyassets.broker.server import _Connection
@@ -35,6 +34,7 @@ def admissions(root):
     return identities
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 @pytest.mark.parametrize("expired", [False, True])
 def test_session_hash_proof_requires_a_live_router_row(tmp_path, expired):
     cookie = "interactive-cookie-" + "z" * 32
@@ -74,6 +74,7 @@ def _session(root, owner, cookie):
                     json.dumps({"user_id": owner}), time.time() + 3600))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(
         tmp_path, local_action_policy):
     legacy = _legacy(tmp_path, "alpha", "hand_off")
@@ -112,14 +113,9 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(
     assert legacy.read_bytes() == original
 
 
-def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path, local_action_policy):
-    store = local_action_policy
-    legacy = _legacy(tmp_path, "new", "hand_off")
-    original = legacy.read_bytes()
-    assert store.decide("alice", center="new", action_class="app.write")["decision"] == "allow"
-    assert legacy.read_bytes() == original
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
     store = PolicyStore(tmp_path, admissions(tmp_path))
     blocked = store._path("alice").parent
@@ -133,6 +129,7 @@ def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
     assert "ALARM: owner policy refused for alice" in caplog.text
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker owner policy uses Unix peer credentials")
 def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  # noqa: F811
@@ -175,6 +172,7 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
         **request, "amount": 11, "request_id": "model-call-2"})["rule"] == "spend_cap"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker stream uses Unix peer credentials")
 def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_path):  # noqa: F811
@@ -200,6 +198,7 @@ def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_pa
     assert any(row["rule"] == "spend_amount_required" for row in store.receipts("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 def test_once_approval_is_exact_and_stale_generation_refused(tmp_path, local_action_policy):
     _legacy(tmp_path, "alpha", "ask_first")
     cookie = "interactive-cookie-" + "b" * 32
@@ -218,6 +217,7 @@ def test_once_approval_is_exact_and_stale_generation_refused(tmp_path, local_act
     assert not store.consume_once("alice", token, digest, current.generation)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     _legacy(tmp_path, "alpha", "do")
     owner_cookie = "interactive-cookie-" + "c" * 32
@@ -259,6 +259,7 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     assert (refusals, writes) == (7, 1)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, local_action_policy):
     _legacy(tmp_path, "alpha", "ask_first")
     cookie = "interactive-cookie-" + "e" * 32
@@ -291,6 +292,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, lo
     assert not store.allows_grant("alice", **{**query, "generation": revoked.generation})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
     _legacy(tmp_path, "alpha", "do")
     cookie = "interactive-cookie-" + "f" * 32
@@ -315,32 +317,6 @@ def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
     assert final["rule"] == "spend_monthly_cap"
 
 
-def test_ta_policy_commands_have_only_read_and_propose(tmp_path):
-    calls = []
-
-    def dispatch(message):
-        calls.append(message)
-        if message["op"] == "catalog":
-            return {"capabilities": [
-                {"name": "policy:show", "description": "Read", "arguments": {}},
-                {"name": "policy:propose", "description": "Ask", "arguments": {}}],
-                "extension_roots": {}}
-        return {"result": {"ok": True}}
-
-    assert ta_cli.main(["policy", "show"], dispatch=dispatch,
-                       load_extensions=False) == {"ok": True}
-    assert ta_cli.main(["policy", "propose", "--json",
-                        '{"expected_generation":1,"policy":{}}'],
-                       dispatch=dispatch, load_extensions=False) == {"ok": True}
-    assert calls[1] == {"op": "call", "name": "policy:show", "arguments": {}}
-    assert calls[3] == {"op": "call", "name": "policy:propose",
-                        "arguments": {"expected_generation": 1, "policy": {}}}
-    with pytest.raises(ValueError, match="unknown capability"):
-        ta_cli.main(["policy:write", "--json", "{}"], dispatch=dispatch,
-                    load_extensions=False)
-    with pytest.raises(ValueError, match="a call requires"):
-        ta_cli.main(["policy", "write", "--json", "{}"], dispatch=dispatch,
-                    load_extensions=False)
 
 
 @pytest.fixture

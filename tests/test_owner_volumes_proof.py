@@ -32,6 +32,10 @@ def command(*args, **kwargs):
     return result.stdout.strip()
 
 
+@pytest.mark.verifies(
+    'owner-daemon-in-box:C1', 'owner-daemon-in-box:C2',
+    'owner-daemon-in-box:C10', 'owner-daemon-in-box:T4',
+)
 def test_owner_volumes_real_mounts(tmp_path):
     assert sys.platform == "linux" and os.geteuid() == 0, "root Linux oracle required"
     base = os.environ["TA_REHEARSAL_BASE_IMAGE"]

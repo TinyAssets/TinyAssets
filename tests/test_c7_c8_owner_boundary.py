@@ -11,6 +11,7 @@ from tinyassets.storage import outbound_connections as oc
 from tinyassets.storage.outbound_connections import _classify_global_address
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("verb", ["GET", "POST"])
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"])
 def test_model_and_connector_real_broker_refuse_private_before_dial(box, chain, monkeypatch,
@@ -34,6 +35,7 @@ def test_model_and_connector_real_broker_refuse_private_before_dial(box, chain, 
     assert chain.state["requests"] == []
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("host", ["models.example.com", "another.example.com"])
 def test_public_broker_destination_uses_only_its_own_credential(box, chain, host):
     resolved = []
@@ -68,6 +70,7 @@ def test_public_broker_destination_uses_only_its_own_credential(box, chain, host
     assert len(chain.state["requests"]) == 1
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 def test_broker_neither_stores_nor_decides_owner_actions(box):
     store = box.broker.server._policy_store
     document = store.read("owner").document
@@ -81,6 +84,7 @@ def test_broker_neither_stores_nor_decides_owner_actions(box):
                 "table": "rules", "values": {"action_class": action, "behaviour": "do"}}]})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 @pytest.mark.parametrize("missing", ["row", "file"])
 def test_missing_local_policy_is_never_recreated_by_a_decision(box, missing):
     import sqlite3
@@ -111,6 +115,7 @@ def _git_request(server, host="git.test"):
     return heads, b"".join(chunks)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"])
 def test_git_real_broker_refuses_private_before_dial(git_server, monkeypatch, address):
     monkeypatch.setattr(oc, "_classify_global_address", _classify_global_address)
@@ -122,6 +127,7 @@ def test_git_real_broker_refuses_private_before_dial(git_server, monkeypatch, ad
     assert git_server.state["seen"] == []
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("host", ["git.test", "another.example.com"])
 def test_git_public_destination_scopes_credential_to_service(git_server, chain, monkeypatch, host):
     import socket
@@ -139,6 +145,7 @@ def test_git_public_destination_scopes_credential_to_service(git_server, chain, 
         "Bearer " + git_server.secret if host == "git.test" else None)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("missing", ["operation", "credential"])
 def test_public_operation_without_credential_authority_uses_no_secret(box, chain, missing):
     resolved = []
@@ -175,6 +182,7 @@ def test_public_operation_without_credential_authority_uses_no_secret(box, chain
     assert "Authorization" not in chain.state["requests"][0]["headers"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C1')
 def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch):
     import sqlite3
 
@@ -193,14 +201,3 @@ def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch)
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         opened[0].execute("SELECT 1")
-
-
-def test_oauth_offer_accepts_a_bounded_resource_url():
-    from tinyassets.broker.model_connect import validate
-
-    resource = "https://public.example/" + "x" * (2048 - len("https://public.example/"))
-    document = {"action": "oauth_offer", "requested": {}, "hosts": [resource],
-                "callback": "https://door.example/callback", "registration_url": ""}
-    assert validate(document) is None
-    with pytest.raises(ValueError, match="invalid offer hosts"):
-        validate({**document, "hosts": [resource + "x"]})

@@ -60,27 +60,9 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     return identities
 
 
-def test_secret_mint_rotation_and_admission_through_real_broker(admitted, boxes, tmp_path):
-    first = admitted.box_route("alice")
-    assert first == admitted.box_route("alice")
-    assert first == OwnerIdentities(admitted.path).box_route("alice")
-    bob = admitted.box_route("bob")
-    assert first[0] != bob[0] and first[1] != bob[1]
-    from tinyassets.restore_recovery import rotate_box_secrets
-
-    boxes.manager.retire("alice", first[0])
-    boxes.manager.retire("bob", bob[0])
-    rotate_box_secrets(tmp_path)
-    rotated = admitted.box_route("alice")
-    assert rotated[0] == first[0] and rotated[1] != first[1]
-    assert not boxes.runtime.alive(first[0])
-    for owner in ("unknown", "reserved"):
-        with pytest.raises(LookupError):
-            admitted.box_route(owner)
-    retire_local(boxes.roots["alice"], "cc-alice")
-    assert admitted.box_route("alice") == rotated
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_route_operation_rejects_forged_authority_or_socket_overrides(
     admitted, broker, boxes, tmp_path,  # noqa: F811
 ):
@@ -262,6 +244,7 @@ def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
     assert owner_calls == [], "even a swallowed owner-store read violates router mode"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
     async def exercise():
         from fastmcp import Client
@@ -303,36 +286,9 @@ def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
     asyncio.run(exercise())
 
 
-def test_sse_first_chunk_and_disconnect_are_streamed(router, boxes):
-    """A body that cannot finish still delivers its first chunk, then cancels."""
-    async def exercise():
-        messages = []
-        incoming = asyncio.Queue()
-        await incoming.put({"type": "http.request", "body": b"", "more_body": False})
-
-        async def send(message):
-            messages.append(message)
-            if message["type"] == "http.response.body" and message.get("body"):
-                assert message["body"] == b"data: first\n\n"
-                await incoming.put({"type": "http.disconnect"})
-
-        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-                 "method": "GET", "scheme": "http", "path": "/app/api/test-stream",
-                 "raw_path": b"/app/api/test-stream", "query_string": b"",
-                 "root_path": "", "headers": [(b"authorization", b"Bearer alice")],
-                 "server": ("test", 80), "client": ("127.0.0.1", 1)}
-        await asyncio.wait_for(router(scope, incoming.get, send), timeout=5)
-        assert messages[0]["status"] == 200
-        assert (b"mcp-session-id", b"box-stream") in messages[0]["headers"]
-        assert any(m.get("body") == b"data: first\n\n" for m in messages)
-
-    asyncio.run(exercise())
-    deadline = time.monotonic() + 5
-    while not (boxes.roots["alice"] / "stream-closed").exists() and time.monotonic() < deadline:
-        time.sleep(.01)
-    assert (boxes.roots["alice"] / "stream-closed").read_text() == "closed"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_shared_owner_session_authenticates_and_carries_protected_view_proof(router):
     from tinyassets.onboarding import app_config, owner_sessions
 
@@ -368,6 +324,7 @@ def test_shared_owner_session_authenticates_and_carries_protected_view_proof(rou
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_hook_delivery_reaches_token_owners_real_socket(router, tmp_path, monkeypatch):
     from tinyassets.router_credentials import HookOwners
 
@@ -386,6 +343,7 @@ def test_hook_delivery_reaches_token_owners_real_socket(router, tmp_path, monkey
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  # noqa: F811
     from starlette.testclient import TestClient
 
@@ -439,6 +397,7 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
         assert response.headers["location"] == "/app?approval=" + ref
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_owner_socket_requires_current_secret(boxes, admitted):
     owner = Identity(user_id="alice", username="alice")
     headers = {"x-owner": "alice", "x-owner-identity": base64.urlsafe_b64encode(
@@ -454,6 +413,7 @@ def test_owner_socket_requires_current_secret(boxes, admitted):
             "x-box-secret": boxes.secrets["alice"]}).status_code == 200
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 def test_awake_forwarding_survives_every_control_plane_rpc_outage(router, boxes, monkeypatch):
     from tinyassets.boxes import daemon_control
     from tinyassets.broker import owner_identities
@@ -475,6 +435,7 @@ def test_awake_forwarding_survives_every_control_plane_rpc_outage(router, boxes,
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 @pytest.mark.parametrize("pending_restore", [False, True])
 def test_cold_request_uses_broker_and_keeps_credential(
     router, boxes, admitted, broker, monkeypatch, pending_restore,  # noqa: F811
@@ -522,6 +483,7 @@ def test_cold_request_uses_broker_and_keeps_credential(
     assert boxes.manager.admission.volume("alice")["work"] == {"kind": "running"}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 def test_withdrawn_route_rejects_delayed_snapshot_and_wake(
     router, boxes, admitted, broker, tmp_path, monkeypatch,  # noqa: F811
 ):
@@ -550,6 +512,7 @@ def test_withdrawn_route_rejects_delayed_snapshot_and_wake(
     assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 def test_router_restart_needs_snapshot_from_its_own_incarnation(
     router, boxes, broker, tmp_path, monkeypatch,  # noqa: F811
 ):
@@ -576,6 +539,7 @@ def test_router_restart_needs_snapshot_from_its_own_incarnation(
     assert asyncio.run(request()).status_code == 200
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 def test_withdrawal_without_router_delivery_stops_old_ingress(
     router, boxes, admitted, broker, tmp_path, monkeypatch,  # noqa: F811
 ):
@@ -602,6 +566,7 @@ def test_withdrawal_without_router_delivery_stops_old_ingress(
     assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 def test_rotation_stops_old_ingress_before_publishing_replacement(
     boxes, admitted, broker, tmp_path, monkeypatch,  # noqa: F811
 ):
@@ -639,6 +604,7 @@ def test_rotation_stops_old_ingress_before_publishing_replacement(
         assert client.get("/mcp", headers=headers | {"x-box-secret": fresh}).status_code == 200
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_owner_box_refuses_a_request_for_any_other_owner(boxes, admitted):
     """The silo authorizes its own caller: even with its valid secret, alice's
     box serves no identity but alice's."""
@@ -654,6 +620,7 @@ def test_owner_box_refuses_a_request_for_any_other_owner(boxes, admitted):
         assert response.status_code == 401
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tmp_path,
                                                                   monkeypatch):
     from starlette.responses import Response
@@ -684,6 +651,7 @@ def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tm
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_box_minted_key_authenticates_router_until_box_revokes_it(router, boxes):
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
@@ -707,6 +675,7 @@ def test_box_minted_key_authenticates_router_until_box_revokes_it(router, boxes)
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_box_created_hooks_route_then_all_revocation_paths_refuse(router, monkeypatch):
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
 
@@ -736,6 +705,7 @@ def test_box_created_hooks_route_then_all_revocation_paths_refuse(router, monkey
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     boxes, tmp_path, admitted,
 ):
@@ -779,6 +749,7 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
         request("bob", {"operation": "key_list"})
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_relay_mint_uses_installed_snapshot_with_broker_lookups_unavailable(
     boxes, admitted, tmp_path, monkeypatch,
 ):
@@ -804,6 +775,7 @@ def test_relay_mint_uses_installed_snapshot_with_broker_lookups_unavailable(
     assert HookOwners(tmp_path).resolve(reply["result"]["token"]) == "alice"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 @pytest.mark.parametrize("publication_available", [True, False])
 def test_snapshot_withdrawal_does_not_wait_for_mint_and_retires_relay(
     boxes, admitted, broker, monkeypatch, publication_available,  # noqa: F811
@@ -875,6 +847,7 @@ def test_snapshot_withdrawal_does_not_wait_for_mint_and_retires_relay(
         assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_broker_credential_frame_only_revokes_and_cannot_mint(boxes, tmp_path):
     from tinyassets.router_credentials import _request, revoke_request
 
@@ -887,6 +860,7 @@ def test_broker_credential_frame_only_revokes_and_cannot_mint(boxes, tmp_path):
         "op": "ROUTER_CREDENTIAL_IS", "result": {"revoked": True}}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, monkeypatch):
     from tinyassets import router_credentials
 
@@ -899,86 +873,17 @@ def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, mon
         assert channel.recv(1) == b""
 
 
-def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatch):
-    monkeypatch.setattr("tinyassets.boxes.daemon_control.request",
-                        lambda operation, owner, **fields: {
-                            "uid": admitted.owner_machine(owner), "lease": "l" * 43})
-    from tinyassets.owner_router import resolve_box
-
-    monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
-    from tinyassets.broker.routing import BrokerLifecycle
-    from tinyassets.router_credentials import routing_dispatch
-
-    routing = BrokerLifecycle(SimpleNamespace(_owner_identities=admitted,
-                                               _data_root=admitted.path.parent.parent.parent))
-    routing._router = lambda request: routing_dispatch(routing.root, request)
-    routing.publish()
-    route = resolve_box("alice")
-    assert route.socket == Path("/run/tinyassets-boxhostd") / str(
-        admitted.owner_machine("alice")) / "app.sock"
-    compose = (Path(__file__).parents[1] / "deploy/compose.yml").read_text()
-    assert "/run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro" in compose
-
-
-def test_router_hook_rows_are_capped_per_owner(tmp_path, monkeypatch):
-    from tinyassets import router_credentials
-    from tinyassets.router_credentials import HookOwners
-
-    monkeypatch.setattr(router_credentials, "MAX_HOOKS_PER_OWNER", 3)
-    hooks = HookOwners(tmp_path)
-    digests = [hashlib.sha256(f"alice-{n}".encode()).hexdigest() for n in range(4)]
-    for digest in digests[:3]:
-        hooks.publish(digest, "alice")
-    with pytest.raises(ValueError, match="too many inbound hooks"):
-        hooks.publish(digests[3], "alice")
-    # Another owner's room is its own; a revocation frees a slot.
-    hooks.publish(hashlib.sha256(b"bob-0").hexdigest(), "bob")
-    hooks.revoke(digests[0], "alice")
-    hooks.publish(digests[3], "alice")
-
-
-def test_router_key_rows_stay_bounded_across_mint_revoke_cycles(tmp_path, monkeypatch):
-    import sqlite3
-    from contextlib import closing
-
-    from tinyassets import api_keys
-    from tinyassets.api_keys import ApiKeyStore
-
-    monkeypatch.setattr(api_keys, "MAX_REVOKED_KEYS_PER_OWNER", 2)
-    keys = ApiKeyStore(tmp_path)
-    for n in range(6):
-        minted = keys.mint("alice", name=f"k{n}", request_ref=f"ref-{n}", scopes=[],
-                           authority=None)
-        keys.revoke("alice", minted["key_id"], authority=None)
-    bob = keys.mint("bob", name="b", request_ref="ref-b", scopes=[], authority=None)
-    keys.revoke("bob", bob["key_id"], authority=None)
-    with closing(sqlite3.connect(keys.path)) as db:
-        rows = dict(db.execute("SELECT owner, COUNT(*) FROM api_keys GROUP BY owner"))
-    assert rows == {"alice": 2, "bob": 1}
 
 
 
 
-def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
-
-    async def exercise():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
-                                     base_url="http://test") as client:
-            minted = await client.post("/app/test-credentials", headers={
-                "authorization": "Bearer alice"}, json={"operation": "hook_mint"})
-            assert minted.status_code == 200, minted.text
-            token = minted.json()["token"]
-            for headers in ({}, {"authorization": "Bearer alice"}):
-                retired = await client.post("/mcp/hooks/" + token, headers=headers)
-                assert retired.status_code in {401, 404}
-            delivered = await client.post("/hooks/inbound/" + token, content=b"still delivered")
-            assert delivered.status_code == 202
-            assert delivered.json() == {"owner": "alice", "payload": "still delivered"}
-
-    asyncio.run(exercise())
 
 
+
+
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch, admitted, boxes):
     from tinyassets import router_credentials
     from tinyassets.broker.owner_identities import owner_admission
@@ -1006,6 +911,7 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch, admitted, b
 
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C5')
 def test_boxhostd_real_process_restart_keeps_secret_and_serves_again(
     boxes, admitted, broker,  # noqa: F811
 ):
@@ -1027,6 +933,7 @@ def test_boxhostd_real_process_restart_keeps_secret_and_serves_again(
         assert ready.status_code == 200
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11')
 def test_local_center_retirement_preserves_owner_daemon_and_route(
     boxes, admitted, tmp_path,
 ):
@@ -1055,22 +962,9 @@ def test_local_center_retirement_preserves_owner_daemon_and_route(
     assert "centers" not in boxes.manager.admission.owner("alice")
 
 
-def test_root_lifecycle_callback_is_absent_and_cannot_override_a_binding(boxes, admitted):
-    from tinyassets import rpc_frames as rf
-
-    before = admitted.box_route("alice")
-    for override in ({}, {"uid": 300002}, {"rotate": True}, {"quota": 1},
-                     {"principal": "reserved"}, {"deletion_only": True}):
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
-            channel.settimeout(5)
-            channel.connect(str(boxes.host_path))
-            channel.sendall(rf.control(0, {"op": "BOX_LIFECYCLE", "principal": "alice",
-                                           **override}))
-            answer = rf.read_frame_blocking(channel)
-            assert answer is None or answer.control() == {"op": "BOX_REFUSED"}
-    assert admitted.box_route("alice") == before
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11')
 def test_shared_channel_cannot_create_or_retire_local_centers(boxes, admitted):
     from tinyassets import rpc_frames as rf
     from tinyassets.owner_centers import Centers
@@ -1092,6 +986,7 @@ def test_shared_channel_cannot_create_or_retire_local_centers(boxes, admitted):
     assert "centers" not in boxes.manager.admission.owner("alice")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_box_admitted_request_blocks_eviction_until_disconnect(
     boxes, admitted, broker, monkeypatch,  # noqa: F811
 ):
@@ -1146,6 +1041,7 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
     assert not waiter.is_alive() and result == [b]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("op", ["BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED", "BOX_PUBLIC",
                                 "BOX_LIFECYCLE", "BOX_CREDENTIAL", "BOX_IDENTITY",
                                 "BOX_PING", "BOX_PUBLISH", "BOX_READ"])

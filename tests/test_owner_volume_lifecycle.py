@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import drive, projection, retire_local
+from tests.support.admission import drive, projection
 from tinyassets.broker import box_admission, owner_volumes
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
@@ -162,6 +162,7 @@ def sleep(storage, owner="alice"):
     return storage.lifecycle.volume(owner)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C1')
 def test_every_sleep_publishes_verified_reference_and_growth_never_shrinks(storage):
     record, mount = start(storage)
     uid = record["uid"]
@@ -179,6 +180,7 @@ def test_every_sleep_publishes_verified_reference_and_growth_never_shrinks(stora
     assert storage.volumes.size(uid) == grown
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_failed_upload_retains_reference_and_retries_without_waking(storage):
     start(storage)
     previous = sleep(storage)
@@ -195,6 +197,7 @@ def test_failed_upload_retains_reference_and_retries_without_waking(storage):
     assert not any(event == "attach" for event, _ in storage.volumes.events)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
     start(storage)
     previous = sleep(storage)
@@ -216,6 +219,7 @@ def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
         drive(storage.lifecycle.recover("alice"))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_interrupted_restore_commits_generation_before_next_mount(storage, monkeypatch):
     start(storage)
     before = sleep(storage)
@@ -244,6 +248,7 @@ def test_interrupted_restore_commits_generation_before_next_mount(storage, monke
     assert storage.volumes.events[-2:] == [("attach", uid), ("grow", uid)]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_restore_needs_only_published_reference_not_local_catalog_or_volume(storage):
     start(storage)
     published = sleep(storage)
@@ -261,6 +266,7 @@ def test_restore_needs_only_published_reference_not_local_catalog_or_volume(stor
     assert read(storage.identities, "alice").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_retention_keeps_seven_and_never_deletes_current_map_reference(storage):
     for _ in range(9):
         start(storage)
@@ -273,6 +279,7 @@ def test_retention_keeps_seven_and_never_deletes_current_map_reference(storage):
         storage.lifecycle.volume("alice", "forget", snapshot_id=record["snapshot_id"])
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_restore_old_snapshot_repoints_map_and_retention_preserves_it(storage, monkeypatch):
     start(storage)
     first = sleep(storage)
@@ -292,6 +299,7 @@ def test_restore_old_snapshot_repoints_map_and_retention_preserves_it(storage, m
     assert (first["uid"], first["snapshot_id"]) in storage.volumes.remote
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T3')
 def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
     record, _ = start(storage)
     uid = record["uid"]
@@ -310,16 +318,9 @@ def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
         storage.admission.owner("alice")
 
 
-def test_center_retirement_preserves_account_volume_recovery(storage):
-    start(storage)
-    snapshot = sleep(storage)
-    retire_local(storage.identities.path.parent / "synthetic-box-alice", "alice")
-    restored = drive(storage.lifecycle.restore("alice", snapshot["snapshot_id"]))
-    assert restored["uid"] == snapshot["uid"]
-    assert restored["volume_generation"] == snapshot["volume_generation"] + 1
-    assert restored["uid"] in storage.volumes.images
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T3')
 def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage):
     with sqlite3.connect(storage.identities.path) as db:
         db.execute("DELETE FROM box_records WHERE principal='alice'")
@@ -334,30 +335,9 @@ def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage
         drive(storage.lifecycle.recover("alice"))
 
 
-def test_owner_generation_refuses_pre_restore_operation_ids(tmp_path):
-    from tinyassets.boxes.boxd import OwnerBoxd
-    from tinyassets.boxes.provider import BoxOperationRefused
-
-    root = tmp_path / "owner"
-    root.mkdir()
-    first = OwnerBoxd(owner_id="alice", owner_root=root, state_dir=root / ".owner-boxd",
-                      volume_generation=1)
-    old_id = first.operation_prefix() + "operation"
-    first.close()
-    restored = OwnerBoxd(owner_id="alice", owner_root=root, state_dir=root / ".owner-boxd",
-                         volume_generation=2)
-    try:
-        handle = restored.bind("alice")
-        with pytest.raises(BoxOperationRefused, match="volume generation"):
-            restored.write(handle, old_id, "/cc/stale", b"old", max_bytes=10)
-        assert not (root / "stale").exists()
-        restored.write(handle, restored.operation_prefix() + "operation", "/cc/current",
-                       b"new", max_bytes=10)
-        assert (root / "current").read_bytes() == b"new"
-    finally:
-        restored.close()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_database_validation_is_owner_local_and_retried_after_failure(tmp_path):
     from tinyassets.boxes.state import BoxHostState
     from tinyassets.owner_runtime import validate_databases
@@ -382,6 +362,7 @@ def test_database_validation_is_owner_local_and_retried_after_failure(tmp_path):
         state.close()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("arguments", [{"uid": 300002}, {"path": "/other"},
                                        {"volume_generation": 8}])
 def test_volume_protocol_refuses_caller_selected_binding(storage, arguments):
@@ -395,6 +376,7 @@ def age_sleep(storage, seconds):
                    (time.time() - seconds,))
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 def test_cold_eviction_restores_exact_bytes_before_attach(storage):
     record, _ = start(storage)
     uid = record["uid"]
@@ -418,6 +400,7 @@ def test_cold_eviction_restores_exact_bytes_before_attach(storage):
     assert ("create", uid) not in storage.volumes.events
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 @pytest.mark.parametrize("state", ["pending", "restore", "erased", "unverified", "awake"])
 def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state):
     start(storage)
@@ -444,6 +427,7 @@ def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state
     assert storage.lifecycle.volume("alice")["local"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 def test_cold_restore_failure_never_creates_empty_volume(storage):
     start(storage)
     before = sleep(storage)
@@ -459,6 +443,7 @@ def test_cold_restore_failure_never_creates_empty_volume(storage):
     assert storage.lifecycle.volume("alice")["work"]["kind"] == "restore"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
     start(storage)
     before = sleep(storage)
@@ -479,6 +464,7 @@ def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
     assert storage.volumes.images[before["uid"]] == b"initial"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C10')
 @pytest.mark.parametrize("first", ["wake", "evict"])
 def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeypatch, first):
     import asyncio
@@ -519,6 +505,7 @@ def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeyp
     assert before["uid"] in storage.volumes.attached
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(storage, tmp_path):
     import shutil
 

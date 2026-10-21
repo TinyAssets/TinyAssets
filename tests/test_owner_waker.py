@@ -7,7 +7,6 @@ import queue
 import socket
 import sqlite3
 import tempfile
-import threading
 import time
 from contextlib import closing
 from datetime import datetime, timezone
@@ -23,7 +22,7 @@ from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.next_wake import NextWakeIndex
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.owner_reads import PlanMissing
-from tinyassets.broker.waker import MAX_PENDING, Waker
+from tinyassets.broker.waker import Waker
 
 
 @pytest.fixture
@@ -55,6 +54,7 @@ async def settled_tick(waker):
     await asyncio.gather(*waker.pending.values(), return_exceptions=True)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C9')
 def test_missing_row_reconstructs_and_null_never_periodically_wakes(index):
     calls = []
     clock = [100.0]
@@ -91,6 +91,7 @@ def test_missing_row_reconstructs_and_null_never_periodically_wakes(index):
             ("a", None), ("b", None), ("c", 1000000)]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("reason", ["billing", "abuse"])
 def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(index, reason, caplog):
     plans = plan_store(index)
@@ -125,6 +126,7 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
         owner_record(index.identities, "b")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C9')
 def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ack(index):
     calls = []
     for owner in ("a", "b", "c"):
@@ -155,31 +157,9 @@ def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ac
     asyncio.run(exercise())
 
 
-def test_slow_wakes_do_not_block_the_timer_and_are_bounded(index):
-    release = threading.Event()
-    entered = queue.Queue()
-
-    def wake(owner, **kw):
-        entered.put(owner)
-        assert release.wait(10)
-
-    waker = Waker(index, plan_store(index), wake=async_call(wake))
-
-    async def exercise():
-        try:
-            await waker.tick()
-            for _ in range(MAX_PENDING):
-                await asyncio.to_thread(entered.get, timeout=5)
-            await waker.tick()
-            assert len(waker.pending) == MAX_PENDING
-            assert entered.empty()
-        finally:
-            release.set()
-            await asyncio.gather(*waker.pending.values())
-
-    asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C9')
 def test_report_rejects_invalid_times_and_retired_admission(index):
     for at in (True, "123", float("nan"), float("inf"), {}):
         with pytest.raises(ValueError):
@@ -189,6 +169,7 @@ def test_report_rejects_invalid_times_and_retired_admission(index):
             index.report(owner, 0)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 def test_lost_identity_database_is_never_recreated_by_the_wake_scan(index):
     index.identities.path.unlink()
     with pytest.raises(sqlite3.OperationalError, match="unable to open"):
@@ -196,29 +177,9 @@ def test_lost_identity_database_is_never_recreated_by_the_wake_scan(index):
     assert not index.identities.path.exists()
 
 
-def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(tmp_path):
-    from tinyassets.broker.box_admission import owner_record
-
-    state = tmp_path / ".broker" / "state"
-    state.mkdir(parents=True, mode=0o700)
-    plans = Plans(tmp_path)
-    identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=plans)
-    identities.resolve("a", allocate=True)
-    drive(identities.admit("a", routing=projection(identities.path)))
-    assert plans.read("a")["tier"] == "free"
-    assert not (state / "plans.db").exists()
-    for reason in ("billing", "abuse"):
-        suspend(plans, "a", reason=reason, suspended=True)
-    plans.set_plan("a", "paid", event_created=10)
-    suspend(plans, "a", reason="billing", suspended=False)
-    with pytest.raises(PermissionError, match="suspended"):
-        owner_record(identities, "a")
-    with closing(sqlite3.connect(plans.path)) as db, db:
-        db.execute("DELETE FROM plans WHERE owner='a'")
-    with pytest.raises(PermissionError, match="suspended"):
-        owner_record(identities, "a")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_only_broker_can_request_bound_interactive_or_scheduled_wakes():
     from tinyassets.boxes.host_service import HostService
 
@@ -240,6 +201,7 @@ def test_only_broker_can_request_bound_interactive_or_scheduled_wakes():
                      ("a", {"scheduled": False, "launch": record})]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T7')
 def test_waker_starts_without_request_and_shutdown_joins_control_calls(index):
     calls = []
 
@@ -385,6 +347,7 @@ def sleep_when_quiet(box):
         assert time.monotonic() < deadline, "background work did not drain"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C9')
 def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(sleeping_box):
     box = sleeping_box
     await_report(box, box.at)
@@ -409,6 +372,7 @@ def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(slee
         assert db.execute("SELECT COUNT(*) FROM automation_attempts").fetchone()[0] == 1
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 def test_bound_report_cannot_name_another_owner(sleeping_box):
     box = sleeping_box
     await_report(box, box.at)

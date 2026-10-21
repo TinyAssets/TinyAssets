@@ -94,6 +94,7 @@ def authority(tmp_path, monkeypatch):
                            events=events, server=server, host=host, released=released)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 def test_enqueue_and_status_never_read_remote_and_erasure_mutates_once(authority):
     a = authority
 
@@ -114,6 +115,7 @@ def test_enqueue_and_status_never_read_remote_and_erasure_mutates_once(authority
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 def test_restart_resumes_local_job_when_remote_reads_are_unavailable(authority, monkeypatch):
     a = authority
     start = a.server.routing.start
@@ -133,6 +135,7 @@ def test_restart_resumes_local_job_when_remote_reads_are_unavailable(authority, 
     assert a.remote.reads == 0
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C3')
 def test_historical_platform_copy_recovers_from_offhost_job(authority, tmp_path):
     a = authority
     a.released.append("retained-before-erasure")
@@ -166,6 +169,7 @@ def test_historical_platform_copy_recovers_from_offhost_job(authority, tmp_path)
     assert (a.events.count("delete_snapshots"), a.events.count("destroy")) == host_effects
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 def test_wake_and_deletion_share_the_broker_owner_lock(authority, monkeypatch):
     a = authority
     entered, release = threading.Event(), threading.Event()
@@ -194,6 +198,7 @@ def test_wake_and_deletion_share_the_broker_owner_lock(authority, monkeypatch):
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 def test_host_lifecycle_has_no_broker_state_callbacks():
     root = Path(__file__).resolve().parents[1]
     removed = {"BOX_ADMISSION_ERASE", "BOX_RETIRE_ADMISSION", "BOX_VOLUME",
@@ -215,6 +220,7 @@ def test_host_lifecycle_has_no_broker_state_callbacks():
         "_start", "_sleep", "ensure_awake"}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 @pytest.mark.parametrize("action", ["sleep", "restore"])
 def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkeypatch, action):
     a = authority
@@ -255,6 +261,7 @@ def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkey
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C14')
 def test_only_job_step_one_requests_runtime_admission_erasure():
     root = Path(__file__).resolve().parents[1] / "tinyassets/broker"
     writers = []
@@ -267,6 +274,7 @@ def test_only_job_step_one_requests_runtime_admission_erasure():
     assert writers == ["deletion_jobs.py"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 @pytest.mark.parametrize("operation", ["snapshot", "restore"])
 def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority, operation):
     from tinyassets.broker.waker import Waker
@@ -304,6 +312,7 @@ def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority, opera
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 @pytest.mark.parametrize("async_operation", [False, True])
 def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(
         tmp_path, async_operation):
@@ -337,6 +346,7 @@ def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(authority, monkeypatch):
     from tinyassets.broker.waker import Waker
 
@@ -390,6 +400,7 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_mutation_without_routing_fails_before_changing_admission(authority):
     a = authority
     with pytest.raises(RuntimeError, match="requires routing"):
@@ -398,6 +409,7 @@ def test_mutation_without_routing_fails_before_changing_admission(authority):
     assert admission.read(a.identities, "alice").state == "admitted"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_map_erase_is_the_only_volume_cleanup_writer_and_retains_release_on_retry(authority):
     a = authority
     snapshot_id = "a" * 32
@@ -413,6 +425,7 @@ def test_map_erase_is_the_only_volume_cleanup_writer_and_retains_release_on_retr
     assert "UPDATE owner_volumes" not in source.read_text()
     assert "DELETE FROM owner_snapshots" not in source.read_text()
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_routing_projection_contains_only_admitted_and_suspended_owners(authority):
     from tinyassets.routing_snapshot import RoutingSnapshot
 
@@ -435,6 +448,7 @@ def test_routing_projection_contains_only_admitted_and_suspended_owners(authorit
         snapshot.route("alice")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_slow_status_for_one_owner_cannot_block_another_wake(authority):
     a = authority
     entered, release = threading.Event(), threading.Event()
@@ -457,6 +471,7 @@ def test_slow_status_for_one_owner_cannot_block_another_wake(authority):
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_host_has_no_capacity_decision_and_capacity_wait_has_no_host_rpc():
     root = Path(__file__).resolve().parents[1]
     host = (root / "tinyassets/boxes/owner_daemons.py").read_text()
@@ -470,6 +485,7 @@ def test_host_has_no_capacity_decision_and_capacity_wait_has_no_host_rpc():
                 "host", "execute", "_launch"}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_erased_installed_resume_does_not_repeat_withdrawal(authority):
     a = authority
     async def exercise():

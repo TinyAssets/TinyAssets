@@ -51,6 +51,7 @@ def request(cookie="protected", origin="https://tinyassets.io"):
     )
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 @pytest.mark.parametrize(
     "cookie,origin,owner",
     [
@@ -67,6 +68,7 @@ def test_bearer_origin_spoof_or_other_owner_is_not_approval(setup, cookie, origi
         sessions.require(request(cookie, origin), owner=owner)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_live_cookie_is_required_and_logout_revokes_it(setup):
     assert sessions.require(request(), owner="alice")
     sessions.revoke("protected")
@@ -74,6 +76,7 @@ def test_live_cookie_is_required_and_logout_revokes_it(setup):
         sessions.require(request(), owner="alice")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_login_pins_query_response_mode_and_keeps_verifier_in_server_custody(setup):
     req = request()
     req.headers.update({"sec-fetch-mode": "navigate", "sec-fetch-dest": "document"})
@@ -93,11 +96,13 @@ def test_login_pins_query_response_mode_and_keeps_verifier_in_server_custody(set
     assert b"copied-code" not in refused.body
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_bearer_fetch_cannot_start_interactive_login(setup):
     response = asyncio.run(sessions.begin(request()))
     assert response.status_code == 403
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_policy_bearer_write_cannot_bypass_owner_session(
         setup, monkeypatch, tmp_path):
     from tinyassets.broker.client import BrokerRefused
@@ -147,6 +152,7 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
     assert any(row["kind"] == "write" for row in json.loads(accepted.body)["receipts"])
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_path):
     from tinyassets.connection_oauth.pkce import flows_db
     from tinyassets.onboarding.inline_model_connect import flows, take
@@ -183,6 +189,7 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
     assert take(owner="alice", handle="aliceready")["status"] == "cancelled"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 @pytest.mark.parametrize("choice", ["approve", "deny"])
 @pytest.mark.parametrize("expired", [False, True])
 def test_box_approval_decision_uses_forwarded_session(tmp_path, monkeypatch, choice, expired):
@@ -242,6 +249,7 @@ def test_box_approval_decision_uses_forwarded_session(tmp_path, monkeypatch, cho
     assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 def test_box_policy_door_uses_local_policy_without_broker_or_cookie(tmp_path, monkeypatch):
     from tinyassets import owner_runtime
     from tinyassets.action_policy import ActionPolicyStore, initialize

@@ -4,6 +4,8 @@ import hashlib
 import json
 import sqlite3
 
+import pytest
+
 from tests.support.migration_volumes import contents
 from tests.test_owner_cutover_apply import cutover  # noqa: F401
 from tests.test_owner_cutover_census import _fingerprint, source  # noqa: F401
@@ -13,6 +15,7 @@ from tinyassets.broker.policy import _canonical, _digest
 from tinyassets.owner_centers import Centers, admitted_owner
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11')
 def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
     from tests.support.admission import Plans, drive, projection
     from tinyassets.broker.owner_identities import OwnerIdentities
@@ -60,6 +63,7 @@ def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
     assert after == before
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C11', 'owner-daemon-in-box:C8', 'owner-daemon-in-box:C7')
 def test_cutover_drops_custody_and_retains_account_policy(cutover):  # noqa: F811
     data, store, *_ = cutover
     account = hashlib.sha256(b"alice").hexdigest()

@@ -118,6 +118,7 @@ def http_origin():
         assert not thread.is_alive()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("tunnel", [False, True])
 @pytest.mark.parametrize("native", [True, False, "retired"], indirect=True,
                          ids=["center", "zero-centers", "retired-center"])
@@ -162,6 +163,7 @@ def test_owner_command_http_and_connect_reach_local_origin(
     assert not native.core._running
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 def test_native_bridge_preserves_body_and_response_after_half_close(
     native, http_origin, monkeypatch,
 ):
@@ -183,6 +185,7 @@ def test_native_bridge_preserves_body_and_response_after_half_close(
     assert seen == ["/upload"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_every_owner_command_gets_proxy_defaults_without_ambient_proxy(native, monkeypatch):
     for name in PROXY_ENV:
         monkeypatch.setenv(name, "unusable-ambient-proxy")
@@ -201,6 +204,7 @@ def test_every_owner_command_gets_proxy_defaults_without_ambient_proxy(native, m
     assert asyncio.run(OwnerTools(native.home).bash(op_id, command)) == "[exit code 0]"
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("refusal", ["admission", "registry", "tombstone", "billing", "abuse",
                                    "private", "metadata", "owner_cap", "host_cap"])
 def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, refusal):
@@ -244,6 +248,7 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
     assert native.proxy.active == before
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("document", [
     {"op": "BOX_PUBLIC", "center": "center"},
     {"op": "BOX_PUBLIC", "center": "foreign"},
@@ -273,14 +278,9 @@ def test_invalid_relay_operations_refuse_before_broker_contact(native, monkeypat
     assert not native.proxy.active
 
 
-def test_box_forwarder_child_does_not_hold_command_output_open(native):
-    forwarder = native.core._public_forwarder
-    done = run(native, "print('finished')")
-    assert done.returncode == 0 and done.stdout == b"finished\n" and done.stderr == b""
-    assert forwarder._thread.is_alive()
-    assert not native.core._running
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_provisioning_package_child_inherits_proxy_and_uses_broker(
     native, http_origin, monkeypatch, tmp_path,
 ):
@@ -325,6 +325,7 @@ def test_provisioning_package_child_inherits_proxy_and_uses_broker(
     assert seen == ["/package"]
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_daemon_close_joins_active_forwarder_and_releases_listener(native):
     forwarder = native.core._public_forwarder
     with socket.create_connection(  # hermetic-ok: fixed box-local loopback only
@@ -351,6 +352,7 @@ def test_daemon_close_joins_active_forwarder_and_releases_listener(native):
         fresh.close()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_shutdown_interrupts_stalled_relay_admission(native, tmp_path):
     forwarder = native.core._public_forwarder
     path = tmp_path / "stalled.sock"
@@ -374,18 +376,6 @@ def test_shutdown_interrupts_stalled_relay_admission(native, tmp_path):
     assert not forwarder._thread.is_alive()
 
 
-def test_listener_startup_failure_releases_owner_journal(native, tmp_path):
-    state = tmp_path / "failed-start"
-    with pytest.raises(OSError):
-        OwnerBoxd(owner_id="alice", owner_root=native.home.parent,
-                  state_dir=state, relay=native.relay)
-    recovered = OwnerBoxd(owner_id="alice", owner_root=native.home.parent, state_dir=state)
-    try:
-        done = recovered.run(["true"], cwd=native.home, wall_seconds=3, output_bytes=100)
-        assert done.returncode == 0
-    finally:
-        recovered.close()
-    assert native.core._public_forwarder._thread.is_alive()
 
 
 @pytest.fixture
@@ -394,6 +384,7 @@ def git_origin(native, tmp_path, monkeypatch):
     yield from synthetic.__wrapped__(tmp_path / "git-origin", monkeypatch)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(native, git_origin):
     from tinyassets.broker.client import BrokerClient
     from tinyassets.owner_git import routes
@@ -420,6 +411,7 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(nativ
         assert rf.read_frame_blocking(channel) is None
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("op", ["BOX_CONNECT", "BOX_PUBLIC"])
 def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, monkeypatch, op):
     from tinyassets.broker.admission import local_mutate

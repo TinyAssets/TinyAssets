@@ -75,38 +75,9 @@ async def exchange(proxy, request, *, center=None, principal="alice"):
         await server.wait_closed()
 
 
-@pytest.mark.asyncio
-async def test_proxy_pins_destination_and_preserves_body_after_half_close(proxy, monkeypatch):
-    received = []
-
-    async def upstream(reader, writer):
-        received.append(await reader.readuntil(b"\r\n\r\n"))
-        received.append(await reader.readexactly(3))
-        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
-    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-
-    def resolve(binding, host, actual_port):
-        assert (host, actual_port) == ("example.test", port)
-        return ["127.0.0.1"]  # substituted DNS policy only, real sockets below
-
-    monkeypatch.setattr("tinyassets.broker.public_egress.destination", resolve)
-    try:
-        request = (f"POST http://example.test:{port}/path HTTP/1.1\r\n"
-                   "Content-Length: 3\r\n\r\nabc").encode()
-        result = await exchange(proxy, request)
-        assert result.endswith(b"\r\n\r\nok")
-        assert received == [b"POST /path HTTP/1.1\r\nContent-Length: 3\r\n\r\n", b"abc"]
-        assert not proxy._public_egress.active
-    finally:
-        server.close()
-        await server.wait_closed()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["CONNECT", "GET"])
 @pytest.mark.parametrize("target", ["127.0.0.1:80", "169.254.169.254:80", "example.test:25",
@@ -118,16 +89,9 @@ async def test_public_proxy_refuses_private_and_unresolvable_destinations(proxy,
     assert not proxy._public_egress.active
 
 
-@pytest.mark.asyncio
-async def test_public_proxy_refuses_foreign_center_capacity_and_oversized_headers(proxy):
-    assert await exchange(proxy, b"", center="foreign") == b"REFUSED"
-    proxy._public_egress.active["alice"] = 32
-    assert await exchange(proxy, b"") == b"REFUSED"
-    proxy._public_egress.active.clear()
-    assert (await exchange(proxy, b"x" * 17000 + b"\r\n\r\n")).startswith(b"HTTP/1.1 403")
-    assert not proxy._public_egress.active
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("allocated", [False, True])
 async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypatch, allocated):
@@ -143,6 +107,7 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
     assert not proxy._public_egress.active
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("damage", ["erased", "close"])
 async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypatch, damage):

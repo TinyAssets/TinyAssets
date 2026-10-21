@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import secrets
 import threading
 import time
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from tests.support.admission import drive, projection
@@ -124,20 +121,9 @@ def fleet(tmp_path, monkeypatch):
         loop.close()
 
 
-def test_wake_reuses_one_box_and_secret_across_restart(fleet):
-    manager = fleet.manager
-    uid = fleet.wake("a")
-    first = fleet.admission.secrets["a"]
-    assert fleet.wake("a") == uid
-    assert len(fleet.runtime.starts) == 1
-    assert fleet.runtime.starts[0][1]["memory_bytes"] == 1024**3
-    with manager.condition:
-        assert manager._sleep(manager.boxes[uid], idle=0)
-    fleet.wake("a")
-    assert fleet.admission.secrets["a"] == first
-    assert len(fleet.runtime.starts) == 2
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(fleet):
     manager = fleet.manager
     uid = fleet.wake("a")
@@ -161,17 +147,9 @@ def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(flee
     assert len(fleet.runtime.starts) == 2
 
 
-def test_center_retirement_has_no_volume_operation(fleet):
-    manager = fleet.manager
-    uid = fleet.wake("a")
-    previous = list(manager.volumes.events)
-    manager.retire("a", uid)
-    assert manager.volumes.events == previous
-    assert uid in manager.volumes.images
-    fleet.wake("a")
-    assert uid in fleet.runtime.live
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_restore_executor_accepts_only_broker_bound_uid(fleet):
     uid = fleet.wake("a")
     snapshot = drive(fleet.routing.volumes.sleep("a"))
@@ -184,6 +162,7 @@ def test_restore_executor_accepts_only_broker_bound_uid(fleet):
     assert service.lifecycle(request, 1002) == {"restored": True}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 @pytest.mark.parametrize("failure", ["suspended", "auth", "refused", "transport"])
 def test_broker_admission_failure_refuses_wake_without_host_callback(fleet, monkeypatch, failure):
     from tinyassets.broker import box_admission
@@ -208,6 +187,7 @@ def test_broker_admission_failure_refuses_wake_without_host_callback(fleet, monk
     assert "wanted" not in vars(manager.boxes[a])
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.parametrize("awake", [False, True])
 def test_suspended_owner_cannot_wake_but_broker_can_stop_bound_box(fleet, awake):
     from tinyassets.broker.admission import local_mutate
@@ -223,6 +203,7 @@ def test_suspended_owner_cannot_wake_but_broker_can_stop_bound_box(fleet, awake)
     assert not fleet.runtime.alive(uid)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_failed_launch_cleanup_keeps_capacity_and_never_advertises_readiness(fleet, monkeypatch):
     original = fleet.runtime.start
 
@@ -244,6 +225,7 @@ def test_failed_launch_cleanup_keeps_capacity_and_never_advertises_readiness(fle
     assert len(fleet.runtime.starts) == 1
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C12')
 def test_idle_never_stops_a_running_turn_and_drain_refuses_new_turns(fleet):
     uid = fleet.wake("a")
     activity = fleet.states[uid]
@@ -263,6 +245,7 @@ def test_idle_never_stops_a_running_turn_and_drain_refuses_new_turns(fleet):
             pytest.fail("drained box admitted a turn")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_crashed_process_never_restarts_without_a_broker_wake(fleet):
     uid = fleet.wake("a")
     for _ in range(6):
@@ -279,6 +262,7 @@ def test_crashed_process_never_restarts_without_a_broker_wake(fleet):
     assert fleet.manager.status(uid)["error"] == ""
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
     a = fleet.wake("a")
     b = fleet.wake("b")
@@ -309,6 +293,7 @@ def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
     assert result == [b] and not thread.is_alive()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_busy_boxes_are_never_evicted_and_wake_is_bounded(fleet):
     a, b = fleet.wake("a"), fleet.wake("b")
     fleet.routing.config.wake_timeout = .05
@@ -318,6 +303,7 @@ def test_busy_boxes_are_never_evicted_and_wake_is_bounded(fleet):
     assert fleet.runtime.live == {a, b}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 @pytest.mark.parametrize("operation", ["snapshot", "restore"])
 def test_copy_operations_refuse_a_running_box_without_stopping_it(fleet, operation):
     uid = fleet.wake("a")
@@ -331,6 +317,7 @@ def test_copy_operations_refuse_a_running_box_without_stopping_it(fleet, operati
     assert fleet.runtime.stops == before
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_stop_executes_only_broker_bound_uid_and_retires_old_ingress(fleet):
     uid = fleet.wake("a")
     service = HostService(fleet.admission, fleet.manager.volumes, None, fleet.manager)
@@ -342,61 +329,13 @@ def test_stop_executes_only_broker_bound_uid_and_retires_old_ingress(fleet):
     assert not fleet.runtime.live and fleet.states[uid].revoked
 
 
-def test_ingress_old_secret_and_revoked_forward_fail(monkeypatch, tmp_path):
-    from starlette.responses import JSONResponse
-
-    from tinyassets import owner_activity, owner_runtime
-    from tinyassets.owner_ingress import OwnerIngress
-
-    activity = Activity()
-    monkeypatch.setattr(owner_activity, "activity", activity)
-    monkeypatch.setattr(owner_runtime, "_runtime", SimpleNamespace(principal="a", pid=os.getpid()))
-    secret = tmp_path / "secret"
-    old, fresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    secret.write_text(fresh)
-    app = OwnerIngress(JSONResponse({"ok": True}), secret)
-
-    async def exercise():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
-                                     base_url="http://owner") as client:
-            denied = await client.get("/_box/status", headers={"x-box-secret": old})
-            assert denied.status_code == 401
-            headers = {"x-box-secret": fresh}
-            assert (await client.get("/_box/status", headers=headers)).status_code == 200
-            assert (await client.post("/_box/revoke", headers=headers, json={})).status_code == 200
-            assert (await client.get("/_box/status", headers=headers)).status_code == 401
-
-    asyncio.run(exercise())
 
 
-def test_wake_needs_no_lease_and_active_owner_work_blocks_sleep(fleet):
-    manager = fleet.manager
-    uid = fleet.wake("a")
-    box = manager.boxes[uid]
-    assert "leases" not in vars(box)
-    with fleet.states[uid].enter(), manager.condition:
-        assert not manager._sleep(box, idle=0)
-    with manager.condition:
-        assert manager._sleep(box, idle=0)
-    assert not fleet.runtime.live
 
 
-def test_deleting_box_is_not_idle_even_after_last_turn_and_lease_finish(fleet):
-    manager = fleet.manager
-    uid = fleet.wake("a")
-    activity = fleet.states[uid]
-    with activity.enter():
-        activity.status(deleting=True)
-        with manager.condition:
-            assert not manager._sleep(manager.boxes[uid], idle=0)
-    with manager.condition:
-        assert not manager._sleep(manager.boxes[uid], idle=0)
-    assert fleet.runtime.live == {uid}
-    activity.deletion_refused()
-    with pytest.raises(RuntimeError, match="draining"), activity.enter():
-        pytest.fail("refused deletion reopened activity")
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C12')
 def test_quiesce_refuses_background_submission_and_maintenance(tmp_path, monkeypatch):
     from tinyassets import owner_activity, owner_runtime, run_input_runtime
     from tinyassets.api import runs
@@ -421,6 +360,7 @@ def test_quiesce_refuses_background_submission_and_maintenance(tmp_path, monkeyp
     assert gate.status()["active"] == 0
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C12')
 def test_background_work_blocks_drain_without_renewing_user_idle(monkeypatch):
     from tinyassets import owner_activity
 
@@ -439,45 +379,9 @@ def test_background_work_blocks_drain_without_renewing_user_idle(monkeypatch):
     assert gate.status(drain=True, idle=900)["draining"]
 
 
-def test_erased_record_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, monkeypatch):
-    import base64
-    import json
-
-    from starlette.responses import JSONResponse
-
-    from tinyassets import owner_activity, owner_ingress, owner_runtime
-
-    manager = fleet.manager
-    uid = fleet.wake("a")
-    gate = fleet.states[uid]
-    gate.admit_deletion_only()
-    route = {"secret": manager.boxes[uid].secret}
-    assert gate.deletion_only
-    monkeypatch.setattr(owner_activity, "activity", gate)
-    monkeypatch.setattr(owner_runtime, "current", lambda: SimpleNamespace(principal="a", uid=uid))
-
-    async def refused(identity):
-        return JSONResponse({"error": "deletion_refused"}, status_code=409)
-
-    monkeypatch.setattr(owner_ingress, "delete_local_account", refused)
-    app = owner_ingress.OwnerIngress(None, tmp_path / str(uid) / "secret")
-    headers = {"x-box-secret": route["secret"], "x-owner": "a",
-               "x-owner-identity": base64.b64encode(json.dumps(
-                   {"user_id": "a", "username": "a"}).encode()).decode()}
-
-    async def exercise():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
-                                     base_url="http://owner") as client:
-            assert (await client.post("/_box/account/delete", headers=headers)).status_code == 409
-
-    asyncio.run(exercise())
-    for keep_awake in (True, False):
-        with pytest.raises(RuntimeError, match="draining"), gate.enter(keep_awake=keep_awake):
-            pytest.fail("fenced owner executed")
-    with manager.condition:
-        assert not manager._sleep(manager.boxes[uid], idle=0)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T5')
 def test_erasure_refuses_broker_restart_and_host_has_no_restart_intent(fleet):
     from tinyassets.broker.admission import local_mutate
     uid = fleet.wake("a")

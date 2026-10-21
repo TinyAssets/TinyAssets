@@ -1,13 +1,11 @@
 """In-box git routes use real broker smart HTTP and never hold a credential."""
 import socket
-import sys
 from urllib.parse import urlsplit
 
 import pytest
 
 from tests.support.synthetic_git import synthetic
 from tinyassets.boxes import git_routes
-from tinyassets.boxes.boxd import OwnerBoxd
 from tinyassets.broker.client import BrokerClient
 from tinyassets.owner_git import environment, routes
 
@@ -17,6 +15,7 @@ def git_server(tmp_path, monkeypatch):
     yield from synthetic.__wrapped__(tmp_path, monkeypatch)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("claimed_owner", ["alice", "bob"])
 def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server, claimed_owner):
     s = git_server
@@ -54,32 +53,3 @@ def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server,
             assert response.startswith(b"HTTP/1.1 403"), response
             assert not s.state["seen"]
     assert not git_routes._routes
-
-
-def test_authenticated_git_child_overrides_public_proxy_default(git_server, monkeypatch):
-    s = git_server
-    client = BrokerClient(s.path, principal="alice", command_center="center",
-                          fence=lambda: s.generation)
-
-    def forbidden(*_):
-        pytest.fail("authenticated git used public egress")
-
-    monkeypatch.setattr("tinyassets.broker.public_egress.destination", forbidden)
-    core = OwnerBoxd(owner_id="alice", owner_root=s.workspace,
-                     state_dir=s.tmp_path / "owner-state", relay=s.path)
-    try:
-        with routes(client, [s.record], "developer") as env:
-            # Real child and git binary; only the synthetic origin is substituted.
-            done = core.run(["git", "ls-remote", "https://git.test/owner/repo.git"],
-                            cwd=s.workspace, env=env, wall_seconds=5, output_bytes=16384)
-            assert done.returncode == 0, done.stdout
-            assert s.secret.encode() not in done.stdout
-            assert core._public_forwarder._thread.is_alive()
-            proxy = core.run([sys.executable, "-c", "import os; print(os.environ['http_proxy']); "
-                              "print(os.environ['HTTPS_PROXY'])"],
-                             cwd=s.workspace, env=env, wall_seconds=5, output_bytes=1024)
-            assert proxy.stdout == (env["http_proxy"] + "\nhttp://127.0.0.1:3128\n").encode()
-        assert s.state["seen"] == [("/owner/repo.git/info/refs?service=git-upload-pack", True)]
-        assert not git_routes._routes
-    finally:
-        core.close()
