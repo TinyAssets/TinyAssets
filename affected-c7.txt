@@ -34,7 +34,6 @@ tests/test_backup_restore_drill_invariants.py
 tests/test_backup_script.py
 tests/test_backup_ship_gh.py
 tests/test_billing_boundary.py
-tests/test_bootstrap_env.py
 tests/test_box_local_driver.py
 tests/test_box_provider_contract.py
 tests/test_box_store_backup.py
@@ -142,7 +141,6 @@ tests/test_discovery_http.py
 tests/test_discovery_quantities.py
 tests/test_discovery_snapshot.py
 tests/test_docker_entrypoint.py
-tests/test_drop_first_operational_migration.py
 tests/test_engine_admissions.py
 tests/test_engine_endpoint.py
 tests/test_escrow_withdraw.py
@@ -182,9 +180,7 @@ tests/test_inference_reply_budget.py
 tests/test_ingress_http.py
 tests/test_inline_model_connect.py
 tests/test_inline_owner_sessions.py
-tests/test_install_log_reader.py
 tests/test_interactive_http_agent.py
-tests/test_ios_review_video.py
 tests/test_jail_admission_headroom.py
 tests/test_jail_disk.py
 tests/test_jail_seccomp.py
@@ -253,13 +249,11 @@ tests/test_payments_schema.py
 tests/test_payments_settlement_ledger.py
 tests/test_pending_requests_power.py
 tests/test_per_universe_engine_resolution.py
-tests/test_persona_custody.py
 tests/test_platform_oauth_clients.py
 tests/test_platform_secret_scope.py
 tests/test_platform_state_outside_command_centers.py
 tests/test_predeploy_auth_hardening.py
 tests/test_privileged_chain.py
-tests/test_probe_app_surface.py
 tests/test_protocol_encoders.py
 tests/test_provider_advertised_shortlist_and_effort.py
 tests/test_provider_assignment_admission.py

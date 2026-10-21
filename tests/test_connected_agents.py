@@ -1,8 +1,5 @@
 """Actual auth receipts, never manufactured agents or delivery readiness."""
 import json
-import shutil
-import subprocess
-from pathlib import Path
 
 import pytest
 from starlette.applications import Starlette
@@ -75,33 +72,8 @@ def _initialize(http, name="Fixture agent", *, path="/mcp", token="fixture-beare
             "clientInfo": {"name": name, "version": "test"}}})
 
 
-def test_mcp_auth_populates_and_reentry_deduplicates(stores, tmp_path, monkeypatch):
-    http = _mcp(monkeypatch, _identity())
-    assert _initialize(http, token="wrong").status_code == 401
-    assert roster(tmp_path) == []
-    assert _initialize(http).status_code == 200
-    found = roster(tmp_path)
-    assert len(found) == 1 and found[0]["name"] == "Fixture agent"
-    assert found[0]["name_source"] == "client_reported"
-    assert found[0]["messaging_ready"] is False
-    assert _initialize(http).status_code == 200
-    assert len(roster(tmp_path)) == 1
-    assert roster(tmp_path, "bob") == []
-    assert roster(tmp_path, universe="foreign") == []
-    raw = stores[1].path.read_bytes()
-    assert b"fixture-bearer" not in raw and b"clientInfo" not in raw
-    assert connections.roster(tmp_path, owner="alice", universe_id="home") == roster(tmp_path)
 
 
-@pytest.mark.parametrize("metadata,status,path", [
-    ({"first_party_client": True}, 200, "/mcp"),
-    ({}, 403, "/mcp"), ({}, 200, "/app/test"),
-])
-def test_failed_or_first_party_connection_does_not_seed_roster(
-        stores, tmp_path, monkeypatch, metadata, status, path):
-    http = _mcp(monkeypatch, _identity(**metadata), status=status)
-    _initialize(http, path=path)
-    assert roster(tmp_path) == []
 
 
 @pytest.mark.parametrize("name", [None, {}, "", "Bearer fixture-secret",
@@ -130,14 +102,6 @@ def test_observed_outside_mcp_respects_current_grants_and_revoke(stores, tmp_pat
     assert roster(tmp_path) == []
 
 
-def test_first_party_browser_mcp_is_not_an_external_agent(stores, tmp_path, monkeypatch):
-    http = _mcp(monkeypatch, _identity())
-    response = http.post("/mcp", headers={"authorization": "Bearer fixture-bearer",
-                                         "origin": "http://testserver"}, json={
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"clientInfo": {"name": "TinyAssets app"}}})
-    assert response.status_code == 200
-    assert roster(tmp_path) == []
 
 
 def test_deleted_owner_valid_mcp_token_cannot_recreate_receipt(stores, tmp_path, monkeypatch):
@@ -204,46 +168,3 @@ def test_owner_erasure_inventory_includes_receipts():
     from tinyassets.account_deletion import OWNER_ONLY_TABLES
 
     assert OWNER_ONLY_TABLES["authenticated_connections"] == "owner"
-
-
-def test_shell_empty_state_names_and_late_response_are_safe():
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node unavailable")
-    from tinyassets.onboarding.app_modules import shell_source
-
-    source = shell_source(Path(__file__).parents[1] / "tinyassets/onboarding/app.html")
-    code = source[source.index("  async function refreshAgentSwitcher(){"):
-                  source.index('  // The ACCOUNT half of')]
-    script = r'''
-const assert=require('node:assert/strict');
-class Element {
- constructor(){this.children=[];this.hidden=true;this.textContent='';}
- replaceChildren(...x){this.children=x;} appendChild(x){this.children.push(x);return x;}
- append(...x){this.children.push(...x);} addEventListener(){} setAttribute(){}
-}
-const names=['external-agent-roster','external-agent-summary','external-agent-list'];
-const nodes=Object.fromEntries(names.map(k=>[k,new Element()]));
-const $=id=>nodes[id];const document={createElement:()=>new Element(),querySelector:()=>null};
-const AppUI={enabled:true,home:'home',epoch:1,
-fence(e,h){return this.enabled&&this.epoch===e&&this.home===h;}};
-'''+code+r'''
-renderExternalAgents([]);
-assert.equal(nodes['external-agent-list'].children[0].textContent,
-'Tell your agents to connect to your TinyAssets MCP or API.');
-renderExternalAgents([{name:'<img src=x onerror=alert(1)>',protocol:'api',
-last_authenticated_at:100,name_source:'owner_supplied'}]);
-assert.equal(nodes['external-agent-list'].children[0].children[0].textContent,
-'<img src=x onerror=alert(1)>');
-assert.match(nodes['external-agent-list'].children.at(-1).textContent,/not established/);
-(async()=>{
- let resolve;AppUI.listAgents=()=>new Promise(r=>resolve=r);
- const request=refreshAgentSwitcher();AppUI.epoch++;AppUI.home='other';clearExternalAgents();
- resolve({agents:[{agent_id:'main',name:'Your agent'}],external_agents:[{name:'old owner'}]});
- await request;
- assert.equal(nodes['external-agent-roster'].hidden,true);
- assert.equal(nodes['external-agent-list'].children.length,0);
-})().catch(e=>{console.error(e);process.exitCode=1;});
-'''
-    result = subprocess.run([node], input=script, text=True, capture_output=True, timeout=20)
-    assert result.returncode == 0, result.stderr

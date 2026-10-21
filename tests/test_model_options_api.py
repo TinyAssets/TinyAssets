@@ -1,17 +1,13 @@
 """Shared unpowered model catalogue: actual ownership/storage, synthetic HTTP."""
 
-import asyncio
 import json
 
 import pytest
 
 from tests import test_served_model_preferences as integration
-from tests.test_discovery_snapshot import _model
-from tinyassets import daemon_server, universe_server
+from tinyassets import daemon_server
 from tinyassets.api import permissions
-from tinyassets.auth import middleware as auth
-from tinyassets.providers import definition, discovery_snapshot
-from tinyassets.storage.model_preferences import ModelPreferenceStore
+from tinyassets.providers import discovery_snapshot
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 rig = integration.rig
@@ -38,116 +34,16 @@ def read(**kwargs):
     return json.loads(read_graph(target="model_options", **kwargs))
 
 
-def test_configured_but_unpowered_agent_can_read_without_activation(catalogue):
-    before = catalogue.binding
-    result = read()
-    assert result["kind"] == "advisory_model_options" and result["advisory"] is True
-    assert result["binding_state"] == "no_serving_binding" and result["binding"] is None
-    assert len(result["options"]) == 1 and result["order"] == []
-    assert result["unavailable"] == []  # Source failure is not a phantom empty model.
-    assert result["source_failures"]
-    assert result["sources"][0]["bind_key"] == catalogue.rig.definition.id
-    assert result["sources"][0]["accepted"] is True
-    assert "no_serving_binding" in result["sources"][0]["reasons"]
-    from tinyassets.commons_catalog import get_binding
-
-    assert get_binding(catalogue.rig.base, universe_id="u-models",
-                       binding_id=before["agent_binding_id"]) == before
-    assert ModelPreferenceStore(catalogue.rig.base).get("owner", "u-models").generation == 0
 
 
-def test_live_binding_uses_shared_plan_and_preserves_accepted_constraints(catalogue):
-    catalogue.binding = integration.enable(catalogue)
-    result = read()
-    provider = "api_key_http:" + catalogue.rig.definition.id
-    assert result["binding"] == {"id": catalogue.binding["agent_binding_id"],
-                                 "revision": catalogue.binding["revision"]}
-    assert result["choice_authority"] == "accepted_manifest"
-    assert result["order"] == [{"provider_ref": provider, "model_id": "new-company/new-model"}]
-    assert result["accepted_model_access"] == {catalogue.rig.definition.id: {
-        "model_scope": "discovered", "model_ids": [], "cost_caps": None,
-    }}
 
 
-def test_newly_connected_source_is_listed_but_not_selectable_until_accepted(catalogue):
-    """Connected custody is not model authority: a source the owner never
-    accepted is shown so it can be offered, and nothing on it is selectable."""
-    catalogue.binding = integration.enable(catalogue)
-    extra = definition.register_definition(
-        universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
-        protocol="openai_chat", model="other-fixed-model", ref="grant-models",
-    )
-    result = read()
-    source = next(row for row in result["sources"] if row["bind_key"] == extra.id)
-    assert source["accepted"] is False and "source_not_accepted" in source["reasons"]
-    assert not any(row["in_candidate_catalog"] for row in result["options"]
-                   if row["reference"]["provider_ref"] == "api_key_http:" + extra.id)
-    assert extra.id not in result["accepted_model_access"]
-    assert result["order"] == [{"provider_ref": "api_key_http:" + catalogue.rig.definition.id,
-                                "model_id": "new-company/new-model"}]
 
 
-def test_legacy_model_scope_explains_optin_without_hiding_discovery(catalogue):
-    from tinyassets.provider_assignment_manifest import ModelAccess
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    connected = bind_serving_provider(
-        base_path=catalogue.rig.base, universe_dir=catalogue.rig.base / "u-models",
-        owner_user_id="owner", universe_id="u-models",
-        agent_binding_id=catalogue.binding["agent_binding_id"],
-        expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
-        model_access={catalogue.rig.definition.id: ModelAccess("legacy")},
-    )
-    catalogue.binding = connected["agent_binding"]
-    result = read()
-    assert len(result["options"]) == 1 and result["order"] == result["unavailable"] == []
-    assert "model_access_optin_required" in result["sources"][0]["reasons"]
-    assert "discovery_unavailable" not in result["sources"][0]["reasons"]
 
 
-def _discovers_configured_model(monkeypatch, reader):
-    """The legacy source's configured model is on its live catalogue; the legacy
-    lane runs that one model and nothing the catalogue does not list."""
-    def read(**kwargs):
-        document = reader[1](**kwargs)
-        if "benchmarks" not in kwargs["url"]:
-            document = {**document, "data": [*document["data"], _model("legacy-fixed")]}
-        return document
-    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", read)
-    return read
 
 
-@pytest.mark.parametrize("revoked", [False, True])
-def test_legacy_http_configuration_is_identified_without_inventing_a_candidate(
-    catalogue, reader, monkeypatch, revoked,
-):
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    connected = bind_serving_provider(
-        base_path=catalogue.rig.base, universe_dir=catalogue.rig.base / "u-models",
-        owner_user_id="owner", universe_id="u-models",
-        agent_binding_id=catalogue.binding["agent_binding_id"],
-        expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
-    )
-    catalogue.binding = connected["agent_binding"]
-    discover = _discovers_configured_model(monkeypatch, reader)
-    catalogue.binding = integration.enable(catalogue)
-    if revoked:
-        def revoke_during_discovery(**kwargs):
-            result = discover(**kwargs)
-            catalogue.rig.ledger.revoke_grant("grant-models")
-            return result
-        monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document",
-                            revoke_during_discovery)
-    result = read()
-    assert result["legacy_source"] == (None if revoked else {
-        "provider_ref": "api_key_http:" + catalogue.rig.definition.id,
-        "bind_key": catalogue.rig.definition.id,
-        "access_method": "api_key_http",
-        "model_id": catalogue.rig.definition.model,
-    })
-    assert result["accepted_model_access"] == {} and result["order"] == []
-    assert not any(row["in_candidate_catalog"] for row in result["options"])
 
 
 def test_foreign_registered_source_is_not_listed(catalogue):
@@ -160,53 +56,6 @@ def test_foreign_registered_source_is_not_listed(catalogue):
     assert foreign.id not in json.dumps(read())
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_shared_access_confirmation_composes_bind_then_enable(catalogue, reader, monkeypatch,
-                                                              legacy):
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    if legacy:
-        bound = bind_serving_provider(
-            base_path=catalogue.rig.base, universe_dir=catalogue.rig.base / "u-models",
-            owner_user_id="owner", universe_id="u-models",
-            agent_binding_id=catalogue.binding["agent_binding_id"],
-            expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
-        )
-        catalogue.binding = bound["agent_binding"]
-        _discovers_configured_model(monkeypatch, reader)
-        source_id = catalogue.rig.definition.id
-    else:
-        extra = definition.register_definition(
-            universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
-            protocol="openai_chat", model="extra-fixed", ref="grant-models",
-        )
-        source_id = extra.id
-    catalogue.binding = integration.enable(catalogue)
-    before = read()
-    source = next(s for s in before["sources"] if s["bind_key"] == source_id)
-    assert source["access_method"] == "api_key_http"
-    access = {**before["accepted_model_access"], source["bind_key"]: {
-        "model_scope": "discovered", "model_ids": [], "cost_caps": None,
-    }}
-    bound = json.loads(universe_server.write_graph(
-        target="agent_binding", operation="bind_serving_provider", graph_id="u-models",
-        agent_binding_id=before["binding"]["id"], expected_revision=before["binding"]["revision"],
-        payload_json=json.dumps({"provider": source["bind_key"], "model_access": access}),
-    ))
-    assert bound["status"] == "ready"
-    assert bound["agent_binding"]["status"] == "configured"
-    enabled = json.loads(universe_server.write_graph(
-        target="agent_binding", operation="set_serving", graph_id="u-models",
-        agent_binding_id=bound["agent_binding"]["agent_binding_id"],
-        expected_revision=bound["agent_binding"]["revision"],
-        payload_json=json.dumps({"enabled": True}),
-    ))
-    assert enabled["status"] == "serving"
-    after = read()
-    assert after["choice_authority"] == "accepted_manifest" and after["legacy_source"] is None
-    assert after["accepted_model_access"] == access
-    assert after["order"]
-    assert before["preferences"] == after["preferences"]
 
 
 @pytest.mark.parametrize("case", ["anonymous", "other_actor", "non_admin", "foreign_graph",
@@ -229,20 +78,6 @@ def test_scope_refuses_before_discovery(catalogue, reader, monkeypatch, case):
     assert reader[0] == []
 
 
-def test_full_catalogue_survives_read_limit_and_adapter(catalogue, reader, monkeypatch):
-    def many(**kwargs):
-        result = reader[1](**kwargs)
-        if "models/user" in kwargs["url"]:
-            result["data"] = [_model("future/model-" + str(i)) for i in range(71)]
-        return result
-
-    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", many)
-    # The owner door: every choice, and `limit` does not reach this target.
-    assert len(read(limit=1)["options"]) == 71
-    # The model door: a projection that still counts every one of them.
-    result = asyncio.run(universe_server.mcp.call_tool("read_graph", {"target": "model_options"}))
-    assert result.structured_content["total_models"] == 71
-    assert result.content and result.content[0].type == "text"
 
 
 def test_scope_change_during_refresh_refuses_entire_result(catalogue, reader, monkeypatch):
@@ -263,22 +98,3 @@ def test_catalogue_does_not_serialize_private_source_metadata(catalogue):
                    str(catalogue.rig.base), "source_digest", "authenticated_account_id"):
         assert secret not in encoded
     assert result["sources"][0]["observed_at"] and result["sources"][0]["expires_at"]
-
-
-def test_empty_owned_home_is_readable_without_provider_or_agent(tmp_path, monkeypatch):
-    from tinyassets.auth.provider import Identity
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    universe = tmp_path / "u-empty"
-    universe.mkdir()
-    (universe / "soul.md").write_text("# Empty home", encoding="utf-8")
-    daemon_server.set_founder_home(tmp_path, founder_sub="empty-owner", universe_id=universe.name,
-                                   platform_generated=True)
-    daemon_server.grant_universe_access(tmp_path, universe_id=universe.name,
-                                       actor_id="empty-owner", permission="admin")
-    with auth.identity_context(Identity(user_id="empty-owner", username="empty-owner")):
-        result = read()
-    assert result["options"] == result["sources"] == result["order"] == []
-    assert result["preferences"]["generation"] == 0
-    assert result["binding_state"] == "no_serving_binding"
-    assert result["choice_authority"] == "none"

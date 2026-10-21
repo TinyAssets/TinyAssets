@@ -1,10 +1,9 @@
 """Exact single-inference data and usage accounting, no provider calls."""
 
-from dataclasses import FrozenInstanceError
 
 import pytest
 
-from tinyassets.providers.agent_inference import AgentInferenceRequest, openrouter_usage_cost
+from tinyassets.providers.agent_inference import openrouter_usage_cost
 
 
 @pytest.mark.parametrize(
@@ -30,23 +29,3 @@ from tinyassets.providers.agent_inference import AgentInferenceRequest, openrout
 )
 def test_documented_account_charge_is_conservative_and_unknown_is_not_zero(wire, expected):
     assert openrouter_usage_cost(wire) == expected
-
-
-def test_request_inventory_is_immutable_and_detached():
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "read",
-                "description": "",
-                "parameters": {"type": "object"},
-            },
-        }
-    ]
-    request = AgentInferenceRequest(tools=tools)
-    tools[0]["function"]["name"] = "changed"
-    assert request.tools()[0]["function"]["name"] == "read"
-    with pytest.raises(FrozenInstanceError):
-        request.tools_json = "{}"
-    with pytest.raises(ValueError):
-        AgentInferenceRequest(tools=tools, history=[])

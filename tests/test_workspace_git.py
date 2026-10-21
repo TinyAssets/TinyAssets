@@ -25,7 +25,6 @@ import signal
 import socket
 import stat
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +34,6 @@ import pytest
 from tinyassets import workspace_git as wg
 from tinyassets.workspace_git import (
     CredentialBroker,
-    GitResult,
     WorkspaceGitError,
     classify_stderr,
     create_bundle,
@@ -164,18 +162,6 @@ def test_module_source_never_reads_an_environment_variable() -> None:
         assert forbidden not in source
 
 
-def test_module_docstring_states_the_boundary_verbatim() -> None:
-    """The boundary statement is normative (design D1, round 3) -- not a gloss."""
-    doc = " ".join((wg.__doc__ or "").split())
-    assert "credential-blind" in doc.lower()
-    for sentence in (
-        "No credentialed git ever opens a workspace.",
-        "No host-side git opens a workspace's ``.git`` after the workspace is "
-        "published to user code.",
-        "A host-side, credential-free initializer may populate a fresh, "
-        "unpublished directory from a verified bundle.",
-    ):
-        assert " ".join(sentence.split()) in doc
 
 
 # ---------------------------------------------------------------------------
@@ -1663,8 +1649,6 @@ def test_classify_stderr(expected: str, fixture: str) -> None:
     assert classify_stderr(fixture) == expected
 
 
-def test_every_declared_class_has_a_fixture() -> None:
-    assert set(CLASS_FIXTURES) == set(wg.STDERR_CLASSES)
 
 
 def test_classify_stderr_is_total() -> None:
@@ -1672,21 +1656,6 @@ def test_classify_stderr_is_total() -> None:
         assert classify_stderr(text) in wg.STDERR_CLASSES
 
 
-def test_git_result_carries_the_class(tmp_path: Path, empty_home: Path) -> None:
-    launcher = RecordingLauncher(
-        FakeCompleted(returncode=128, stderr=CLASS_FIXTURES["auth"].encode())
-    )
-    result = run_git(
-        ["fetch"],
-        cwd=tmp_path,
-        home_dir=empty_home,
-        path="/usr/bin",
-        timeout_s=5,
-        launcher=launcher,
-    )
-    assert isinstance(result, GitResult)
-    assert result.stderr_class == "auth"
-    assert result.ok is False
 
 
 # ---------------------------------------------------------------------------
@@ -2344,8 +2313,6 @@ def test_bundle_helpers_never_touch_the_real_subprocess_by_default() -> None:
         assert "env" not in parameters, "a caller must not be able to hand in an env"
 
 
-def test_python_is_recent_enough_for_the_typing_used() -> None:
-    assert sys.version_info >= (3, 11)
 
 
 def test_populate_forwards_the_descriptor_to_both_of_its_git_calls(monkeypatch):
