@@ -58,15 +58,3 @@ def case(tmp_path, monkeypatch):
 
     monkeypatch.setattr("tinyassets.storage.outbound_connections.ConnectionLedger", no_local)
     return SimpleNamespace(root=tmp_path, ledger=ledger, definitions=definitions, calls=calls)
-
-
-
-
-
-
-
-
-
-
-
-

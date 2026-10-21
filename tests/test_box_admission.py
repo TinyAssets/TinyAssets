@@ -502,5 +502,3 @@ def test_deletion_resume_requires_positive_permanent_binding(authority, owner, u
         drive(jobs.resume_loaded_job(new_job(owner, uid)))
     assert read(authority, "alice").state == "admitted"
     assert authority.owner_machine("unknown") is None
-
-

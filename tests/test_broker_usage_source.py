@@ -30,9 +30,3 @@ def source(discovery):  # noqa: F811
                                request={"body": {"model": "chosen-model"}})
     discovery.store = UsageStore(discovery.root)
     return discovery
-
-
-
-
-
-

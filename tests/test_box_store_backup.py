@@ -277,5 +277,3 @@ if [[ "${@: -1}" == FSTYPE ]]; then echo "$TEST_FS"; else echo "$TEST_OPTIONS"; 
         text=True,
     )
     assert result.returncode == expected
-
-

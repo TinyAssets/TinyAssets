@@ -106,9 +106,3 @@ def _bound_and_serving(tmp_path, monkeypatch):
         expected_revision=connected["agent_binding"]["revision"], enabled=True,
     )["agent_binding"]
     return universe_dir, serving, definition
-
-
-
-
-
-

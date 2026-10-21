@@ -35,23 +35,3 @@ def post(operation, data, *, origin="https://tinyassets.io", cookie=""):
 
 def begin():
     return post("begin", {"preset_id": "openrouter_user_models_v1", "code_challenge": CHALLENGE})
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -121,27 +121,3 @@ def _drive(
     resp = asyncio.run(route.endpoint(Request(scope, receive)))
     set_cookie = [v.decode() for k, v in resp.raw_headers if k == b"set-cookie"]
     return resp.status_code, json.loads(resp.body), set_cookie, calls
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

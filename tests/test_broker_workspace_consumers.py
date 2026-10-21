@@ -43,11 +43,3 @@ def invoke(rig, *, owner="alice", center="cc-alice", context=True):
         if context else None)
     wrapped({})
     return chain.evidence["checkout"]["workspace"]
-
-
-
-
-
-
-
-

@@ -465,5 +465,3 @@ def _parity_violations(source: str, preview: dict[str, set[str]]) -> list[str]:
 
 
         # monkeypatch restores the original poison state and lock globals.
-
-

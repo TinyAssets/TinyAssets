@@ -714,5 +714,3 @@ def test_owner_operation_has_no_host_socket_fallback(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="owner broker channel is unavailable"):
         client.owner_policy("read")
     assert not (tmp_path / "host.sock").exists()
-
-

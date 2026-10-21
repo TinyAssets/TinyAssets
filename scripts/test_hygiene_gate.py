@@ -453,8 +453,9 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     base = merge_base(base, head, root)
     changes = changed_files(base, head, root)
     shape_files = test_shape.sources(root, head)
+    old_shape_files = test_shape.sources(root, base)
     rows = test_shape.registry(shape_files)
-    old_rows = test_shape.registry(test_shape.sources(root, base))
+    old_rows = test_shape.registry(old_shape_files)
     changed_tests = {new for _, _, new in changes if collectable(new)}
     retired = {row for row, state in old_rows.items()
                if state == "current" and rows.get(row) != "current"}
@@ -481,8 +482,19 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
         if ((old or "").startswith("tests/") and (old or "").endswith(".py"))
         or ((new or "").startswith("tests/") and (new or "").endswith(".py"))
     ]
-    befores = {old: model(_show(base, old, root), old) for old, _ in test_changes if old}
-    afters = {new: model(_show(head, new, root), new) for _, new in test_changes if new}
+    # The shape resolver already batch-read every collectable test blob.
+    # Reuse that text instead of spawning two more git processes per file.
+    def test_text(revision, path, blobs):
+        return blobs.get(path) if collectable(path) else _show(revision, path, root)
+
+    befores = {
+        old: model(test_text(base, old, old_shape_files), old)
+        for old, _ in test_changes if old
+    }
+    afters = {
+        new: model(test_text(head, new, shape_files), new)
+        for _, new in test_changes if new
+    }
     # A test counts as MOVED only if an identical body was ADDED to a file
     # pytest still collects; matched one-to-one, so a surviving copy can never
     # vouch for a deleted one.

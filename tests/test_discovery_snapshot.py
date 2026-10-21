@@ -59,27 +59,3 @@ def _refresh(rig):
     return snapshots.refresh_model_discovery(
         owner_user_id="owner", universe_id="u-models", definition_id=rig.definition.id
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

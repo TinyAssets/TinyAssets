@@ -98,5 +98,3 @@ def test_preview_assets_come_only_from_verified_public_package(home, monkeypatch
     else:
         assert out["error"] == "preview_unavailable" and "ui" not in out
     assert reads == [] and list_pending(home / BOB_UNIVERSE) == []
-
-

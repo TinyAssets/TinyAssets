@@ -145,5 +145,3 @@ def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> in
     starts = [m for m in sent if m["type"] == "http.response.start"]
     assert starts, "no response.start emitted"
     return starts[0]["status"]
-
-

@@ -23,11 +23,3 @@ def document(**changes):
     return dict(action="configure", grant_id="grant-a", connection_id="conn-a",
                 capability_kind="constant_headers", descriptor={"headers": {"X-Fixture": "yes"}},
                 enabled=True, preview=False) | changes
-
-
-
-
-
-
-
-

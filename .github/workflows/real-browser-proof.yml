@@ -191,4 +191,3 @@ jobs:
           name: junit-real-browser-proof
           path: ${{ runner.temp }}/browser-out/junit-real-browser.xml
           if-no-files-found: warn
-

@@ -54,17 +54,3 @@ def context(owner_setup, tmp_path, monkeypatch):  # noqa: F811
 
     yield home, row, keys, authority, call
     _logout()
-
-
-
-
-
-
-
-
-
-
-
-
-
-

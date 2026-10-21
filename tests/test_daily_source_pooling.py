@@ -95,9 +95,3 @@ def _assert_pool(pool):
     assert _router._quota.daily_detail(pool.first, owner=parity.A_OWNER)
     assert _router._quota.available(pool.second, owner=parity.A_OWNER)
     assert pool.foreign.requests == [] and pool.foreign.reads == []
-
-
-
-
-
-

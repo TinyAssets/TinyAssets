@@ -298,25 +298,3 @@ _MORE = [
     {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["POST"]},
     {"host": "api.example.com", "path_template": "/v1/threads", "methods": ["POST"]},
 ]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

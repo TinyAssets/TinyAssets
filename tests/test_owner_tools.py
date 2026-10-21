@@ -216,6 +216,3 @@ def test_extension_delivery_failure_prevents_local_command(owner, failure):
             bridge.close()
 
     asyncio.run(run())
-
-
-

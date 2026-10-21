@@ -231,21 +231,3 @@ def _async_call(served):
     return model_call(served.router,
         "writer", "hello", "system", operation="converse", universe_context=served.context
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

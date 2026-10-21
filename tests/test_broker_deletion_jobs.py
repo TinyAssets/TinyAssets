@@ -871,5 +871,3 @@ def test_full_job_including_custody_mutates_admission_exactly_once(jobs, monkeyp
     assert mutations == [("alice", "erase")]
     assert complete_deletion(jobs.service, "alice")["status"] == "deleted"
     assert mutations == [("alice", "erase")]
-
-
