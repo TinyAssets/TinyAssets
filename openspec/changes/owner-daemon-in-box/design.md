@@ -912,7 +912,7 @@ Target:
   that `owner_record` overrides, and boxhostd's router-side `status` operation,
   which has no production caller.
 
-**As built (b9, C15 round-5 items 1–3):** the existing map work slot records
+**As built (b9, C15 round-5 items 1-3):** the existing map work slot records
 sleep debt. Wake changes pending snapshot work to running without replacing the
 published restore point. Graceful sleep records debt and releases capacity;
 deploy completes after those sleeps. The tick copies outside the broker owner
@@ -922,11 +922,12 @@ boxhostd uses its per-UID execution lock for launch, probes, drain and shutdown;
 the registry lock only accesses registry rows. All broker lifecycle host calls,
 including deletion, use the existing capacity condition and one configured
 connection count. The waker uses that configuration, and boxhostd sends an
-explicit excess-connection error. Registration does not consume a lifecycle
-execution slot. The copy-on-prepare/recover path, snapshot wake refusal, serial
-deploy copies, registry-lock I/O spans and independent waker bound are deleted.
+explicit excess-connection error. Three configured lifecycle calls plus the one
+persistent registration occupy the four broker connections. The copy inside
+prepare/recover, snapshot wake refusal, serial deploy copies, registry-lock I/O
+spans and independent waker bound are deleted.
 Round-4 publication, deletion ordering, routing and recovery receipts remain as
-built in b8. This note claims no deployment; round-5 items 4–6 belong to lane c.
+built in b8. This note claims no deployment; round-5 items 4-6 belong to lane c.
 
 ### Build order and lanes
 Lane a (C1â€“C4) and step 1 are complete. The remaining lanes run one after

@@ -544,8 +544,15 @@ def test_fifth_broker_connection_gets_explicit_refusal(tmp_path, monkeypatch):
     monkeypatch.setattr("tinyassets.boxes.host_service.peer",
                         lambda sock: (os.getpid(), 1002, 1002))
     stop, release = threading.Event(), threading.Event()
+    listening = threading.Event()
     entered = queue.Queue()
     path = tmp_path / "host.sock"
+    listen = socket.socket.listen
+
+    def ready(sock, backlog):
+        listen(sock, backlog)
+        listening.set()
+    monkeypatch.setattr(socket.socket, "listen", ready)
 
     def handler(sock):
         entered.put(True)
@@ -557,9 +564,7 @@ def test_fifth_broker_connection_gets_explicit_refusal(tmp_path, monkeypatch):
     thread.start()
     clients = []
     try:
-        deadline = time.monotonic() + 2
-        while not path.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
+        assert listening.wait(2)
         for _ in range(4):
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             clients.append(client)
