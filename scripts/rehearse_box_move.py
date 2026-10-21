@@ -113,6 +113,33 @@ def rehearsal_manifests():
                               else value for column, value in zip(columns, row)) for row in rows]
             tables[name] = sorted(rows, key=repr)
     shared[relative] = {'schema': schema, 'tables': tables}
+    # C11's policy rewrite stamps its migration receipt with the wall clock.
+    # Compare those databases by rows: one recent receipt, exact otherwise.
+    import re
+
+    for key in [key for key in shared
+                if re.fullmatch(r'\.broker/accounts/[0-9a-f]{64}/policy\.db', key)]:
+        with closing(sqlite3.connect(root / key)) as db:
+            policy_schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master '
+                                       'ORDER BY name').fetchall()
+            policy_tables = {}
+            for kind, name, _, _ in policy_schema:
+                if kind != 'table':
+                    continue
+                cursor = db.execute('SELECT * FROM "' + name.replace('"', '""') + '"')
+                columns = [column[0] for column in cursor.description]
+                rows = cursor.fetchall()
+                if name == 'receipts':
+                    migrated = [row for row in rows
+                                if dict(zip(columns, row)).get('kind') == 'migration']
+                    assert len(migrated) == 1
+                    assert 0 <= time.time() - dict(zip(columns, migrated[0]))['at'] < 7 * 86400
+                    rows = [tuple('recent migration receipt' if column == 'at'
+                                  and dict(zip(columns, row)).get('kind') == 'migration'
+                                  else value for column, value in zip(columns, row))
+                            for row in rows]
+                policy_tables[name] = sorted(rows, key=repr)
+        shared[key] = {'schema': policy_schema, 'tables': policy_tables}
     return [shared, journal['owner_manifests']]
 
 
