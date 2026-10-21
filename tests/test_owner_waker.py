@@ -20,7 +20,7 @@ from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.support.admission import Plans, async_call, drive, projection, retire_local, suspend
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.admission import local_mutate
-from tinyassets.broker.next_wake import FLOOR_SECONDS, NextWakeIndex
+from tinyassets.broker.next_wake import NextWakeIndex
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.owner_reads import PlanMissing
 from tinyassets.broker.waker import MAX_PENDING, Waker
@@ -55,43 +55,49 @@ async def settled_tick(waker):
     await asyncio.gather(*waker.pending.values(), return_exceptions=True)
 
 
-def test_floor_includes_never_reported_and_preserves_reports_across_restart(index):
+def test_missing_row_reconstructs_and_null_never_periodically_wakes(index):
     calls = []
     clock = [100.0]
-    index.report("b", None, now=90)
-    index.report("c", 1000000, now=90)
+    index.report("b", None)
+    index.report("c", 1000000)
+
+    def wake(owner, **kw):
+        calls.append((owner, kw))
+        index.report(owner, None)
+
     waker = Waker(index, plan_store(index), clock=lambda: clock[0],
-                  wake=async_call(lambda owner, **kw: calls.append((owner, kw))))
+                  wake=async_call(wake))
 
     async def exercise():
         await settled_tick(waker)
         await settled_tick(waker)
-        assert sorted(calls) == [(o, {"scheduled": True}) for o in ("a", "b", "c")]
+        assert calls == [("a", {"scheduled": True})]
         calls.clear()
-        clock[0] += FLOOR_SECONDS - 1
+        clock[0] += 2 * 24 * 60 * 60
         await settled_tick(waker)
         assert calls == []
-        clock[0] += 1
+        with closing(sqlite3.connect(index.path)) as db, db:
+            db.execute("DELETE FROM next_wakes WHERE owner='a'")
         await settled_tick(waker)
         await settled_tick(waker)
-        assert {o for o, _ in calls} == {"a", "b", "c"}
+        assert calls == [("a", {"scheduled": True})]
 
     asyncio.run(exercise())
     restored = NextWakeIndex(index.identities)
     with closing(sqlite3.connect(restored.path)) as db:
-        assert db.execute("SELECT next_wake_at, reported_at FROM next_wakes "
-                          "WHERE owner='c'").fetchone() == (1000000, 90)
-        assert db.execute("SELECT reported_at FROM next_wakes "
-                          "WHERE owner='a'").fetchone() == (None,)
+        assert [r[1] for r in db.execute("PRAGMA table_info(next_wakes)")] == [
+            "owner", "next_wake_at"]
+        assert db.execute("SELECT * FROM next_wakes ORDER BY owner").fetchall() == [
+            ("a", None), ("b", None), ("c", 1000000)]
 
 
 @pytest.mark.parametrize("reason", ["billing", "abuse"])
 def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(index, reason, caplog):
     plans = plan_store(index)
-    index.report("a", 0, now=0)
+    index.report("a", 0)
     suspend(plans, "a", reason=reason, suspended=True)
     with pytest.raises(PermissionError, match="suspended"):
-        index.report("a", 0, now=0)
+        index.report("a", 0)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='b'")
     retire_local(index.identities.path.parent / "synthetic-box-c", "cc-c")
@@ -101,6 +107,7 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
     def wake(owner, **kw):
         owner_record(index.identities, owner)
         calls.append(owner)
+        index.report(owner, None)
 
     waker = Waker(index, plans, wake=async_call(wake))
 
@@ -121,8 +128,8 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
 def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ack(index):
     calls = []
     for owner in ("a", "b", "c"):
-        index.woken(owner, now=100)
-    index.report("a", 90, now=99)
+        index.report(owner, None)
+    index.report("a", 90)
 
     def wake(owner, **kw):
         calls.append(owner)
@@ -130,15 +137,15 @@ def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ac
             raise RuntimeError("capacity unavailable")
         # A tick reporting during startup must not be overwritten by its wake ACK.
         if len(calls) == 3:
-            index.report(owner, None, now=102)
+            index.report(owner, None)
 
     waker = Waker(index, plan_store(index), wake=async_call(wake), clock=lambda: 101)
 
     async def exercise():
         await settled_tick(waker)
         with closing(sqlite3.connect(index.path)) as db:
-            assert db.execute("SELECT last_woken_at FROM next_wakes "
-                              "WHERE owner='a'").fetchone() == (100,)
+            assert db.execute("SELECT next_wake_at FROM next_wakes "
+                              "WHERE owner='a'").fetchone() == (90,)
         await settled_tick(waker)
         assert index.due(now=101) == ["a"]
         await settled_tick(waker)
@@ -176,10 +183,10 @@ def test_slow_wakes_do_not_block_the_timer_and_are_bounded(index):
 def test_report_rejects_invalid_times_and_retired_admission(index):
     for at in (True, "123", float("nan"), float("inf"), {}):
         with pytest.raises(ValueError):
-            index.report("a", at, now=0)
+            index.report("a", at)
     for owner in ("retired", "reserved", "unknown"):
         with pytest.raises(LookupError):
-            index.report(owner, 0, now=0)
+            index.report(owner, 0)
 
 
 def test_lost_identity_database_is_never_recreated_by_the_wake_scan(index):
@@ -407,7 +414,7 @@ def test_bound_report_cannot_name_another_owner(sleeping_box):
     await_report(box, box.at)
     victim = box.index.identities.resolve("victim", allocate=True)
     drive(box.index.identities.admit("victim", routing=projection(box.index.identities.path)))
-    box.index.report("victim", box.at + 99, now=0)
+    box.index.report("victim", box.at + 99)
     path = box.relays.bind(box.owner, box.uid)
     for field in ("owner", "principal", "uid"):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:

@@ -423,7 +423,7 @@ class _Connection:
                     if set(doc) != {"op", "at"}:
                         raise ValueError("invalid next-wake report")
                     await asyncio.to_thread(self._server.next_wakes.report,
-                                            self._box_owner, doc["at"], now=time.time())
+                                            self._box_owner, doc["at"])
                     answer = {"op": "BOX_RESULT", "result": None}
                 except Exception:
                     _LOG.exception("next-wake report refused")

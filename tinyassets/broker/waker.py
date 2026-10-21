@@ -30,7 +30,6 @@ class Waker:
             return
         # C5: the broker lifecycle authority serializes this wake with withdrawal.
         await self.wake(owner, scheduled=True)
-        self.index.woken(owner, now=self.clock())
 
     async def tick(self):
         if self.lifecycle_tick is not None:

@@ -507,6 +507,14 @@ work time, or null when paused or empty. A missing index row triggers
 reconstruction. Delivery stays at least once, and the box handles each
 occurrence idempotently. Snapshot retries are C2's lifecycle work, never an agent wake.
 
+**As built (lane c, C9):** `NextWakeIndex` stores only `owner` and
+`next_wake_at`. The waker selects due reports and missing rows, and only the box's
+report changes the index. A failed wake or report leaves reconstruction pending;
+a null report has no periodic wake. Cutover discards the old disposable index
+schema. Root Linux tests cover the two-column schema, reconstruction, null,
+suspension, retries, and real sleeping-box execution with duplicate delivery
+across restart (57 passed with the admission tests).
+
 ### C10. Storage scales with active owners (founder decision, 2026-10-19)
 The founder asked for storage that grows and shrinks with demand, with no
 downtime and little wasted money. This builds on C1 and C2 and adds no new

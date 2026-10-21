@@ -2095,9 +2095,9 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
 
     from tinyassets.broker.next_wake import NextWakeIndex
 
-    wake = NextWakeIndex(SimpleNamespace(path=identity))
-    with closing(sqlite3.connect(wake.path)) as db, db:
-        db.execute("DELETE FROM next_wakes")
+    with closing(sqlite3.connect(identity.parent / "next-wake.db")) as db, db:
+        db.execute("DROP TABLE IF EXISTS next_wakes")
+    NextWakeIndex(SimpleNamespace(path=identity))
     hook_path = shared / ".hook-owners.sqlite3"
     with closing(sqlite3.connect(hook_path)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS hook_owners ("

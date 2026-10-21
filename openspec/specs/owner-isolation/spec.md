@@ -6,6 +6,24 @@ Define owner admission, source integrity and crash-resume requirements for the o
 
 ## Requirements
 
+### Requirement: The wake index holds only the next owner wake
+The shared wake index SHALL have exactly two columns, `owner` and `next_wake_at`.
+Schedule definitions, pause state and occurrence execution SHALL live in the box.
+Only a box report SHALL set its next wake, or null when paused or empty. The waker
+SHALL reconstruct a missing row by waking the admitted box to report again.
+Failed wake or report SHALL retry on the existing tick. A reported null SHALL
+never cause a periodic wake. Snapshot retries SHALL remain lifecycle work.
+
+#### Scenario: Missing rows reconstruct without periodic null wakes
+- **WHEN** an admitted owner's row is missing
+- **THEN** the waker wakes that box to reconstruct its next wake
+- **AND** a null report stays asleep beyond 24 hours, including after restart
+
+#### Scenario: Failed delivery preserves the report
+- **WHEN** wake or reporting fails
+- **THEN** the existing due or missing row remains eligible for retry
+- **AND** duplicate delivery, including restart between execution and reporting, never runs the same scheduled occurrence twice
+
 ### Requirement: Owner admission has one record and one writer
 
 Each owner SHALL have one admission record with one writer. The router, waker
