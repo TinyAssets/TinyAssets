@@ -41,7 +41,9 @@ no_check_bucket = true
 EOF
     )
     for _ in $(seq 1 60); do
-      if rclone mkdir "spaces:${bucket}" --retries 1 --low-level-retries 1 >/dev/null 2>&1; then
+      if rclone mkdir "spaces:${bucket}" --retries 1 --low-level-retries 1 >/dev/null 2>&1 \
+          && rclone lsd spaces: --retries 1 --low-level-retries 1 2>/dev/null \
+            | awk '{print $NF}' | grep -Fxq "$bucket"; then
         printf 'BACKUP_DEST=spaces:%s/workflow-backups\n' "$bucket"
         exit 0
       fi

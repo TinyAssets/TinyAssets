@@ -1,6 +1,7 @@
 """The synthetic workload must reach the real owner-split census."""
 
 import sqlite3
+import stat
 import subprocess
 from pathlib import Path
 
@@ -22,6 +23,13 @@ def test_fixture_is_production_shaped_and_cutover_ready(tmp_path):
     assert report["ready"], report["refusals"]
     assert report["owners"] == 3
     assert report["admitted_centers"] == 5
+    broker_state = tmp_path / ".broker/state"
+    identity_db = broker_state / "owner-identities.db"
+    assert (broker_state.stat().st_uid, stat.S_IMODE(broker_state.stat().st_mode)) == (1002, 0o700)
+    assert (identity_db.stat().st_uid, stat.S_IMODE(identity_db.stat().st_mode)) == (1002, 0o600)
+    assert (tmp_path / "a1").stat().st_gid == 300001
+    assert (tmp_path / "b1").stat().st_gid == 300002
+    assert (tmp_path / "c1").stat().st_gid == 300003
 
 
 def test_workload_shells_parse():
