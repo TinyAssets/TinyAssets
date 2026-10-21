@@ -31,7 +31,10 @@ class HostService:
         self._broker = None
         self.broker_ready = threading.Event()
         self._slots = threading.BoundedSemaphore(32)
-        self._broker_slots = threading.BoundedSemaphore(4)
+        from tinyassets.broker.lifecycle_config import LifecycleConfig
+
+        # The broker's persistent registration occupies one connection.
+        self._broker_slots = threading.BoundedSemaphore(LifecycleConfig().volume_concurrency + 1)
         self.daemons = daemons
 
     def register(self, sock):
@@ -204,6 +207,7 @@ class HostService:
                     continue
                 slots = self._broker_slots if peer(sock)[1] == 1002 else self._slots
                 if not slots.acquire(blocking=False):
+                    send(sock, {"error": "boxhostd connection limit exceeded"})
                     sock.close()
                     continue
 

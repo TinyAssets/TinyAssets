@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from tinyassets.broker import owner_volumes
-from tinyassets.broker.admission import read, thread_work
+from tinyassets.broker.admission import owner_lock, read
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class VolumeLifecycle:
 
     async def host(self, owner, operation, **arguments):
         uid = owner_volumes.binding(self.identities, owner)["uid"]
-        return await thread_work(self.execute, operation, uid=uid, **arguments)
+        return await self.lifecycle.host_call(self.execute, operation, uid=uid, **arguments)
 
     async def recover(self, owner):
         record = self.volume(owner, "pending")
@@ -37,32 +37,32 @@ class VolumeLifecycle:
                 if idle is None or (idle < self.lifecycle.config.idle_limit
                                     and status["uptime"] < 86400):
                     return record
-            record = self.volume(owner, "sleep")
-            work = record["work"]
+            return await self.sleep(owner)
         if not work or work["kind"] == "create":
-            await self.prune(owner)
             return record
         if work["kind"] == "evict":
             await self.host(owner, "evict")
             return self.volume(owner, "evicted")
-        if work["kind"] in {"restore", "snapshot"}:
+        if work["kind"] == "snapshot":
+            return await self.sleep(owner)
+        if work["kind"] == "restore":
             if await self.host(owner, "sleep") != {"stopped": True}:
                 raise RuntimeError("owner sleep remains pending")
             await self.lifecycle.stopped(owner)
-        if work["kind"] == "restore":
             await self.host(owner, "restore", snapshot_id=work["snapshot_id"],
                             sha256=work["sha256"])
             return self.volume(owner, "restored", snapshot_id=work["snapshot_id"])
-        result = await self.host(owner, "snapshot", snapshot_id=work["snapshot_id"])
-        self.volume(owner, "publish", **result)
-        await self.prune(owner)
-        return self.volume(owner)
+        return record
 
     async def prepare(self, owner, launch):
         status = await self.host(owner, "status")
         if status["awake"] and launch["quota"] > status["volume_size"]:
             await self.sleep(owner)
-        record = await self.recover(owner)
+        record = self.volume(owner, "pending")
+        if record["work"] and record["work"]["kind"] in {"restore", "evict"}:
+            record = await self.recover(owner)
+        if not status["awake"]:
+            await self.lifecycle.stopped(owner)
         if not record["local"]:
             self.volume(owner, "restore", snapshot_id=record["snapshot_id"])
             record = await self.recover(owner)
@@ -75,8 +75,11 @@ class VolumeLifecycle:
             "volume_generation", "snapshot_id", "snapshot_sha256")}}
 
     async def sleep(self, owner):
-        self.volume(owner, "sleep")
-        return await self.recover(owner)
+        record = self.volume(owner, "sleep")
+        if await self.host(owner, "sleep") != {"stopped": True}:
+            raise RuntimeError("owner sleep remains pending")
+        await self.lifecycle.stopped(owner)
+        return record
 
     async def restore(self, owner, snapshot_id):
         self.volume(owner, "restore", snapshot_id=snapshot_id)
@@ -102,8 +105,22 @@ class VolumeLifecycle:
         return True
 
     async def tick_owner(self, owner):
-        # Called on a per-owner worker while the broker owns the async lock.
-        if read(self.identities, owner).state not in {"admitted", "suspended"}:
-            return
-        await self.recover(owner)
-        await self.evict(owner)
+        async with owner_lock(self.identities.path, owner):
+            if read(self.identities, owner).state not in {"admitted", "suspended"}:
+                return
+            record = await self.recover(owner)
+        work = record["work"]
+        if work and work["kind"] == "snapshot":
+            # C15: copying owns only boxhostd's UID execution lock. A wake may
+            # replace this intent; only its matching completed sleep can publish.
+            result = await self.host(owner, "snapshot", snapshot_id=work["snapshot_id"])
+            async with owner_lock(self.identities.path, owner):
+                publish = self.volume(owner, "pending")["work"] == work
+                if publish:
+                    self.volume(owner, "publish", **result)
+            if not publish:
+                await self.host(owner, "delete_snapshots",
+                                snapshot_ids=[work["snapshot_id"]], released=[])
+        async with owner_lock(self.identities.path, owner):
+            await self.prune(owner)
+            await self.evict(owner)

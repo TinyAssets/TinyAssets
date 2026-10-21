@@ -156,7 +156,7 @@ def sleep(storage, owner="alice"):
     storage.volumes.detach(uid)
     storage.live.discard(uid)
     try:
-        drive(storage.lifecycle.recover(owner))
+        drive(storage.lifecycle.tick_owner(owner))
     except (OSError, RuntimeError, PermissionError):
         pass  # Explicit retry tests inspect retained work and the prior reference.
     return storage.lifecycle.volume(owner)
@@ -192,7 +192,7 @@ def test_failed_upload_retains_reference_and_retries_without_waking(storage):
     assert "alice" in storage.admission.pending_volumes()
     storage.volumes.fail_upload = False
     storage.volumes.events.clear()
-    drive(storage.lifecycle.recover("alice"))
+    drive(storage.lifecycle.tick_owner("alice"))
     assert storage.lifecycle.volume("alice")["snapshot_id"] == pending_id
     assert not any(event == "attach" for event, _ in storage.volumes.events)
 

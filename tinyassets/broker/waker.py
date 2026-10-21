@@ -8,13 +8,14 @@ import time
 
 log = logging.getLogger(__name__)
 POLL_SECONDS = 30
-# Two of boxhostd's four broker workers remain available for retirement.
-MAX_PENDING = 2
 
 
 class Waker:
     def __init__(self, index, plans, *, wake, clock=time.time,
-                 poll_seconds=POLL_SECONDS, lifecycle_tick=None):
+                 poll_seconds=POLL_SECONDS, lifecycle_tick=None, config=None):
+        from tinyassets.broker.lifecycle_config import LifecycleConfig
+
+        self.config = config or LifecycleConfig()
         if not math.isfinite(poll_seconds) or poll_seconds <= 0:
             raise ValueError("waker interval must be positive and finite")
         self.index, self.plans, self.wake = index, plans, wake
@@ -47,7 +48,7 @@ class Waker:
         self.attempted = {owner: at for owner, at in self.attempted.items() if owner in due}
         # A failed or continuously due box cannot starve owners later in the index.
         for owner in sorted(due, key=lambda owner: self.attempted.get(owner, -1)):
-            if len(self.pending) >= MAX_PENDING:
+            if len(self.pending) >= self.config.volume_concurrency:
                 break
             if owner not in self.pending:
                 self.attempted[owner] = self.clock()

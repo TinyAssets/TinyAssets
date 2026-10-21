@@ -176,7 +176,7 @@ async def serve(args: argparse.Namespace) -> None:
 
             plans.initialize()
             waker_task = asyncio.create_task(Waker(
-                server.next_wakes, plans, wake=routing.wake,
+                server.next_wakes, plans, wake=routing.wake, config=routing.config,
                 poll_seconds=args.wake_poll_seconds, lifecycle_tick=routing.tick).run(stop))
         try:
             await stop.wait()

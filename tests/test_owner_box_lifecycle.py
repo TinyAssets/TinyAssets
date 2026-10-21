@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -148,7 +149,9 @@ def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(flee
 @pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_restore_executor_accepts_only_broker_bound_uid(fleet):
     uid = fleet.wake("a")
-    snapshot = drive(fleet.routing.volumes.sleep("a"))
+    drive(fleet.routing.sleep("a"))
+    fleet.tick()
+    snapshot = fleet.admission.volume("a")
     request = {"lifecycle": "restore", "uid": uid,
                "snapshot_id": snapshot["snapshot_id"], "sha256": snapshot["snapshot_sha256"]}
     service = HostService(fleet.admission, fleet.manager.volumes, None, fleet.manager)
@@ -383,3 +386,97 @@ def test_erasure_refuses_broker_restart_and_host_has_no_restart_intent(fleet):
     fleet.tick()
     assert not fleet.runtime.live
     assert len(fleet.runtime.starts) == 1
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("slow", ["launch", "readiness", "probe", "drain"])
+def test_slow_owner_execution_does_not_hold_fleet_registry(fleet, monkeypatch, slow):
+    from concurrent.futures import ThreadPoolExecutor
+
+    b = fleet.wake("b")
+    a = fleet.admission.owner("a")["uid"]
+    if slow in {"probe", "drain"}:
+        fleet.wake("a")
+    entered, release = threading.Event(), threading.Event()
+    start, rpc = fleet.runtime.start, fleet.manager._rpc
+
+    def slow_start(uid, *args, **kwargs):
+        if uid == a and slow == "launch":
+            entered.set()
+            assert release.wait(10)
+        return start(uid, *args, **kwargs)
+
+    def slow_rpc(box, operation="status", **body):
+        if box.uid == a and ((slow in {"readiness", "probe"} and operation == "status")
+                              or (slow == "drain" and operation == "delete-admission")):
+            entered.set()
+            assert release.wait(10)
+        return rpc(box, operation, **body)
+
+    monkeypatch.setattr(fleet.runtime, "start", slow_start)
+    monkeypatch.setattr(fleet.manager, "_rpc", slow_rpc)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(fleet.manager.withdraw, a) if slow == "drain" else (
+            pool.submit(fleet.manager.status, a) if slow == "probe" else
+            pool.submit(fleet.wake, "a"))
+        try:
+            assert entered.wait(2)
+            assert pool.submit(fleet.control, "sleep", uid=b).result(timeout=2) == {"stopped": True}
+            assert pool.submit(fleet.wake, "b").result(timeout=2) == b
+            assert not first.done()
+        finally:
+            release.set()
+            first.result(timeout=3)
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_fifth_broker_connection_gets_explicit_refusal(tmp_path, monkeypatch):
+    import queue
+    import socket
+
+    from tinyassets.boxes.control_channel import receive
+
+    service = HostService(None, None, None, None)
+    monkeypatch.setattr("tinyassets.boxes.host_service.peer",
+                        lambda sock: (os.getpid(), 1002, 1002))
+    stop, release = threading.Event(), threading.Event()
+    listening = threading.Event()
+    entered = queue.Queue()
+    path = tmp_path / "host.sock"
+    listen = socket.socket.listen
+
+    def ready(sock, backlog):
+        listen(sock, backlog)
+        listening.set()
+    monkeypatch.setattr(socket.socket, "listen", ready)
+
+    def handler(sock):
+        entered.put(True)
+        try:
+            assert release.wait(10)
+        finally:
+            sock.close()
+    thread = threading.Thread(target=service.serve, args=(path, 1002, handler, stop))
+    thread.start()
+    clients = []
+    try:
+        assert listening.wait(2)
+        for _ in range(4):
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            clients.append(client)
+            client.connect(str(path))
+            entered.get(timeout=2)
+        fifth = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        clients.append(fifth)
+        fifth.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        fifth.settimeout(2)
+        fifth.connect(str(path))
+        assert receive(fifth, (os.getpid(), os.geteuid(), os.getegid())) == {
+            "error": "boxhostd connection limit exceeded"}
+        assert entered.empty()
+    finally:
+        release.set()
+        stop.set()
+        for client in clients:
+            client.close()
+        thread.join(3)
+    assert not thread.is_alive()

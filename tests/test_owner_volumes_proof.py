@@ -369,7 +369,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
                      timeout=30)
         with manager.condition:
             assert manager._sleep(manager.boxes[uid], idle=0)
-        drive(routing.volumes.recover("proof-owner"))
+        drive(routing.volumes.tick_owner("proof-owner"))
         published = manager.admission.volume("proof-owner")
         assert published["snapshot_id"] and published["work"] is None
         original_bytes = digest(volumes.store / f"{uid}.img")
@@ -412,7 +412,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         assert result.stdout == "integrated"
         with manager.condition:
             assert manager._sleep(manager.boxes[uid], idle=0)
-        drive(routing.volumes.recover("proof-owner"))
+        drive(routing.volumes.tick_owner("proof-owner"))
         published = manager.admission.volume("proof-owner")
         print("PROOF C10 sparse eviction cold-wake PASS", flush=True)
         import runpy

@@ -34,6 +34,7 @@ class BrokerLifecycle:
         # Shared awake-slot reservation: scheduled waiters release this condition;
         # an interactive eviction and its replacement launch reserve one slot.
         self._capacity = asyncio.Condition()
+        self._host_calls = 0
         self._reservations = {}
         self._instance = None
 
@@ -102,7 +103,7 @@ class BrokerLifecycle:
             uid = self.identities.owner_machine(owner)
             if uid is None:
                 raise LookupError("owner lifecycle binding missing")
-            if await thread_work(request, "stop", uid=uid) != {"stopped": True}:
+            if await self.host_call(request, "stop", uid=uid) != {"stopped": True}:
                 raise RuntimeError("admission withdrawal remains pending")
             await self.stopped(owner)
         return receipt
@@ -158,7 +159,7 @@ class BrokerLifecycle:
                 # An uncertain launch still occupies its reserved slot until
                 # recover observes it stopped or a stop/sleep acknowledges it.
                 self.awake.add(owner)
-                uid = await thread_work(self._launch, owner, record, scheduled=scheduled)
+                uid = await self.host_call(self._launch, owner, record, scheduled=scheduled)
                 return uid
             finally:
                 async with self._capacity:
@@ -172,11 +173,24 @@ class BrokerLifecycle:
             self.facts.pop(owner, None)
             self._capacity.notify_all()
 
+    async def host_call(self, function, *args, **kwargs):
+        """C15: one broker limit for every lifecycle connection, including copies."""
+        async with self._capacity:
+            await self._capacity.wait_for(
+                lambda: self._host_calls < self.config.volume_concurrency)
+            self._host_calls += 1
+        try:
+            return await thread_work(function, *args, **kwargs)
+        finally:
+            async with self._capacity:
+                self._host_calls -= 1
+                self._capacity.notify_all()
+
     async def deploy(self, image):
         """C12: publish once, then use ordinary sleep; wake remains demand-driven."""
         from tinyassets.boxes.daemon_control import request
 
-        await asyncio.to_thread(request, "select_image", image=image)
+        await self.host_call(request, "select_image", image=image)
         with closing(self.identities._connect(write=False)) as db:
             owners = [row[0] for row in db.execute("SELECT principal FROM owner_volumes")]
         counts = {"slept": 0, "asleep": 0, "incomplete": 0}
@@ -200,19 +214,21 @@ class BrokerLifecycle:
         return await owner_call(self.identities.path, owner, self.volumes.restore,
                                 owner, snapshot_id)
 
-    def start(self, owner, operation, *, recovery=False):
+    def start(self, owner, operation, *, recovery=False, serialized=True):
         """The existing tick starts at most one lifecycle task per owner."""
         if not self.identities.work_ready and not recovery:
             return
         task = self.tasks.get(owner)
         if task is not None and not task.done():
             return task
-        self.tasks[owner] = asyncio.create_task(self._work(owner, operation))
+        self.tasks[owner] = asyncio.create_task(self._work(owner, operation, serialized))
         return self.tasks[owner]
 
-    async def _work(self, owner, operation):
+    async def _work(self, owner, operation, serialized):
         try:
-            return await owner_call(self.identities.path, owner, operation, owner)
+            if serialized:
+                return await owner_call(self.identities.path, owner, operation, owner)
+            return await operation(owner)
         except Exception:
             log.exception("owner lifecycle work remains pending owner=%s", owner)
 
@@ -254,4 +270,4 @@ class BrokerLifecycle:
         from tinyassets.broker.owner_volumes import pending
 
         for owner in await asyncio.to_thread(pending, self.identities):
-            self.start(owner, self.volumes.tick_owner)
+            self.start(owner, self.volumes.tick_owner, serialized=False)

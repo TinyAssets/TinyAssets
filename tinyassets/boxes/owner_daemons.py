@@ -162,8 +162,6 @@ class OwnerDaemons:
         box.error, box.failures = "", 0
         (self.directory / "secrets" / str(box.uid)).unlink(missing_ok=True)
         (self.directory / str(box.uid) / "app.sock").unlink(missing_ok=True)
-        with self.condition:
-            self.condition.notify_all()
 
     def _activity(self, box):
         try:
@@ -190,13 +188,13 @@ class OwnerDaemons:
     def ensure_awake(self, owner, *, scheduled=False, launch=None):
         if type(scheduled) is not bool:
             raise ValueError("scheduled must be boolean")
-        deadline = time.monotonic() + self.startup_timeout
-        with self.condition:
-            if launch is None:
-                raise BoxAuthError("broker launch authorization is missing")
-            record = launch
-            uid = record["uid"]
-            box = self.boxes.setdefault(uid, Box(owner, uid))
+        if launch is None:
+            raise BoxAuthError("broker launch authorization is missing")
+        record = launch
+        uid = record["uid"]
+        with self.volumes.operation(uid):
+            with self.condition:
+                box = self.boxes.setdefault(uid, Box(owner, uid))
             box.launch = record
             if box.owner != owner:
                 raise BoxError("broker owner reservation changed")
@@ -212,17 +210,15 @@ class OwnerDaemons:
                 box.awake = False
                 self._failed(box, BoxError("owner daemon crashed"))
             try:
-                self._start(box, deadline, launch=record)
+                self._start(box, time.monotonic() + self.startup_timeout, launch=record)
                 return uid
             except Exception as exc:
                 self._failed(box, exc)
                 raise BoxError(f"owner daemon startup failed: {exc}") from exc
-            finally:
-                self.condition.notify_all()
 
     def retire(self, owner, uid):
         self.runtime.box_id(uid)
-        with self.condition:
+        with self.volumes.operation(uid):
             box = self.boxes.get(uid)
             if box is not None and box.owner != owner:
                 raise BoxError("retirement owner differs from broker reservation")
@@ -230,40 +226,36 @@ class OwnerDaemons:
                 self.runtime.stop(uid)
             else:
                 self._stop(box, retire=True)
-            self.condition.notify_all()
 
     def withdraw(self, uid):
         """C5/C6: close work and drain before making old ingress unreachable."""
-        with self.condition:
-            with self.volumes.operation(uid):
-                box = self.boxes.get(uid)
-                if box is not None and box.awake and self.runtime.alive(uid):
-                    deadline = time.monotonic() + 20
-                    while self._rpc(box, "delete-admission")["active"]:
-                        if time.monotonic() >= deadline:
-                            raise BoxBusy("owner work did not drain before withdrawal")
-                        time.sleep(.02)
-                self.retire(box.owner if box else "", uid)
-                self.relays.retire(uid)
+        with self.volumes.operation(uid):
+            box = self.boxes.get(uid)
+            if box is not None and box.awake and self.runtime.alive(uid):
+                deadline = time.monotonic() + 20
+                while self._rpc(box, "delete-admission")["active"]:
+                    if time.monotonic() >= deadline:
+                        raise BoxBusy("owner work did not drain before withdrawal")
+                    time.sleep(.02)
+            self.retire(box.owner if box else "", uid)
+            self.relays.retire(uid)
 
     def destroy(self, uid):
         """Account retirement, unlike center retirement, erases the entire volume."""
         from tinyassets.boxes.destroy import socket_tree
 
-        with self.condition:
+        with self.volumes.operation(uid):
             box = self.boxes.get(uid)
             self.retire(box.owner if box else "", uid)
             self.volumes.delete(uid)
             self.relays.retire(uid)
             socket_tree(self.directory, uid)
             (self.directory / "secrets" / str(uid)).unlink(missing_ok=True)
-            self.boxes.pop(uid, None)
+            with self.condition:
+                self.boxes.pop(uid, None)
 
     def status(self, uid):
-        # Read opaque image size outside the shared runtime registry lock.
-        # Snapshot execution owns the volume lock and may notify this registry.
-        size = self.volumes.size(uid) if (uid in self.boxes and self.boxes[uid].awake) else None
-        with self.condition:
+        with self.volumes.operation(uid):
             box = self.boxes.get(uid)
             awake = bool(box and box.awake and self.runtime.alive(uid))
             activity = self._activity(box) if awake else None
@@ -273,20 +265,23 @@ class OwnerDaemons:
                     "idle_seconds": time.monotonic() - box.last if activity else None,
                     "active": activity["active"] if activity else None,
                     "uptime": time.monotonic() - box.started if awake else 0,
-                    "volume_size": size if awake else None}
+                    "volume_size": self.volumes.size(uid) if awake else None}
 
     def maintain(self):
         """Observe exited processes; only the broker selects the next transition."""
         with self.condition:
-            for box in self.boxes.values():
+            boxes = list(self.boxes.values())
+        for box in boxes:
+            with self.volumes.operation(box.uid):
                 if box.awake and not self.runtime.alive(box.uid):
                     self.runtime.stop(box.uid)
                     box.awake = False
                     self._failed(box, BoxError("owner daemon crashed"))
-            self.condition.notify_all()
 
     def close(self):
         with self.condition:
-            for box in self.boxes.values():
+            boxes = list(self.boxes.values())
+        for box in boxes:
+            with self.volumes.operation(box.uid):
                 if box.awake:
                     self._stop(box)
