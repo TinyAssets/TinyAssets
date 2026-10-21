@@ -25,7 +25,7 @@ OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.writ
 def initialize(path, document=None):
     """Initialize one box-local policy; cutover is the sole shared caller."""
     fresh = not Path(path).exists()
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS policy (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),

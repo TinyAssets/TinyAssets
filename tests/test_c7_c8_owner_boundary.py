@@ -173,3 +173,23 @@ def test_public_operation_without_credential_authority_uses_no_secret(box, chain
     assert result["body"] == "public response"
     assert resolved == ([] if missing == "operation" else [True])
     assert "Authorization" not in chain.state["requests"][0]["headers"]
+
+
+def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch):
+    import sqlite3
+
+    from tinyassets.action_policy import initialize
+
+    opened = []
+    connect = sqlite3.connect
+
+    def track(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", track)
+    initialize(tmp_path / ".action-policy.db")
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        opened[0].execute("SELECT 1")
