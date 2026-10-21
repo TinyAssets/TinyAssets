@@ -538,8 +538,8 @@ def test_general_vault_resolver_matches_http_record_only(tmp_path, monkeypatch):
     assert resolver("vault://http/anthropic-conn") == "http-secret-token"
     with pytest.raises(RuntimeError):  # a non-http ref is not this resolver's job
         resolver("vault://github/x")
-    with pytest.raises(RuntimeError):  # a missing record fails closed
-        resolver("vault://http/nonexistent")
+    # C7: missing credential authority injects nothing; public access stays open.
+    assert resolver("vault://http/nonexistent") == ""
 
 
 def _make_http_ledger_with_vault(tmp_path, *, credential_ref="vault://http/anthropic-conn"):

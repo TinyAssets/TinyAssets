@@ -271,9 +271,14 @@ def test_revoked_authority_is_refused_before_proxy(rig, target):
 def test_current_rows_not_just_definition_must_authorize_read(rig, table, column, value):
     with rig.ledger._connect() as raw:
         raw.execute(f"UPDATE {table} SET {column} = ?", (value,))
-    with pytest.raises(ProviderUnavailableError):
-        rig.read()
-    assert not rig.starts
+    if column == "scopes_json":
+        assert rig.read() == {"data": []}
+        assert rig.auth == ["none"]
+        assert rig.calls == [("GET", {"url": URL})]
+    else:
+        with pytest.raises(ProviderUnavailableError):
+            rig.read()
+        assert not rig.starts
 
 
 @pytest.mark.parametrize(
