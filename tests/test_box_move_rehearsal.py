@@ -347,9 +347,11 @@ def test_migration_container_overrides_image_fault_default(tmp_path, mode):
     fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8")
     fake.chmod(0o755)
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
+    backup = tmp_path / "disposable-backup"
+    backup.mkdir()
     result = subprocess.run(
         [bash, str(ROOT / "deploy/deploy_fail_safe.sh"), "--box-migration-container",
-         "disposable-data", "/disposable-store", "/dev/loop0", "/disposable-backup",
+         "disposable-data", "/disposable-store", "/dev/loop0", str(backup),
          "unused-image", mode, "/data"],
         env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
              "CUTOVER_CRASH_AT": "", "MSYS_NO_PATHCONV": "1"},
@@ -359,12 +361,17 @@ def test_migration_container_overrides_image_fault_default(tmp_path, mode):
     args = result.stdout.splitlines()
     assert args[args.index("CUTOVER_CRASH_AT=") - 1] == "-e"
     assert args[-5:] == ["-B", "-m", "tinyassets.box_layout_migration", mode, "/data"]
-    assert args[args.index("--network") + 1] == "none"
+    assert args[args.index("--network") + 1] == ("bridge" if mode == "apply" else "none")
     if mode in {"apply", "verify"}:
         assert "--privileged" in args
-        assert "BACKUP_DEST=:local:/snapshots/owner-snapshots" in args
-        assert "/disposable-backup:/snapshots" in args
-        assert not any("/root/.config/rclone" in argument for argument in args)
+        assert "BACKUP_DEST=spaces:/snapshots/owner-snapshots" in args
+        assert "RCLONE_CONFIG=/root/.config/rclone/rclone.conf" in args
+        assert f"{backup}:/snapshots" in args
+        # The same config-file lookup as production; only the file's content
+        # (a local "spaces" remote) is rehearsal data.
+        assert f"{backup}/rclone:/root/.config/rclone:ro" in args
+        assert (backup / "rclone/rclone.conf").read_text() == "[spaces]\ntype = local\n"
+        assert not any(arg.startswith("RCLONE_CONFIG_SPACES_") for arg in args)
 
 
 def test_production_restore_cannot_load_recorded_provider(tmp_path):
