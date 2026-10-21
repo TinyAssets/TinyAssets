@@ -20,6 +20,23 @@ jobs:
           sudo apt-get install -y -qq rclone
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo ip addr add 169.254.169.254/32 dev docker0
+          cat > /tmp/live-like-metadata.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path != '/metadata/v1/id':
+                      self.send_error(404)
+                      return
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b'123456789')
+
+          ThreadingHTTPServer(('169.254.169.254', 80), Handler).serve_forever()
+          PY
+          sudo nohup python3 /tmp/live-like-metadata.py >/dev/null 2>&1 &
+          curl --noproxy '*' --fail --silent --retry 10 --retry-delay 1 http://169.254.169.254/metadata/v1/id
           sudo groupadd -o -g 1001 tinyassets
           sudo groupadd -o -g 1100 ta-work
           sudo install -d /opt/tinyassets/deploy /opt/tinyassets-host-uptime /etc/tinyassets

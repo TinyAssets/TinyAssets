@@ -40,6 +40,10 @@ def build(root: Path) -> dict:
         raise RuntimeError(f"fixture volume must be empty: {root}")
     (root / ".layout.json").write_text(
         json.dumps({"layout": 2, "split": "owner-split", "state": "stable"}), encoding="utf-8")
+    (root / "platform-expected-instance.json").write_text(json.dumps({
+        "schema": "platform_expected_instance", "version": 1,
+        "expected_instance_id": "123456789",
+    }), encoding="utf-8")
     (root / ".layout.lock").touch()
     identity_rows = ",".join(f"('{owner}',{machine})" for owner, machine in OWNERS)
     admission_rows = ",".join(
