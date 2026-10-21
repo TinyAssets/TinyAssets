@@ -510,6 +510,8 @@ owner-local decisions to `broker/server.py:1020`.
 
 **As built (lane c, C8):** `action_policy.ActionPolicyStore` stores action rules,
 classifications, receipts and one-use approvals in the box's `.action-policy.db`.
+First box startup creates this store; a missing file or policy row refuses
+subsequent decisions instead of regenerating defaults.
 The protected owner route and local action callers use that store. The broker
 policy document holds monetary rules and spend limits only; stream opening no
 longer decides an owner's app action. Cutover moves retained account action rules

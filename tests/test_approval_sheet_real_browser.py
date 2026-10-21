@@ -96,9 +96,7 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
         if(String(url)==='/app/api/policy'){
           const payload=options?.body&&JSON.parse(options.body);
           return Response.json(payload?.action==='issue_once'?{token:'policy-once'}:
-            {generation:1,policy:{entries:[],egress:{mode:'open',allowlist:[]},
-              spend:{daily:null,monthly:null,transaction:null,ask_above:null,
-                source_ceilings:{}}}});
+            {generation:1,policy:{entries:[]}});
         }
         if(!String(url).startsWith('/app/approvals/'))return previous(url,options);
         const payload=JSON.parse(options.body);calls.push({url,payload});

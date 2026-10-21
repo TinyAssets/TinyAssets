@@ -797,6 +797,8 @@ def test_a_differently_cased_header_cannot_shadow_or_duplicate_the_key(monkeypat
             auth_scheme="header", header_name="X-Api-Key", method="POST",
             url="https://api.example.com/v1/x", headers={"x-api-key": "shadow"},
             body={"a": 1},
+            allowed_endpoints=oc._parse_allowed_endpoints([{
+                "host": "api.example.com", "path_template": "/v1/x", "methods": ["POST"]}]),
         )
     finally:
         server.shutdown()

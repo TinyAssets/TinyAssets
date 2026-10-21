@@ -153,11 +153,10 @@ class ConnectionResource:
     #: How the child applies the credential (design.md D5): "bearer" | "basic" |
     #: "header" | "none". Empty for legacy connections.
     auth_scheme: str = ""
-    #: The per-connection egress allowlist (design.md D3). Empty ⇒ no call.
+    #: Authorized credential endpoints (C7). Empty means public access without auth.
     allowed_endpoints: tuple[OutboundEndpoint, ...] = ()
-    #: ``exact`` | ``full`` (full-channel-access D2). Read by the egress
-    #: allowlist, the git-scope check and the workspace consents; never by the
-    #: SSRF safety checks, which run for both modes.
+    #: ``exact`` | ``full`` credential service scope and workspace consent.
+    #: Public-address validation runs for both modes.
     access_mode: str = ACCESS_EXACT
     #: The host git operations use, when the owner declared one at connect time
     #: (a forge whose git transport is not its API host). Empty: the connection's

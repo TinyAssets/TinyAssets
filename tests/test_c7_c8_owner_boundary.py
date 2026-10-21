@@ -126,8 +126,11 @@ def test_git_real_broker_refuses_private_before_dial(git_server, monkeypatch, ad
 def test_git_public_destination_scopes_credential_to_service(git_server, chain, monkeypatch, host):
     import socket
 
-    monkeypatch.setattr(oc, "_default_open_socket", lambda address, timeout, source:
-                        socket.create_connection(chain.server_address, timeout))
+    def open_local(address, timeout, source):
+        return socket.create_connection(  # hermetic-ok: this test's loopback HTTP listener
+            ("127.0.0.1", chain.server_port), timeout)
+
+    monkeypatch.setattr(oc, "_default_open_socket", open_local)
     chain.state["responses"] = [{"body": b"public git response"}]
     heads, body = _git_request(git_server, host)
     assert len(heads) == 1

@@ -108,10 +108,12 @@ async def test_proxy_pins_destination_and_preserves_body_after_half_close(proxy,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["CONNECT", "GET"])
 @pytest.mark.parametrize("target", ["127.0.0.1:80", "169.254.169.254:80", "example.test:25",
                                     "engine.tinyassets.box:80"])
-async def test_public_proxy_refuses_private_metadata_and_mail(proxy, target):
-    result = await exchange(proxy, f"CONNECT {target} HTTP/1.1\r\n\r\n".encode())
+async def test_public_proxy_refuses_private_and_unresolvable_destinations(proxy, target, method):
+    url = target if method == "CONNECT" else f"http://{target}/"
+    result = await exchange(proxy, f"{method} {url} HTTP/1.1\r\n\r\n".encode())
     assert result.startswith(b"HTTP/1.1 403")
     assert not proxy._public_egress.active
 

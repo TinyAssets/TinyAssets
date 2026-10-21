@@ -7,7 +7,7 @@ platform has never heard of — with ZERO platform changes, by:
 
   1. Creating an ``http`` outbound connection (the Pipedream "connected
      account"): a vault ``credential_ref`` + an ``auth_scheme``
-     (bearer/basic/header/oauth1a/none) + a per-endpoint egress allowlist
+     (bearer/basic/header/oauth1a/none) + authorized credential endpoints
      (host + path_template + methods, including the ``{name+}`` multi-segment
      tail). See ``storage/outbound_connections.ConnectionLedger``.
   2. Granting that connection to the universe (``grant_effector_consent`` /

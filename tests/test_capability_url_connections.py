@@ -941,28 +941,24 @@ def test_wire_request_carries_a_multi_segment_secret(stub_server: Any) -> None:
     assert stub_server.stub["received"]["path"] == f"/services/{SLACK_SECRET}"
 
 
-def test_allowlist_refuses_a_node_supplied_value_in_the_secret_position() -> None:
-    """The reserved pattern is the literal token, so a node cannot address the
-    secret's position with a value of its own — not even the real secret."""
-    driver = _SsrfHardenedHttpDriver(
-        resolver=lambda _h, _p: pytest.fail("must refuse before resolving"),
-        validator=lambda addr: addr,
-        open_socket=lambda *_a, **_k: pytest.fail("must refuse before dialing"),
-        ssl_context=_PassThroughTLS(),
-    )
+def test_public_path_outside_secret_template_is_sent_without_substitution(stub_server) -> None:
+    """C7: public paths remain reachable; only the reserved template injects a key."""
+    driver, port = _local_driver(stub_server)
     for path in (
-        f"/hooks/inbound/{HOOK_SECRET}",   # the real secret, hardcoded by the node
+        f"/hooks/inbound/{HOOK_SECRET}",
         "/hooks/inbound/guessed-value-01",
         "/hooks/inbound/{other}",
     ):
-        with pytest.raises(SsrfValidationError):
-            driver(
-                bundle=ConnectionSecretBundle(token=HOOK_SECRET),
-                auth_scheme=_URL_SECRET_SCHEME,
-                method="POST",
-                url=f"https://{HOOK_HOST}{path}",
-                allowed_endpoints=_parsed(),
-            )
+        result = driver(
+            bundle=ConnectionSecretBundle(token=HOOK_SECRET),
+            auth_scheme=_URL_SECRET_SCHEME,
+            method="POST",
+            url=f"https://{HOOK_HOST}:{port}{path}",
+            allowed_endpoints=_parsed(),
+        )
+        assert result["status"] == 200
+        assert stub_server.stub["received"]["path"] == path
+        assert "authorization" not in stub_server.stub["received"]["headers"]
 
 
 def test_a_failing_far_side_that_echoes_the_url_fails_closed(

@@ -25,6 +25,7 @@ from tinyassets.storage.outbound_connections import (
     ProxyRequestError,
     SsrfValidationError,
     UpstreamStream,
+    _parse_allowed_endpoints,
     _SsrfHardenedHttpDriver,
 )
 
@@ -90,6 +91,8 @@ def _open(server, **overrides):
     return driver.open_stream(
         bundle=ConnectionSecretBundle(token=SECRET), auth_scheme="bearer", method="POST",
         url=f"https://models.example:{port}/v1/chat", headers={"Content-Type": "application/json"},
+        allowed_endpoints=_parse_allowed_endpoints([{
+            "host": "models.example", "path_template": "/v1/chat", "methods": ["POST"]}]),
         body={"stream": True}, **stream_kwargs,
     )
 
@@ -257,7 +260,9 @@ def test_an_oauth1_signature_alone_is_held_encoded_and_decoded():
     prepared = driver._prepare(
         bundle=bundle, auth_scheme="oauth1a", method="POST",
         url="https://api.example.com/2/tweets", headers=None, body={"text": "hi"},
-        header_name="", allowed_endpoints=None, access_mode="exact",
+        header_name="", allowed_endpoints=_parse_allowed_endpoints([{
+            "host": "api.example.com", "path_template": "/2/tweets", "methods": ["POST"]}]),
+        access_mode="exact",
     )
     header = prepared.auth_headers["Authorization"]
     signature = re.search(r'oauth_signature="([^"]+)"', header).group(1)
@@ -414,7 +419,8 @@ def test_oauth_refresh_is_guarded_and_checks_deadline(oauth_broker, monkeypatch,
     monkeypatch.setattr(CredentialBlindBroker, "_oauth_bundle", refresh)
     if expired:
         with pytest.raises(OutboundDeadlineExceeded):
-            broker.dispatch("grant-model", "POST", {}, stream=True, guard=Guard,
+            broker.dispatch("grant-model", "POST", {"url": "https://models.example.com/v1/chat"},
+                            stream=True, guard=Guard,
                             deadline_at=time.monotonic() - 1)
         assert not refreshes and not calls
     else:
@@ -425,7 +431,8 @@ def test_oauth_refresh_is_guarded_and_checks_deadline(oauth_broker, monkeypatch,
         def checkpoint():
             pass
         broker._network_request = network
-        broker.dispatch("grant-model", "POST", {}, stream=True, guard=Guard,
+        broker.dispatch("grant-model", "POST", {"url": "https://models.example.com/v1/chat"},
+                        stream=True, guard=Guard,
                         checkpoint=checkpoint, deadline_at=time.monotonic() + 30)
         assert len(refreshes) == 2
 

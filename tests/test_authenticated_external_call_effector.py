@@ -8,7 +8,7 @@ platform change. These tests prove:
   * a generic call succeeds with the EXACT wire request the packet described;
   * the credential is applied INSIDE the broker worker (resolved from the vault),
     never carried by the packet or the effector — credential-blindness;
-  * an out-of-allowlist path is refused before any socket opens;
+  * an endpoint outside credential scope never receives the credential;
   * a SECOND, arbitrary service (different host + a different auth scheme) works
     with NO new module code — plug-and-play;
   * a grant bound to another universe is refused (isolation);
@@ -344,7 +344,7 @@ def test_owner_allowed_issue_post_reaches_broker_without_a_review(tmp_path, monk
     assert len(loop.recorded) == 1 and loop.recorded[0]["path"] == path
 
 
-def test_out_of_allowlist_path_is_refused(tmp_path, monkeypatch):
+def test_public_path_outside_credential_scope_has_no_auth(tmp_path, monkeypatch):
     monkeypatch.setenv(_HTTP_FLAG, "1")
     data_root, universe_dir, db_path = _setup(tmp_path)  # allowlist: only /v1/messages
     loop = _Loopback()
@@ -377,13 +377,15 @@ def test_out_of_allowlist_path_is_refused(tmp_path, monkeypatch):
     finally:
         loop.stop()
 
-    assert evidence.get("delivered") is not True
-    assert evidence["error_kind"] == "grant_path_refused"
-    assert "POST /v1/secret-exfil" in evidence["error"]
+    assert evidence["delivered"] is True
+    assert evidence["response"]["status"] == 200
+    assert evidence["url"] == "https://api.example.com/v1/secret-exfil"
     assert "/v1/messages" not in json.dumps(evidence)
-    # Refused at the allowlist BEFORE any socket — nothing reached the endpoint.
-    assert loop.recorded == []
+    assert len(loop.recorded) == 1
+    assert loop.recorded[0]["path"] == "/v1/secret-exfil"
+    assert "Authorization" not in loop.recorded[0]["headers"]
     assert "real-vault-http-token" not in json.dumps(evidence)
+
 
 
 # --------------------------------------------------------------------------- #
@@ -455,20 +457,18 @@ def test_second_arbitrary_channel_works_with_zero_platform_code(tmp_path, monkey
 # --------------------------------------------------------------------------- #
 # Served broker: credential resolved by the broker; effector stays blind
 # --------------------------------------------------------------------------- #
-def test_served_broker_resolves_credential_and_stays_blind(tmp_path, monkeypatch):
+def test_served_broker_refuses_private_destination_and_stays_blind(tmp_path, monkeypatch):
     monkeypatch.setenv(_HTTP_FLAG, "1")
     data_root, universe_dir, db_path = _setup(tmp_path)
 
-    # A non-allowlisted host: the REAL spawned worker RESOLVES the credential from
-    # the vault, then the allowlist refuses the destination — proving the worker
-    # (not the effector) applied the credential. NO _open_connection_proxy or
-    # driver monkeypatch: this is the genuine spawned-worker path.
+    # C7: the real broker refuses private destinations before any network dial;
+    # a foreign service never causes the connection credential to be loaded.
     packet = {
         "sink": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
         "connection_id": "conn-http",
         "grant_id": "grant-http",
         "verb": "POST",
-        "request": {"host": "not-allowed.example", "path": "/v1/messages", "body": {"x": 1}},
+        "request": {"host": "127.0.0.1", "path": "/v1/messages", "body": {"x": 1}},
     }
     run_state = {"out": json.dumps(packet)}
     evidence = run_authenticated_external_call_effector(
@@ -478,14 +478,13 @@ def test_served_broker_resolves_credential_and_stays_blind(tmp_path, monkeypatch
         base_path=str(universe_dir),
     )
 
-    assert evidence["error_kind"] == "grant_path_refused"
-    assert "POST /v1/messages" in evidence["error"]
+    assert evidence["error_kind"] == "outbound_request_failed"
+    assert evidence["detail"] == "outbound request failed"
     assert "real-vault-http-token" not in json.dumps(evidence)
 
     audit = _read_audit(data_root, "grant-http")
-    # A typed endpoint refusal proves the real worker reached the driver
-    # after resolving the credential. No credential crosses the boundary.
-    assert [r["reason"] for r in audit] == ["grant_path_refused"]
+    # The audit records the real destination refusal, without credential material.
+    assert [r["reason"] for r in audit] == ["destination request failed"]
     assert "real-vault-http-token" not in json.dumps(audit)
 
 
