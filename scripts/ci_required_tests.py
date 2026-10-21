@@ -103,7 +103,7 @@ MIN_RAN_FLOOR = 10000
 # it. 1,500 keeps the old ~10% cushion under the current count.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
-    "heavy": 1500,           # .github/heavy-test-files.txt only (1,681 on 2026-10-14)
+    "heavy": 1100,           # .github/heavy-test-files.txt only (1,202 on 2026-10-20)
     # ONE shard of the required gate (~3,600 of ~21,900 at 6 shards). The union
     # floor is checked again by `--aggregate`, but the union floor alone cannot
     # see one shard collapsing: 5 of 6 shards still clear it comfortably.

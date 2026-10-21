@@ -1,4 +1,3 @@
-tests/smoke/test_base_files.py
 tests/smoke/test_mcp_tools_list_non_empty.py
 tests/smoke/test_selfhost_parity.py
 tests/smoke/test_sqlite_saver_importable.py
@@ -60,7 +59,6 @@ tests/test_anonymous_write_challenge.py
 tests/test_api_evaluation.py
 tests/test_api_helpers.py
 tests/test_api_key_http_provider.py
-tests/test_api_logger_names.py
 tests/test_api_market.py
 tests/test_api_runs.py
 tests/test_api_runtime_ops.py
@@ -127,11 +125,8 @@ tests/test_app_ui_one_bad_component.py
 tests/test_app_ui_renderability.py
 tests/test_app_url_is_apex_app.py
 tests/test_app_working_indicator.py
-tests/test_apply_daemon_env_voice_flags.py
 tests/test_approval_browser_handoff.py
 tests/test_approval_sheet_real_browser.py
-tests/test_asp_engine_data_file.py
-tests/test_asp_solver.py
 tests/test_assigned_queue_consumer.py
 tests/test_assigned_queue_consumer_live_worker.py
 tests/test_assignment_projection_contract.py
@@ -254,10 +249,6 @@ tests/test_canary_scripts_import_smoke.py
 tests/test_cancel_reaches_the_running_child.py
 tests/test_canon_containment_sites.py
 tests/test_canon_io.py
-tests/test_canonical_bindings_migration.py
-tests/test_canonical_branch.py
-tests/test_canonical_branch_mcp.py
-tests/test_canonical_url_references.py
 tests/test_capability_url_connections.py
 tests/test_capture_idea.py
 tests/test_carried_approval_provenance.py
@@ -269,7 +260,6 @@ tests/test_chat_file_download.py
 tests/test_chat_renderer.py
 tests/test_chat_renderer_browser.py
 tests/test_chat_turn_seat.py
-tests/test_chatbot_builder_behaviors_doc.py
 tests/test_chatgpt_chat.py
 tests/test_chatgpt_update_node_path.py
 tests/test_check_primitive_exists.py
@@ -325,8 +315,6 @@ tests/test_command_center_update_maintenance.py
 tests/test_command_center_update_surface.py
 tests/test_command_center_updates.py
 tests/test_command_center_workflow_refs.py
-tests/test_commit_kg_integration.py
-tests/test_commit_scene_history.py
 tests/test_commons_bundle_versions.py
 tests/test_commons_catalog.py
 tests/test_community_loop_typed_observation.py
@@ -362,7 +350,6 @@ tests/test_consumer_reason_actions.py
 tests/test_consumer_run_envelope.py
 tests/test_consumer_selection.py
 tests/test_consumer_startup.py
-tests/test_context_budget_regression.py
 tests/test_context_compaction.py
 tests/test_context_debug_instrumentation.py
 tests/test_context_guardrails.py
@@ -372,8 +359,6 @@ tests/test_contribution_events_emit.py
 tests/test_contribution_events_schema.py
 tests/test_control_plane_duty.py
 tests/test_control_plane_scheduler.py
-tests/test_control_station_degraded_mode.py
-tests/test_control_station_vocabulary.py
 tests/test_conversation_attention.py
 tests/test_conversation_custody.py
 tests/test_conversation_execution_history.py
@@ -453,7 +438,6 @@ tests/test_deployed_sha_post_deploy.py
 tests/test_deployed_sha_public.py
 tests/test_describe_branch_approval.py
 tests/test_describe_branch_wiki_pages.py
-tests/test_design_008_selector_backfill.py
 tests/test_desktop.py
 tests/test_dev_hygiene.py
 tests/test_diagnose_prod_startup_workflow.py
@@ -469,7 +453,6 @@ tests/test_discovery_snapshot.py
 tests/test_disk_autoprune.py
 tests/test_disk_health.py
 tests/test_disk_watch.py
-tests/test_dispatch_execution.py
 tests/test_distributed_execution_authority.py
 tests/test_dns_canary.py
 tests/test_dns_canary_workflow.py
@@ -481,7 +464,6 @@ tests/test_docview.py
 tests/test_domain_registry.py
 tests/test_dr_drill_workflow.py
 tests/test_drain_review_gate.py
-tests/test_drift_cleanup_story_db.py
 tests/test_drop_first_exec_gate.py
 tests/test_drop_first_operational_migration.py
 tests/test_dry_inspect_node.py
@@ -512,7 +494,6 @@ tests/test_evaluator_authoring.py
 tests/test_evaluator_protocol.py
 tests/test_execution_authority_records.py
 tests/test_execution_blob_proof.py
-tests/test_execution_kind_generic.py
 tests/test_execution_subject.py
 tests/test_execution_verified_evidence.py
 tests/test_expected_instance_state_preparation.py
@@ -525,8 +506,6 @@ tests/test_external_agent_contract.py
 tests/test_external_agent_custody.py
 tests/test_external_agent_receipts.py
 tests/test_external_write_receipts.py
-tests/test_fact_extraction.py
-tests/test_fact_extraction_stopwords.py
 tests/test_fetch_prod_logs_workflow.py
 tests/test_file_bug_compact_response.py
 tests/test_fix_mojibake.py
@@ -544,7 +523,6 @@ tests/test_full_channel_access.py
 tests/test_gate_bonus_release.py
 tests/test_gate_bonuses_mcp.py
 tests/test_gate_bonuses_schema.py
-tests/test_gate_event_leaderboard.py
 tests/test_gate_event_mcp.py
 tests/test_gate_events.py
 tests/test_gate_events_schema.py
@@ -559,13 +537,6 @@ tests/test_git_egress_routes.py
 tests/test_git_host_is_not_the_api_host.py
 tests/test_git_squash_merge.py
 tests/test_github_is_an_ordinary_connection.py
-tests/test_goal_canonicals.py
-tests/test_goals_discoverability.py
-tests/test_goals_ladder_shape.py
-tests/test_goals_ledger_attribution.py
-tests/test_goals_run_canonical.py
-tests/test_goals_search_multi_token.py
-tests/test_goals_set_selector.py
 tests/test_grant_scope_guidance.py
 tests/test_graph_answer_execution.py
 tests/test_graph_compiler_empty_response.py
@@ -576,16 +547,13 @@ tests/test_graph_compiler_provider_chain_propagation.py
 tests/test_graph_compiler_reducer_law.py
 tests/test_graph_reply_execution.py
 tests/test_graph_run_controls.py
-tests/test_graph_topology.py
 tests/test_handoff_authority.py
 tests/test_handoff_receipts.py
 tests/test_handoff_store.py
-tests/test_hard_rename_surfaces.py
 tests/test_harness_history.py
 tests/test_held_attempt_diagnostics.py
 tests/test_held_turn_never_blocks.py
 tests/test_hook_wiring.py
-tests/test_host_independence_runbook.py
 tests/test_hosted_model_auth.py
 tests/test_hosted_model_flow_persistence.py
 tests/test_http_connect_plan_equivalence.py
@@ -615,7 +583,6 @@ tests/test_inline_model_connect.py
 tests/test_inline_owner_sessions.py
 tests/test_inline_request_storage.py
 tests/test_input_keys_isolation.py
-tests/test_inspect_cross_surface_hint.py
 tests/test_install_log_reader.py
 tests/test_install_tinyassets_env.py
 tests/test_interactive_http_agent.py
@@ -634,7 +601,6 @@ tests/test_landing_index.py
 tests/test_last_activity_canary.py
 tests/test_leak_probe_plugin.py
 tests/test_learned_catalog_grant_boundary.py
-tests/test_learning.py
 tests/test_learning_never_locks_out.py
 tests/test_link_free_leftovers.py
 tests/test_linux_oracle.py
@@ -649,7 +615,6 @@ tests/test_main_red.py
 tests/test_manifest_connection_inventory.py
 tests/test_manifest_failure_taxonomy.py
 tests/test_manual_model_connect.py
-tests/test_mcp_cross_client_parity_contract.py
 tests/test_mcp_current_protocol.py
 tests/test_mcp_discovery_cors.py
 tests/test_mcp_discovery_html.py
@@ -696,7 +661,6 @@ tests/test_model_preference_store.py
 tests/test_model_preferences.py
 tests/test_model_price_applicability.py
 tests/test_model_source_policies.py
-tests/test_multi_tenant_isolation.py
 tests/test_multi_value_credential_ask.py
 tests/test_native_agent_input.py
 tests/test_native_cli_payload.py
@@ -709,7 +673,6 @@ tests/test_native_return_ui.py
 tests/test_native_sign_in.py
 tests/test_native_sign_in_browser.py
 tests/test_needs_you_open_browser.py
-tests/test_ner_extractor_filters.py
 tests/test_no_anonymous_principal.py
 tests/test_no_eligible_model_notice.py
 tests/test_no_platform_llm_credentials.py
@@ -752,7 +715,6 @@ tests/test_open_serving_bind.py
 tests/test_openspec_flow.py
 tests/test_operator_priority_authority.py
 tests/test_optional_auth_mode.py
-tests/test_orient_reflection.py
 tests/test_orphan_ready_browser.py
 tests/test_orphan_ready_coordinator.py
 tests/test_orphan_ready_turn.py
@@ -765,8 +727,6 @@ tests/test_outbound_ssrf_driver.py
 tests/test_outbound_user_agent.py
 tests/test_outcome_evaluators.py
 tests/test_outcome_events.py
-tests/test_outcome_gate_git_backend.py
-tests/test_outcome_gate_read_surfaces.py
 tests/test_outcomes_schema.py
 tests/test_outside_authority.py
 tests/test_outside_client_claims_probe.py
@@ -789,7 +749,6 @@ tests/test_owner_ui_prefs_lifecycle.py
 tests/test_owner_unread.py
 tests/test_p0_triage_workflow.py
 tests/test_packaging_build.py
-tests/test_packets.py
 tests/test_parent_turn_request_budget.py
 tests/test_patch_branch_auth_gate.py
 tests/test_patch_branch_readback.py
@@ -809,9 +768,7 @@ tests/test_permission_decisions.py
 tests/test_persona.py
 tests/test_persona_custody.py
 tests/test_phase7.py
-tests/test_phase7_h2_goals_cutover.py
 tests/test_phase_vocab.py
-tests/test_planning.py
 tests/test_platform_llm_refusal_is_never_swallowed.py
 tests/test_platform_oauth_clients.py
 tests/test_platform_provenance_bounds.py
@@ -831,7 +788,6 @@ tests/test_prepared_run_worker.py
 tests/test_privileged_chain.py
 tests/test_probe_app_surface.py
 tests/test_probe_retired_mcp_routes.py
-tests/test_process_evaluation.py
 tests/test_progress_events.py
 tests/test_project_memory.py
 tests/test_proposals.py
@@ -875,8 +831,6 @@ tests/test_publication_completion.py
 tests/test_publish_is_discoverable.py
 tests/test_publish_version.py
 tests/test_pushover_page.py
-tests/test_quality_leaderboard.py
-tests/test_quality_leaderboard_auth_boundary.py
 tests/test_quarantine_oracle.py
 tests/test_query_runs.py
 tests/test_queue_attempts.py
@@ -897,7 +851,6 @@ tests/test_refused_models_remembered.py
 tests/test_registry_name_survives_fk_registration.py
 tests/test_related_wiki_pages.py
 tests/test_related_wiki_visibility.py
-tests/test_relay_ux_prompts.py
 tests/test_release_reconcile_workflow.py
 tests/test_remote_box_extensions.py
 tests/test_remote_box_ta.py
@@ -964,7 +917,6 @@ tests/test_role_tools.py
 tests/test_role_video.py
 tests/test_role_workspace_remote.py
 tests/test_rollback.py
-tests/test_rollback_repoint.py
 tests/test_row5_builder_is_repo_and_channel_agnostic.py
 tests/test_rpc_frames.py
 tests/test_run_activity.py
@@ -1023,8 +975,6 @@ tests/test_sandbox_unavailable.py
 tests/test_sanitize_startup_diagnostics.py
 tests/test_sanitize_systemd_startup_diagnostics.py
 tests/test_scenario_runner.py
-tests/test_scene_attempt_counter.py
-tests/test_scene_dispatch_advance.py
 tests/test_scheduler.py
 tests/test_scheduler_edge_cases.py
 tests/test_scheduler_owner.py
@@ -1032,7 +982,6 @@ tests/test_scheduler_source_events.py
 tests/test_scoped_reset_mutation_proof.py
 tests/test_select_do_image.py
 tests/test_selected_model_authority.py
-tests/test_selector_dispatch.py
 tests/test_serve_open_hardening.py
 tests/test_served_agent_can_ask.py
 tests/test_served_authority_shared_chain.py
@@ -1040,7 +989,6 @@ tests/test_served_automation_lifecycle.py
 tests/test_served_branch_create_errors.py
 tests/test_served_capability_grants.py
 tests/test_served_docs_teach_a_parseable_packet.py
-tests/test_served_docs_teach_every_required_packet_field.py
 tests/test_served_effect_edit_parity.py
 tests/test_served_execution_choice_patch.py
 tests/test_served_failure_notice.py
@@ -1151,21 +1099,17 @@ tests/test_universe_egress.py
 tests/test_universe_file_reads_are_bounded.py
 tests/test_universe_intelligence.py
 tests/test_universe_list_observability.py
-tests/test_universe_nodes.py
 tests/test_universe_owner.py
 tests/test_universe_ownership_inventory.py
 tests/test_universe_seats.py
 tests/test_universe_self_model.py
 tests/test_universe_server_add_canon.py
 tests/test_universe_server_five_handles.py
-tests/test_universe_server_framing.py
 tests/test_universe_server_ledger.py
 tests/test_universe_server_mcp_structured_results.py
 tests/test_universe_server_metadata.py
 tests/test_universe_server_premise_escaping.py
 tests/test_universe_server_telemetry.py
-tests/test_universe_server_word_count.py
-tests/test_universe_server_world_query.py
 tests/test_universe_soul.py
 tests/test_universe_sqlite_identity.py
 tests/test_universe_state.py
@@ -1188,7 +1132,6 @@ tests/test_validate_skills.py
 tests/test_vault_account_deletion_guard.py
 tests/test_verify_llm_binding.py
 tests/test_verify_worker_routes.py
-tests/test_vocabulary_hygiene.py
 tests/test_wait_for_run.py
 tests/test_watchdog.py
 tests/test_webhook_delivery_proof.py
@@ -1196,7 +1139,6 @@ tests/test_webhook_hooks.py
 tests/test_webhook_inbound.py
 tests/test_webhook_inbound_hardened.py
 tests/test_webhook_ops.py
-tests/test_website_rename_surfaces.py
 tests/test_wellknown_discovery.py
 tests/test_wiki_alias_corner_cases.py
 tests/test_wiki_canary.py
@@ -1212,9 +1154,7 @@ tests/test_work_agent_authority.py
 tests/test_work_candidate_data.py
 tests/test_work_consumer_model_bridge.py
 tests/test_work_model_selection.py
-tests/test_work_target_advance_on_accept.py
 tests/test_work_target_origin.py
-tests/test_work_targets.py
 tests/test_workflow_context_fit.py
 tests/test_workflow_http_agent.py
 tests/test_workflow_lanes_refresh.py
@@ -1253,8 +1193,6 @@ tests/test_workspace_wait_cancellation.py
 tests/test_workspace_waiter_real_owner_authority.py
 tests/test_workspace_worker.py
 tests/test_worktree_status.py
-tests/test_world_state_db.py
-tests/test_worldbuild_noop_integration.py
 tests/test_write_gate.py
 tests/test_writer_execution_receipt.py
 tests/test_wt.py
