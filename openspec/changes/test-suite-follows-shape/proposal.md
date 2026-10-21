@@ -23,6 +23,6 @@ The founder's rules (2026-10-21):
 
 ## Impact
 
-- Touches every test module once, to add the marker. That's done after the C6 cutover, so it doesn't collide with the C6 lanes.
+- Built inside the C6 pruning lane, as tag-or-delete: every surviving test gets the row it verifies, or the founder's rule deletes it. It ships with the C6 cutover.
 - The hygiene gate gains two checks and loses none.
 - Structural guards and `check_shapes` probes stay; they are among the "other ways" a behaviour is checked.
