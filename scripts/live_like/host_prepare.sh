@@ -9,9 +9,9 @@
 # loads, /opt/tinyassets holding the runtime bundle, the daemon unit, the
 # host-uptime services (backup, prune, watchdogs and their timers) installed by
 # their production installer, and a loop-backed XFS box store configured the
-# way install-boxhostd-preflight.sh accepts one. It installs nothing the
-# deploy itself installs (gVisor, boxhostd, the env helper): those are the
-# deploy's job, and the gate must see it do them.
+# way install-boxhostd-preflight.sh accepts one, with gVisor and an idle
+# boxhostd installed by the live revision's own installer, as its deploy left
+# them. This change's deploy then upgrades them, as it will on the droplet.
 #
 # The inputs file holds caller-owned values only, all synthetic and generated
 # per run by the gate: TINYASSETS_IMAGE (the image the host is "running"),
@@ -161,6 +161,14 @@ if [ ! -e /etc/tinyassets/box-store.conf ]; then
   chmod 0600 /etc/tinyassets/box-store.conf
 fi
 install -d -m 0755 /var/lib/boxhostd /var/lib/tinyassets-deploy /var/backups/tinyassets
+
+# --- what the live revision's own deploy installed: pinned gVisor, idle
+#     boxhostd, the mounted box store and its check script, by that revision's
+#     installer. This change's deploy then upgrades them, as on the droplet.
+boxstage="$(mktemp -d)"
+git -C "$repo" archive "${BASE_REVISION}" deploy | tar -x -C "$boxstage"
+bash "$boxstage/deploy/install-boxhostd-preflight.sh"
+rm -rf -- "$boxstage"
 
 systemctl daemon-reload
 systemctl enable tinyassets-daemon >/dev/null 2>&1

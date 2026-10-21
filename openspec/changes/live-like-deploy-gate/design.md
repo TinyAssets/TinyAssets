@@ -42,7 +42,8 @@ drift check (`profile.md`).
 - Candidate image: built in the gate with the production build cache read-only, pushed to a host-local registry so the fail-safe gets the `@sha256:` ref it requires.
 - Caller inputs: synthetic per run (HMAC keys, canary bearer and door, tunnel token, app-ingress key, expected instance id), masked, never production values.
 - Backup destination: D's MinIO behind a root rclone `spaces` remote at `/root/.config/rclone/rclone.conf`, the droplet's path and form; BACKUP_DEST is `spaces:<bucket>/workflow-backups`.
-- Box store: the explicit loop image install-boxhostd-preflight.sh already accepts (`BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img`); the deploy itself creates it.
+- Box store: the explicit loop image install-boxhostd-preflight.sh already accepts (`BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img`), set up with gVisor and idle boxhostd by the live revision's own installer, as its deploy left the droplet; the change's deploy upgrades them.
+- Order: data before services, and the stack starts through the daemon unit, so the watchdog timers behave as on the droplet instead of racing a second `compose up`.
 - uid 1001: the runner owns it, so `tinyassets` is a second name for 1001 and listed first in `/etc/group` (the unit's ExecStartPre checks `root:tinyassets`).
 - Core canary: `CORE_CANARY_PROVISIONED=1` in the gate; the WorkOS sign-in is production-only and named as not exercised.
 - Turn wait: `YIELD_WORKFLOWS` empty; nothing else mutates the gate host.

@@ -63,13 +63,11 @@ PY
     printf 'alice' | tinyassets-env set UNIVERSE_SERVER_DEV_USER
     tinyassets-env render-daemon-env
     # These are the actual production service definitions and Compose flags.
-    # The external Cloudflare tunnel cannot connect with synthetic credentials;
+    # Through the daemon unit, as the droplet runs the stack: its start jobs
+    # serialize with the watchdogs', and restart applies the env just rendered.
+    # cloudflared starts but cannot reach the edge with synthetic credentials;
     # this gate proves the loopback workload, not Cloudflare edge connectivity.
-    services=(daemon logs)
-    if docker compose --env-file "$env_file" -f "$compose" config --services | grep -qx broker; then
-      services=(broker daemon logs)
-    fi
-    docker compose --env-file "$env_file" -f "$compose" up -d --timeout 20 "${services[@]}"
+    systemctl restart tinyassets-daemon.service
     for _ in $(seq 1 90); do
       if probe_mcp; then
         break
