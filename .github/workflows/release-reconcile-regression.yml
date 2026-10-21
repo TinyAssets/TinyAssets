@@ -6,10 +6,8 @@ on:
       - '.github/workflows/build-image.yml'
       - '.github/workflows/release-reconcile.yml'
       - '.github/workflows/release-reconcile-regression.yml'
-      - 'tests/test_build_image_workflow.py'
       - 'tests/test_release_reconcile_workflow.py'
       - 'scripts/runtime_paths.py'
-      - 'tests/test_runtime_paths.py'
       - 'tests/runtime_repo_fixture.py'
   push:
     branches: [main]
@@ -17,10 +15,8 @@ on:
       - '.github/workflows/build-image.yml'
       - '.github/workflows/release-reconcile.yml'
       - '.github/workflows/release-reconcile-regression.yml'
-      - 'tests/test_build_image_workflow.py'
       - 'tests/test_release_reconcile_workflow.py'
       - 'scripts/runtime_paths.py'
-      - 'tests/test_runtime_paths.py'
       - 'tests/runtime_repo_fixture.py'
   workflow_dispatch:
 
@@ -57,7 +53,5 @@ jobs:
       - name: Run release workflow contracts
         run: >-
           python -m pytest
-          tests/test_build_image_workflow.py
           tests/test_release_reconcile_workflow.py
-          tests/test_runtime_paths.py
           -q

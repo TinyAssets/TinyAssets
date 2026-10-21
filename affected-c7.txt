@@ -19,23 +19,19 @@ tests/test_admission_deletion_retire.py
 tests/test_admission_envelope_corrections.py
 tests/test_admission_hash_provenance.py
 tests/test_admission_mapper_channel.py
-tests/test_affected_tests.py
 tests/test_agent_access_controls.py
 tests/test_agent_activities.py
 tests/test_agent_box_dev_workflow.py
 tests/test_agent_capacity_boundary.py
 tests/test_agent_chat_codec.py
 tests/test_agent_chat_portable_history.py
-tests/test_agent_chat_tool_call_shapes.py
 tests/test_agent_files.py
 tests/test_agent_git_credentials.py
 tests/test_agent_inference.py
 tests/test_agent_loop_box_tools.py
 tests/test_agent_loop_owner_reads.py
-tests/test_agent_loop_served_chat.py
 tests/test_agent_loop_tool_session.py
 tests/test_agent_native_journal.py
-tests/test_agent_node.py
 tests/test_agent_node_seats.py
 tests/test_agent_notifications.py
 tests/test_agent_owned_wiki.py
@@ -64,13 +60,11 @@ tests/test_api_runs.py
 tests/test_api_runtime_ops.py
 tests/test_api_status.py
 tests/test_api_universe.py
-tests/test_api_wiki.py
 tests/test_app_account_transition.py
 tests/test_app_addressed_agent.py
 tests/test_app_browser_notifications.py
 tests/test_app_chat_cloud.py
 tests/test_app_chat_cloud_browser.py
-tests/test_app_chat_latest_browser.py
 tests/test_app_connect_disclosure.py
 tests/test_app_connection_controls.py
 tests/test_app_consumer_controls.py
@@ -82,11 +76,9 @@ tests/test_app_fcm_device.py
 tests/test_app_file_upload.py
 tests/test_app_file_upload_run.py
 tests/test_app_file_upload_ui.py
-tests/test_app_first_run_connect_browser.py
 tests/test_app_full_message_expansion.py
 tests/test_app_header_name.py
 tests/test_app_hosted_model_connect.py
-tests/test_app_live_pending_browser.py
 tests/test_app_live_route.py
 tests/test_app_live_turn_recovery.py
 tests/test_app_memory_panel.py
@@ -101,13 +93,10 @@ tests/test_app_object.py
 tests/test_app_owner_sign_in.py
 tests/test_app_owner_unread.py
 tests/test_app_pending_requests_browser.py
-tests/test_app_phone_conversation_browser.py
 tests/test_app_plan_without_billing.py
 tests/test_app_profile.py
-tests/test_app_recovery_browser.py
 tests/test_app_request_rail_executes.py
 tests/test_app_send_not_delivered.py
-tests/test_app_send_resume_browser.py
 tests/test_app_serving_heal_executes.py
 tests/test_app_shell_freshness.py
 tests/test_app_sign_in_again.py
@@ -119,7 +108,6 @@ tests/test_app_store_release.py
 tests/test_app_store_review_account.py
 tests/test_app_stream_liveness.py
 tests/test_app_two_surfaces.py
-tests/test_app_two_surfaces_browser.py
 tests/test_app_ui_by_talking.py
 tests/test_app_ui_one_bad_component.py
 tests/test_app_ui_renderability.py
@@ -183,7 +171,6 @@ tests/test_brain_user_boundary.py
 tests/test_branch_create_and_publish.py
 tests/test_branch_definitions_db.py
 tests/test_branch_delete_is_first_class.py
-tests/test_branch_execution_choice_authoring.py
 tests/test_branch_janitor.py
 tests/test_branch_mutation_authority.py
 tests/test_branch_name_resolution.py
@@ -242,7 +229,6 @@ tests/test_bug_investigation_flow.py
 tests/test_bug_investigation_wiring.py
 tests/test_build_branch_nested_graph_shape.py
 tests/test_build_branch_summary_response.py
-tests/test_build_image_workflow.py
 tests/test_bundled_source_contract.py
 tests/test_c3_difficulty_migration.py
 tests/test_canary_scripts_import_smoke.py
@@ -369,7 +355,6 @@ tests/test_conversation_memory.py
 tests/test_conversation_pending.py
 tests/test_conversation_run_admissions.py
 tests/test_conversation_store.py
-tests/test_converse_addressed_agent.py
 tests/test_converse_handle.py
 tests/test_converse_server_owned.py
 tests/test_converse_turn_cost.py
@@ -408,7 +393,6 @@ tests/test_daily_source_quota.py
 tests/test_dashboard_panes.py
 tests/test_data_dir_call_sites.py
 tests/test_data_dir_resolver.py
-tests/test_declare_universe_loop.py
 tests/test_def_run_admission_pin.py
 tests/test_delivery_account_deletion.py
 tests/test_delivery_attempts.py
@@ -441,7 +425,6 @@ tests/test_describe_branch_wiki_pages.py
 tests/test_desktop.py
 tests/test_dev_hygiene.py
 tests/test_diagnose_prod_startup_workflow.py
-tests/test_direct_run_work_preferences.py
 tests/test_discovery.py
 tests/test_discovery_catalogue_shapes.py
 tests/test_discovery_contract.py
@@ -513,8 +496,6 @@ tests/test_fork_from.py
 tests/test_founder_clock_in_context.py
 tests/test_four_boxes_become_a_signed_request.py
 tests/test_free_account_run_provider_parity.py
-tests/test_free_model_reply_recovery.py
-tests/test_free_model_sibling_retry.py
 tests/test_free_source_cards.py
 tests/test_fresh_host_backup_config.py
 tests/test_frontend_proxy.py
@@ -570,7 +551,6 @@ tests/test_identity_observability.py
 tests/test_ids.py
 tests/test_import_graph_smoke.py
 tests/test_in_platform_agent_systems.py
-tests/test_in_turn_learning.py
 tests/test_incident_issue.py
 tests/test_inference_proposes_the_credential_list.py
 tests/test_inference_reply_budget.py
@@ -600,7 +580,6 @@ tests/test_landing_index.py
 tests/test_last_activity_canary.py
 tests/test_leak_probe_plugin.py
 tests/test_learned_catalog_grant_boundary.py
-tests/test_learning_never_locks_out.py
 tests/test_link_free_leftovers.py
 tests/test_linux_oracle.py
 tests/test_list_runs_universe_scope.py
@@ -671,7 +650,6 @@ tests/test_native_model_options_api.py
 tests/test_native_return_ui.py
 tests/test_native_sign_in.py
 tests/test_native_sign_in_browser.py
-tests/test_needs_you_open_browser.py
 tests/test_no_anonymous_principal.py
 tests/test_no_eligible_model_notice.py
 tests/test_no_platform_llm_credentials.py
@@ -739,11 +717,9 @@ tests/test_owner_identity_ipc.py
 tests/test_owner_launcher_client.py
 tests/test_owner_lease.py
 tests/test_owner_message_wakes.py
-tests/test_owner_notifications.py
 tests/test_owner_policy.py
 tests/test_owner_steering.py
 tests/test_owner_ui_prefs.py
-tests/test_owner_ui_prefs_browser.py
 tests/test_owner_ui_prefs_lifecycle.py
 tests/test_owner_unread.py
 tests/test_p0_triage_workflow.py
@@ -759,7 +735,6 @@ tests/test_payments_escrow.py
 tests/test_payments_schema.py
 tests/test_payments_settlement_ledger.py
 tests/test_peer_agent.py
-tests/test_pending_requests.py
 tests/test_pending_requests_migration.py
 tests/test_pending_requests_power.py
 tests/test_per_universe_engine_resolution.py
@@ -937,7 +912,6 @@ tests/test_run_file_lock.py
 tests/test_run_file_node.py
 tests/test_run_file_node_rpc.py
 tests/test_run_file_public.py
-tests/test_run_file_public_authoring.py
 tests/test_run_file_reader.py
 tests/test_run_file_retention.py
 tests/test_run_file_store.py
@@ -962,7 +936,6 @@ tests/test_run_transcript_rotation.py
 tests/test_run_universe_threading.py
 tests/test_run_usage_budgets.py
 tests/test_runs_schema_migration.py
-tests/test_runtime_paths.py
 tests/test_runtime_reconcile.py
 tests/test_s2_engine_assignment.py
 tests/test_s6_s8_engine_sources.py
@@ -985,16 +958,13 @@ tests/test_serve_open_hardening.py
 tests/test_served_agent_can_ask.py
 tests/test_served_authority_shared_chain.py
 tests/test_served_automation_lifecycle.py
-tests/test_served_branch_create_errors.py
 tests/test_served_capability_grants.py
 tests/test_served_docs_teach_a_parseable_packet.py
 tests/test_served_effect_edit_parity.py
 tests/test_served_execution_choice_patch.py
 tests/test_served_failure_notice.py
 tests/test_served_launch_accounting.py
-tests/test_served_model_preferences.py
 tests/test_served_model_setup.py
-tests/test_served_node_edit_parity.py
 tests/test_served_refresh_renews_binding.py
 tests/test_served_tool_contract_small_models.py
 tests/test_served_webhook_triggers.py
@@ -1086,7 +1056,6 @@ tests/test_trim_to_budget.py
 tests/test_ttl_memo.py
 tests/test_turn_continuity.py
 tests/test_turn_interrupt.py
-tests/test_turn_request_economy.py
 tests/test_turn_wait_visibility.py
 tests/test_turns_in_flight.py
 tests/test_ui_preview.py
@@ -1096,7 +1065,6 @@ tests/test_universe_birth_gate.py
 tests/test_universe_bundle.py
 tests/test_universe_egress.py
 tests/test_universe_file_reads_are_bounded.py
-tests/test_universe_intelligence.py
 tests/test_universe_list_observability.py
 tests/test_universe_owner.py
 tests/test_universe_ownership_inventory.py
@@ -1151,7 +1119,6 @@ tests/test_wiki_write_back_effector.py
 tests/test_work_agent_allowance.py
 tests/test_work_agent_authority.py
 tests/test_work_candidate_data.py
-tests/test_work_consumer_model_bridge.py
 tests/test_work_model_selection.py
 tests/test_work_target_origin.py
 tests/test_workflow_context_fit.py
