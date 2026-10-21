@@ -112,10 +112,15 @@ final class ReviewVideoTests: XCTestCase {
         if !found {
             // Nothing secret is on screen before the email is typed; the
             // harness exports only this assertion line.
-            let tree = [springboard, app, safari].filter {
-                $0.state == .runningForeground || $0.state == .runningBackground
-            }.map(\.debugDescription).joined(separator: "\n").replacingOccurrences(of: "\n", with: " | ")
-            XCTFail("\(step): system-browser email form. Hierarchy: \(tree)")
+            var tree: [String] = []
+            for host: XCUIApplication in [springboard, app, safari] {
+                let state = host.state
+                if state == .runningForeground || state == .runningBackground {
+                    tree.append(host.debugDescription)
+                }
+            }
+            let flat = tree.joined(separator: "\n").replacingOccurrences(of: "\n", with: " | ")
+            XCTFail("\(step): system-browser email form. Hierarchy: \(flat)")
         }
         return auth
     }
