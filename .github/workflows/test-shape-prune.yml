@@ -23,15 +23,25 @@ jobs:
         with:
           python-version: '3.11'
       - name: Collect per-test CI coverage in the disposable Linux oracle
+        id: coverage
+        # A broken orphan must not prevent its own removal proposal. Failed
+        # coverage runs never supply duplicate-removal evidence.
+        continue-on-error: true
         run: |
           mkdir -p "$RUNNER_TEMP/shape-coverage"
           python scripts/linux_oracle.py --as-root --out "$RUNNER_TEMP/shape-coverage" -- \
             -q --cov=tinyassets --cov=scripts --cov-context=test \
             --cov-report=json:/out/coverage.json -o cache_dir=/tmp/pytest-cache
       - name: Report subsets and delete orphaned tests
+        env:
+          COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
         run: |
           python -m pip install pytest pyyaml ruff
-          python scripts/test_shape.py --coverage "$RUNNER_TEMP/shape-coverage/coverage.json" \
+          coverage_args=()
+          if [ "$COVERAGE_OUTCOME" = success ]; then
+            coverage_args=(--coverage "$RUNNER_TEMP/shape-coverage/coverage.json")
+          fi
+          python scripts/test_shape.py "${coverage_args[@]}" \
             --json "$RUNNER_TEMP/shape-report.json" --prune --body "$RUNNER_TEMP/prune-body.md"
           ruff check tests --select F401,F841 --fix
       - uses: actions/upload-artifact@v4

@@ -23,8 +23,15 @@ Delete the old shared code.
 > **Superseded by C1.**
 ### C3. Superseded correction
 Old path.
+## Superseded layout
+### C4. Former route
+Historical.
+| T2 | Old table row |
 """,
-        "openspec/specs/door/spec.md": "### Requirement: Authenticate\nLive.\n",
+        "openspec/specs/door/spec.md": (
+            "### Requirement: Authenticate\nLive.\n"
+            "### Requirement: The deleted row set is derived\nLive deletion behavior.\n"
+        ),
         "openspec/changes/archive/old/design.md": "### D1. Historical\n",
     }
     rows = shape.registry(files)
@@ -33,18 +40,21 @@ Old path.
         "box:C1": "current",
         "box:C2": "superseded",
         "box:C3": "superseded",
+        "box:C4": "superseded",
+        "box:T2": "superseded",
         "door:Authenticate": "current",
+        "door:The deleted row set is derived": "current",
     }
     items = shape.tests(
         "tests/test_x.py",
         """
 import pytest
-@pytest.mark.verifies("box:C2", "box:C4", "typo:C1")
+@pytest.mark.verifies("box:C2", "box:C5", "typo:C1")
 def test_old(): pass
 def test_missing(): pass
 """,
     )
-    report = shape.audit(items, rows, {"box:C4": "current"})
+    report = shape.audit(items, rows, {"box:C5": "current"})
     assert [f["state"] for f in report["unresolvable"]] == ["superseded", "deleted", "unknown"]
     assert report["untagged"] == ["tests/test_x.py::test_missing"]
 
@@ -66,6 +76,17 @@ class TestBox:
 """,
     )
     assert items[0].ids == {"box:T1", "box:C1", "door:Authenticate"}
+    overwritten = shape.tests(
+        "tests/test_x.py",
+        """
+import pytest
+pytestmark = pytest.mark.verifies("box:T1")
+pytestmark = []
+@pytest.mark.parametrize("x", [pytest.param(1, marks=pytest.mark.verifies("box:T1")), 2])
+def test_partial(x): pass
+""",
+    )
+    assert not overwritten[0].ids
 
 
 def _commit(root, message):
@@ -106,13 +127,19 @@ def test_hygiene_checks_changed_tests_and_unchanged_references_to_retired_rows(t
     base = _commit(tmp_path, "base")
     spec.write_text("### C1. Route\n> **Superseded.**\n", encoding="utf-8")
     (tests / "test_new.py").write_text("def test_new(): pass\n", encoding="utf-8")
+    (tests / "test_bad.py").write_text(
+        'import pytest\n@pytest.mark.verifies("box:typo")\ndef test_bad(): pass\n',
+        encoding="utf-8",
+    )
     head = _commit(tmp_path, "retire")
     delta = gate.compute_delta(base, head, tmp_path, dt.date(2026, 10, 21))
     failures = gate.evaluate(delta, "")
     assert any("test_new" in f and "no verifies" in f for f in failures)
     assert any("test_old" in f and "still named" in f for f in failures)
+    assert any("test_bad" in f and "unresolvable" in f for f in failures)
     (tests / "test_old.py").unlink()
     (tests / "test_new.py").unlink()
+    (tests / "test_bad.py").unlink()
     head = _commit(tmp_path, "prune")
     assert not gate.compute_delta(base, head, tmp_path, dt.date(2026, 10, 21)).shape
 
@@ -192,3 +219,72 @@ def test_scheduled_prune_is_one_draft_pr_with_no_deploy_or_auto_merge():
     assert create["with"]["branch"] == "automation/test-shape-prune"
     assert "body-path" in create["with"]
     assert all("merge --auto" not in s.get("run", "") for s in steps)
+    report = next(s for s in steps if s.get("name") == "Report subsets and delete orphaned tests")
+    assert '"$COVERAGE_OUTCOME" = success' in report["run"]
+
+
+@pytest.mark.verifies(
+    "test-suite-follows-shape:A test already checked another way is pruned automatically"
+)
+def test_prune_command_writes_reviewable_removal_reasons_and_kept_witnesses(tmp_path):
+    import json
+
+    spec = tmp_path / "openspec/changes/box/design.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("### C1. Route\nLive.\n", encoding="utf-8")
+    path = tmp_path / "tests/test_x.py"
+    path.parent.mkdir()
+    path.write_text(
+        """import pytest
+@pytest.mark.verifies("box:C1")
+def test_a(): assert True
+@pytest.mark.verifies("box:C1")
+def test_b(): assert True
+@pytest.mark.verifies("box:retired")
+def test_orphan(): assert True
+""",
+        encoding="utf-8",
+    )
+    coverage = tmp_path / "coverage.json"
+    coverage.write_text(
+        json.dumps(
+            {
+                "meta": {"show_contexts": True},
+                "files": {
+                    "tinyassets/route.py": {
+                        "contexts": {
+                            "1": ["tests/test_x.py::test_a|run", "tests/test_x.py::test_b|run"]
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    body = tmp_path / "body.md"
+    report = tmp_path / "report.json"
+    assert (
+        shape.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--coverage",
+                str(coverage),
+                "--prune",
+                "--body",
+                str(body),
+                "--json",
+                str(report),
+            ]
+        )
+        == 0
+    )
+    assert [t.node for t in shape.tests("tests/test_x.py", path.read_text())] == [
+        "tests/test_x.py::test_a"
+    ]
+    assert "Test-Removal: retired" in body.read_text()
+    assert "Test-Removal: consolidated" in body.read_text()
+    assert "Registry row(s): S8" in body.read_text()
+    assert json.loads(report.read_text())["duplicates"] == {
+        "tests/test_x.py::test_b": "tests/test_x.py::test_a"
+    }

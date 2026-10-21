@@ -19,10 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-REQUIREMENT = re.compile(r"^### Requirement:\s*(.+?)\s*$", re.M)
 HEADING = re.compile(r"^(#{1,6})\s+(.+)$", re.M)
 ROW = re.compile(r"^\|\s*([A-Z]\d+(?:[a-z]|\.\d+)*)\s*\|", re.M)
-RETIRED = re.compile(r"\b(?:superseded|deleted|removed)\b", re.I)
 
 
 def git(root: Path, *args: str) -> str:
@@ -81,7 +79,8 @@ def _retired(title: str, body: str) -> bool:
     # A deletion LIST within a live correction does not retire the correction.
     first = next((s for s in body.splitlines() if s.strip()), "")
     return bool(
-        RETIRED.search(title)
+        re.search(r"\bsuperseded\b", title, re.I)
+        or re.search(r"\((?:deleted|removed)\)", title, re.I)
         or re.match(r"\s*(?:>\s*)?(?:\*\*)?(?:Superseded|Deleted|Removed)\b", first, re.I)
     )
 
@@ -97,28 +96,35 @@ def registry(files: dict[str, str]) -> dict[str, str]:
         if not (active or main):
             continue
         namespace = parts[2]
+        sections = list(_sections(text))
+
+        def retired_section(heading, body):
+            return _retired(heading[2], body) or any(
+                _retired(h[2], b)
+                for h, b in sections
+                if h.start() < heading.start() < h.end() + len(b)
+            )
+
         if path.endswith("/spec.md"):
-            for heading, body in _sections(text):
+            for heading, body in sections:
                 if heading[2].startswith("Requirement: "):
                     title = heading[2].removeprefix("Requirement: ").strip()
                     before = text[: heading.start()]
                     operations = re.findall(r"^## (\w+) Requirements", before, re.M)
-                    retired = _retired(title, body) or bool(
+                    retired = retired_section(heading, body) or bool(
                         operations and operations[-1] == "REMOVED"
                     )
                     result[f"{namespace}:{title}"] = "superseded" if retired else "current"
         if active and path.endswith("/design.md"):
-            for heading, body in _sections(text):
+            for heading, body in sections:
                 hit = re.match(r"([A-Z]\d+(?:[a-z]|\.\d+)*)(?:[. :]|$)", heading[2])
                 if hit:
                     result[f"{namespace}:{hit[1]}"] = (
-                        "superseded" if _retired(heading[2], body) else "current"
+                        "superseded" if retired_section(heading, body) else "current"
                     )
             for row in ROW.finditer(text):
                 line = text[row.start() :].splitlines()[0]
-                parents = [
-                    (h, b) for h, b in _sections(text) if h.end() <= row.start() < h.end() + len(b)
-                ]
+                parents = [(h, b) for h, b in sections if h.end() <= row.start() < h.end() + len(b)]
                 cells = line.split("|")
                 retired = any(
                     re.match(r"\s*(?:\*\*)?Superseded\b", cell, re.I) for cell in cells[2:]
@@ -128,21 +134,18 @@ def registry(files: dict[str, str]) -> dict[str, str]:
 
 
 def _claims(node: ast.AST) -> set[str]:
-    claims = set()
-    for call in ast.walk(node):
-        if (
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "verifies"
-            and isinstance(call.func.value, ast.Attribute)
-            and call.func.value.attr == "mark"
-        ):
-            for arg in call.args:
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    claims.add(arg.value)
-                else:
-                    claims.add("<nonliteral verifies id>")
-    return claims
+    # A mark inside parametrize data or a test body is not a declaration on
+    # every case of the test. Restrict claims to direct literal pytest marks.
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return set().union(*(_claims(child) for child in node.elts))
+    if not isinstance(node, ast.Call) or ast.unparse(node.func) != "pytest.mark.verifies":
+        return set()
+    return {
+        arg.value
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        else "<nonliteral verifies id>"
+        for arg in node.args
+    }
 
 
 @dataclass(frozen=True)
@@ -158,12 +161,16 @@ def tests(path: str, text: str) -> list[Test]:
     result = []
 
     def walk(body, parents=(), inherited=frozenset()):
-        local = set(inherited)
+        declared = set()
         for node in body:
             if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
-                    local.update(_claims(node.value))
+                    if isinstance(node, ast.AugAssign):
+                        declared.update(_claims(node.value))
+                    else:
+                        declared = _claims(node.value)
+        local = set(inherited) | declared
         for node in body:
             if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
                 extra = set().union(*(_claims(d) for d in node.decorator_list))
@@ -274,12 +281,7 @@ def prune(root: Path, items: list[Test], removals: set[str]) -> None:
         path = (root / rel).resolve()
         path.relative_to((root / "tests").resolve())
         text = path.read_text(encoding="utf-8")
-        remaining = [t for t in items if t.node.startswith(rel + "::") and t.node not in removals]
         # Helper-only modules can be imported by other tests; retain their helpers.
-        lines = text.splitlines(keepends=True)
-        for test in sorted(selected, key=lambda t: t.start, reverse=True):
-            lines[test.start - 1 : test.end] = []
-        updated = "".join(lines)
         # Empty classes need pass. Work from the ORIGINAL tree's source spans.
         tree = ast.parse(text)
         replacements = {}
@@ -303,9 +305,28 @@ def prune(root: Path, items: list[Test], removals: set[str]) -> None:
         updated = "".join(lines)
         ast.parse(updated)
         path.write_text(updated, encoding="utf-8")
-        if not remaining:
-            # Leave importable fixtures/helpers; no untagged test survives.
-            pass
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--shape-collection", help="write actual collected node IDs and verifies claims"
+    )
+
+
+def pytest_collection_finish(session):
+    """Optional collection evidence, including parameter cases and imported tests."""
+    destination = session.config.getoption("--shape-collection")
+    if destination:
+        records = [
+            {
+                "node": item.nodeid,
+                "ids": sorted(
+                    {claim for mark in item.iter_markers("verifies") for claim in mark.args}
+                ),
+            }
+            for item in session.items
+        ]
+        Path(destination).write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
 
 
 def main(argv=None) -> int:
@@ -348,7 +369,7 @@ def main(argv=None) -> int:
             body.append(f"Test-Removal: retired -- {len(orphans)} tests name no current shape row.")
         if duplicate:
             body.append(
-                f"Test-Removal: consolidated -- {len(duplicate)} tests have kept coverage witnesses."
+                f"Test-Removal: consolidated -- {len(duplicate)} tests have kept coverage witnesses"
             )
         body.extend(["", "Requires ordinary review; do not auto-merge.", ""])
         body.extend(f"- `{node}`: orphaned" for node in sorted(orphans))
