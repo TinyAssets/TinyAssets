@@ -1,0 +1,4001 @@
+{
+  "code_stores": [
+    "*.db",
+    "*.sqlite3",
+    "*/agent-activities.db",
+    ".account_seats.db",
+    ".action-policy.db",
+    ".api-keys.sqlite3",
+    ".auth.db",
+    ".author_server.db",
+    ".authoring.db",
+    ".automations.db",
+    ".boxhost/boxhost.db",
+    ".broker/accounts/*/policy.db",
+    ".broker/credential-custody.db",
+    ".broker/outbound.db",
+    ".broker/plans.db",
+    ".broker/state/next-wake.db",
+    ".broker/state/ops.db",
+    ".broker/state/owner-identities.db",
+    ".centers.db",
+    ".command-center-packages/packages.db",
+    ".control_plane.db",
+    ".conversation_attention.db",
+    ".conversation_memory.db",
+    ".effector_consents.db",
+    ".engine_run_admissions.db",
+    ".erasure-ledger.sqlite3",
+    ".external_write_receipts.db",
+    ".hook-owners.sqlite3",
+    ".hosted-model-auth.db",
+    ".idempotency.db",
+    ".langgraph_runs.db",
+    ".node_eval.db",
+    ".outside-client-authority.sqlite3",
+    ".owner-boxd/boxhost.db",
+    ".owner_devices.db",
+    ".owner_leases.db",
+    ".pending_requests.db",
+    ".project_memory.db",
+    ".remote-ta-receipts.sqlite3",
+    ".router-deleted-owners.sqlite3",
+    ".runs.db",
+    ".runtime/owner-sessions.db",
+    ".source_channel_policy.db",
+    ".storage_accounting.db",
+    ".subscription_state.db",
+    ".tinyassets.db",
+    ".universe_seats.db",
+    ".usage_ledger.db",
+    ".wiki_write_back_destination_markers.db",
+    ".workflow.db",
+    "/policy.db",
+    "activity.db",
+    "agent-activities.db",
+    "boxhost.db",
+    "checkpoints.db",
+    "credential-custody.db",
+    "daemon_brain.db",
+    "history.db",
+    "ingress-v1.sqlite3",
+    "knowledge.db",
+    "mcp-events.sqlite3",
+    "next-wake.db",
+    "ops.db",
+    "outbound.db",
+    "owner-identities.db",
+    "owner-sessions.db",
+    "packages.db",
+    "plans.db",
+    "policy.db",
+    "rules.db",
+    "starter-seeds.sqlite3",
+    "state/owner-identities.db",
+    "steering.db",
+    "story.db",
+    "wiki_trigger_attempts.db"
+  ],
+  "code_tables": [
+    "IF",
+    "__TABLE__",
+    "access_tokens",
+    "account_seats",
+    "account_timezone",
+    "action_records",
+    "action_result_outbox",
+    "action_result_receipts",
+    "activities",
+    "activity_events",
+    "activity_shape_cutover",
+    "admissions",
+    "agent_bindings",
+    "agent_component_lineage",
+    "agent_definitions",
+    "agent_model_launches",
+    "agent_request_attempts",
+    "agent_request_dispatches",
+    "agent_request_usage",
+    "agent_request_usage_links",
+    "agent_turn_rounds",
+    "agent_turn_tools",
+    "agent_turns",
+    "agent_wakes",
+    "api_key_request_counts",
+    "api_keys",
+    "applied_wiki_effects",
+    "approval_handoffs",
+    "assigned_queue_refusals",
+    "attribution_credit",
+    "attribution_edge",
+    "authenticated_connections",
+    "author_definitions",
+    "author_forks",
+    "author_runtime_instances",
+    "authoring_confirmations",
+    "authoring_events",
+    "authoring_file_handles",
+    "authoring_sessions",
+    "authoring_versions",
+    "authorization_codes",
+    "automation_activations",
+    "automation_activations_new",
+    "automation_attempts",
+    "automations",
+    "background_branch_attempts",
+    "background_branch_authority_owners",
+    "background_branch_bindings",
+    "blobs",
+    "box_model_sources",
+    "box_records",
+    "boxes",
+    "branch_definitions",
+    "branch_heads",
+    "branch_schedules",
+    "branch_subscriptions",
+    "branch_tasks_v2",
+    "branch_tasks_v2_maintenance_state",
+    "branch_tasks_v2_quarantine",
+    "branch_versions",
+    "branch_versions_migrations",
+    "branches",
+    "brings",
+    "broker_schema_migrations",
+    "browser_vault",
+    "canary_door_limits",
+    "canonical_bindings",
+    "capability_grants",
+    "center_admissions",
+    "centers",
+    "changes",
+    "chat_turn_failures",
+    "checkout_settlements",
+    "cloud_automation_controls",
+    "cloud_automation_slice_triggers",
+    "cloud_automation_terminal_receipts",
+    "command_center_adoptions",
+    "command_center_auto_receipts",
+    "command_center_auto_status",
+    "command_center_policy_requests",
+    "command_center_release_evidence",
+    "command_center_release_series",
+    "command_center_releases",
+    "command_center_update_policies",
+    "command_center_update_requests",
+    "commons_bundle_sources",
+    "commons_bundle_versions",
+    "commons_bundles",
+    "commons_log_bytes",
+    "commons_writers",
+    "communities",
+    "conformance_pack",
+    "connection_capabilities",
+    "connection_disconnections",
+    "connection_oauth_flows",
+    "contribution_events",
+    "conversation_backfill",
+    "conversation_custody_consumed_grants",
+    "conversation_custody_database_binding",
+    "conversation_custody_deletions",
+    "conversation_custody_idempotency",
+    "conversation_custody_messages",
+    "conversation_custody_threads",
+    "conversation_learned",
+    "conversation_run_admissions",
+    "conversation_terminal_projections",
+    "conversation_turns",
+    "counter",
+    "daemon_brain_entries",
+    "daemon_brain_entries_fts",
+    "daemon_memory_events",
+    "daemon_memory_promotions",
+    "deleted_principals",
+    "deletion_jobs",
+    "deliveries",
+    "draft_versions",
+    "edges",
+    "effect_intents",
+    "effector_consents",
+    "entities",
+    "episodic_facts",
+    "events",
+    "extension_activations",
+    "extension_bindings",
+    "extension_hook_events",
+    "extension_revisions",
+    "extension_ui_projections",
+    "external_write_identity_aliases",
+    "external_write_receipts",
+    "facts",
+    "fence_high_water",
+    "first",
+    "for",
+    "founder_home",
+    "gate_claims",
+    "gate_event",
+    "gate_event_cite",
+    "goal_canonicals",
+    "goals",
+    "graph_deliveries",
+    "graph_delivery_answers",
+    "graph_delivery_attempts",
+    "graph_delivery_files",
+    "graph_output_links",
+    "graph_receivers",
+    "handoff",
+    "handoff_artifacts",
+    "handoff_confirmation",
+    "handoff_transition",
+    "hook_owners",
+    "host",
+    "hosted_model_flows",
+    "idempotent_results",
+    "ingress_imports",
+    "inline_model_flows",
+    "learned_model_evidence",
+    "learned_model_source_evidence",
+    "llm_credential_custody",
+    "measurements",
+    "meta",
+    "native_login_flows",
+    "native_login_limits",
+    "next_wakes",
+    "node_edit_audit",
+    "node_executions",
+    "node_status",
+    "oauth_clients",
+    "oauth_public_clients",
+    "once_approvals",
+    "open_turns",
+    "ops",
+    "outbound_connection_grants",
+    "outbound_connections",
+    "outbound_connector_artifact_edges",
+    "outbound_connector_artifacts",
+    "outcome_artifact",
+    "outcome_artifact_source",
+    "outcome_event",
+    "outcome_evidence",
+    "outcome_evidence_transition",
+    "outside_audit",
+    "outside_effects",
+    "outside_families",
+    "outside_grants",
+    "outside_revocations",
+    "outside_switch",
+    "owner_admission",
+    "owner_box_secrets",
+    "owner_devices",
+    "owner_fence",
+    "owner_identities",
+    "owner_lease",
+    "owner_login_completions",
+    "owner_login_flows",
+    "owner_notify_settings",
+    "owner_sessions",
+    "owner_snapshots",
+    "owner_store_catalog",
+    "owner_ui_prefs",
+    "owner_view_receipts",
+    "owner_volumes",
+    "package_versions",
+    "pending",
+    "pending_requests",
+    "pins",
+    "plans",
+    "policy",
+    "project_memory",
+    "project_memory_history",
+    "provider_assignment_candidates",
+    "provider_assignments",
+    "provider_invocation_reservations",
+    "provider_work_bindings",
+    "provider_work_execution_claims",
+    "reads",
+    "receipts",
+    "reflections",
+    "refresh_tokens",
+    "refused_model_marks",
+    "request_admission_events",
+    "request_admission_rollouts",
+    "request_admissions",
+    "request_answer_deliveries",
+    "request_asking_launches",
+    "request_item_answers",
+    "request_notifications",
+    "request_storage_migration",
+    "request_suppressions",
+    "request_unmutes",
+    "request_workflow_agents",
+    "requests",
+    "restore_state",
+    "routing_sequence",
+    "run_cancels",
+    "run_child_attachments",
+    "run_events",
+    "run_file_allocations",
+    "run_file_bindings",
+    "run_file_cleanup",
+    "run_file_objects",
+    "run_file_operations",
+    "run_input_admissions",
+    "run_judgments",
+    "run_lineage",
+    "run_receipts",
+    "run_terminal_outbox",
+    "runs",
+    "scene_summaries",
+    "scheduler_delivered_events",
+    "scoped_reset_leases",
+    "scoped_reset_operations",
+    "seat_waiters",
+    "seed_binding",
+    "seed_blobs",
+    "seed_notices",
+    "seed_paths",
+    "seed_receipts",
+    "seed_transaction_paths",
+    "seed_transactions",
+    "series_promises",
+    "served_provider_budget_reservations",
+    "settlements",
+    "spend_reservations",
+    "statements",
+    "steer",
+    "style_observations",
+    "subscriptions",
+    "ta_receipts",
+    "teammate_messages",
+    "temporal_facts",
+    "tool_calls",
+    "trigger_fires",
+    "triggers",
+    "universe_acl",
+    "universe_app_ui",
+    "universe_app_ui_asset",
+    "universe_hard_priorities",
+    "universe_leases",
+    "universe_model_preferences",
+    "universe_notes",
+    "universe_owner",
+    "universe_rules",
+    "universe_snapshots",
+    "universe_work_targets",
+    "universes",
+    "unreconciled_writes",
+    "user_accounts",
+    "user_requests",
+    "user_sessions",
+    "verification_budget",
+    "vote_ballots",
+    "vote_windows",
+    "webhook_admissions",
+    "webhook_deliveries",
+    "webhook_hooks",
+    "webhook_inflight",
+    "workspace_generations",
+    "workspace_leases",
+    "workspace_ledger",
+    "workspace_locks",
+    "workspace_outbox",
+    "workspace_push_intents",
+    "workspace_waiters"
+  ],
+  "counts": {
+    "centers_per_owner": "1-10",
+    "owners": "1-10",
+    "universes": "0"
+  },
+  "files": [
+    {
+      "class": "broker",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".layout.json",
+      "sizes": {
+        "11-1k": "1-10"
+      }
+    },
+    {
+      "class": "broker",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".layout.lock",
+      "sizes": {
+        "0": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".account_seats.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".api-keys.sqlite3",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".auth.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".automations.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/<id>/<id>/policy.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/<id>/next-wake.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/<id>/ops.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/<id>/owner-identities.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/credential-custody.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/outbound.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".broker/plans.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".command-center-packages/packages.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".control_plane.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".effector_consents.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".engine_run_admissions.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".erasure-ledger.sqlite3",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".hook-owners.sqlite3",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".hosted-model-auth.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".langgraph_runs.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".outside-client-authority.sqlite3",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".owner_devices.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".owner_leases.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".router-deleted-owners.sqlite3",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".runs.db",
+      "sizes": {
+        ">100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".runtime/owner-sessions.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".storage_accounting.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": ".tinyassets.db",
+      "sizes": {
+        ">100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": "<id>/boxhost.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": "outbound.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "database_files",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": "wiki_trigger_attempts.db",
+      "sizes": {
+        "1k-100k": "1-10"
+      }
+    },
+    {
+      "class": "dropped",
+      "count": "1k-100k",
+      "kinds": {
+        "file": "1k-100k"
+      },
+      "links": {},
+      "pattern": ".platform/owners/<owner>/agent-home/<id>/<id>/<file>.txt",
+      "sizes": {
+        "1-10": "1-10",
+        "11-1k": "1k-100k"
+      }
+    },
+    {
+      "class": "owner",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {
+        "hardlink": "1-10"
+      },
+      "pattern": ".universe-sidecars/<center>/<file>",
+      "sizes": {
+        "1-10": "1-10",
+        "11-1k": "1-10"
+      }
+    },
+    {
+      "class": "owner",
+      "count": "1-10",
+      "kinds": {
+        "fifo": "1-10"
+      },
+      "links": {},
+      "pattern": ".universe-sidecars/<center>/<file>.fifo",
+      "sizes": {}
+    },
+    {
+      "class": "owner",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {
+        "hardlink": "1-10"
+      },
+      "pattern": ".universe-sidecars/<center>/<file>.json",
+      "sizes": {
+        "11-1k": "1-10"
+      }
+    },
+    {
+      "class": "owner",
+      "count": "1-10",
+      "kinds": {
+        "symlink": "1-10"
+      },
+      "links": {},
+      "pattern": ".universe-sidecars/<center>/<file>.txt",
+      "sizes": {}
+    },
+    {
+      "class": "owner",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": "<center>/<file>.txt",
+      "sizes": {
+        "1-10": "1-10",
+        "11-1k": "1-10"
+      }
+    },
+    {
+      "class": "regenerated",
+      "count": "1-10",
+      "kinds": {
+        "socket": "1-10"
+      },
+      "links": {},
+      "pattern": ".universe-sidecars/<center>/<file>.sock",
+      "sizes": {}
+    },
+    {
+      "class": "router",
+      "count": "1-10",
+      "kinds": {
+        "file": "1-10"
+      },
+      "links": {},
+      "pattern": "platform-expected-instance.json",
+      "sizes": {
+        "11-1k": "1-10"
+      }
+    }
+  ],
+  "stores": {
+    ".account_seats.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "account_seats": {
+          "columns": {
+            "account_id": "TEXT",
+            "acquired_at": "REAL",
+            "depth": "INTEGER",
+            "expires_at": "REAL",
+            "holder": "TEXT",
+            "kind": "TEXT",
+            "run_id": "TEXT",
+            "seat_class": "TEXT",
+            "seat_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "chat_turn_failures": {
+          "columns": {
+            "account_id": "TEXT",
+            "message": "TEXT",
+            "recorded_at": "REAL",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "seat_waiters": {
+          "columns": {
+            "account_id": "TEXT",
+            "enqueued_at": "REAL",
+            "expires_at": "REAL",
+            "holder": "TEXT",
+            "kind": "TEXT",
+            "run_id": "TEXT",
+            "seat_class": "TEXT",
+            "ticket": "INTEGER",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".api-keys.sqlite3": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "api_key_request_counts": {
+          "columns": {
+            "kind": "TEXT",
+            "owner": "TEXT",
+            "requests": "INTEGER",
+            "subject": "TEXT",
+            "window_start": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "api_keys": {
+          "columns": {
+            "created_at": "REAL",
+            "key_id": "TEXT",
+            "last_used_at": "REAL",
+            "name": "TEXT",
+            "owner": "TEXT",
+            "revoked_at": "REAL",
+            "secret_sha256": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".auth.db": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "access_tokens": {
+          "columns": {
+            "client_id": "TEXT",
+            "created_at": "REAL",
+            "expires_at": "REAL",
+            "revoked": "INTEGER",
+            "scope": "TEXT",
+            "token_hash": "TEXT",
+            "user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "authorization_codes": {
+          "columns": {
+            "client_id": "TEXT",
+            "code": "TEXT",
+            "code_challenge": "TEXT",
+            "code_challenge_method": "TEXT",
+            "created_at": "REAL",
+            "redirect_uri": "TEXT",
+            "scope": "TEXT",
+            "used": "INTEGER",
+            "user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "oauth_clients": {
+          "columns": {
+            "client_id": "TEXT",
+            "client_name": "TEXT",
+            "created_at": "TEXT",
+            "grant_types": "TEXT",
+            "metadata_json": "TEXT",
+            "redirect_uris": "TEXT",
+            "response_types": "TEXT",
+            "token_endpoint_auth_method": "TEXT"
+          },
+          "rows": "0"
+        },
+        "refresh_tokens": {
+          "columns": {
+            "client_id": "TEXT",
+            "created_at": "REAL",
+            "expires_at": "REAL",
+            "revoked": "INTEGER",
+            "scope": "TEXT",
+            "token_hash": "TEXT",
+            "user_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".automations.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "automation_attempts": {
+          "columns": {
+            "automation_id": "TEXT",
+            "claimed_at": "TEXT",
+            "due_at": "TEXT",
+            "finished_at": "TEXT",
+            "reason": "TEXT",
+            "run_id": "TEXT",
+            "status": "TEXT"
+          },
+          "rows": "0"
+        },
+        "automations": {
+          "columns": {
+            "automation_id": "TEXT",
+            "owner_principal_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "universe_leases": {
+          "columns": {
+            "expires_at": "TEXT",
+            "holder": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".boxhost/boxhost.db": {
+      "class": [
+        "dropped"
+      ],
+      "tables": {
+        "boxes": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "execs": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "host": {
+          "columns": {
+            "k": "TEXT",
+            "v": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "ops": {
+          "columns": {
+            "digest": "TEXT",
+            "namespace": "TEXT",
+            "op_id": "TEXT",
+            "sent": "INTEGER",
+            "stamp_ms": "INTEGER",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_destroys": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/accounts/<owner>/policy.db": {
+      "class": [
+        "broker",
+        "dropped"
+      ],
+      "tables": {
+        "once_approvals": {
+          "columns": {
+            "consumed_at": "REAL",
+            "expires_at": "REAL",
+            "generation": "INTEGER",
+            "request_digest": "TEXT",
+            "session_id": "TEXT",
+            "token_hash": "TEXT"
+          },
+          "rows": "0"
+        },
+        "policy": {
+          "columns": {
+            "digest": "TEXT",
+            "document": "TEXT",
+            "generation": "INTEGER",
+            "singleton": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "receipts": {
+          "columns": {
+            "at": "REAL",
+            "decision": "TEXT",
+            "generation": "INTEGER",
+            "id": "INTEGER",
+            "kind": "TEXT",
+            "new_digest": "TEXT",
+            "old_digest": "TEXT",
+            "outcome": "TEXT",
+            "owner": "TEXT",
+            "request_digest": "TEXT",
+            "rule": "TEXT",
+            "session_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "spend_reservations": {
+          "columns": {
+            "amount": "INTEGER",
+            "day": "TEXT",
+            "month": "TEXT",
+            "request_digest": "TEXT",
+            "request_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/credential-custody.db": {
+      "class": [
+        "broker",
+        "dropped"
+      ],
+      "tables": {
+        "deleted_principals": {
+          "columns": {
+            "deleted_at": "REAL",
+            "founder_sub": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_custody": {
+          "columns": {
+            "generation": "INTEGER",
+            "owner_user_id": "TEXT",
+            "record_digest": "TEXT",
+            "reference_digest": "TEXT",
+            "reference_id": "TEXT",
+            "service": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_deposit_commits": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_deposit_owners": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_refresh_state": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/outbound.db": {
+      "class": [
+        "broker",
+        "dropped"
+      ],
+      "tables": {
+        "agent_model_launches": {
+          "columns": {
+            "active": "INTEGER",
+            "agent_binding_id": "TEXT",
+            "authority_id": "TEXT",
+            "authority_kind": "TEXT",
+            "binding_revision": "INTEGER",
+            "owner": "TEXT",
+            "reference_hash": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_attempts": {
+          "columns": {
+            "attempt_json": "TEXT",
+            "dispatched_at": "TEXT",
+            "ordinal": "INTEGER",
+            "owner": "TEXT",
+            "source_ref": "TEXT",
+            "state": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_dispatches": {
+          "columns": {
+            "active": "INTEGER",
+            "claimed": "INTEGER",
+            "connection_id": "TEXT",
+            "first_ordinal": "INTEGER",
+            "grant_id": "TEXT",
+            "last_ordinal": "INTEGER",
+            "operation_id": "TEXT",
+            "owner": "TEXT",
+            "reference_hash": "TEXT",
+            "request_digest": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_usage": {
+          "columns": {
+            "closed": "INTEGER",
+            "created_at": "TEXT",
+            "failures_json": "TEXT",
+            "owner": "TEXT",
+            "owner_token": "TEXT",
+            "parent_token": "TEXT",
+            "policy_json": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_usage_links": {
+          "columns": {
+            "kind": "TEXT",
+            "owner": "TEXT",
+            "subject_id": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "box_model_sources": {
+          "columns": {
+            "definition": "TEXT",
+            "id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "broker_schema_migrations": {
+          "columns": {
+            "name": "TEXT"
+          },
+          "rows": "0"
+        },
+        "browser_vault": {
+          "columns": {
+            "account": "TEXT",
+            "owner": "TEXT",
+            "revision": "INTEGER",
+            "status": "TEXT",
+            "verify": "TEXT"
+          },
+          "rows": "0"
+        },
+        "connection_capabilities": {
+          "columns": {
+            "capability_kind": "TEXT",
+            "configured_at": "REAL",
+            "connection_id": "TEXT",
+            "descriptor_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connection_grants": {
+          "columns": {
+            "connection_id": "TEXT",
+            "grant_id": "TEXT",
+            "granted_at": "REAL",
+            "inference_required": "INTEGER",
+            "owner_user_id": "TEXT",
+            "revoked_at": "REAL",
+            "unprompted_action_cap_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connections": {
+          "columns": {
+            "access_mode": "TEXT",
+            "allowed_endpoints_json": "TEXT",
+            "auth_scheme": "TEXT",
+            "connection_class": "TEXT",
+            "connection_id": "TEXT",
+            "connection_type": "TEXT",
+            "credential_ref": "TEXT",
+            "destination": "TEXT",
+            "owner_user_id": "TEXT",
+            "provider": "TEXT",
+            "revoked_at": "REAL",
+            "scopes_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connector_artifact_edges": {
+          "columns": {
+            "child_artifact_id": "TEXT",
+            "created_at": "REAL",
+            "parent_artifact_id": "TEXT",
+            "remixed_by_user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connector_artifacts": {
+          "columns": {
+            "artifact_id": "TEXT",
+            "connector_definition_json": "TEXT",
+            "created_at": "REAL",
+            "mcp_client_config_json": "TEXT",
+            "owner_user_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/plans.db": {
+      "class": [
+        "broker"
+      ],
+      "tables": {
+        "checkout_settlements": {
+          "columns": {
+            "attempt": "TEXT",
+            "attempt_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "plans": {
+          "columns": {
+            "attempt": "TEXT",
+            "ends_at": "REAL",
+            "event_created": "REAL",
+            "owner": "TEXT",
+            "subscription_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/state/next-wake.db": {
+      "class": [
+        "broker"
+      ],
+      "tables": {
+        "next_wakes": {
+          "columns": {
+            "next_wake_at": "REAL"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/state/ops.db": {
+      "class": [
+        "dropped"
+      ],
+      "tables": {
+        "meta": {
+          "columns": {
+            "key": "TEXT",
+            "value": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "ops": {
+          "columns": {
+            "digest": "TEXT",
+            "namespace": "TEXT",
+            "op_id": "TEXT",
+            "sent": "INTEGER",
+            "stamp_ms": "INTEGER",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".broker/state/owner-identities.db": {
+      "class": [
+        "broker",
+        "dropped"
+      ],
+      "tables": {
+        "box_records": {
+          "columns": {
+            "principal": "TEXT",
+            "project_id": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "center_admissions": {
+          "columns": {
+            "center": "TEXT",
+            "event": "TEXT",
+            "generation": "INTEGER",
+            "machine": "INTEGER",
+            "principal": "TEXT"
+          },
+          "rows": "1-10"
+        },
+        "deletion_jobs": {
+          "columns": {
+            "record": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_admission": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_box_revocations": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_box_secrets": {
+          "columns": {
+            "secret": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_identities": {
+          "columns": {
+            "machine_id": "INTEGER",
+            "principal": "TEXT"
+          },
+          "rows": "1-10"
+        },
+        "owner_snapshots": {
+          "columns": {
+            "principal": "TEXT",
+            "snapshot_sha256": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_volumes": {
+          "columns": {
+            "asleep_at": "REAL",
+            "snapshot_sha256": "TEXT",
+            "uid": "INTEGER",
+            "work": "TEXT"
+          },
+          "rows": "0"
+        },
+        "routing_sequence": {
+          "columns": {
+            "revision": "INTEGER"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".command-center-packages/packages.db": {
+      "class": [
+        "owner",
+        "published"
+      ],
+      "tables": {
+        "blobs": {
+          "columns": {
+            "author_id": "TEXT",
+            "blob_sha256": "TEXT",
+            "created_at": "REAL",
+            "size_bytes": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "extension_activations": {
+          "columns": {
+            "agent_id": "TEXT",
+            "ceiling_json": "TEXT",
+            "generation": "INTEGER",
+            "name": "TEXT",
+            "owner_id": "TEXT",
+            "revision": "TEXT",
+            "state": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "extension_bindings": {
+          "columns": {
+            "agent_id": "TEXT",
+            "bindings_json": "TEXT",
+            "generation": "INTEGER",
+            "name": "TEXT",
+            "owner_id": "TEXT",
+            "revision": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "extension_revisions": {
+          "columns": {
+            "agent_id": "TEXT",
+            "name": "TEXT",
+            "owner_id": "TEXT",
+            "revision": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "package_versions": {
+          "columns": {
+            "author_id": "TEXT",
+            "blob_sha256": "TEXT",
+            "created_at": "REAL",
+            "definition_id": "TEXT",
+            "name": "TEXT",
+            "version": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "pins": {
+          "columns": {
+            "activated_at": "REAL",
+            "agent_id": "TEXT",
+            "claim_token": "TEXT",
+            "claimed_at": "REAL",
+            "created_at": "REAL",
+            "digest": "TEXT",
+            "kind": "TEXT",
+            "owner_id": "TEXT",
+            "pin_id": "TEXT",
+            "progress_json": "TEXT",
+            "record_json": "TEXT",
+            "request_id": "TEXT",
+            "state": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".control_plane.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "trigger_fires": {
+          "columns": {
+            "claimed_at": "TEXT",
+            "collapsed": "INTEGER",
+            "due_at": "TEXT",
+            "lag_s": "REAL",
+            "outcome": "TEXT",
+            "owner_generation": "INTEGER",
+            "run_id": "TEXT",
+            "started_at": "TEXT",
+            "trigger_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "triggers": {
+          "columns": {
+            "agent_id": "TEXT",
+            "coalesced_total": "INTEGER",
+            "command_center_id": "TEXT",
+            "created_at": "TEXT",
+            "enabled": "INTEGER",
+            "engaged_at": "TEXT",
+            "kind": "TEXT",
+            "last_due_at": "TEXT",
+            "last_run_id": "TEXT",
+            "owner_principal_id": "TEXT",
+            "policy_override": "TEXT",
+            "trigger_key": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".effector_consents.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "effector_consents": {
+          "columns": {
+            "destination": "TEXT",
+            "granted_at": "REAL",
+            "granted_by": "TEXT",
+            "revoked_at": "REAL",
+            "sink": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".engine_run_admissions.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "admissions": {
+          "columns": {
+            "owner_user_id": "TEXT",
+            "run_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "dispatch_budget": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "settlements": {
+          "columns": {
+            "kind": "TEXT",
+            "run_id": "TEXT",
+            "ts": "REAL"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".erasure-ledger.sqlite3": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "events": {
+          "columns": {
+            "ingress_id": "TEXT",
+            "payload": "BLOB",
+            "sequence": "INTEGER",
+            "terminal": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "initialized": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".hook-owners.sqlite3": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "hook_owners": {
+          "columns": {
+            "owner": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".hosted-model-auth.db": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "connection_oauth_flows": {
+          "columns": {
+            "action_digest": "TEXT",
+            "approved_owner": "TEXT",
+            "challenge": "TEXT",
+            "expires_at": "REAL",
+            "owner_user_id": "TEXT",
+            "redirect_uri": "TEXT"
+          },
+          "rows": "0"
+        },
+        "hosted_model_flows": {
+          "columns": {
+            "challenge": "TEXT",
+            "created_at": "REAL",
+            "owner_user_id": "TEXT",
+            "preset_digest": "TEXT",
+            "request_ref": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".langgraph_runs.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "checkpoints": {
+          "columns": {
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "writes": {
+          "columns": {
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".outside-client-authority.sqlite3": {
+      "class": [
+        "owner",
+        "router"
+      ],
+      "tables": {
+        "authenticated_connections": {
+          "columns": {
+            "connection_id": "TEXT",
+            "first_authenticated_at": "REAL",
+            "identity_source": "TEXT",
+            "last_authenticated_at": "REAL",
+            "name": "TEXT",
+            "name_source": "TEXT",
+            "outside_origin": "TEXT",
+            "owner": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outside_audit": {
+          "columns": {
+            "action": "TEXT",
+            "at": "TEXT",
+            "client": "TEXT",
+            "generation": "INTEGER",
+            "owner": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outside_effects": {
+          "columns": {
+            "admitted_at": "REAL",
+            "client": "TEXT",
+            "generation": "INTEGER",
+            "lease": "TEXT",
+            "owner": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outside_families": {
+          "columns": {
+            "authenticated_at": "INTEGER",
+            "client": "TEXT",
+            "family": "TEXT",
+            "owner": "TEXT",
+            "retired": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "outside_grants": {
+          "columns": {
+            "client": "TEXT",
+            "family": "TEXT",
+            "generation": "INTEGER",
+            "owner": "TEXT",
+            "revoked": "INTEGER",
+            "scopes": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outside_revocations": {
+          "columns": {
+            "client": "TEXT",
+            "owner": "TEXT",
+            "revoked_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "outside_switch": {
+          "columns": {
+            "enabled": "INTEGER",
+            "id": "INTEGER"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".owner_devices.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "owner_devices": {
+          "columns": {
+            "created_at": "REAL",
+            "device_id": "TEXT",
+            "enabled": "INTEGER",
+            "label": "TEXT",
+            "last_seen_at": "REAL",
+            "owner_user_id": "TEXT",
+            "platform": "TEXT",
+            "retired_at": "REAL",
+            "retired_reason": "TEXT",
+            "token_json": "TEXT",
+            "token_sha256": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_notify_settings": {
+          "columns": {
+            "enabled": "INTEGER",
+            "owner_user_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "request_notifications": {
+          "columns": {
+            "device_id": "TEXT",
+            "item_id": "TEXT",
+            "kind": "TEXT",
+            "outcome": "TEXT",
+            "owner_user_id": "TEXT",
+            "request_id": "TEXT",
+            "sent_at": "REAL"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".owner_leases.db": {
+      "class": [
+        "owner",
+        "regenerated"
+      ],
+      "tables": {
+        "fence_high_water": {
+          "columns": {
+            "generation": "INTEGER",
+            "owner_key": "TEXT",
+            "store_path": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_lease": {
+          "columns": {
+            "acquired_at": "TEXT",
+            "generation": "INTEGER",
+            "holder_tree": "TEXT",
+            "owner_key": "TEXT",
+            "proof_sha256": "TEXT",
+            "released_at": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_store_catalog": {
+          "columns": {
+            "registered_at": "TEXT",
+            "store_kind": "TEXT",
+            "store_path": "TEXT"
+          },
+          "rows": "0"
+        },
+        "restore_state": {
+          "columns": {
+            "manifest_json": "TEXT",
+            "singleton": "INTEGER",
+            "started_at": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".router-deleted-owners.sqlite3": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "deleted_owners": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".runs.db": {
+      "class": [
+        "owner",
+        "regenerated"
+      ],
+      "tables": {
+        "branch_schedules": {
+          "columns": {
+            "active": "INTEGER",
+            "branch_def_id": "TEXT",
+            "created_at": "REAL",
+            "cron_expr": "TEXT",
+            "inputs_template_json": "TEXT",
+            "interval_seconds": "REAL",
+            "last_fired_at": "REAL",
+            "owner_actor": "TEXT",
+            "owner_principal_id": "TEXT",
+            "pause_reason": "TEXT",
+            "paused": "INTEGER",
+            "revision": "INTEGER",
+            "schedule_id": "TEXT",
+            "skip_if_running": "INTEGER",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "branch_subscriptions": {
+          "columns": {
+            "active": "INTEGER",
+            "branch_def_id": "TEXT",
+            "created_at": "REAL",
+            "event_type": "TEXT",
+            "filter_json": "TEXT",
+            "inputs_mapping_json": "TEXT",
+            "owner_actor": "TEXT",
+            "subscription_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "branch_versions": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "branch_version_id": "TEXT",
+            "content_hash": "TEXT",
+            "notes": "TEXT",
+            "parent_version_id": "TEXT",
+            "public": "INTEGER",
+            "published_at": "TEXT",
+            "publisher": "TEXT",
+            "rolled_back_at": "TEXT",
+            "rolled_back_by": "TEXT",
+            "rolled_back_reason": "TEXT",
+            "snapshot_json": "TEXT",
+            "status": "TEXT",
+            "watch_window_seconds": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "branch_versions_migrations": {
+          "columns": {
+            "applied_at": "TEXT",
+            "detail": "TEXT"
+          },
+          "rows": "0"
+        },
+        "contribution_events": {
+          "columns": {
+            "actor_handle": "TEXT",
+            "actor_id": "TEXT",
+            "daemon_id": "TEXT",
+            "event_id": "TEXT",
+            "event_type": "TEXT",
+            "metadata_json": "TEXT",
+            "occurred_at": "REAL",
+            "owner_user_id": "TEXT",
+            "runtime_instance_id": "TEXT",
+            "source_artifact_id": "TEXT",
+            "source_artifact_kind": "TEXT",
+            "source_run_id": "TEXT",
+            "weight": "REAL",
+            "worker_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "conversation_run_admissions": {
+          "columns": {
+            "admission_id": "TEXT",
+            "context_json": "TEXT",
+            "conversation_turn_no": "INTEGER",
+            "created_at": "REAL",
+            "intent_digest": "TEXT",
+            "intent_json": "TEXT",
+            "owner_user_id": "TEXT",
+            "projection_state": "TEXT",
+            "request_key_hash": "TEXT",
+            "run_id": "TEXT",
+            "selection_json": "TEXT",
+            "session_id": "TEXT",
+            "terminal_json": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "gate_event": {
+          "columns": {
+            "attested_at": "TEXT",
+            "attested_by": "TEXT",
+            "dispute_reason": "TEXT",
+            "disputed_at": "TEXT",
+            "disputed_by": "TEXT",
+            "event_date": "TEXT",
+            "event_id": "TEXT",
+            "event_type": "TEXT",
+            "goal_id": "TEXT",
+            "notes": "TEXT",
+            "retracted_at": "TEXT",
+            "retracted_by": "TEXT",
+            "retraction_note": "TEXT",
+            "verification_status": "TEXT",
+            "verified_at": "TEXT",
+            "verified_by": "TEXT"
+          },
+          "rows": "0"
+        },
+        "gate_event_cite": {
+          "columns": {
+            "branch_version_id": "TEXT",
+            "cite_id": "TEXT",
+            "cited_at": "TEXT",
+            "contribution_summary": "TEXT",
+            "event_id": "TEXT",
+            "run_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "graph_deliveries": {
+          "columns": {
+            "accepted_at": "REAL",
+            "delivery_id": "TEXT",
+            "inputs_json": "TEXT",
+            "link_id": "TEXT",
+            "occurrence_id": "TEXT",
+            "receiver_branch_id": "TEXT",
+            "receiver_generation": "INTEGER",
+            "receiver_id": "TEXT",
+            "receiver_node_id": "TEXT",
+            "receiver_owner_id": "TEXT",
+            "receiver_universe_id": "TEXT",
+            "request_sha256": "TEXT",
+            "sender_id": "TEXT",
+            "sender_universe_id": "TEXT",
+            "snapshot_json": "TEXT",
+            "snapshot_sha256": "TEXT",
+            "source_branch_id": "TEXT",
+            "source_node_id": "TEXT",
+            "source_run_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "graph_delivery_answers": {
+          "columns": {
+            "answered_at": "REAL",
+            "delivery_id": "TEXT",
+            "note": "TEXT",
+            "noticed_at": "REAL",
+            "outcome": "TEXT"
+          },
+          "rows": "0"
+        },
+        "graph_delivery_attempts": {
+          "columns": {
+            "attempt": "INTEGER",
+            "claim_token": "TEXT",
+            "created_at": "REAL",
+            "delivery_id": "TEXT",
+            "execution_started_at": "REAL",
+            "finished_at": "REAL",
+            "run_id": "TEXT",
+            "safe_reason": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "graph_delivery_files": {
+          "columns": {
+            "delivery_id": "TEXT",
+            "field_name": "TEXT",
+            "ordinal": "INTEGER",
+            "receiver_file_id": "TEXT",
+            "sender_file_id": "TEXT",
+            "sha256": "TEXT",
+            "size_bytes": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "graph_output_links": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "created_at": "REAL",
+            "disconnected_at": "REAL",
+            "link_id": "TEXT",
+            "mapping_json": "TEXT",
+            "node_id": "TEXT",
+            "owner_id": "TEXT",
+            "receiver_generation": "INTEGER",
+            "receiver_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "graph_receivers": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "contract_json": "TEXT",
+            "created_at": "REAL",
+            "description": "TEXT",
+            "discoverable": "INTEGER",
+            "generation": "INTEGER",
+            "node_id": "TEXT",
+            "open_to_all": "INTEGER",
+            "owner_id": "TEXT",
+            "receiver_id": "TEXT",
+            "revoked_at": "REAL",
+            "sender_rate_limit": "INTEGER",
+            "senders_json": "TEXT",
+            "snapshot_json": "TEXT",
+            "snapshot_sha256": "TEXT",
+            "source_sha256": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "node_edit_audit": {
+          "columns": {
+            "audit_id": "TEXT",
+            "branch_def_id": "TEXT",
+            "edit_kind": "TEXT",
+            "node_after_json": "TEXT",
+            "node_before_json": "TEXT",
+            "nodes_changed_json": "TEXT",
+            "timestamp": "TEXT",
+            "triggered_by_judgment_id": "TEXT",
+            "version_after": "INTEGER",
+            "version_before": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "run_cancels": {
+          "columns": {
+            "requested_at": "REAL",
+            "run_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_child_attachments": {
+          "columns": {
+            "attached_at": "REAL",
+            "attachment_id": "TEXT",
+            "attachment_json": "TEXT",
+            "child_branch_def_id": "TEXT",
+            "child_run_id": "TEXT",
+            "evidence_handle": "TEXT",
+            "output_digest": "TEXT",
+            "parent_run_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_events": {
+          "columns": {
+            "detail_json": "TEXT",
+            "finished_at": "REAL",
+            "node_id": "TEXT",
+            "run_id": "TEXT",
+            "started_at": "REAL",
+            "status": "TEXT",
+            "step_index": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "run_file_allocations": {
+          "columns": {
+            "amount": "INTEGER",
+            "operation_id": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_file_bindings": {
+          "columns": {
+            "field_name": "TEXT",
+            "file_id": "TEXT",
+            "ordinal": "INTEGER",
+            "run_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_file_cleanup": {
+          "columns": {
+            "inventory_json": "TEXT",
+            "operation_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_file_objects": {
+          "columns": {
+            "file_id": "TEXT",
+            "filename": "TEXT",
+            "media_type": "TEXT",
+            "operation_id": "TEXT",
+            "owner_id": "TEXT",
+            "sha256": "TEXT",
+            "size_bytes": "INTEGER",
+            "state": "TEXT",
+            "storage_key": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_file_operations": {
+          "columns": {
+            "created_at": "REAL",
+            "inventory_json": "TEXT",
+            "max_bytes": "INTEGER",
+            "operation_id": "TEXT",
+            "owner_id": "TEXT",
+            "physical_root_id": "TEXT",
+            "request_sha256": "TEXT",
+            "result_json": "TEXT",
+            "state": "TEXT",
+            "unbound_expires_at": "REAL",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_input_admissions": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "branch_version_id": "TEXT",
+            "claim_token": "TEXT",
+            "execution_started_at": "REAL",
+            "origin_kind": "TEXT",
+            "origin_options_json": "TEXT",
+            "origin_version": "INTEGER",
+            "owner_id": "TEXT",
+            "run_id": "TEXT",
+            "snapshot_json": "TEXT",
+            "snapshot_sha256": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_judgments": {
+          "columns": {
+            "author": "TEXT",
+            "judgment_id": "TEXT",
+            "node_id": "TEXT",
+            "run_id": "TEXT",
+            "tags_json": "TEXT",
+            "text": "TEXT",
+            "timestamp": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_lineage": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "branch_version": "INTEGER",
+            "edits_since_parent_json": "TEXT",
+            "parent_run_id": "TEXT",
+            "run_id": "TEXT",
+            "timestamp": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_receipts": {
+          "columns": {
+            "created_at": "REAL",
+            "node_id": "TEXT",
+            "payload_json": "TEXT",
+            "receipt_id": "TEXT",
+            "receipt_type": "TEXT",
+            "run_id": "TEXT",
+            "subject_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "run_terminal_outbox": {
+          "columns": {
+            "created_at": "REAL",
+            "delivered_at": "REAL",
+            "run_id": "TEXT",
+            "seq": "INTEGER",
+            "status": "TEXT"
+          },
+          "rows": "0"
+        },
+        "runs": {
+          "columns": {
+            "actor": "TEXT",
+            "branch_def_id": "TEXT",
+            "branch_task_id": "TEXT",
+            "daemon_id": "TEXT",
+            "error": "TEXT",
+            "finished_at": "REAL",
+            "inputs_json": "TEXT",
+            "last_node_id": "TEXT",
+            "model": "TEXT",
+            "output_json": "TEXT",
+            "owner_user_id": "TEXT",
+            "provider_used": "TEXT",
+            "queue_universe_id": "TEXT",
+            "run_id": "TEXT",
+            "run_name": "TEXT",
+            "runtime_instance_id": "TEXT",
+            "started_at": "REAL",
+            "status": "TEXT",
+            "thread_id": "TEXT",
+            "token_count": "INTEGER",
+            "worker_id": "TEXT"
+          },
+          "rows": "1-10"
+        },
+        "scheduler_delivered_events": {
+          "columns": {
+            "delivered_at": "REAL",
+            "event_id": "TEXT",
+            "subscription_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "teammate_messages": {
+          "columns": {
+            "acked": "INTEGER",
+            "body_json": "TEXT",
+            "from_run_id": "TEXT",
+            "message_id": "TEXT",
+            "message_type": "TEXT",
+            "reply_to_id": "TEXT",
+            "sent_at": "TEXT",
+            "to_node_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "workspace_generations": {
+          "columns": {
+            "generation": "INTEGER",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "workspace_leases": {
+          "columns": {
+            "measured_bytes": "INTEGER",
+            "quarantine_path": "TEXT",
+            "repo_key": "TEXT",
+            "run_id": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "workspace_ledger": {
+          "columns": {
+            "created_at": "REAL",
+            "kind": "TEXT",
+            "operation_id": "TEXT",
+            "reserved": "INTEGER",
+            "run_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "workspace_locks": {
+          "columns": {
+            "acquired_at": "REAL",
+            "lease_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "workspace_outbox": {
+          "columns": {
+            "claimed_at": "REAL",
+            "done_at": "REAL",
+            "generation": "INTEGER",
+            "outcome": "TEXT",
+            "release_host_lock": "INTEGER",
+            "repo_key": "TEXT",
+            "run_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "workspace_push_intents": {
+          "columns": {
+            "attempts": "INTEGER",
+            "completed_at": "REAL",
+            "connection_id": "TEXT",
+            "created_at": "REAL",
+            "expected_old_sha": "TEXT",
+            "grant_id": "TEXT",
+            "host": "TEXT",
+            "intent_id": "TEXT",
+            "next_after": "REAL",
+            "node_id": "TEXT",
+            "observed_sha": "TEXT",
+            "remote_ref": "TEXT",
+            "repo": "TEXT",
+            "run_id": "TEXT",
+            "sha": "TEXT",
+            "state": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "workspace_waiters": {
+          "columns": {
+            "created_at": "REAL",
+            "dispatched_at": "REAL",
+            "run_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".runtime/owner-sessions.db": {
+      "class": [
+        "router"
+      ],
+      "tables": {
+        "approval_handoffs": {
+          "columns": {
+            "expires": "REAL",
+            "owner": "TEXT",
+            "request_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "canary_sign_in_attempts": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "inline_model_flows": {
+          "columns": {
+            "browser_hash": "TEXT",
+            "expires": "REAL",
+            "owner": "TEXT"
+          },
+          "rows": "0"
+        },
+        "native_login_flows": {
+          "columns": {
+            "challenge": "TEXT",
+            "client": "TEXT",
+            "expires": "REAL",
+            "payload": "BLOB"
+          },
+          "rows": "0"
+        },
+        "native_login_limits": {
+          "columns": {
+            "attempts": "INTEGER",
+            "expires": "REAL"
+          },
+          "rows": "0"
+        },
+        "owner_approval_handoffs": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_login_completions": {
+          "columns": {
+            "expires_at": "REAL",
+            "handle_hash": "TEXT",
+            "state_hash": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_login_flows": {
+          "columns": {
+            "cookie_hash": "TEXT",
+            "expires_at": "REAL",
+            "state_hash": "TEXT",
+            "verifier": "BLOB"
+          },
+          "rows": "0"
+        },
+        "owner_refresh_sessions": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_sessions": {
+          "columns": {
+            "expires_at": "REAL",
+            "identity_json": "TEXT",
+            "session_hash": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".storage_accounting.db": {
+      "class": [
+        "owner",
+        "regenerated"
+      ],
+      "tables": {
+        "commons_log_bytes": {
+          "columns": {
+            "bytes": "INTEGER",
+            "writer": "TEXT"
+          },
+          "rows": "0"
+        },
+        "commons_writers": {
+          "columns": {
+            "digest": "TEXT",
+            "recorded_at": "REAL",
+            "rel_path": "TEXT",
+            "writer": "TEXT"
+          },
+          "rows": "0"
+        },
+        "counter": {
+          "columns": {
+            "id": "INTEGER",
+            "seq": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "measurements": {
+          "columns": {
+            "bytes": "INTEGER",
+            "dirty": "INTEGER",
+            "measured_at": "REAL",
+            "scope_id": "TEXT",
+            "start_seq": "INTEGER",
+            "store": "TEXT"
+          },
+          "rows": "0"
+        },
+        "pending": {
+          "columns": {
+            "account_id": "TEXT",
+            "bytes": "INTEGER",
+            "commit_seq": "INTEGER",
+            "created_at": "REAL",
+            "id": "INTEGER",
+            "scope_id": "TEXT",
+            "state": "TEXT",
+            "store": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    ".tinyassets.db": {
+      "class": [
+        "broker",
+        "dropped",
+        "owner",
+        "published",
+        "regenerated",
+        "router"
+      ],
+      "tables": {
+        "account_timezone": {
+          "columns": {
+            "owner_user_id": "TEXT",
+            "timezone": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "action_approvals": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "action_records": {
+          "columns": {
+            "action_id": "TEXT",
+            "action_type": "TEXT",
+            "actor_id": "TEXT",
+            "actor_type": "TEXT",
+            "created_at": "REAL",
+            "payload_json": "TEXT",
+            "summary": "TEXT",
+            "target_id": "TEXT",
+            "target_type": "TEXT",
+            "universe_id": "TEXT",
+            "visibility": "TEXT"
+          },
+          "rows": "0"
+        },
+        "action_result_outbox": {
+          "columns": {
+            "app_binding_ref": "TEXT",
+            "channel_id": "TEXT",
+            "claim_token": "TEXT",
+            "claimed_at": "REAL",
+            "created_at": "REAL",
+            "delivered_at": "REAL",
+            "origin_event_id": "TEXT",
+            "run_id": "TEXT",
+            "state": "TEXT",
+            "terminal_revision": "INTEGER",
+            "thread_ts": "TEXT",
+            "universe_id": "TEXT",
+            "workspace_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "action_result_receipts": {
+          "columns": {
+            "idempotency_key": "TEXT",
+            "posted_at": "REAL",
+            "receipt": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_bindings": {
+          "columns": {
+            "agent_binding_id": "TEXT",
+            "agent_definition_id": "TEXT",
+            "configuration_json": "TEXT",
+            "created_at": "REAL",
+            "created_by": "TEXT",
+            "revision": "INTEGER",
+            "status": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL",
+            "updated_by": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_component_lineage": {
+          "columns": {
+            "child_component_key": "TEXT",
+            "child_definition_id": "TEXT",
+            "created_at": "REAL",
+            "credit_share": "REAL",
+            "generation_depth": "INTEGER",
+            "parent_component_key": "TEXT",
+            "parent_definition_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_conversion_receipt_links": {
+          "columns": {
+            "actor_id": "TEXT",
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_conversion_receipt_owners": {
+          "columns": {
+            "actor_id": "TEXT",
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_conversion_receipts": {
+          "columns": {
+            "actor_id": "TEXT",
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_definitions": {
+          "columns": {
+            "agent_definition_id": "TEXT",
+            "author_id": "TEXT",
+            "components_json": "TEXT",
+            "content_fingerprint": "TEXT",
+            "created_at": "REAL",
+            "description": "TEXT",
+            "external_origins_json": "TEXT",
+            "idempotency_key": "TEXT",
+            "name": "TEXT",
+            "portable_json": "TEXT",
+            "schema_version": "INTEGER",
+            "tags_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_import_stages": {
+          "columns": {
+            "actor_id": "TEXT",
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_interchange_idempotency": {
+          "columns": {
+            "actor_id": "TEXT",
+            "center_id": "TEXT",
+            "owner_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_attempts": {
+          "columns": {
+            "attempt_json": "TEXT",
+            "dispatched_at": "TEXT",
+            "ordinal": "INTEGER",
+            "owner": "TEXT",
+            "source_ref": "TEXT",
+            "state": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_dispatches": {
+          "columns": {
+            "active": "INTEGER",
+            "claimed": "INTEGER",
+            "connection_id": "TEXT",
+            "first_ordinal": "INTEGER",
+            "grant_id": "TEXT",
+            "last_ordinal": "INTEGER",
+            "operation_id": "TEXT",
+            "owner": "TEXT",
+            "reference_hash": "TEXT",
+            "request_digest": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_usage": {
+          "columns": {
+            "closed": "INTEGER",
+            "created_at": "TEXT",
+            "failures_json": "TEXT",
+            "owner": "TEXT",
+            "owner_token": "TEXT",
+            "parent_token": "TEXT",
+            "policy_json": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_request_usage_links": {
+          "columns": {
+            "kind": "TEXT",
+            "owner": "TEXT",
+            "subject_id": "TEXT",
+            "usage_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "agent_turn_rounds": {
+          "columns": {
+            "candidate_json": "TEXT",
+            "cost_microusd": "INTEGER",
+            "ordinal": "INTEGER",
+            "owner_user_id": "TEXT",
+            "reply_json": "TEXT",
+            "state": "TEXT",
+            "turn_id": "TEXT",
+            "universe_id": "TEXT",
+            "version": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "agent_turn_tools": {
+          "columns": {
+            "arguments_json": "TEXT",
+            "call_id": "TEXT",
+            "content_kind": "TEXT",
+            "is_error": "INTEGER",
+            "name": "TEXT",
+            "ordinal": "INTEGER",
+            "owner_user_id": "TEXT",
+            "result_json": "TEXT",
+            "round_ordinal": "INTEGER",
+            "state": "TEXT",
+            "turn_id": "TEXT",
+            "universe_id": "TEXT",
+            "version": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "agent_turns": {
+          "columns": {
+            "created_at": "TEXT",
+            "generation": "INTEGER",
+            "input_json": "TEXT",
+            "owner_user_id": "TEXT",
+            "round_ordinal": "INTEGER",
+            "state": "TEXT",
+            "turn_id": "TEXT",
+            "universe_id": "TEXT",
+            "version": "INTEGER"
+          },
+          "rows": "1-10"
+        },
+        "app_channel_bindings": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "app_event_admissions": {
+          "columns": {
+            "center_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "app_principal_mappings": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "assigned_queue_refusals": {
+          "columns": {
+            "branch_task_id": "TEXT",
+            "consumer_id": "TEXT",
+            "observed_at": "TEXT",
+            "reason": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "author_definitions": {
+          "columns": {
+            "author_id": "TEXT",
+            "created_at": "REAL",
+            "display_name": "TEXT",
+            "lineage_parent_id": "TEXT",
+            "metadata_json": "TEXT",
+            "reputation_score": "REAL",
+            "soul_hash": "TEXT",
+            "soul_text": "TEXT"
+          },
+          "rows": "0"
+        },
+        "author_forks": {
+          "columns": {
+            "child_author_id": "TEXT",
+            "created_at": "REAL",
+            "fork_id": "TEXT",
+            "metadata_json": "TEXT",
+            "parent_author_id": "TEXT",
+            "proposed_by": "TEXT",
+            "reason": "TEXT",
+            "vote_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "author_runtime_instances": {
+          "columns": {
+            "author_id": "TEXT",
+            "branch_id": "TEXT",
+            "created_at": "REAL",
+            "created_by": "TEXT",
+            "instance_id": "TEXT",
+            "metadata_json": "TEXT",
+            "model_name": "TEXT",
+            "provider_name": "TEXT",
+            "status": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "automation_activations": {
+          "columns": {
+            "automation_id": "TEXT",
+            "epoch": "INTEGER",
+            "executor_class": "TEXT",
+            "immutable_branch_version": "TEXT",
+            "lease_id": "TEXT",
+            "state": "TEXT",
+            "subject_digest": "TEXT",
+            "subject_kind": "TEXT",
+            "subject_ref": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "background_branch_attempts": {
+          "columns": {
+            "attempt_id": "TEXT",
+            "binding_generation": "INTEGER",
+            "binding_id": "TEXT",
+            "lifecycle": "TEXT",
+            "logical_attempt_key": "TEXT",
+            "record_digest": "TEXT",
+            "record_json": "TEXT",
+            "updated_at": "TEXT",
+            "updated_at_utc_micros": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "background_branch_authority_owners": {
+          "columns": {
+            "owner_id": "TEXT",
+            "owner_kind": "TEXT",
+            "record_digest": "TEXT",
+            "record_json": "TEXT",
+            "state": "TEXT",
+            "transition_generation": "INTEGER",
+            "updated_at": "TEXT",
+            "updated_at_utc_micros": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "background_branch_bindings": {
+          "columns": {
+            "authorizing_principal_id": "TEXT",
+            "binding_id": "TEXT",
+            "branch_def_id": "TEXT",
+            "generation": "INTEGER",
+            "record_digest": "TEXT",
+            "record_json": "TEXT",
+            "source_id": "TEXT",
+            "source_kind": "TEXT",
+            "source_revision": "TEXT",
+            "status": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "branch_definitions": {
+          "columns": {
+            "author": "TEXT",
+            "branch_def_id": "TEXT",
+            "created_at": "REAL",
+            "description": "TEXT",
+            "domain_id": "TEXT",
+            "entry_point": "TEXT",
+            "name": "TEXT",
+            "node_defs_json": "TEXT",
+            "parent_def_id": "TEXT",
+            "published": "INTEGER",
+            "skills_json": "TEXT",
+            "state_schema_json": "TEXT",
+            "stats_json": "TEXT",
+            "tags_json": "TEXT",
+            "updated_at": "REAL",
+            "version": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "branch_heads": {
+          "columns": {
+            "branch_id": "TEXT",
+            "metadata_json": "TEXT",
+            "snapshot_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "branch_tasks_v2": {
+          "columns": {
+            "admission_id": "TEXT",
+            "automation_activation_epoch": "INTEGER",
+            "automation_branch_version": "TEXT",
+            "automation_executor_class": "TEXT",
+            "automation_id": "TEXT",
+            "automation_lease_id": "TEXT",
+            "automation_subject_digest": "TEXT",
+            "automation_subject_kind": "TEXT",
+            "automation_subject_ref": "TEXT",
+            "branch_def_id": "TEXT",
+            "branch_task_id": "TEXT",
+            "claimed_at": "TEXT",
+            "claimed_by": "TEXT",
+            "detail_json": "TEXT",
+            "directed_daemon_id": "TEXT",
+            "disabled": "INTEGER",
+            "heartbeat_at": "TEXT",
+            "inputs_json": "TEXT",
+            "lease_expires_at": "TEXT",
+            "priority_weight": "REAL",
+            "protocol_version": "INTEGER",
+            "quarantine_reason": "TEXT",
+            "queue_epoch": "INTEGER",
+            "queued_at": "TEXT",
+            "request_id": "TEXT",
+            "status": "TEXT",
+            "terminal_at": "TEXT",
+            "trigger_source": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "branch_tasks_v2_maintenance_state": {
+          "columns": {
+            "cycle_high_rowid": "INTEGER",
+            "last_source_rowid": "INTEGER",
+            "maintenance_name": "TEXT"
+          },
+          "rows": "0"
+        },
+        "branch_tasks_v2_quarantine": {
+          "columns": {
+            "branch_task_id": "TEXT",
+            "first_seen_at": "TEXT",
+            "last_seen_at": "TEXT",
+            "reason": "TEXT",
+            "row_digest": "TEXT",
+            "row_json": "TEXT",
+            "seen_count": "INTEGER",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "branches": {
+          "columns": {
+            "branch_id": "TEXT",
+            "created_at": "REAL",
+            "created_by": "TEXT",
+            "is_public": "INTEGER",
+            "metadata_json": "TEXT",
+            "name": "TEXT",
+            "parent_branch_id": "TEXT",
+            "status": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "canonical_bindings": {
+          "columns": {
+            "bound_at": "REAL",
+            "bound_by_actor_id": "TEXT",
+            "branch_version_id": "TEXT",
+            "goal_id": "TEXT",
+            "scope_token": "TEXT",
+            "visibility": "TEXT"
+          },
+          "rows": "0"
+        },
+        "capability_grants": {
+          "columns": {
+            "capability": "TEXT",
+            "created_at": "REAL",
+            "expires_at": "REAL",
+            "generation": "INTEGER",
+            "granted_by": "TEXT",
+            "revoked_at": "REAL",
+            "scope": "TEXT",
+            "user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "cloud_automation_continuations": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "cloud_automation_controls": {
+          "columns": {
+            "automation_id": "TEXT",
+            "cadence_seconds": "INTEGER",
+            "definition_digest": "TEXT",
+            "definition_json": "TEXT",
+            "desired_state": "TEXT",
+            "principal_id": "TEXT",
+            "record_json": "TEXT",
+            "revision": "INTEGER",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "cloud_automation_slice_triggers": {
+          "columns": {
+            "activation_epoch": "INTEGER",
+            "activation_subject_digest": "TEXT",
+            "activation_subject_ref": "TEXT",
+            "admission_id": "TEXT",
+            "automation_id": "TEXT",
+            "branch_task_id": "TEXT",
+            "claim_expires_at": "TEXT",
+            "due_at": "TEXT",
+            "generation": "INTEGER",
+            "previous_terminal_receipt_id": "TEXT",
+            "record_json": "TEXT",
+            "request_id": "TEXT",
+            "slice_ordinal": "INTEGER",
+            "status": "TEXT",
+            "trigger_digest": "TEXT",
+            "trigger_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "cloud_automation_terminal_receipts": {
+          "columns": {
+            "activation_epoch": "INTEGER",
+            "automation_id": "TEXT",
+            "completed_at": "TEXT",
+            "receipt_digest": "TEXT",
+            "receipt_id": "TEXT",
+            "record_json": "TEXT",
+            "slice_ordinal": "INTEGER",
+            "trigger_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "cloud_execution_continuations": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_adoptions": {
+          "columns": {
+            "adoption_id": "TEXT",
+            "baseline_hash": "TEXT",
+            "install_request_id": "TEXT",
+            "last_plan_digest": "TEXT",
+            "last_request_id": "TEXT",
+            "original_definition_id": "TEXT",
+            "owner_id": "TEXT",
+            "revision": "INTEGER",
+            "ui_definition_id": "TEXT",
+            "ui_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_auto_receipts": {
+          "columns": {
+            "adoption_id": "TEXT",
+            "created_at": "REAL",
+            "grant_request_id": "TEXT",
+            "operation_id": "TEXT",
+            "owner_id": "TEXT",
+            "reservation_id": "INTEGER",
+            "reserved_bytes": "INTEGER",
+            "result_json": "TEXT",
+            "settlement": "TEXT",
+            "settlement_error": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_auto_status": {
+          "columns": {
+            "adoption_id": "TEXT",
+            "operation_id": "TEXT",
+            "owner_id": "TEXT",
+            "status_json": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "command_center_policy_requests": {
+          "columns": {
+            "adoption_id": "TEXT",
+            "owner_id": "TEXT",
+            "plan_digest": "TEXT",
+            "request_id": "TEXT",
+            "snapshot_json": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_release_evidence": {
+          "columns": {
+            "identity_hashes_json": "TEXT",
+            "owner_id": "TEXT",
+            "publisher_home": "TEXT",
+            "release_id": "TEXT",
+            "request_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_release_series": {
+          "columns": {
+            "head_release_id": "TEXT",
+            "owner_id": "TEXT",
+            "publisher_home": "TEXT",
+            "series_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_releases": {
+          "columns": {
+            "definition_id": "TEXT",
+            "record_json": "TEXT",
+            "release_id": "TEXT",
+            "sequence": "INTEGER",
+            "series_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_update_policies": {
+          "columns": {
+            "adoption_id": "TEXT",
+            "enabled": "INTEGER",
+            "last_digest": "TEXT",
+            "last_request_id": "TEXT",
+            "owner_id": "TEXT",
+            "revision": "INTEGER",
+            "snapshot_json": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "command_center_update_requests": {
+          "columns": {
+            "adoption_id": "TEXT",
+            "owner_id": "TEXT",
+            "plan_digest": "TEXT",
+            "plan_json": "TEXT",
+            "request_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "commons_bundle_sources": {
+          "columns": {
+            "bundle_id": "TEXT",
+            "owner_id": "TEXT",
+            "source_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "commons_bundle_versions": {
+          "columns": {
+            "bundle_id": "TEXT",
+            "definition_id": "TEXT",
+            "previous_definition_id": "TEXT",
+            "version": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "commons_bundles": {
+          "columns": {
+            "author_id": "TEXT",
+            "bundle_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "connection_disconnections": {
+          "columns": {
+            "completed": "INTEGER",
+            "connection_id": "TEXT",
+            "destination": "TEXT",
+            "grant_id": "TEXT",
+            "incarnation": "TEXT",
+            "model_source": "INTEGER",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "deleted_principals": {
+          "columns": {
+            "deleted_at": "REAL",
+            "founder_sub": "TEXT"
+          },
+          "rows": "0"
+        },
+        "external_agent_catalogue_receipts": {
+          "columns": {
+            "owner": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "external_agent_cli_invocations": {
+          "columns": {
+            "owner": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "external_agent_job_receipts": {
+          "columns": {
+            "owner": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "founder_home": {
+          "columns": {
+            "created_at": "REAL",
+            "founder_sub": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "gate_claims": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "claim_id": "TEXT",
+            "claimed_at": "TEXT",
+            "claimed_by": "TEXT",
+            "conformance_pack_id": "TEXT",
+            "evidence_note": "TEXT",
+            "evidence_url": "TEXT",
+            "goal_id": "TEXT",
+            "retracted_at": "TEXT",
+            "retracted_reason": "TEXT",
+            "rung_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "goal_canonicals": {
+          "columns": {
+            "branch_version_id": "TEXT",
+            "goal_id": "TEXT",
+            "scope_actor": "TEXT",
+            "set_at": "REAL",
+            "set_by": "TEXT"
+          },
+          "rows": "0"
+        },
+        "goals": {
+          "columns": {
+            "author": "TEXT",
+            "created_at": "REAL",
+            "description": "TEXT",
+            "goal_id": "TEXT",
+            "name": "TEXT",
+            "tags_json": "TEXT",
+            "updated_at": "REAL",
+            "visibility": "TEXT"
+          },
+          "rows": "0"
+        },
+        "learned_model_evidence": {
+          "columns": {
+            "first_verified_at": "TEXT",
+            "model_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "source_kind": "TEXT"
+          },
+          "rows": "0"
+        },
+        "learned_model_source_evidence": {
+          "columns": {
+            "first_verified_at": "TEXT",
+            "model_id": "TEXT",
+            "provider_ref": "TEXT",
+            "source_kind": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_custody": {
+          "columns": {
+            "generation": "INTEGER",
+            "owner_user_id": "TEXT",
+            "record_digest": "TEXT",
+            "reference_digest": "TEXT",
+            "reference_id": "TEXT",
+            "service": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_deposit_commits": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_deposit_owners": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "llm_credential_refresh_state": {
+          "columns": {
+            "fixture_key": "TEXT"
+          },
+          "rows": "0"
+        },
+        "native_shortlist_cache": {
+          "columns": {
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "operation_scopes": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_fence": {
+          "columns": {
+            "generation": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "owner_ui_prefs": {
+          "columns": {
+            "agent_id": "TEXT",
+            "owner_user_id": "TEXT",
+            "pref_key": "TEXT",
+            "updated_at": "REAL",
+            "value_json": "TEXT",
+            "viewport": "TEXT"
+          },
+          "rows": "0"
+        },
+        "owner_view_receipts": {
+          "columns": {
+            "item_id": "TEXT",
+            "kind": "TEXT",
+            "owner_user_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "provider_assignment_candidates": {
+          "columns": {
+            "assignment_generation": "INTEGER",
+            "binding_digest": "TEXT",
+            "binding_generation": "INTEGER",
+            "binding_id": "TEXT",
+            "candidate_digest": "TEXT",
+            "constraints_json": "TEXT",
+            "credential_reference_digest": "TEXT",
+            "credential_reference_generation": "INTEGER",
+            "credential_reference_id": "TEXT",
+            "provider": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "provider_assignments": {
+          "columns": {
+            "assignment_digest": "TEXT",
+            "binding_digest": "TEXT",
+            "binding_generation": "INTEGER",
+            "binding_id": "TEXT",
+            "credential_reference_digest": "TEXT",
+            "credential_reference_generation": "INTEGER",
+            "credential_reference_id": "TEXT",
+            "generation": "INTEGER",
+            "owner_user_id": "TEXT",
+            "provider": "TEXT",
+            "state": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "provider_invocation_reservations": {
+          "columns": {
+            "actual_cost_microunits": "INTEGER",
+            "actual_input_tokens": "INTEGER",
+            "actual_output_tokens": "INTEGER",
+            "actual_total_tokens": "INTEGER",
+            "claim_digest": "TEXT",
+            "claim_generation": "INTEGER",
+            "claim_id": "TEXT",
+            "invocation_key": "TEXT",
+            "max_cost_microunits": "INTEGER",
+            "max_tokens": "INTEGER",
+            "ordinal": "INTEGER",
+            "receipt_id": "TEXT",
+            "record_json": "TEXT",
+            "reservation_digest": "TEXT",
+            "reservation_id": "TEXT",
+            "settled_at": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "provider_work_bindings": {
+          "columns": {
+            "binding_digest": "TEXT",
+            "binding_id": "TEXT",
+            "generation": "INTEGER",
+            "owner_user_id": "TEXT",
+            "provider": "TEXT",
+            "record_json": "TEXT",
+            "state": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "provider_work_execution_claims": {
+          "columns": {
+            "claim_digest": "TEXT",
+            "claim_id": "TEXT",
+            "generation": "INTEGER",
+            "lease_expires_at": "TEXT",
+            "receipt_id": "TEXT",
+            "record_json": "TEXT",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "provider_work_receipts": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "refused_model_marks": {
+          "columns": {
+            "connection_id": "TEXT",
+            "detail": "TEXT",
+            "expires_at": "TEXT",
+            "failure_class": "TEXT",
+            "model_id": "TEXT",
+            "refused_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "request_admission_events": {
+          "columns": {
+            "admission_id": "TEXT",
+            "branch_task_id": "TEXT",
+            "detail_json": "TEXT",
+            "event_at": "TEXT",
+            "event_id": "TEXT",
+            "event_type": "TEXT",
+            "request_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "request_admission_rollouts": {
+          "columns": {
+            "activated_at": "TEXT",
+            "allowed_reader_shas_json": "TEXT",
+            "allowed_server_shas_json": "TEXT",
+            "config_hash": "TEXT",
+            "evidence_json": "TEXT",
+            "expires_at": "TEXT",
+            "owner_id": "TEXT",
+            "queue_epoch": "INTEGER",
+            "required_capability": "TEXT",
+            "rollout_id": "TEXT",
+            "state": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "request_admissions": {
+          "columns": {
+            "accepted_priority_weight": "REAL",
+            "actor_id": "TEXT",
+            "admission_id": "TEXT",
+            "body_digest": "TEXT",
+            "body_digest_version": "TEXT",
+            "branch_task_id": "TEXT",
+            "compacted_at": "TEXT",
+            "created_at": "TEXT",
+            "grant_generation": "INTEGER",
+            "idempotency_key_hash": "TEXT",
+            "priority_policy_version": "TEXT",
+            "receipt_json": "TEXT",
+            "request_id": "TEXT",
+            "result_json": "TEXT",
+            "state": "TEXT",
+            "tenant_id": "TEXT",
+            "terminal_at": "TEXT",
+            "trigger_source": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "request_storage_migration": {
+          "columns": {
+            "singleton": "INTEGER",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "scheduled_work": {
+          "columns": {
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "scoped_reset_leases": {
+          "columns": {
+            "fence": "INTEGER",
+            "home_id": "TEXT",
+            "plan_id": "TEXT",
+            "principal_fingerprint": "TEXT",
+            "state": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "scoped_reset_operations": {
+          "columns": {
+            "commit_witness": "INTEGER",
+            "created_at": "REAL",
+            "fence": "INTEGER",
+            "home_id": "TEXT",
+            "inventory_revision": "TEXT",
+            "journal_path": "TEXT",
+            "plan_id": "TEXT",
+            "plan_json": "TEXT",
+            "principal_fingerprint": "TEXT",
+            "receipt_json": "TEXT",
+            "roster_revision": "TEXT",
+            "source_path": "TEXT",
+            "staging_path": "TEXT",
+            "state": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "served_provider_budget_reservations": {
+          "columns": {
+            "actual_cost_microunits": "INTEGER",
+            "actual_total_tokens": "INTEGER",
+            "binding_generation": "INTEGER",
+            "binding_id": "TEXT",
+            "created_at": "REAL",
+            "lease_deadline": "REAL",
+            "reservation_id": "TEXT",
+            "reserved_cost_microunits": "INTEGER",
+            "reserved_total_tokens": "INTEGER",
+            "state": "TEXT"
+          },
+          "rows": "0"
+        },
+        "universe_acl": {
+          "columns": {
+            "actor_id": "TEXT",
+            "granted_at": "REAL",
+            "granted_by": "TEXT",
+            "permission": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "universe_app_ui": {
+          "columns": {
+            "owner_user_id": "TEXT",
+            "revision": "INTEGER",
+            "ui_library_json": "TEXT",
+            "ui_selection_json": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "universe_app_ui_asset": {
+          "columns": {
+            "content": "BLOB",
+            "created_at": "REAL",
+            "owner_user_id": "TEXT",
+            "sha256": "TEXT",
+            "size_bytes": "INTEGER"
+          },
+          "rows": "0"
+        },
+        "universe_hard_priorities": {
+          "columns": {
+            "payload_json": "TEXT",
+            "priority_id": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "universe_model_preferences": {
+          "columns": {
+            "generation": "INTEGER",
+            "owner_user_id": "TEXT",
+            "policy_json": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
+          },
+          "rows": "0"
+        },
+        "universe_notes": {
+          "columns": {
+            "category": "TEXT",
+            "clearly_wrong": "INTEGER",
+            "metadata_json": "TEXT",
+            "note_id": "TEXT",
+            "quoted_passage": "TEXT",
+            "source": "TEXT",
+            "status": "TEXT",
+            "tags_json": "TEXT",
+            "target": "TEXT",
+            "text": "TEXT",
+            "timestamp": "REAL",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "universe_owner": {
+          "columns": {
+            "owner_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "1-10"
+        },
+        "universe_rules": {
+          "columns": {
+            "branch_mode": "TEXT",
+            "metadata_json": "TEXT",
+            "public_fork": "INTEGER",
+            "public_read": "INTEGER",
+            "quick_vote_seconds": "INTEGER",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "universe_snapshots": {
+          "columns": {
+            "artifact_ref": "TEXT",
+            "branch_id": "TEXT",
+            "created_at": "REAL",
+            "created_by": "TEXT",
+            "label": "TEXT",
+            "metadata_json": "TEXT",
+            "snapshot_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "universe_work_targets": {
+          "columns": {
+            "payload_json": "TEXT",
+            "target_id": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL"
+          },
+          "rows": "0"
+        },
+        "universes": {
+          "columns": {
+            "created_at": "REAL",
+            "display_name": "TEXT",
+            "host_path": "TEXT",
+            "metadata_json": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "unreconciled_writes": {
+          "columns": {
+            "git_error": "TEXT",
+            "helper_name": "TEXT",
+            "id": "INTEGER",
+            "paths_json": "TEXT",
+            "recorded_at": "TEXT",
+            "row_ref": "TEXT"
+          },
+          "rows": "0"
+        },
+        "user_accounts": {
+          "columns": {
+            "created_at": "REAL",
+            "display_name": "TEXT",
+            "is_active": "INTEGER",
+            "metadata_json": "TEXT",
+            "updated_at": "REAL",
+            "user_id": "TEXT",
+            "username": "TEXT"
+          },
+          "rows": "0"
+        },
+        "user_requests": {
+          "columns": {
+            "branch_id": "TEXT",
+            "created_at": "REAL",
+            "metadata_json": "TEXT",
+            "preferred_author_id": "TEXT",
+            "request_id": "TEXT",
+            "request_type": "TEXT",
+            "status": "TEXT",
+            "text": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "REAL",
+            "user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "user_sessions": {
+          "columns": {
+            "created_at": "REAL",
+            "expires_at": "REAL",
+            "last_seen": "REAL",
+            "metadata_json": "TEXT",
+            "session_token": "TEXT",
+            "user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "vote_ballots": {
+          "columns": {
+            "choice": "TEXT",
+            "comment": "TEXT",
+            "created_at": "REAL",
+            "user_id": "TEXT",
+            "vote_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "vote_windows": {
+          "columns": {
+            "closes_at": "REAL",
+            "created_by": "TEXT",
+            "opens_at": "REAL",
+            "payload_json": "TEXT",
+            "result_json": "TEXT",
+            "status": "TEXT",
+            "subject_id": "TEXT",
+            "subject_type": "TEXT",
+            "universe_id": "TEXT",
+            "vote_id": "TEXT",
+            "vote_type": "TEXT"
+          },
+          "rows": "0"
+        },
+        "webhook_admissions": {
+          "columns": {
+            "id": "INTEGER",
+            "token_hash": "TEXT",
+            "ts": "REAL",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "webhook_deliveries": {
+          "columns": {
+            "dedupe_key": "TEXT",
+            "ts": "REAL"
+          },
+          "rows": "0"
+        },
+        "webhook_hooks": {
+          "columns": {
+            "branch_def_id": "TEXT",
+            "created_at": "REAL",
+            "owner_principal_id": "TEXT",
+            "revoked_at": "REAL",
+            "source_id": "TEXT",
+            "token_hash": "TEXT",
+            "token_prefix": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "webhook_inflight": {
+          "columns": {
+            "reservation_id": "TEXT",
+            "run_id": "TEXT",
+            "ts": "REAL",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    "outbound.db": {
+      "class": [
+        "dropped"
+      ],
+      "tables": {
+        "box_model_sources": {
+          "columns": {
+            "definition": "TEXT",
+            "id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "broker_schema_migrations": {
+          "columns": {
+            "name": "TEXT"
+          },
+          "rows": "0"
+        },
+        "browser_vault": {
+          "columns": {
+            "account": "TEXT",
+            "owner": "TEXT",
+            "revision": "INTEGER",
+            "status": "TEXT",
+            "verify": "TEXT"
+          },
+          "rows": "0"
+        },
+        "connection_capabilities": {
+          "columns": {
+            "capability_kind": "TEXT",
+            "configured_at": "REAL",
+            "connection_id": "TEXT",
+            "descriptor_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connection_grants": {
+          "columns": {
+            "connection_id": "TEXT",
+            "grant_id": "TEXT",
+            "granted_at": "REAL",
+            "inference_required": "INTEGER",
+            "owner_user_id": "TEXT",
+            "revoked_at": "REAL",
+            "unprompted_action_cap_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connections": {
+          "columns": {
+            "access_mode": "TEXT",
+            "allowed_endpoints_json": "TEXT",
+            "auth_scheme": "TEXT",
+            "connection_class": "TEXT",
+            "connection_id": "TEXT",
+            "connection_type": "TEXT",
+            "credential_ref": "TEXT",
+            "destination": "TEXT",
+            "owner_user_id": "TEXT",
+            "provider": "TEXT",
+            "revoked_at": "REAL",
+            "scopes_json": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connector_artifact_edges": {
+          "columns": {
+            "child_artifact_id": "TEXT",
+            "created_at": "REAL",
+            "parent_artifact_id": "TEXT",
+            "remixed_by_user_id": "TEXT"
+          },
+          "rows": "0"
+        },
+        "outbound_connector_artifacts": {
+          "columns": {
+            "artifact_id": "TEXT",
+            "connector_definition_json": "TEXT",
+            "created_at": "REAL",
+            "mcp_client_config_json": "TEXT",
+            "owner_user_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    },
+    "wiki_trigger_attempts.db": {
+      "class": [
+        "owner"
+      ],
+      "tables": {
+        "wiki_trigger_attempts": {
+          "columns": {
+            "center_id": "TEXT",
+            "universe_id": "TEXT"
+          },
+          "rows": "0"
+        }
+      }
+    }
+  },
+  "version": 1
+}
