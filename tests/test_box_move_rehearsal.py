@@ -359,12 +359,14 @@ def test_migration_container_overrides_image_fault_default(tmp_path, mode):
     args = result.stdout.splitlines()
     assert args[args.index("CUTOVER_CRASH_AT=") - 1] == "-e"
     assert args[-5:] == ["-B", "-m", "tinyassets.box_layout_migration", mode, "/data"]
-    assert args[args.index("--network") + 1] == "none"
+    assert args[args.index("--network") + 1] == ("bridge" if mode == "apply" else "none")
     if mode in {"apply", "verify"}:
         assert "--privileged" in args
-        assert "BACKUP_DEST=:local:/snapshots/owner-snapshots" in args
+        assert "BACKUP_DEST=spaces:/snapshots/owner-snapshots" in args
+        assert "RCLONE_CONFIG_SPACES_TYPE=local" in args
+        assert "RCLONE_CONFIG=/root/.config/rclone/rclone.conf" in args
         assert "/disposable-backup:/snapshots" in args
-        assert not any("/root/.config/rclone" in argument for argument in args)
+        assert "/root/.config/rclone:/root/.config/rclone:ro" not in args
 
 
 def test_production_restore_cannot_load_recorded_provider(tmp_path):

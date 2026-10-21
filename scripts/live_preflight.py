@@ -205,7 +205,9 @@ def check_special_files(root: Path) -> list[str]:
 
 
 def run(args) -> list[str]:
-    root = docker_volume_root(args.data_volume)
+    root = args.data if args.data is not None else docker_volume_root(args.data_volume)
+    if not root.is_dir():
+        return [f"check=data_missing path={root}"]
     marker = layout_marker(root)
     low = DEFAULT_LOW_WATER_PCT
     configured = read_env_value(args.env_file, "DISK_AUTOPRUNE_LOW_PCT")
@@ -215,7 +217,8 @@ def run(args) -> list[str]:
         except ValueError:
             pass
     refusals = []
-    refusals += check_core_canary(os.environ.get("CORE_CANARY_PROVISIONED", ""), marker)
+    refusals += check_core_canary(
+        "1" if args.waiver else os.environ.get("CORE_CANARY_PROVISIONED", ""), marker)
     refusals += check_disk(low, args.harness_root)
     refusals += check_box_store(args.box_store, marker, args.box_store_check)
     refusals += check_special_files(root)
@@ -224,7 +227,9 @@ def run(args) -> list[str]:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data", type=Path, help="data directory (default: Docker volume)")
     parser.add_argument("--data-volume", default="tinyassets-data")
+    parser.add_argument("--waiver", action="store_true", help="waive only the canary precondition")
     parser.add_argument("--box-store", type=Path, default=Path("/var/lib/boxhostd/owners"))
     parser.add_argument("--box-store-check", type=Path,
                         default=Path("/opt/tinyassets/boxhostd/box-store-check.sh"))

@@ -1557,6 +1557,7 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     assert "--security-opt no-new-privileges=true --network bridge" in apply_call
     assert "BACKUP_DEST=:local:/synthetic-snapshots" in apply_call
     assert "/root/.config/rclone:/root/.config/rclone:ro" in apply_call
+    assert "RCLONE_CONFIG=/root/.config/rclone/rclone.conf" in apply_call
     assert "--box-backup /backup/tinyassets-box-store-" in calls
     detail_call = next(line for line in calls.splitlines()
                        if "tinyassets.box_layout_migration census" in line)

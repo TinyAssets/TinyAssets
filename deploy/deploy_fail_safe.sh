@@ -177,17 +177,20 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
       if [ "$1" = "apply" ]; then
         data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
       fi
+      local snapshot_dest
       if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ]; then
-        # Synthetic remote, preserved across disposable migration containers.
+        # The isolated rehearsal injects a local spaces remote as caller data.
+        # Migration still uses the production BACKUP_DEST/rclone code path.
+        snapshot_dest=spaces:/snapshots/owner-snapshots
         extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots" \
-          -e BACKUP_DEST=:local:/snapshots/owner-snapshots)
+          -e RCLONE_CONFIG_SPACES_TYPE=local)
       else
-        local snapshot_dest
         snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
-        extra+=(-e "BACKUP_DEST=$snapshot_dest" \
-          -v /root/.config/rclone:/root/.config/rclone:ro)
-        [ "$1" != "apply" ] || network=bridge
+        extra+=(-v /root/.config/rclone:/root/.config/rclone:ro)
       fi
+      extra+=(-e "BACKUP_DEST=$snapshot_dest" \
+        -e RCLONE_CONFIG=/root/.config/rclone/rclone.conf)
+      [ "$1" != "apply" ] || network=bridge
     else
       extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
     fi
