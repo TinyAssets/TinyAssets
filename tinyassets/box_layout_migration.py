@@ -149,7 +149,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".boxhost/boxhost.db", "host boxes ops execs owner_destroys", "dropped")
     add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "
         "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts "
-        "approval_handoffs inline_model_flows", "router")
+        "approval_handoffs inline_model_flows native_login_flows native_login_limits", "router")
     add(".outside-client-authority.sqlite3", "authenticated_connections", "owner",
         principals=("owner",))
     add(".outside-client-authority.sqlite3", "outside_switch", "router")
