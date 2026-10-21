@@ -50,7 +50,7 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     from tinyassets.broker.process import _Dispatchers
     from tinyassets.broker.server import BOX_HOST, OWNER, BrokerServer
     from tinyassets.broker.tokens import ConnectionTokens
-    from tinyassets.connection_oauth import directory, tokens, transport
+    from tinyassets.connection_oauth import directory, discovery, tokens, transport
     from tinyassets.storage import outbound_connections as outbound
 
     root = Path(root)
@@ -83,6 +83,32 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
         "default_scopes": {"call": ["tasks.write"]},
     }]
     events = []
+
+    discovery.DISCOVERY_ENABLED = True
+    registrations = []
+
+    def public_provider(method, url, **kwargs):
+        if method == "POST":
+            assert url == "https://auth.example.com/register"
+            assert kwargs["json_body"]["token_endpoint_auth_method"] == "none"
+            registrations.append((url, os.getpid()))
+            return 201, {"client_id": "public-client", "token_endpoint_auth_method": "none"}
+        if url == "https://api.example.com/data":
+            return 401, {}
+        if "/.well-known/oauth-protected-resource" in url:
+            return 200, {"resource": "https://api.example.com",
+                         "authorization_servers": ["https://auth.example.com"]}
+        if "/.well-known/" in url:
+            return 200, {"issuer": "https://auth.example.com",
+                         "authorization_endpoint": "https://auth.example.com/authorize",
+                         "token_endpoint": "https://auth.example.com/token",
+                         "registration_endpoint": "https://auth.example.com/register",
+                         "code_challenge_methods_supported": ["S256"],
+                         "response_types_supported": ["code"],
+                         "grant_types_supported": ["authorization_code", "refresh_token"]}
+        raise AssertionError((method, url))
+
+    discovery.request_json = public_provider
 
     def token_request(method, url, *, form, **kwargs):
         assert method == "POST"
@@ -180,6 +206,9 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
                     door_server.routing.publish()
                     pipe.send("routes_published")
                     continue
+                if command == "registrations":
+                    pipe.send(list(registrations))
+                    continue
                 if command == "expire":
                     from tinyassets.credential_vault import custody_namespace
 
@@ -273,31 +302,7 @@ def lifecycle(tmp_path, monkeypatch, request):
     monkeypatch.setattr(pending_requests, "get_request", forbidden)
     monkeypatch.setattr(directory, "secret", forbidden)
     monkeypatch.setattr(tokens, "exchange_code", forbidden)
-    monkeypatch.setattr(discovery, "DISCOVERY_ENABLED", True)
-    registrations = []
-
-    def public_provider(method, url, **kwargs):
-        if method == "POST":
-            assert url == "https://auth.example.com/register"
-            assert kwargs["json_body"]["token_endpoint_auth_method"] == "none"
-            registrations.append(url)
-            return 201, {"client_id": "public-client", "token_endpoint_auth_method": "none"}
-        if url == "https://api.example.com/data":
-            return 401, {}
-        if "/.well-known/oauth-protected-resource" in url:
-            return 200, {"resource": "https://api.example.com",
-                         "authorization_servers": ["https://auth.example.com"]}
-        if "/.well-known/" in url:
-            return 200, {"issuer": "https://auth.example.com",
-                         "authorization_endpoint": "https://auth.example.com/authorize",
-                         "token_endpoint": "https://auth.example.com/token",
-                         "registration_endpoint": "https://auth.example.com/register",
-                         "code_challenge_methods_supported": ["S256"],
-                         "response_types_supported": ["code"],
-                         "grant_types_supported": ["authorization_code", "refresh_token"]}
-        raise AssertionError((method, url))
-
-    monkeypatch.setattr(discovery, "request_json", public_provider)
+    monkeypatch.setattr(discovery, "request_json", forbidden)
     with owner_sessions.store() as db:
         db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
                    (owner_sessions.hashed("owner-cookie"), json.dumps({"user_id": "owner"}),
@@ -327,7 +332,7 @@ def lifecycle(tmp_path, monkeypatch, request):
 
     try:
         yield SimpleNamespace(post=post, events=events, kind=kind, router=router,
-                              relay=relay_path, broker_pid=process.pid, registrations=registrations)
+                              relay=relay_path, broker_pid=process.pid)
     finally:
         relay.close()
         if process.is_alive():
@@ -428,7 +433,9 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
         query = parse_qs(urlsplit(begun.json()["authorize_url"]).query)
         assert query["client_id"] == [
             "registered-client" if rig.kind == "registered" else "public-client"]
-        assert len(rig.registrations) == (rig.kind == "dcr")
+        assert rig.events("registrations") == (
+            [("https://auth.example.com/register", rig.broker_pid)]
+            if rig.kind == "dcr" else [])
     assert "center" not in begun.json()
     flow = begun.json()["flow"]
     with pkce.flows_db(rig.router) as (db, _):
@@ -500,7 +507,7 @@ def test_source_sign_in_uses_client_metadata_without_owner_state(lifecycle, monk
     assert document["client_id"] == query["client_id"][0]
     assert document["token_endpoint_auth_method"] == "none"
     assert document["redirect_uris"] == [ORIGIN + "/app/model-callback/connect"]
-    assert not lifecycle.registrations
+    assert lifecycle.events("registrations") == []
 
 
 @pytest.mark.parametrize("lifecycle", ["preset"], indirect=True)
