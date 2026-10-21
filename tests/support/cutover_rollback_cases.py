@@ -29,6 +29,10 @@ pytestmark = pytest.mark.verifies('owner-daemon-in-box:C4')
 @pytest.fixture
 def xfs_store(tmp_path):
     """Production has a separate owner-store device, with real numeric owners."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     backing = tmp_path / "store.xfs"
     with backing.open("wb") as stream:
         stream.truncate(512 * 1024 * 1024)
