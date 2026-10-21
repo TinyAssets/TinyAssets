@@ -76,14 +76,6 @@ jobs:
           set -euo pipefail
           echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: Free runner disk for a droplet-sized host
-        run: |
-          set -euo pipefail
-          # Toolchains the host never has; the box store alone needs 14 GiB.
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/share/swift
-          df -h / /mnt
-
       - name: Resolve the image production serves now
         id: live_base
         env:
@@ -186,6 +178,12 @@ jobs:
           python -c 'import json,sys; sys.path.insert(0,"scripts"); from prepare_expected_instance_state import build_state; print(json.dumps(build_state("424242424"), indent=2))' \
             > "${RUNNER_TEMP}/platform-expected-instance.json"
           echo "DEPLOY_EXPECTED_INSTANCE_FILE=${RUNNER_TEMP}/platform-expected-instance.json" >> "$GITHUB_ENV"
+
+      - name: Install the droplet's host packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends rclone xfsprogs sqlite3 >/dev/null
 
       - name: Start the local S3 endpoint and root's rclone `spaces` remote
         id: s3
