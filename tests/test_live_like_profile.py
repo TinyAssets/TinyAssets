@@ -48,10 +48,14 @@ def test_fixture_build_covers_profile(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(os, "chown", lambda *args, **kwargs: None)
     fixture.build(tmp_path, profile)
     for name, store in profile["stores"].items():
+        # Empty stores and tables are the live image's to create, exactly.
+        tables = {t: spec for t, spec in store["tables"].items() if spec["rows"] != "0"}
+        if not tables:
+            continue
         path = fixture._materialize_pattern(tmp_path, name)
         assert path.is_file(), name
         with sqlite3.connect(path) as db:
-            for table, spec in store["tables"].items():
+            for table, spec in tables.items():
                 columns = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
                 assert set(spec["columns"]) <= columns, (name, table)
     for item in profile["files"]:

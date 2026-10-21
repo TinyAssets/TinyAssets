@@ -90,10 +90,17 @@ def apply_profile(root: Path, profile: dict) -> None:
     if errors:
         raise ValueError("; ".join(errors))
     for name, store in profile["stores"].items():
+        # Stores and tables that hold no rows are left to the code to create
+        # when the live image boots: profile columns can be a partial parse,
+        # and a short table would turn the code's create into a no-op and
+        # break the daemon.
+        tables = {t: spec for t, spec in store["tables"].items() if spec["rows"] != "0"}
+        if not tables:
+            continue
         path = _materialize_pattern(root, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(path) as db:
-            for table, spec in store["tables"].items():
+            for table, spec in tables.items():
                 columns = spec["columns"]
                 existing = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
                 if not existing:
