@@ -318,8 +318,6 @@ def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
         storage.admission.owner("alice")
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:T3')
 def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage):
     with sqlite3.connect(storage.identities.path) as db:
@@ -333,8 +331,6 @@ def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage
         routing=projection(storage.identities.path)))
     with pytest.raises(PermissionError, match="erased"):
         drive(storage.lifecycle.recover("alice"))
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C2')

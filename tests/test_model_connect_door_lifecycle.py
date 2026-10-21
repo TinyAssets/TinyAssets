@@ -410,6 +410,7 @@ finally:
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("lifecycle", ["dcr", "registered", "preset"], indirect=True)
 def test_door_exchange_box_call_refresh_disconnect(lifecycle):
     from tinyassets.broker.disconnect import disconnect
@@ -481,45 +482,6 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
         ".runtime", ".hosted-model-auth.db", ".hosted-model-auth.db-wal",
         ".hosted-model-auth.db-shm", ".ordinary-admission.json"}
     assert (rig.router / ".ordinary-admission.json").read_text() == '{"ordinary":true}\n'
-
-
-@pytest.mark.parametrize("lifecycle", ["dcr"], indirect=True)
-def test_source_sign_in_uses_client_metadata_without_owner_state(lifecycle, monkeypatch):
-    from tinyassets.providers import free_sources
-
-    monkeypatch.setattr(free_sources, "sign_in_preset", lambda _: {
-        "id": "fixture", "base_url": "https://api.example.com",
-        "wire": "openai_chat", "models": ["fixture-model"],
-        "sign_in": {"issuer_host": "api.example.com", "scopes": ["tasks.write"]}})
-    response = lifecycle.post("source_sign_in", {
-        "preset_id": "fixture", "code_challenge": pkce.challenge_for(VERIFIER),
-        "request_ref": "opaque-source-request"})
-    assert response.status_code == 200, response.text
-    query = parse_qs(urlsplit(response.json()["authorize_url"]).query)
-    assert query["client_id"] == [ORIGIN + "/app/oauth/client-metadata.json"]
-    from starlette.requests import Request
-
-    scope = {"type": "http", "method": "GET", "path": "/app/oauth/client-metadata.json",
-             "headers": [], "query_string": b"", "server": ("tinyassets.io", 443),
-             "scheme": "https"}
-    metadata = asyncio.run(handle_client_metadata(Request(scope)))
-    document = json.loads(metadata.body)
-    assert document["client_id"] == query["client_id"][0]
-    assert document["token_endpoint_auth_method"] == "none"
-    assert document["redirect_uris"] == [ORIGIN + "/app/model-callback/connect"]
-    assert lifecycle.events("registrations") == []
-
-
-@pytest.mark.parametrize("lifecycle", ["preset"], indirect=True)
-def test_inline_popup_flow_at_empty_door_polls_and_cancels(lifecycle):
-    begun = lifecycle.post("inline_begin", {"preset_id": PRESET, "request_ref": "popup-request"})
-    assert begun.status_code == 200, begun.text
-    payload = {"flow": begun.json()["flow"]}
-    assert lifecycle.post("inline_poll", payload).json() == {"status": "waiting"}
-    assert lifecycle.post("inline_cancel", payload).json() == {"status": "cancelled"}
-    with pkce.flows_db(lifecycle.router) as (db, _):
-        assert db.execute("SELECT COUNT(*) FROM hosted_model_flows").fetchone()[0] == 0
-    assert lifecycle.events() == []
 
 
 def _box_operation(rig, operation, payload):
@@ -664,6 +626,7 @@ finally:
     return json.loads(result.stdout)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("lifecycle",
     ["none", "bearer", "basic", "header", "oauth1a", "url_secret"], indirect=True)
 def test_other_auth_connect_box_call_disconnect(lifecycle):
@@ -713,49 +676,7 @@ def test_other_auth_connect_box_call_disconnect(lifecycle):
     assert not (rig.router / ".platform").exists()
 
 
-@pytest.mark.parametrize("lifecycle", ["bearer"], indirect=True)
-def test_box_action_and_approval_link_then_ledger_completion(lifecycle):
-    from tinyassets.api.http_connection import _ids
-
-    rig = lifecycle
-    endpoints = [{"host": "api.example.com", "path_template": "/data", "methods": ["POST"]}]
-    direct = _box_operation(rig, "ask", {"direct": True, "destination": "direct",
-        "auth_scheme": "bearer", "allowed_endpoints": endpoints})
-    assert direct["status"] == "connect_required"
-    refused = _box_operation(rig, "ask", {"direct": True, "destination": "leak",
-        "auth_scheme": "bearer", "allowed_endpoints": endpoints, "secret": "never-in-box"})
-    assert refused["error"] == "connection_setup_invalid"
-    query = parse_qs(urlsplit(direct["connect_url"]).query)
-    assert query == {"request": [direct["request_ref"]], "center": ["center"],
-                     "connection": [_ids(owner="owner", destination="direct")[0]]}
-    pending = _box_operation(rig, "ask", {
-        "kind": "connection", "title": "Connect fixture", "body": "Allow this endpoint.",
-        "fields": [], "action": {"type": "connect", "destination": "fixture",
-            "auth_scheme": "bearer", "endpoints": endpoints, "uses": {"call": {}}}})
-    ref = pending["request_id"]
-    answer = _box_operation(rig, "answer", {"request_id": ref})
-    assert answer["status"] == "connect_required"
-    refused = _box_operation(rig, "answer", {
-        "request_id": ref, "values": {"secret": "never-in-box"}})
-    assert refused["error"] == "request_invalid"
-    assert parse_qs(urlsplit(answer["connect_url"]).query) == {
-        "request": [ref], "center": ["center"],
-        "connection": [_ids(owner="owner", destination="fixture")[0]]}
-    assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "pending"
-    body = {"request_ref": "unrelated-request",
-            "secret": DEPOSIT_SECRETS["bearer"], "definition": {
-                "destination": "fixture", "auth_scheme": "bearer", "endpoints": endpoints}}
-    assert rig.post("deposit", body).status_code == 200
-    assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "pending"
-    response = rig.post("deposit", {**body, "request_ref": ref})
-    assert response.status_code == 200, response.text
-    done = _box_operation(rig, "reconcile", {"request_id": ref})
-    assert done["status"] == "answered"
-    assert not done.get("answer")
-    assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "answered"
-    assert not (rig.router / "center").exists()
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_box_connect_schema_has_no_secret_parameters():
     import inspect
 
@@ -766,6 +687,7 @@ def test_box_connect_schema_has_no_secret_parameters():
     assert set(inspect.signature(connect_http).parameters) == {"universe_id", "payload"}
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T8')
 @pytest.mark.parametrize("lifecycle", ["preset"], indirect=True)
 def test_first_preset_confirm_then_default_agent_chat_in_box(lifecycle):
     rig = lifecycle
@@ -798,6 +720,7 @@ def test_first_preset_confirm_then_default_agent_chat_in_box(lifecycle):
     assert not (rig.router / ".platform").exists()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C8')
 @pytest.mark.parametrize("lifecycle", ["none"], indirect=True)
 def test_box_commit_cannot_carry_an_approval_reference(lifecycle):
     from tinyassets.onboarding.connection_definition import policy

@@ -75,8 +75,6 @@ async def exchange(proxy, request, *, center=None, principal="alice"):
         await server.wait_closed()
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["CONNECT", "GET"])
@@ -87,8 +85,6 @@ async def test_public_proxy_refuses_private_and_unresolvable_destinations(proxy,
     result = await exchange(proxy, f"{method} {url} HTTP/1.1\r\n\r\n".encode())
     assert result.startswith(b"HTTP/1.1 403")
     assert not proxy._public_egress.active
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C7')

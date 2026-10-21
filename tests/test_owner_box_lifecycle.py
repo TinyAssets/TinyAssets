@@ -121,8 +121,6 @@ def fleet(tmp_path, monkeypatch):
         loop.close()
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(fleet):
     manager = fleet.manager
@@ -145,8 +143,6 @@ def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(flee
     assert fleet.admission.volume("a")["snapshot_id"]
     fleet.wake("a")
     assert len(fleet.runtime.starts) == 2
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C13')
@@ -329,12 +325,6 @@ def test_stop_executes_only_broker_bound_uid_and_retires_old_ingress(fleet):
     assert not fleet.runtime.live and fleet.states[uid].revoked
 
 
-
-
-
-
-
-
 @pytest.mark.verifies('owner-daemon-in-box:C12')
 def test_quiesce_refuses_background_submission_and_maintenance(tmp_path, monkeypatch):
     from tinyassets import owner_activity, owner_runtime, run_input_runtime
@@ -377,8 +367,6 @@ def test_background_work_blocks_drain_without_renewing_user_idle(monkeypatch):
     background()
     assert gate.status()["idle_seconds"] == 1000
     assert gate.status(drain=True, idle=900)["draining"]
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T5')

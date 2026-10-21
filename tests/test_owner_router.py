@@ -60,8 +60,6 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     return identities
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_route_operation_rejects_forged_authority_or_socket_overrides(
     admitted, broker, boxes, tmp_path,  # noqa: F811
@@ -284,8 +282,6 @@ def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
             assert "cc-alice" in str(result)
 
     asyncio.run(exercise())
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T1')
@@ -873,16 +869,6 @@ def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, mon
         assert channel.recv(1) == b""
 
 
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.verifies('owner-daemon-in-box:C13')
 def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch, admitted, boxes):
     from tinyassets import router_credentials
@@ -907,8 +893,6 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch, admitted, b
             dispatch(tmp_path, "alice", request)
     assert dispatch(tmp_path, "bob", {"operation": "hook_mint"})["token"]
     assert not hasattr(router_credentials, "_DISPATCH")
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C5')
@@ -960,8 +944,6 @@ def test_local_center_retirement_preserves_owner_daemon_and_route(
     assert resolve_box("alice").secret == stale.secret
     assert boxes.runtime.alive(uid)
     assert "centers" not in boxes.manager.admission.owner("alice")
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C11')

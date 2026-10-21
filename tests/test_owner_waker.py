@@ -157,8 +157,6 @@ def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ac
     asyncio.run(exercise())
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:C9')
 def test_report_rejects_invalid_times_and_retired_admission(index):
     for at in (True, "123", float("nan"), float("inf"), {}):
@@ -175,8 +173,6 @@ def test_lost_identity_database_is_never_recreated_by_the_wake_scan(index):
     with pytest.raises(sqlite3.OperationalError, match="unable to open"):
         index.due(now=0)
     assert not index.identities.path.exists()
-
-
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C13')
@@ -279,7 +275,6 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
 
     class Admission:
         broker_socket = live.socket_path
-
 
 
     with tempfile.TemporaryDirectory(prefix="ta-wake-") as short:

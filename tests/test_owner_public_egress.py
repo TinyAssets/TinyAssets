@@ -278,8 +278,6 @@ def test_invalid_relay_operations_refuse_before_broker_contact(native, monkeypat
     assert not native.proxy.active
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_provisioning_package_child_inherits_proxy_and_uses_broker(
     native, http_origin, monkeypatch, tmp_path,
@@ -374,8 +372,6 @@ def test_shutdown_interrupts_stalled_relay_admission(native, tmp_path):
                 assert guest.recv(1) == relay.recv(1) == b""
     assert not forwarder._workers
     assert not forwarder._thread.is_alive()
-
-
 
 
 @pytest.fixture

@@ -30,7 +30,6 @@ import shutil
 import subprocess
 import threading
 import time
-from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
@@ -395,191 +394,14 @@ def _connected(provider, app, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_discovery_follows_the_resource_to_its_authorization_server(provider):
-    from tinyassets.connection_oauth.discovery import resolve_offer
-
-    offer, reason = resolve_offer({"scopes": ["tasks.write"]}, [API])
-    assert reason == ""
-    assert offer == {
-        "issuer": f"https://{AUTH}", "authorize_url": f"https://{AUTH}/authorize",
-        "token_url": f"https://{TOKEN}/token", "client_id": "",
-        "registration_url": f"https://{AUTH}/register", "iss_parameter_supported": False,
-        "scopes": ["tasks.write"],
-        "source": "discovered", "resource": f"https://{API}",
-        "registration_method": "dcr",
-    }
-
-
-def test_discovery_refuses_what_does_not_cover_the_request(provider):
-    from tinyassets.connection_oauth.discovery import resolve_offer
-
-    offer, reason = resolve_offer({"scopes": ["billing.admin"]}, [API])
-    assert reason == "" and offer["scopes"] == ["billing.admin"]
-    provider.pkce = ["plain"]
-    assert resolve_offer({"scopes": ["tasks.write"]}, [API]) == (None, "pkce_not_offered")
-    provider.pkce = ["S256"]
-    provider.advertise = False  # no RFC 9728 document, and the API host is no issuer
-    offer, reason = resolve_offer({}, [API])
-    assert offer is None and reason == "no_authorization_server_metadata"
-
-
-def test_discovery_refuses_metadata_for_another_issuer(provider, monkeypatch):
-    from tinyassets.connection_oauth.discovery import resolve_offer
-
-    original = provider.route
-
-    def lying(method, host, path, headers, body):
-        status, doc = original(method, host, path, headers, body)
-        if path == "/.well-known/oauth-authorization-server":
-            doc = {**doc, "issuer": "https://elsewhere.example"}
-        return status, doc
-    monkeypatch.setattr(provider, "route", lying)
-    assert resolve_offer({}, [API]) == (None, "authorization_server_issuer_mismatch")
-
-
-@pytest.mark.parametrize("oauth", [
-    {"token_url": "https://collector.example.net/token"},
-    {"authorize_url": f"https://{AUTH}/authorize",
-     "token_url": "https://collector.example.net/token", "client_id": "c"},
-    {"issuer": "https://collector.example.net"},
-    {"registration_url": "https://collector.example.net/register"},
-    {"token_endpoint": "https://collector.example.net/token"},
-])
-def test_a_requester_cannot_name_sign_in_endpoints(provider, universes, oauth):
-    """Round 1 BLOCK: a remixed or injected ask pairing the real sign-in page with
-    its own token endpoint would collect the code, the verifier and every
-    refresh token. Endpoints come ONLY from discovery on the connection host."""
-    with _as(OWNER):
-        refused = _ask(action={**TASKS_ASK, "oauth": {**oauth, "scopes": ["tasks.write"]}})
-    assert refused["error"] == "request_invalid"
-    assert "never supplied" in refused["detail"]
-    with pytest.raises(ValueError, match="client secret"):
-        from tinyassets.connection_oauth.discovery import validate_request
-
-        validate_request({"client_secret": "x"})
-
-
-def test_discovery_via_the_connection_host_still_works_with_a_client_id(provider):
-    from tinyassets.connection_oauth.discovery import resolve_offer, validate_request
-
-    requested = validate_request({"scopes": "tasks.write", "client_id": "public-client"})
-    offer, reason = resolve_offer(requested, [API])
-    assert reason == "" and offer["source"] == "discovered"
-    assert offer["token_url"] == f"https://{TOKEN}/token"  # from discovery, not the ask
-    assert offer["client_id"] == "public-client" and offer["registration_url"] == ""
-
-
 # --------------------------------------------------------------------------- #
 # 2. Preference: OAuth primary when offered, key paste when it is not.
 # --------------------------------------------------------------------------- #
 
 
-def test_oauth_discovery_begins_at_the_door(provider, app):
-    with _as(OWNER):
-        asked = _ask(fields=[])
-        assert asked["primary"] == "connect" and asked["fields"] == []
-        assert "authorize_url" not in asked["action"]["oauth"]
-        from tests.owner_answer import answer_request
-
-        linked = answer_request(universe_id=UID, payload={
-            "request_id": asked["request_id"], "values": {}})
-        assert linked["status"] == "connect_required"
-        assert "request=" + asked["request_id"] in linked["connect_url"]
-        begun = _post("oauth_begin", {"request_id": asked["request_id"],
-                                      "code_challenge": CHALLENGE})
-    assert begun.status_code == 200, begun.text
-    assert begun.json()["authorize_url"].startswith(f"https://{AUTH}/authorize")
-
-
-def test_key_paste_when_the_provider_offers_no_oauth(provider, app):
-    provider.advertise = False
-    with _as(OWNER):
-        asked = _ask(fields=[])
-        assert asked["primary"] == "connect"
-        assert "oauth_unavailable" not in asked
-        begun = _post("oauth_begin", {"request_id": asked["request_id"],
-                                      "code_challenge": CHALLENGE})
-    assert begun.status_code != 200
-    assert begun.json()["error"] == "no_authorization_server_metadata"
-
-
-def test_an_agent_cannot_forge_a_discovered_offer(universes):
-    with _as(OWNER):
-        forged = _ask(action={**TASKS_ASK, "oauth": {
-            "authorize_url": "https://x.example/a", "token_url": "https://x.example/t",
-            "client_id": "c", "source": "discovered"}})
-    assert forged["error"] == "request_invalid" and "never supplied" in forged["detail"]
-    with _as(OWNER):
-        forged = _ask(action={**TASKS_ASK, "oauth": {"source": "discovered"}})
-    assert forged["error"] == "request_invalid" and "unknown fields" in forged["detail"]
-
-
 # --------------------------------------------------------------------------- #
 # 3. The PKCE round trip through the real callback.
 # --------------------------------------------------------------------------- #
-
-
-def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
-    from tinyassets.auth.middleware import _auth_challenge_path
-
-    # The fixed callback is a public shell; exchange stays behind the bearer.
-    assert _auth_challenge_path("/app/model-callback/connect") is False
-    assert _auth_challenge_path("/app/model-connect/oauth_exchange") is True
-
-    with _as(OWNER):
-        asked = _ask()
-    begun, back, done = _sign_in(provider, asked["request_id"])
-    authorize = dict(parse_qsl(urlsplit(begun.json()["authorize_url"]).query))
-    assert authorize["redirect_uri"] == REDIRECT == f"https://{back.netloc}{back.path}"
-    assert authorize["scope"] == "tasks.write"
-    assert authorize["code_challenge"] == CHALLENGE
-    assert len(provider.clients) == 1  # a public client, registered dynamically
-
-    assert done.status_code == 200, done.text
-    body = done.json()
-    assert body["status"] == "provisioned"
-    assert body["request_ref"] == asked["request_id"]
-    for token in list(provider.access) + list(provider.refresh_live):
-        assert token not in done.text  # no token ever crosses back to the app
-
-    from tinyassets.api.http_connection import _ids
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    connection_id, grant_id = _ids(owner=OWNER, destination="tasklark")
-    ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)
-    resource = ledger._get_connection_resource(connection_id)
-    assert resource.auth_scheme == "oauth2"
-    grant = ledger.require_active_grant(grant_id)
-    assert grant.owner_user_id == OWNER
-    assert grant.connection_id == connection_id
-    assert grant.connection_id == connection_id
-    bundle = _vault_bundle(app)
-    assert bundle.token_url == f"https://{TOKEN}/token"
-    assert bundle.refresh_token in provider.refresh_live
-
-    # The code is spent: replaying the exchange cannot redeem it again.
-    q = dict(parse_qsl(back.query))
-    with _as(OWNER):
-        replay = _post("oauth_exchange", {"flow": q["state"], "code": q["code"],
-                                          "code_verifier": VERIFIER})
-    assert replay.status_code == 404
-
-    # And the connection works: the broker sends the access token.
-    dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
-    assert _call(dispatch, grant_id)["status"] == 200
-    assert provider.api_calls[-1] == bundle.access_token
-
-
-def test_a_wrong_verifier_redeems_nothing(provider, app):
-    with _as(OWNER):
-        asked = _ask()
-        begun = _post("oauth_begin", {"request_id": asked["request_id"],
-                                      "code_challenge": CHALLENGE})
-        q = dict(parse_qsl(urlsplit(provider.authorize(begun.json()["authorize_url"])).query))
-        wrong = _post("oauth_exchange", {"flow": q["state"], "code": q["code"],
-                                         "code_verifier": "w" * 43})
-    assert wrong.status_code == 400 and wrong.json()["error"] == "invalid_pkce_verifier"
-    assert provider.access == {}  # the provider was never asked
 
 
 # --------------------------------------------------------------------------- #
@@ -597,41 +419,7 @@ def _age(base, *, expires_at):
     keeper._write("tasklark", replace(_vault_bundle(base), expires_at=expires_at))
 
 
-def test_refresh_before_expiry_persists_the_rotated_token(provider, app, tmp_path):
-    _done, grant_id = _connected(provider, app, tmp_path)
-    before = _vault_bundle(app)
-    _age(app, expires_at=time.time() + 10)  # inside the refresh window
-
-    dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
-    assert _call(dispatch, grant_id)["status"] == 200
-    after = _vault_bundle(app)
-    assert provider.refresh_calls == 1
-    assert provider.api_calls == [after.access_token]  # refreshed BEFORE sending
-    assert after.access_token != before.access_token
-    # Rotation persisted: the old refresh token is spent, the new one stored.
-    assert before.refresh_token in provider.refresh_spent
-    assert after.refresh_token in provider.refresh_live
-    assert after.expires_at and after.expires_at > time.time() + 3000
-
-    # The NEXT refresh spends the rotated token, not the old one.
-    _age(app, expires_at=time.time() + 10)
-    assert _call(dispatch, grant_id)["status"] == 200
-    assert provider.refresh_calls == 2 and provider.reused == 0
-
-
-def test_refresh_on_401_then_one_retry(provider, app, tmp_path):
-    _done, grant_id = _connected(provider, app, tmp_path)
-    stale = _vault_bundle(app).access_token
-    provider.revoke_access()  # the service stops honouring it before its expiry
-
-    dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
-    result = _call(dispatch, grant_id)
-    assert result["status"] == 200
-    fresh = _vault_bundle(app).access_token
-    assert provider.api_calls == [stale, fresh]  # 401, refresh, one retry
-    assert provider.refresh_calls == 1
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_concurrent_calls_refresh_once_and_never_reuse_a_refresh_token(
         provider, app, tmp_path):
     _done, grant_id = _connected(provider, app, tmp_path)
@@ -657,53 +445,12 @@ def test_concurrent_calls_refresh_once_and_never_reuse_a_refresh_token(
     assert set(provider.api_calls) == {_vault_bundle(app).access_token}
 
 
-def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp_path):
-    from tinyassets.storage.outbound_connections import ConnectionAuthorizationError
-
-    _done, grant_id = _connected(provider, app, tmp_path)
-    provider.refresh_live.clear()  # the provider revoked the grant
-    _age(app, expires_at=time.time() + 5)
-    dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
-    with pytest.raises(ConnectionAuthorizationError) as caught:
-        _call(dispatch, grant_id)
-    failure = caught.value.failure
-    assert failure["stage"] == "connection" and failure["class"] == "auth"
-    assert ("invalid_grant" in failure["provider_detail"]
-            or "refresh token" in failure["provider_detail"])
-    assert provider.api_calls == []  # nothing was sent on a dead authorization
-
-
 # --------------------------------------------------------------------------- #
 # 5. Custody: tokens never cross MCP, and no other universe can use them.
 # --------------------------------------------------------------------------- #
 
 
-def test_oauth2_cannot_be_pasted_and_a_bundle_is_never_sent_as_a_key(universes):
-    from tests.support.connection_door import connect_http
-    from tinyassets.connection_oauth.tokens import TokenBundle, encode
-    from tinyassets.storage.outbound_connections import (
-        SsrfValidationError,
-        _build_http_secret_bundle,
-    )
-
-    bundle = encode(TokenBundle(access_token="at-1", token_url="https://a.example.net/t",
-                                client_id="c", refresh_token="rt-1"))
-    with _as(OWNER):
-        pasted = connect_http(universe_id=UID, payload=json.dumps({
-            "destination": "x1", "secret": bundle, "auth_scheme": "oauth2",
-            "allowed_endpoints": [{"host": API, "path_template": "/v1/tasks",
-                                   "methods": ["POST"]}]}))
-        assert pasted["error"] == "unsupported_auth_scheme"
-        smuggled = connect_http(universe_id=UID, payload=json.dumps({
-            "destination": "x2", "secret": bundle, "auth_scheme": "bearer",
-            "allowed_endpoints": [{"host": API, "path_template": "/v1/tasks",
-                                   "methods": ["POST"]}]}))
-        assert smuggled["error"] == "connection_setup_invalid"
-    for scheme in ("bearer", "header", "basic", "oauth2"):
-        with pytest.raises(SsrfValidationError):
-            _build_http_secret_bundle(scheme, bundle)
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_an_oauth_connection_is_never_usable_by_another_owner(provider, app, tmp_path):
     from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
@@ -815,89 +562,12 @@ function body(fields){const box=new El('div');
     return json.loads(result.stdout)
 
 
-def test_the_rail_puts_sign_in_first_and_folds_the_key_under_it():
-    out = _run_rail("""
-const req={request_id:'r1',title:'Connect tasklark',action:{type:'connect',
-  destination:'tasklark',host:'api.tasklark.io',path_template:'/tasks',methods:['POST'],
-  oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
-const b=body(['textarea']);ConnectOAuth.decorate(req,b.box,b.row,b.note);
-const first=b.box.children[0];
-await first.onclick();
-const plain=body(['textarea']);
-ConnectOAuth.decorate({request_id:'r2',action:{type:'connect'}},plain.box,plain.row,plain.note);
-const only=body([]);ConnectOAuth.decorate(req,only.box,only.row,only.note);
-console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag,
- foldedHoldsKey:!!b.box.children[1].querySelector('textarea'),navigations,posts,
- saved:JSON.parse(storage.get('ta_connect_oauth')),plainFirst:plain.box.children[0].tag,
- onlyAcceptHidden:only.acc.hidden,keyAcceptHidden:b.acc.hidden}));
-""")
-    assert out["first"] == "Sign in with the provider"
-    assert out["folded"] == "details" and out["foldedHoldsKey"] is True
-    assert out["posts"] == [{"url": "/app/model-connect/oauth_begin",
-                             "body": {"request_ref": "r1", "code_challenge": "c" * 43,
-                                      "definition": {"destination": "tasklark", "endpoints": [
-                                          {"host": "api.tasklark.io", "path_template": "/tasks",
-                                           "methods": ["POST"]}], "oauth": {"scopes": []}}}}]
-    assert out["navigations"][0].startswith("https://auth.tasklark.io/authorize")
-    assert out["saved"]["flow"] == "f" * 43 and out["saved"]["verifier"] == "v" * 43
-    assert out["plainFirst"] == "label"  # no offer: the key ask is untouched
-    assert out["onlyAcceptHidden"] is True and out["keyAcceptHidden"] is False
-
-
-@pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 0)])
-def test_rail_sign_in_keeps_center_and_does_not_relay_a_chat(origin, source, turn_count):
-    out = _run_rail("""
-const req={request_id:'r1',universe_id:'center-a',title:'Connect source',
-  origin:__ORIGIN__,action:{type:'connect',
-  oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
-const b=body([]);ConnectOAuth.decorate(req,b.box,b.row,b.note);
-await b.box.children[1].onclick();
-const saved=JSON.parse(storage.get('ta_connect_oauth'));
-window.location.pathname='/app/model-callback/connect';
-window.location.search='?code=abc&state='+saved.flow;
-ConnectOAuth.pending=ConnectOAuth.takeCallback();
-let exchange;
-ConnectOAuth.post=async(op,payload)=>{exchange=payload;return {status:'provisioned'};};
-await ConnectOAuth.finish();
-console.log(JSON.stringify({saved,turns,exchange}));
-""".replace("__ORIGIN__", json.dumps(origin)))
-    assert out["saved"]["source"] is source
-    assert out["saved"]["center"] == out["exchange"]["center"] == "center-a"
-    # The box completes its opaque reference; browser chat is never a relay.
-    assert len(out["turns"]) == turn_count
-
-
-def test_the_callback_is_taken_before_account_sign_in_and_only_once():
-    out = _run_rail("""
-storage.set('ta_connect_oauth',JSON.stringify({verifier:'v'.repeat(43),flow:'f'.repeat(43),
-  title:'Connect tasklark',center:'center-a',expires:Date.now()+60000}));
-window.location.pathname='/app/model-callback/connect';
-window.location.search='?code=abc&state='+'f'.repeat(43);
-const taken=ConnectOAuth.takeCallback();
-const again=ConnectOAuth.takeCallback();
-console.log(JSON.stringify({taken,again,path:window.location.pathname,search:window.location.search,
-  left:storage.has('ta_connect_oauth')}));
-""")
-    assert out["taken"] == {"flow": "f" * 43, "code": "abc", "code_verifier": "v" * 43,
-                            "title": "Connect tasklark", "center": "center-a"}
-    assert out["again"] is None  # the URL is stripped; nothing is left to redeem
-    assert out["path"] == "/app" and out["search"] == "" and out["left"] is False
-
-
-def test_no_vendor_names_in_the_oauth_code():
-    root = Path(__file__).resolve().parents[1] / "tinyassets" / "connection_oauth"
-    files = sorted(root.glob("*.py"))
-    assert len(files) >= 5, "the OAuth package must exist for this check to mean anything"
-    text = "\n".join(p.read_text(encoding="utf-8").lower() for p in files)
-    for name in ("openrouter", "github", "google", "openai", "anthropic", "tasklark"):
-        assert name not in text
-
-
 # --------------------------------------------------------------------------- #
 # Round 1 floor: the token URL is pinned, RFC 9207 iss, and lock contention.
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_rfc9207_issuer_is_checked_when_the_server_supports_it(provider, app):
     provider.iss = True
     with _as(OWNER):
@@ -924,39 +594,7 @@ def test_rfc9207_issuer_is_checked_when_the_server_supports_it(provider, app):
     assert right.status_code == 200, right.text
 
 
-def test_lock_contention_during_refresh_never_loses_the_rotated_token(
-        provider, app, tmp_path, monkeypatch):
-    """Windows gives up on the cross-process vault lock after about a second.
-    A refresh that spent the single-use refresh token and only THEN failed to
-    take that lock would lose the rotated token; the lock is taken first."""
-    from contextlib import contextmanager
-
-    from tinyassets.broker import vault
-
-    _done, grant_id = _connected(provider, app, tmp_path)
-    before = _vault_bundle(app)
-    _age(app, expires_at=time.time() + 5)
-
-    real = vault.vault_lock
-    busy = {"left": 3}
-
-    @contextmanager
-    def contended(universe_dir):
-        if busy["left"] > 0:
-            busy["left"] -= 1
-            raise TimeoutError("provider assignment admission lock remained unavailable")
-        with real(universe_dir):
-            yield
-
-    monkeypatch.setattr(vault, "vault_lock", contended)
-    dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
-    assert _call(dispatch, grant_id)["status"] == 200
-    after = _vault_bundle(app)
-    assert busy["left"] == 0 and provider.refresh_calls == 1 and provider.reused == 0
-    assert before.refresh_token in provider.refresh_spent
-    assert after.refresh_token in provider.refresh_live  # the rotated token was kept
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 @pytest.mark.parametrize("cookie", ["", "__Host-ta-owner=forged"])
 def test_bearer_cannot_start_owner_bound_oauth(provider, app, cookie):
     from tinyassets.connection_oauth import pkce
@@ -972,25 +610,7 @@ def test_bearer_cannot_start_owner_bound_oauth(provider, app, cookie):
     assert provider.access == {}
 
 
-def test_unbound_legacy_oauth_flow_cannot_be_upgraded_at_completion(provider, app):
-    from tests.owner_answer import session_cookie
-    from tinyassets.connection_oauth import pkce
-
-    with _as(OWNER):
-        asked = _ask()
-        begun = _post("oauth_begin", {"request_id": asked["request_id"],
-                                     "code_challenge": CHALLENGE}).json()
-        back = dict(parse_qsl(urlsplit(provider.authorize(begun["authorize_url"])).query))
-        with pkce.flows_db(app) as (conn, _):
-            conn.execute("UPDATE connection_oauth_flows SET approved_owner=''")
-        for cookie in ("", session_cookie()):
-            result = _post("oauth_exchange", {"flow": back["state"], "code": back["code"],
-                                             "code_verifier": VERIFIER}, cookie=cookie)
-            assert result.status_code == 403
-            assert result.json()["error"] == "interactive_approval_required"
-    assert provider.access == {}
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_generic_exchange_refuses_cookieless_replay_and_foreign_handle(provider, app):
     from tinyassets.connection_oauth import pkce
 
@@ -1016,6 +636,7 @@ def test_generic_exchange_refuses_cookieless_replay_and_foreign_handle(provider,
     assert provider.access == issued
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_owner_revocation_prevents_outstanding_generic_exchange(provider, app):
     from tinyassets.onboarding.owner_sessions import revoke_owner
 

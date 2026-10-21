@@ -113,8 +113,6 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(
     assert legacy.read_bytes() == original
 
 
-
-
 @pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
     store = PolicyStore(tmp_path, admissions(tmp_path))
@@ -315,8 +313,6 @@ def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
     assert store.decide("alice", **base, amount=40, request_id="second")["decision"] == "allow"
     final = store.decide("alice", **base, amount=20, request_id="third")
     assert final["rule"] == "spend_monthly_cap"
-
-
 
 
 @pytest.fixture
