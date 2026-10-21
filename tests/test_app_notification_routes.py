@@ -31,6 +31,9 @@ PUBLIC_APP_PATHS = {
     "/app",              # the SPA shell, loads before sign-in
     "/app/token",        # its same-origin PKCE exchange
     "/app/owner-sign-in",  # document navigation begins interactive owner PKCE
+    # The phone apps start system-browser sign-in signed out; it returns only a
+    # flow ref, and the session still comes from the PKCE exchange at /app/token.
+    "/app/native-sign-in",
     # The deploy canary's own sign-in: obtaining a bearer is its job, so it
     # cannot carry one. 404 unless the host pins one synthetic account, and it
     # still requires a server-held key AND that account's WorkOS password.
