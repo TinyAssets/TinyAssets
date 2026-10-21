@@ -647,6 +647,29 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${RETENTION_HELPER} --check-headroom --image-ref ${IMAGE_REF}"
 
+      # Drain-review re-check: the cutover restarts boxhostd inside the fail-safe
+      # deploy, so its new unit and code must be installed before that step.
+      - name: Install pinned gVisor and idle boxhostd
+        if: ${{ success() }}
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          list="${RUNNER_TEMP}/boxhostd-install-files.txt"
+          python scripts/boxhostd_install_files.py > "$list"
+          [[ -s "$list" ]]
+          mapfile -t boxhostd_files < "$list"
+          bundle="${RUNNER_TEMP}/boxhostd-install.tar"
+          tar -cf "$bundle" "${boxhostd_files[@]}"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes "$bundle" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/boxhostd-install.tar"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE_BOX'
+          set -euo pipefail
+          stage=$(mktemp -d /tmp/boxhostd-install.XXXXXXXX)
+          trap 'rm -rf -- "$stage"' EXIT
+          tar -xf /tmp/boxhostd-install.tar -C "$stage"
+          sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash "$stage/deploy/install-boxhostd-preflight.sh"
+          REMOTE_BOX
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -1028,27 +1051,6 @@ jobs:
       # healthy. No daemon path calls it, and this step runs no gate workload.
       # The copy list is derived from the installer. Restart, DR, and the
       # box-preflight workflow do not run it.
-      - name: Install pinned gVisor and idle boxhostd
-        if: ${{ success() }}
-        timeout-minutes: 8
-        run: |
-          set -euo pipefail
-          list="${RUNNER_TEMP}/boxhostd-install-files.txt"
-          python scripts/boxhostd_install_files.py > "$list"
-          [[ -s "$list" ]]
-          mapfile -t boxhostd_files < "$list"
-          bundle="${RUNNER_TEMP}/boxhostd-install.tar"
-          tar -cf "$bundle" "${boxhostd_files[@]}"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes "$bundle" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/boxhostd-install.tar"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE_BOX'
-          set -euo pipefail
-          stage=$(mktemp -d /tmp/boxhostd-install.XXXXXXXX)
-          trap 'rm -rf -- "$stage"' EXIT
-          tar -xf /tmp/boxhostd-install.tar -C "$stage"
-          sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash "$stage/deploy/install-boxhostd-preflight.sh"
-          REMOTE_BOX
-
       - name: Enforce daemon image retention (post-canary)
         # Use this revision's policy on the first repaired deploy as well as later
         # timer installs. Failure is visible and blocks further successful pulls.

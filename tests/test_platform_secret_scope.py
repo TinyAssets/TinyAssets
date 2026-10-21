@@ -275,7 +275,7 @@ def test_boxhostd_receives_only_its_snapshot_remote(tmp_path):
     assert _assigned(box) == {"BACKUP_DEST"}
     assert "spaces:bucket/path" in box.read_text(encoding="utf-8")
     unit = (Path(__file__).resolve().parents[1] / "deploy/boxhostd.service").read_text()
-    assert "EnvironmentFile=/etc/tinyassets/boxhostd.env\n" in unit
+    assert "EnvironmentFile=-/etc/tinyassets/boxhostd.env\n" in unit
     assert "EnvironmentFile=/etc/tinyassets/env" not in unit
 
 
