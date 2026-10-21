@@ -443,19 +443,7 @@ jobs:
       - name: Prune daemon images and require pull headroom
         id: disk_prepare
         timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          helper="/tmp/daemon-image-retention-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
-          snapshot_helper="/tmp/backup-snapshot-retention-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/backup_snapshot_retention.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${snapshot_helper}"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/daemon_image_retention.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${helper}"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${snapshot_helper} --apply"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${helper} --apply --prepare-pull"
-          echo "helper=${helper}" >> "$GITHUB_OUTPUT"
+        run: bash deploy/deploy_host.sh disk-prepare
 
       - name: Wait for in-flight turns
         id: turns
@@ -469,40 +457,21 @@ jobs:
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           YIELD_WORKFLOWS: p0-outage-triage.yml restart-daemon.yml install-host-services.yml apply-daemon-env.yml
-        run: bash deploy/wait_for_turns.sh
+        run: bash deploy/deploy_host.sh wait-for-turns
 
       - name: Recheck disk before fail-safe pull
         timeout-minutes: 5
         env:
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${RETENTION_HELPER} --check-headroom --image-ref ${IMAGE_REF}"
+        run: bash deploy/deploy_host.sh disk-recheck
 
       # Drain-review re-check: the cutover restarts boxhostd inside the fail-safe
       # deploy, so its new unit and code must be installed before that step.
       - name: Install pinned gVisor and idle boxhostd
         if: ${{ success() }}
         timeout-minutes: 8
-        run: |
-          set -euo pipefail
-          list="${RUNNER_TEMP}/boxhostd-install-files.txt"
-          python scripts/boxhostd_install_files.py > "$list"
-          [[ -s "$list" ]]
-          mapfile -t boxhostd_files < "$list"
-          bundle="${RUNNER_TEMP}/boxhostd-install.tar"
-          tar -cf "$bundle" "${boxhostd_files[@]}"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes "$bundle" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/boxhostd-install.tar"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE_BOX'
-          set -euo pipefail
-          stage=$(mktemp -d /tmp/boxhostd-install.XXXXXXXX)
-          trap 'rm -rf -- "$stage"' EXIT
-          tar -xf /tmp/boxhostd-install.tar -C "$stage"
-          sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash "$stage/deploy/install-boxhostd-preflight.sh"
-          REMOTE_BOX
+        run: bash deploy/deploy_host.sh install-boxhostd
 
       - name: Run fail-safe deploy on the droplet
         id: deploy
@@ -510,41 +479,9 @@ jobs:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           BUNDLE_DIR: ${{ steps.stage_bundle.outputs.stage }}
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
-        run: |
-          set -euo pipefail
-          probe="/tmp/turns_in_flight.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}.py"
-          verifier="/tmp/verify_deploy_backup.py"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/deploy_fail_safe.sh deploy/install-tinyassets-env.sh \
-              deploy/snapshot_candidate_evidence.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              scripts/turns_in_flight.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${probe}"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              scripts/verify_deploy_backup.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
-          set +e
-          out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
-          rc=$?
-          set -e
-          echo "${out}"
-          result="$(printf '%s\n' "${out}" | awk -F= '/^deploy_result=/{print $2}' | tail -1)"
-          deployed="$(printf '%s\n' "${out}" | awk -F= '/^deployed_image=/{print $2}' | tail -1)"
-          echo "rc=${rc}" >> "$GITHUB_OUTPUT"
-          echo "result=${result}" >> "$GITHUB_OUTPUT"
-          echo "deployed_image=${deployed}" >> "$GITHUB_OUTPUT"
-          pending="$(printf '%s\n' "${out}" | awk -F= '/^cutover_admission_pending=/{print $2}' | tail -1)"
-          echo "cutover_admission_pending=${pending}" >> "$GITHUB_OUTPUT"
-          # rc 0 = deployed new, 2 = rolled back to previous (prod still up), 1/3 = hard fail.
-          if [ "${rc}" -eq 0 ]; then
-            echo "::notice::deployed ${deployed}"
-          elif [ "${rc}" -eq 2 ]; then
-            echo "::error::new image unhealthy; prod rolled back to ${deployed}"; exit 1
-          else
-            echo "::error::deploy failed (rc=${rc}); see log above"; exit 1
-          fi
+          DEPLOY_STARTED_EPOCH: ${{ steps.run_clock.outputs.epoch }}
+          CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
+        run: bash deploy/deploy_host.sh fail-safe-deploy
 
       - name: Core user capabilities and systemic failure rates
         id: core_canary
@@ -569,18 +506,14 @@ jobs:
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: canary
-        run: |
-          set -euo pipefail
-          python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles
+        run: bash deploy/deploy_host.sh public-mcp-canary
 
       # The app is the second public surface this deploy can break, and the MCP
       # canary says nothing about it: the connector can be perfectly green while
       # /app 404s. Folded into the same rollback condition below.
       - name: Public app-surface probe
         id: app_probe
-        run: |
-          set -euo pipefail
-          python scripts/probe_app_surface.py --verbose
+        run: bash deploy/deploy_host.sh public-app-probe
 
       - name: Roll owner boxes and accept the canary box
         id: owner_boxes
@@ -593,26 +526,18 @@ jobs:
           TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
           TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
-        run: |
-          set -euo pipefail
-          python scripts/roll_owner_boxes.py --image-ref "${IMAGE_REF}" \
-            --ssh-target "${DO_SSH_USER}@${DO_DROPLET_HOST}" --ssh-key ~/.ssh/do_deploy \
-            --expected-sha "${EXPECTED_SHA}" --receipt "${RUNNER_TEMP}/owner-box-roll.json"
+        run: bash deploy/deploy_host.sh roll-owner-boxes
 
       - name: Consume cutover eligibility and open ordinary admission after acceptance
         if: steps.deploy.outputs.cutover_admission_pending == 'true'
-        run: |
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo python3 -" < scripts/open_router_traffic.py
+        run: bash deploy/deploy_host.sh open-router-traffic
 
       - name: Take the first platform backup of the new layout
         # Review follow-up: without this the new shared layer has no off-host
         # copy until the nightly timer. Same oneshot unit the timer starts.
         if: steps.deploy.outputs.cutover_admission_pending == 'true'
         timeout-minutes: 20
-        run: |
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemctl start tinyassets-backup.service"
+        run: bash deploy/deploy_host.sh first-platform-backup
 
       - name: Save owner-box roll receipt
         if: ${{ always() && steps.owner_boxes.outcome != 'skipped' }}
@@ -725,11 +650,7 @@ jobs:
         if: ${{ always() && steps.deploy.outputs.rc == '0' && (failure() || cancelled()) }}
         continue-on-error: true
         timeout-minutes: 1
-        run: |
-          set +e
-          timeout 25s ssh -i ~/.ssh/do_deploy               -o BatchMode=yes               -o ConnectTimeout=10               -o ServerAliveInterval=5               -o ServerAliveCountMax=2               "${DO_SSH_USER}@${DO_DROPLET_HOST}"               "sudo bash /tmp/snapshot_candidate_evidence.sh"
-          echo "ssh_rc=$?" >> "$GITHUB_OUTPUT"
-          exit 0
+        run: bash deploy/deploy_host.sh snapshot-candidate-evidence
 
       # Name kept verbatim: three test files key on this step by name
       # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
@@ -739,22 +660,7 @@ jobs:
         if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
-        run: |
-          set -euo pipefail
-          echo "::error::a public surface (MCP canary, app probe, or core canary) went red after a fresh deploy — rolling back to the captured previous image"
-          if [ -z "${PREV_IMAGE}" ]; then
-            echo "::error::no previous image captured; manual rollback required"; exit 3
-          fi
-          # --restore-bundle, not a plain invocation: the forward deploy installed
-          # a new compose.yml / vector config / systemd unit inside its
-          # transaction, so converging the previous IMAGE against the new CONFIG
-          # would roll back half the change. This reinstalls the snapshot named by
-          # /var/lib/tinyassets-deploy/bundle-previous first, then converges
-          # PREV_IMAGE (and force-recreates tinyassets-logs if the restore moved a
-          # vector input). It never installs the staged bundle — that is what it
-          # is undoing.
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh --restore-bundle '${PREV_IMAGE}'"
+        run: bash deploy/deploy_host.sh rollback-public-canary
 
       # AFTER the rollback: nothing here touches production, so none of it can
       # delay recovery. Fetches what the snapshot wrote, sanitizes locally, and
@@ -768,77 +674,7 @@ jobs:
         env:
           TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           TARGET_REVISION: ${{ steps.tag.outputs.revision }}
-        run: |
-          set +e
-          evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
-          state_raw="${RUNNER_TEMP}/ta-candidate.state"
-          raw_log="${RUNNER_TEMP}/ta-candidate.log"
-          cid_file="${RUNNER_TEMP}/ta-candidate.cid"
-          mkdir -p "${evidence_dir}"
-          printf '{"candidate_identity_match":false,"capture":"unavailable"}\n' \
-              > "${evidence_dir}/daemon-state.json"
-          : > "${raw_log}"
-          : > "${cid_file}"
-
-          timeout 40s scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              -o ConnectTimeout=10 \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.cid" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.state" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.log" \
-              "${RUNNER_TEMP}/" 2>/dev/null
-
-          container_id="$(head -c 128 "${cid_file}" 2>/dev/null | tr -dc 'a-f0-9')"
-          candidate_identity_match=false
-          if [ -n "${container_id}" ] && [ -s "${state_raw}" ]; then
-            if python scripts/sanitize_startup_diagnostics.py \
-                --state \
-                --target-revision "${TARGET_REVISION}" \
-                --target-image-ref "${TARGET_IMAGE_REF}" \
-                < "${state_raw}" \
-                > "${evidence_dir}/daemon-state.json" 2>/dev/null; then
-              candidate_identity_match=true
-            fi
-          fi
-          if [ "${candidate_identity_match}" != "true" ]; then
-            : > "${raw_log}"
-          fi
-          python scripts/sanitize_startup_diagnostics.py \
-              < "${raw_log}" \
-              > "${evidence_dir}/daemon-signals.json"
-          rm -f "${raw_log}" "${state_raw}" "${cid_file}"
-
-          CONTAINER_ID="${container_id}" python - \
-              "${evidence_dir}/manifest.json" \
-              "${evidence_dir}/daemon-state.json" <<'PY'
-          import datetime
-          import json
-          import os
-          import pathlib
-          import re
-          import sys
-
-          revision = os.environ["TARGET_REVISION"]
-          if not re.fullmatch(r"[0-9a-f]{40}", revision):
-              revision = "unavailable"
-          container_id = os.environ.get("CONTAINER_ID") or ""
-          if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
-              container_id = "unavailable"
-          state = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
-          manifest = {
-              "schema_version": 2,
-              "run_id": int(os.environ["GITHUB_RUN_ID"]),
-              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-              "target_revision": revision,
-              "container_id": container_id,
-              "candidate_identity_match": state.get("candidate_identity_match") is True,
-              "captured_utc": datetime.datetime.now(datetime.UTC).isoformat(),
-          }
-          pathlib.Path(sys.argv[1]).write_text(
-              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
-              encoding="utf-8",
-          )
-          PY
-          exit 0
+        run: bash deploy/deploy_host.sh sanitize-candidate-diagnostics
 
       - name: Publish release-state receipt
         if: ${{ success() }}
@@ -850,36 +686,14 @@ jobs:
           DEPLOYED_IMAGE: ${{ steps.deploy.outputs.deployed_image }}
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          now="$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)"
-          cat > release-state.json <<EOF
-          {"receipt_available":true,"git_sha":"${GIT_SHA}","image_tag":"${IMAGE_TAG}","image_digest":"${IMAGE_DIGEST}","build_run_id":"${BUILD_RUN_ID}","build_run_url":"https://github.com/${{ github.repository }}/actions/runs/${BUILD_RUN_ID}","deploy_run_id":"${{ github.run_id }}","deploy_run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}","schema_migration_rev":"not_applicable","canary_bundle_status":"not_run","deployed_at":"${now}","rollback_target":"${PREV_IMAGE}","actor":"${{ github.actor }}","repository":"${{ github.repository }}","workflow_event":"${{ github.event_name }}","extra":{"active_git_sha":"${GIT_SHA}","active_identity_status":"running_healthy","active_image_digest":"${IMAGE_DIGEST}","active_image_ref":"${DEPLOYED_IMAGE}","active_source_provenance":"digest_revision_label","image_ref":"${IMAGE_REF}","image_mutation_started":true,"outcome":"succeeded","production_mutation_started":true,"release_state_version":2,"rollback_attempted":false,"rollback_reason":"not_needed","rollback_result":"not_attempted","running_image_ref":"${DEPLOYED_IMAGE}","forward_canary_status":"passed","forward_deploy_status":"succeeded","terminal_at":"${now}"}}
-          EOF
-          python scripts/release_containment.py release-state.json
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes release-state.json \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/release-state.json"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "vol=\$(sudo docker volume inspect tinyassets-data --format '{{ .Mountpoint }}'); \
-             sudo install -m 0644 -o root -g root /tmp/release-state.json \"\${vol}/release-state.json\""
-          echo "published release-state git_sha=${GIT_SHA}"
+        run: bash deploy/deploy_host.sh publish-release-receipt
 
       - name: Verify protected receipt contains target revision
         id: deployed_sha
         env:
           GIT_SHA: ${{ steps.tag.outputs.revision }}
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
-        run: |
-          set -euo pipefail
-          # --report-provenance is a record-only diagnostic printed from the same
-          # pulse response this assertion already fetches (openspec change
-          # cloud-only-runtime-admission, task 5). It does not affect the exit
-          # code, and an `unknown` verdict is the absence of an observation --
-          # never a pass of cloud acceptance.
-          python scripts/deployed_sha.py \
-            --url https://tinyassets.io/mcp \
-            --report-provenance \
-            --assert-contains "${GIT_SHA}"
+        run: bash deploy/deploy_host.sh verify-deployed-receipt
 
       # P2a installs an idle service after the image and public surfaces are
       # healthy. No daemon path calls it, and this step runs no gate workload.
@@ -893,10 +707,7 @@ jobs:
         timeout-minutes: 5
         env:
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${RETENTION_HELPER} --apply"
+        run: bash deploy/deploy_host.sh enforce-image-retention
 
       - name: Retire platform LLM logins from the host
         # The platform has no LLM (AGENTS.md Hard Rule 15). The new image and
@@ -909,13 +720,7 @@ jobs:
         # universe (u-*). Names and counts only in the log. Idempotent, and it runs ONLY after the public canary is green:
         # the script also refuses unless the running daemon is the new release.
         if: ${{ success() && steps.canary.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/retire_platform_llm_logins.sh deploy/install-tinyassets-env.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo bash /tmp/retire_platform_llm_logins.sh /tmp/install-tinyassets-env.sh"
+        run: bash deploy/deploy_host.sh retire-platform-logins
 
       # One open deploy-failed incident, same module as the uptime canary.
       # A failure comments on the newest open issue with this label (skipping

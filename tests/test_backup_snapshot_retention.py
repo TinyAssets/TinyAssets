@@ -115,6 +115,9 @@ def test_deploy_and_timer_ship_and_run_before_image_prune() -> None:
     workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text()
     step = workflow.split("- name: Prune daemon images and require pull headroom", 1)[1]
     step = step.split("- name: Wait for in-flight turns", 1)[0]
+    assert "bash deploy/deploy_host.sh disk-prepare" in step
+    driver = (ROOT / "deploy/deploy_host.sh").read_text()
+    step = driver.split("phase_disk_prepare() {", 1)[1].split("\n}\n", 1)[0]
     assert step.index("scripts/backup_snapshot_retention.py") < step.index(
         "scripts/daemon_image_retention.py"
     )

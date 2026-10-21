@@ -1,0 +1,458 @@
+name: Live-like deploy gate
+
+# Every change deploys, through the driver production deploys with
+# (deploy/deploy_host.sh), to a throwaway production-like host running
+# TinyAssets live, before it merges. Founder rule: "We should not be surprised
+# when we go live, ever. For any PR."
+#
+# The runner becomes the host (DEPLOY_TARGET=local): systemd, docker, the
+# droplet's users and paths, a loop-backed XFS box store, a root rclone config
+# with a `spaces` remote on a local S3 endpoint. The image production serves
+# now (read from the public /app build header) starts live on synthetic
+# production-shaped data: several owners and centers, real SQLite, an engine
+# holding sidecar sockets, a writer, a scheduled job. Then the deploy-prod
+# phases run, in deploy-prod's order and with its `if:` and timeout wiring,
+# deploying this change's image. tests/test_deploy_phase_parity.py keeps the
+# two workflows calling the same phases in the same order.
+#
+# Authority stays with the caller. This job binds no environment and reads no
+# secret: every credential below is synthetic, generated for this run. The
+# steps of deploy-prod it does not run are pure GitHub or authority work (the
+# DigitalOcean lookup, GHCR resolution, WorkOS canary sign-in, the Cloudflare
+# Access check, incident issues) and are listed in the parity test.
+#
+# Cases (matrix):
+#   cutover   the deploy, including any data move the change carries, must
+#             succeed and leave the host live on the new image.
+#   rollback  a fault forced after the one-shot window; the fail-safe must
+#             bring the old image back serving on the old layout, the box store
+#             as the next attempt needs it, and no candidate harness left.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: live-like-gate-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    # Non-required at first. On PRs it runs for this branch only until it is
+    # green; merge_group and manual runs cover everything else.
+    if: github.event_name != 'pull_request' || github.head_ref == 'conv/live-like-gate'
+    name: live-like (${{ matrix.case }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        # rollback joins once the fail-safe's fault hook lands.
+        case: [cutover]
+    env:
+      LIVE_LIKE_HOST: '1'
+      DEPLOY_TARGET: local
+      DEPLOY_MCP_URL: http://127.0.0.1:8001/mcp
+      DEPLOY_APP_BASE_URL: http://127.0.0.1:8001
+      GATE_CASE: ${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Record this deploy run's start
+        id: run_clock
+        run: |
+          set -euo pipefail
+          echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Free runner disk for a droplet-sized host
+        run: |
+          set -euo pipefail
+          # Toolchains the host never has; the box store alone needs 14 GiB.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h / /mnt
+
+      - name: Resolve the image production serves now
+        id: live_base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Public, unauthenticated: the build header production's /app sends.
+          served="$(python scripts/deployed_sha.py --json | python -c 'import json,sys; print(json.load(sys.stdin)["deployed_sha"])')"
+          [[ "${served}" =~ ^[0-9a-f]{40}$ ]]
+          image="ghcr.io/$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/tinyassets-daemon"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin >/dev/null
+          docker pull -q "${image}:${served:0:12}"
+          ref="$(docker image inspect -f '{{index .RepoDigests 0}}' "${image}:${served:0:12}")"
+          [[ "${ref}" == *@sha256:* ]]
+          echo "image_ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "revision=${served}" >> "$GITHUB_OUTPUT"
+          echo "live base: ${ref} (${served})"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Start the host's local image registry
+        run: |
+          set -euo pipefail
+          docker run -d --restart=always --name live-like-registry -p 127.0.0.1:5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:5000/v2/ >/dev/null && break; sleep 1; done
+
+      - name: Build this change's image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: localhost:5000/tinyassets-daemon:candidate
+          build-args: |
+            TINYASSETS_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=tinyassets-daemon
+            type=gha,scope=live-like-gate
+          cache-to: type=gha,mode=max,scope=live-like-gate
+
+      - name: Resolve image tag -> immutable digest
+        id: tag
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image=localhost:5000/tinyassets-daemon
+          {
+            echo "tag=candidate"
+            echo "image=${image}"
+            echo "image_ref=${image}@${DIGEST}"
+            echo "digest=${DIGEST}"
+            echo "revision=${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Caller-owned inputs, all synthetic and fresh per run. Production's
+      # values come from the production environment, which this job never binds.
+      - name: Generate synthetic caller inputs
+        id: inputs
+        env:
+          BASE_IMAGE: ${{ steps.live_base.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          umask 077
+          b64() { openssl rand -base64 32; }
+          hex() { openssl rand -hex "$1"; }
+          tunnel_secret="$(b64)"
+          tunnel_token="$(printf '{"a":"%s","t":"%s","s":"%s"}' "$(hex 16)" "$(cat /proc/sys/kernel/random/uuid)" "${tunnel_secret}" | base64 -w0)"
+          f="${RUNNER_TEMP}/caller-inputs.env"
+          {
+            echo "TINYASSETS_IMAGE=${BASE_IMAGE}"
+            echo "CLOUDFLARE_TUNNEL_TOKEN=${tunnel_token}"
+            echo "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=$(b64)"
+            echo "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=$(b64)"
+            echo "TINYASSETS_WIKI_CANARY_TOKEN=$(hex 32)"
+            echo "TINYASSETS_CANARY_DOOR_KEY=$(hex 32)"
+            echo "TINYASSETS_CANARY_USER_ID=live-like-canary"
+            echo "TINYASSETS_APP_INGRESS_HMAC_KEY=$(b64)"
+          } > "$f"
+          while IFS='=' read -r key value; do
+            echo "::add-mask::${value}"
+            [ "${key}" = TINYASSETS_IMAGE ] || echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < "$f"
+          echo "file=${f}" >> "$GITHUB_OUTPUT"
+          # The expected droplet identity: a synthetic id, in the typed file
+          # scripts/prepare_expected_instance_state.py writes.
+          python -c 'import json,sys; sys.path.insert(0,"scripts"); from prepare_expected_instance_state import build_state; print(json.dumps(build_state("424242424"), indent=2))' \
+            > "${RUNNER_TEMP}/platform-expected-instance.json"
+          echo "DEPLOY_EXPECTED_INSTANCE_FILE=${RUNNER_TEMP}/platform-expected-instance.json" >> "$GITHUB_ENV"
+
+      - name: Start the local S3 endpoint and root's rclone `spaces` remote
+        id: s3
+        run: |
+          set -euo pipefail
+          out="$(sudo bash scripts/live_like/s3_remote.sh up)"
+          printf '%s\n' "${out}"
+          dest="$(printf '%s\n' "${out}" | awk -F= '/^BACKUP_DEST=/{print substr($0, index($0,"=")+1)}' | tail -1)"
+          [[ "${dest}" == spaces:*/workflow-backups ]]
+          echo "BACKUP_DEST=${dest}" >> "${{ steps.inputs.outputs.file }}"
+          echo "backup_dest=${dest}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare the runner as a droplet-like host
+        run: sudo LIVE_LIKE_HOST=1 bash scripts/live_like/host_prepare.sh "${{ steps.inputs.outputs.file }}"
+
+      - name: Fill the data volume with synthetic production-shaped data
+        run: sudo "$(command -v python)" scripts/live_like/fixture.py build --volume tinyassets-data
+
+      - name: Start the live image and make it live
+        env:
+          BASE_IMAGE: ${{ steps.live_base.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          sudo bash scripts/live_like/make_live.sh start "${BASE_IMAGE}"
+          sudo bash scripts/live_like/make_live.sh check
+
+      # ---- deploy-prod's driver phases, in its order, with its wiring ----
+      # Names, ids, `if:`, `timeout-minutes` and env names match deploy-prod.yml
+      # (tests/test_deploy_phase_parity.py); the values are this host's.
+
+      - name: Capture current image (for public-canary rollback)
+        id: capture
+        run: bash deploy/deploy_host.sh capture-current-image
+
+      - name: Resolve the core canary gate (founder waiver)
+        id: canary_gate
+        # The real canary signs in through WorkOS, which only production holds.
+        # The gate runs the fail-safe as a provisioned canary would.
+        run: echo "provisioned=1" >> "$GITHUB_OUTPUT"
+
+      - name: Live preflight (read-only)
+        id: live_preflight
+        env:
+          CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
+        run: bash deploy/deploy_host.sh live-preflight
+
+      - name: Install daemon-only request idempotency HMAC secret
+        env:
+          REQUEST_HMAC_INSTALL_MODE: set-once
+        run: bash deploy/deploy_host.sh install-request-hmac
+
+      - name: Install OAuth provider client credentials
+        env:
+          TINYASSETS_OAUTH_GOOGLE_CLIENT_ID: ''
+          TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET: ''
+          OAUTH_ACTION: skip
+          PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
+        run: bash deploy/deploy_host.sh install-oauth-credentials
+
+      - name: Install daemon-only agent interchange HMAC secret
+        run: bash deploy/deploy_host.sh install-interchange-hmac
+
+      - name: Validate installed host HMAC pair
+        run: bash deploy/deploy_host.sh validate-host-hmac-pair
+
+      - name: Scrub stale cloud env overrides
+        run: bash deploy/deploy_host.sh scrub-env-overrides
+
+      - name: Sync runtime deploy files
+        id: stage_bundle
+        run: bash deploy/deploy_host.sh stage-bundle
+
+      - name: Prepare data volume root
+        run: bash deploy/deploy_host.sh prepare-data-volume
+
+      - name: Sync the canary bearer into /etc/tinyassets/env
+        run: bash deploy/deploy_host.sh sync-canary-bearer
+
+      - name: Sync the canary sign-in door into /etc/tinyassets/env
+        run: bash deploy/deploy_host.sh sync-canary-door
+
+      - name: Prepare expected-instance state (required for admission)
+        id: expected_instance
+        run: |
+          set -euo pipefail
+          bash deploy/deploy_host.sh install-expected-instance
+          echo "prepared=true" >> "$GITHUB_OUTPUT"
+
+      - name: Prune daemon images and require pull headroom
+        id: disk_prepare
+        timeout-minutes: 5
+        run: bash deploy/deploy_host.sh disk-prepare
+
+      - name: Wait for in-flight turns
+        id: turns
+        timeout-minutes: 55
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TURN_WAIT_CAP_S: '2700'
+          TURN_POLL_S: '15'
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ''
+          # Production yields to its own recovery workflows; nothing else
+          # mutates this host.
+          YIELD_WORKFLOWS: ''
+        run: bash deploy/deploy_host.sh wait-for-turns
+
+      - name: Recheck disk before fail-safe pull
+        timeout-minutes: 5
+        env:
+          RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+        run: bash deploy/deploy_host.sh disk-recheck
+
+      - name: Install pinned gVisor and idle boxhostd
+        if: ${{ success() }}
+        timeout-minutes: 8
+        run: bash deploy/deploy_host.sh install-boxhostd
+
+      - name: Arm the forced-rollback fault (rollback case only)
+        if: ${{ matrix.case == 'rollback' }}
+        run: |
+          echo "::error::the forced-rollback fault hook is not wired yet"
+          exit 1
+
+      - name: Run fail-safe deploy on the droplet
+        id: deploy
+        env:
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          BUNDLE_DIR: ${{ steps.stage_bundle.outputs.stage }}
+          RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
+          DEPLOY_STARTED_EPOCH: ${{ steps.run_clock.outputs.epoch }}
+          CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
+        # The rollback case expects the fail-safe to refuse; its verdict is the
+        # assertion step below, not this exit code.
+        continue-on-error: ${{ matrix.case == 'rollback' }}
+        run: bash deploy/deploy_host.sh fail-safe-deploy
+
+      - name: Public MCP canary (--assert-handles)
+        id: canary
+        if: ${{ matrix.case == 'cutover' }}
+        run: bash deploy/deploy_host.sh public-mcp-canary
+
+      - name: Public app-surface probe
+        id: app_probe
+        if: ${{ matrix.case == 'cutover' }}
+        run: bash deploy/deploy_host.sh public-app-probe
+
+      - name: Roll owner boxes and accept the canary box
+        id: owner_boxes
+        if: ${{ matrix.case == 'cutover' }}
+        timeout-minutes: 50
+        env:
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          EXPECTED_SHA: ${{ steps.tag.outputs.revision }}
+        run: bash deploy/deploy_host.sh roll-owner-boxes
+
+      - name: Consume cutover eligibility and open ordinary admission after acceptance
+        if: steps.deploy.outputs.cutover_admission_pending == 'true'
+        run: bash deploy/deploy_host.sh open-router-traffic
+
+      - name: Take the first platform backup of the new layout
+        if: steps.deploy.outputs.cutover_admission_pending == 'true'
+        timeout-minutes: 20
+        run: bash deploy/deploy_host.sh first-platform-backup
+
+      - name: Snapshot failed candidate evidence (before rollback)
+        id: candidate_snapshot
+        if: ${{ always() && steps.deploy.outputs.rc == '0' && (failure() || cancelled()) }}
+        continue-on-error: true
+        timeout-minutes: 1
+        run: bash deploy/deploy_host.sh snapshot-candidate-evidence
+
+      - name: Roll back if the public canary is red
+        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) }}
+        env:
+          PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
+        run: bash deploy/deploy_host.sh rollback-public-canary
+
+      - name: Sanitize failed candidate diagnostics
+        id: candidate_diagnostics
+        if: ${{ always() && steps.candidate_snapshot.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+        run: bash deploy/deploy_host.sh sanitize-candidate-diagnostics
+
+      - name: Publish release-state receipt
+        if: ${{ success() && matrix.case == 'cutover' }}
+        env:
+          GIT_SHA: ${{ steps.tag.outputs.revision }}
+          IMAGE_TAG: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.tag.outputs.digest }}
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          DEPLOYED_IMAGE: ${{ steps.deploy.outputs.deployed_image }}
+          PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+        run: bash deploy/deploy_host.sh publish-release-receipt
+
+      - name: Verify protected receipt contains target revision
+        id: deployed_sha
+        if: ${{ matrix.case == 'cutover' }}
+        env:
+          GIT_SHA: ${{ steps.tag.outputs.revision }}
+        run: bash deploy/deploy_host.sh verify-deployed-receipt
+
+      - name: Enforce daemon image retention (post-canary)
+        id: retention
+        if: ${{ success() && matrix.case == 'cutover' }}
+        timeout-minutes: 5
+        env:
+          RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
+        run: bash deploy/deploy_host.sh enforce-image-retention
+
+      - name: Retire platform LLM logins from the host
+        if: ${{ success() && steps.canary.outcome == 'success' }}
+        run: bash deploy/deploy_host.sh retire-platform-logins
+
+      # ---- the gate's own verdict -----------------------------------------
+
+      - name: Assert the host is live on the expected image
+        if: ${{ always() && steps.deploy.outcome != 'skipped' }}
+        env:
+          CANDIDATE: ${{ steps.tag.outputs.image_ref }}
+          BASE_IMAGE: ${{ steps.capture.outputs.prev_image }}
+          DEPLOY_RC: ${{ steps.deploy.outputs.rc }}
+          DEPLOY_RESULT: ${{ steps.deploy.outputs.result }}
+        run: |
+          set -euo pipefail
+          sudo bash scripts/live_like/make_live.sh check
+          running="$(sudo docker inspect -f '{{.Image}}' tinyassets-daemon | xargs sudo docker image inspect -f '{{index .RepoDigests 0}}')"
+          echo "deploy rc=${DEPLOY_RC} result=${DEPLOY_RESULT}; running ${running}"
+          root=/opt/tinyassets/boxhostd
+          current="$(sudo readlink "${root}/harness-current" 2>/dev/null || true)"
+          harnesses="$(sudo find "${root}" -maxdepth 1 -name 'harness-*' ! -name harness-current -printf '%f\n' 2>/dev/null | sort)"
+          echo "harness-current -> ${current:-<none>}; harness dirs: ${harnesses:-<none>}"
+          if [ "${GATE_CASE}" = cutover ]; then
+            [ "${DEPLOY_RC}" = 0 ] || { echo "::error::cutover case: deploy rc=${DEPLOY_RC}"; exit 1; }
+            [ "${running}" = "${CANDIDATE}" ] || { echo "::error::not running the candidate"; exit 1; }
+          else
+            [ "${DEPLOY_RC}" = 2 ] || { echo "::error::rollback case: expected the fail-safe to roll back (rc=2), got rc=${DEPLOY_RC} result=${DEPLOY_RESULT}"; exit 1; }
+            [ "${running##*@}" = "${BASE_IMAGE##*@}" ] || { echo "::error::rollback case: not serving the old image"; exit 1; }
+            # The next attempt needs a clean box store and only the harness it started with.
+            leftovers="$(sudo find /var/lib/boxhostd/owners -mindepth 1 -maxdepth 1 \( -name '*.img' -o -name '.locks' \) -print 2>/dev/null || true)"
+            [ -z "${leftovers}" ] || { echo "::error::rollback left box-store files: ${leftovers}"; exit 1; }
+            for h in ${harnesses}; do
+              [ "${h}" = "${current}" ] || { echo "::error::rollback left candidate harness ${h}"; exit 1; }
+            done
+            # And the next attempt's read-only preflight must pass.
+            bash deploy/deploy_host.sh live-preflight
+          fi
+
+      - name: Host diagnostics
+        if: ${{ failure() }}
+        run: |
+          set +e
+          sudo docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+          for c in tinyassets-daemon tinyassets-broker tinyassets-tunnel tinyassets-logs; do
+            echo "----- docker logs ${c} (tail) -----"
+            sudo docker logs --tail 60 "${c}" 2>&1
+          done
+          for u in tinyassets-daemon boxhostd box-store-device var-lib-boxhostd-owners.mount tinyassets-backup; do
+            echo "----- ${u} -----"
+            sudo systemctl status "${u}" --no-pager -l | head -20
+            sudo journalctl -u "${u}" -n 40 --no-pager
+          done
+          df -h / /var/lib/boxhostd /var/lib/boxhostd/owners
+          sudo ls -la /var/lib/boxhostd/owners /opt/tinyassets/boxhostd
+
+      - name: Stop the local S3 endpoint
+        if: ${{ always() }}
+        run: sudo bash scripts/live_like/s3_remote.sh down || true

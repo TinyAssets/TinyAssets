@@ -25,7 +25,7 @@
 # files with `cp`. Authority (secrets, the DigitalOcean lookup, GHCR, the
 # production environment) never lives here: it stays in the caller.
 #
-# tests/test_deploy_host_driver.py records every remote command a phase issues
+# tests/test_deploy_phase_parity.py records every remote command a phase issues
 # and keeps deploy-prod.yml and the gate calling the same phases in the same
 # order.
 set -euo pipefail
@@ -51,13 +51,15 @@ DEPLOY_EXPECTED_INSTANCE_FILE="${DEPLOY_EXPECTED_INSTANCE_FILE:-platform-expecte
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-case "$DEPLOY_TARGET" in
-  ssh) : "${DO_SSH_USER:?DO_SSH_USER required for DEPLOY_TARGET=ssh}" \
-         "${DO_DROPLET_HOST:?DO_DROPLET_HOST required for DEPLOY_TARGET=ssh}" ;;
-  local) DO_SSH_USER="${DO_SSH_USER:-$(id -un)}"; DO_DROPLET_HOST="${DO_DROPLET_HOST:-localhost}" ;;
-  *) echo "::error::DEPLOY_TARGET must be ssh or local (got ${DEPLOY_TARGET})" >&2; exit 2 ;;
-esac
-export DO_SSH_USER DO_DROPLET_HOST
+check_target() {
+  case "$DEPLOY_TARGET" in
+    ssh) : "${DO_SSH_USER:?DO_SSH_USER required for DEPLOY_TARGET=ssh}" \
+           "${DO_DROPLET_HOST:?DO_DROPLET_HOST required for DEPLOY_TARGET=ssh}" ;;
+    local) DO_SSH_USER="${DO_SSH_USER:-$(id -un)}"; DO_DROPLET_HOST="${DO_DROPLET_HOST:-localhost}" ;;
+    *) echo "::error::DEPLOY_TARGET must be ssh or local (got ${DEPLOY_TARGET})" >&2; exit 2 ;;
+  esac
+  export DO_SSH_USER DO_DROPLET_HOST
+}
 
 # remote <command...>: one command line on the host, stdin passed through.
 # REMOTE_TIMEOUT (e.g. 25s) bounds the call; REMOTE_SSH_OPTS adds ssh options.
@@ -609,7 +611,7 @@ phase_retire_platform_logins() {
     "sudo bash /tmp/retire_platform_llm_logins.sh /tmp/install-tinyassets-env.sh"
 }
 
-# Phase names, in production order. tests/test_deploy_host_driver.py reads
+# Phase names, in production order. tests/test_deploy_phase_parity.py reads
 # this list and checks both workflows against it.
 PHASES=(
   capture-current-image
@@ -649,6 +651,7 @@ if [ "$PHASE" = --list ]; then
 fi
 for known in "${PHASES[@]}"; do
   if [ "$known" = "$PHASE" ]; then
+    check_target
     "phase_${PHASE//-/_}" "$@"
     exit $?
   fi

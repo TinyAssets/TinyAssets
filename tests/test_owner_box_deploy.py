@@ -279,8 +279,12 @@ def test_workflow_requires_box_acceptance_after_health_and_keeps_failure_local()
                     "Roll back if the public canary is red")
     assert steps.index(app) < steps.index(roll)
     assert "continue-on-error" not in roll and "if" not in roll
-    assert "scripts/roll_owner_boxes.py" in roll["run"]
-    assert "--expected-sha" in roll["run"] and "--receipt" in roll["run"]
+    assert roll["run"] == "bash deploy/deploy_host.sh roll-owner-boxes"
+    driver = (Path(__file__).parents[1] / "deploy/deploy_host.sh").read_text()
+    phase = driver.split("phase_roll_owner_boxes() {", 1)[1].split("\n}\n", 1)[0]
+    for transport in phase.split("else"):
+        assert "scripts/roll_owner_boxes.py" in transport
+        assert "--expected-sha" in transport and "--receipt" in transport
     assert "founder_canary_waiver" not in str(roll)
     assert "owner_boxes" not in rollback["if"]
     artifact = next(step for step in steps if step.get("with", {}).get("name") == "owner-box-roll")
