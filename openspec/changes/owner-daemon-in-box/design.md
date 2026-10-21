@@ -20,7 +20,7 @@ router/map, the credential/egress proxy and the waker (research.md:69).
 | T3 | The map holds "`owner_id → box_id`, plus the latest volume/snapshot ID" (55). "The box needs a durable volume and off-host snapshots" (61). | Each owner's data is one **opaque volume**. The map records the owner's permanent UID and volume binding, the volume generation and the latest verified off-host snapshot. The map and its permanent bindings are recoverable independently of owner volumes. A historical map never authorizes reassigning an existing owner's UID or volume. | After losing the local instance and local map, recover the durable owner→volume binding and a retained, verified off-host snapshot reference, then restore that owner without inspecting any other owner's contents. Retention preserves every reference the supported recovery point needs. |
 | T4 | "Never reads tenant data" (3); "zero host paths to owner data" (117); "Tests that prove the daemon holds no host path to owner data" (113). | Shared application services have no mounted owner-content path. Lifecycle code does only opaque volume operations by UID: create, attach, detach, snapshot, restore and delete. Filesystem access for a running box is scoped to that box. The one-shot cutover migration is the only exception, and it is deleted after cutover. | Verify the deployed mount and access arrangement, and the shared call paths including subprocesses. Exercise create, start, sleep, snapshot, restore and delete with no shared content traversal. A structural test also fails on any shared open, listing, stat or tree walk under the owner mount root. |
 | T5 | Cross-owner checks are "positive mappings ('derive the box from the authenticated owner'), never exclusion filters", in three components (69). Never pass a caller-supplied owner or box ID through (54). | One admission record per owner. The router, waker and proxy decide on it alone, and the authenticated identity or bound channel selects the owner's one admitted box. | For the router, waker and proxy: the authenticated identity or bound channel selects the one admitted box. A caller-supplied owner or box substitution denies, and an absent record denies. Withdrawing admission invalidates cached routing, and a wake or open running concurrently cannot complete under the withdrawn admission. |
-| T6 | Credentials and egress proxy: "keys and OAuth tokens, injected into outbound requests per box; a per-box allowlist"; it must not "hand a raw secret into the box, or hold a token that reaches every box" (57). Infrastructure isolates (44). | Every outbound connection from a box (model HTTP, connector HTTP, public HTTP/CONNECT, git) passes one proxy allowlist check before the upstream is opened. That includes destinations reached by redirect. A missing allowlist denies. Provider credentials stay in proxy custody and are injected only upstream. Box-ingress credentials are per box. Infrastructure (null netns) prevents direct external connections. | Every egress path refuses a destination outside the owner's allowlist. A missing policy denies. An allowed destination succeeds. Direct native egress fails. No provider credential appears in box inputs or responses. |
+| T6 | Credentials and egress proxy: "keys and OAuth tokens, injected into outbound requests per box; a per-box allowlist"; it must not "hand a raw secret into the box, or hold a token that reaches every box" (57). Infrastructure isolates (44). | Every outbound connection from a box (model HTTP, connector HTTP, public HTTP/CONNECT, git) passes one proxy check before the upstream is opened: the owner is admitted and the destination is a public address. That includes destinations reached by redirect. A credential is injected only into its own authorized service (C7, founder decision 2026-10-20: open public web, scoped credentials). Provider credentials stay in proxy custody and are injected only upstream. Box-ingress credentials are per box. Infrastructure (null netns) prevents direct external connections. | Every egress path refuses private and metadata destinations and an unadmitted owner. A credential is never injected outside its service, including after a redirect. An allowed destination succeeds. Direct native egress fails. No provider credential appears in box inputs or responses. |
 | T7 | Wake index: "`(owner_id, next_wake_at)`, rebuildable by asking each box"; no "job definitions, pause state or payloads" (58). The clock is outside and the rows are inside, and delivery is at least once (36). A paused box reports "no next wake" (67). | The index holds `owner` and `next_wake_at`. The box reports its earliest locally scheduled work, or null when paused or empty. Any periodic agent wake is box-local scheduling. A missing row triggers reconstruction (one wake, the box re-reports). A reported null never causes periodic waking. | Prove reconstruction from boxes, paused and null behavior, and retry after a failed wake or report. A duplicate delivery, including a restart between execution and reporting, never runs the same scheduled occurrence twice. |
 | T8 | Into the box: the agent loop, history, files, owner DB, schedules, pause, "the app and MCP logic that serves the owner's own data" and "authorization among an owner's sub-users" (63). | All of these run in the owner's box, including the owner's policy for their own file, shell, workflow and app actions. The broker keeps only credential, egress and spending policy. | Trace agent execution, private app and MCP handlers, history, files, schedules, sub-user authorization and owner action policy to the box. No shared collaborator makes these owner-local decisions. |
 | T9 | A flag lives "where its reader lives, and give it one writer" (67). | Pause is written and read inside the box. Admission state has one writer, the broker's admission authority. Billing and abuse submit their suspension reasons to it. The owner stays suspended while either reason applies, and `erased` is terminal. | Prove one mutation path. Clearing a billing suspension cannot clear an abuse suspension or an erasure. |
@@ -462,25 +462,37 @@ removes their stores; progress now lives in broker job rows with off-host write-
 replace the temporary equivalence matrix. Routing snapshot/secret persistence
 and platform recovery ordering remain later lane work.
 
-### C7. One per-box egress allowlist at the proxy (T6)
-Each owner has one egress allowlist. Its default is derived from the owner's
-connected sources (the endpoints of their admitted connections and model
-sources), and the owner can add to it. There is no `open` mode
-(`policy.py:124`). Every connection-opening path calls one proxy function that
-checks the actual destination, including destinations reached by redirect,
-before opening the upstream:
+### C7. One egress check at the proxy; credentials scoped to their service (T6)
+**Founder decision (2026-10-20):** the agent keeps open access to the public web,
+as today and as the leading agents have; saved keys and logins are only ever sent
+to the service they belong to. This replaces the earlier per-owner allowlist with
+no open mode.
+
+Every connection-opening path from a box calls one proxy function, which checks
+the actual destination before opening the upstream, including destinations
+reached by redirect:
 - model HTTP;
 - connector HTTP;
-- public HTTP and CONNECT, which has no allowlist today (`broker/public_egress.py:40`);
+- public HTTP and CONNECT (`broker/public_egress.py`);
 - git.
 
-A missing allowlist denies. **Deleted:** the three separate mechanisms (policy
-egress mode, per-connection endpoint allowlist and git scope matching as
-independent allowlists). Credential scoping remains for every credential type: an owner-bound credential
-may be injected only into its authorized service endpoint and operation. Passing
-the per-box network allowlist never authorizes using an arbitrary credential at
-that destination. A redirect re-evaluates credential eligibility before injection.
-Git repository scope is one instance of this rule.
+The check is the same for every path: the owner is admitted, and the destination
+resolves to a public address (private, loopback, link-local and metadata ranges
+refuse, pinned to the resolved address). Any public destination may be reached
+without a credential.
+
+**The credential rule is the allowlist.** An owner-bound credential is injected
+only into its authorized service endpoint and operation. Passing the egress check
+never authorizes using a credential at that destination. A redirect re-evaluates
+credential eligibility before injection. Git repository scope is one instance of
+this rule. A missing credential record injects nothing.
+
+**Deleted:** the policy document's egress mode (`open`/`allowlist`/`ask`) and its
+per-owner allowlist, and every separate allowlist mechanism that duplicates the
+one check (per-connection endpoint allowlists and git scope matching as
+independent destination gates). Their credential-scoping parts move into the
+one credential rule above. The C11 cutover drops the egress section of each
+owner's retained policy document; account rules and spend controls stay.
 
 ### C8. The owner's own action policy moves into the box (T8)
 `broker/policy.py:29` decides `workspace.files`, `workspace.shell`, workflows and
@@ -862,8 +874,9 @@ another on `conv/c6-research-shape`, each after the previous lane has merged:
   callback.
 - **(d) C11–C13:** an owner-keyed shared layer, image-at-wake deploys, and C13's
   remaining mechanisms.
-- **(c) C7–C9:** the egress allowlist, owner policy in the box, the wake index.
-  It runs after d, because policy and allowlists are keyed by owner.
+- **(c) C7–C9:** one egress check with scoped credentials, owner policy in the
+  box, the wake index. It runs after d, because policy and custody are keyed by
+  owner.
 
 Lane b establishes the broker-owned cold-wake and withdrawal contract that lane d
 uses. Lane d preserves that contract while removing host callbacks and center

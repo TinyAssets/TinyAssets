@@ -152,16 +152,23 @@ Missing required authority SHALL leave the job pending.
 - **THEN** the broker imports that authoritative off-host record into its local job rows and resumes through the normal execution path
 - **AND** the historical shared database cannot discard the newer job
 
-### Requirement: Every egress path checks the owner's allowlist at the proxy
-Every outbound connection from a box SHALL pass one proxy allowlist check
-before the upstream is opened. That covers model HTTP, connector HTTP, public
-HTTP and CONNECT, git and destinations reached by redirect. A missing allowlist
-SHALL deny. Provider credentials SHALL stay in proxy custody, and direct
-external connections from a box SHALL be impossible.
+### Requirement: Every egress path passes one proxy check, and credentials stay scoped
+Every outbound connection from a box SHALL pass one proxy check before the
+upstream is opened: the owner SHALL be admitted and the destination SHALL be a
+public address. That covers model HTTP, connector HTTP, public HTTP and CONNECT,
+git and destinations reached by redirect. Any public destination MAY be reached
+without a credential. An owner's credential SHALL be injected only into its own
+authorized service endpoint and operation, re-evaluated after every redirect.
+Provider credentials SHALL stay in proxy custody, and direct external
+connections from a box SHALL be impossible.
 
-#### Scenario: Public CONNECT outside the allowlist is refused
-- **WHEN** an admitted box issues CONNECT to a public destination outside its owner's allowlist
+#### Scenario: A private destination is refused
+- **WHEN** an admitted box issues CONNECT to a private, loopback, link-local or metadata address
 - **THEN** the proxy refuses before opening an upstream connection
+
+#### Scenario: A credential never leaves its service
+- **WHEN** a request carrying an owner's connection is redirected to another host
+- **THEN** the proxy does not inject the credential at the new host
 
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before
