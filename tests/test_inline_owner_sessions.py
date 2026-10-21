@@ -40,6 +40,7 @@ def setup(tmp_path, monkeypatch):
 
 def request(cookie="protected", origin="https://tinyassets.io"):
     return SimpleNamespace(
+        query_params={},
         cookies={sessions.COOKIE: cookie},
         headers={
             "origin": origin,
@@ -128,6 +129,7 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
     monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", broker)
     req = request(cookie="")
     req.method = "POST"
+    req.query_params = {"scope": "spend"}
     with identity_context(Identity(user_id="alice", username="alice")):
         response = asyncio.run(onboarding._handle_policy(req))
     assert response.status_code == 403
@@ -240,9 +242,9 @@ def test_box_approval_decision_uses_forwarded_session(tmp_path, monkeypatch, cho
     assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()
 
 
-def test_box_policy_door_forwards_proof_without_cookie(tmp_path, monkeypatch):
+def test_box_policy_door_uses_local_policy_without_broker_or_cookie(tmp_path, monkeypatch):
     from tinyassets import owner_runtime
-    from tinyassets.broker.client import owner_policy_operation
+    from tinyassets.action_policy import ActionPolicyStore
 
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -253,16 +255,16 @@ def test_box_policy_door_forwards_proof_without_cookie(tmp_path, monkeypatch):
     monkeypatch.setattr(onboarding, "_read_home", lambda _: "home")
     proof = {"session_hash": "a" * 64, "identity_json": json.dumps({"user_id": "alice"}),
              "expires_at": time.time() + 300}
-    seen = []
 
-    def broker(root, owner, action, **fields):
-        seen.append((owner, action, fields))
-        return {}
+    def no_broker(*args, **kwargs):
+        pytest.fail("local action policy used a shared collaborator")
 
     async def payload(_request):
-        return {"expected_generation": 1, "policy": {}}
+        return {"expected_generation": 1, "policy": {"entries": [
+            {"scope": "account", "table": "rules", "values": {
+                "action_class": "workspace.shell", "behaviour": "ask_first"}}]}}
 
-    monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", broker)
+    monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", no_broker)
     monkeypatch.setattr(onboarding, "_read_small_json", payload)
     req = request(cookie="")
     req.cookies = {}
@@ -271,10 +273,9 @@ def test_box_policy_door_forwards_proof_without_cookie(tmp_path, monkeypatch):
                                    metadata={"router_owner_session": proof})):
         response = asyncio.run(onboarding._handle_policy(req))
     assert response.status_code == 200, response.body
-    assert seen[0] == ("alice", "write", {"session_proof": {"session_hash": "a" * 64},
-                                         "expected_generation": 1, "policy": {}})
-    # Slice 3: the box reaches policy only through its relay channel; with no
-    # relay bound it fails loudly, never reading a local policy file.
-    with pytest.raises(RuntimeError, match="owner broker channel is unavailable"):
-        owner_policy_operation(tmp_path, "alice", "read")
+    store = ActionPolicyStore(tmp_path / "home")
+    assert store.read("alice").generation == 2
+    assert store.decide("alice", center="home", action_class="workspace.shell")["decision"] == "ask"
+    assert (tmp_path / ".action-policy.db").is_file()
+    assert not (tmp_path / ".broker").exists()
     assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()

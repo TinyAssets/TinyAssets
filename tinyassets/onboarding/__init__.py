@@ -1113,13 +1113,18 @@ async def _handle_profile(request: Any) -> Any:
     return JSONResponse(profile, headers=_NO_STORE)
 
 async def _handle_policy(request: Any) -> Any:
-    """Forward an owner policy edit without attesting identity to the broker."""
+    """Edit local action rules, or the separately broker-held spending policy."""
+    from functools import partial
+
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
+    from tinyassets.action_policy import PolicyRefused
+    from tinyassets.action_policy import owner_policy_operation as action_policy
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.broker.client import BrokerRefused, owner_policy_operation
+    from tinyassets.broker.client import BrokerRefused
+    from tinyassets.broker.client import owner_policy_operation as spending_policy
     from tinyassets.onboarding.owner_sessions import require
 
     if not onboarding_enabled():
@@ -1132,6 +1137,11 @@ async def _handle_policy(request: Any) -> Any:
     center = await run_in_threadpool(_read_home, identity)
     if not center:
         return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+    scope = request.query_params.get("scope", "actions")
+    if scope not in {"actions", "spend"}:
+        return JSONResponse({"error": "invalid_policy_scope"}, status_code=400)
+    owner_policy_operation = (partial(action_policy, center=center)
+                              if scope == "actions" else spending_policy)
     if request.method == "GET":
         result = await run_in_threadpool(owner_policy_operation, _base_path(), owner, "read")
         receipts = await run_in_threadpool(
@@ -1179,7 +1189,7 @@ async def _handle_policy(request: Any) -> Any:
                 session_proof=session_proof,
                 expected_generation=proposal["expected_generation"],
                 policy=proposal["policy"])
-        except BrokerRefused:
+        except (BrokerRefused, PolicyRefused):
             return JSONResponse({"error": "policy_changed_or_session_required"},
                                 status_code=409, headers=_NO_STORE)
         resolved = await run_in_threadpool(
@@ -1203,7 +1213,7 @@ async def _handle_policy(request: Any) -> Any:
         result = await run_in_threadpool(
             owner_policy_operation, _base_path(), owner, action,
             session_proof=session_proof, **fields)
-    except BrokerRefused:
+    except (BrokerRefused, PolicyRefused):
         return JSONResponse({"error": "interactive_owner_session_required"},
                             status_code=403, headers=_NO_STORE)
     if action == "write":

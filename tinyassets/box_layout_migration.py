@@ -2135,7 +2135,7 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
             placeholders = ",".join("?" for _ in columns)
             db.executemany(f"INSERT INTO {table} ({selected}) VALUES ({placeholders})", rows)
 
-    # C11: policy is already owner-keyed. Only center entries are discarded.
+    # C7/C11: discard center scopes and the retired egress mode.
     from tinyassets.broker.policy import _canonical, _digest
 
     for owner in plan:
@@ -2150,8 +2150,12 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
             document = json.loads(raw)
             if _digest(document) != old_digest:
                 raise RuntimeError("policy digest mismatch")
+            document.pop("egress", None)
+            db.execute("DROP TABLE IF EXISTS once_approvals")
             document["entries"] = [entry for entry in document["entries"]
-                                   if entry["scope"] == "account"]
+                                   if entry["scope"] == "account"
+                                   and entry["values"].get("action_class") in
+                                   {"spend", "money.move"}]
             digest = _digest(document)
             db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
                        (generation + 1, digest, _canonical(document)))
@@ -2358,8 +2362,19 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
 
         for owner in plan:
             tree = mounts / str(owner.uid)
+            from tinyassets.action_policy import initialize as initialize_action_policy
             from tinyassets.owner_centers import Centers
 
+            account = hashlib.sha256(owner.principal.encode()).hexdigest()
+            source_policy = data / ".broker/accounts" / account / "policy.db"
+            entries = []
+            if source_policy.exists():
+                with closing(sqlite3.connect(source_policy.as_uri() + "?mode=ro", uri=True)) as db:
+                    raw = db.execute("SELECT document FROM policy WHERE singleton=1").fetchone()[0]
+                entries = [entry for entry in json.loads(raw)["entries"]
+                           if entry["scope"] == "account"
+                           and entry["values"].get("action_class") not in {"spend", "money.move"}]
+            initialize_action_policy(tree / ".action-policy.db", {"entries": entries})
             centers = Centers(tree)
             for center in owner.centers:
                 centers.create(center)

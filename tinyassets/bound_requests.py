@@ -528,7 +528,7 @@ def _decide(home, data, session):
         approval = data.get("policy_approval")
         if choice == "approve" and (
                 not isinstance(approval, str) or len(approval) < 32 or len(approval) > 512):
-            raise RequestRefused("A fresh broker approval is required.")
+            raise RequestRefused("A fresh action approval is required.")
         if current["status"] == "unresolved" and choice not in ("deny", "skip", "alternative"):
             raise RequestRefused("Check the uncertain outcome; this card cannot send it again.")
         if choice not in ("approve", "deny", "skip", "defer", "alternative"):

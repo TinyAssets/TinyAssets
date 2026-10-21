@@ -1713,3 +1713,6 @@ def test_the_chapters_example_link_deposits_through_it(base: Path) -> None:
     assert result["status"] == "provisioned", result
     assert [r["token"] for r in _http_records(udir)] == [SLACK_SECRET]
     assert SLACK_SECRET not in json.dumps(result)
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

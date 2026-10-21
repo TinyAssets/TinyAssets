@@ -90,11 +90,11 @@ async def test_proxy_pins_destination_and_preserves_body_after_half_close(proxy,
     server = await asyncio.start_server(upstream, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
 
-    def resolve(host, actual_port):
+    def resolve(binding, host, actual_port):
         assert (host, actual_port) == ("example.test", port)
         return ["127.0.0.1"]  # substituted DNS policy only, real sockets below
 
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", resolve)
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", resolve)
     try:
         request = (f"POST http://example.test:{port}/path HTTP/1.1\r\n"
                    "Content-Length: 3\r\n\r\nabc").encode()
@@ -132,7 +132,7 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
     def no_upstream(*args):
         pytest.fail("unadmitted owner reached destination resolution")
 
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", no_upstream)
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", no_upstream)
     if allocated:
         proxy._owner_identities.resolve("bob", allocate=True)
         proxy._owner_identities.plans.apply("bob", tier="paid", event_created=1)
@@ -158,7 +158,7 @@ async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypat
 
     destination = await asyncio.start_server(upstream, "127.0.0.1", 0)
     port = destination.sockets[0].getsockname()[1]
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses",
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination",
                         lambda *a: ["127.0.0.1"])
 
     async def handle(reader, writer):

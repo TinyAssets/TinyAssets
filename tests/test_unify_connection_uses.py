@@ -855,3 +855,6 @@ def test_served_configure_runs_as_the_owner_on_the_bound_universe(served, monkey
     assert result == {"status": "configured"}
     assert seen == [({"universe_id": "u-setup", "payload": document}, "owner-setup")]
     assert current_identity() == before
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

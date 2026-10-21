@@ -157,3 +157,6 @@ def test_leaf_honors_remaining_deadline_instead_of_starting_a_new_budget(stub_se
             ),
             absolute_deadline=time.monotonic() + 0.04,
         )
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

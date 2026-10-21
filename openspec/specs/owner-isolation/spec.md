@@ -6,6 +6,42 @@ Define owner admission, source integrity and crash-resume requirements for the o
 
 ## Requirements
 
+### Requirement: Every egress path passes one proxy check, and credentials stay scoped
+Every outbound connection from a box SHALL pass one proxy check before the
+upstream is opened: the owner SHALL be admitted and the destination SHALL be a
+public address. That covers model HTTP, connector HTTP, public HTTP and CONNECT,
+git and destinations reached by redirect. Any public destination MAY be reached
+without a credential. An owner's credential SHALL be injected only into its own
+authorized service endpoint and operation, re-evaluated after every redirect.
+Provider credentials SHALL stay in proxy custody, and direct external
+connections from a box SHALL be impossible.
+
+#### Scenario: A private destination is refused
+- **WHEN** an admitted box issues CONNECT to a private, loopback, link-local or metadata address
+- **THEN** the proxy refuses before opening an upstream connection
+
+#### Scenario: A credential never leaves its service
+- **WHEN** a request carrying an owner's connection is redirected to another host
+- **THEN** the proxy does not inject the credential at the new host
+
+### Requirement: Owner action policy belongs to the box
+The owner box SHALL store and decide workspace file, shell and workflow rules,
+private app reads and writes, action classifications and action approvals. The
+broker SHALL retain credential scope and spending controls only. A local action
+policy request SHALL NOT require a shared policy decision. The stopped cutover
+SHALL move retained account action rules into the owner volume, retain spending
+rules in broker custody, and remove the egress section and shared action approvals.
+
+#### Scenario: Action rules do not require shared authority
+- **WHEN** the owner changes a workspace shell rule through the protected owner session
+- **THEN** the box stores and applies the rule without contacting the broker policy service
+- **AND** the broker policy document contains no owner-local action rule
+
+#### Scenario: A cutover separates policy ownership
+- **WHEN** the stopped cutover retains an account policy
+- **THEN** action rules move into the box and monetary rules and spend limits remain in the broker
+- **AND** neither policy has an egress mode or destination allowlist
+
 ### Requirement: The wake index holds only the next owner wake
 The shared wake index SHALL have exactly two columns, `owner` and `next_wake_at`.
 Schedule definitions, pause state and occurrence execution SHALL live in the box.
@@ -308,7 +344,7 @@ shared layer SHALL hold no center admission table and no per-center store.
 - **WHEN** the cutover migration runs
 - **THEN** each owner's center table is written into that owner's box from the admitted center-to-owner mapping
 - **AND** every center-keyed credential, connection, grant and policy scope is dropped and counted, and no custody is carried into the owner-keyed stores
-- **AND** owner-keyed policy keeps account rules, egress and spend controls, with a recomputed digest, next generation and migration receipt
+- **AND** owner-keyed policy keeps monetary account rules and spend controls, moves account action rules into the box, and drops egress, with a recomputed digest, next generation and migration receipt
 - **AND** owners reconnect through the door's ordinary connection flow
 
 #### Scenario: Creating a center touches no shared store

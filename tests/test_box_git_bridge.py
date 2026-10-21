@@ -64,7 +64,7 @@ def test_authenticated_git_child_overrides_public_proxy_default(git_server, monk
     def forbidden(*_):
         pytest.fail("authenticated git used public egress")
 
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", forbidden)
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", forbidden)
     core = OwnerBoxd(owner_id="alice", owner_root=s.workspace,
                      state_dir=s.tmp_path / "owner-state", relay=s.path)
     try:

@@ -5,9 +5,11 @@ import contextlib
 import sqlite3
 
 from tinyassets import rpc_frames as rf
-from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
+from tinyassets.boxes.network import EgressRefused, _destination
 from tinyassets.broker.admission import owner_lock
 from tinyassets.broker.box_admission import resolve_owner
+from tinyassets.broker.egress import destination
+from tinyassets.storage.outbound_connections import SsrfValidationError
 
 
 class PublicEgress:
@@ -41,10 +43,8 @@ class PublicEgress:
             if len(head) > 16384:
                 raise EgressRefused("proxy header exceeds bound")
             host, port, first = _destination(head)
-            if host == "engine.tinyassets.box":
-                raise EgressRefused("shared engine route is retired; use owner loopback")
             addresses = await asyncio.wait_for(
-                asyncio.to_thread(_checked_addresses, host, port), 10)
+                asyncio.to_thread(destination, (self.identities, owner), host, port), 10)
             async with asyncio.timeout(15):
                 for address in addresses:
                     try:
@@ -63,7 +63,8 @@ class PublicEgress:
             pumps = [asyncio.create_task(self._pump(reader, upstream)),
                      asyncio.create_task(self._pump(incoming, writer))]
             await asyncio.gather(*pumps)
-        except (EgressRefused, ValueError, PermissionError, LookupError, OSError, sqlite3.Error,
+        except (EgressRefused, SsrfValidationError, ValueError, PermissionError,
+                LookupError, OSError, sqlite3.Error,
                 asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
             with contextlib.suppress(OSError, TimeoutError):
                 writer.write((b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n"

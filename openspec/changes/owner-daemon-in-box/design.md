@@ -494,11 +494,27 @@ independent destination gates). Their credential-scoping parts move into the
 one credential rule above. The C11 cutover drops the egress section of each
 owner's retained policy document; account rules and spend controls stay.
 
+**As built (lane c, C7):** `broker.egress.destination` performs the admitted-owner
+lookup and pinned public-address resolution for model and connector HTTPS,
+public HTTP/CONNECT and git. Redirect hops call the same function. The shared
+credential endpoint matcher selects injection only; an unmatched endpoint uses
+no credential. Git expresses repository operations in that same matcher.
+The separate public resolver, git target gate, HTTP endpoint destination gate
+and policy egress mode are deleted. Cutover removes retained egress sections.
+
 ### C8. The owner's own action policy moves into the box (T8)
 `broker/policy.py:29` decides `workspace.files`, `workspace.shell`, workflows and
 private app reads and writes. That policy moves into the box, and the broker keeps
 credential, egress and spending policy. `policy_rules.py:69` stops delegating
 owner-local decisions to `broker/server.py:1020`.
+
+**As built (lane c, C8):** `action_policy.ActionPolicyStore` stores action rules,
+classifications, receipts and one-use approvals in the box's `.action-policy.db`.
+The protected owner route and local action callers use that store. The broker
+policy document holds monetary rules and spend limits only; stream opening no
+longer decides an owner's app action. Cutover moves retained account action rules
+into the box and drops shared one-use approvals. The owner route selects actions
+by default and spending explicitly with `scope=spend`.
 
 ### C9. Wake index is two columns (T7)
 Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, and drop the

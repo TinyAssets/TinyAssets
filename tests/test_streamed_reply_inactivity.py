@@ -294,3 +294,6 @@ def test_the_socket_says_which_bound_armed_its_read(remaining, per_op, by_total)
                               per_op_timeout=per_op)
     wrapped._arm()
     assert wrapped.bound_by_total is by_total
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

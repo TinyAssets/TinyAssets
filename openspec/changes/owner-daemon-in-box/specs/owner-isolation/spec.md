@@ -188,6 +188,24 @@ connections from a box SHALL be impossible.
 - **WHEN** a request carrying an owner's connection is redirected to another host
 - **THEN** the proxy does not inject the credential at the new host
 
+### Requirement: Owner action policy belongs to the box
+The owner box SHALL store and decide workspace file, shell and workflow rules,
+private app reads and writes, action classifications and action approvals. The
+broker SHALL retain credential scope and spending controls only. A local action
+policy request SHALL NOT require a shared policy decision. The stopped cutover
+SHALL move retained account action rules into the owner volume, retain spending
+rules in broker custody, and remove the egress section and shared action approvals.
+
+#### Scenario: Action rules do not require shared authority
+- **WHEN** the owner changes a workspace shell rule through the protected owner session
+- **THEN** the box stores and applies the rule without contacting the broker policy service
+- **AND** the broker policy document contains no owner-local action rule
+
+#### Scenario: A cutover separates policy ownership
+- **WHEN** the stopped cutover retains an account policy
+- **THEN** action rules move into the box and monetary rules and spend limits remain in the broker
+- **AND** neither policy has an egress mode or destination allowlist
+
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before
 admission reopens, services SHALL start with admission closed for every owner.
@@ -317,7 +335,7 @@ shared layer SHALL hold no center admission table and no per-center store.
 - **WHEN** the cutover migration runs
 - **THEN** each owner's center table is written into that owner's box from the admitted center-to-owner mapping
 - **AND** every center-keyed credential, connection, grant and policy scope is dropped and counted, and no custody is carried into the owner-keyed stores
-- **AND** owner-keyed policy keeps account rules, egress and spend controls, with a recomputed digest, next generation and migration receipt
+- **AND** owner-keyed policy keeps monetary account rules and spend controls, moves account action rules into the box, and drops egress, with a recomputed digest, next generation and migration receipt
 - **AND** owners reconnect through the door's ordinary connection flow
 
 #### Scenario: Creating a center touches no shared store
@@ -604,7 +622,7 @@ outbound connections at its socket seam.
 
 #### Scenario: An authenticated effector uses its grant
 - **WHEN** the owner invokes an authenticated external call
-- **THEN** its policy decision, connection grant and HTTP dispatch use the admitted box channel
+- **THEN** its action policy decision runs in the box and its connection grant and HTTP dispatch use the admitted box channel
 - **AND** revoking the grant prevents dispatch
 
 #### Scenario: Native commands use the persistent public bridge

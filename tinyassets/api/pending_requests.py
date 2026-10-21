@@ -1153,7 +1153,7 @@ def request_from_user(
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     if action.get("type") == "policy_proposal":
-        from tinyassets.broker.client import owner_policy_operation
+        from tinyassets.action_policy import owner_policy_operation
         from tinyassets.owner_centers import admitted_owner
 
         owner = admitted_owner(udir.parent, center=_uid)

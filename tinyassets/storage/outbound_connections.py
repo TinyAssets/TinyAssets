@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -837,9 +837,7 @@ class _BrokerChannel:
         self._connection_id = connection_id
         self._closed = False
 
-    def request(self, verb: str, request: object, *, inference_usage=None,
-                policy_approval=None, policy_grant_ref=None, policy_agent=None,
-                policy_task_id=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         from tinyassets.broker.ops import new_op_id
 
         if self._closed:
@@ -850,12 +848,6 @@ class _BrokerChannel:
                                     verb=verb, request=request,
                                     op_id=(inference_usage.operation_id
                                            if inference_usage is not None else new_op_id()),
-                                    **({"policy_approval": policy_approval}
-                                       if policy_approval is not None else {}),
-                                    **({"policy_grant_ref": policy_grant_ref,
-                                        "policy_agent": policy_agent,
-                                        "policy_task_id": policy_task_id}
-                                       if policy_grant_ref is not None else {}),
                                     **({"inference_usage": inference_usage.document()}
                                        if inference_usage is not None else {}))
 
@@ -921,9 +913,7 @@ class ScopedConnectionProxy:
     access_mode: str = ACCESS_EXACT
     _channel: _BrokerChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
-    def request(self, verb: str, request: object, *, inference_usage=None,
-                policy_approval=None, policy_grant_ref=None, policy_agent=None,
-                policy_task_id=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         if not _verb_within_scopes(verb, self.scopes, self.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
@@ -931,12 +921,6 @@ class ScopedConnectionProxy:
         return self._channel.request(
             verb, request, **({"inference_usage": inference_usage}
                              if inference_usage is not None else {}),
-            **({"policy_approval": policy_approval}
-               if policy_approval is not None else {}),
-            **({"policy_grant_ref": policy_grant_ref,
-                "policy_agent": policy_agent,
-                "policy_task_id": policy_task_id}
-               if policy_grant_ref is not None else {}),
         )
 
     @asynccontextmanager
@@ -1085,7 +1069,17 @@ class CredentialBlindBroker:
                 )
                 if current is None or current[1] != authority_stamp:
                     raise GrantResolutionError("outbound connection authority changed")
-        if not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
+        if resource.connection_type == "http":
+            if not isinstance(request, dict):
+                raise SsrfValidationError("outbound http request shape is not permitted")
+            canonical = _parse_canonical_https_url(
+                request.get("url"), allowed_ports=frozenset({443}))
+            endpoint = _credential_endpoint(canonical, verb, resource.allowed_endpoints,
+                                            resource.access_mode)
+            if (endpoint is None
+                    or not _verb_within_scopes(verb, resource.scopes, resource.access_mode)):
+                resource = replace(resource, auth_scheme="none")
+        elif not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -2193,7 +2187,7 @@ def _substitute_url_secret(
     """Put the vault segment where the reserved placeholder is. AFTER the allowlist.
 
     The ORDER is the design (design.md D2). The canonical parse and
-    ``_enforce_endpoint_allowlist`` have already run against the URL as the
+    ``_credential_endpoint`` have already run against the URL as the
     CALLER supplied it, carrying the literal ``{secret}`` token — so the egress
     boundary was decided with no secret material present, and no
     ``SsrfValidationError`` raised by either of them can carry one. Only then is
@@ -2671,44 +2665,19 @@ def _query_permitted(query_items: list[tuple[str, str]], endpoint: OutboundEndpo
     return True
 
 
-def _enforce_endpoint_allowlist(
+def _credential_endpoint(
     canonical: _CanonicalOutboundUrl,
     method: str,
     endpoints: tuple[OutboundEndpoint, ...],
     access_mode: str = ACCESS_EXACT,
 ) -> OutboundEndpoint | None:
-    """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
-
-    Returns the endpoint that ADMITTED the request (``None`` on a ``full``
-    connection, where the host match is the whole decision and no template was
-    consulted). The identity of the matching endpoint is what a capability-URL
-    substitution is positioned by: searching the path for the placeholder
-    instead let a caller-controlled ``{tail+}`` segment carry a reserved token
-    and receive the secret in a position the allowlist never reserved for it
-    (gpt-6-astra refute round 1, FINDING 3).
-
-    This is the real egress boundary: an EMPTY allowlist permits nothing, and a
-    URL whose host, method, path, OR query does not match a declared endpoint is
-    refused before any socket is opened.
-
-    On a ``full`` connection (full-channel-access D3.1) the owner has said the
-    universe may do anything the key itself can do on this channel, so once the
-    HOST matches one the agent declared, any path, any query and any of the five
-    verbs are admitted. What "full" does NOT touch: the caller has already
-    refused a non-HTTPS scheme, userinfo, a port other than 443, dot segments,
-    encoded separators, double encoding and a verb outside the five; and the DNS
-    resolution plus the globally-routable-address check still run after this,
-    immediately before the socket. Full is bounded to the 1-4 hosts the channel
-    declared, never to every host the credential might reach.
-    """
+    """C7: select a credential's authorized endpoint; absence injects nothing."""
     if not endpoints:
-        raise SsrfValidationError("connection has no permitted endpoints")
+        return None
     host = canonical.hostname.strip().lower()
     verb = (method or "").strip().upper()
     if normalize_access_mode(access_mode) == ACCESS_FULL:
-        if any(endpoint.host == host for endpoint in endpoints):
-            return None
-        raise SsrfValidationError("outbound host is not on the connection allowlist")
+        return next((endpoint for endpoint in endpoints if endpoint.host == host), None)
     raw_path, _, raw_query = canonical.path_qs.partition("?")
     if len(raw_query) > _SSRF_MAX_QUERY_LEN:
         raise SsrfValidationError("outbound url query is too long")
@@ -2738,7 +2707,7 @@ def _enforce_endpoint_allowlist(
         if not _query_permitted(query_items, endpoint):
             continue
         return endpoint
-    raise GrantPathRefused("outbound endpoint is not on the connection allowlist")
+    return None
 
 
 _REALTIME_VOICE_PROTOCOL = "tinyassets.voice.v1"
@@ -4050,6 +4019,7 @@ class _SsrfHardenedHttpDriver:
     """
 
     __slots__ = (
+        "_identity",
         "_allowed_ports",
         "_max_body_bytes",
         "_max_header_bytes",
@@ -4079,6 +4049,9 @@ class _SsrfHardenedHttpDriver:
         max_header_bytes: int = _SSRF_MAX_HEADER_BYTES,
         dns_timeout: float = _SSRF_DNS_TIMEOUT_SECONDS,
     ) -> None:
+        from tinyassets.broker.egress import identity
+
+        self._identity = identity.get()
         # An injected resolver is used verbatim (tests drive controlled ones);
         # the production default wraps getaddrinfo in the threaded deadline so a
         # hanging resolver is abandoned instead of escaping the budget.
@@ -4102,18 +4075,16 @@ class _SsrfHardenedHttpDriver:
         does not claim to cancel a native resolver thread instantly.
         """
         remaining = _remaining_redirect_seconds(deadline)
-        if canonical.is_ip_literal:
-            pinned = self._validator(canonical.hostname)
-        else:
-            def resolve(host: str, port: int) -> list[str]:
-                return _threaded_dns_resolve(
-                    host, port, base_resolver=self._resolver_base,
-                    timeout=min(self._dns_timeout, remaining),
-                )
+        from tinyassets.broker.egress import destination
 
-            pinned = _resolve_pinned_addresses(
-                canonical.hostname, canonical.port, resolver=resolve, validator=self._validator,
-            )[0]
+        def resolve(host: str, port: int) -> list[str]:
+            return _threaded_dns_resolve(
+                host, port, base_resolver=self._resolver_base,
+                timeout=min(self._dns_timeout, remaining),
+            )
+
+        pinned = destination(self._identity, canonical.hostname, canonical.port,
+                             resolver=resolve, validator=self._validator)[0]
         _remaining_redirect_seconds(deadline)
         return pinned
 
@@ -4248,14 +4219,10 @@ class _SsrfHardenedHttpDriver:
         )
 
     def _pin(self, canonical: _CanonicalOutboundUrl) -> str:
-        if canonical.is_ip_literal:
-            return self._validator(canonical.hostname)
-        return _resolve_pinned_addresses(
-            canonical.hostname,
-            canonical.port,
-            resolver=self._resolver,
-            validator=self._validator,
-        )[0]
+        from tinyassets.broker.egress import destination
+
+        return destination(self._identity, canonical.hostname, canonical.port,
+                           resolver=self._resolver, validator=self._validator)[0]
 
     def _prepare(
         self,
@@ -4276,23 +4243,12 @@ class _SsrfHardenedHttpDriver:
         if verb not in _SSRF_ALLOWED_METHODS:
             raise SsrfValidationError("outbound method is not permitted")
         canonical = _parse_canonical_https_url(url, allowed_ports=self._allowed_ports)
-        # The per-connection endpoint allowlist is the real egress boundary
-        # (design.md D3). When supplied, the concrete host/method/path must match
-        # a declared endpoint BEFORE any resolution/socket. ``None`` means the
-        # caller is exercising the raw transport (the driver's own adversarial
-        # tests); every production call through _TrustedNetworkDriver passes a
-        # non-empty allowlist, and an empty one refuses.
-        matched_endpoint: OutboundEndpoint | None = None
-        if allowed_endpoints is not None:
-            matched_endpoint = _enforce_endpoint_allowlist(
-                canonical, verb, allowed_endpoints, access_mode
-            )
-        # A capability URL's secret enters the path HERE and not one line
-        # earlier: everything above decided egress against the placeholder form
-        # (design.md D2), and everything below — DNS, the routable-address
-        # check, the socket — needs the real path. The host is unchanged, so the
-        # pin is unaffected. The POSITION comes from the endpoint that admitted
-        # the request, never from searching the path (astra round 1, FINDING 3).
+        # C7: destination permission never confers credential authority.
+        matched_endpoint = _credential_endpoint(
+            canonical, verb, allowed_endpoints or (), access_mode)
+        if matched_endpoint is None:
+            auth_scheme = "none"
+            bundle = ConnectionSecretBundle()
         canonical = _substitute_url_secret(
             canonical,
             auth_scheme=auth_scheme,
@@ -4342,17 +4298,10 @@ class _SsrfHardenedHttpDriver:
         # payload after the scheme, and an OAuth signature encoded and decoded.
         sensitive = list(bundle.secret_values()) + _redirect_auth_material(auth_headers)
         encoded_body = _encode_request_body(body, request_headers)
-        approved_sources = tuple(
-            endpoint for endpoint in (allowed_endpoints or ())
-            if endpoint.redirect_mode == "public_https_get"
-        )
-        redirect_enabled = False
-        if verb == "GET" and body is None and approved_sources:
-            try:
-                _enforce_endpoint_allowlist(canonical, verb, approved_sources, ACCESS_EXACT)
-                redirect_enabled = True
-            except SsrfValidationError:
-                pass  # Full access alone does not opt in arbitrary source paths.
+        redirect_endpoint = _credential_endpoint(
+            canonical, verb, tuple(endpoint for endpoint in (allowed_endpoints or ())
+                                   if endpoint.redirect_mode == "public_https_get"))
+        redirect_enabled = bool(verb == "GET" and body is None and redirect_endpoint)
         return _PreparedRequest(
             verb=verb, canonical=canonical, headers=request_headers,
             auth_headers=auth_headers, sensitive=sensitive, body=encoded_body,
@@ -4440,13 +4389,7 @@ class _SsrfHardenedHttpDriver:
             crossed_origin = crossed_origin or (target.hostname, target.port) != initial_origin
             headers = {"Accept": "*/*", "User-Agent": "TinyAssets-download"}
             if not crossed_origin:
-                authorized = False
-                try:
-                    _enforce_endpoint_allowlist(target, "GET", allowed_endpoints, access_mode)
-                    authorized = True
-                except SsrfValidationError:
-                    pass  # Same origin is not itself authorization for another path.
-                if authorized:
+                if _credential_endpoint(target, "GET", allowed_endpoints, access_mode):
                     auth = _ssrf_auth_headers(
                         auth_scheme, bundle, header_name=header_name, method="GET", url=target_url,
                     )
@@ -4651,9 +4594,6 @@ class _TrustedNetworkDriver:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
             raise ProxyRequestError("outbound http connections are not enabled")
-        if not allowed_endpoints:
-            # No allowlist ⇒ no reachable destination (the real egress boundary).
-            raise SsrfValidationError("connection has no permitted endpoints")
         if not isinstance(request, dict):
             raise SsrfValidationError("outbound http request shape is not permitted")
         # The capability-URL binding, re-checked against the row as the broker
@@ -5582,9 +5522,10 @@ class ConnectionLedger:
                 if not url:
                     continue
                 canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
-                _enforce_endpoint_allowlist(
+                if _credential_endpoint(
                     canonical, spec.verb, resource.allowed_endpoints, resource.access_mode,
-                )
+                ) is None:
+                    raise GrantPathRefused("capability is outside the credential service")
             if preview:
                 return capability  # Same current grant/endpoint checks, no metadata write.
             connection.execute(

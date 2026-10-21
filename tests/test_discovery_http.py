@@ -23,7 +23,7 @@ from tinyassets.storage.outbound_connections import (
     ConnectionLedger,
     CredentialBlindBroker,
     ScopedConnectionProxy,
-    _enforce_endpoint_allowlist,
+    _credential_endpoint,
     _parse_canonical_https_url,
 )
 
@@ -106,6 +106,7 @@ def rig(tmp_path, monkeypatch):
         db=tmp_path / "outbound.db",
         definition=definition,
         calls=[],
+        auth=[],
         starts=[],
         closes=0,
         response={"status": 200, "body": '{"data":[]}'},
@@ -117,9 +118,10 @@ def rig(tmp_path, monkeypatch):
     def network(**kwargs):
         wire = kwargs["request"]
         canonical = _parse_canonical_https_url(wire["url"], allowed_ports=frozenset({443}))
-        _enforce_endpoint_allowlist(
+        _credential_endpoint(
             canonical, kwargs["verb"], kwargs["allowed_endpoints"], kwargs["access_mode"]
         )
+        state.auth.append(kwargs["auth_scheme"])
         state.calls.append((kwargs["verb"], wire))
         return state.response
 
@@ -193,16 +195,18 @@ def test_exact_get_uses_existing_resolver_and_closes_without_mutation(rig):
     assert rig.definition.model == "unchanged-legacy-pin"
 
 
-def test_full_channel_keeps_its_existing_host_boundary(rig):
+def test_full_channel_scopes_credentials_to_its_service(rig):
     with rig.ledger._connect() as raw:
         raw.execute(
             "UPDATE outbound_connections SET access_mode = 'full', scopes_json = '[\"POST\"]'"
         )
     another_path = "https://models.example.com/other/catalogue?version=2"
     assert rig.read(url=another_path) == {"data": []}
-    with pytest.raises(ProviderUnavailableError):
-        rig.read(url="https://another.example.com/other/catalogue")
-    assert rig.calls == [("GET", {"url": another_path})] and rig.closes == 1
+    other = "https://another.example.com/other/catalogue"
+    assert rig.read(url=other) == {"data": []}
+    assert rig.calls == [("GET", {"url": another_path}), ("GET", {"url": other})]
+    assert rig.auth == ["bearer", "none"]
+    assert rig.closes == 2
 
 
 @pytest.mark.parametrize("response", [None, [], {"error": "synthetic-private-details"}])
@@ -275,9 +279,6 @@ def test_current_rows_not_just_definition_must_authorize_read(rig, table, column
 @pytest.mark.parametrize(
     "url",
     [
-        "https://attacker.example/api/models/user",
-        "https://models.example.com/custom/inference",
-        URL + "?undeclared=1",
         URL + "#fragment",
         "http://models.example.com/api/models/user",
         "https://user:secret@models.example.com/api/models/user",
@@ -289,7 +290,7 @@ def test_current_rows_not_just_definition_must_authorize_read(rig, table, column
         URL + "/" + "x" * 2048,
     ],
 )
-def test_unauthorized_or_noncanonical_url_opens_no_proxy(rig, url):
+def test_noncanonical_url_opens_no_proxy(rig, url):
     with pytest.raises(ProviderUnavailableError):
         rig.read(url=url)
     assert not rig.starts
@@ -321,9 +322,10 @@ def test_real_broker_passes_current_narrowed_endpoints_to_network(rig):
             raw.execute("UPDATE outbound_connections SET allowed_endpoints_json = '[]'")
 
     rig.before_dispatch = narrow
-    with pytest.raises(ProviderUnavailableError, match="transport failed"):
-        rig.read()
-    assert rig.closes == 1 and not rig.calls
+    assert rig.read() == {"data": []}
+    assert rig.closes == 1
+    assert rig.calls == [("GET", {"url": URL})]
+    assert rig.auth == ["none"]
 
 
 @pytest.mark.parametrize("field", ["fail_request", "fail_close"])
@@ -427,3 +429,13 @@ def test_pre_registration_discovery_is_owner_scoped_across_centers(rig):
         db_path=rig.db, grant_id="grant-discovery", owner_user_id="owner",
         universe_id="other", url=URL) == {"data": []}
     assert len(rig.calls) == 1
+
+
+@pytest.mark.parametrize("url", ["https://another.example/api/models/user",
+                                 "https://models.example.com/custom/inference",
+                                 URL + "?undeclared=1"])
+def test_public_destination_outside_credential_scope_succeeds_without_auth(rig, url):
+    assert rig.read(url=url) == {"data": []}
+    assert rig.calls == [("GET", {"url": url})]
+    assert rig.auth == ["none"]
+    assert rig.closes == 1

@@ -460,3 +460,6 @@ def test_redirect_stream_reports_each_connection():
         assert _drain(stream) == b"ok" and len(connected) == 2
     finally:
         fixture.close()
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

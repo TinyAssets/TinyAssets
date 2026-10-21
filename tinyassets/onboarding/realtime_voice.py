@@ -92,8 +92,7 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
         resolve_current_serving_provider_authority,
     )
     from tinyassets.storage.outbound_connections import (
-        _enforce_endpoint_allowlist,
-        _parse_canonical_https_url,
+            _parse_canonical_https_url,
     )
 
     base = universe_dir.parent
@@ -160,15 +159,10 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
     if capability is None:
         raise RealtimeVoiceError("capability_not_declared", 409)
     try:
-        canonical = _parse_canonical_https_url(
+        _parse_canonical_https_url(
             capability.session_url, allowed_ports=frozenset({443})
         )
-        _enforce_endpoint_allowlist(
-            canonical,
-            "POST",
-            view.allowed_endpoints,
-            view.access_mode,
-        )
+
     except Exception as exc:
         raise RealtimeVoiceError("voice_capability_invalid", 409) from exc
     return VoiceBinding(

@@ -53,7 +53,6 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.admission import owner_call
@@ -436,10 +435,9 @@ class _Connection:
                     "op": "BOX_RESULT", "result": {"principal": self._box_owner}}))
                 return
             if op == "OWNER_POLICY":
-                if doc.get("action") not in {"read", "receipts", "classify", "decide", "proposal",
-                                           "write", "issue_once"}:
+                if doc.get("action") not in {"read", "receipts", "decide", "proposal", "write"}:
                     raise rf.FrameError("unsupported box policy operation")
-                if doc["action"] in {"write", "issue_once"} and "session_proof" not in doc:
+                if doc["action"] == "write" and "session_proof" not in doc:
                     raise rf.FrameError("protected policy changes require shared door proof")
                 doc = {**doc, "principal": self._box_owner}
                 answer = await asyncio.to_thread(self._owner_policy, doc)
@@ -847,30 +845,6 @@ class _Connection:
                     "op", "action", "principal", proof_key, "expected_generation", "policy"}:
                 result = store.write(owner, doc[proof_key], doc["expected_generation"],
                                      doc["policy"]).projection()
-            elif action == "classify" and set(doc) == {
-                    "op", "action", "principal", "connection", "method", "path"}:
-                action_class, operation = store.classify(
-                    owner, owner, doc["connection"], doc["method"], doc["path"])
-                result = {"action_class": action_class, "operation": operation}
-            elif action == "issue_once" and set(doc) == {
-                    "op", "action", "principal", proof_key, "expected_generation",
-                    "grant_id", "connection_id", "verb", "request",
-                    "destination"}:
-                self._server._ledger_for(owner).authorize_exact(
-                     grant_id=doc["grant_id"],
-                    connection_id=doc["connection_id"])
-                raw = doc["request"]
-                if not isinstance(raw, dict) or not isinstance(doc["destination"], str):
-                    raise PolicyRefused("invalid approved request")
-                wire = {"url": doc["destination"]}
-                for name in ("headers", "body", "header_name"):
-                    if name in raw:
-                        wire[name] = raw[name]
-                digest = request_digest(grant_id=doc["grant_id"],
-                                        connection_id=doc["connection_id"],
-                                        verb=doc["verb"], request=wire)
-                result = store.issue_once(owner, doc[proof_key], doc["expected_generation"],
-                                          digest)
             elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
                 request = doc["request"]
                 if not isinstance(request, dict) or set(request) != {
@@ -884,7 +858,7 @@ class _Connection:
             rf.control(rf.CONNECTION, answer)
             return answer
         except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError) as exc:
-            if action in {"write", "issue_once"}:
+            if action == "write":
                 try:
                     self._server._policy_store.receipt_refusal(
                         owner, action, {k: v for k, v in doc.items()
@@ -946,11 +920,17 @@ class _Connection:
                 if self._closed.is_set():
                     raise PermissionError("connection cancelled")
                 require_admitted(self._server._owner_identities, doc["principal"])
-                result = local_operation(self._server._ledger_for(doc["principal"]),
-                                    principal=doc["principal"],
-                                    command_center=doc["principal"],
-                                    document=doc["document"],
-                                    committed_via="door" if self._role == OWNER else "box")
+                from tinyassets.broker.egress import identity
+
+                binding = identity.set((self._server._owner_identities, doc["principal"]))
+                try:
+                    result = local_operation(self._server._ledger_for(doc["principal"]),
+                                        principal=doc["principal"],
+                                        command_center=doc["principal"],
+                                        document=doc["document"],
+                                        committed_via="door" if self._role == OWNER else "box")
+                finally:
+                    identity.reset(binding)
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer
@@ -1103,34 +1083,6 @@ class _Connection:
                                          connection=connection_id, source=connection_id)
                             self._server._ops.finish(namespace, op_id, "refused")
                             return "refused"
-                        raw_path = request.get("url") or request.get("path") or "/"
-                        parsed = urlsplit(raw_path)
-                        path = parsed.path or "/"
-                        action_class, operation = store.classify(
-                            principal, command_center, connection_id, verb, path)
-                        host = parsed.hostname or getattr(resource, "destination", "")
-                        policy = store.decide(
-                            principal, center=command_center, action_class=action_class,
-                            connection=connection_id, operation=operation, destination=host)
-                        if policy["decision"] != "allow":
-                            origin = (parsed.scheme or "https") + "://" + host.lower()
-                            if parsed.port and parsed.port != 443:
-                                origin += f":{parsed.port}"
-                            standing = (policy["decision"] in ("ask", "hold")
-                                        and store.allows_grant(
-                                            principal, center=command_center,
-                                            generation=policy["generation"],
-                                            decision_id=doc.get("policy_grant_ref"),
-                                            action_class=action_class, connection=connection_id,
-                                            operation=operation, origin=origin,
-                                            agent=doc.get("policy_agent"),
-                                            task_id=doc.get("policy_task_id") or ""))
-                            once = (policy["decision"] in ("ask", "hold") and not standing
-                                    and store.consume_once(principal, doc.get("policy_approval"),
-                                                           digest, policy["generation"]))
-                            if not (standing or once):
-                                self._server._ops.finish(namespace, op_id, "refused")
-                                return "refused"
                     except Exception:  # noqa: BLE001 - policy unavailability never permits a send
                         self._server._ops.finish(namespace, op_id, "refused")
                         return "refused"
@@ -1148,8 +1100,14 @@ class _Connection:
                 with self._server._streams_lock:
                     self._server._streams[(self._key, stream_id)] = stream
                 try:
-                    dispatch = self._server._dispatch_for(principal, command_center, grant_id,
-                                                          resource)
+                    from tinyassets.broker.egress import identity
+
+                    binding = identity.set((self._server._owner_identities, principal))
+                    try:
+                        dispatch = self._server._dispatch_for(
+                            principal, command_center, grant_id, resource)
+                    finally:
+                        identity.reset(binding)
                     threading.Thread(
                         target=self._run, args=(stream, dispatch, grant_id, verb, request,
                                                 doc.get("idle_s"), doc.get("inference_usage")),
@@ -1212,8 +1170,10 @@ class _Connection:
 
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
              request: dict[str, Any], idle_s: Any, inference_usage=None) -> None:
+        from tinyassets.broker.egress import identity
         from tinyassets.broker.owner_sources import BOX_REQUEST
 
+        binding = identity.set((self._server._owner_identities, stream.namespace))
         box_token = BOX_REQUEST.set(self._role == BOX)
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
@@ -1290,6 +1250,7 @@ class _Connection:
                 "side_effect_state": "unknown" if stream.marked else "none", **extra,
             }), stream, final=True)
             BOX_REQUEST.reset(box_token)
+            identity.reset(binding)
 
     def _pump_body(self, stream: _Stream, upstream: Any) -> None:
         buffered = bytearray()

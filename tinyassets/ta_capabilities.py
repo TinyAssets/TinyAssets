@@ -248,10 +248,11 @@ class Capabilities:
                 return {"error": "owner policy unavailable"}
             if arguments:
                 return {"error": "policy show takes no arguments"}
-            from tinyassets.broker.client import owner_policy_operation
+            from tinyassets.action_policy import owner_policy_operation
 
             return {"result": await asyncio.to_thread(
-                owner_policy_operation, self.root.parent, self.context.owner, "read")}
+                owner_policy_operation, self.root.parent, self.context.owner, "read",
+                center=self.root.name)}
         if name == "policy:propose":
             if not self._bound_policy_owner():
                 return {"error": "owner policy unavailable"}
@@ -259,7 +260,7 @@ class Capabilities:
                     or type(arguments["expected_generation"]) is not int
                     or not isinstance(arguments["policy"], dict)):
                 return {"error": "policy proposal requires a generation and document"}
-            from tinyassets.broker.client import owner_policy_operation
+            from tinyassets.action_policy import owner_policy_operation
 
             encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
             if len(encoded.encode()) > 12000:

@@ -74,18 +74,18 @@ def _session(root, owner, cookie):
                     json.dumps({"user_id": owner}), time.time() + 3600))
 
 
-def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_path):
+def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(
+        tmp_path, local_action_policy):
     legacy = _legacy(tmp_path, "alpha", "hand_off")
     original = legacy.read_bytes()
     cookie = "interactive-cookie-" + "a" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, admissions(tmp_path))
-    store.bootstrap()
+    store = local_action_policy
 
     before = store.read("alice")
     assert before.generation == 1
     assert before.document["entries"] == []
-    assert store._path("alice").parent.parent.parent == tmp_path / ".broker"
+    assert store._path("alice") == tmp_path / ".action-policy.db"
     assert store.decide("alice", center="alpha", action_class="app.write")["decision"] == "allow"
     assert legacy.read_bytes() == original
 
@@ -96,10 +96,10 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_pa
     with pytest.raises(PolicyRefused):
         store.write("alice", "an-agent-token-" + "x" * 32, before.generation, changed)
     with pytest.raises(PolicyRefused):
-        store.write("bob", cookie, before.generation, changed)
+        store.write("bob", local_action_policy.proof, before.generation, changed)
     assert store.read("alice").generation == 1
 
-    after = store.write("alice", cookie, before.generation, changed)
+    after = store.write("alice", local_action_policy.proof, before.generation, changed)
     assert after.generation == 2 and after.digest != before.digest
     assert store.decide("alice", center="alpha", action_class="app.write")["decision"] == "ask"
     assert store.decide("alice", center="beta", action_class="app.write")["decision"] == "ask"
@@ -107,16 +107,13 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_pa
     with sqlite3.connect(store._path("alice")) as db:
         rows = db.execute("SELECT kind,session_id,old_digest,new_digest FROM receipts "
                           "WHERE kind='write'").fetchall()
-    assert rows == [("write", hashlib.sha256(cookie.encode()).hexdigest(),
+    assert rows == [("write", local_action_policy.proof["session_hash"],
                      before.digest, after.digest)]
     assert legacy.read_bytes() == original
 
 
-def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path):
-    identities = admissions(tmp_path)
-    store = PolicyStore(tmp_path, identities)
-    store.bootstrap()
-    drive(identities.admit("alice", routing=projection(identities.path)))
+def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path, local_action_policy):
+    store = local_action_policy
     legacy = _legacy(tmp_path, "new", "hand_off")
     original = legacy.read_bytes()
     assert store.decide("alice", center="new", action_class="app.write")["decision"] == "allow"
@@ -203,20 +200,21 @@ def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_pa
     assert any(row["rule"] == "spend_amount_required" for row in store.receipts("alice"))
 
 
-def test_once_approval_is_exact_and_stale_generation_refused(tmp_path):
+def test_once_approval_is_exact_and_stale_generation_refused(tmp_path, local_action_policy):
     _legacy(tmp_path, "alpha", "ask_first")
     cookie = "interactive-cookie-" + "b" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, admissions(tmp_path))
-    store.bootstrap()
+    store = local_action_policy
     current = store.read("alice")
     digest = "sha256:" + "1" * 64
-    token = store.issue_once("alice", cookie, current.generation, digest)["token"]
+    token = store.issue_once("alice", local_action_policy.proof,
+                             current.generation, digest)["token"]
     assert not store.consume_once("alice", token, "sha256:" + "2" * 64, current.generation)
     assert store.consume_once("alice", token, digest, current.generation)
     assert not store.consume_once("alice", token, digest, current.generation)
-    token = store.issue_once("alice", cookie, current.generation, digest)["token"]
-    store.write("alice", cookie, current.generation, current.document)
+    token = store.issue_once("alice", local_action_policy.proof,
+                             current.generation, digest)["token"]
+    store.write("alice", local_action_policy.proof, current.generation, current.document)
     assert not store.consume_once("alice", token, digest, current.generation)
 
 
@@ -232,8 +230,7 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     peer = object.__new__(_Connection)
     peer._server = SimpleNamespace(_policy_store=store)
     document = json.loads(json.dumps(current.document))
-    document["egress"]["mode"] = "allowlist"
-    document["egress"]["allowlist"] = ["example.com"]
+    document["spend"]["transaction"] = 50
     request = {"op": "OWNER_POLICY", "action": "write", "principal": "alice",
                "expected_generation": current.generation, "policy": document}
     attempts = (
@@ -262,12 +259,11 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     assert (refusals, writes) == (7, 1)
 
 
-def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path):
+def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, local_action_policy):
     _legacy(tmp_path, "alpha", "ask_first")
     cookie = "interactive-cookie-" + "e" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, admissions(tmp_path))
-    store.bootstrap()
+    store = local_action_policy
     current = store.read("alice")
     document = json.loads(json.dumps(current.document))
     grant = {"owner": "alice", "home": "alpha", "agent": "main",
@@ -277,7 +273,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path):
     document["entries"].append({"scope": "account", "table": "approval_grants", "values": {
         "id": 5, "agent": "main", "record_kind": "preapproval",
         "decision_id": "grant-5", "grant_json": json.dumps(grant)}})
-    written = store.write("alice", cookie, current.generation, document)
+    written = store.write("alice", local_action_policy.proof, current.generation, document)
     query = {"center": "alpha", "generation": written.generation,
              "decision_id": "grant-5", "action_class": "app.write",
              "connection": "conn", "operation": "POST",
@@ -286,15 +282,16 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path):
     assert not store.allows_grant("alice", **{**query, "agent": "worker"})
     assert store.allows_grant("alice", **{**query, "center": "beta"})
     edited = json.loads(json.dumps(document))
-    edited["egress"] = {"mode": "allowlist", "allowlist": ["example.com"]}
-    later = store.write("alice", cookie, written.generation, edited)
+    edited["entries"].append({"scope": "account", "table": "review_on",
+                              "values": {"agent": "worker"}})
+    later = store.write("alice", local_action_policy.proof, written.generation, edited)
     assert store.allows_grant("alice", **{**query, "generation": later.generation})
-    edited["entries"].pop()
-    revoked = store.write("alice", cookie, later.generation, edited)
+    edited["entries"].pop(0)
+    revoked = store.write("alice", local_action_policy.proof, later.generation, edited)
     assert not store.allows_grant("alice", **{**query, "generation": revoked.generation})
 
 
-def test_egress_and_spend_caps_stay_under_approvals(tmp_path):
+def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
     _legacy(tmp_path, "alpha", "do")
     cookie = "interactive-cookie-" + "f" * 32
     _session(tmp_path, "alice", cookie)
@@ -302,14 +299,12 @@ def test_egress_and_spend_caps_stay_under_approvals(tmp_path):
     store.bootstrap()
     current = store.read("alice")
     document = json.loads(json.dumps(current.document))
-    document["egress"] = {"mode": "allowlist", "allowlist": ["example.com"]}
     document["spend"].update({"transaction": 50, "monthly": 90,
                               "ask_above": 30, "source_ceilings": {"model-a": 45}})
     document["entries"].append({"scope": "account", "table": "rules", "values": {
         "agent": "main", "action_class": "spend", "behaviour": "do"}})
     store.write("alice", cookie, current.generation, document)
-    assert store.decide("alice", center="alpha", action_class="app.write",
-                        destination="unlisted.example")["rule"] == "egress_allowlist"
+    assert set(store.read("alice").document) == {"entries", "spend"}
     base = {"center": "alpha", "action_class": "spend", "destination": "example.com",
             "source": "model-a", "approved": True}
     assert store.decide("alice", **base, amount=0)["decision"] == "deny"
@@ -346,3 +341,24 @@ def test_ta_policy_commands_have_only_read_and_propose(tmp_path):
     with pytest.raises(ValueError, match="a call requires"):
         ta_cli.main(["policy", "write", "--json", "{}"], dispatch=dispatch,
                     load_extensions=False)
+
+
+@pytest.fixture
+def local_action_policy(tmp_path, monkeypatch):
+    import os
+
+    from tinyassets import owner_runtime
+    from tinyassets.action_policy import ActionPolicyStore
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    runtime = owner_runtime.OwnerRuntime("alice", os.getuid(), tmp_path, os.getpid(), None)
+    monkeypatch.setattr(owner_runtime, "_runtime", runtime)
+    proof = {"session_hash": "a" * 64}
+    session = {**proof, "identity_json": json.dumps({"user_id": "alice"}),
+               "expires_at": time.time() + 3600}
+    with identity_context(Identity(user_id="alice", username="alice",
+                                   metadata={"router_owner_session": session})):
+        store = ActionPolicyStore(tmp_path / "alpha")
+        store.proof = proof
+        yield store

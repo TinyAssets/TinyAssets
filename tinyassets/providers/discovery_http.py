@@ -27,7 +27,6 @@ from tinyassets.storage.outbound_connections import (
     SsrfValidationError,
     _broker_channel,
     _canonical_request_url,
-    _enforce_endpoint_allowlist,
     _parse_canonical_https_url,
     _resource_from_row,
     _verb_within_scopes,
@@ -142,7 +141,6 @@ def read_granted_discovery_document(
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError("invalid URL")
         canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
-        _enforce_endpoint_allowlist(canonical, "GET", view.allowed_endpoints, view.access_mode)
     except (SsrfValidationError, ValueError):
         raise ModelDiscoveryUnavailable("missing_discovery_scope") from None
 

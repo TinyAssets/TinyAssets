@@ -376,3 +376,6 @@ def test_a_later_round_asks_only_for_what_is_left_of_the_turn(agent):
     first, second = (wire[1]["reply_budget_s"] for wire in agent.wires)
     assert first <= agent.config.absolute_cap_s
     assert second <= first - 0.3
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

@@ -71,6 +71,8 @@ def test_cutover_drops_custody_and_retains_account_policy(cutover):  # noqa: F81
                 "action_class": "money.move", "behaviour": "hand_off"}},
             {"scope": "a1", "table": "rules", "values": {
                 "action_class": "app.write", "behaviour": "ask_first"}},
+            {"scope": "account", "table": "rules", "values": {
+                "action_class": "workspace.shell", "behaviour": "ask_first"}},
         ],
         "egress": {"mode": "allowlist", "allowlist": ["service.invalid"]},
         "spend": {"daily": 100, "monthly": 200, "transaction": 10,
@@ -115,10 +117,13 @@ def test_cutover_drops_custody_and_retains_account_policy(cutover):  # noqa: F81
                 assert db.execute(f'SELECT count(*) FROM "{table}"').fetchone() == (0,)
     assert Centers(contents(store) / "300001").active() == ["a1", "a2"]
     assert Centers(contents(store) / "300002").active() == ["b1", "b2"]
+    with sqlite3.connect(contents(store) / "300001/.action-policy.db") as db:
+        local = json.loads(db.execute("SELECT document FROM policy").fetchone()[0])
+        assert local == {"entries": document["entries"][2:]}
     with sqlite3.connect(policy_path) as db:
         generation, digest, raw = db.execute(
             "SELECT generation,digest,document FROM policy").fetchone()
-        expected = {**document, "entries": document["entries"][:1]}
+        expected = {"entries": document["entries"][:1], "spend": document["spend"]}
         assert (generation, digest, json.loads(raw)) == (5, _digest(expected), expected)
         assert db.execute("SELECT kind,owner,old_digest,new_digest,generation,outcome "
                           "FROM receipts").fetchall() == [

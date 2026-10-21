@@ -135,12 +135,12 @@ def test_owner_command_http_and_connect_reach_local_origin(
 
     monkeypatch.setattr(native.proxy, "serve", public)
 
-    def addresses(host, actual_port):
+    def addresses(binding, host, actual_port):
         assert (host, actual_port) == ("example.test", port)
         checked.append((host, actual_port))
         return ["127.0.0.1"]  # same DNS-policy seam as broker egress tests
 
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", addresses)
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", addresses)
     if tunnel:
         code = ("import http.client; "
                 "c=http.client.HTTPConnection('127.0.0.1',3128,timeout=3); "
@@ -167,11 +167,11 @@ def test_native_bridge_preserves_body_and_response_after_half_close(
 ):
     port, seen = http_origin
 
-    def addresses(host, actual_port):
+    def addresses(binding, host, actual_port):
         assert (host, actual_port) == ("example.test", port)
         return ["127.0.0.1"]
 
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", addresses)
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", addresses)
     request = (f"POST http://example.test:{port}/upload HTTP/1.1\r\n"
                "Content-Length: 3\r\n\r\nabc").encode()
     done = run(native, "import socket; c=socket.create_connection(('127.0.0.1',3128),3); "
@@ -290,11 +290,11 @@ def test_provisioning_package_child_inherits_proxy_and_uses_broker(
 
     port, seen = http_origin
 
-    def addresses(host, actual_port):
+    def addresses(binding, host, actual_port):
         assert (host, actual_port) == ("example.test", port)
         return ["127.0.0.1"]
 
-    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", addresses)
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", addresses)
     package = '{"name":"empty","version":"1.0.0"}'
     lock = '{"name":"empty","version":"1.0.0","lockfileVersion":3,"packages":{}}'
     plan = admit_node(package, lock)

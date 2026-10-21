@@ -21,7 +21,7 @@ from tinyassets.storage.outbound_connections import (
     ConnectionLedger,
     CredentialBlindBroker,
     ScopedConnectionProxy,
-    _enforce_endpoint_allowlist,
+    _credential_endpoint,
     _parse_canonical_https_url,
 )
 
@@ -59,7 +59,7 @@ def source(rig, monkeypatch):
     def network(**kwargs):
         request = kwargs["request"]
         canonical = _parse_canonical_https_url(request["url"], allowed_ports=frozenset({443}))
-        _enforce_endpoint_allowlist(canonical, kwargs["verb"], kwargs["allowed_endpoints"],
+        _credential_endpoint(canonical, kwargs["verb"], kwargs["allowed_endpoints"],
                                     kwargs["access_mode"])
         if kwargs.get("on_connect") is not None:
             kwargs["on_connect"](None)

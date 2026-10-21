@@ -205,8 +205,7 @@ class BrokerClient:
         """Forward policy requests; the broker verifies write cookies itself."""
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        if action not in {"read", "write", "receipts", "proposal", "classify",
-                          "decide", "issue_once"}:
+        if action not in {"read", "write", "receipts", "proposal", "decide"}:
             raise ValueError("unsupported owner policy operation")
         wire = {"op": "OWNER_POLICY", "action": action, "principal": self._principal,
                 **fields}
@@ -372,11 +371,7 @@ class BrokerClient:
     @observed('connected_service', owner=lambda self, **kwargs: self._principal)
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
-                inference_usage: dict[str, Any] | None = None,
-                policy_approval: str | None = None,
-                policy_grant_ref: str | None = None,
-                policy_agent: str | None = None,
-                policy_task_id: str | None = None) -> dict[str, Any]:
+                inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
 
         generation, token = self._fence()
         open_doc = {
@@ -387,11 +382,6 @@ class BrokerClient:
         }
         if inference_usage is not None:
             open_doc["inference_usage"] = inference_usage
-        if policy_approval is not None:
-            open_doc["policy_approval"] = policy_approval
-        if policy_grant_ref is not None:
-            open_doc.update(policy_grant_ref=policy_grant_ref, policy_agent=policy_agent,
-                            policy_task_id=policy_task_id)
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
         from tinyassets.storage.outbound_connections import (

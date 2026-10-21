@@ -352,3 +352,6 @@ def test_the_existing_classes_are_unchanged(row: str, expected: str) -> None:
     """The new branch runs first, so this is the regression that proves it only
     claims rows that carry an edge code."""
     assert _classify_external_write(row) == expected
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

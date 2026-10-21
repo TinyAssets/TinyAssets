@@ -5,8 +5,6 @@ import socket
 import time
 from urllib.parse import urlsplit
 
-REFUSED_PORTS = frozenset({25, 465, 587})
-_RESOLVE_TIMEOUT_S = 10.0
 _HEAD_LIMIT = 16 * 1024
 _HEAD_TIMEOUT_S = 30.0
 
@@ -36,27 +34,6 @@ def _destination(head: bytes) -> tuple[str, int, bytes | None]:
     first = f"{method} {path} {version}\r\n".encode("ascii")
     return parts.hostname, parts.port or 80, first + rest
 
-
-def _checked_addresses(host: str, port: int) -> list[str]:
-    """Every address ``host`` resolves to, each proven globally routable."""
-    from tinyassets.storage.outbound_connections import (
-        SsrfValidationError,
-        _classify_global_address,
-        _make_default_resolver,
-        _resolve_pinned_addresses,
-    )
-
-    if port in REFUSED_PORTS:
-        raise EgressRefused(f"port {port} (outbound mail) is not reachable from a universe")
-    if not 0 < port < 65536:
-        raise EgressRefused(f"port {port} is not a valid port")
-    try:
-        return _resolve_pinned_addresses(
-            host, port, resolver=_make_default_resolver(_RESOLVE_TIMEOUT_S),
-            validator=_classify_global_address,
-        )
-    except SsrfValidationError as exc:
-        raise EgressRefused(f"{host}: {exc}") from None
 
 def _read_head(conn: socket.socket) -> bytes:
     """Read a request head under one deadline, including trickled bytes."""

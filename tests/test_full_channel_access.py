@@ -222,13 +222,13 @@ def _driver():
 
 def _enforce(url, method, endpoints, mode):
     from tinyassets.storage.outbound_connections import (
-        _enforce_endpoint_allowlist,
+        _credential_endpoint,
         _parse_allowed_endpoints,
         _parse_canonical_https_url,
     )
 
     canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
-    _enforce_endpoint_allowlist(
+    return _credential_endpoint(
         canonical, method, _parse_allowed_endpoints(list(endpoints)), mode
     )
 
@@ -245,7 +245,7 @@ def _enforce(url, method, endpoints, mode):
     ],
 )
 def test_full_admits_any_path_query_and_verb_on_a_declared_host(url, method):
-    _enforce(url, method, [GITHUB_ENDPOINT], ACCESS_FULL)
+    assert _enforce(url, method, [GITHUB_ENDPOINT], ACCESS_FULL) is not None
 
 
 @pytest.mark.parametrize(
@@ -257,26 +257,23 @@ def test_full_admits_any_path_query_and_verb_on_a_declared_host(url, method):
     ],
 )
 def test_exact_still_refuses_what_it_always_refused(url, method):
-    with pytest.raises(SsrfValidationError):
-        _enforce(url, method, [GITHUB_ENDPOINT], ACCESS_EXACT)
+    assert _enforce(url, method, [GITHUB_ENDPOINT], ACCESS_EXACT) is None
 
 
 def test_full_is_bounded_to_the_declared_hosts(tmp_path):
-    with pytest.raises(SsrfValidationError, match="host is not on"):
-        _enforce("https://evil.example/x", "GET", [GITHUB_ENDPOINT], ACCESS_FULL)
+    assert _enforce("https://evil.example/x", "GET", [GITHUB_ENDPOINT], ACCESS_FULL) is None
 
 
 def test_full_admits_nothing_when_the_connection_declares_nothing():
     from tinyassets.storage.outbound_connections import (
-        _enforce_endpoint_allowlist,
+        _credential_endpoint,
         _parse_canonical_https_url,
     )
 
     canonical = _parse_canonical_https_url(
         "https://api.github.com/x", allowed_ports=frozenset({443})
     )
-    with pytest.raises(SsrfValidationError, match="no permitted endpoints"):
-        _enforce_endpoint_allowlist(canonical, "GET", (), ACCESS_FULL)
+    assert _credential_endpoint(canonical, "GET", (), ACCESS_FULL) is None
 
 
 @pytest.mark.parametrize(
@@ -1062,18 +1059,18 @@ def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
         owner_user_id="user-1",
     )
 
-    sent: list[str] = []
+    sent = []
 
     broker = CredentialBlindBroker(
         ledger,
         resolve_credential=lambda _ref, _ctype=None: "ghp_" + "x" * 30,
-        network_request=lambda **kw: sent.append(kw["verb"]) or {"status": 200},
+        network_request=lambda **kw: (
+            sent.append((kw["verb"], kw["auth_scheme"])) or {"status": 200}),
     )
 
-    # Exact: the stored verbs are the grant, so POST is refused.
-    with pytest.raises(PermissionError, match="outside the granted"):
-        broker.dispatch("grant-1", "POST", {"path": "/x"})
-    assert sent == []
+    # C7: an operation outside credential scope reaches the public web without auth.
+    broker.dispatch("grant-1", "POST", {"url": "https://api.github.com/x"})
+    assert sent == [("POST", "none")]
 
     endpoints_json, scopes_json = ledger.policy_json("conn-1")
     assert ledger.set_access_mode(
@@ -1086,12 +1083,12 @@ def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
     upgraded = ledger._get_connection_resource("conn-1")
     assert upgraded.scopes == ("GET",)
     # ...and the same POST now reaches the network.
-    broker.dispatch("grant-1", "POST", {"path": "/x"})
-    assert sent == ["POST"]
+    broker.dispatch("grant-1", "POST", {"url": "https://api.github.com/x"})
+    assert sent == [("POST", "none"), ("POST", "bearer")]
 
     # A git scope is still not an HTTP verb, whatever the mode.
     with pytest.raises(PermissionError, match="outside the granted"):
-        broker.dispatch("grant-1", "git_read:octocat/hello", {"path": "/x"})
+        broker.dispatch("grant-1", "git_read:octocat/hello", {"url": "https://api.github.com/x"})
 
 
 def test_a_replacement_key_with_an_identical_policy_does_not_inherit_the_yes(tmp_path):
@@ -1178,3 +1175,6 @@ def test_full_answer_with_incomplete_snapshot_refuses_before_broker(
     }))
     assert result == {"error": "connection_conflict", "resource": "connection"}
     assert _ledger(base, "alice").access_mode(deposited["connection_id"]) == ACCESS_EXACT
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

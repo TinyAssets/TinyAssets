@@ -1385,3 +1385,6 @@ def test_replace_refusal_shows_the_input_where_old_stops_matching():
     assert out is None and "fetch the file" in why and "closest" not in why
     assert aec._nearest_window("abc", "abcdef") is None      # under the 8-char floor
     assert aec._nearest_window("x" * 50 + "needle-here-yes", "needle-here-no").startswith("x")
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

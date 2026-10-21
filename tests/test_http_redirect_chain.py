@@ -507,3 +507,6 @@ def test_authority_database_wait_is_bounded_by_the_chain_deadline(tmp_path):
     finally:
         blocker.rollback()
         blocker.close()
+
+
+from tests.support.egress import admitted_egress  # noqa: E402, F401

@@ -1,4 +1,4 @@
-"""Preview predicates and read-only matching for broker-held owner grants."""
+"""Preview predicates and read-only matching for box-local owner grants."""
 
 import time
 from contextlib import closing
@@ -89,7 +89,7 @@ def predicate(envelope, scope):
 
 
 def matches(home, packet, owner, agent):
-    """Find a candidate; the broker checks the signed policy before dispatch."""
+    """Find a candidate; the box checks its current policy before dispatch."""
     from tinyassets import bound_requests as bound
 
     if not owner or not agent:
