@@ -94,6 +94,7 @@ ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
 DAEMON_ENV_FILE="${TINYASSETS_DAEMON_ENV_FILE-/etc/tinyassets/daemon.env}"
 DAEMON_ENV_SOURCE="${TINYASSETS_DAEMON_ENV_SOURCE-/etc/tinyassets/env}"
 BROKER_ENV_FILE="${TINYASSETS_BROKER_ENV_FILE-${DAEMON_ENV_FILE%/*}/broker.env}"
+BOXHOSTD_ENV_FILE="${TINYASSETS_BOXHOSTD_ENV_FILE-${DAEMON_ENV_FILE%/*}/boxhostd.env}"
 COMPOSE_ASSIGNMENT=""
 COMPOSE_TRIMMED=""
 ATOMIC_TEMP=""
@@ -817,6 +818,7 @@ write_daemon_env() {
     read_file_exactly "${DAEMON_ENV_SOURCE}" \
         || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
     local rest="${READ_CONTENT}" line selected=0 out="# GENERATED OAuth broker environment"$'\n'
+    local box_out="# GENERATED boxhostd environment: the snapshot remote only"$'\n'
     QUOTE_OPEN=""
     while [ -n "${rest}" ]; do
         if [[ "${rest}" == *$'\n'* ]]; then
@@ -842,6 +844,7 @@ write_daemon_env() {
                   "${ENV_KEY}" == BACKUP_DEST ]]; then
                 selected=1
                 out+="${line}"$'\n'
+                if [ "${ENV_KEY}" = BACKUP_DEST ]; then box_out+="${line}"$'\n'; fi
             fi
         fi
     done
@@ -860,6 +863,8 @@ write_daemon_env() {
     fi
     out+="RCLONE_CONFIG=/etc/tinyassets/broker-rclone.conf"$'\n'
     ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )
+    # boxhostd reads only its snapshot remote; root's HOME keeps root's rclone config.
+    ( ENV_FILE="${BOXHOSTD_ENV_FILE}"; atomic_install "${box_out}"; assert_readable )
     echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
 }
 

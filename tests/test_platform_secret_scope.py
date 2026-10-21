@@ -256,6 +256,30 @@ def test_render_removes_every_compose_spelling_of_a_forbidden_name(tmp_path):
 
 
 @_POSIX_SHELL
+@pytest.mark.verifies("owner-daemon-in-box:C2")
+def test_boxhostd_receives_only_its_snapshot_remote(tmp_path):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text(
+        "HOME=/app\n"
+        "BACKUP_DEST=spaces:bucket/path\n"
+        "STRIPE_SECRET_KEY=placeholder-stripe\n"
+        "WORKOS_API_KEY=placeholder-workos\n",
+        encoding="utf-8",
+    )
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    box = tmp_path / "boxhostd.env"
+    assert _assigned(box) == {"BACKUP_DEST"}
+    assert "spaces:bucket/path" in box.read_text(encoding="utf-8")
+    unit = (Path(__file__).resolve().parents[1] / "deploy/boxhostd.service").read_text()
+    assert "EnvironmentFile=/etc/tinyassets/boxhostd.env\n" in unit
+    assert "EnvironmentFile=/etc/tinyassets/env" not in unit
+
+
+@_POSIX_SHELL
 def test_render_refuses_a_forbidden_value_that_continues_past_its_line(tmp_path):
     source = tmp_path / "env"
     daemon = tmp_path / "daemon.env"

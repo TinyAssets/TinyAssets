@@ -7,6 +7,8 @@ ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 
 [Service]
 Environment=PYTHONPATH=/opt/tinyassets/boxhostd
+# BACKUP_DEST only; never the container env file, whose HOME would hide root's rclone config.
+EnvironmentFile=/etc/tinyassets/boxhostd.env
 Type=simple
 ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh
 ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd.py
