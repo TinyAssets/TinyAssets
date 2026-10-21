@@ -18,9 +18,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq rclone
-          sudo groupadd -g 1001 tinyassets
-          sudo useradd -u 1001 -g 1001 -m tinyassets
-          sudo groupadd -g 1100 ta-work
+          sudo groupadd -o -g 1001 tinyassets
+          sudo groupadd -o -g 1100 ta-work
           sudo install -d /opt/tinyassets/deploy /opt/tinyassets-host-uptime /etc/tinyassets
           sudo cp deploy/compose.yml /opt/tinyassets/compose.yml
           sudo cp deploy/vector.yaml deploy/vector-betterstack.yaml deploy/vector-entrypoint.sh /opt/tinyassets/deploy/
