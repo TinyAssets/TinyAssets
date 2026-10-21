@@ -65,9 +65,22 @@ def build(root: Path) -> dict:
         INSERT INTO agent_turns VALUES {turns};
     """)
     sql(root / ".runs.db", """
-        CREATE TABLE runs (run_id TEXT, owner_user_id TEXT, queue_universe_id TEXT);
-        INSERT INTO runs VALUES ('run-a1','alice','a1'),('run-b1','bob','b1'),
-                                ('run-c1','carol','c1');
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY, branch_def_id TEXT NOT NULL,
+            run_name TEXT NOT NULL DEFAULT '', thread_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued', actor TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL DEFAULT '', inputs_json TEXT NOT NULL DEFAULT '{}',
+            output_json TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '',
+            last_node_id TEXT NOT NULL DEFAULT '', started_at REAL NOT NULL,
+            finished_at REAL, provider_used TEXT, model TEXT, token_count INTEGER,
+            daemon_id TEXT, runtime_instance_id TEXT, worker_id TEXT,
+            branch_task_id TEXT, queue_universe_id TEXT
+        );
+        INSERT INTO runs (run_id,branch_def_id,thread_id,actor,owner_user_id,started_at,
+                          queue_universe_id) VALUES
+            ('run-a1','branch-a1','thread-a1','alice','alice',1,'a1'),
+            ('run-b1','branch-b1','thread-b1','bob','bob',1,'b1'),
+            ('run-c1','branch-c1','thread-c1','carol','carol',1,'c1');
     """)
     sql(root / ".automations.db", """
         CREATE TABLE automations (automation_id TEXT, owner_principal_id TEXT, universe_id TEXT);
