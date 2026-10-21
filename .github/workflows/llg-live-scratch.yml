@@ -35,9 +35,9 @@ jobs:
 
           ThreadingHTTPServer(('169.254.169.254', 80), Handler).serve_forever()
           PY
-          sudo sh -c 'nohup python3 /tmp/live-like-metadata.py >/tmp/live-like-metadata.log 2>&1 &'
-          if ! curl --noproxy '*' --fail --silent --retry 10 --retry-delay 1 http://169.254.169.254/metadata/v1/id; then
-            sudo cat /tmp/live-like-metadata.log
+          sudo systemd-run --unit=tinyassets-live-like-metadata --property=Restart=on-failure /usr/bin/python3 /tmp/live-like-metadata.py
+          if ! curl --noproxy '*' --fail --silent --retry 10 --retry-connrefused --retry-delay 1 http://169.254.169.254/metadata/v1/id; then
+            sudo journalctl -u tinyassets-live-like-metadata --no-pager --lines 30
             ip addr show docker0
             sudo ss -lntp | head -30
             exit 1
