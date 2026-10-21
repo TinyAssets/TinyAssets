@@ -165,10 +165,14 @@ install -d -m 0755 /var/lib/boxhostd /var/lib/tinyassets-deploy /var/backups/tin
 # --- what the live revision's own deploy installed: pinned gVisor, idle
 #     boxhostd, the mounted box store and its check script, by that revision's
 #     installer. This change's deploy then upgrades them, as on the droplet.
-boxstage="$(mktemp -d)"
-git -C "$repo" archive "${BASE_REVISION}" deploy | tar -x -C "$boxstage"
-bash "$boxstage/deploy/install-boxhostd-preflight.sh"
-rm -rf -- "$boxstage"
+#     Its ship list, copied flat into one directory, as that deploy did.
+boxtree="$(mktemp -d)"; boxstage="$(mktemp -d)"
+git -C "$repo" archive "${BASE_REVISION}" deploy scripts | tar -x -C "$boxtree"
+(cd "$boxtree" && python3 scripts/boxhostd_install_files.py) > "$boxtree/ship-list"
+[ -s "$boxtree/ship-list" ]
+while IFS= read -r f; do cp -- "$boxtree/$f" "$boxstage/"; done < "$boxtree/ship-list"
+bash "$boxstage/install-boxhostd-preflight.sh"
+rm -rf -- "$boxtree" "$boxstage"
 
 systemctl daemon-reload
 systemctl enable tinyassets-daemon >/dev/null 2>&1
