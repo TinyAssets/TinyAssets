@@ -35,8 +35,13 @@ jobs:
 
           ThreadingHTTPServer(('169.254.169.254', 80), Handler).serve_forever()
           PY
-          sudo nohup python3 /tmp/live-like-metadata.py >/dev/null 2>&1 &
-          curl --noproxy '*' --fail --silent --retry 10 --retry-delay 1 http://169.254.169.254/metadata/v1/id
+          sudo sh -c 'nohup python3 /tmp/live-like-metadata.py >/tmp/live-like-metadata.log 2>&1 &'
+          if ! curl --noproxy '*' --fail --silent --retry 10 --retry-delay 1 http://169.254.169.254/metadata/v1/id; then
+            sudo cat /tmp/live-like-metadata.log
+            ip addr show docker0
+            sudo ss -lntp | head -30
+            exit 1
+          fi
           sudo groupadd -o -g 1001 tinyassets
           sudo groupadd -o -g 1100 ta-work
           sudo install -d /opt/tinyassets/deploy /opt/tinyassets-host-uptime /etc/tinyassets
