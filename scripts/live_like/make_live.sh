@@ -26,6 +26,21 @@ case "${1:-}" in
     test -f "$compose"
     root="$(volume_root)"
     test -f "$root/.layout.json"
+    if test ! -f "$root/release-state.json"; then
+      docker pull -q "$image" >/dev/null
+      revision="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
+      [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+      python3 - "$root/release-state.json" "$revision" "$image" <<'PY'
+import datetime, json, pathlib, sys
+path, revision, image = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+path.write_text(json.dumps({
+    "git_sha": revision, "image_tag": revision[:12], "image_ref": image,
+    "deployed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}) + "\n", encoding="utf-8")
+PY
+      chown 1001:1100 "$root/release-state.json"
+      chmod 0664 "$root/release-state.json"
+    fi
     install -d -m 0755 "$state" /etc/tinyassets /run/tinyassets-boxhostd/broker
     if test ! -f "$env_file"; then
       printf 'TINYASSETS_IMAGE=%s\nTINYASSETS_MCP_CANARY_URL=http://127.0.0.1:8001/mcp\nUNIVERSE_SERVER_DEV_USER=alice\nBACKUP_DEST=spaces:tinyassets-live-like/workflow-backups\n' "$image" > "$env_file"

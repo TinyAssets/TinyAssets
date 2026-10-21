@@ -72,7 +72,7 @@ jobs:
         run: |
           sudo bash scripts/live_like/s3_remote.sh up
           sudo python3 scripts/live_like/fixture.py build --volume tinyassets-data
-          printf 'TINYASSETS_IMAGE=%s\nCLOUDFLARE_TUNNEL_TOKEN=synthetic-invalid\nBACKUP_DEST=spaces:tinyassets-live-like/workflow-backups\n' '${{ steps.image.outputs.ref }}' | sudo tee /etc/tinyassets/env >/dev/null
+          printf 'TINYASSETS_IMAGE=%s\nCLOUDFLARE_TUNNEL_TOKEN=synthetic-invalid\nTINYASSETS_WIKI_CANARY_TOKEN=%s\nBACKUP_DEST=spaces:tinyassets-live-like/workflow-backups\n' '${{ steps.image.outputs.ref }}' "$(openssl rand -hex 32)" | sudo tee /etc/tinyassets/env >/dev/null
           sudo bash scripts/live_like/make_live.sh start '${{ steps.image.outputs.ref }}'
           ! sudo grep -q '^CLOUDFLARE_TUNNEL_TOKEN=' /etc/tinyassets/daemon.env
           sudo bash scripts/live_like/make_live.sh check
@@ -96,6 +96,7 @@ jobs:
         run: |
           docker ps -a
           docker logs tinyassets-daemon --tail 100 || true
+          docker inspect --format '{{json .State.Health}}' tinyassets-daemon || true
           docker logs tinyassets-broker --tail 100 || true
           sudo journalctl -u tinyassets-backup.timer --no-pager --lines 50 || true
       - name: Stop disposable workload
