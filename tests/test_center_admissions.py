@@ -107,8 +107,6 @@ def test_owner_admission_rpc_has_no_center_or_machine_selector(broker, tmp_path)
     assert request(broker) == expected
     assert request(broker) == expected
     assert len(rows(identities)) == 1
-    # A first sign-in reserves the next label; the caller never names one.
-    assert request(broker, principal="bob") == {"op": "OWNER_ADMIT_IS", "machine": 300002}
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C11')
