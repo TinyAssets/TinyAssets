@@ -796,6 +796,12 @@ def archive_rehearsal(image, archive, *, store_bytes, from_committed=False, cach
             required(venue.migration(step))
             baseline = venue.manifests()
             passed(step, manifests=len(baseline[1]) + 1)
+            if cache:
+                # Save the verified committed generation as soon as it exists:
+                # every later retest resumes at host_startup without waiting
+                # for the restore and crash-resume proofs below.
+                venue.committed_state(cache / "state.tar.gz")
+                (cache / "report.json").write_text(json.dumps(report))
             step = "restore_before_write"
             venue.restore()
             passed(step, comparisons=1)
@@ -830,9 +836,6 @@ def archive_rehearsal(image, archive, *, store_bytes, from_committed=False, cach
                     required(venue.migration("preflight"))
                     required(venue.migration("census"))
             passed(step, interruptions=2, comparisons=2)
-            if cache:
-                venue.committed_state(cache / "state.tar.gz")
-                (cache / "report.json").write_text(json.dumps(report))
         step = "host_startup"
         venue.start_stack()
         passed(step, services=2)
