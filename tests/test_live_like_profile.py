@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -84,3 +86,55 @@ def test_new_create_table_fails_drift(tmp_path: Path) -> None:
     errors = shape_profile.diff(committed, fresh)
     assert any("new CREATE TABLE missing from profile: newly_added_table" in e for e in errors)
     assert any("new SQLite store missing from profile: .newly_added.db" in e for e in errors)
+
+
+def test_profile_reports_all_drift_without_leaking_it(tmp_path: Path) -> None:
+    with sqlite3.connect(tmp_path / ".automations.db") as db:
+        db.executescript(
+            "CREATE TABLE universe_leases (universe_id TEXT, holder TEXT, "
+            "expires_at TEXT, run_id TEXT, secret_extra TEXT, another_secret INTEGER);"
+            "CREATE TABLE private_surprise (private_token TEXT);"
+        )
+    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
+        db.executescript("CREATE TABLE second_surprise (private_key TEXT);")
+    output = tmp_path.parent / "redacted-profile.json"
+    run = subprocess.run(
+        [
+            sys.executable,
+            str(shape_profile.REPO / "scripts/live_like/shape_profile.py"),
+            "profile",
+            "--data",
+            str(tmp_path),
+            "--out",
+            str(output),
+            "--check-redaction",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode != 0
+    assert run.stdout == ""
+    assert run.stderr.splitlines() == [
+        ".automations.db/private_surprise: 1 unreviewed columns",
+        ".automations.db/private_surprise: unreviewed table",
+        ".automations.db/universe_leases: 2 unreviewed columns",
+        ".tinyassets.db/second_surprise: 1 unreviewed columns",
+        ".tinyassets.db/second_surprise: unreviewed table",
+    ]
+    payload = output.read_text(encoding="utf-8")
+    for secret in ("private_surprise", "second_surprise", "secret_extra", "another_secret"):
+        assert secret not in payload
+    shape_profile.check_redaction(json.loads(payload))
+
+
+def test_universe_leases_migration_is_reviewed(tmp_path: Path) -> None:
+    assert shape_profile.source_schema()["universe_leases"]["run_id"] == "TEXT"
+    with sqlite3.connect(tmp_path / ".automations.db") as db:
+        db.executescript(
+            "CREATE TABLE universe_leases (universe_id TEXT, holder TEXT, "
+            "expires_at TEXT, run_id TEXT);"
+        )
+    result = shape_profile.profile(tmp_path)
+    assert "run_id" in result["stores"][".automations.db"]["tables"]["universe_leases"]["columns"]
+    shape_profile.check_redaction(result)

@@ -114,13 +114,46 @@ def bucket(value: int) -> str:
 
 
 def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str]]:
-    """Find literal CREATE statements; keep vocabulary, never evaluate source."""
+    """Find literal CREATE statements and literal schema migrations without evaluating source."""
     found: dict[str, dict[str, str]] = {}
     sources = sorted((*source.rglob("*.py"), *source.rglob("*.sql")))
     if (REPO / "scripts/live_like/fixture.py").is_file():
         sources.append(REPO / "scripts/live_like/fixture.py")
     for path in sources:
         code = path.read_text(encoding="utf-8")
+        tree = ast.parse(code) if path.suffix == ".py" else None
+        migrations: list[tuple[str, str, str]] = []
+        replacements: set[tuple[str, str]] = set()
+        if tree is not None:
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    if any(
+                        isinstance(target, ast.Name) and target.id == "_MIGRATIONS"
+                        for target in targets
+                    ):
+                        try:
+                            literal = ast.literal_eval(node.value)
+                        except (ValueError, TypeError):
+                            continue
+                        migrations.extend(
+                            item
+                            for item in literal
+                            if isinstance(item, tuple)
+                            and len(item) == 3
+                            and all(isinstance(value, str) for value in item)
+                        )
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "replace"
+                    and len(node.args) == 2
+                    and all(
+                        isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                        for arg in node.args
+                    )
+                ):
+                    replacements.add((node.args[0].value, node.args[1].value))
         for match in CREATE.finditer(code):
             table = match.group(1)
             # SQL is frequently assembled from adjacent Python string literals.
@@ -158,6 +191,13 @@ def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str
                 found[table] = columns
             else:
                 found.setdefault(table, {})
+        for template, actual in replacements:
+            if template in found:
+                found.setdefault(actual, {}).update(found[template])
+        for table, column, declaration in migrations:
+            kind = re.match(r"(INTEGER|TEXT|REAL|BLOB|NUMERIC)\b", declaration, re.I)
+            if table in found and kind:
+                found[table][column] = kind.group(1).upper()
     return found
 
 
@@ -293,7 +333,9 @@ def _file_shapes(
     return output
 
 
-def profile(root: Path, source: Path = REPO / "tinyassets") -> dict:
+def profile(
+    root: Path, source: Path = REPO / "tinyassets", *, findings: list[str] | None = None
+) -> dict:
     root = root.resolve(strict=True)
     schema = source_schema(source)
     stores = known_stores(schema)
@@ -308,6 +350,7 @@ def profile(root: Path, source: Path = REPO / "tinyassets") -> dict:
             ):
                 centers.setdefault(center, set()).add(principal)
     databases = set()
+    drift: list[str] = []
     for name, store in stores.items():
         candidates = (
             list(root.glob(name.replace("<owner>", "*"))) if "<owner>" in name else [root / name]
@@ -321,16 +364,29 @@ def profile(root: Path, source: Path = REPO / "tinyassets") -> dict:
                     if table.startswith("sqlite_"):
                         continue
                     if table not in store["tables"]:
-                        raise ValueError(f"unreviewed table in {name}")
+                        drift.append(f"{name}/{table}: unreviewed table")
+                        quoted_table = '"' + table.replace('"', '""') + '"'
+                        column_count = len(
+                            db.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+                        )
+                        if column_count:
+                            drift.append(f"{name}/{table}: {column_count} unreviewed columns")
+                        continue
                     columns = {
                         row[1]: row[2].upper()
                         for row in db.execute(f'PRAGMA table_info("{table}")')
                     }
                     allowed = set(schema.get(table, {})) | set(store["tables"][table]["columns"])
-                    if not set(columns) <= allowed:
-                        raise ValueError(f"unreviewed columns in {name}/{table}")
+                    unreviewed = set(columns) - allowed
+                    if unreviewed:
+                        drift.append(f"{name}/{table}: {len(unreviewed)} unreviewed columns")
                     count = db.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
-                    store["tables"][table] = {"columns": columns, "rows": bucket(count)}
+                    store["tables"][table] = {
+                        "columns": {
+                            column: kind for column, kind in columns.items() if column in allowed
+                        },
+                        "rows": bucket(count),
+                    }
     per_owner = Counter(next(iter(v)) for v in centers.values() if len(v) == 1)
     universes = 0
     main = root / ".tinyassets.db"
@@ -340,7 +396,7 @@ def profile(root: Path, source: Path = REPO / "tinyassets") -> dict:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='universes'"
             ).fetchone():
                 universes = db.execute("SELECT count(*) FROM universes").fetchone()[0]
-    return {
+    result = {
         "version": 1,
         "counts": {
             "owners": bucket(len(owners)),
@@ -352,6 +408,11 @@ def profile(root: Path, source: Path = REPO / "tinyassets") -> dict:
         "code_tables": sorted(schema),
         "code_stores": source_stores(source),
     }
+    if drift:
+        if findings is None:
+            raise ValueError("\n".join(sorted(set(drift))))
+        findings.extend(sorted(set(drift)))
+    return result
 
 
 def check_redaction(document: dict, source: Path = REPO / "tinyassets") -> None:
@@ -488,9 +549,12 @@ def main() -> None:
     compare.add_argument("--source", type=Path, default=REPO / "tinyassets")
     args = parser.parse_args()
     if args.command == "profile":
-        result = profile(args.data)
+        findings: list[str] = []
+        result = profile(args.data, findings=findings)
         check_redaction(result)
         args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if findings:
+            parser.exit(1, "\n".join(findings) + "\n")
     elif args.command == "check-redaction":
         check_redaction(json.loads(args.profile.read_text(encoding="utf-8")))
     else:
