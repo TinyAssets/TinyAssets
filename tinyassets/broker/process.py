@@ -83,6 +83,22 @@ class _Dispatchers:
         return dispatch
 
 
+def supplementary_groups() -> list[int]:
+    """Groups beyond the primary gid. Docker always lists a named user's own
+    primary group among the supplementary ones; it grants nothing the primary
+    gid does not already grant."""
+    return sorted(set(os.getgroups()) - {os.getgid()})
+
+
+def role_identity_retired(fields: dict[str, str]) -> bool:
+    return (os.getresuid() == (1002, 1002, 1002)
+            and os.getresgid() == (1002, 1002, 1002)
+            and supplementary_groups() == [1102]
+            and all(int(fields[key], 16) == 0 for key in
+                    ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+            and int(fields["NoNewPrivs"]) == 1)
+
+
 async def serve(args: argparse.Namespace) -> None:
     import ctypes
 
@@ -91,11 +107,7 @@ async def serve(args: argparse.Namespace) -> None:
     _sanitize_child_environment()  # no TLS key logging, no ambient proxies
     fields = dict(line.split(":", 1) for line in Path(
         "/proc/self/status").read_text().splitlines())
-    if (os.getresuid() != (1002, 1002, 1002)
-            or os.getresgid() != (1002, 1002, 1002) or os.getgroups() != [1102]
-            or any(int(fields[key], 16) != 0 for key in
-                   ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
-            or int(fields["NoNewPrivs"]) != 1):
+    if not role_identity_retired(fields):
         raise RuntimeError("broker role identity is not retired")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:

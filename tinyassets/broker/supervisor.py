@@ -25,6 +25,17 @@ class BrokerUidSplitRequired(RuntimeError):
     """The daemon cannot reach the bootstrapped broker over its authenticated boundary."""
 
 
+def daemon_identity_split(fields: dict[str, str]) -> bool:
+    """The daemon role: uid/gid 1001, supplementary groups exactly the work,
+    broker-IPC and broker-readable groups (beyond its own primary group, which
+    Docker always lists for a named user), no capabilities, no new privileges."""
+    return (os.getresuid() == (1001, 1001, 1001) and os.getresgid() == (1001, 1001, 1001)
+            and sorted(set(os.getgroups()) - {os.getgid()}) == [1100, 1101, 1102]
+            and not any(int(fields[key], 16) for key in
+                        ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+            and int(fields["NoNewPrivs"]) == 1)
+
+
 def _peer(sock: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
 
@@ -43,11 +54,7 @@ def _protect_daemon() -> None:
     finally:
         os.close(directory)
     fields = dict(line.split(':', 1) for line in raw.decode().splitlines())
-    if (os.getresuid() != (1001, 1001, 1001) or os.getresgid() != (1001, 1001, 1001)
-            or os.getgroups() != [1100, 1101, 1102]
-            or any(int(fields[key], 16) for key in
-                   ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
-            or int(fields["NoNewPrivs"]) != 1):
+    if not daemon_identity_split(fields):
         raise BrokerUidSplitRequired("credential broker needs the per-role uid split")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:

@@ -265,13 +265,11 @@ jobs:
         # an @sha256: ref); `.Config.Image` could be a mutable tag.
         run: bash deploy/deploy_host.sh capture-current-image
 
-      - name: Live preflight (read-only)
+      - name: Finalize previous rollback, then live preflight
         id: live_preflight
-        # Before the first host mutation, the conditions only a live host has:
-        # the C6 cutover refused five times on them (an unprovisioned canary,
-        # a stray file in the box store, sidecar sockets, disk above the
-        # low-water mark from leftover candidate harnesses). Inspects only;
-        # scripts/live_preflight.py names each refusal.
+        # Finalize only a proven old-layout rollback, then inspect live host
+        # conditions before any new deployment mutation. Cleanup and refusal
+        # share cutover_control's image/layout/owner-box guards.
         env:
           CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
         run: bash deploy/deploy_host.sh live-preflight

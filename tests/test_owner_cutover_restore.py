@@ -32,14 +32,13 @@ def cutover(tmp_path, source):
     return control, backup
 
 
-def test_cutover_consumption_is_durable_before_open_and_cannot_be_reinitialized(cutover,
-                                                                             monkeypatch):
+def test_cutover_consumption_is_durable_before_open_and_archived(cutover, monkeypatch):
     import os
     import stat
 
-    from tinyassets.cutover_control import CutoverRefused, initialize, open_admission, rollback
+    from tinyassets.cutover_control import CutoverRefused, open_admission, rollback
 
-    control, backup = cutover
+    control, _ = cutover
     events = []
     flushed = []
     fsync = os.fsync
@@ -57,14 +56,16 @@ def test_cutover_consumption_is_durable_before_open_and_cannot_be_reinitialized(
 
     open_admission(control, open_ordinary=open_ordinary)
     assert events == ["open"]
-    with pytest.raises(CutoverRefused, match="consumed"):
+    assert not control.exists()
+    archived, = control.parent.glob(control.name + "-committed-*")
+    assert json.loads((archived / "state.json").read_text())["state"] == "consumed"
+    assert flushed == [False, True, True]
+    with pytest.raises(CutoverRefused):
         open_admission(control, open_ordinary=lambda: pytest.fail("reopened"))
     with pytest.raises(CutoverRefused, match="consumed"):
-        rollback(control, stop_new=lambda: pytest.fail("stopped"),
+        rollback(archived, stop_new=lambda: pytest.fail("stopped"),
                  install_old=lambda _: pytest.fail("restored"),
                  start_old=lambda _: pytest.fail("started"))
-    with pytest.raises(FileExistsError):
-        initialize(control, backup=backup, old_image="old-image-digest")
 
 
 def test_cutover_pretraffic_rollback_stops_restores_exact_old_layout_then_starts(cutover, source,
@@ -158,8 +159,10 @@ open_admission(Path(sys.argv[1]), open_ordinary=lambda: print('opened', flush=Tr
         output, error = process.communicate(timeout=10)
         assert process.returncode == 0, error
         assert output.strip() == "opened"
-        assert control.stat().st_ino == inode
-        assert json.loads((control / "state.json").read_text())["state"] == "consumed"
+        assert not control.exists()
+        archived, = control.parent.glob(control.name + "-committed-*")
+        assert archived.stat().st_ino == inode
+        assert json.loads((archived / "state.json").read_text())["state"] == "consumed"
     finally:
         os.close(descriptor)
         if process.poll() is None:
@@ -182,47 +185,6 @@ def test_interruption_after_consumption_keeps_both_paths_closed(cutover):
     with pytest.raises(CutoverRefused):
         rollback(control, stop_new=lambda: pytest.fail("stopped"), install_old=None,
                  start_old=None)
-
-
-def _shim(directory, name, body):
-    path = directory / name
-    path.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
-    path.chmod(0o755)
-
-
-def test_live_cutover_rollback_installs_old_layout_and_only_then_restarts(cutover, source,
-                                                                      tmp_path, monkeypatch):
-    import os
-
-    from tinyassets.cutover_control import rollback_live
-
-    control, _ = cutover
-    root = tmp_path / "live"
-    shutil.copytree(source, root)
-    (root / ".layout.json").write_text(json.dumps({"state": "stable", "box_layout": "owner-box"}))
-    shutil.rmtree(root / "a1")
-    commands = tmp_path / "commands"
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("CUTOVER_TEST_LOG", str(commands))
-    _shim(binaries, "systemctl", 'printf "systemctl %s\\n" "$*" >> "$CUTOVER_TEST_LOG"\n')
-    _shim(binaries, "docker", 'printf "docker %s\\n" "$*" >> "$CUTOVER_TEST_LOG"\n'
-          '[ "$*" = "ps -q --filter volume=tinyassets-data" ]\n')
-    deploy = binaries / "old-deploy"
-    _shim(binaries, deploy.name, 'printf "deploy %s\\n" "$*" >> "$CUTOVER_TEST_LOG"\n'
-          f'test -f "{root}/a1/notes.txt"\n'
-          f'python -c "import json; assert json.load(open(\'{control}/state.json\'))'
-          '[\'state\'] == \'consumed\'"\n')
-    rollback_live(control, root, deploy_script=deploy)
-    assert _fingerprint(root) == _fingerprint(source)
-    assert commands.read_text().splitlines() == [
-        "systemctl stop tinyassets-daemon.service boxhostd.service",
-        "docker ps -q --filter volume=tinyassets-data",
-        "docker ps -q --filter volume=tinyassets-data",
-        "deploy --restore-bundle old-image-digest",
-    ]
-    assert not list(tmp_path.glob(".cutover-rollback-*"))
 
 
 @pytest.mark.parametrize("interruption", ["copied_tree", "box_records", "removed_host_tree"])

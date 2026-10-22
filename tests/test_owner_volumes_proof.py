@@ -32,6 +32,36 @@ def command(*args, **kwargs):
     return result.stdout.strip()
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_migration_container_finds_spaces_with_non_root_image_home():
+    """The production container flags must defeat the image-baked HOME."""
+    assert sys.platform == "linux" and os.geteuid() == 0, "root Linux oracle required"
+    base = os.environ["TA_REHEARSAL_BASE_IMAGE"]
+    name = "ta-migration-rclone-" + uuid.uuid4().hex[:12]
+    image = name + ":proof"
+    try:
+        command("docker", "build", "-t", image, "-",
+                input=f"FROM {base}\nENV HOME=/home/tinyassets\n")
+        command("docker", "volume", "create", name)
+        command("docker", "run", "--rm", "-v", f"{name}:/root/.config/rclone",
+                "--entrypoint", "sh", image, "-c",
+                "printf '[spaces]\\ntype = local\\n' > /root/.config/rclone/rclone.conf")
+        flags = ["--rm", "--cap-drop", "ALL", "--user", "0", "--privileged",
+                 "--security-opt", "no-new-privileges=true", "--network", "bridge",
+                 "--memory=2g", "--memory-swap=2g",
+                 "--tmpfs", "/tmp:rw,size=512m,mode=1777",
+                 "-v", f"{name}:/root/.config/rclone:ro", "--entrypoint", "rclone"]
+        missing = command("docker", "run", *flags, image, "listremotes")
+        assert "spaces:" not in missing, "the old HOME lookup must fail in this proof"
+        found = command("docker", "run", *flags, "-e",
+                        "RCLONE_CONFIG=/root/.config/rclone/rclone.conf", image,
+                        "listremotes")
+        assert "spaces:" in found.splitlines()
+    finally:
+        subprocess.run(["docker", "volume", "rm", "-f", name], capture_output=True)
+        subprocess.run(["docker", "image", "rm", "-f", image], capture_output=True)
+
+
 @pytest.mark.verifies(
     'owner-daemon-in-box:C1', 'owner-daemon-in-box:C2',
     'owner-daemon-in-box:C10', 'owner-daemon-in-box:T4',

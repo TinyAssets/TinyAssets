@@ -80,22 +80,23 @@ PY
       sleep 2
     done
     probe_mcp
-    # A held engine-style socket under the runtime directory reproduces the
-    # special inode that stopped the first C6 backup snapshot.
-    socket="$root/.universe-sidecars/a1/engine.sock"
+    # The former production egress proxy used this sidecar directory and
+    # egress-<pid>.sock name. Hold that restorable runtime inode for the snapshot.
     cat > "$state/sidecar.py" <<'PY'
-import pathlib, signal, socket, sys, time
-path = pathlib.Path(sys.argv[1])
+import os, pathlib, signal, socket, sys, time
+directory, receipt = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+path = directory / f"egress-{os.getpid()}.sock"
 path.unlink(missing_ok=True)
 server = socket.socket(socket.AF_UNIX)
 server.bind(str(path))
 server.listen(4)
+receipt.write_text(str(path), encoding="utf-8")
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 while True:
     time.sleep(1)
 PY
     systemd-run --unit=tinyassets-live-like-sidecar --property=Restart=on-failure \
-      /usr/bin/python3 "$state/sidecar.py" "$socket"
+      /usr/bin/python3 "$state/sidecar.py" "$root/.universe-sidecars/a1" "$state/socket-path"
     docker exec -d "$container" /opt/venv/bin/python -B -c '
 import sqlite3, time
 db = sqlite3.connect("/data/.tinyassets.db", timeout=10)
@@ -114,7 +115,11 @@ while True:
       test "$(docker inspect -f '{{.State.Running}}' tinyassets-broker)" = true
     fi
     probe_mcp
-    test -S "$root/.universe-sidecars/a1/engine.sock"
+    test -f "$state/socket-path"
+    socket="$(cat "$state/socket-path")"
+    test "$(dirname "$socket")" = "$root/.universe-sidecars/a1"
+    [[ "$(basename "$socket")" =~ ^egress-[0-9]+\.sock$ ]]
+    test -S "$socket"
     systemctl is-active --quiet tinyassets-live-like-sidecar.service
     systemctl is-active --quiet tinyassets-backup.timer
     systemctl is-enabled --quiet tinyassets-backup.timer

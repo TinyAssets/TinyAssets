@@ -255,6 +255,26 @@ never opened. Deployment control SHALL consume rollback eligibility durably and
 permanently before opening admission. Missing or unreadable deployment state
 SHALL permit neither rollback nor opening traffic.
 
+#### Scenario: Retry after an old manual rollback left consumed state
+- **WHEN** deployment finds a consumed cutover receipt before preflight
+- **THEN** it verifies the recorded backup, stable OLD marker, recorded old image,
+  and absence of registered or running owner boxes under the lifecycle lock
+- **AND** it removes only that attempt's owner images, locks, shared cutover tree
+  and interrupted store staging, then archives the receipt with a timestamp
+- **AND** unknown artifacts, image mismatch, unstable or new layout, attached
+  images or registered/running boxes refuse without deleting anything
+- **AND** cleanup writes neither the data volume nor backups; automatic and manual
+  rollback perform this same finalization after the old image is accepted
+- **AND** a fresh attempt creates new eligibility rather than replaying consumption
+
+#### Scenario: Deploy after successful ordinary admission
+- **WHEN** ordinary admission opens after eligibility is durably consumed
+- **THEN** deployment archives the consumed receipt under the same lock
+- **AND** if archiving was interrupted, the next deploy recognizes the consumed
+  receipt, stable owner-box layout and open admission, and archives only the receipt
+- **AND** later deploys proceed without rollback cleanup of committed owner stores
+- **AND** a later refusal restarts the daemon unless this deploy owns an in-flight cutover
+
 #### Scenario: A restarted workflow cannot roll back after traffic opened
 - **WHEN** a deploy workflow is re-run after ordinary admission has opened
 - **THEN** old-layout rollback is refused

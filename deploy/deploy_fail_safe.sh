@@ -177,17 +177,28 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
       if [ "$1" = "apply" ]; then
         data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
       fi
+      local snapshot_dest rclone_dir=/root/.config/rclone
       if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ]; then
-        # Synthetic remote, preserved across disposable migration containers.
-        extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots" \
-          -e BACKUP_DEST=:local:/snapshots/owner-snapshots)
+        # The isolated rehearsal supplies only caller data: a local "spaces"
+        # remote in a real rclone.conf, read through the same file lookup.
+        snapshot_dest=spaces:/snapshots/owner-snapshots
+        rclone_dir="${MIGRATION_BACKUP_DIR}/rclone"
+        # Written through the engine: a rehearsal runner may not share the
+        # engine host's filesystem, which is where bind sources resolve.
+        docker run --rm --network none --user 0 -v "${MIGRATION_BACKUP_DIR}:/snapshots" \
+          --entrypoint sh "$NEW_IMAGE" -c \
+          'mkdir -p /snapshots/rclone && printf "[spaces]\ntype = local\n" > /snapshots/rclone/rclone.conf' \
+          >/dev/null || return 1
+        extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots")
       else
-        local snapshot_dest
         snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
-        extra+=(-e "BACKUP_DEST=$snapshot_dest" \
-          -v /root/.config/rclone:/root/.config/rclone:ro)
-        [ "$1" != "apply" ] || network=bridge
       fi
+      # The image bakes HOME=/home/tinyassets, so rclone must be pointed at
+      # root's mounted config explicitly (cutover attempt 6, 2026-10-21).
+      extra+=(-v "$rclone_dir:/root/.config/rclone:ro" \
+        -e "BACKUP_DEST=$snapshot_dest" \
+        -e RCLONE_CONFIG=/root/.config/rclone/rclone.conf)
+      [ "$1" != "apply" ] || network=bridge
     else
       extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
     fi
@@ -1653,46 +1664,42 @@ if ! ensure_state_dir; then
   exit 1
 fi
 
+HARNESS_INSTALLED_THIS_RUN=""
+HARNESS_PREVIOUS_LINK=""
+MIGRATION_COMMITTED=0
+
 discard_candidate_harness() {  # a refused or rolled-back run keeps only the harness it started with
-  local root name image_id current previous_id
+  local root name
   root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
-  name="${HARNESS_INSTALLED_THIS_RUN:-}"
-  if [ -z "$name" ] && [ "${BOX_CANDIDATE_LAYOUT:-}" = owner-box ]; then
-    # install_box_harness may reuse a rootfs left by an earlier refused run.
-    # It still switched harness-current; clean that candidate too, but never
-    # remove the harness belonging to the image that was already serving.
-    image_id="$(docker image inspect -f '{{.Id}}' "$NEW_IMAGE" 2>/dev/null)" || return 1
-    previous_id="$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null)" || return 1
-    [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ && "$previous_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-    current="$(readlink "${root}/harness-current" 2>/dev/null || true)"
-    if [ "$image_id" != "$previous_id" ] && [ "$current" = "harness-${image_id#sha256:}" ]; then
-      name="$current"
-    fi
-  fi
+  name="$HARNESS_INSTALLED_THIS_RUN"
   [ -n "$name" ] || return 0
-  # Initialization can itself fail after publishing eligibility (including the
-  # gate fault). Keep the candidate's recovery code until the EXIT handler has
-  # restored the stopped data, even when migration_refused calls us first.
-  if [ -d "${BUNDLE_STATE_DIR}/cutover" ] && [ -n "${MIGRATION_SNAPSHOT:-}" ] \
-      && [ "${CUTOVER_RESTORED:-0}" != 1 ]; then return 0; fi
-  [ "${MIGRATION_COMMITTED:-0}" != "1" ] || return 0  # the committed layout runs on it
-  [[ "$name" =~ ^harness-[0-9a-f]{64}$ ]] || return 1
-  [ "$name" != "${HARNESS_PREVIOUS_LINK:-}" ] || return 0
+  [ "$MIGRATION_COMMITTED" != "1" ] || return 0  # the committed layout runs on it
   HARNESS_INSTALLED_THIS_RUN=""
   if [ -n "$HARNESS_PREVIOUS_LINK" ] && [ -d "${root}/${HARNESS_PREVIOUS_LINK}" ]; then
     ln -s "$HARNESS_PREVIOUS_LINK" "${root}/.harness-current.$$" \
       && mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" \
-      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 1; }
+      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 0; }
   elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
-    rm -f -- "${root}/harness-current" || return 1
+    rm -f -- "${root}/harness-current"
   fi
   case "$name" in
     harness-[0-9a-f]*)
       # extract_box_harness made the tree read-only; writable again before rm.
       chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
       rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
-        || { err "could not remove candidate harness ${name}"; return 1; } ;;
+        || err "could not remove candidate harness ${name}" ;;
   esac
+}
+
+finish_cutover_rollback() {  # caller holds host mutation lock; image was observed/accepted
+  local data_root
+  data_root="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')" || return 1
+  PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+    python3 -m tinyassets.cutover_control finish-rollback \
+    --state "${BUNDLE_STATE_DIR}/cutover" --data "$data_root" \
+    --store "${BOX_STORE_DIR:-/var/lib/boxhostd/owners}" --old-image "$1" \
+    --host-state "${BOX_HOST_STATE:-/var/lib/boxhostd/state}" \
+    --runsc "${BOX_RUNSC:-/opt/tinyassets/boxhostd/current/runsc}"
 }
 
 # Restore the snapshot recorded before the failed install, and clear the dirty
@@ -1734,7 +1741,6 @@ recover_from_failed_install() {
     fi
     MIGRATION_COMMITTED=0
     MIGRATION_COMMIT_UNVERIFIED=0
-    CUTOVER_RESTORED=1
     if [ "$INSTALLED_THIS_RUN" = 1 ] && ! restore_previous_bundle; then
       mark_dirty "$SNAPSHOT_PATH" || true
       return 3
@@ -1749,11 +1755,8 @@ recover_from_failed_install() {
         return 3
       fi
     done
+    finish_cutover_rollback "$old_image" || return 3
     discard_candidate_harness || return 3
-    # Keep the consumed receipt, but let a NEW stopped backup authorize the
-    # next attempt. Never reinitialize or replay this receipt.
-    mv -T "${BUNDLE_STATE_DIR}/cutover" \
-      "${BUNDLE_STATE_DIR}/cutover-rolled-back-$(date -u +%Y%m%dT%H%M%S)-$$" || return 3
     finish rolled_back "$old_image" 2
   fi
   err "restoring ${SNAPSHOT_PATH} and leaving the pointer where it was"
@@ -1795,7 +1798,6 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
         if [ ! -d "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/${HARNESS_PREVIOUS_LINK}" ]; then
           HARNESS_PREVIOUS_LINK=""
         fi
-        CUTOVER_RESTORED=1
         discard_candidate_harness || exit 3
         finish deployed "$NEW_IMAGE" 0
       fi
@@ -1927,6 +1929,12 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
     mv -- "$stage" "$target" || return 1
     HARNESS_INSTALLED_THIS_RUN="$target_name"
   fi
+  if [ "$NEW_IMAGE" != "$PREV_IMAGE" ]; then
+    HARNESS_INSTALLED_THIS_RUN="$target_name"
+    # A failed earlier attempt may have left this same candidate selected.
+    # It is not the old serving harness to restore on another refusal.
+    if [ "$HARNESS_PREVIOUS_LINK" = "$target_name" ]; then HARNESS_PREVIOUS_LINK=""; fi
+  fi
   [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
   chmod 0555 "$target" || return 1
   [ ! -e "$target/data" ] && [ ! -e "$target/.broker" ] && \
@@ -1934,8 +1942,6 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
   ln -s "$target_name" "${root}/.harness-current.$$" || return 1
   mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" || return 1
 }
-HARNESS_INSTALLED_THIS_RUN=""
-HARNESS_PREVIOUS_LINK=""
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
 # volume still holds rows to move, and prints what it counted. A migrated
@@ -1963,7 +1969,6 @@ HARNESS_PREVIOUS_LINK=""
 # leaves the service down with the exact restore command for the snapshot this
 # block took (`rollback_needs_restore`), never the image-only rollback.
 MIGRATION_OK=1
-MIGRATION_COMMITTED=0
 MIGRATION_COMMIT_UNVERIFIED=0
 CUTOVER_INITIALIZE_STARTED=0
 CUTOVER_APPLY_STARTED=0
@@ -2032,7 +2037,7 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  if [ "${2:-}" != "pre_stop" ] && [ ! -d "${BUNDLE_STATE_DIR}/cutover" ]; then
+  if [ "${2:-}" != "pre_stop" ] && [ "${CUTOVER_INITIALIZE_STARTED:-0}" != 1 ]; then
     start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
     start_line="$(printf '%s\n' "$start_out" | one_line)"
     [ -n "$start_line" ] || start_line="<none>"
@@ -2040,7 +2045,8 @@ migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon 
     err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
     }
   fi
-  discard_candidate_harness
+  # Keep recovery code until the EXIT rollback has completed.
+  if [ "${CUTOVER_INITIALIZE_STARTED:-0}" != 1 ]; then discard_candidate_harness; fi
   if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     recover_from_failed_install migration_refused
   fi
@@ -2155,6 +2161,12 @@ else
       echo "deploy_result=harness_invalid"
       exit 1
     fi
+  fi
+  if [ -d "${BUNDLE_STATE_DIR}/cutover" ]; then
+    if ! finish_cutover_rollback "$PREV_IMAGE"; then
+      migration_refused "check=cutover_retry_cleanup unsafe_or_unconsumed=yes" pre_stop
+    fi
+    log "previous rollback cleaned and archived; retry preflight may proceed"
   fi
   log "migration: asking ${NEW_IMAGE} whether this volume still holds agent bindings"
   probe_out="$(migration_container check /data 2>&1)"
