@@ -8911,7 +8911,9 @@
       const choices=document.createElement("div");
       for(const entry of CFG.model_discovery_addresses||[]){
         const choice=document.createElement("button");choice.type="button";
-        choice.className="btn btn--ghost";choice.textContent=entry.name;
+        choice.className="btn btn--ghost";
+        choice.textContent=entry.label?entry.name+" ("+entry.label+")":entry.name;
+        if(entry.default&&!address.value)address.value=entry.address;
         choice.addEventListener("click",()=>{address.value=entry.address;
           address.dispatchEvent(new Event("input"));address.focus();});
         choices.appendChild(choice);

@@ -60,6 +60,9 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
 
         try:
             definition = discover(document["address"])
+            if definition["sign_in"] != "authorization_code_pkce":
+                return {"definition": definition, "offer": None,
+                        "reason": definition["reason"]}
             answer = local_operation(ledger, principal=principal, command_center=command_center,
                 committed_via=committed_via, document={
                     "action": "oauth_offer", "requested": {},
