@@ -221,7 +221,8 @@ def test_every_failed_proof_is_the_same_answer_and_only_the_log_differs(rig, cap
     assert (status, json.loads(body)) == (403, {"error": "refused"})
     logged = [line.split("code=")[1] for line in caplog.text.splitlines() if "code=" in line]
     assert logged == [
-        "wrong_door_key", "not_the_canary_account", "password_refused", "not_the_canary_account",
+        "wrong_door_key", "email_not_pinned_account",
+        "password_refused workos=invalid_credentials", "authenticated_other_account",
     ]
     for secret in (KEY, PASSWORD, EMAIL):
         assert secret not in caplog.text
@@ -303,7 +304,66 @@ def test_nothing_secret_reaches_the_log_or_the_body(rig, caplog):
     for secret in (KEY, PASSWORD, EMAIL, RESOURCE_TOKEN):
         assert secret not in text
     assert "canary_sign_in issued a canary session via=resource_refresh" in caplog.text
-    assert "canary_sign_in refused code=password_refused" in caplog.text
+    assert "canary_sign_in refused code=password_refused workos=invalid_credentials" in caplog.text
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C5')
+@pytest.mark.parametrize("upstream,logged", [
+    ({"code": "invalid_client"}, "workos=invalid_client"),
+    ({"code": "email_verification_required", "message": "canary@example.invalid"},
+     "workos=email_verification_required"),
+    ({"code": "Not A Code <script>"}, "workos=http_403"),
+    ({}, "workos=http_403"),
+])
+def test_a_refused_password_grant_logs_which_workos_check_refused(rig, caplog, monkeypatch,
+                                                                  upstream, logged):
+    """Attempt 10's 403 came after the key and the limiter (11 DB calls) and two
+    WorkOS round trips; the log said only ``password_refused``. It now names the
+    upstream code, bounded, and the public answer stays the one refusal."""
+    caplog.set_level("WARNING")
+
+    def refuse(request):
+        if str(request.url) == door.AUTHENTICATE_URL:
+            return httpx.Response(403, json=upstream)
+        return rig(request)
+
+    class Upstream(CLIENT):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(refuse)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", Upstream)
+    response = knock(_ask())
+    assert (response.status_code, response.json()) == (403, {"error": "refused"})
+    assert "canary_sign_in refused code=password_refused " + logged in caplog.text
+    assert EMAIL not in caplog.text
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C5')
+def test_the_router_serves_the_door_under_closed_admission(rig, tmp_path, monkeypatch):
+    """Owner-box layout: the shared door answers /app/canary-sign-in itself,
+    before ordinary admission opens, so the canary can sign in to accept a deploy."""
+    from tinyassets.owner_router import OwnerRouter
+    from tinyassets.routing_snapshot import snapshot
+
+    (tmp_path / ".ordinary-admission.json").write_text(json.dumps({"ordinary": False}))
+    monkeypatch.setattr(type(snapshot(tmp_path)), "require_current", lambda self: None)
+
+    def no_box(owner):
+        raise AssertionError("the door is shared; it never routes to a box")
+
+    app = mw.AuthContextMiddleware(OwnerRouter(
+        Starlette(routes=onboarding.onboarding_routes()), resolver=no_box, admitter=no_box),
+        router=True)
+
+    async def run():
+        async with CLIENT(transport=httpx.ASGITransport(app=app),
+                          base_url="https://tinyassets.io") as client:
+            return await client.post("/app/canary-sign-in", json=_ask())
+
+    response = asyncio.run(run())
+    assert response.status_code == 200, response.text
+    assert response.json()["access_token"] == RESOURCE_TOKEN
 
 
 def test_the_carve_out_is_this_exact_path_and_nothing_under_it(monkeypatch):

@@ -132,10 +132,21 @@ class OwnerIdentities:
         return identity
 
     def _admit(self, principal: str) -> OwnerIdentity:
-        """Admit one reserved owner; centers never enter the shared map (C11)."""
-        from tinyassets.broker.admission import admission, mutate
+        """Admit one owner, reserving a new one's permanent identity first.
 
-        identity = self.resolve(principal)
+        Centers never enter the shared map (C11). A first sign-in is the only
+        way an owner arrives after cutover, so admission reserves the label;
+        an erased owner is refused before any label is spent, and recovery
+        (C3) keeps admission closed.
+        """
+        from tinyassets.broker.admission import OwnerErased, OwnerUnadmitted, admission, mutate
+
+        if not self.work_ready:
+            raise OwnerUnadmitted("platform recovery admission is closed")
+        with closing(self._connect(write=False)) as db:
+            if admission(db, principal).state == "erased":
+                raise OwnerErased("owner account is deleted (erased)")
+        identity = self.resolve(principal, allocate=True)
         with closing(self._connect(write=True)) as db, db:
             self.plans.attach_admission(db)
             db.execute("PRAGMA synchronous=FULL")

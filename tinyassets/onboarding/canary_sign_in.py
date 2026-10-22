@@ -188,6 +188,18 @@ async def _pinned_email(client, api_key: str, canary_user: str) -> str:
     return email
 
 
+def _upstream_code(response) -> str:
+    """WorkOS's own error code (``invalid_credentials``, ``invalid_client``,
+    ``email_verification_required``...), bounded to a safe token: the door's
+    log names which upstream check refused without any value or message."""
+    try:
+        payload = response.json()
+        code = str(payload.get("code") or payload.get("error") or "")
+    except (ValueError, TypeError, AttributeError):
+        code = ""
+    return code if re.fullmatch(r"[a-z0-9_]{1,64}", code) else f"http_{response.status_code}"
+
+
 async def _resource_token(client, cfg: dict, refresh: str) -> str:
     """Trade the session's refresh token for one bound to the MCP resource —
     the same grant ``/app/token`` performs for the app's own page. Empty when
@@ -233,7 +245,8 @@ async def _canary_session(
         if email.strip().casefold() != (
             await _pinned_email(client, api_key, canary_user)
         ).strip().casefold():
-            raise _Refused("not_the_canary_account")
+            # TINYASSETS_CANARY_EMAIL is not the pinned user's own address.
+            raise _Refused("email_not_pinned_account")
         try:
             response = await client.post(
                 AUTHENTICATE_URL,
@@ -249,7 +262,7 @@ async def _canary_session(
         except httpx.HTTPError:
             raise _Refused("password_check_unavailable", status=502) from None
         if response.status_code >= 400:
-            raise _Refused("password_refused")
+            raise _Refused("password_refused workos=" + _upstream_code(response))
         try:
             payload = response.json()
             user_id = str(payload["user"]["id"])
@@ -257,7 +270,7 @@ async def _canary_session(
             raise _Refused("password_check_unavailable", status=502) from None
         if not _matches(user_id, canary_user):
             # The pin again, on what WorkOS actually authenticated.
-            raise _Refused("not_the_canary_account")
+            raise _Refused("authenticated_other_account")
         candidates = []
         refresh = str(payload.get("refresh_token", "")).strip()
         if refresh:

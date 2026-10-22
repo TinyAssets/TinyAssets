@@ -41,10 +41,12 @@ def test_owner_admission_retains_reserved_machine_and_secret_on_retry(tmp_path):
     assert read(identities, "bob").state == "admitted"
 
 
-def test_missing_invalid_and_erased_owners_refuse_without_mutation(tmp_path):
+def test_invalid_and_erased_owners_refuse_without_mutation(tmp_path):
+    # A never-allocated owner is a first sign-in and is admitted
+    # (tests/test_owner_first_admission.py).
     identities = store(tmp_path, "alice")
     routing = projection(identities.path)
-    for principal in ("", " alice", "never-allocated"):
+    for principal in ("", " alice"):
         before = rows(identities)
         with pytest.raises((ValueError, LookupError)):
             drive(identities.admit(principal, routing=routing))
@@ -98,13 +100,15 @@ def test_owner_admission_rpc_has_no_center_or_machine_selector(broker, tmp_path)
     broker.server._routing = projection(identities.path)
     for changes in ({"token": "stale"}, {"generation": True}, {"machine": 300001},
                     {"uid": 300001}, {"path": "/data/alice-home"},
-                    {"principal": "bob"}, {"center": "x"}, {"event": "retire"}):
+                    {"center": "x"}, {"event": "retire"}):
         assert request(broker, **changes) == refused
     assert rows(identities) == []
     expected = {"op": "OWNER_ADMIT_IS", "machine": 300001}
     assert request(broker) == expected
     assert request(broker) == expected
     assert len(rows(identities)) == 1
+    # A first sign-in reserves the next label; the caller never names one.
+    assert request(broker, principal="bob") == {"op": "OWNER_ADMIT_IS", "machine": 300002}
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C11')
