@@ -39,6 +39,66 @@ def test_redaction_drops_emails_ids_and_user_paths(tmp_path: Path) -> None:
     assert "300001" not in payload
 
 
+def test_realistic_variable_segments_normalize(tmp_path: Path) -> None:
+    owner = "user_privateowner42"
+    center = "u-privatecenter42"
+    identity = tmp_path / ".broker/state/owner-identities.db"
+    identity.parent.mkdir(parents=True)
+    with sqlite3.connect(identity) as db:
+        db.executescript(
+            "CREATE TABLE owner_identities (principal TEXT, machine_id INTEGER);"
+            "CREATE TABLE center_admissions (generation INTEGER, event TEXT, "
+            "principal TEXT, center TEXT, machine INTEGER);"
+        )
+        db.execute("INSERT INTO owner_identities VALUES (?,?)", (owner, 300001))
+        db.execute("INSERT INTO center_admissions VALUES (1,'admit',?,?,300001)", (owner, center))
+    account_hash = "a1" * 32
+    account = tmp_path / ".broker/accounts" / account_hash / "policy.db"
+    account.parent.mkdir(parents=True)
+    with sqlite3.connect(account) as db:
+        db.execute(
+            "CREATE TABLE policy "
+            "(singleton INTEGER, generation INTEGER, digest TEXT, document TEXT)"
+        )
+    names = [
+        f"{center}/550e8400-e29b-41d4-a716-446655440000/1730000000/12345/note.txt",
+        f"{account_hash}/secret.json",
+        f".owner_tree/{owner}/tree.json",
+        "_removed_20261021/secret.txt",
+        "_backup_subject_20261021/secret.txt",
+        "scratch/private/scratch.txt",
+        f".platform/owners/300001/agent-home/workspace/{center}/work/private-note.md",
+        f".platform/owners/300001/agent-home/workspace/{center}/policy.db",
+    ]
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic", encoding="utf-8")
+    result = shape_profile.profile(tmp_path)
+    shape_profile.check_redaction(result)
+    patterns = {item["pattern"] for item in result["files"]}
+    assert any(pattern.endswith("/agent-home/<id>/<id>/<id>/<file>.md") for pattern in patterns)
+    assert any(pattern.endswith("/agent-home/<id>/<id>/<file>.db") for pattern in patterns)
+    payload = json.dumps(result)
+    private_values = (
+        owner, center, account_hash, "550e8400", "1730000000", "12345",
+        "private-note", "_removed_20261021", "_backup_subject_20261021",
+    )
+    for value in private_values:
+        assert value not in payload
+
+
+def test_unknown_path_vocabulary_reports_class_only(capsys: pytest.CaptureFixture[str]) -> None:
+    document = json.loads(shape_profile.DEFAULT.read_text(encoding="utf-8"))
+    item = next(item for item in document["files"] if item["pattern"] == ".layout.json")
+    item["pattern"] = "private-diary-amber.txt"
+    with pytest.raises(ValueError, match="unapproved path vocabulary"):
+        shape_profile.check_redaction(document)
+    err = capsys.readouterr().err
+    assert err == "path class=broker segment=0 chars=slug length=17-32 store=none table=none\n"
+    assert "private-diary" not in err
+
+
 def test_fixture_build_covers_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     if os.name != "posix":
         pytest.skip("special inodes need POSIX")

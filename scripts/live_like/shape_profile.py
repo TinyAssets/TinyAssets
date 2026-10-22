@@ -96,9 +96,70 @@ FIXED_PATH_PARTS = (
             ".workspace-family-locks",
             "activity.log",
             "activity.log.1",
+            ".owner-cutover.json",
+            ".ordinary-admission.json",
+            ".router-credentials.json",
+            ".disaster-restore.json",
+            ".run_recovery.lock",
+            ".run_recovery.lock.pid",
+            ".ui-preview.lock",
+            ".deploy-pending.json",
+            ".runtime_status.json",
+            ".worker_supervisor.json",
+            ".engine_mcp_http_routes.json",
+            ".scoped-reset.barrier",
         }
     )
 )
+
+
+def _extension_class(component: str) -> str:
+    match = re.search(r"\.(db-(?:wal|shm|journal)|[A-Za-z0-9]{1,10})$", component)
+    suffix = "." + match.group(1).lower() if match else ""
+    return suffix if suffix in EXTENSIONS else ""
+
+
+def _normalize_file_pattern(pattern: str) -> str:
+    parts = pattern.split("/")
+    workspace = "agent-home" in parts or "workspace" in parts
+    for index, part in enumerate(parts):
+        if part.startswith("<file>"):
+            parts[index] = "<file>" + _extension_class(part)
+        elif workspace and index == len(parts) - 1:
+            parts[index] = "<file>" + _extension_class(part)
+        elif part not in PLACEHOLDERS and part not in FIXED_PATH_PARTS:
+            parts[index] = "<file>" + _extension_class(part) if index == len(parts) - 1 else "<id>"
+    return "/".join(parts)
+
+
+def _character_class(segment: str) -> str:
+    chars = set(segment)
+    if chars <= set("0123456789"):
+        return "digits"
+    if chars <= set("0123456789abcdefABCDEF"):
+        return "hex"
+    if chars <= set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        return "letters"
+    if chars <= set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"):
+        return "alphanumeric"
+    if chars <= set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."):
+        return "slug"
+    if chars <= set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.<>"):
+        return "placeholder-like"
+    return "mixed"
+
+
+def _length_bucket(segment: str) -> str:
+    length = len(segment)
+    if length <= 8:
+        return "1-8"
+    if length <= 16:
+        return "9-16"
+    if length <= 32:
+        return "17-32"
+    if length <= 64:
+        return "33-64"
+    return ">64"
 
 
 def bucket(value: int) -> str:
@@ -293,11 +354,7 @@ def _file_shapes(
     for placement, entries in sorted(patterns.items()):
         for raw_pattern in sorted(entries):
             # Census owns the masking and placement. Normalize unapproved suffixes.
-            pattern = re.sub(
-                r"<file>\.[A-Za-z0-9]{1,10}",
-                lambda m: m.group() if m.group()[6:] in EXTENSIONS else "<file>",
-                raw_pattern,
-            )
+            pattern = _normalize_file_pattern(raw_pattern)
             matches = assigned.get((placement, raw_pattern), [])
             if not matches:
                 continue
@@ -458,6 +515,10 @@ def check_redaction(document: dict, source: Path = REPO / "tinyassets") -> None:
         raise ValueError("unapproved CREATE TABLE vocabulary")
     if set(document["code_stores"]) - set(source_stores(source)):
         raise ValueError("unapproved store class vocabulary")
+    path_failures = []
+    store_patterns = [
+        (name, _pattern_regex(name)) for name in sorted(document["stores"])
+    ]
     for item in document["files"]:
         if set(item) != {"class", "pattern", "count", "kinds", "sizes", "links"}:
             raise ValueError("unapproved file metadata")
@@ -473,13 +534,21 @@ def check_redaction(document: dict, source: Path = REPO / "tinyassets") -> None:
             "unattributed",
         }:
             raise ValueError("unapproved file class")
-        for component in item["pattern"].split("/"):
+        store_name = next(
+            (name for name, matcher in store_patterns if matcher.fullmatch(item["pattern"])),
+            None,
+        )
+        for index, component in enumerate(item["pattern"].split("/")):
             if component in PLACEHOLDERS or component in EXTENSIONS:
                 continue
             if component.startswith("<file>") and component[6:] in EXTENSIONS:
                 continue
             if component not in FIXED_PATH_PARTS:
-                raise ValueError("unapproved path vocabulary")
+                path_failures.append(
+                    f"path class={item['class']} segment={index} "
+                    f"chars={_character_class(component)} length={_length_bucket(component)} "
+                    f"store={store_name or 'none'} table=none"
+                )
         if item["count"] not in BUCKETS or any(
             v not in BUCKETS
             for section in ("kinds", "sizes", "links")
@@ -492,6 +561,10 @@ def check_redaction(document: dict, source: Path = REPO / "tinyassets") -> None:
             or set(item["links"]) - {"hardlink"}
         ):
             raise ValueError("unapproved file kind")
+    if path_failures:
+        for failure in path_failures:
+            print(failure, file=sys.stderr)
+        raise ValueError("unapproved path vocabulary")
 
 
 def diff(committed: dict, fresh: dict, *, require_fixture: bool = True) -> list[str]:
