@@ -26,6 +26,16 @@ def main():
 
     owner_public_egress.LISTEN_ADDRESS = ("127.0.0.1", 0)
     app = create_app(relay=relay, secret_file=secret)
+    # Exercise the actual daemon startup key without exporting it to the parent.
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from tinyassets.onboarding.session_store import SEAL_KEY_ENV, durable_seal_key
+
+    assert SEAL_KEY_ENV not in os.environ
+    nonce = os.urandom(12)
+    proof = AESGCM(durable_seal_key()).encrypt(nonce, b"owner startup", None)
+    (root / "seal-proof.json").write_text(json.dumps({
+        "nonce": nonce.hex(), "ciphertext": proof.hex()}))
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
     from tinyassets.owner_runtime import current
 
