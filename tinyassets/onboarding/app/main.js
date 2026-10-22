@@ -51,7 +51,8 @@
   }
   async function openExternal(url){
     if(DESKTOP_SHELL){
-      if(!window.tinyassetsDesktop)throw new Error('Update the desktop app to open the system browser.');
+      // Shells before 0.1.1 have no bridge, but they hand every window.open to the system browser.
+      if(!window.tinyassetsDesktop){window.open(url,"_blank","noopener");return;}
       await window.tinyassetsDesktop.openExternal(url);return;
     }
     const B = NATIVE ? nativePlugin("Browser") : null;
