@@ -917,7 +917,8 @@ class _Connection:
             if self._role == BOX and ("request_ref" in doc["document"]
                     or doc["document"].get("secret")
                     or doc["document"]["action"] in {
-                        "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
+                        "rotate", "model_discover", "oauth_offer", "oauth_exchange",
+                        "preset_exchange"}
                     or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
                 raise PermissionError("credential deposits require the door")
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
