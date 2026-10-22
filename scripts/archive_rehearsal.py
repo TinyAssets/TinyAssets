@@ -452,6 +452,11 @@ class Venue:
                       "-f", str(self.compose_dir / "paths.yml"), *args, check=check)
 
     def start_stack(self):
+        # The synthetic snapshot remote has the same platform namespace as production.
+        self.container("--rm", "--user", "0", "-v", self.names["backup"] + ":/backup",
+                       "--entrypoint", "sh", self.image, "-ec",
+                       "mkdir -p /backup/owner-snapshots/platform; "
+                       "chown 1002:1002 /backup/owner-snapshots/platform")
         # Caller-owned canary credential; production's healthcheck is unchanged.
         self.container("--rm", "--user", "1001:1001", "-v", self.names["data"] + ":/data",
                        "--entrypoint", "python", self.image, "-c",
