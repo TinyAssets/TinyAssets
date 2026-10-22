@@ -121,6 +121,7 @@ Usage:
   install-tinyassets-env.sh delete <KEY> [KEY...]
   install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
   install-tinyassets-env.sh render-daemon-env   # daemon.env = env minus platform secrets
+  install-tinyassets-env.sh sync-operational-credentials # reconcile router JSON
   install-tinyassets-env.sh daemon-forbidden-names
 EOF
     exit 1
@@ -881,6 +882,103 @@ cmd_render_daemon_env() {
     echo "removed: ${removed}"
 }
 
+# C3: the router reads this file only, never an environment fallback. Resolve
+# the named volume on the host, before either compose layout starts the daemon.
+# Keep credentials off argv/environment; the NUL-framed stream is a pipe.
+sync_operational_credentials() {
+    local mountpoint
+    mountpoint="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')"
+    [ -n "${mountpoint}" ] && [ -d "${mountpoint}" ] || {
+        echo "::error::tinyassets-data mountpoint is unavailable" >&2
+        return 3
+    }
+    operational_credential_records | python3 -c '
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+root = Path(sys.argv[1])
+records = sys.stdin.buffer.read().decode("utf-8").split("\0")
+# A failed producer must never look like an empty source and revoke everything.
+if records[-2:] != ["COMPLETE", ""]:
+    raise SystemExit("incomplete operational credential source")
+names = ("TINYASSETS_WIKI_CANARY_TOKEN", "TINYASSETS_CANARY_DOOR_KEY",
+         "TINYASSETS_CANARY_USER_ID")
+current = dict(zip(records[:-2:2], records[1:-2:2]))
+target = root / ".router-credentials.json"
+try:
+    saved = json.loads(target.read_text(encoding="utf-8"))
+except FileNotFoundError:
+    saved = {}
+if not isinstance(saved, dict):
+    raise SystemExit("invalid router credential object")
+for name in names:
+    saved.pop(name, None)
+saved.update(current)
+fd, temporary = tempfile.mkstemp(prefix=".router-credentials.", dir=root)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        os.fchown(stream.fileno(), 1001, 1001)
+        json.dump(saved, stream)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+' "${mountpoint}"
+}
+
+operational_credential_records() {
+    local line rc
+    QUOTE_OPEN=""
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if [ -n "${QUOTE_OPEN}" ]; then
+            rc=0
+            closes_open_quote "${line}" || rc=$?
+            if [ "${rc}" = 0 ]; then QUOTE_OPEN=""; fi
+            [ "${rc}" != 2 ] || return 7
+            continue
+        fi
+        parse_env_assignment "${line}" || continue
+        classify_env_value || return 7
+        case "${ENV_KEY}" in
+            TINYASSETS_WIKI_CANARY_TOKEN|TINYASSETS_CANARY_DOOR_KEY|TINYASSETS_CANARY_USER_ID)
+                # These machine credentials use the same portable, unquoted
+                # alphabet as set-pair. Refuse ambiguous dotenv interpolation.
+                if [[ -n "${ENV_VALUE}" && ! "${ENV_VALUE}" =~ ^[A-Za-z0-9._~:/+=,@%-]+$ ]]; then
+                    echo "::error::${ENV_KEY} requires a portable unquoted value" >&2
+                    return 7
+                fi
+                printf '%s\0%s\0' "${ENV_KEY}" "${ENV_VALUE}"
+                ;;
+        esac
+    done < "${ENV_FILE}"
+    [ -z "${QUOTE_OPEN}" ] || return 7
+    printf 'COMPLETE\0'
+}
+
+sync_changed_operational_credentials() {
+    local key
+    for key in "$@"; do
+        case "${key}" in
+            TINYASSETS_WIKI_CANARY_TOKEN|TINYASSETS_CANARY_DOOR_KEY|TINYASSETS_CANARY_USER_ID)
+                sync_operational_credentials
+                return
+                ;;
+        esac
+    done
+}
+
 # Writes to the main env file keep the daemon's copy current. Any other target
 # (request-idempotency.env, agent-interchange.env, a test's temp file) is not
 # the daemon's source and renders nothing.
@@ -896,18 +994,22 @@ case "${subcmd}" in
     set)
         [ $# -eq 1 ] || usage
         cmd_set "$1"
+        sync_changed_operational_credentials "$@"
         ;;
     set-once)
         [ $# -eq 1 ] || usage
         cmd_set "$1" true
+        sync_changed_operational_credentials "$@"
         ;;
     set-pair)
         [ $# -eq 2 ] || usage
         cmd_set_pair "$@"
+        sync_changed_operational_credentials "$@"
         ;;
     delete)
         [ $# -ge 1 ] || usage
         cmd_delete "$@"
+        sync_changed_operational_credentials "$@"
         ;;
     assert-absent)
         [ $# -eq 1 ] || usage
@@ -916,6 +1018,10 @@ case "${subcmd}" in
     render-daemon-env)
         [ $# -eq 0 ] || usage
         cmd_render_daemon_env
+        ;;
+    sync-operational-credentials)
+        [ $# -eq 0 ] || usage
+        sync_operational_credentials
         ;;
     daemon-forbidden-names)
         [ $# -eq 0 ] || usage
