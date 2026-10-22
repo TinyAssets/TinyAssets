@@ -152,6 +152,11 @@ def apply_profile(root: Path, profile: dict) -> None:
                 elif kind == "socket":
                     import socket
 
+                    # Production's only sockets are the daemon's relay
+                    # sockets (role_relays.directory names, which backup.sh's
+                    # snapshot inventory admits); a synthetic name is one no
+                    # live volume can hold.
+                    path = path.with_name(f"egress-{index + 1}.sock")
                     with socket.socket(socket.AF_UNIX) as sock:
                         sock.bind(str(path))
                 else:

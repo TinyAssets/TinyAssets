@@ -283,6 +283,8 @@ jobs:
           echo "backup_dest=${dest}" >> "$GITHUB_OUTPUT"
 
       - name: Fill the data volume with synthetic production-shaped data
+        env:
+          GATE_REVISION: ${{ steps.candidate.outputs.gate }}
         run: |
           set -euo pipefail
           # Data before services, as on the droplet: host prep arms the
@@ -290,7 +292,12 @@ jobs:
           # The label marks the synthetic volume family, the only place the
           # fail-safe admits a forced fault.
           sudo docker volume create --label io.tinyassets.live-like=synthetic tinyassets-data >/dev/null
-          sudo "$(command -v python)" scripts/live_like/fixture.py build --volume tinyassets-data
+          # The data's shape is production's, not the candidate's: the fixture
+          # and its drift check read the gate's own tree, whatever revision
+          # is being deployed.
+          gate="${RUNNER_TEMP}/gate-tree"
+          git worktree add -q --detach "${gate}" "${GATE_REVISION}"
+          sudo "$(command -v python)" "${gate}/scripts/live_like/fixture.py" build --volume tinyassets-data
 
       - name: Prepare the runner as a droplet-like host
         run: sudo LIVE_LIKE_HOST=1 bash scripts/live_like/host_prepare.sh "${{ steps.inputs.outputs.file }}"

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.live_like.fixture import build
+from scripts.live_like.fixture import DEFAULT, build
 from tinyassets.box_layout_migration import census
 from tinyassets.storage import platform_state_move as psm
 
@@ -51,7 +51,8 @@ def test_workload_shells_parse():
 def test_built_fixture_passes_snapshot_inventory_with_live_socket(tmp_path):
     root = tmp_path / "_data"
     root.mkdir()
-    build(root)
+    # With the committed profile: its sidecar sockets are built too.
+    build(root, json.loads(DEFAULT.read_text(encoding="utf-8")))
     sidecar = root / ".universe-sidecars/a1" / f"egress-{os.getpid()}.sock"
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(sidecar))
