@@ -1,7 +1,13 @@
 import json
 import re
 
+import pytest
+
 from tinyassets.onboarding import render_app_html
+
+pytestmark = pytest.mark.verifies(
+    "live-mcp-connector-surface:The Web App Is Served At The Apex `/app`"
+)
 
 
 def test_app_page_declares_platform_versions_and_update_ui():
