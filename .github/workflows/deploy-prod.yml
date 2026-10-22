@@ -903,9 +903,8 @@ jobs:
           echo "ssh_rc=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
-      # AFTER the rollback: nothing here touches production, so none of it can
-      # delay recovery. Fetches what the snapshot wrote, sanitizes locally, and
-      # records the evidence as unavailable when the container was already gone
+      # Fetch what the snapshot wrote and sanitize locally before later recovery;
+      # record the evidence as unavailable when the container was already gone
       # (Codex P2) rather than leaving a manifest that implies a match.
       - name: Sanitize failed candidate diagnostics
         id: candidate_diagnostics
@@ -1065,7 +1064,7 @@ jobs:
             "sudo bash /tmp/retire_platform_llm_logins.sh /tmp/install-tinyassets-env.sh"
 
       # Recovery runs after all post-deploy work so owner roll, admission,
-      # backup and receipt failures receive the same committed-layout policy.
+      # backup and receipt failures use the same pre_traffic recovery policy.
       # Keep the historical step name for workflow consumers.
       - name: Roll back if the public canary is red
         id: post_commit_failure
@@ -1077,13 +1076,20 @@ jobs:
           IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
           POST_COMMIT_REASON: deploy=${{ steps.deploy.outcome }},mcp=${{ steps.canary.outcome }},app=${{ steps.app_probe.outcome }},core=${{ steps.core_canary.outcome }},owner_boxes=${{ steps.owner_boxes.outcome }}
         run: |
+          set +e
           set -uo pipefail
-          # The host reads the durable layout, including when the deploy failed
-          # before returning outputs. No committed-layout image-only rollback.
-          out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+          # Extend #5203's fail-closed read under the host mutation lock, in the
+          # same guard used by deploy health failure and manual bundle restore.
+          # SSH/read failure cannot fall through to another rollback command.
+          out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=20 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo HEALTH_TIMEOUT=180 ON_POST_COMMIT_FAILURE='${ON_POST_COMMIT_FAILURE}' POST_COMMIT_REASON='${POST_COMMIT_REASON}' IMAGE_ROLLBACK_ALLOWED='${IMAGE_ROLLBACK_ALLOWED}' ROLLBACK_IMAGE='${PREV_IMAGE}' bash /tmp/deploy_fail_safe.sh --post-deploy-failure '${IMAGE_REF}'" 2>&1)"
           rc=$?
           printf '%s\n' "$out"
+          if [ "$rc" != 0 ] && [ "$rc" != 2 ] && ! printf '%s\n' "$out" | grep -q '^deploy_result='; then
+            echo "::error::HOLDING: could not read this run's cutover state or complete recovery over SSH"
+            echo "deploy_result=recovery_unavailable"
+            out="deploy_result=recovery_unavailable"
+          fi
           echo "result=$(printf '%s\n' "$out" | awk -F= '/^deploy_result=/{print $2}' | tail -1)" >> "$GITHUB_OUTPUT"
           echo "reason=${POST_COMMIT_REASON}" >> "$GITHUB_OUTPUT"
           # rc 2 means recovery completed; the original failure remains red.

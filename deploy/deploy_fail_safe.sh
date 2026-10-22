@@ -105,10 +105,10 @@
 #   sudo deploy_fail_safe.sh --post-deploy-failure <candidate_image_ref>
 #
 # `--post-deploy-failure` reads the durable layout before changing the bundle.
-# ON_POST_COMMIT_FAILURE=hold (default) preserves a committed stack; rollback
+# ON_POST_COMMIT_FAILURE=hold (default) preserves a committed pre_traffic stack; rollback
 # invokes cutover_control and requires unconsumed pre_traffic eligibility.
 # A fixed image_tag dispatch resumes canaries, owner roll, admission and backup.
-# `--restore-bundle` refuses a committed layout; otherwise it reinstalls the
+# `--restore-bundle` refuses a committed pre_traffic cutover; otherwise it reinstalls the
 # snapshot named by the bundle pointer and THEN converges <previous_image_ref>.
 # It never installs the staged bundle (that is what it is undoing).
 #
@@ -675,14 +675,27 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 # C4: recovery is a layout decision BEFORE any bundle or image is changed.
 # A retry dispatch with image_tag=<fixed commit> and on_post_commit_failure=hold
 # installs the staged candidate bundle normally; stable owner-box skips apply.
-# Only pre_traffic eligibility permits full rollback. Consumed eligibility
-# refuses in cutover_control, leaving the committed stack in place.
-committed_layout() {
+# Only this committed pre_traffic cutover holds. Consumed or archived receipts
+# restore ordinary image/bundle rollback, subject to the compatibility guards.
+cutover_pending() {
   local marker
   marker="$(layout_marker_path)" || return 2
-  python3 - "$marker" <<'COMMITTED_PY'
+  python3 - "$marker" "${BUNDLE_STATE_DIR}/cutover" <<'COMMITTED_PY'
 import json, sys
+from pathlib import Path
 try:
+    directory = Path(sys.argv[2])
+    try:
+        with (directory / "state.json").open() as stream:
+            state = json.load(stream)
+    except FileNotFoundError:
+        # A missing directory is normal after archival or before any cutover.
+        # An incomplete receipt in an existing directory is not safe to assume.
+        sys.exit(2 if directory.exists() else 1)
+    if not isinstance(state, dict) or state.get("state") not in ("pre_traffic", "consumed"):
+        sys.exit(2)
+    if state["state"] == "consumed":
+        sys.exit(1)
     with open(sys.argv[1]) as stream:
         doc = json.load(stream)
     if not isinstance(doc, dict) or doc.get("state") != "stable":
@@ -693,6 +706,20 @@ except FileNotFoundError:
 except (OSError, ValueError):
     sys.exit(2)
 COMMITTED_PY
+}
+
+# Every recovery entry point shares the same fail-closed read. A failed read
+# must not be treated as "no cutover", including in automatic health recovery.
+guard_cutover_recovery() {
+  local state_rc
+  cutover_pending; state_rc=$?
+  case "$state_rc" in
+    0) post_commit_failure ;;
+    1) return 0 ;;
+    *) err "could not read this run's cutover state or layout; refusing image-only recovery"
+       echo "deploy_result=rollback_needs_restore"
+       exit 3 ;;
+  esac
 }
 
 post_commit_failure() {
@@ -1700,14 +1727,7 @@ restore_previous_bundle() {
 
 # --- 1. record the current (rollback) image -------------------------------
 if [ "$POST_DEPLOY_FAILURE" = 1 ] || [ "$RESTORE_BUNDLE" = 1 ]; then
-  committed_layout; layout_rc=$?
-  if [ "$layout_rc" = 0 ]; then
-    post_commit_failure
-  elif [ "$layout_rc" != 1 ]; then
-    err "layout unavailable or unstable; refusing image-only recovery"
-    echo "deploy_result=rollback_needs_restore"
-    exit 3
-  fi
+  guard_cutover_recovery
   if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
     [ "${IMAGE_ROLLBACK_ALLOWED:-0}" = 1 ] || exit 0
     NEW_IMAGE="${ROLLBACK_IMAGE:-}"
@@ -2041,9 +2061,7 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
     "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")"
 }
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
-  if committed_layout; then
-    POST_COMMIT_REASON="$1" post_commit_failure
-  fi
+  POST_COMMIT_REASON="$1" guard_cutover_recovery
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
   if [ "${2:-}" != "pre_stop" ]; then
@@ -2358,7 +2376,7 @@ if [ "$MIGRATION_OK" = "1" ]; then
   log "swapping TINYASSETS_IMAGE and converging the stack"
   if ! set_image "$NEW_IMAGE"; then
     err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}"
-    if committed_layout; then post_commit_failure; fi
+    guard_cutover_recovery
     if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
       refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
     fi
@@ -2403,18 +2421,16 @@ if [ "$MIGRATION_OK" = "1" ]; then
   if [ "$ACCEPTED" = "1" ]; then
     # Fix-forward resumes acceptance, never initializes eligibility or moves
     # data again. These outputs schedule canaries -> owner roll -> admit -> backup.
-    if committed_layout && [ -f "${BUNDLE_STATE_DIR}/cutover/state.json" ]; then
-      python3 - "${BUNDLE_STATE_DIR}/cutover/state.json" <<'PENDING_PY' || exit 3
-import json, sys
-with open(sys.argv[1]) as stream:
-    state = json.load(stream)["state"]
-if state == "pre_traffic":
-    print("cutover_admission_pending=true")
-elif state != "consumed":
-    raise ValueError("invalid cutover eligibility")
-PENDING_PY
+    if cutover_pending; then
+      echo "cutover_admission_pending=true"
+    else
+      pending_rc=$?
+      [ "$pending_rc" = 1 ] || { echo "deploy_result=cutover_state_unreadable"; exit 3; }
     fi
     log "deploy healthy on ${NEW_IMAGE}"
+    if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+      finish rolled_back "$NEW_IMAGE" 2
+    fi
     finish deployed "$NEW_IMAGE" 0
   fi
 fi
@@ -2425,9 +2441,7 @@ if [ "$RESTORE_BUNDLE" = 1 ]; then
   echo "deploy_result=rollback_failed"
   exit 3
 fi
-if committed_layout; then
-  post_commit_failure
-fi
+guard_cutover_recovery
 # Never put the old compose under the candidate after a committed or uncertain
 # migration, even when the previous image would subsequently be refused.
 if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then

@@ -3,7 +3,7 @@
 Fix forward: dispatch deploy-prod with image_tag=<fixed-commit> and
 on_post_commit_failure=hold. A stable committed layout bypasses migration;
 pre_traffic resumes canaries, owner roll, admission consumption and first backup.
-Rollback is pre_traffic-only and restores the preserved original bundle with
+Full data rollback is pre_traffic-only and restores the preserved original bundle with
 its recorded image. Legacy eligibility without a preserved bundle fails closed.
 """
 
@@ -216,6 +216,15 @@ def test_full_rollback_after_retry_restores_original_data_bundle_and_image(box, 
     assert json.loads((volume / ".layout.json").read_text())["split"] == "owner-split"
     assert json.loads((control / "state.json").read_text())["state"] == "consumed"
 
+    # A later public-check failure must use ordinary bundle/image recovery,
+    # even if the dispatch still requests the cutover rollback policy.
+    recovered = box.run("--post-deploy-failure", OLD_IMAGE,
+                        IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE,
+                        ON_POST_COMMIT_FAILURE="rollback", **env)
+    assert recovered.returncode == 2, recovered.stdout + recovered.stderr
+    assert _result(recovered) == "rolled_back"
+    assert box.env_image() == OLD_IMAGE
+
 
 def test_legacy_cutover_without_original_bundle_refuses_before_stopping(box, monkeypatch):
     from tinyassets.cutover_control import CutoverRefused, rollback_live
@@ -237,3 +246,64 @@ def test_fix_forward_preflight_failure_holds_bundle_and_admission(box):
     assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
     assert not _daemon_starts(box)
     assert json.loads((control / "state.json").read_text())["state"] == "pre_traffic"
+
+
+@pytest.mark.parametrize("receipt", ["consumed", "archived"])
+@pytest.mark.parametrize("failure", ["health", "public", "manual"])
+def test_completed_cutover_restores_normal_image_rollback(box, receipt, failure):
+    _, env, control = committed(box)
+    # Both releases support owner-box and both bundles run the non-root daemon.
+    old_compose = box.valid_compose() + "\n# previous owner-box release\n"
+    (box.runtime / "compose.yml").write_text(old_compose)
+    box.set_docker_state(
+        active_box_layout={NEW_IMAGE: "owner-box", OLD_IMAGE: "owner-box"},
+        known_layouts={image: {"layouts": [1, 2], "boxes": ["owner-box"]}
+                       for image in (NEW_IMAGE, OLD_IMAGE)},
+    )
+    state = json.loads((control / "state.json").read_text())
+    (control / "state.json").write_text(json.dumps({**state, "state": "consumed"}))
+    if receipt == "archived":
+        control.rename(control.with_name("cutover-archive"))
+    if failure == "health":
+        box.set_docker_state(unhealthy_images=[NEW_IMAGE])
+        result = box.run(NEW_IMAGE, **env)
+        assert result.returncode == 2, result.stdout + result.stderr
+    else:
+        deployed = box.run(NEW_IMAGE, **env)
+        assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+        assert "cutover_admission_pending=true" not in deployed.stdout
+        if failure == "public":
+            result = box.run("--post-deploy-failure", NEW_IMAGE,
+                             IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE,
+                             ON_POST_COMMIT_FAILURE="rollback", **env)
+            assert result.returncode == 2, result.stdout + result.stderr
+        else:
+            result = box.run("--restore-bundle", OLD_IMAGE, **env)
+            assert result.returncode == 0, result.stdout + result.stderr
+    assert _result(result) == ("deployed" if failure == "manual" else "rolled_back")
+    assert box.env_image() == OLD_IMAGE
+    assert (box.runtime / "compose.yml").read_text() == old_compose
+
+
+@pytest.mark.parametrize("receipt", ["malformed", "missing", "unknown"])
+@pytest.mark.parametrize("entry", ["health", "public", "manual"])
+def test_unreadable_cutover_state_cannot_fall_through_to_rollback(box, receipt, entry):
+    _, env, control = committed(box)
+    state = control / "state.json"
+    if receipt == "missing":
+        state.unlink()
+    else:
+        state.write_text("{" if receipt == "malformed" else '{"state": "unknown"}')
+    before = (box.runtime / "compose.yml").read_bytes()
+    if entry == "health":
+        box.set_docker_state(unhealthy_images=[NEW_IMAGE])
+        result = box.run(NEW_IMAGE, **env)
+        expected = (box.stage / "compose.yml").read_bytes()
+    else:
+        args = ("--restore-bundle", OLD_IMAGE) if entry == "manual" else (
+            "--post-deploy-failure", NEW_IMAGE)
+        result = box.run(*args, IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE, **env)
+        expected = before
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert _result(result) == "rollback_needs_restore"
+    assert (box.runtime / "compose.yml").read_bytes() == expected
