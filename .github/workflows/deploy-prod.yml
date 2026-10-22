@@ -255,6 +255,15 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Guard active hotfixes
+        id: hotfix_guard
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+        run: |
+          set -euo pipefail
+          commits="$(python scripts/hotfix.py guard --revision "$TARGET_REVISION")"
+          echo "commits=${commits}" >> "$GITHUB_OUTPUT"
+
       - name: Capture current image (for public-canary rollback)
         id: capture
         run: |
@@ -682,6 +691,8 @@ jobs:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           BUNDLE_DIR: ${{ steps.stage_bundle.outputs.stage }}
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
+          HOTFIX_ALLOWED_COMMITS: ${{ steps.hotfix_guard.outputs.commits }}
+          HOTFIX_IMAGE_REVISION: ${{ steps.tag.outputs.revision }}
         run: |
           set -euo pipefail
           probe="/tmp/turns_in_flight.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}.py"
@@ -698,7 +709,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 HOTFIX_ALLOWED_COMMITS='${HOTFIX_ALLOWED_COMMITS}' HOTFIX_IMAGE_REVISION='${HOTFIX_IMAGE_REVISION}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
@@ -1026,6 +1037,14 @@ jobs:
             --url https://tinyassets.io/mcp \
             --report-provenance \
             --assert-contains "${GIT_SHA}"
+
+      - name: Archive hotfixes included in deployed image
+        if: ${{ success() }}
+        env:
+          HOTFIX_REVISION: ${{ steps.tag.outputs.revision }}
+        run: |
+          set -euo pipefail
+          python scripts/hotfix.py archive --revision "$HOTFIX_REVISION"
 
       # P2a installs an idle service after the image and public surfaces are
       # healthy. No daemon path calls it, and this step runs no gate workload.

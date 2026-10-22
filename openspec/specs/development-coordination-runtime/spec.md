@@ -331,3 +331,18 @@ is worse than silence -- a reader cannot tell a stale requirement from a live on
 
 Recover any of it from git: the reset merged as `e4180697`, and this file's
 history holds the full text.
+
+### Requirement: Fixes reach production through a reversible hotfix first
+
+Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a corroborated Drain-Review APPROVE receipt for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
+
+#### Scenario: A live check fails
+
+- **WHEN** health, app 200, anonymous MCP 401, authenticated pulse 200, or the available sign-in probe fails
+- **THEN** the hotfix restores saved daemon and box-harness originals and records the failure durably under the shared host-mutation lock
+
+#### Scenario: Normal deployment would erase a fix
+
+- **WHEN** an image revision does not descend from every active hotfix commit
+- **THEN** deployment refuses before replacing the daemon
+- **AND** a successful deployment containing those commits archives their records

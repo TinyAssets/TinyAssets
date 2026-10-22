@@ -1766,6 +1766,30 @@ if ! docker pull "$NEW_IMAGE" >/dev/null 2>&1; then
   err "failed to pull ${NEW_IMAGE}; prod untouched"; exit 1
 fi
 
+# The runner proves ancestry with git. Recheck its exact active set under this
+# host-mutation lock, and bind the proof to the pulled image's revision label.
+if ! python3 - "${BUNDLE_STATE_DIR}/hotfixes" "${HOTFIX_ALLOWED_COMMITS:-}" <<'HOTFIX_GUARD'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+expected = set(filter(None, sys.argv[2].split(',')))
+records = [json.loads(p.read_text()) for p in root.glob('*.json')] if root.exists() else []
+pending = [r['id'] for r in records if r['status'] == 'pending']
+active = {r['commit'] for r in records if r['status'] == 'active'}
+if pending or active != expected:
+    sys.exit(f"deploy refused: active hotfixes changed or pending: active={sorted(active)} pending={pending}; expected={sorted(expected)}")
+HOTFIX_GUARD
+then
+  err "hotfix guard refused candidate; prod untouched"; exit 1
+fi
+if [ -n "${HOTFIX_ALLOWED_COMMITS:-}" ]; then
+  candidate_revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$NEW_IMAGE" 2>/dev/null)" || {
+    err "hotfix guard cannot read candidate revision label; prod untouched"; exit 1;
+  }
+  if [ "$candidate_revision" != "${HOTFIX_IMAGE_REVISION:-}" ]; then
+    err "hotfix guard candidate image revision ${candidate_revision} differs from ancestry-proved ${HOTFIX_IMAGE_REVISION:-unset}; prod untouched"; exit 1
+  fi
+fi
+
 # --- 3. prove the new image LOADS before touching prod --------------------
 if ! timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
       --entrypoint python "$NEW_IMAGE" -c 'import tinyassets.universe_server' >/dev/null 2>&1; then
@@ -2495,6 +2519,32 @@ if ! set_image "$PREV_IMAGE"; then
 fi
 if ! restart_stack; then
   err "the rollback converge failed — manual intervention required"
+  echo "deploy_result=rollback_failed"
+  exit 3
+fi
+# Recreating PREV_IMAGE discards its writable container layer. Restore active
+# hotfix bytes before accepting that rollback; the originals remain available
+# for hotfix.py revert. This runs under the existing host-mutation lock.
+if ! python3 - "${BUNDLE_STATE_DIR}/hotfixes" "$DAEMON_CONTAINER" <<'HOTFIX_RESTORE'
+import hashlib, json, pathlib, subprocess, sys
+root, container = pathlib.Path(sys.argv[1]), sys.argv[2]
+changed = False
+for record_path in sorted(root.glob('*.json')):
+    record = json.loads(record_path.read_text())
+    if record['status'] != 'active':
+        continue
+    for entry in record['files']:
+        path = entry['path']
+        source = root / record['id'] / 'after' / path
+        if hashlib.sha256(source.read_bytes()).hexdigest() != entry['after_sha256']:
+            sys.exit('saved hotfix bytes corrupt; rollback refused')
+        subprocess.run(['docker', 'cp', str(source), f'{container}:/app/{path}'], check=True)
+        changed = True
+if changed:
+    subprocess.run(['docker', 'restart', container], check=True)
+HOTFIX_RESTORE
+then
+  err "could not restore active hotfixes onto rollback container"
   echo "deploy_result=rollback_failed"
   exit 3
 fi
