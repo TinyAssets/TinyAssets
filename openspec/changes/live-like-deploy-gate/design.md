@@ -39,7 +39,7 @@ drift check (`profile.md`).
 - Packaging: a shell driver, not a composite action or reusable workflow; per-step `timeout-minutes` and environment binding stay in each caller's YAML.
 - Transport: `DEPLOY_TARGET=local` runs the same remote command strings through `bash -c` and copies with `cp`; production keeps ssh/scp.
 - Base image: the image production serves now (public `/app` build header -> GHCR tag), so the gate deploys onto the layout production actually has.
-- Candidate image: built in the gate with the production build cache read-only, pushed to a host-local registry so the fail-safe gets the `@sha256:` ref it requires.
+- Candidate image: built in the gate with the production build cache read-only, pushed by digest and untagged to the public daemon package (`ghcr.io/tinyassets/tinyassets-daemon`), the only repository the retention helper and fail-safe accept; no tag, so nothing that resolves tags can select it. A host-local registry failed the retention helper's `invalid_pull_reference`. Fork PRs get a read-only token and cannot run the gate.
 - Caller inputs: synthetic per run (HMAC keys, canary bearer and door, tunnel token, app-ingress key, expected instance id), masked, never production values.
 - Backup destination: D's MinIO behind a root rclone `spaces` remote at `/root/.config/rclone/rclone.conf`, the droplet's path and form; BACKUP_DEST is `spaces:<bucket>/workflow-backups`.
 - Box store: the explicit loop image install-boxhostd-preflight.sh already accepts (`BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img`), set up with gVisor and idle boxhostd by the live revision's own installer, as its deploy left the droplet; the change's deploy upgrades them.

@@ -41,7 +41,11 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  # The candidate is pushed, by digest and untagged, to the daemon package the
+  # deploy path pulls from (scripts/daemon_image_retention.py and the fail-safe
+  # accept only that repository). No tag: nothing that resolves tags can pick
+  # it. The repository and package are public; fork PRs get a read-only token.
+  packages: write
 
 concurrency:
   group: live-like-gate-${{ github.event.pull_request.number || github.run_id }}
@@ -107,15 +111,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-
-      - name: Start the host's local image registry
-        run: |
-          set -euo pipefail
-          docker run -d --restart=always --name live-like-registry -p 127.0.0.1:5000:5000 \
-            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
-          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:5000/v2/ >/dev/null && break; sleep 1; done
 
       - name: Build this change's image
         id: build
@@ -123,8 +118,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          push: true
-          tags: localhost:5000/tinyassets-daemon:candidate
+          outputs: type=image,name=ghcr.io/tinyassets/tinyassets-daemon,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             TINYASSETS_BUILD_SHA=${{ github.sha }}
           labels: |
@@ -141,9 +135,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
-          image=localhost:5000/tinyassets-daemon
+          image=ghcr.io/tinyassets/tinyassets-daemon
           {
-            echo "tag=candidate"
+            # Informational (the receipt's image_tag); the push carries no tag.
+            echo "tag=${GITHUB_SHA:0:12}"
             echo "image=${image}"
             echo "image_ref=${image}@${DIGEST}"
             echo "digest=${DIGEST}"
