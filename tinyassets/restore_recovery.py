@@ -102,6 +102,20 @@ RESET_TABLES = {
 
 
 def reset_credentials(staged, now):
+    from tinyassets.broker.admission import admission
+    from tinyassets.router_account_deletion import revocation_path, revoke_local_tokens
+
+    _safe(staged, ".workos-revocations.sqlite3")
+    # Offline root phase: the broker must not write the router's auth store.
+    # This fence precedes the upstream revocations in platform_recovery.
+    with closing(sqlite3.connect(staged / ".broker/state/owner-identities.db")) as db:
+        owners = [row[0] for row in db.execute("SELECT principal FROM owner_identities")]
+        for owner in owners:
+            revoke_local_tokens(staged, owner, now=now,
+                                deleted=admission(db, owner).state == "erased")
+    if owners:
+        revocation_path(staged).chmod(0o600)
+        os.chown(revocation_path(staged), 1001, 1001)
     for relative, tables in RESET_TABLES.items():
         present = _read(staged, relative)
         if not present:

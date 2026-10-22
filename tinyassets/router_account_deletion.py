@@ -75,13 +75,45 @@ def revoke_workos_sessions(user_id: str, *, request=None) -> None:
             raise AccountDeletionError("WorkOS session revocation unavailable") from None
 
 
-def require_workos_session(user_id: str, session_id: str) -> None:
-    """C3 positive current provider authority; signed revoked tokens still deny."""
-    if not isinstance(session_id, str) or not session_id.startswith("session_"):
-        raise AccountDeletionError("WorkOS session identity missing")
-    if any(session["id"] == session_id for session in workos_sessions(user_id)):
-        return
-    raise AccountDeletionError("WorkOS session is not active")
+def revocation_path(root):
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("workos_revocations")
+    return root / ".workos-revocations.sqlite3"
+
+
+def revoke_local_tokens(root, owner, *, now=None, deleted=False):
+    """Durable, monotonic router authority; deletion can never be undone."""
+    import sqlite3
+    import time
+    from contextlib import closing
+
+    path = revocation_path(root)
+    mode = "rw" if path.exists() else "rwc"
+    with closing(sqlite3.connect(path.as_uri() + "?mode=" + mode, uri=True)) as db, db:
+        db.execute("CREATE TABLE IF NOT EXISTS revocations ("
+                   "owner TEXT PRIMARY KEY, not_before REAL NOT NULL, deleted INTEGER NOT NULL)")
+        db.execute("INSERT INTO revocations VALUES (?, ?, ?) ON CONFLICT(owner) DO UPDATE SET "
+                   "not_before=max(not_before, excluded.not_before), "
+                   "deleted=max(deleted, excluded.deleted)",
+                   (owner, time.time() if now is None else now, int(deleted)))
+
+
+def local_revocation(owner, root=None):
+    """Read committed authority on every request; storage errors fail closed."""
+    import sqlite3
+    from contextlib import closing
+
+    from tinyassets.storage import data_dir
+
+    path = revocation_path(root if root is not None else data_dir())
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return None
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        return db.execute("SELECT not_before, deleted FROM revocations WHERE owner=?",
+                          (owner,)).fetchone()
 
 
 def workos_user_exists(user_id: str, *, request=None) -> bool:

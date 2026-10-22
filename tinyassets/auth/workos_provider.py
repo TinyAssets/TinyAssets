@@ -297,6 +297,9 @@ class WorkOSAuthProvider(AuthProvider):
 
         try:
             claims = jwt.decode(token, signing_key.key, **decode_kwargs)
+        except (TypeError, OverflowError):
+            _log_token_rejection("invalid_token")
+            return None
         except jwt.PyJWTError as error:
             _log_token_rejection(_validation_failure_category(error))
             return None
@@ -323,17 +326,25 @@ class WorkOSAuthProvider(AuthProvider):
             return None
         sub = named_principal(claims.get("sub"))
 
-        # C3: revoked provider sessions must deny even a still-signed access
-        # token. Authenticate against positive current session authority, with
-        # no restore timestamp or refresh-token exception.
-        from tinyassets.router_account_deletion import (
-            AccountDeletionError,
-            require_workos_session,
-        )
+        import math
+        import sqlite3
+
+        from tinyassets.router_account_deletion import local_revocation
 
         try:
-            require_workos_session(sub, claims.get("sid"))
-        except AccountDeletionError:
+            revocation = local_revocation(sub)
+        except (OSError, sqlite3.Error):
+            _log_token_rejection("invalid_token")
+            return None
+        if revocation and revocation[1]:
+            _log_token_rejection("account_deleted")
+            return None
+        issued = claims.get("iat")
+        if (isinstance(issued, bool) or not isinstance(issued, (int, float))
+                or not math.isfinite(issued)):
+            _log_token_rejection("required_claim")
+            return None
+        if revocation and issued < revocation[0]:
             _log_token_rejection("expired")
             return None
 
@@ -350,8 +361,6 @@ class WorkOSAuthProvider(AuthProvider):
         capabilities = list(
             dict.fromkeys([*_AUTHENTICATED_BASE_CAPABILITIES, *granted])
         )
-
-        import sqlite3
 
         from tinyassets.outside_authority import OutsideRefused, current_store, origin
 

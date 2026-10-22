@@ -427,7 +427,12 @@ async def _handle_token(request: Any) -> Any:
         # from the cookie and the caller proved nothing (Codex, 2026-08-28).
         refresh_came_from_handle = bool(refresh)
         if not refresh:
-            refresh = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
+            cookie = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
+            if cookie.startswith("local:"):
+                refresh, current_handle = _session_store.read(cookie[6:])
+                refresh_came_from_handle = bool(refresh)
+            else:
+                refresh = cookie
         if not refresh or len(refresh) > 4096:
             return JSONResponse({"error": "no_refresh_token"}, status_code=401)
         token_form = {
@@ -545,6 +550,13 @@ async def _handle_token(request: Any) -> Any:
         body = ({"error": "account_deleted", "message": "Account deleted."}
                 if reason == "account_deleted" else {"error": "identity_unresolved"})
         return JSONResponse(body, status_code=401, headers=_NO_STORE)
+    if grant == "refresh_token" and not refresh_came_from_handle:
+        from tinyassets.router_account_deletion import local_revocation
+
+        # A fresh upstream iat cannot rehabilitate pre-restore raw refresh authority.
+        if local_revocation(identity.user_id):
+            return JSONResponse({"error": "identity_unresolved"}, status_code=401,
+                                headers=_NO_STORE)
     may_reuse_handle = bool(current_handle) and refresh_came_from_handle
     if refresh_token and len(refresh_token) <= 4096:
         if may_reuse_handle:
@@ -571,7 +583,7 @@ async def _handle_token(request: Any) -> Any:
     if refresh_token and len(refresh_token) <= 4096:
         response.set_cookie(
             _REFRESH_COOKIE,
-            refresh_token,
+            "local:" + handle,
             max_age=_REFRESH_COOKIE_MAX_AGE,
             path=_REFRESH_COOKIE_PATH,
             secure=True,
