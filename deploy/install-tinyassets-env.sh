@@ -818,7 +818,8 @@ write_daemon_env() {
     read_file_exactly "${DAEMON_ENV_SOURCE}" \
         || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
     local rest="${READ_CONTENT}" line selected=0 out="# GENERATED OAuth broker environment"$'\n'
-    local box_out="# GENERATED boxhostd environment: the snapshot remote only"$'\n'
+    local public_origin=""
+    local box_out="# GENERATED boxhostd environment: snapshot remote and public URL"$'\n'
     QUOTE_OPEN=""
     while [ -n "${rest}" ]; do
         if [[ "${rest}" == *$'\n'* ]]; then
@@ -836,6 +837,34 @@ write_daemon_env() {
         selected=0
         if parse_env_assignment "${line}"; then
             classify_env_value || true # Already validated by render_daemon_content.
+            if [ "${ENV_KEY}" = WORKOS_MCP_RESOURCE ]; then
+                [ -z "${QUOTE_OPEN}" ] || refuse_render "WORKOS_MCP_RESOURCE must be on one line"
+                # Same source as the router's protected_resource_metadata. Only
+                # its origin crosses into boxes, under the name _server_url reads.
+                public_origin="$(python3 - "${ENV_VALUE}" <<'PY'
+import re
+import sys
+from urllib.parse import urlsplit
+
+raw = sys.argv[1].strip()
+if raw[:1] in ("'", '"'):
+    raw = raw[1:].split(raw[0], 1)[0]
+else:
+    raw = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+try:
+    url = urlsplit(raw)
+    valid = (url.scheme in ("http", "https") and url.hostname
+             and not url.username and not url.password
+             and re.fullmatch(r"[A-Za-z0-9.\-\[\]:]+", url.netloc))
+    url.port  # Reject malformed ports too.
+except ValueError:
+    valid = False
+if not valid:
+    sys.exit(1)
+print(f"{url.scheme}://{url.netloc.lower()}")
+PY
+                )" || refuse_render "WORKOS_MCP_RESOURCE must contain a valid HTTP(S) public origin"
+            fi
             # C6: the broker deletion job invokes billing and identity erasure.
             if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
                   "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == STRIPE_WEBHOOK_SECRET ||
@@ -848,6 +877,9 @@ write_daemon_env() {
             fi
         fi
     done
+    if [ -n "${public_origin}" ]; then
+        box_out+="UNIVERSE_SERVER_URL=${public_origin}"$'\n'
+    fi
     # C14: the broker writes job metadata directly to the existing backup remote.
     # This is configuration, not a second lifecycle authority or root RPC.
     local backup_config="${TINYASSETS_RCLONE_CONFIG-/root/.config/rclone/rclone.conf}"
@@ -863,7 +895,7 @@ write_daemon_env() {
     fi
     out+="RCLONE_CONFIG=/etc/tinyassets/broker-rclone.conf"$'\n'
     ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )
-    # boxhostd reads only its snapshot remote; root's HOME keeps root's rclone config.
+    # root's HOME keeps root's rclone config; boxes also receive the public URL.
     ( ENV_FILE="${BOXHOSTD_ENV_FILE}"; atomic_install "${box_out}"; assert_readable )
     echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
 }
