@@ -49,6 +49,7 @@ drift check (`profile.md`).
 - Turn wait: `YIELD_WORKFLOWS` empty; nothing else mutates the gate host.
 - Rollback case: a matrix case; the deploy step is `continue-on-error` there and post-deploy success-path steps carry `matrix.case == 'cutover'`, which the parity test strips before comparing.
 - Trigger: `merge_group`, manual, and `pull_request` for this branch only; non-required until green.
+- Manual inputs: `base_revision` (start from another layout), `candidate_revision` (deploy any revision; the workspace is that revision for the image and every host-side file, and only the caller-side driver, `wait_for_turns.sh`, `roll_owner_boxes.py`, `live_preflight.py` and the harness are the gate's), `cases` (one case), `skip_ahead` (reuse the candidate digest an earlier run cached for that revision instead of rebuilding). `merge_group` and `pull_request` always build and run both cases.
 
 ## G3. Read-only live preflight
 
