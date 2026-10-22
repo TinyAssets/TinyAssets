@@ -125,6 +125,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/boxes/bootstrap.py::BrokerRegistration.maintain": (
+        CONTROL_PLANE,
+        "the broker re-registers with the root box host after a host restart",
+    ),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
         "root box host observes exited processes; only the broker selects lifecycle work",

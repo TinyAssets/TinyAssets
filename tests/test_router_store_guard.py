@@ -145,6 +145,9 @@ def test_router_guard_detects_owner_store_imports_and_file_access(source):
 # D7: the reviewed process boundaries, by module and qualified function.
 # Owner-runtime's own lifecycle is intrinsic to that module, not a second path.
 _ROLE_DISPATCH = {
+    ('onboarding/session_store.py', '_load_key'): (
+        'A box seals sessions with its own volume key; the router keeps its host seal key.'
+    ),
     ('router_account_deletion.py', 'revocation_path'): (
         'Router owns bearer revocation authority; direct box access must refuse.'
     ),
