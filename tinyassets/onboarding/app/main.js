@@ -5567,7 +5567,6 @@
         if(NATIVE)await openExternal(url);else popup.location.href=url;
         this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
       }catch(error){
-        if(popup)popup.close();
         if(this.current(record)){
           this.failed('Sign-in could not start. Your message is kept.');
           if(error.signIn){
@@ -7666,21 +7665,20 @@
     async start(source,ui,resume=null){
       if(this.busy)return;
       const external=NATIVE||DESKTOP_SHELL;
-      const popup=external||resume?null:window.open("about:blank","_blank");
-      if(popup){popup.opener=null;
-        try{const note=popup.document.createElement("p");
-          note.style.cssText="font:16px system-ui,sans-serif;padding:24px;max-width:32em";
-          note.textContent="Setting up "+source.name+" sign-in. This tab continues on its own; "+
-            "the first time takes about a minute.";
-          popup.document.title=source.name+" sign-in";popup.document.body.append(note);}catch(_e){}}
-      const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume,cancelled=false;
+      const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
       this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
       ui.status.textContent="Setting up "+source.name+" for your agent. The first time takes about a minute…";
       ui.cancel.onclick=()=>{cancelled=true;};
       try{
         let state=await this.post(resume?"poll":"begin",resume?{flow}:{source_id:source.id},epoch);flow=state.flow;
+        source.name=state.display_name||source.name||"this source";
+        if(state.status==="installing"){
+          pending=true;
+          appendMessage("system","Installing "+source.name+"? you'll be asked to sign in when it's ready");
+          closeConnectRequest();
+        }
         pkceStore.setItem(this.storageKey,JSON.stringify({flow,source_id:source.id,
-          owner:queueOwner,expires:Date.now()+900000}));
+          owner:queueOwner,opened,expires:Date.now()+900000}));
         ui.submit.onclick=async()=>{
           if(!ui.input.value.trim())return;
           ui.submit.disabled=true;
@@ -7695,9 +7693,21 @@
           if(state.status==="failed"||state.status==="cancelled")throw new Error("Sign-in did not complete. Retry to connect.");
           if(state.authorize_url&&!opened){
             const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
-            if(external)await openExternal(url.href);
-            else if(popup)popup.location.href=url.href;
-            else{window.location.assign(url.href);return;}
+            if(pending){
+              const signIn=document.createElement("button");signIn.type="button";
+              signIn.textContent="Sign in to "+source.name;
+              signIn.onclick=()=>{signIn.disabled=true;
+                const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
+                  JSON.stringify({...saved,opened:true}));
+                openConnectRequest();
+                if(external)openExternal(url.href);else window.location.assign(url.href);};
+              appendMessage("system",source.name+" is ready to sign in.",signIn);
+            }else{
+              const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
+                JSON.stringify({...saved,opened:true}));
+              if(external)await openExternal(url.href);
+              else{window.location.assign(url.href);return;}
+            }
             opened=true;
           }
           ui.input.hidden=ui.submit.hidden=!(state.accepts_code&&opened&&state.status==="waiting");
@@ -7710,15 +7720,14 @@
             ui.status.textContent="Connected. Your agent can use this subscription.";
             appendMessage("system","Connected "+source.name+". Your agent is ready — say hello.");
             pkceStore.removeItem(this.storageKey);
-            if(popup&&!opened)popup.close();
             await closeExternal();await refreshRail();closeConnectRequest();return;
           }
           await sleep(1000);state=await this.post("poll",{flow},epoch);
         }
         throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){
-        if(popup)popup.close();
         ui.status.textContent=error.message;
+        if(pending)appendMessage("system",source.name+": "+error.message);
         pkceStore.removeItem(this.storageKey);
         if(flow&&epoch===MCP._loginEpoch){try{await this.post("cancel",{flow},epoch);}catch(_e){}}
       }finally{

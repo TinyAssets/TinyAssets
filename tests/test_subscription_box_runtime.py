@@ -264,3 +264,32 @@ def test_registry_forwarder_refuses_other_hosts_and_ports(tmp_path):
                 assert connection.recv(1024).startswith(b'HTTP/1.1 403 Forbidden')
     finally:
         forwarder.close()
+
+
+def test_image_package_is_verified_and_reused_without_owner_install(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets import owner_runtime
+    from tinyassets.providers.source_record import SourceRecord
+    from tinyassets.providers.subscription_image import ImageInstaller
+    from tinyassets.providers.subscription_runtime import SubscriptionError, SubscriptionRuntime
+
+    doc = fixture_package(tmp_path)
+    image = ImageInstaller(SourceRecord.parse(doc), tmp_path)
+    image.build()
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    directory = owner / ".ta-cli/sources"
+    directory.mkdir(parents=True)
+    (directory / "fake-cli.json").write_text(json.dumps(doc))
+    monkeypatch.setattr(SubscriptionRuntime, "IMAGE_ROOT", tmp_path)
+    monkeypatch.setattr(owner_runtime, "current", lambda: SimpleNamespace(root=owner))
+    runtime = SubscriptionRuntime("fake-cli")
+    assert runtime.binary == image.binary
+    monkeypatch.setattr(runtime, "_install_npm", lambda *a: pytest.fail("owner install"))
+    runtime.install()
+    assert not (runtime.directory / "node_modules").exists()
+    lock = image.directory / "package-lock.json"
+    lock.write_text(lock.read_text() + " ")
+    with pytest.raises(SubscriptionError, match="image CLI lock mismatch"):
+        SubscriptionRuntime("fake-cli")

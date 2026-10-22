@@ -22,6 +22,7 @@ def test_native_subscription_connect_controls(native):
       const pkceStore=sessionStorage,queueOwner='owner',queueScope='center';
       const token=()=>true,ensureFreshToken=async()=>{},authHeaders=()=>({});
       const refreshRail=async()=>{},closeExternal=async()=>{};
+      const appendMessage=()=>{};
       const closeConnectRequest=()=>{document.body.dataset.connected='yes';};
       const openExternal=async url=>{window.externalUrl=url;};
       const sleep=ms=>new Promise(resolve=>setTimeout(resolve,25));

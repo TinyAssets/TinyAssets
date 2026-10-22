@@ -6,11 +6,15 @@ Restore native subscription model access inside isolated owner boxes using edita
 ## Requirements
 
 ### Requirement: Owner-box subscription runtime
-The system SHALL load editable source definitions and install pinned packages only in the admitted owner volume, with integrity verification and exact registry egress.
+The system SHALL load editable source definitions and build declared pinned CLI packages once into the shared read-only box image, with the same lock/integrity verification and exact registry egress as runtime installation. Only login/configuration state lives in the owner home. A record absent from the image MAY install into the admitted owner volume with a 1 GiB free-space check and failure/cache cleanup.
 
 #### Scenario: First installation and reuse
 - **WHEN** an owner connects a source twice
-- **THEN** a verified pinned install is reused and no shared image is changed
+- **THEN** the matching verified image binary is reused and no owner install is performed
+
+#### Scenario: Fallback installation
+- **WHEN** a user-added source needs installation
+- **THEN** connect returns immediately, the conversation shows it as installing, and offers sign-in when ready without a waiting tab
 
 ### Requirement: Native login and durable isolation
 The system SHALL run the native CLI login in the box and expose its URL or device code, verifying completion before publishing a source.

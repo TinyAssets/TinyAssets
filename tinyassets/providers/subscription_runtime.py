@@ -11,6 +11,7 @@ import re
 import secrets
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from tinyassets.providers.subscription_source import digest, select, sources
@@ -21,6 +22,8 @@ class SubscriptionError(RuntimeError):
 
 
 class SubscriptionRuntime:
+    IMAGE_ROOT = Path("/opt/tinyassets/cli")
+
     def __init__(self, source_id):
         from tinyassets.owner_runtime import current
 
@@ -34,6 +37,28 @@ class SubscriptionRuntime:
         self.binary = self.directory / "node_modules" / ".bin" / self.cli_login["install"]["bin"]
         if self.cli_login["install"]["manager"] == "pip":
             self.binary = self.directory / "venv" / "bin" / self.cli_login["install"]["bin"]
+        self.image_install = self._image_binary()
+        if self.image_install:
+            self.binary = self.image_install
+
+    def _image_binary(self):
+        directory = self.IMAGE_ROOT / self.source.id
+        marker = directory / "installed.json"
+        if not marker.is_file():
+            return None
+        record = json.loads(marker.read_text())
+        if record["source"] != self.install_digest():
+            return None
+        lockfile = directory / ("requirements.lock" if self.cli_login["install"]["manager"]
+                                == "pip" else "package-lock.json")
+        if record["lock"] != hashlib.sha256(lockfile.read_bytes()).hexdigest():
+            raise SubscriptionError("image CLI lock mismatch")
+        if self.cli_login["install"]["manager"] == "npm":
+            self.verify_lock(lockfile)
+        binary = directory / self.binary.relative_to(self.directory)
+        if not binary.is_file():
+            raise SubscriptionError("image CLI binary missing")
+        return binary
 
     @contextlib.contextmanager
     def lock(self):
@@ -118,6 +143,8 @@ class SubscriptionRuntime:
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 target.write_text(self.argv([content])[0])
                 target.chmod(0o600)
+            if self.image_install:
+                return
             if install["manager"] == "pip":
                 self.install_pip()
                 return
@@ -367,7 +394,7 @@ class Login:
     def __init__(self, runtime):
         self.runtime = runtime
         self.handle = secrets.token_urlsafe(32)
-        self.status = "installing"
+        self.status = "waiting" if runtime.image_install else "installing"
         self.url = self.code = ""
         self.inputs = queue.Queue(maxsize=1)
         self.cancelled = threading.Event()
@@ -385,6 +412,7 @@ class Login:
             return {
                 "flow": self.handle,
                 "source_id": self.runtime.source["id"],
+                "display_name": self.runtime.source.display_name,
                 "status": self.status,
                 "authorize_url": self.url,
                 "code": self.code,
