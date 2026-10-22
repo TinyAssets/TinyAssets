@@ -47,6 +47,18 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \".claude/hooks/bash_guard.py\"",
+            "timeout": 40
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
@@ -54,6 +66,16 @@
           {
             "type": "command",
             "command": "python \".claude/hooks/supervisor_record.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \".claude/hooks/bash_guard.py\"",
+            "timeout": 40
           }
         ]
       }

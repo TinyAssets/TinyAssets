@@ -23,31 +23,32 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
 
 ## Live state
 
-| Kind | Home |
-|---|---|
-| Queued work | `openspec/changes/` |
-| Findings | `docs/concerns/`; delete a file to resolve |
-| Founder-only | `docs/host-actions.md` |
-| Who has what | branches and open PRs |
-| Narrative | git log: your commit message |
+Queued work: `openspec/changes/`. Findings: `docs/concerns/` (delete =
+resolve). Founder-only: `docs/host-actions.md`. Claims: branches, PRs.
+Narrative: commit messages.
 
 Orient: Direction, § Shape registry, "Shape reconciliation" issue.
 Converge a shape; add no second path. Write durable state before replying.
 
 ## The loop
 
-1. One intent, one worktree, disjoint files, one PR.
+1. One intent, one PR; parallel lanes by default, split by file around a
+   written contract (tests too).
 2. A one-sentence diff gets no plan. Spec first: public MCP/API, storage shape,
    authority, migrations, money.
 3. Run touched tests, affected heavy files and `ruff`; CI does the rest.
-   Mutation tables only for data-loss/cross-user guards.
+   Mutation tables only for data-loss/cross-user guards. Prove it live-like
+   (real deploy path) first.
 4. Review only floor-class (ADR-015) and gate-file changes, from push, beside
-   CI: one round ("cross-family review") by a non-author told to break it;
-   floor/correctness findings, `AGREE`/`DISAGREE_EVIDENCE`; fix rounds see
-   only new product hunks. Others: the lead stamps.
-5. Parallel, no lane cap. Use each known fix now (on the host if faster;
-   the PR follows); non-blockers never gate the next try; retest from the last
-   failure. Fold colliding or superseded lanes; serialize merges.
+   CI: one round ("cross-family review") by a non-author told to break it,
+   from `git diff --stat origin/main...`; floor/correctness findings,
+   `AGREE`/`DISAGREE_EVIDENCE`; fix rounds see only new product hunks.
+   Others: the lead stamps.
+5. Never serialize independent steps; non-blockers gate nothing. Known fixes
+   go live now (host; PR follows). Cache costly state on the first run; a
+   retry replays the last failure first (candidate image, live inputs).
+   Watch long work; post unasked milestones, all lanes, minutes from now.
+   Fold colliding lanes.
 6. Done = `deployed_sha.py --assert-contains <sha>`, one naive-user pass via
    the app agent, spec synced. A pasted chat is a bug report.
 7. Repeat error/finding, or round 3: escalate (Astra, Opus, simplify).
@@ -55,7 +56,6 @@ Converge a shape; add no second path. Write durable state before replying.
 
 ## Facts (numbers are cited repo-wide)
 
-1. `SqliteSaver`, never `AsyncSqliteSaver`.
 2. Reuse the LanceDB connection; never recreate it.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
@@ -63,7 +63,6 @@ Converge a shape; add no second path. Write durable state before replying.
 5. Accumulating state needs `Annotated[list, operator.add]` —
    `tinyassets/graph_compiler.py`.
 6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
-7. Python 3.11+ — `pyproject.toml`.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.
@@ -72,7 +71,6 @@ Converge a shape; add no second path. Write durable state before replying.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
 
-Required CI omits `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
 Sandbox, filesystem or process-limit work needs `scripts/linux_oracle.py`;
-a skip is not a pass. No temp root in the repo. Secrets:
-`set -a; source scripts/load_secrets.sh; set +a`.
+a skip is not a pass. Secrets: `set -a; source scripts/load_secrets.sh;
+set +a`.

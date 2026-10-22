@@ -254,6 +254,32 @@ after it, so wrapping a reason never fails the gate.
 - **WHEN** a new skipif's reason is wrapped and `# owner=x runs-in=linux-ci` follows it
 - **THEN** the hygiene gate accepts the marker
 
+### Requirement: A pull request stays inside its declared lane
+
+A pull request whose body declares `Lane: <glob> <dir/> ...` SHALL be refused
+when any changed path (including a rename's previous path) is outside those
+globs. A pull request touching a release-critical path SHALL declare a lane. The
+check SHALL run from the trusted base checkout, before the receipt is read.
+
+#### Scenario: A smuggled lineage is refused
+- **WHEN** a lane declares `Lane: scripts/peer_agent.py` and its diff also carries `deploy/deploy_fail_safe.sh`
+- **THEN** the scope guard refuses it and names `deploy/deploy_fail_safe.sh`
+
+#### Scenario: A release-critical change must declare a lane
+- **WHEN** a pull request touches `deploy/` and its body has no `Lane:` line
+- **THEN** the scope guard refuses it
+
+### Requirement: Agent shell commands that lost time are refused
+
+The Claude Code Bash guard SHALL refuse a heredoc whose body holds a backslash, a
+`pkill -f` whose pattern lacks the bracket trick, and a receipt naming a head that
+is not the pull request's current head. After a `git push` it SHALL report a
+branch whose origin ref is not the local head.
+
+#### Scenario: A self-matching pkill is refused
+- **WHEN** the agent runs `ssh host 'pkill -f rehearse'`
+- **THEN** the guard refuses it and suggests `'[r]ehearse'`
+
 ### Requirement: Worktree inspection supports narrowed provider scope
 
 The worktree status tool SHALL accept a provider filter and MUST apply it before

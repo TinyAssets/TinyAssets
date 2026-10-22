@@ -127,7 +127,11 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "TID251"]
+
+# Formerly AGENTS.md fact 1; a rule a script can enforce gets no line.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"langgraph.checkpoint.sqlite.aio".msg = "Use SqliteSaver, never AsyncSqliteSaver."
 
 [tool.ruff.lint.per-file-ignores]
 # Embeds JavaScript DOM-scanning strings (regexes, selectors) that can't

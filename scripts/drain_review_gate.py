@@ -22,6 +22,7 @@ exact head its reviewer had BLOCKED.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import re
@@ -546,6 +547,58 @@ def _list_carry_heads(argv: list[str]) -> int:
     return 0
 
 
+# A lane's declared files. A lane branched from another lane's WIP commit and
+# carried a 689-line deploy refactor through five reviews (2026-10-21), because
+# every reviewer read the lane's own commits, not its diff against main. A PR
+# that touches a release-critical path must say which files it owns, and every
+# PR that says so is held to it: a file outside the lane is a smuggled lineage
+# or a second intent, and either way it is refused before review starts.
+_LANE_RE = re.compile(r"^Lane:[ \t]*(\S.*)$", re.MULTILINE)
+
+
+def declared_lane(body: str) -> list[str] | None:
+    """The body's `Lane:` globs (`dir/` is a prefix), or None when undeclared."""
+    match = _LANE_RE.search(body)
+    if not match:
+        return None
+    globs = [g.strip("`") for g in re.split(r"[,\s]+", match.group(1))]
+    return [g for g in globs if g] or None
+
+
+def outside_lane(paths: list[str], globs: list[str]) -> list[str]:
+    def inside(path: str) -> bool:
+        return any(
+            path.startswith(g) if g.endswith("/") else fnmatch.fnmatchcase(path, g)
+            for g in globs
+        )
+
+    return [p for p in paths if p and not inside(p)]
+
+
+def _lane_scope(argv: list[str]) -> int:
+    """`--lane-scope --body-file F [--require]`, changed paths on stdin."""
+    parser = argparse.ArgumentParser(prog="drain_review_gate.py --lane-scope")
+    parser.add_argument("--body-file", type=Path, required=True)
+    parser.add_argument("--require", action="store_true",
+                        help="the diff touches a release-critical path")
+    args = parser.parse_args(argv)
+    globs = declared_lane(_read_text(args.body_file) or "")
+    if globs is None:
+        if args.require:
+            print("this PR touches a release-critical path: declare its files as "
+                  "`Lane: <glob> <dir/> ...` in the body", file=sys.stderr)
+            return 2
+        return 0
+    stray = outside_lane(sys.stdin.read().splitlines(), globs)
+    if stray:
+        print("files outside the declared Lane (branch from origin/main, or "
+              "widen the Lane):", file=sys.stderr)
+        for path in stray:
+            print(f"  {path}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _print_diff_key(argv: list[str]) -> int:
     """`--print-diff-key BASE HEAD`: the value a reviewer stamps as Drain-Review-Diff."""
     parser = argparse.ArgumentParser(prog="drain_review_gate.py --print-diff-key")
@@ -565,6 +618,8 @@ def main() -> int:
         return _print_diff_key(sys.argv[2:])
     if sys.argv[1:2] == ["--list-carry-heads"]:
         return _list_carry_heads(sys.argv[2:])
+    if sys.argv[1:2] == ["--lane-scope"]:
+        return _lane_scope(sys.argv[2:])
     parser = argparse.ArgumentParser()
     parser.add_argument("--head", required=True)
     parser.add_argument("--body-file", type=Path, required=True)
