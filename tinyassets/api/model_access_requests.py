@@ -98,7 +98,16 @@ def capture_action(uid: str, action: dict) -> dict:
         raise ValueError("agent binding revision is stale; read it again")
     root, proposed = _proposal(base, actor, uid, action)
     previous = _membership(assignment)
-    if not set(previous).issubset(proposed):
+    from tinyassets.provider_serving_binding import _resolve_serving_source
+
+    def still_resolves(name):
+        try:
+            _resolve_serving_source(base, uid, actor, name, ModelAccess())
+        except Exception:  # noqa: BLE001 - departed sources cannot be preserved
+            return False
+        return True
+
+    if not {name for name in previous if still_resolves(name)}.issubset(proposed):
         raise ValueError("model setup must preserve other accepted providers")
     for name, value in proposed.items():
         old = previous.get(name)

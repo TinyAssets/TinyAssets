@@ -1,10 +1,23 @@
 """Protected owner-box native login handoff; the router only forwards this door."""
 import json
+import logging
+import traceback
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+_SAFE_DETAILS = {"invalid login request", "native login is not complete",
+                 "native login is not connected", "subscription sign-in required",
+                 "not enough free storage to install this source",
+                 "CLI package lock failed", "CLI installation failed",
+                 "installed CLI version verification failed"}
+
+
+def _failure_detail(exc):
+    frame = traceback.extract_tb(exc.__traceback__)[-1]
+    message = str(exc) if str(exc) in _SAFE_DETAILS else "connection failed"
+    return f"{type(exc).__name__}@{frame.filename}:{frame.lineno}: {message}"
 
 
 def finish(source_id):
@@ -70,5 +83,8 @@ async def handle(request):
         else:
             result = login_operation(action, **doc)
         return JSONResponse(result, headers=HEADERS)
-    except (ValueError, KeyError, TypeError, PermissionError, SubscriptionError):
-        return JSONResponse({"error": "subscription_connection_incomplete"}, 409, headers=HEADERS)
+    except (ValueError, KeyError, TypeError, PermissionError, SubscriptionError) as exc:
+        detail = _failure_detail(exc)
+        logging.getLogger(__name__).warning("subscription connection %s: %s", action, detail)
+        return JSONResponse({"error": "subscription_connection_incomplete", "detail": detail},
+                            409, headers=HEADERS)

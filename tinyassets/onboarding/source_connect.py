@@ -37,14 +37,32 @@ def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
         binding = ensure_bootstrap_binding(base, uid=uid, owner=owner)
     if binding is None or binding["created_by"] != owner:
         raise PermissionError("owned agent required")
+    def live(definition_id):
+        from tinyassets.broker.ledger_queries import granted_resource_row
+        from tinyassets.providers.definition import get_definition
+
+        definition = get_definition(uid, definition_id)
+        if (definition is None or definition.owner_user_id != owner
+                or definition.access_method != "api_key_http"):
+            return False
+        try:
+            granted_resource_row(base, principal=owner, command_center=uid,
+                                 grant_id=definition.ref)
+        except Exception:  # noqa: BLE001 - a missing grant cannot serve
+            return False
+        return True
+
     access = ({m.provider.removeprefix("api_key_http:"): m.access.document()
-               for m in assignment.candidates}
+               for m in assignment.candidates
+               if live(m.provider.removeprefix("api_key_http:"))}
               if assignment is not None else {})
     proposed = (ModelAccess("explicit", tuple(models), None)
                 if models is not None else ModelAccess("discovered"))
     access.setdefault(definition_id, proposed.document())
     root = (assignment.provider.removeprefix("api_key_http:") if assignment is not None
             else definition_id)
+    if root not in access:
+        root = definition_id
     result = request_from_user(universe_id=uid, origin="platform", payload={
         "kind": "LLM", "title": "Use your " + preset["name"] + " models",
         "body": " ".join((preset["offer"], preset.get("billing_note", _PAID_USAGE_NOTE),

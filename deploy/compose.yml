@@ -173,6 +173,7 @@ services:
       # http connections stay DARK (not needed for the deposit→chat onboarding; their
       # deep hardening is post-live per AGENTS.md § Review sequencing).
       TINYASSETS_ONBOARDING_APP: "1"
+      TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED: ${TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED:-1}
     # NOT /etc/tinyassets/env. That file is the box's whole secret store and
     # this file's interpolation source (`--env-file`): the tunnel token, the
     # log-shipping token and an account-wide DigitalOcean token have all lived
@@ -229,6 +230,8 @@ services:
     env_file:
       - path: /etc/tinyassets/broker.env
         required: false
+    environment:
+      TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED: ${TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED:-1}
     volumes:
       - tinyassets-data:/data
       # Separate broker-only keys. Never included in data-volume backups.

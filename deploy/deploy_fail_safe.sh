@@ -784,6 +784,15 @@ restart_stack() {
   local image
   image="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1)"
   bundle_matches_image "$image" || return 1
+  # The broker starts before the daemon and must create usage lease locks.
+  local data_mount liveness
+  data_mount="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)" || return 1
+  [ -d "$data_mount" ] && [ ! -L "$data_mount" ] || return 1
+  liveness="$data_mount/.consumer_liveness"
+  [ ! -L "$liveness" ] || return 1
+  install -d -o 1001 -g 1102 -m 2770 -- "$liveness" || return 1
+  chown 1001:1102 -- "$liveness" || return 1
+  chmod 2770 -- "$liveness" || return 1
   systemctl reset-failed "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new

@@ -131,61 +131,95 @@ class SubscriptionRuntime:
                 }:
                     self.verify_lock(lockfile)
                     return
-            package = install["package"]
-            spec = install["version"]
-            if "archive" in install:
-                archive = (self.home / install["archive"]).resolve()
-                archive.relative_to(self.home.resolve())
-                actual = (
-                    "sha512-"
-                    + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode()
-                )
-                if actual != install["integrity"]:
-                    raise SubscriptionError("local package integrity mismatch")
-                spec = "file:" + str(archive)
-            (self.directory / "package.json").write_text(
-                json.dumps(
-                    {
-                        "name": "owner-subscription-source",
-                        "version": "1.0.0",
-                        "private": True,
-                        "dependencies": {package: spec},
-                    }
-                )
+            try:
+                self._require_space()
+                self._install_npm(install, lockfile, marker)
+            except BaseException:
+                self._discard_partial()
+                raise
+            finally:
+                self._clear_download_cache()
+
+    INSTALL_FREE_BYTES = 1024**3
+
+    def _require_space(self):
+        import shutil
+
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if shutil.disk_usage(self.directory).free < self.INSTALL_FREE_BYTES:
+            raise SubscriptionError("not enough free storage to install this source")
+
+    def _discard_partial(self):
+        import shutil
+
+        for name in ("node_modules", "package-lock.json", "installed.json"):
+            target = self.directory / name
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink(missing_ok=True)
+
+    def _clear_download_cache(self):
+        import shutil
+
+        shutil.rmtree(self.home / ".ta-cli" / ".npm-cache", ignore_errors=True)
+
+    def _install_npm(self, install, lockfile, marker):
+        package = install["package"]
+        spec = install["version"]
+        if "archive" in install:
+            archive = (self.home / install["archive"]).resolve()
+            archive.relative_to(self.home.resolve())
+            actual = (
+                "sha512-"
+                + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode()
             )
-            npm = [
-                "npm",
-                "--prefix",
-                str(self.directory),
-                "--registry",
-                "https://" + self.source["egress"]["registry"][0],
-                "--ignore-scripts",
-                "--no-audit",
-                "--no-fund",
-            ]
-            result = self.run(
-                [*npm, "install", "--package-lock-only"], phase="registry", timeout=300
+            if actual != install["integrity"]:
+                raise SubscriptionError("local package integrity mismatch")
+            spec = "file:" + str(archive)
+        (self.directory / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "owner-subscription-source",
+                    "version": "1.0.0",
+                    "private": True,
+                    "dependencies": {package: spec},
+                }
             )
-            if result.returncode:
-                raise SubscriptionError("CLI package lock failed")
-            self.verify_lock(lockfile)
-            scripts = ["--ignore-scripts=false"] if install.get("lifecycle_scripts") else []
-            result = self.run([*npm, "ci", *scripts], phase="registry", timeout=300)
-            if result.returncode or not self.binary.is_file():
-                raise SubscriptionError("CLI installation failed")
-            if install.get("verify_argv"):
-                result = self.run(self.argv(install["verify_argv"]), phase="registry",
-                                  separate_stderr=True)
-                if result.returncode or install["version"] not in result.stdout.decode():
-                    raise SubscriptionError("installed CLI version verification failed")
-            marker.write_text(
-                json.dumps(
-                    {
-                        "source": self.install_digest(),
-                        "lock": hashlib.sha256(lockfile.read_bytes()).hexdigest(),
-                    }
-                )
+        )
+        npm = [
+            "npm",
+            "--prefix",
+            str(self.directory),
+            "--registry",
+            "https://" + self.source["egress"]["registry"][0],
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ]
+        result = self.run(
+            [*npm, "install", "--package-lock-only"], phase="registry", timeout=300
+        )
+        if result.returncode:
+            raise SubscriptionError("CLI package lock failed")
+        self.verify_lock(lockfile)
+        scripts = ["--ignore-scripts=false"] if install.get("lifecycle_scripts") else []
+        result = self.run([*npm, "ci", *scripts], phase="registry", timeout=300)
+        if result.returncode or not self.binary.is_file():
+            raise SubscriptionError("CLI installation failed")
+        if install.get("verify_argv"):
+            result = self.run(self.argv(install["verify_argv"]), phase="registry",
+                              separate_stderr=True)
+            if result.returncode or install["version"] not in result.stdout.decode():
+                raise SubscriptionError("installed CLI version verification failed")
+        marker.write_text(
+            json.dumps(
+                {
+                    "source": self.install_digest(),
+                    "lock": hashlib.sha256(lockfile.read_bytes()).hexdigest(),
+                }
             )
+        )
 
     def install_pip(self):
         """Wheels only: every transitive dependency must be version/hash locked."""

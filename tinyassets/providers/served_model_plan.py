@@ -40,6 +40,18 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
 
+
+def _recover_stale_default(plan, admitted, owner, universe):
+    policy = plan.policy
+    if (plan.next_candidate(owner, universe) is None
+            and policy.current_selection is None and policy.saved_default is not None
+            and any(connection.models for connection in admitted)):
+        policy = replace(policy, mode="automatic", saved_default=None, fallbacks=(),
+                         stable_preference=None)
+        return replace(plan, policy=policy)
+    return plan
+
+
 def connected_sources(base: str | Path, universe: str | Path, owner: str,
                       *, conn=None) -> frozenset[str]:
     """Return this owner's live model sources for one command center.
@@ -401,6 +413,9 @@ def prepare_owned_model_plan(
         _refused_models(base, owner, (provider for provider, _chain in chains)),
         cooling_sources(owner, admitted),
     )
+    if not allow_empty:
+        plan = _recover_stale_default(plan, admitted, owner, universe.name)
+        policy = plan.policy
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         pinned = policy.current_selection or policy.saved_default
         # Name what is held and why: "no model connected" was wrong for an owner

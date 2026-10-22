@@ -944,6 +944,14 @@ class _Connection:
         except OwnerErased:
             return {"op": "HTTP_CONNECT_RESULT", "result": {"error": "deposit_failed"}}
         except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            import logging
+            import traceback
+
+            frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
+            logging.getLogger(__name__).warning(
+                "http connect refused: %s.%s at %s:%s", type(exc).__module__,
+                type(exc).__qualname__, frame.filename if frame else "?",
+                frame.lineno if frame else "?")
             return {"op": "HTTP_CONNECT_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
