@@ -803,16 +803,6 @@
       "class": "owner",
       "count": "1-10",
       "kinds": {
-        "fifo": "1-10"
-      },
-      "links": {},
-      "pattern": ".universe-sidecars/<center>/<file>.fifo",
-      "sizes": {}
-    },
-    {
-      "class": "owner",
-      "count": "1-10",
-      "kinds": {
         "file": "1-10"
       },
       "links": {
