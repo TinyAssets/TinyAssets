@@ -455,6 +455,22 @@ secret before the new route is admitted.
 - **WHEN** a sleeping owner's box is woken
 - **THEN** the router forwards with the same per-box secret from its snapshot
 
+### Requirement: Cutover preserves shared directory custody
+Staging SHALL record the live UID, GID and permission bits of every existing
+shared directory it stages. Publication and crash resume SHALL restore those
+recorded values exactly. New directories SHALL have explicit role custody:
+broker-private directories use 1002:1002 0700; published directories use
+1002:1102 0750; connection secrets and runtime children use 1001:1001 0700;
+the runtime socket parent uses 1001:1102 0710; the platform parent uses
+1001:1001 0711, with broker-private children. Other router directories use
+1001:1001 0750. Staged directory metadata SHALL be verified alongside the file
+manifest before publication; absent or changed metadata SHALL refuse publication.
+
+#### Scenario: A live runtime survives cutover
+- **WHEN** cutover stages a live `.runtime` owned by 1001:1102 with mode 0710
+- **THEN** publication preserves that custody and every other existing shared directory's custody
+- **AND** the daemon serving credentials as UID 1001 with groups 1100, 1101, 1102 permits the UID 1002 broker with group 1102 to connect
+
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge
 SQLite files verbatim into their owner's box. Census SHALL report knowledge
