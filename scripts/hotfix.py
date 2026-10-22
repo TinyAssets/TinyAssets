@@ -5,10 +5,11 @@ apply --branch <pushed-branch> [--files auto | path ...], revert <id>, list.
 Requires DO_DROPLET_HOST, DO_SSH_USER, DO_SSH_KEY_PATH (default ~/.ssh/do_deploy),
 and TINYASSETS_WIKI_CANARY_TOKEN. Floor changes also require gh and an approved PR.
 New/deleted files, incompatible diffs and unbounded test selections deploy normally.
-Active hotfix commits must survive the PR merge (no squash/rebase of those commits).
+Deploys verify candidate bytes or inclusion of the merged PR, including squash merges.
 """
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import io
@@ -50,22 +51,9 @@ def eligible(path):
     )
 
 
-def floor_class(paths):
-    # ADR-015 has semantic categories, not a maintained path registry.
-    return any(
-        re.search(
-            r"auth|credential|secret|token|billing|payment|money|escrow|storage|store|"
-            r"broker|sandbox|workspace|owner|tenant|consent|effector|external|"
-            r"mcp|universe_server|onboarding|api/|delete|purge|checkpoint",
-            p,
-        )
-        for p in paths
-    )
-
-
 def require_review(branch, commit, paths):
-    if not floor_class(paths):
-        return
+    # pr-scope-guard and drain_review_gate require a receipt for EVERY PR.
+    # There is no longer a selective floor path list; use that canonical gate.
     from scripts.drain_review_gate import published_approval_urls, review_allows_merge
 
     pr = json.loads(run("gh", "pr", "view", branch, "--json", "number,body,headRefOid"))
@@ -263,9 +251,13 @@ def branch_payload(branch, paths=None):
                 )
     require_review(branch, commit, runtime)
     probe_sources = targeted_tests(commit, changed)
+    pr = json.loads(run("gh", "pr", "view", branch, "--json", "number,headRefOid"))
+    if pr["headRefOid"] != commit:
+        raise ValueError("PR head changed; retry")
     if git("ls-remote", "--heads", "origin", branch).split()[0] != commit:
         raise ValueError("branch head changed during targeted tests; retry")
     manifest = {
+        "pr": pr["number"],
         "branch": branch,
         "commit": commit,
         "deployed_commit": base,
@@ -305,22 +297,42 @@ def branch_payload(branch, paths=None):
     return out.getvalue()
 
 
+def record_key(record):
+    return digest(json.dumps(record, sort_keys=True).encode())
+
+
 def guard_revision(revision):
+    """Runner attests merged PR inclusion; the host checks actual image bytes."""
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("invalid candidate revision")
     active = json.loads(remote("list"))
-    if any(r["status"] != "active" for r in active):
-        raise ValueError("deploy refused: unfinished hotfix; revert it first")
-    commits = sorted({r["commit"] for r in active})
-    for commit in commits:
-        git("cat-file", "-e", f"{commit}^{{commit}}")
-        try:
-            git("merge-base", "--is-ancestor", commit, revision)
-        except subprocess.CalledProcessError as exc:
-            raise ValueError(
-                f"deploy refused: image revision {revision} does not contain active hotfix {commit}"
-            ) from exc
-    return commits
+    proof = {"revision": revision, "records": {}}
+    for record in active:
+        if record["status"] != "active":
+            raise ValueError("deploy refused: unfinished hotfix; revert it first")
+        merged = None
+        if record.get("pr"):
+            try:
+                pr = json.loads(
+                    run(
+                        "gh",
+                        "pr",
+                        "view",
+                        str(record["pr"]),
+                        "--json",
+                        "state,baseRefName,mergeCommit",
+                    )
+                )
+                if pr["state"] == "MERGED" and pr["baseRefName"] == "main":
+                    sha = pr["mergeCommit"]["oid"]
+                    git("merge-base", "--is-ancestor", sha, revision)
+                    merged = sha
+            except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+                # GitHub/history may be unavailable. This removes only the PR
+                # exemption: the host still checks every applied file hash.
+                pass
+        proof["records"][record["id"]] = {"key": record_key(record), "merge": merged}
+    return base64.b64encode(json.dumps(proof, sort_keys=True).encode()).decode()
 
 
 def lock():
@@ -352,9 +364,17 @@ def wait_healthy(container):
     until = time.monotonic() + int(os.environ.get("HOTFIX_HEALTH_TIMEOUT", "180"))
     while time.monotonic() < until:
         state = (
-            run("docker", "inspect", "-f", "{{.State.Health.Status}}", container).decode().strip()
+            run(
+                "docker",
+                "inspect",
+                "-f",
+                "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
+                container,
+            )
+            .decode()
+            .strip()
         )
-        if state == "healthy":
+        if state in {"healthy", "running"}:
             return
         if state == "unhealthy":
             raise RuntimeError(f"{container} unhealthy after restart")
@@ -411,10 +431,242 @@ def smoke_checks(env, probe_sources):
     return {"passed": True, "checks": results}
 
 
+def valid_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
+        raise ValueError("id must contain only letters, numbers, underscores and hyphens")
+    return value
+
+
+def read_record(path):
+    """Normalize both shipped and hand-written records; never skip unknown state."""
+    try:
+        record = json.loads(path.read_text())
+        valid_id(record["id"])
+        if path.stem != record["id"]:
+            raise ValueError("id must match the record filename")
+        if "status" not in record:
+            if type(record.get("active")) is not bool:
+                raise ValueError("provide boolean active or explicit status")
+            record["status"] = "active" if record["active"] else "reverted"
+        if record["status"] not in {"active", "pending", "reverted", "archived"}:
+            raise ValueError("status must be active, pending, reverted or archived")
+        if isinstance(record["files"], dict):
+            record["files"] = [
+                {"path": name, "after_sha256": sha} for name, sha in record["files"].items()
+            ]
+            record["legacy"] = True
+            match = re.fullmatch(r"hf-([1-9][0-9]*)-.+", record["id"])
+            if match:
+                record.setdefault("pr", int(match[1]))
+        if not isinstance(record["files"], list) or not record["files"]:
+            raise ValueError("files must be a nonempty path-to-sha256 map or entry list")
+        paths = set()
+        for entry in record["files"]:
+            valid_file(entry["path"])
+            if entry["path"] in paths:
+                raise ValueError("duplicate file path")
+            paths.add(entry["path"])
+            if not re.fullmatch(r"[0-9a-f]{64}", entry["after_sha256"]):
+                raise ValueError("each file needs its applied SHA256 in after_sha256")
+        containers = record.get(
+            "containers", [record["container"]] if "container" in record else []
+        )
+        if (
+            not isinstance(containers, list)
+            or not containers
+            or any(
+                not isinstance(c, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", c)
+                for c in containers
+            )
+        ):
+            raise ValueError("containers must be a nonempty list of Docker names or ids")
+        record["containers"] = containers
+        for entry in record["files"]:
+            entry.setdefault("containers", containers)
+            if not entry["containers"] or not set(entry["containers"]) <= set(containers):
+                raise ValueError("file containers must name recorded containers")
+        if record.get("pr") is not None and (type(record["pr"]) is not int or record["pr"] < 1):
+            raise ValueError("pr must be a positive PR number")
+        return record
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise ValueError(
+            f"cannot read hotfix record {path}: {exc}. Fix {path}: retain id, "
+            "containers, files (path -> applied sha256) and boolean active, or restore "
+            "the valid record from backup; retain <id>.orig/ originals. Do not delete "
+            "an active record to bypass the guard."
+        ) from exc
+
+
 def records():
-    if not STATE.exists():
-        return []
-    return [json.loads(p.read_text()) for p in sorted(STATE.glob("*.json"))]
+    return [read_record(p) for p in sorted(STATE.glob("*.json"))] if STATE.exists() else []
+
+
+def file_bytes(container, path):
+    with tarfile.open(fileobj=io.BytesIO(docker_file(container, path))) as archive:
+        members = archive.getmembers()
+        if len(members) != 1 or not members[0].isfile():
+            raise ValueError(f"not a regular file: {container}:/app/{path}")
+        return archive.extractfile(members[0]).read(), members[0].mode & 0o777
+
+
+def running_containers():
+    """Discover services by their image, not a fixed daemon-only name."""
+    rows = run("docker", "ps", "--format", "{{.Names}}\t{{.Image}}").decode().splitlines()
+    found = [row.split("\t")[0] for row in rows if "tinyassets" in row.split("\t", 1)[1].lower()]
+    if not found:
+        raise ValueError("no running containers using a tinyassets image")
+    return sorted(found)
+
+
+def container_has_file(container, path):
+    try:
+        run("docker", "exec", container, "test", "-f", f"/app/{path}")
+        return True
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1:
+            return False
+        raise
+
+
+def restart_targets(containers, boxes):
+    # The service closes all awake owner daemons before exiting; subsequent
+    # admission boots them from the updated harness. Restart it before broker
+    # registration, which must reconnect to the new control listener.
+    if boxes:
+        run("systemctl", "restart", "boxhostd.service")
+        run("systemctl", "is-active", "--quiet", "boxhostd.service")
+    for container in containers:
+        run("docker", "restart", container)
+        wait_healthy(container)
+
+
+def original_path(record, entry, container):
+    root = STATE / record["id"]
+    if record.get("legacy"):
+        root = STATE / (record["id"] + ".orig")
+        candidates = [root / container / entry["path"], root / entry["path"]]
+        # Early hand-written fixes used basename-only backups.
+        if len({PurePosixPath(f["path"]).name for f in record["files"]}) == len(record["files"]):
+            candidates.append(root / PurePosixPath(entry["path"]).name)
+    elif record.get("version") == 2:
+        candidates = [root / "containers" / container / entry["path"]]
+    else:
+        candidates = [root / entry["path"]]
+    for candidate in candidates:
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    raise ValueError(
+        f"missing original: restore {candidates[0]} from the pre-hotfix backup before reverting"
+    )
+
+
+def prepare_recovery(record):
+    """Capture legacy applied bytes BEFORE deployment discards writable layers."""
+    for entry in record["files"]:
+        target = STATE / record["id"] / "after" / entry["path"]
+        if target.is_file() and digest(target.read_bytes()) == entry["after_sha256"]:
+            continue
+        data = None
+        for container in entry["containers"]:
+            try:
+                candidate, mode = file_bytes(container, entry["path"])
+            except subprocess.CalledProcessError:
+                continue
+            if digest(candidate) == entry["after_sha256"]:
+                data = candidate
+                break
+        if data is None:
+            raise ValueError(
+                f"restore applied bytes with SHA256 {entry['after_sha256']} to {target}; "
+                "no recorded container holds them; deployment refused"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        save_bytes(target, data, mode)
+
+
+def host_guard(image, encoded, archive=False):
+    """Called under deployment's lock, or by archive under our own lock."""
+    active = [r for r in records() if r["status"] in {"active", "pending"}]
+    if not active:
+        return
+    try:
+        proof = json.loads(base64.b64decode(encoded, validate=True))
+        expected = proof["records"]
+        if set(expected) != {r["id"] for r in active} or any(
+            r["status"] != "active" or expected[r["id"]]["key"] != record_key(r) for r in active
+        ):
+            raise ValueError("active hotfix set changed or is pending; rerun guard")
+        revision = (
+            run(
+                "docker",
+                "image",
+                "inspect",
+                "-f",
+                '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+                image,
+            )
+            .decode()
+            .strip()
+        )
+        if revision != proof["revision"]:
+            raise ValueError("candidate image revision differs from proof; rerun guard")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"deploy refused: invalid hotfix proof: {exc}; rerun hotfix.py guard"
+        ) from exc
+    candidate = run("docker", "create", "--entrypoint", "/bin/true", image).decode().strip()
+    try:
+        for record in active:
+            if not expected[record["id"]]["merge"]:
+                for entry in record["files"]:
+                    try:
+                        data, _ = file_bytes(candidate, entry["path"])
+                    except subprocess.CalledProcessError as exc:
+                        raise ValueError(
+                            f"candidate missing hotfixed file {entry['path']}"
+                        ) from exc
+                    if digest(data) != entry["after_sha256"]:
+                        raise ValueError(
+                            f"deploy refused: candidate lacks hotfix {record['id']} "
+                            f"at {entry['path']}; include its applied bytes or merged PR"
+                        )
+            if not archive:
+                prepare_recovery(record)
+        if archive:
+            for record in active:
+                record.update(
+                    status="archived",
+                    active=False,
+                    archived_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+                )
+                save_record(record)
+    finally:
+        run("docker", "rm", candidate)
+
+
+def host_restore():
+    active = [r for r in records() if r["status"] == "active"]
+    targets, boxes = set(), False
+    # Verify every saved payload before changing any runtime.
+    for record in active:
+        for entry in record["files"]:
+            source = STATE / record["id"] / "after" / entry["path"]
+            if not source.is_file() or digest(source.read_bytes()) != entry["after_sha256"]:
+                raise ValueError(
+                    f"saved hotfix bytes corrupt: restore {source} "
+                    f"with SHA256 {entry['after_sha256']}"
+                )
+    for record in active:
+        for entry in record["files"]:
+            source = STATE / record["id"] / "after" / entry["path"]
+            for container in entry["containers"]:
+                cp_into(source, container, entry["path"])
+                targets.add(container)
+            if entry.get("box_before_sha256"):
+                shutil.copy2(source, BOX / entry["path"])
+                boxes = True
+    if targets:
+        restart_targets(sorted(targets), boxes)
 
 
 def save_record(record):
@@ -428,10 +680,9 @@ def save_record(record):
     os.replace(tmp, STATE / f"{record['id']}.json")
 
 
-def host_apply(container, also_boxes):
+def host_apply(container=None, also_boxes=True):
     guard = lock()
-    data = sys.stdin.buffer.read()
-    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+    with tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read())) as archive:
         names = archive.getnames()
         if names.count("manifest.json") != 1:
             raise ValueError("missing manifest")
@@ -439,107 +690,83 @@ def host_apply(container, also_boxes):
         smoke_env = manifest.pop("smoke_env", {})
         probe_sources = manifest.pop("probe_sources", {})
         files = manifest["files"]
-        if set(names) != {"manifest.json", *(f["path"] for f in files)}:
-            raise ValueError("archive contains unexpected files")
-        for member in archive:
-            if not member.isfile():
-                raise ValueError("archive contains non-file")
+        if (
+            not files
+            or len(names) != len(files) + 1
+            or set(names) != {"manifest.json", *(f["path"] for f in files)}
+        ):
+            raise ValueError("archive contains unexpected or duplicate files")
+        if any(not member.isfile() for member in archive):
+            raise ValueError("archive contains non-file")
         if any(not eligible(f["path"]) for f in files):
             raise ValueError("not hot-swappable; use the normal deploy")
-        revision = (
-            run(
-                "docker",
-                "inspect",
-                "-f",
-                '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
-                container,
-            )
-            .decode()
-            .strip()
-        )
-        if revision != manifest["deployed_commit"]:
-            raise ValueError(f"deployed revision changed: {revision}")
         if any(
             {f["path"] for f in r["files"]} & {f["path"] for f in files}
             for r in records()
             if r["status"] in ("active", "pending")
         ):
             raise ValueError("a named file already has an active hotfix")
+        containers = running_containers()
         identifier = (
             dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
         )
         saved = STATE / identifier
         saved.mkdir(parents=True)
+        manifest.update(id=identifier, version=2, containers=containers, status="pending")
         touched = []
+        box_touched = []
         try:
             for entry in files:
                 path = valid_file(entry["path"])
-                before_tar = docker_file(container, path)
-                with tarfile.open(fileobj=io.BytesIO(before_tar)) as original:
-                    members = original.getmembers()
-                    if len(members) != 1 or not members[0].isfile():
-                        raise ValueError(f"live path is not a regular file: {path}")
-                    before = original.extractfile(members[0]).read()
-                    mode = members[0].mode & 0o777
-                if digest(before) != entry["before_sha256"]:
-                    raise ValueError(f"live file differs from deployed commit: {path}")
                 after = archive.extractfile(path).read()
                 if digest(after) != entry["after_sha256"]:
                     raise ValueError(f"payload digest mismatch: {path}")
-                target = saved / path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                save_bytes(target, before, mode)
+                entry["containers"] = [c for c in containers if container_has_file(c, path)]
+                if not entry["containers"]:
+                    raise ValueError(f"no running tinyassets container contains {path}")
+                for target in entry["containers"]:
+                    before, mode = file_bytes(target, path)
+                    if digest(before) != entry["before_sha256"]:
+                        raise ValueError(f"live file differs from deployed commit: {target}:{path}")
+                    original = saved / "containers" / target / path
+                    original.parent.mkdir(parents=True, exist_ok=True)
+                    save_bytes(original, before, mode)
                 patched = saved / "after" / path
                 patched.parent.mkdir(parents=True, exist_ok=True)
                 save_bytes(patched, after, mode)
-                if also_boxes:
-                    box_path = BOX / path
-                    if not box_path.is_file() or box_path.is_symlink():
-                        raise ValueError(f"box harness file missing: {path}")
-                    box_saved = saved / "boxes" / path
-                    box_saved.parent.mkdir(parents=True, exist_ok=True)
-                    save_bytes(box_saved, box_path.read_bytes(), box_path.stat().st_mode & 0o777)
-                entry["box_before_sha256"] = (
-                    digest((saved / "boxes" / path).read_bytes()) if also_boxes else None
-                )
-            manifest.update(
-                {
-                    "id": identifier,
-                    "container": container,
-                    "also_boxes": also_boxes,
-                    "status": "pending",
-                }
-            )
+                box_path = BOX / path
+                if box_path.is_symlink():
+                    raise ValueError(f"box harness file is a symlink: {path}")
+                if also_boxes and box_path.is_file():
+                    original = saved / "boxes" / path
+                    original.parent.mkdir(parents=True, exist_ok=True)
+                    save_bytes(original, box_path.read_bytes(), box_path.stat().st_mode & 0o777)
+                    entry["box_before_sha256"] = digest(original.read_bytes())
             save_record(manifest)
             for entry in files:
                 path = entry["path"]
-                after = archive.extractfile(path).read()
-                touched.append(path)
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    staged = Path(temp_dir) / "payload"
-                    staged.write_bytes(after)
-                    staged.chmod((saved / path).stat().st_mode & 0o777)
-                    cp_into(staged, container, path)
-                if also_boxes:
-                    (BOX / path).write_bytes(after)
-            run("docker", "restart", container)
-            wait_healthy(container)
+                for target in entry["containers"]:
+                    touched.append((target, path))
+                    cp_into(saved / "after" / path, target, path)
+                if entry.get("box_before_sha256"):
+                    box_touched.append(path)
+                    shutil.copy2(saved / "after" / path, BOX / path)
+            restart_targets(sorted({c for c, _ in touched}), bool(box_touched))
             manifest["smoke"] = smoke_checks(smoke_env, probe_sources)
             manifest["status"] = "active"
             save_record(manifest)
             print(identifier)
         except BaseException as exc:
             manifest["smoke"] = {"passed": False, "error": str(exc)}
-            if "id" in manifest:
+            # Only persist a pending record after mutation began. Preflight
+            # failures cannot leave an invalid/incomplete record blocking deploy.
+            if touched or box_touched:
                 save_record(manifest)
-            for path in touched:
-                cp_into(saved / path, container, path)
-                if also_boxes and (saved / "boxes" / path).exists():
+                for target, path in touched:
+                    cp_into(saved / "containers" / target / path, target, path)
+                for path in box_touched:
                     shutil.copy2(saved / "boxes" / path, BOX / path)
-            if touched:
-                run("docker", "restart", container)
-                wait_healthy(container)
-            if "id" in manifest:
+                restart_targets(sorted({c for c, _ in touched}), bool(box_touched))
                 manifest["status"] = "reverted"
                 save_record(manifest)
                 print(f"hotfix {identifier}: automatically reverted", file=sys.stderr)
@@ -551,49 +778,50 @@ def host_apply(container, also_boxes):
 
 def host_revert(identifier):
     guard = lock()
-    if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", identifier):
-        raise ValueError("invalid hotfix id")
-    path = STATE / f"{identifier}.json"
-    record = json.loads(path.read_text())
+    valid_id(identifier)
+    record = read_record(STATE / f"{identifier}.json")
     if record["status"] not in {"active", "pending"}:
         raise ValueError("hotfix is not active or pending")
-    current = (
-        run(
-            "docker",
-            "inspect",
-            "-f",
-            '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
-            record["container"],
-        )
-        .decode()
-        .strip()
-    )
-    if current != record["deployed_commit"]:
-        raise ValueError("image changed; refuse to restore originals over a newer deploy")
+    originals = []
+    box_originals = []
     for entry in record["files"]:
-        name = valid_file(entry["path"])
-        if digest((STATE / identifier / name).read_bytes()) != entry["before_sha256"]:
-            raise ValueError(f"saved original corrupt: {name}")
-        if record["also_boxes"] and (
-            digest((STATE / identifier / "boxes" / name).read_bytes()) != entry["box_before_sha256"]
-        ):
-            raise ValueError(f"saved box original corrupt: {name}")
+        name = entry["path"]
+        for container in entry["containers"]:
+            source = original_path(record, entry, container)
+            before = digest(source.read_bytes())
+            if entry.get("before_sha256") and before != entry["before_sha256"]:
+                raise ValueError(f"saved original corrupt: {source}")
+            live, _ = file_bytes(container, name)
+            if digest(live) not in {before, entry["after_sha256"]}:
+                raise ValueError(
+                    f"live file changed: {container}:{name}; refuse to overwrite newer content"
+                )
+            originals.append((source, container, name))
+        if entry.get("box_before_sha256"):
+            source = STATE / identifier / "boxes" / name
+            if digest(source.read_bytes()) != entry["box_before_sha256"]:
+                raise ValueError(f"saved box original corrupt: {source}")
+            if digest((BOX / name).read_bytes()) not in {
+                entry["box_before_sha256"],
+                entry["after_sha256"],
+            }:
+                raise ValueError(f"box file changed: {name}; refuse to overwrite newer content")
+            box_originals.append((source, name))
     record["status"] = "pending"
     save_record(record)
-    for entry in record["files"]:
-        name = valid_file(entry["path"])
-        cp_into(STATE / identifier / name, record["container"], name)
-        if record["also_boxes"]:
-            shutil.copy2(STATE / identifier / "boxes" / name, BOX / name)
-    run("docker", "restart", record["container"])
-    wait_healthy(record["container"])
-    record["status"] = "reverted"
-    record["reverted_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    for source, container, name in originals:
+        cp_into(source, container, name)
+    for source, name in box_originals:
+        shutil.copy2(source, BOX / name)
+    restart_targets(sorted({c for _, c, _ in originals}), bool(box_originals))
+    record.update(
+        status="reverted", active=False, reverted_at=dt.datetime.now(dt.timezone.utc).isoformat()
+    )
     save_record(record)
     guard.close()
 
 
-def host_archive(commits, revision):
+def host_archive(proof, revision):
     guard = lock()
     current = (
         run(
@@ -608,13 +836,8 @@ def host_archive(commits, revision):
     )
     if current != revision:
         raise ValueError("deployed image changed; refusing archive")
-    active = [r for r in records() if r["status"] == "active"]
-    if set(commits) != {r["commit"] for r in active}:
-        raise ValueError("active hotfix set changed during deploy; refusing archive")
-    for record in active:
-        record["status"] = "archived"
-        record["archived_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        save_record(record)
+    image = run("docker", "inspect", "-f", "{{.Image}}", "tinyassets-daemon").decode().strip()
+    host_guard(image, proof, archive=True)
     guard.close()
 
 
@@ -638,13 +861,13 @@ def main():
             end="",
         )
     elif args.action == "guard":
-        print(",".join(guard_revision(args.revision)))
+        print(guard_revision(args.revision))
     elif args.action in ("revert", "list", "revision", "archive"):
         argv = [args.action]
         if args.action == "revert":
             argv.append(args.id)
         if args.action == "archive":
-            argv += [args.revision, *guard_revision(args.revision)]
+            argv += [args.revision, guard_revision(args.revision)]
         print(remote(*argv).decode(), end="")
 
 
@@ -673,7 +896,11 @@ def host_main():
             )
         )
     elif action == "archive":
-        host_archive(sys.argv[4:], sys.argv[3])
+        host_archive(sys.argv[4], sys.argv[3])
+    elif action == "guard-image":
+        host_guard(sys.argv[3], sys.argv[4])
+    elif action == "restore":
+        host_restore()
 
 
 if __name__ == "__main__":

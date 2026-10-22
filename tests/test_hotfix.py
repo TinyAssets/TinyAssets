@@ -1,4 +1,4 @@
-"""Hotfix records and ancestry guard, without contacting a host."""
+"""Hotfix records and content guard, without contacting a host."""
 
 import importlib.util
 import io
@@ -17,6 +17,7 @@ spec.loader.exec_module(hotfix)
 def packed(before, after):
     path = "tinyassets/example.py"
     record = {
+        "pr": 12,
         "branch": "fix/signin",
         "commit": "b" * 40,
         "deployed_commit": "a" * 40,
@@ -44,9 +45,16 @@ def test_record_and_revert(tmp_path, monkeypatch, capsys, red_smoke):
     monkeypatch.setattr(hotfix, "STATE", tmp_path / "hotfixes")
     monkeypatch.setattr(hotfix, "lock", lambda: io.BytesIO())
     monkeypatch.setattr(hotfix.sys, "stdin", io.TextIOWrapper(io.BytesIO(packed(b"old", b"new"))))
-    live = {"tinyassets/example.py": b"old"}
+    live = {
+        (c, "tinyassets/example.py"): b"old" for c in ("tinyassets-daemon", "tinyassets-broker")
+    }
 
     def fake_run(*args, **kwargs):
+        if args[:2] == ("docker", "ps"):
+            return (
+                b"tinyassets-daemon\ttinyassets:live\n"
+                b"tinyassets-broker\tghcr.io/org/tinyassets:live\n"
+            )
         if args[:2] == ("docker", "inspect"):
             return ("a" * 40 + "\n").encode()
         return b""
@@ -54,7 +62,7 @@ def test_record_and_revert(tmp_path, monkeypatch, capsys, red_smoke):
     def fake_docker_file(container, path):
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            data = live[path]
+            data = live[container, path]
             info = tarfile.TarInfo(Path(path).name)
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
@@ -65,7 +73,9 @@ def test_record_and_revert(tmp_path, monkeypatch, capsys, red_smoke):
     monkeypatch.setattr(
         hotfix,
         "cp_into",
-        lambda source, container, path: live.__setitem__(path, Path(source).read_bytes()),
+        lambda source, container, path: live.__setitem__(
+            (container, path), Path(source).read_bytes()
+        ),
     )
     monkeypatch.setattr(hotfix, "wait_healthy", lambda container: None)
     monkeypatch.setattr(hotfix, "BOX", tmp_path / "box")
@@ -74,7 +84,7 @@ def test_record_and_revert(tmp_path, monkeypatch, capsys, red_smoke):
     box_file.write_bytes(b"box original")
 
     def smoke(*args):
-        assert live["tinyassets/example.py"] == b"new"
+        assert set(live.values()) == {b"new"}
         assert box_file.read_bytes() == b"new"
         if red_smoke:
             raise RuntimeError("smoke /app: expected 200, got 500")
@@ -87,7 +97,7 @@ def test_record_and_revert(tmp_path, monkeypatch, capsys, red_smoke):
         record = hotfix.records()[0]
         assert record["status"] == "reverted"
         assert record["smoke"]["passed"] is False
-        assert live["tinyassets/example.py"] == b"old"
+        assert set(live.values()) == {b"old"}
         assert box_file.read_bytes() == b"box original"
         return
     hotfix.host_apply("tinyassets-daemon", True)
@@ -95,9 +105,10 @@ def test_record_and_revert(tmp_path, monkeypatch, capsys, red_smoke):
     record = json.loads((hotfix.STATE / f"{identifier}.json").read_text())
     assert record["status"] == "active"
     assert record["files"][0]["before_sha256"] == hotfix.digest(b"old")
-    assert live["tinyassets/example.py"] == b"new"
+    assert set(live.values()) == {b"new"}
     hotfix.host_revert(identifier)
-    assert live["tinyassets/example.py"] == b"old"
+    assert set(live.values()) == {b"old"}
+    assert box_file.read_bytes() == b"box original"
     assert json.loads((hotfix.STATE / f"{identifier}.json").read_text())["status"] == "reverted"
 
 
@@ -116,36 +127,6 @@ def test_refuses_file_outside_branch_diff(monkeypatch):
     )
     with pytest.raises(ValueError, match="not modified"):
         hotfix.branch_payload("fix/signin", ["tinyassets/example.py"])
-
-
-def test_deploy_refusal_and_archive(tmp_path, monkeypatch):
-    monkeypatch.setattr(hotfix, "STATE", tmp_path / "hotfixes")
-    monkeypatch.setattr(hotfix, "lock", lambda: io.BytesIO())
-    record = {
-        "id": "20261022T000000Z-12345678",
-        "branch": "fix/signin",
-        "commit": "b" * 40,
-        "files": [],
-        "status": "active",
-    }
-    hotfix.save_record(record)
-    monkeypatch.setattr(
-        hotfix, "remote", lambda *args, **kwargs: json.dumps(hotfix.records()).encode()
-    )
-
-    def fake_git(*args):
-        if args[0] == "merge-base":
-            raise hotfix.subprocess.CalledProcessError(1, args)
-        return ""
-
-    monkeypatch.setattr(hotfix, "git", fake_git)
-    with pytest.raises(ValueError, match="does not contain active hotfix"):
-        hotfix.guard_revision("c" * 40)
-    monkeypatch.setattr(hotfix, "git", lambda *args: "")
-    hotfix.guard_revision("c" * 40)
-    monkeypatch.setattr(hotfix, "run", lambda *a, **kw: ("c" * 40).encode())
-    hotfix.host_archive(["b" * 40], "c" * 40)
-    assert json.loads((hotfix.STATE / (record["id"] + ".json")).read_text())["status"] == "archived"
 
 
 @pytest.mark.parametrize(
@@ -226,6 +207,7 @@ def test_selected_file_cannot_hide_dependency_change(monkeypatch):
 
 
 def test_failed_tests_prevent_payload(monkeypatch):
+    monkeypatch.setattr(hotfix, "require_review", lambda *a: None)
     monkeypatch.setattr(hotfix, "remote", lambda *a, **kw: ("a" * 40).encode())
     monkeypatch.setattr(
         hotfix,
@@ -247,27 +229,6 @@ def test_failed_tests_prevent_payload(monkeypatch):
     monkeypatch.setattr(hotfix, "targeted_tests", fail)
     with pytest.raises(RuntimeError, match="tests failed"):
         hotfix.branch_payload("fix/x")
-
-
-@pytest.mark.parametrize(
-    "status,expected,allowed",
-    [
-        ("active", "b" * 40, True),
-        ("active", "", False),
-        ("pending", "b" * 40, False),
-    ],
-)
-def test_deploy_rechecks_records_under_lock(tmp_path, status, expected, allowed):
-    shell = (SCRIPT.parents[1] / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8")
-    block = shell.split("<<'HOTFIX_GUARD'\n", 1)[1].split("\nHOTFIX_GUARD", 1)[0]
-    (tmp_path / "one.json").write_text(
-        json.dumps({"id": "one", "status": status, "commit": "b" * 40})
-    )
-    proc = hotfix.subprocess.run(
-        [hotfix.sys.executable, "-c", block, str(tmp_path), expected], capture_output=True
-    )
-    assert (proc.returncode == 0) is allowed
-    assert '"$candidate_revision" != "${HOTFIX_IMAGE_REVISION:-}"' in shell
 
 
 def test_archive_refuses_wrong_running_revision(tmp_path, monkeypatch):
@@ -345,6 +306,7 @@ def test_signin_probe_failure_is_red(monkeypatch):
 
 
 def test_auto_payload_uses_pushed_bytes_after_tests(monkeypatch):
+    monkeypatch.setattr(hotfix, "require_review", lambda *a: None)
     events = []
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "fake")
     monkeypatch.setattr(hotfix, "remote", lambda *a, **kw: ("a" * 40).encode())
@@ -360,12 +322,23 @@ def test_auto_payload_uses_pushed_bytes_after_tests(monkeypatch):
 
     monkeypatch.setattr(hotfix, "git", git)
     monkeypatch.setattr(hotfix, "targeted_tests", lambda *a: events.append(a))
-    monkeypatch.setattr(hotfix, "run", lambda *a: b"old" if a[-1].startswith("a" * 40) else b"new")
+    monkeypatch.setattr(
+        hotfix,
+        "run",
+        lambda *a: (
+            json.dumps({"number": 12, "headRefOid": "b" * 40}).encode()
+            if a[0] == "gh"
+            else b"old"
+            if a[-1].startswith("a" * 40)
+            else b"new"
+        ),
+    )
     payload = hotfix.branch_payload("fix/x")
     assert events == [("b" * 40, ["tinyassets/example.py", "tests/test_example.py"])]
     with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
         record = json.load(archive.extractfile("manifest.json"))
         assert record["commit"] == "b" * 40
+        assert record["pr"] == 12
         assert archive.extractfile("tinyassets/example.py").read() == b"new"
         assert len(record["files"]) == 1
 
@@ -389,34 +362,297 @@ def test_embedded_sql_shape_change_refused(monkeypatch):
         hotfix.branch_payload("fix/x")
 
 
-@pytest.mark.parametrize("corrupt", [False, True])
-def test_deploy_rollback_restores_hotfix_bytes(tmp_path, monkeypatch, corrupt):
-    shell = (SCRIPT.parents[1] / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8")
-    block = shell.split("<<'HOTFIX_RESTORE'\n", 1)[1].split("\nHOTFIX_RESTORE", 1)[0]
-    original = tmp_path / "one/after/tinyassets/example.py"
+@pytest.fixture
+def legacy(tmp_path, monkeypatch):
+    monkeypatch.setattr(hotfix, "STATE", tmp_path)
+    monkeypatch.setattr(hotfix, "lock", lambda: io.BytesIO())
+    record = {
+        "id": "hf-5206-first-admission",
+        "commit": "b" * 40,
+        "result": "passed",
+        "containers": ["tinyassets-daemon", "tinyassets-broker"],
+        "files": {"tinyassets/example.py": hotfix.digest(b"patched")},
+        "applied_at": "2026-10-21",
+        "active": True,
+    }
+    hotfix.save_record(record)
+    original = tmp_path / (record["id"] + ".orig") / "tinyassets/example.py"
     original.parent.mkdir(parents=True)
-    original.write_bytes(b"bad" if corrupt else b"patched")
-    (tmp_path / "one.json").write_text(
+    original.write_bytes(b"original")
+    return record
+
+
+def test_legacy_list_revert_and_recovery(legacy, monkeypatch):
+    calls = []
+    monkeypatch.setattr(hotfix, "file_bytes", lambda *a: (b"patched", 0o644))
+    monkeypatch.setattr(
+        hotfix, "cp_into", lambda source, c, p: calls.append((c, source.read_bytes()))
+    )
+    monkeypatch.setattr(hotfix, "restart_targets", lambda *a: None)
+    record = hotfix.records()[0]
+    assert record["status"] == "active"
+    hotfix.prepare_recovery(record)
+    hotfix.host_restore()
+    assert calls == [(c, b"patched") for c in legacy["containers"]]
+    calls.clear()
+    hotfix.host_revert(legacy["id"])
+    assert calls == [(c, b"original") for c in legacy["containers"]]
+    assert hotfix.records()[0]["status"] == "reverted"
+
+
+@pytest.mark.parametrize("damage", ["json", "status", "files", "containers", "sha", "id"])
+def test_unreadable_record_refuses_with_fix(legacy, damage):
+    path = hotfix.STATE / (legacy["id"] + ".json")
+    if damage == "json":
+        path.write_text("{")
+    else:
+        if damage == "status":
+            legacy.pop("active")
+        elif damage == "sha":
+            legacy["files"]["tinyassets/example.py"] = "not a sha"
+        else:
+            legacy[damage] = None
+        path.write_text(json.dumps(legacy))
+    with pytest.raises(ValueError, match="Fix .*retain id"):
+        hotfix.records()
+
+
+def proof_for(record, merge=None):
+    return hotfix.base64.b64encode(
         json.dumps(
             {
-                "id": "one",
-                "status": "active",
-                "files": [
-                    {"path": "tinyassets/example.py", "after_sha256": hotfix.digest(b"patched")}
-                ],
+                "revision": "c" * 40,
+                "records": {record["id"]: {"key": hotfix.record_key(record), "merge": merge}},
             }
-        )
-    )
+        ).encode()
+    ).decode()
+
+
+@pytest.mark.parametrize(
+    "content,merged,allowed",
+    [(b"patched", None, True), (b"newer", "d" * 40, True), (b"old", None, False)],
+)
+def test_candidate_content_or_squash_merge_and_archive(
+    legacy, monkeypatch, content, merged, allowed
+):
+    record = hotfix.records()[0]
+    proof = proof_for(record, merged)
     calls = []
-    monkeypatch.setattr(hotfix.sys, "argv", ["-", str(tmp_path), "tinyassets-daemon"])
-    monkeypatch.setattr(hotfix.subprocess, "run", lambda args, **kw: calls.append(args))
-    if corrupt:
-        with pytest.raises(SystemExit, match="corrupt"):
-            exec(compile(block, "<rollback>", "exec"), {})
-        assert not calls
+
+    def run(*args, **kw):
+        calls.append(args)
+        return b"candidate" if args[:2] == ("docker", "create") else ("c" * 40).encode()
+
+    monkeypatch.setattr(hotfix, "run", run)
+    monkeypatch.setattr(
+        hotfix, "file_bytes", lambda c, p: (content if c == "candidate" else b"patched", 0o644)
+    )
+    if not allowed:
+        with pytest.raises(ValueError, match="candidate lacks hotfix"):
+            hotfix.host_guard("image", proof)
+        assert hotfix.records()[0]["status"] == "active"
     else:
-        exec(compile(block, "<rollback>", "exec"), {})
-        assert calls == [
-            ["docker", "cp", str(original), "tinyassets-daemon:/app/tinyassets/example.py"],
-            ["docker", "restart", "tinyassets-daemon"],
-        ]
+        hotfix.host_guard("image", proof)
+        assert (
+            hotfix.STATE / record["id"] / "after/tinyassets/example.py"
+        ).read_bytes() == b"patched"
+        hotfix.host_archive(proof, "c" * 40)
+        assert hotfix.records()[0]["status"] == "archived"
+    assert ("docker", "rm", "candidate") in calls
+
+
+@pytest.mark.parametrize("change", ["pending", "files", "revision"])
+def test_host_guard_rechecks_proof_under_lock(legacy, monkeypatch, change):
+    proof = proof_for(hotfix.records()[0])
+    if change == "pending":
+        legacy["status"] = "pending"
+    elif change == "files":
+        legacy["files"]["tinyassets/example.py"] = hotfix.digest(b"other")
+    hotfix.save_record(legacy)
+    monkeypatch.setattr(hotfix, "run", lambda *a: ("a" * 40).encode())
+    with pytest.raises(ValueError, match="active hotfix set|revision differs"):
+        hotfix.host_guard("image", proof)
+
+
+@pytest.mark.parametrize(
+    "state,base,ancestor,expected",
+    [
+        ("MERGED", "main", True, "d" * 40),
+        ("OPEN", "main", True, None),
+        ("MERGED", "other", True, None),
+        ("MERGED", "main", False, None),
+    ],
+)
+def test_runner_proves_pr_merge_not_branch_ancestry(
+    legacy, monkeypatch, state, base, ancestor, expected
+):
+    legacy["pr"] = 5206
+    hotfix.save_record(legacy)
+    monkeypatch.setattr(hotfix, "remote", lambda *a: json.dumps(hotfix.records()).encode())
+    monkeypatch.setattr(
+        hotfix,
+        "run",
+        lambda *a: json.dumps(
+            {"state": state, "baseRefName": base, "mergeCommit": {"oid": "d" * 40}}
+        ).encode(),
+    )
+
+    def git(*args):
+        assert args == ("merge-base", "--is-ancestor", "d" * 40, "c" * 40)
+        if not ancestor:
+            raise hotfix.subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(hotfix, "git", git)
+    proof = json.loads(hotfix.base64.b64decode(hotfix.guard_revision("c" * 40)))
+    assert proof["records"][legacy["id"]]["merge"] == expected
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tinyassets/account_deletion.py",
+        "tinyassets/action_policy.py",
+        "tinyassets/agent_loop/box_tools.py",
+        "tinyassets/agent_loop/box_ta.py",
+        "tinyassets/agent_loop/tool_session.py",
+        "tinyassets/example.py",
+    ],
+)
+def test_canonical_gate_requires_receipt_without_private_path_exemptions(monkeypatch, path):
+    monkeypatch.setattr(
+        hotfix,
+        "run",
+        lambda *a: b'{"number":1,"body":"","headRefOid":"wrong","nameWithOwner":"org/repo"}',
+    )
+    with pytest.raises(ValueError, match="APPROVE receipt"):
+        hotfix.require_review("fix", "b" * 40, [path])
+
+
+def test_runtime_restart_reaches_boxes_then_both_services(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hotfix, "run", lambda *a: calls.append(a))
+    monkeypatch.setattr(hotfix, "wait_healthy", lambda c: calls.append(("healthy", c)))
+    hotfix.restart_targets(["tinyassets-broker", "tinyassets-daemon"], True)
+    assert calls == [
+        ("systemctl", "restart", "boxhostd.service"),
+        ("systemctl", "is-active", "--quiet", "boxhostd.service"),
+        ("docker", "restart", "tinyassets-broker"),
+        ("healthy", "tinyassets-broker"),
+        ("docker", "restart", "tinyassets-daemon"),
+        ("healthy", "tinyassets-daemon"),
+    ]
+
+
+def test_container_discovery_and_missing_file(monkeypatch):
+    monkeypatch.setattr(
+        hotfix,
+        "run",
+        lambda *a: (
+            b"tinyassets-daemon\ttinyassets:1\ntinyassets-broker\tghcr.io/tinyassets:1\nlogs\tvector:1\n"
+        ),
+    )
+    assert hotfix.running_containers() == ["tinyassets-broker", "tinyassets-daemon"]
+
+    def absent(*args):
+        raise hotfix.subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(hotfix, "run", absent)
+    assert not hotfix.container_has_file("broker", "tinyassets/example.py")
+
+
+def test_restore_corrupt_payload_refuses_before_any_write(legacy, monkeypatch):
+    calls = []
+    monkeypatch.setattr(hotfix, "cp_into", lambda *a: calls.append(a))
+    with pytest.raises(ValueError, match="saved hotfix bytes corrupt: restore"):
+        hotfix.host_restore()
+    assert not calls
+
+
+def test_deploy_uses_shared_reader_for_guard_and_rollback():
+    shell = (SCRIPT.parents[1] / "deploy/deploy_fail_safe.sh").read_text()
+    workflow = (SCRIPT.parents[1] / ".github/workflows/deploy-prod.yml").read_text()
+    assert '--host guard-image "$NEW_IMAGE" "${HOTFIX_PROOF:-}"' in shell
+    assert "--host restore" in shell
+    assert "scripts/hotfix.py" in workflow
+
+
+@pytest.mark.parametrize("identifier", ["hf-5206-first-admission", "hf-5216-desktop-open"])
+def test_both_host_record_ids_and_flat_originals(legacy, identifier, monkeypatch):
+    old_id = legacy["id"]
+    (hotfix.STATE / (old_id + ".json")).unlink()
+    legacy["id"] = identifier
+    hotfix.save_record(legacy)
+    original = hotfix.STATE / (identifier + ".orig") / "example.py"
+    original.parent.mkdir(exist_ok=True)
+    original.write_bytes(b"original")
+    record = hotfix.records()[0]
+    assert record["pr"] == int(identifier.split("-")[1])
+    assert (
+        hotfix.original_path(record, record["files"][0], "tinyassets-daemon").read_bytes()
+        == b"original"
+    )
+
+
+def test_api_failure_still_allows_content_proof(legacy, monkeypatch):
+    monkeypatch.setattr(hotfix, "remote", lambda *a: json.dumps(hotfix.records()).encode())
+
+    def unavailable(*args):
+        raise hotfix.subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(hotfix, "run", unavailable)
+    proof = json.loads(hotfix.base64.b64decode(hotfix.guard_revision("c" * 40)))
+    assert proof["records"][legacy["id"]]["merge"] is None
+
+
+def test_guard_checks_every_hotfixed_file(legacy, monkeypatch):
+    legacy["files"]["tinyassets/second.py"] = hotfix.digest(b"second")
+    hotfix.save_record(legacy)
+    proof = proof_for(hotfix.records()[0])
+    monkeypatch.setattr(
+        hotfix,
+        "run",
+        lambda *a: b"candidate" if a[:2] == ("docker", "create") else ("c" * 40).encode(),
+    )
+    monkeypatch.setattr(hotfix, "file_bytes", lambda *a: (b"patched", 0o644))
+    with pytest.raises(ValueError, match="second.py"):
+        hotfix.host_guard("image", proof)
+
+
+def test_missing_legacy_backup_gives_exact_repair(legacy):
+    record = hotfix.records()[0]
+    (hotfix.STATE / (record["id"] + ".orig") / "tinyassets/example.py").unlink()
+    with pytest.raises(ValueError, match=r"missing original: restore .*example.py.*backup"):
+        hotfix.original_path(record, record["files"][0], "tinyassets-daemon")
+
+
+def test_prepare_recovery_tries_other_recorded_container(legacy, monkeypatch):
+    def contents(container, path):
+        if container == "tinyassets-daemon":
+            raise hotfix.subprocess.CalledProcessError(1, ["docker", "cp"])
+        return b"patched", 0o644
+
+    monkeypatch.setattr(hotfix, "file_bytes", contents)
+    hotfix.prepare_recovery(hotfix.records()[0])
+    assert (hotfix.STATE / legacy["id"] / "after/tinyassets/example.py").read_bytes() == b"patched"
+
+
+def test_health_supports_broker_without_healthcheck(monkeypatch):
+    monkeypatch.setattr(hotfix, "run", lambda *a: b"running")
+    hotfix.wait_healthy("tinyassets-broker")
+
+
+def test_apply_ignores_container_without_file_and_absent_box_harness(tmp_path, monkeypatch):
+    monkeypatch.setattr(hotfix, "STATE", tmp_path / "state")
+    monkeypatch.setattr(hotfix, "BOX", tmp_path / "no-harness")
+    monkeypatch.setattr(hotfix, "lock", lambda: io.BytesIO())
+    monkeypatch.setattr(hotfix.sys, "stdin", io.TextIOWrapper(io.BytesIO(packed(b"old", b"new"))))
+    monkeypatch.setattr(hotfix, "running_containers", lambda: ["daemon", "broker"])
+    monkeypatch.setattr(hotfix, "container_has_file", lambda c, p: c == "daemon")
+    monkeypatch.setattr(hotfix, "file_bytes", lambda *a: (b"old", 0o644))
+    calls = []
+    monkeypatch.setattr(hotfix, "cp_into", lambda source, c, p: calls.append(c))
+    monkeypatch.setattr(hotfix, "restart_targets", lambda cs, boxes: calls.append((cs, boxes)))
+    monkeypatch.setattr(hotfix, "smoke_checks", lambda *a: {"passed": True})
+    hotfix.host_apply()
+    assert calls == ["daemon", (["daemon"], False)]
+    assert hotfix.records()[0]["files"][0]["containers"] == ["daemon"]
