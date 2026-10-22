@@ -30,3 +30,5 @@ def test_committed_cutover_holds_before_any_image_rollback():
     held = script[hold:restore]
     assert "exit 1" in held and "HOLDING" in held
     assert "cutover_control rollback" in held
+    # An unreadable cutover state holds too; it never falls through to the restore.
+    assert script.index("could not read this run's cutover state") < restore
