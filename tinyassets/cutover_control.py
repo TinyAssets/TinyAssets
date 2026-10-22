@@ -87,6 +87,21 @@ def initialize(directory, *, backup, old_image):
     directory = Path(directory)
     directory.mkdir(mode=0o700)
     _fsync_directory(directory.parent)
+    # The rolling bundle pointer advances on every fix-forward deploy. Keep
+    # the original bundle beside its old_image, outside snapshot pruning.
+    pointer = directory.parent / "bundle-previous"
+    if pointer.exists():
+        import shutil
+
+        shutil.copytree(Path(pointer.read_text().strip()), directory / "bundle")
+        for path in (directory / "bundle").rglob("*"):
+            if path.is_file():
+                with path.open("rb") as stream:
+                    os.fsync(stream.fileno())
+        for path in sorted((directory / "bundle").rglob("*"), reverse=True):
+            if path.is_dir():
+                _fsync_directory(path)
+        _fsync_directory(directory / "bundle")
     _write(directory / "state.json", {
         "state": "pre_traffic", "backup": str(backup),
         "sha256": digest, "old_image": old_image,
@@ -157,6 +172,12 @@ def rollback_live(directory, root, *, deploy_script):
 
     from tinyassets.cutover_restore import restore_old_layout
 
+    bundle = Path(directory) / "bundle"
+    has_bundle = (bundle / "manifest").is_file()
+    if not has_bundle and any((Path(directory).parent / name).exists() for name in (
+            "bundle-previous", "bundle-dirty", "bundle-snapshots")):
+        raise CutoverRefused("original cutover bundle unavailable; refusing data/image rollback")
+
     def run(*args):
         return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -181,8 +202,24 @@ def rollback_live(directory, root, *, deploy_script):
         shutil.rmtree(parent)
         _fsync_directory(root.parent)
 
-    rollback(directory, stop_new=stop_new, install_old=install_old,
-             start_old=lambda image: run("bash", str(deploy_script), "--restore-bundle", image))
+    # Serialize the entire recovery, including its recursive deploy. The child
+    # inherits the locked descriptor rather than deadlocking on a second open.
+    lock = os.open(os.environ.get("LOCK_FILE", "/var/lock/tinyassets-host-mutation.lock"),
+                   os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+
+        def start_old(image):
+            subprocess.run(
+                ["bash", str(deploy_script), "--restore-bundle", image], check=True,
+                env={**os.environ, "CUTOVER_LOCK_FD": str(lock),
+                     "CUTOVER_BUNDLE_SNAPSHOT": str(bundle) if has_bundle else ""},
+                pass_fds=(lock,),
+            )
+
+        rollback(directory, stop_new=stop_new, install_old=install_old, start_old=start_old)
+    finally:
+        os.close(lock)
 
 
 def main():

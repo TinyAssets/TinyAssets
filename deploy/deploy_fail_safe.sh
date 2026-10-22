@@ -14,8 +14,10 @@
 #     ->  health + running-image check
 #     ->  restore the bundle snapshot AND roll back the image if unhealthy
 #
-# It NEVER leaves prod stopped: the worst case restores the previous healthy
-# image, and compose `restart: unless-stopped` + systemd `Restart=always` are
+# Before owner-box commitment, recovery restores the previous healthy image.
+# After commitment, HOLD preserves the stack (possibly in maintenance) for a
+# fix-forward dispatch; only cutover_control may restore data plus image.
+# Compose `restart: unless-stopped` + systemd `Restart=always` are
 # the backstop. There is a brief recreate window on `systemctl restart`; true
 # zero-downtime (blue/green) is a later refinement, not required by the
 # never-zero-containers invariant.
@@ -100,8 +102,13 @@
 # Usage:
 #   sudo deploy_fail_safe.sh <new_image_ref>
 #   sudo deploy_fail_safe.sh --restore-bundle <previous_image_ref>
+#   sudo deploy_fail_safe.sh --post-deploy-failure <candidate_image_ref>
 #
-# `--restore-bundle` is the public-canary rollback path: it reinstalls the
+# `--post-deploy-failure` reads the durable layout before changing the bundle.
+# ON_POST_COMMIT_FAILURE=hold (default) preserves a committed pre_traffic stack; rollback
+# invokes cutover_control and requires unconsumed pre_traffic eligibility.
+# A fixed image_tag dispatch resumes canaries, owner roll, admission and backup.
+# `--restore-bundle` refuses a committed pre_traffic cutover; otherwise it reinstalls the
 # snapshot named by the bundle pointer and THEN converges <previous_image_ref>.
 # It never installs the staged bundle (that is what it is undoing).
 #
@@ -245,7 +252,12 @@ unset BOX_MIGRATION_DISPOSABLE BOX_MIGRATION_DATA BOX_MIGRATION_STORE BOX_MIGRAT
 DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
 
 RESTORE_BUNDLE=0
+POST_DEPLOY_FAILURE=0
 case "${1:-}" in
+  --post-deploy-failure)
+    POST_DEPLOY_FAILURE=1
+    NEW_IMAGE="${2:-}"
+    ;;
   --restore-bundle)
     RESTORE_BUNDLE=1
     NEW_IMAGE="${2:-}"
@@ -383,7 +395,11 @@ if [ -z "${DAEMON_FORBIDDEN_ENV// /}" ]; then
 fi
 
 # --- acquire the shared host-mutation lock (review #7) --------------------
-exec 9>"$LOCK_FILE" || { err "cannot open lock ${LOCK_FILE}"; exit 1; }
+if [ -n "${CUTOVER_LOCK_FD:-}" ]; then
+  exec 9<&"$CUTOVER_LOCK_FD" || exit 1
+else
+  exec 9>"$LOCK_FILE" || { err "cannot open lock ${LOCK_FILE}"; exit 1; }
+fi
 if ! flock -w "$LOCK_WAIT" 9; then
   err "another host mutation holds ${LOCK_FILE} after ${LOCK_WAIT}s; refusing (prod untouched)"; exit 1
 fi
@@ -656,6 +672,107 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
   return 0
 }
 
+# C4: recovery is a layout decision BEFORE any bundle or image is changed.
+# A retry dispatch with image_tag=<fixed commit> and on_post_commit_failure=hold
+# installs the staged candidate bundle normally; stable owner-box skips apply.
+# Only this committed pre_traffic cutover holds. Consumed or archived receipts
+# restore ordinary image/bundle rollback, subject to the compatibility guards.
+cutover_pending() {
+  local marker
+  marker="$(layout_marker_path)" || return 2
+  python3 - "$marker" "${BUNDLE_STATE_DIR}/cutover" <<'COMMITTED_PY'
+import json, sys
+from pathlib import Path
+try:
+    directory = Path(sys.argv[2])
+    try:
+        with (directory / "state.json").open() as stream:
+            state = json.load(stream)
+    except FileNotFoundError:
+        # A missing directory is normal after archival or before any cutover.
+        # An incomplete receipt in an existing directory is not safe to assume.
+        sys.exit(2 if directory.exists() else 1)
+    if not isinstance(state, dict) or state.get("state") not in ("pre_traffic", "consumed"):
+        sys.exit(2)
+    if state["state"] == "consumed":
+        sys.exit(1)
+    with open(sys.argv[1]) as stream:
+        doc = json.load(stream)
+    if not isinstance(doc, dict) or doc.get("state") != "stable":
+        sys.exit(2)
+    sys.exit(0 if doc.get("box_layout") == "owner-box" else 1)
+except FileNotFoundError:
+    sys.exit(1)
+except (OSError, ValueError):
+    sys.exit(2)
+COMMITTED_PY
+}
+
+# Every recovery entry point shares the same fail-closed read. A failed read
+# must not be treated as "no cutover", including in automatic health recovery.
+guard_cutover_recovery() {
+  local state_rc
+  cutover_pending; state_rc=$?
+  case "$state_rc" in
+    0) post_commit_failure ;;
+    1) return 0 ;;
+    *) err "could not read this run's cutover state or layout; refusing image-only recovery"
+       echo "deploy_result=rollback_needs_restore"
+       exit 3 ;;
+  esac
+}
+
+post_commit_failure() {
+  local policy="${ON_POST_COMMIT_FAILURE:-hold}" root
+  err "post-commit failure: ${POST_COMMIT_REASON:-candidate did not become acceptable}; policy=${policy}"
+  printf '%s\n' 'Fix forward: gh workflow run deploy-prod.yml -f image_tag=<fixed-commit> -f on_post_commit_failure=hold'
+  printf 'Full rollback (pre_traffic only): sudo env PYTHONPATH=%q python3 -m tinyassets.cutover_control rollback --state %q --data "$(sudo docker volume inspect tinyassets-data --format '\''{{ .Mountpoint }}'\'')" --deploy-script %q\n' \
+    "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+    "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")"
+  if [ "$policy" = rollback ]; then
+    root="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)" || exit 3
+    # rollback_live invokes this script recursively. Release our descriptor;
+    # the control command owns the same host lock through data+bundle+image.
+    flock -u 9
+    PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+      python3 -m tinyassets.cutover_control rollback --state "${BUNDLE_STATE_DIR}/cutover" \
+      --data "$root" --deploy-script "$(realpath "$0")" || {
+        echo "deploy_result=cutover_rollback_refused"; exit 3;
+      }
+    echo "deploy_result=cutover_rolled_back"
+    exit 2
+  fi
+  [ "$policy" = hold ] || err "invalid post-commit policy: ${policy}; holding"
+  echo "deploy_result=post_commit_held"
+  exit 3
+}
+
+# Check the effective Compose user against the image's declared runtime layout
+# before stopping anything. No root-default owner-box daemon may be started,
+# including from a restored snapshot (which bypasses staged-bundle validation).
+bundle_matches_image() {
+  local image="$1" layout config
+  layout="$(timeout 90 docker run --rm --network=none --entrypoint python "$image" -c \
+    'from tinyassets import storage_layout as l; print(getattr(l, "ACTIVE_BOX_LAYOUT", "owner-split"))')" || return 1
+  config="$(TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json)" || return 1
+  # Rendered environment values stay off the process command line.
+  python3 - "$layout" "$image" 7<<<"$config" <<'BUNDLE_IMAGE_PY'
+import json, os, sys
+try:
+    with os.fdopen(7) as stream:
+        daemon = json.load(stream)["services"].get("daemon", {})
+    user = str(daemon.get("user", "")).split(":")[0]
+    ok = sys.argv[1] == "owner-split" or (
+        sys.argv[1] == "owner-box" and user.isdecimal() and int(user) > 0)
+    ok = ok and (not daemon or daemon.get("image") == sys.argv[2])
+except (ValueError, KeyError, TypeError):
+    ok = False
+if not ok:
+    print("REFUSED: runtime bundle/image layout mismatch; require the requested image and an explicit nonzero uid for owner-box", file=sys.stderr)
+sys.exit(0 if ok else 1)
+BUNDLE_IMAGE_PY
+}
+
 # Converge the production services onto TINYASSETS_IMAGE. Drives docker
 # compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
 # never depends on the systemd unit being startable; the unit is then asked to
@@ -664,6 +781,9 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 # a future service from starting by accident. `up -d` recreates only the
 # services whose image or config changed (the tunnel keeps running).
 restart_stack() {
+  local image
+  image="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1)"
+  bundle_matches_image "$image" || return 1
   systemctl reset-failed "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
@@ -685,7 +805,7 @@ restart_stack() {
     fi
   fi
   started="$SECONDS"
-  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
+  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
         --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
     elapsed=$((SECONDS - started))
     err "docker compose up -d failed after ${elapsed}s"
@@ -1569,6 +1689,10 @@ bundle_history_exists() {
 restore_previous_bundle() {
   local snap before after rc target_rc
   snap="$(restore_target)"; target_rc=$?
+  if [ "$RESTORE_BUNDLE" = 1 ] && [ -n "${CUTOVER_BUNDLE_SNAPSHOT:-}" ]; then
+    snap="$CUTOVER_BUNDLE_SNAPSHOT"
+    target_rc=0
+  fi
   snap="${snap%/}"
   if [ "$target_rc" = "2" ]; then
     err "bundle: ${BUNDLE_DIRTY} exists but is EMPTY -- a bundle install was interrupted and recorded no snapshot."
@@ -1602,6 +1726,15 @@ restore_previous_bundle() {
 }
 
 # --- 1. record the current (rollback) image -------------------------------
+if [ "$POST_DEPLOY_FAILURE" = 1 ] || [ "$RESTORE_BUNDLE" = 1 ]; then
+  guard_cutover_recovery
+  if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+    [ "${IMAGE_ROLLBACK_ALLOWED:-0}" = 1 ] || exit 0
+    NEW_IMAGE="${ROLLBACK_IMAGE:-}"
+    case "$NEW_IMAGE" in *@sha256:*) ;; *) err "no immutable rollback image"; exit 3 ;; esac
+    RESTORE_BUNDLE=1
+  fi
+fi
 # The rollback target is what is actually RUNNING, not what the env file says:
 # after a failed deploy the env file already names the failed image (the
 # 2026-08-21 incident state), so rolling back to it would change nothing.
@@ -1928,6 +2061,7 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
     "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")"
 }
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
+  POST_COMMIT_REASON="$1" guard_cutover_recovery
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
   if [ "${2:-}" != "pre_stop" ]; then
@@ -2242,6 +2376,10 @@ if [ "$MIGRATION_OK" = "1" ]; then
   log "swapping TINYASSETS_IMAGE and converging the stack"
   if ! set_image "$NEW_IMAGE"; then
     err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}"
+    guard_cutover_recovery
+    if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
+      refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
+    fi
     if [ "$INSTALLED_THIS_RUN" = "1" ]; then
       err "restoring the runtime bundle so the box is not left on a new config under the old image"
       if ! restore_bundle_from "$SNAPSHOT_PATH"; then
@@ -2281,12 +2419,34 @@ if [ "$MIGRATION_OK" = "1" ]; then
     fi
   fi
   if [ "$ACCEPTED" = "1" ]; then
+    # Fix-forward resumes acceptance, never initializes eligibility or moves
+    # data again. These outputs schedule canaries -> owner roll -> admit -> backup.
+    if cutover_pending; then
+      echo "cutover_admission_pending=true"
+    else
+      pending_rc=$?
+      [ "$pending_rc" = 1 ] || { echo "deploy_result=cutover_state_unreadable"; exit 3; }
+    fi
     log "deploy healthy on ${NEW_IMAGE}"
+    if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+      finish rolled_back "$NEW_IMAGE" 2
+    fi
     finish deployed "$NEW_IMAGE" 0
   fi
 fi
 
 # --- 6. unhealthy -> restore the bundle, then roll back the image ---------
+if [ "$RESTORE_BUNDLE" = 1 ]; then
+  err "requested rollback failed; refusing to pair its restored bundle with another image"
+  echo "deploy_result=rollback_failed"
+  exit 3
+fi
+guard_cutover_recovery
+# Never put the old compose under the candidate after a committed or uncertain
+# migration, even when the previous image would subsequently be refused.
+if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
+  refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
+fi
 if [ "${MIGRATION_OK:-1}" = "1" ]; then
   err "new image did not become acceptable; rolling back"
 else
