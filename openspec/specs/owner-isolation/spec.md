@@ -231,6 +231,8 @@ admission closed.
 #### Scenario: Shared-layer restore invalidates old bearer credentials
 - **WHEN** the shared layer is restored from a backup
 - **THEN** no session, API key, hook token or operational credential issued before the restore is accepted
+- **AND** router-local durable per-owner not-before times reject older bearer `iat` values without listing WorkOS sessions; deletion permanently refuses the owner
+- **AND** upstream refresh revocation remains required, legacy raw refresh cookies cannot bypass the local fence, and fresh sign-ins and sealed refresh handles work after restore
 - **AND** owners reconnect their model sources
 
 #### Scenario: Stripe decides billing while other reasons survive

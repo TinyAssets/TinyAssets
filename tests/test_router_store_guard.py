@@ -20,6 +20,7 @@ from tinyassets.onboarding import (
     owner_sessions,
     session_store,
 )
+from tinyassets.router_account_deletion import revocation_path
 from tinyassets.router_credentials import HookOwners
 
 
@@ -40,6 +41,7 @@ OPENERS = [
     ("oauth_pkce", flows_db),
     ("api_keys", lambda root: ApiKeyStore(root).db()),
     ("hook_owners", HookOwners),
+    ("workos_revocations", revocation_path),
     ("mcp_oauth", lambda root: OAuthProvider(root / ".auth.db")),
     ("mcp_oauth", oauth_connection),
 ]
@@ -47,7 +49,7 @@ OPENERS = [
 
 @pytest.mark.parametrize("name,opener", OPENERS, ids=[
     "plans", "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
-    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "mcp_oauth",
+    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "workos_revocations", "mcp_oauth",
     "mcp_oauth_connect",
 ])
 @pytest.mark.parametrize("inside", [True, False], ids=["box", "router"])
@@ -143,6 +145,9 @@ def test_router_guard_detects_owner_store_imports_and_file_access(source):
 # D7: the reviewed process boundaries, by module and qualified function.
 # Owner-runtime's own lifecycle is intrinsic to that module, not a second path.
 _ROLE_DISPATCH = {
+    ('router_account_deletion.py', 'revocation_path'): (
+        'Router owns bearer revocation authority; direct box access must refuse.'
+    ),
     ('operation_epoch.py', 'new_identity'): (
         'Box operations bind to their durable journal epoch; router identities have no box journal.'
     ),

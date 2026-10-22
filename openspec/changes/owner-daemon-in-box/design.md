@@ -260,8 +260,14 @@ starting the recorded old image. It never takes an owner volume as input.
 The deploy workflow's post-acceptance step consumes this authority and publishes
 ordinary admission; the router only reads that decision. The timestamp database,
 router OPEN_TRAFFIC RPC, credential timestamp predicate and their writer inventory
-are deleted. C3's signed WorkOS tokens must resolve to an active provider session;
-revoked sessions cannot acquire authority from a refreshed token's `iat`.
+are deleted. C3 uses router-owned `.workos-revocations.sqlite3`: each owner has a
+monotonic not-before time and a permanent deleted bit. Deletion persists the fence
+before credential cleanup; offline platform restore advances every restored owner's
+fence before services restart, preserving deleted bits and assigning router custody.
+Bearer validation requires a finite numeric `iat` at or after that fence and never
+lists WorkOS sessions. Upstream refresh revocation remains part of recovery. New
+refresh cookies reference the sealed local session store; legacy raw refresh cookies
+are refused for fenced owners even if upstream returns a freshly issued bearer.
 Root tests prove pre-traffic restore, durable consumption ordering, restart and
 missing-state refusal; deploy-shell tests pin the integration. Migration publishes
 the root-owned 0644 admission decision after assigning service custody, under the

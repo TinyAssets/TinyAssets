@@ -70,6 +70,10 @@ def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_pat
 
     seed(tmp_path)
     tmp_path.chmod(0o1775)
+    from tinyassets.router_account_deletion import revocation_path, revoke_local_tokens
+
+    revoke_local_tokens(tmp_path, "alice", now=1)
+    os.chown(revocation_path(tmp_path), 1001, 1001)
     marker = tmp_path / ".layout.json"
     os.chown(marker, 1001, 1001)
     marker.chmod(0o644)
@@ -153,6 +157,9 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
         report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert fingerprint(owners) == before
     assert events == ["deletion", "billing", "identity", "revoke"]
+    from tinyassets.router_account_deletion import local_revocation
+
+    assert local_revocation("alice", platform) == (2000000000, 0)
     assert "credential_roots_reset" not in report
     assert "broker_replay_cutoff_advanced" not in report
     preparation = json.loads((platform / ".layout.json").read_text())["preparation"]
@@ -513,11 +520,15 @@ def test_platform_recovery_uses_current_admission_not_erased_identity_history(
 ):
     with sqlite3.connect(platform / ".broker/state/owner-identities.db") as db:
         db.execute("INSERT INTO owner_identities VALUES ('erased', 300002)")
+        admission.mutate(db, "erased", "erase")
     calls = []
     adapters = providers(monkeypatch, calls)
     report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert report["owners_reconciled"] == 1
     assert calls == ["deletion", "billing", "identity", "revoke"]
+    from tinyassets.router_account_deletion import local_revocation
+
+    assert local_revocation("erased", platform) == (2000000000, 1)
     with sqlite3.connect(platform / ".broker/state/owner-identities.db") as db:
         assert db.execute(
             "SELECT machine_id FROM owner_identities WHERE principal='erased'"

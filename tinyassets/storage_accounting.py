@@ -577,6 +577,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "next-wake.db": "platform: broker next-wake index and last successful wake timestamps",
     ".published": "platform: shared copies of explicitly published definitions",
     ".custody.lock": "platform: broker credential publication and erasure lock",
+    ".workos-revocations.sqlite3": "platform: router bearer revocation authority",
     ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
     ".ordinary-admission.json": "platform: deployment's ordinary admission decision",
     ".router-credentials.json": "platform: rotated operational credentials after disaster",
