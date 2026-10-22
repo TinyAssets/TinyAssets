@@ -146,11 +146,12 @@ class OwnerTools:
                                 "bash", {"command": command, "cwd": self._root,
                                          "wall": wall, "env": env or {}})
         from tinyassets.owner_git import for_command
-        from tinyassets.owner_public_egress import PROXY_ENV
+        from tinyassets.owner_public_egress import proxy_env
 
         with (tempfile.TemporaryDirectory(prefix="ta-owner-") as directory,
               for_command(env or {}, Path(self._root)) as command_env):
-            launch_env = {**os.environ, **PROXY_ENV, **command_env}
+            launch_env = {**os.environ, **proxy_env(self.provider._public_forwarder),
+                          **command_env}
             server = None
             bridge = self.bridge
             if bridge is not None:

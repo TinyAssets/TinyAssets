@@ -187,6 +187,7 @@ class Box:
         assert self.process.returncode == 0, error
 
 
+@pytest.mark.verifies("box-subscription-sources:Native login and durable isolation")
 @pytest.mark.parametrize("terminal", [False, True])
 def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
     alice, bob = tmp_path / "alice", tmp_path / "bob"
@@ -234,12 +235,14 @@ def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
         awake.close()
 
 
+@pytest.mark.verifies("box-subscription-sources:Owner-box subscription runtime")
 def test_unadmitted_process_cannot_construct_runtime():
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime
 
     with pytest.raises(PermissionError):
         SubscriptionRuntime("fake-cli")
 
+@pytest.mark.verifies("box-subscription-sources:Owner-box subscription runtime")
 def test_registry_forwarder_refuses_other_hosts_and_ports(tmp_path):
     import socket
 
@@ -248,9 +251,10 @@ def test_registry_forwarder_refuses_other_hosts_and_ports(tmp_path):
     forwarder = OwnerPublicForwarder(tmp_path / 'absent-relay.sock',
         listen=('127.0.0.1', 0), allowed_hosts=['registry.npmjs.org'])
     try:
+        address = forwarder.address
         for target in ('provider.example:443', 'registry.npmjs.org.evil:443',
                        'registry.npmjs.org:80'):
-            with socket.create_connection(forwarder.address, timeout=2) as connection:
+            with socket.create_connection(address, 2) as connection:  # hermetic-ok: loopback
                 connection.sendall(('CONNECT ' + target + ' HTTP/1.1\r\n\r\n').encode())
                 assert connection.recv(1024).startswith(b'HTTP/1.1 403 Forbidden')
     finally:

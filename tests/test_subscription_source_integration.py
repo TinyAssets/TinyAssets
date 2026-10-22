@@ -31,6 +31,7 @@ def connected(box):  # noqa: F811
         yield runtime
 
 
+@pytest.mark.verifies("box-subscription-sources:Generic invocation and selection")
 def test_publish_discover_select_and_invoke(connected):
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.providers.base import ModelConfig
@@ -61,6 +62,7 @@ def test_publish_discover_select_and_invoke(connected):
         recheck()
 
 
+@pytest.mark.verifies("box-subscription-sources:Native login and durable isolation")
 def test_finish_enables_owner_agent(connected):
     from tinyassets.onboarding.subscription_connect import finish
     from tinyassets.provider_assignment import load_provider_assignment
@@ -81,6 +83,7 @@ def test_finish_enables_owner_agent(connected):
     assert disconnected['sources'][0]['display_name'] == 'Fixture'
     assert disconnected['source_failures']
 
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
 def test_protected_connect_door(connected):
     import time
 
@@ -124,6 +127,7 @@ def test_protected_connect_door(connected):
         assert post('poll', flow=flow).status_code == 403
 
 
+@pytest.mark.verifies("box-subscription-sources:Native login and durable isolation")
 def test_descriptor_publication_is_owner_scoped(connected, box):  # noqa: F811
     from tinyassets.broker.owner_sources import publish, read
     from tinyassets.providers.definition import register_definition
@@ -138,6 +142,7 @@ def test_descriptor_publication_is_owner_scoped(connected, box):  # noqa: F811
     with pytest.raises(ValueError):
         publish(other, 'other', 'owner', definition.as_dict())
 
+@pytest.mark.verifies("box-subscription-sources:Generic invocation and selection")
 def test_engine_tool_protocol_and_large_stdin(connected):
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.providers.agent_inference import AgentInferenceRequest
@@ -167,6 +172,7 @@ def test_engine_tool_protocol_and_large_stdin(connected):
     assert call.arguments() == {'text': prompt}
     assert response.text == ''
 
+@pytest.mark.verifies("box-subscription-sources:Owner-box subscription runtime")
 def test_pip_hash_locked_owner_install_and_invoke(connected):
     import hashlib
     import zipfile
@@ -212,6 +218,7 @@ def test_pip_hash_locked_owner_install_and_invoke(connected):
     with pytest.raises(SubscriptionError):
         SubscriptionRuntime('fixture-pip').install()
 
+@pytest.mark.verifies("box-subscription-sources:Evidence-based default selection")
 def test_connect_strongest_declared_source_and_keep_explicit_preference(connected):
     from datetime import datetime, timedelta, timezone
 
@@ -251,6 +258,7 @@ def test_connect_strongest_declared_source_and_keep_explicit_preference(connecte
         require_current_home=True)
     assert plan().plan.next_candidate('owner', 'center').connection_id == first['provider']
 
+@pytest.mark.verifies("box-subscription-sources:Generic invocation and selection")
 def test_authorized_router_calls_subscription(connected):
     from tinyassets.auth import middleware as auth
     from tinyassets.commons_catalog import serving_binding_candidates

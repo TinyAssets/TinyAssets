@@ -447,11 +447,9 @@ _logins_lock = threading.Lock()
 
 
 def login_operation(action, *, source_id=None, flow=None, code=None):
-    from tinyassets.owner_runtime import current
+    from tinyassets.owner_runtime import admitted
 
-    owner = current()
-    if owner is None:
-        raise PermissionError("login requires an admitted owner box")
+    owner = admitted()
     with _logins_lock:
         for key, login in list(_logins.items()):
             if time.monotonic() >= login.expires:

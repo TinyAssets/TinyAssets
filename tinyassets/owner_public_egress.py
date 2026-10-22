@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import select
 import socket
 import threading
@@ -15,6 +16,14 @@ PROXY_ENV = {
     name: JAIL_PROXY_URL for name in
     ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 } | {"NO_PROXY": "localhost,127.0.0.1", "no_proxy": "localhost,127.0.0.1"}
+
+
+def proxy_env(forwarder=None):
+    if forwarder is None:
+        return PROXY_ENV
+    url = f"http://127.0.0.1:{forwarder.address[1]}"
+    return {name: url if name.lower().endswith("proxy") and name.lower() != "no_proxy"
+            else value for name, value in PROXY_ENV.items()}
 
 
 class OwnerPublicForwarder:
@@ -33,9 +42,19 @@ class OwnerPublicForwarder:
         self._listener = socket.socket()
         try:
             self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._listener.bind(listen)
+            try:
+                self._listener.bind(listen)
+                self._listener.listen(64)
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                # Local proof processes can share a network namespace while each
+                # owner still needs its own relay-bound listener.
+                self._listener.close()
+                self._listener = socket.socket()
+                self._listener.bind((listen[0], 0))
+                self._listener.listen(64)
             self.address = self._listener.getsockname()
-            self._listener.listen(64)
             self._listener.settimeout(.2)
             self._thread = threading.Thread(target=self._accept, daemon=True)
             self._thread.start()

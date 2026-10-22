@@ -41,6 +41,13 @@ def current() -> OwnerRuntime | None:
     return _runtime
 
 
+def admitted() -> OwnerRuntime:
+    runtime = current()
+    if runtime is None:
+        raise PermissionError("operation requires an admitted owner box")
+    return runtime
+
+
 def refuse_router_store(name: str) -> None:
     if current() is not None:
         raise RuntimeError(f"router store {name} is never opened inside an owner box")

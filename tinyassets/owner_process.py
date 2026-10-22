@@ -21,7 +21,7 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
         line_handler=None, should_cancel=None, input_source=None, output_handler=None,
         separate_stderr=False, terminal=False):
     from tinyassets.boxes.boxd import _Running
-    from tinyassets.owner_public_egress import PROXY_ENV
+    from tinyassets.owner_public_egress import proxy_env
 
     if (not argv or any(not isinstance(arg, str) or "\0" in arg for arg in argv)
             or not math.isfinite(wall_seconds) or wall_seconds <= 0
@@ -63,7 +63,8 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                 proc = subprocess.Popen(
                     ["/bin/sh", "-c", 'cd -P -- "/proc/self/fd/$0" || exit 126; exec "$@"',
                      str(directory), *argv],
-                    cwd=core._root, env={**os.environ, **PROXY_ENV, **(env or {})},
+                    cwd=core._root,
+                    env={**os.environ, **proxy_env(core._public_forwarder), **(env or {})},
                     stdin=slave if terminal else subprocess.PIPE,
                     stdout=slave if terminal else subprocess.PIPE,
                     stderr=slave if terminal else (

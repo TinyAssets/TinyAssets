@@ -8,6 +8,7 @@ from tests.test_app_chat_cloud_browser import app_url, browser  # noqa: F401
 pytestmark = pytest.mark.real_browser
 
 
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
 @pytest.mark.parametrize("native", [False, True])
 def test_native_subscription_connect_controls(app_url, browser, native):  # noqa: F811
     from playwright.sync_api import expect

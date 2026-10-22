@@ -22,9 +22,12 @@ def context(definition, owner, universe):
     # This is a credential-free connection incarnation; native token refresh
     # does not revoke the owner's accepted model scope.
     marker = runtime.directory / "connection"
-    if not marker.is_file():
+    from tinyassets.universe_files import read_data_path
+
+    connection = read_data_path(marker)
+    if connection is None:
         raise PermissionError("subscription login has not been connected")
-    return runtime, digest({"source": runtime.source, "connection": marker.read_text()})
+    return runtime, digest({"source": runtime.source, "connection": connection.decode("utf-8")})
 
 
 def snapshot(definition):

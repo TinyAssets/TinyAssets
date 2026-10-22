@@ -104,7 +104,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/approval-handoff", "/app/approval-handoff/{ref}",
         # K1: owner-session-only grant/revoke control for outside clients.
         "/app/outside-clients", "/app/api-keys",
-        "/app/model-connect/{operation}", "/app/model-callback/{flow}",
+        "/app/model-connect/{operation}", "/app/subscription-connect/{operation}",
+        "/app/model-callback/{flow}",
         # The public OAuth client metadata document a sign-in source names.
         "/app/oauth/client-metadata.json",
 
