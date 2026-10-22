@@ -528,6 +528,7 @@ jobs:
           BASE_IMAGE: ${{ steps.capture.outputs.prev_image }}
           DEPLOY_RC: ${{ steps.deploy.outputs.rc }}
           DEPLOY_RESULT: ${{ steps.deploy.outputs.result }}
+          CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
         run: |
           set -euo pipefail
           sudo bash scripts/live_like/make_live.sh check
