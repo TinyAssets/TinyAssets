@@ -9,6 +9,7 @@ import base64
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
@@ -168,9 +169,23 @@ class OwnerRouter:
         await forward(scope, receive, send, identity, route)
 
 
+def _public_host() -> bytes:
+    from tinyassets.auth.wellknown import protected_resource_metadata
+
+    resource = str(protected_resource_metadata().get("resource", ""))
+    return urlsplit(resource).netloc.lower().encode("ascii")
+
+
 async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
     headers = _headers(scope["headers"], private=True)
+    # The tunnel rewrites Host before the router sees it. The box checks a JSON
+    # request's Origin against its Host, so it must see the public host the
+    # user addressed; a cross-site Origin still fails that check.
+    public = _public_host()
+    if public:
+        headers = [(name, value) for name, value in headers if name.lower() != b"host"]
+        headers.append((b"host", public))
     headers.extend([
         (b"x-owner", identity.user_id.encode("utf-8")),
         (b"x-box-secret", route.secret.encode("ascii")),

@@ -33,6 +33,15 @@ source_dir="$(cd "$(dirname "$0")" && pwd)"
 # Sibling files read from source_dir are the production ship list.
 # scripts/boxhostd_install_files.py derives it; workflows copy that
 # list and do not keep a second one.
+# Render before installing code or restarting the service. A normal deploy
+# reaches this installer BEFORE deploy_fail_safe.sh. Env-only changes also
+# need a restart so the running process receives the new public origin.
+previous_box_env="$(sha256sum /etc/tinyassets/boxhostd.env 2>/dev/null || true)"
+bash "${source_dir}/install-tinyassets-env.sh" render-daemon-env
+grep -q '^UNIVERSE_SERVER_URL=https\?://' /etc/tinyassets/boxhostd.env || {
+    echo 'WORKOS_MCP_RESOURCE is required before starting boxhostd' >&2; exit 1;
+}
+rendered_box_env="$(sha256sum /etc/tinyassets/boxhostd.env)"
 mkdir -p "$root"
 # G4 and the store require XFS userspace tools.
 if ! command -v mkfs.xfs >/dev/null || ! command -v xfs_quota >/dev/null; then
@@ -118,6 +127,7 @@ a0dde4d5e75d4f8e4287bc2e631b96536e83c80f574fb4ff62c58d472d4f58c5  ${target}/gvis
 EOF
 "${target}/runsc" --version | grep -F "$release" >/dev/null
 changed=0
+[[ "$previous_box_env" == "$rendered_box_env" ]] || changed=1
 source_root="$(dirname "$source_dir")"
 bundle_changes="$(python3 "$source_root/scripts/host_service_bundle.py" --root "$source_root" \
     --install-to "$root" --flat-scripts boxhostd.service box-store-device.service box-store-grow.service)"

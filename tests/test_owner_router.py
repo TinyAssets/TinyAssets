@@ -326,7 +326,11 @@ def test_shared_owner_session_authenticates_and_carries_protected_view_proof(rou
     asyncio.run(exercise())
 
 
-def test_box_public_origin_preferences_and_upload(router, boxes):
+@pytest.mark.parametrize("rewrite_host", [True, False])
+def test_box_public_origin_preferences_and_upload(router, boxes, monkeypatch, rewrite_host):
+    if not rewrite_host:
+        # Prove boxes carry the origin independently of the retained rollout hotfix.
+        monkeypatch.setattr("tinyassets.owner_router._public_host", lambda: b"")
     (boxes.roots["alice"] / "cc-alice" / "soul.md").write_text("Fixture home is complete.\n")
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
