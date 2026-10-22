@@ -5823,6 +5823,13 @@
         await enterSignedIn();
         if(epoch!==this.epoch) return;
         const code=error&&error.message;
+        // Nothing left to resume (the saved connection is gone, e.g. after a
+        // migration): the setup is disconnected, so start a fresh sign-in
+        // instead of offering a resume that can never finish.
+        if(!callback&&code==="model_authorization_required"&&this.preset){
+          this.setup="disconnected";this.status("Starting a fresh sign-in…");
+          await this.begin();return;
+        }
         if(code==="no_eligible_free_agent_model"){
           this.status("Your account there offers no free model that can run your command center right now. Check its model and privacy settings, then tap Finish connecting, or connect another way below. Nothing paid was approved.");
         }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
