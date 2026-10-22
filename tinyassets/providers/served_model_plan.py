@@ -58,7 +58,18 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
     for definition in list_definitions(universe.name):
-        if definition.owner_user_id != owner or definition.access_method != "api_key_http":
+        if definition.owner_user_id != owner:
+            continue
+        if definition.access_method == "subscription_cli":
+            from tinyassets.providers.subscription_catalog import context
+
+            try:
+                context(definition, owner, universe.name)
+                sources.add("subscription_cli:" + definition.id)
+            except (PermissionError, OSError, ValueError):
+                pass
+            continue
+        if definition.access_method != "api_key_http":
             continue
         try:
             facts = query_ledger(
@@ -187,17 +198,19 @@ def _http_models(owner, uid, member, *, snapshot=None, needs_tools=True):
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
-    if not member.provider.startswith("api_key_http:") or member.access.model_scope == "legacy":
+    if (not member.provider.startswith(("api_key_http:", "subscription_cli:"))
+            or member.access.model_scope == "legacy"):
         raise ModelSourceUnavailable("model_access_optin_required")
     if snapshot is None:
         snapshot = refresh_model_discovery(
             owner_user_id=owner, universe_id=uid,
-            definition_id=member.provider.removeprefix("api_key_http:"),
+            definition_id=member.provider.split(":", 1)[-1],
         )
     contract = snapshot.contract()
-    definition = get_definition(uid, member.provider.removeprefix("api_key_http:"))
+    definition = get_definition(uid, member.provider.split(":", 1)[-1])
     if (definition is None or definition.owner_user_id != owner
-            or not same_dialect(definition.protocol, contract.inference_protocol)):
+            or (definition.access_method != "subscription_cli"
+                and not same_dialect(definition.protocol, contract.inference_protocol))):
         raise ModelSourceUnavailable("protocol_mismatch")
     caps = member.access.cost_caps
     if caps is None:
@@ -342,7 +355,7 @@ def prepare_owned_model_plan(
 
             snapshot = refresh_model_discovery(
                 owner_user_id=owner, universe_id=universe.name,
-                definition_id=provider.removeprefix("api_key_http:"),
+                definition_id=provider.split(":", 1)[-1],
             )
             # Discovery facts remain useful to a repair screen even when
             # authority, pricing or the agent's contract excludes execution.

@@ -255,7 +255,7 @@ def _reconnect_manifest(
                         "confirmation to recover it. Existing choices were not replaced."
                     )
                 source = _resolve_serving_source(
-                    base, uid, owner, provider.removeprefix("api_key_http:"), ModelAccess(),
+                    base, uid, owner, provider.split(":", 1)[-1], ModelAccess(),
                 )
                 if source.provider not in {m.provider for m in assignment.candidates}:
                     raise PermissionError(
@@ -277,7 +277,7 @@ def _reconnect_manifest(
                 # merely because another member is currently unavailable.
                 for member in assignment.candidates:
                     member_source = _resolve_serving_source(
-                        base, uid, owner, member.provider.removeprefix("api_key_http:"),
+                        base, uid, owner, member.provider.split(":", 1)[-1],
                         member.access,
                     )
                     if member.provider != source.provider:
@@ -301,7 +301,7 @@ def _reconnect_manifest(
                             owner=owner, uid=uid, adopt=False,
                         )
                 model_access = {
-                    m.provider.removeprefix("api_key_http:"): m.access
+                    m.provider.split(":", 1)[-1]: m.access
                     for m in assignment.candidates
                 }
             finally:
@@ -309,7 +309,7 @@ def _reconnect_manifest(
     bound = bind_serving_provider(
         base_path=base, universe_dir=universe, owner_user_id=owner, universe_id=uid,
         agent_binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
-        provider=assignment.provider.removeprefix("api_key_http:"), model_access=model_access,
+        provider=assignment.provider.split(":", 1)[-1], model_access=model_access,
         expected_assignment_digest=expected_digest, require_current_home=True,
     )
     final = bound["agent_binding"]

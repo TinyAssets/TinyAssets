@@ -156,6 +156,15 @@ def refresh_model_discovery(
     leaves models unranked rather than making the catalogue disappear.
     """
     base = _base_path()
+    definition = get_definition(universe_id, definition_id)
+    if definition is not None and definition.access_method == "subscription_cli":
+        from tinyassets.providers.subscription_catalog import context, snapshot
+
+        try:
+            context(definition, owner_user_id, universe_id)
+        except (PermissionError, KeyError, OSError):
+            raise ModelDiscoveryUnavailable("source_revoked") from None
+        return snapshot(definition)
     before = _context(base, owner_user_id, universe_id, definition_id)
     profile = before.profile
     if isinstance(profile, ModelUseCapability):
@@ -267,6 +276,19 @@ def assert_discovery_snapshot_current(snapshot: DiscoverySnapshot) -> None:
         or snapshot.models.freshness != "fresh"
     ):
         raise ModelDiscoveryUnavailable("discovery_expired")
+    if snapshot.provider.startswith("subscription_cli:"):
+        from tinyassets.providers.subscription_catalog import context
+
+        definition = get_definition(snapshot.universe_id, snapshot.provider.split(":", 1)[1])
+        if definition is None:
+            raise ModelDiscoveryUnavailable("source_revoked")
+        try:
+            _, fingerprint = context(definition, snapshot.owner_id, snapshot.universe_id)
+        except (PermissionError, KeyError, OSError):
+            raise ModelDiscoveryUnavailable("source_revoked") from None
+        if fingerprint != snapshot.source_digest:
+            raise ModelDiscoveryUnavailable("source_revoked")
+        return
     current = _context(
         _base_path(), snapshot.owner_id, snapshot.universe_id,
         snapshot.provider.removeprefix("api_key_http:"),

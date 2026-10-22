@@ -92,12 +92,12 @@ def prepare_selected_model(
     needs_tools: bool = False,
     effort: str = "",
 ) -> tuple[SelectedModel, Callable[[], None] | None]:
-    """Prepare an accepted source; native defaults carry no HTTP model facts.
+    """Prepare an accepted source using its current execution contract.
 
     This is not an independent authority entrypoint. The caller must validate the
     exact current member before and after this IO, under assignment admission.
-    Native defaults return (None, None); current member and custody validation
-    remains the caller's responsibility before and after this preparation.
+    Current member and custody validation remains the caller's responsibility
+    before and after this preparation.
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
     definition = _selection_definition(
@@ -171,9 +171,10 @@ def _selection_definition(base_path, owner_user_id, universe_id, provider, model
         or (access.model_scope == "explicit" and model_id not in access.model_ids)
     ):
         raise PermissionError("model is outside the accepted selection scope")
-    if not isinstance(provider, str) or not provider.startswith("api_key_http:"):
+    if (not isinstance(provider, str)
+            or not provider.startswith(("api_key_http:", "subscription_cli:"))):
         raise PermissionError("dynamic selection is not supported by this executor yet")
-    definition_id = provider.removeprefix("api_key_http:")
+    definition_id = provider.split(":", 1)[-1]
     definition = get_definition(universe_id, definition_id)
     if definition is None or definition.owner_user_id != owner_user_id:
         raise PermissionError("selected provider definition is unavailable")
@@ -254,7 +255,8 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access, *, need
         raise PermissionError("discovery snapshot does not match selected provider")
     from tinyassets.providers.wire_dialects import same_dialect
 
-    if not same_dialect(definition.protocol, snapshot.contract().inference_protocol):
+    if (definition.access_method != "subscription_cli"
+            and not same_dialect(definition.protocol, snapshot.contract().inference_protocol)):
         raise PermissionError("discovery and inference protocols do not match")
     contract, caps, order = _eligible_order(
         definition, snapshot, access=access, needs_tools=needs_tools,

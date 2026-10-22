@@ -895,14 +895,16 @@ class OwnerBoxd(BoxdCore):
             raise BoxOperationRefused("consumed operation id is not re-run")
 
     def run(self, argv, *, cwd, stdin=b"", env=None, wall_seconds, output_bytes,
-            line_handler=None, should_cancel=None, input_source=None, output_handler=None):
+            line_handler=None, should_cancel=None, input_source=None, output_handler=None,
+            separate_stderr=False, terminal=False):
         """Supervise a child of this persistent owner daemon, inside its box."""
         from tinyassets.owner_process import run
 
         return run(self, argv, cwd=cwd, stdin=stdin, env=env, wall_seconds=wall_seconds,
                    output_bytes=output_bytes, line_handler=line_handler,
                    should_cancel=should_cancel, input_source=input_source,
-                   output_handler=output_handler)
+                   output_handler=output_handler, separate_stderr=separate_stderr,
+                   terminal=terminal)
 
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt:
         raise BoxOperationRefused("owner deletion is a fenced boxhostd operation")

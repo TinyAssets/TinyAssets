@@ -31,6 +31,8 @@ class SubscriptionRuntime:
         self.source = sources(self.home)[source_id]
         self.directory = self.home / ".ta-cli" / source_id
         self.binary = self.directory / "node_modules" / ".bin" / self.source["install"]["bin"]
+        if self.source["install"]["manager"] == "pip":
+            self.binary = self.directory / "venv" / "bin" / self.source["install"]["bin"]
 
     @contextlib.contextmanager
     def lock(self):
@@ -48,7 +50,7 @@ class SubscriptionRuntime:
         # The fixture path can install an integrity-pinned local archive offline.
         # Networked operation always requires the startup-mounted owner relay.
         if self.owner.relay is None:
-            if "archive" not in self.source["install"]:
+            if not {"archive", "wheelhouse"}.intersection(self.source["install"]):
                 raise SubscriptionError("owner egress relay unavailable")
             yield {"HOME": str(self.home)}
             return
@@ -82,7 +84,8 @@ class SubscriptionRuntime:
 
     def run(self, argv, *, phase, timeout=120, **kwargs):
         with self.environment(phase) as env:
-            env.update(self.source.get("env", {}))
+            env.update({key: self.argv([value])[0]
+                        for key, value in self.source.get("env", {}).items()})
             # Definition environment cannot move HOME or bypass the proxy.
             env.update({"HOME": str(self.home)})
             return self.owner.tools.run(
@@ -95,21 +98,34 @@ class SubscriptionRuntime:
             )
 
     def argv(self, template, **values):
-        values = {"bin": str(self.binary), "home": str(self.home), **values}
+        values = {"bin": str(self.binary), "home": str(self.home),
+                  "config": str(self.directory / "config"), **values}
         # Replace only known placeholders; literal JSON argv is common. Values
         # are substituted once, so braces in a prompt cannot become directives.
         pattern = re.compile(r"\{(" + "|".join(values) + r")\}")
         return [pattern.sub(lambda match: str(values[match.group(1)]), arg) for arg in template]
 
+    def install_digest(self):
+        return digest({"install": self.source["install"],
+                       "registry": self.source["egress"]["registry"]})
+
     def install(self):
         with self.lock():
             install = self.source["install"]
+            for name, content in self.source.get("files", {}).items():
+                target = self.directory / "config" / name
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                target.write_text(self.argv([content])[0])
+                target.chmod(0o600)
+            if install["manager"] == "pip":
+                self.install_pip()
+                return
             lockfile = self.directory / "package-lock.json"
             marker = self.directory / "installed.json"
             if marker.exists() and lockfile.exists() and self.binary.is_file():
                 record = json.loads(marker.read_text())
                 if record == {
-                    "source": digest(self.source),
+                    "source": self.install_digest(),
                     "lock": hashlib.sha256(lockfile.read_bytes()).hexdigest(),
                 }:
                     self.verify_lock(lockfile)
@@ -152,17 +168,59 @@ class SubscriptionRuntime:
             if result.returncode:
                 raise SubscriptionError("CLI package lock failed")
             self.verify_lock(lockfile)
-            result = self.run([*npm, "ci"], phase="registry", timeout=300)
+            scripts = ["--ignore-scripts=false"] if install.get("lifecycle_scripts") else []
+            result = self.run([*npm, "ci", *scripts], phase="registry", timeout=300)
             if result.returncode or not self.binary.is_file():
                 raise SubscriptionError("CLI installation failed")
+            if install.get("verify_argv"):
+                result = self.run(self.argv(install["verify_argv"]), phase="registry",
+                                  separate_stderr=True)
+                if result.returncode or install["version"] not in result.stdout.decode():
+                    raise SubscriptionError("installed CLI version verification failed")
             marker.write_text(
                 json.dumps(
                     {
-                        "source": digest(self.source),
+                        "source": self.install_digest(),
                         "lock": hashlib.sha256(lockfile.read_bytes()).hexdigest(),
                     }
                 )
             )
+
+    def install_pip(self):
+        """Wheels only: every transitive dependency must be version/hash locked."""
+        install = self.source["install"]
+        lockfile = self.directory / "requirements.lock"
+        locked = "\n".join(
+            item["package"] + "==" + item["version"] + " "
+            + " ".join("--hash=" + h for h in item["hashes"])
+            for item in install["requirements"]
+        ) + "\n"
+        record = {"source": self.install_digest(),
+                  "lock": hashlib.sha256(locked.encode()).hexdigest()}
+        marker = self.directory / "installed.json"
+        if (self.binary.is_file() and marker.exists() and lockfile.exists()
+                and marker.read_text() == json.dumps(record) and lockfile.read_text() == locked):
+            return
+        result = self.run(["python3", "-m", "venv", str(self.directory / "venv")],
+                          phase="registry")
+        if result.returncode:
+            raise SubscriptionError("owner CLI virtual environment creation failed")
+        lockfile.write_text(locked)
+        location = ["--index-url", "https://" + self.source["egress"]["registry"][0] + "/simple"]
+        if "wheelhouse" in install:
+            directory = (self.home / install["wheelhouse"]).resolve()
+            directory.relative_to(self.home.resolve())
+            location = ["--no-index", "--find-links", str(directory)]
+        result = self.run([
+            str(self.directory / "venv/bin/python"), "-m", "pip", "--isolated", "install",
+            "--disable-pip-version-check", "--require-hashes", "--only-binary=:all:",
+            "--force-reinstall",
+            *location,
+            "-r", str(lockfile),
+        ], phase="registry", timeout=300)
+        if result.returncode or not self.binary.is_file():
+            raise SubscriptionError("hash-verified owner CLI installation failed")
+        marker.write_text(json.dumps(record))
 
     def verify_lock(self, path):
         packages = json.loads(path.read_text())["packages"]
@@ -193,7 +251,22 @@ class SubscriptionRuntime:
     def authenticated(self):
         if not self.binary.is_file():
             return False
-        result = self.run(self.argv(self.source["login"]["status_argv"]), phase="login", timeout=30)
+        if not all((self.home / path).exists() for path in self.source["state_paths"]):
+            return False
+        for check in self.source["login"].get("state_checks", []):
+            try:
+                value = json.loads((self.home / check["path"]).read_text())
+                if any(not select(value, key) for key in check.get("present", [])):
+                    return False
+                if any(select(value, key) != expected
+                       for key, expected in check.get("equals", {}).items()):
+                    return False
+            except (ValueError, OSError):
+                return False
+        argv = self.source["login"].get("status_argv")
+        if not argv:
+            return bool(self.source["login"].get("state_checks"))
+        result = self.run(self.argv(argv), phase="login", timeout=30, separate_stderr=True)
         if result.returncode:
             return False
         expected = self.source["login"].get("status_equals", {})
@@ -206,12 +279,23 @@ class SubscriptionRuntime:
                 return False
         return all((self.home / path).exists() for path in self.source["state_paths"])
 
-    def invoke(self, prompt, system="", model=""):
+    def invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
         if not self.authenticated():
             raise SubscriptionError("subscription sign-in required")
         invoke = self.source["invoke"]
-        argv = self.argv(invoke["argv"], prompt=prompt, system=system, model=model)
-        result = self.run(argv, phase="provider", timeout=invoke.get("timeout", 600))
+        limit = invoke.get("max_prompt_bytes", 4 * 1024 * 1024)
+        if len((system + prompt).encode()) > limit:
+            raise SubscriptionError("prompt exceeds the source's invocation capacity")
+        argv = self.argv(invoke["argv"], prompt=prompt, system=system,
+                         system_json=json.dumps(system), model=model)
+        if model and model != "default":
+            if not invoke.get("model_argv"):
+                raise SubscriptionError("source cannot select a model")
+            argv += self.argv(invoke["model_argv"], model=model)
+        stdin = self.argv([invoke.get("stdin", "")], prompt=prompt, system=system, model=model)[0]
+        result = self.run(argv, stdin=stdin.encode(), phase="provider",
+                          timeout=min(invoke.get("timeout", 600), timeout or 600),
+                          separate_stderr=True, should_cancel=should_cancel)
         if result.returncode:
             raise SubscriptionError("subscription invocation failed")
         output = result.stdout.decode("utf-8")
@@ -287,14 +371,18 @@ class Login:
             or any(ord(c) < 32 for c in value)
         ):
             raise ValueError("invalid login code handoff")
-        self.inputs.put_nowait(value.encode() + b"\n")
+        try:
+            self.inputs.put_nowait(value.encode() + b"\n")
+        except queue.Full as exc:
+            raise ValueError("a login code is already pending") from exc
 
     def observe(self, data):
         with self._lock:
             self._output = (self._output + data.decode("utf-8", errors="replace"))[-32768:]
+            output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", self._output)
             login = self.runtime.source["login"]
             for key, attribute in (("url_pattern", "url"), ("code_pattern", "code")):
-                match = re.search(login[key], self._output) if login.get(key) else None
+                match = re.search(login[key], output) if login.get(key) else None
                 if not match:
                     continue
                 value = match.group(1)
@@ -317,18 +405,35 @@ class Login:
             with activity.enter():
                 self.runtime.install()
                 with self.runtime.lock():
+                    renewed = False
                     if not self.runtime.authenticated():
                         self.status = "waiting"
-                        result = self.runtime.run(
-                            self.runtime.argv(self.runtime.source["login"]["argv"]),
-                            phase="login",
-                            timeout=600,
-                            input_source=self.input,
-                            output_handler=self.observe,
-                            should_cancel=self.cancelled.is_set,
-                        )
-                        if result.returncode or not self.runtime.authenticated():
+                        login = self.runtime.source["login"]
+                        state_complete = False
+
+                        def stop():
+                            nonlocal state_complete
+                            if login.get("complete_on_state"):
+                                state_complete = self.runtime.authenticated()
+                            return self.cancelled.is_set() or state_complete
+
+                        from tinyassets.owner_process import OwnerProcessCancelled
+
+                        try:
+                            result = self.runtime.run(
+                                self.runtime.argv(login["argv"]), phase="login", timeout=600,
+                                input_source=self.input, output_handler=self.observe,
+                                terminal=login.get("terminal", False), should_cancel=stop,
+                            )
+                            succeeded = result.returncode == 0
+                        except OwnerProcessCancelled:
+                            succeeded = state_complete and not self.cancelled.is_set()
+                        if not succeeded or not self.runtime.authenticated():
                             raise SubscriptionError("native login did not complete")
+                        renewed = True
+                    marker = self.runtime.directory / "connection"
+                    if renewed or not marker.exists():
+                        marker.write_text(secrets.token_hex(32))
                     self.status = "connected"
         except Exception:
             # CLI output can contain credentials; only safe state crosses the page boundary.

@@ -27,7 +27,19 @@ if (action === 'login') {
     if (data.toString().trim() !== 'approved') process.exit(2);
     fs.writeFileSync(state, 'private-login');
     process.stdout.write('Login successful\n');
-    process.exit(0);
+    if (process.env.FAKE_INTERACTIVE === '1') setInterval(() => {}, 1000);
+    else process.exit(0);
+  });
+} else if (action === 'engine') {
+  let input = '';
+  process.stdin.on('data', data => { input += data; });
+  process.stdin.on('end', () => {
+    const request = JSON.parse(input);
+    const message = {role:'assistant', content:null, tool_calls:[{
+      id:'fixture-call', type:'function', function:{name:request.tools[0].function.name,
+      arguments:JSON.stringify({text:request.messages.at(-1).content})}}]};
+    console.error('fixture progress on stderr');
+    console.log(JSON.stringify({result:JSON.stringify(message),is_error:false}));
   });
 } else if (action === 'invoke') {
   if (!fs.existsSync(state)) process.exit(3);
@@ -64,7 +76,7 @@ finally:
 
 
 def fixture_package(root):
-    root.mkdir()
+    root.mkdir(exist_ok=True)
     archive = root / "fixture.tgz"
     with tarfile.open(archive, "w:gz") as tar:
         for name, content in {
@@ -175,10 +187,15 @@ class Box:
         assert self.process.returncode == 0, error
 
 
-def test_install_native_login_call_restart_and_other_owner(tmp_path):
+@pytest.mark.parametrize("terminal", [False, True])
+def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
     alice, bob = tmp_path / "alice", tmp_path / "bob"
-    fixture_package(alice)
-    fixture_package(bob)
+    for root in (alice, bob):
+        doc = fixture_package(root)
+        if terminal:
+            doc["login"].update(terminal=True, complete_on_state=True)
+            doc["env"] = {"FAKE_INTERACTIVE": "1"}
+            (root / ".ta-cli/sources/fake-cli.json").write_text(json.dumps(doc))
     first, second = Box(alice), Box(bob)
     try:
         result = first.call("begin", source_id="fake-cli")
@@ -222,3 +239,19 @@ def test_unadmitted_process_cannot_construct_runtime():
 
     with pytest.raises(PermissionError):
         SubscriptionRuntime("fake-cli")
+
+def test_registry_forwarder_refuses_other_hosts_and_ports(tmp_path):
+    import socket
+
+    from tinyassets.owner_public_egress import OwnerPublicForwarder
+
+    forwarder = OwnerPublicForwarder(tmp_path / 'absent-relay.sock',
+        listen=('127.0.0.1', 0), allowed_hosts=['registry.npmjs.org'])
+    try:
+        for target in ('provider.example:443', 'registry.npmjs.org.evil:443',
+                       'registry.npmjs.org:80'):
+            with socket.create_connection(forwarder.address, timeout=2) as connection:
+                connection.sendall(('CONNECT ' + target + ' HTTP/1.1\r\n\r\n').encode())
+                assert connection.recv(1024).startswith(b'HTTP/1.1 403 Forbidden')
+    finally:
+        forwarder.close()

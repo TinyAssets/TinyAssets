@@ -114,12 +114,18 @@ def _collect(base, owner, uid):
     sources = {}
     definitions = [item for item in list_definitions(uid) if item.owner_user_id == owner]
     for item in definitions:
-        if item.access_method != "api_key_http":
+        if item.access_method not in {"api_key_http", "subscription_cli"}:
             continue
-        provider = "api_key_http:" + item.id
+        provider = item.access_method + ":" + item.id
         sources[provider] = {"provider_ref": provider, "bind_key": item.id,
-                             "access_method": "api_key_http",
+                             "access_method": item.access_method,
                              "accepted": provider in runnable, "reasons": []}
+        if item.access_method == "subscription_cli":
+            from tinyassets.providers.subscription_source import sources as native_sources
+
+            source = native_sources(base).get(item.ref)
+            if source is not None:
+                sources[provider]["display_name"] = source["display_name"]
         if provider in planned_sources:
             continue
         try:
@@ -143,7 +149,7 @@ def _collect(base, owner, uid):
     for provider in accepted:
         sources.setdefault(provider, {"provider_ref": provider,
                                       "access_method": None,
-                                      "bind_key": provider.removeprefix("api_key_http:"),
+                                      "bind_key": provider.split(":", 1)[-1],
                                       "accepted": provider in runnable, "reasons": []})
     failed = {}
     with provider_assignment_admission().shared(universe):
@@ -205,9 +211,9 @@ def _collect(base, owner, uid):
         provider = legacy_provider
         source = sources.get(provider)
         configured_model = ""
-        if provider.startswith("api_key_http:"):
+        if provider.startswith(("api_key_http:", "subscription_cli:")):
             registered = next((item for item in definitions
-                               if "api_key_http:" + item.id == provider), None)
+                               if item.access_method + ":" + item.id == provider), None)
             if registered is not None:
                 configured_model = registered.model
             else:
@@ -226,7 +232,7 @@ def _collect(base, owner, uid):
         "choice_authority": ("accepted_manifest" if assignment and assignment.manifest_digest
                              else "legacy_single_provider"
                              if legacy_provider and legacy_provider not in failed else "none"),
-        "accepted_model_access": {provider.removeprefix("api_key_http:"): access.document()
+        "accepted_model_access": {provider.split(":", 1)[-1]: access.document()
                                   for provider, access in accepted.items()},
         "sources": list(sources.values()),
         **model_options_document(Catalog(owner, uid, models), plan, tuple(rejected)),

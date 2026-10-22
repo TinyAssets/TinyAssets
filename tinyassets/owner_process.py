@@ -18,7 +18,8 @@ class OwnerProcessCancelled(BoxError):
 
 
 def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
-        line_handler=None, should_cancel=None, input_source=None, output_handler=None):
+        line_handler=None, should_cancel=None, input_source=None, output_handler=None,
+        separate_stderr=False, terminal=False):
     from tinyassets.boxes.boxd import _Running
     from tinyassets.owner_public_egress import PROXY_ENV
 
@@ -45,15 +46,34 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                 os.close(box)
             core._state.hold(cc)
             proc = None
+            master = slave = None
             try:
+                if terminal:
+                    import fcntl
+                    import pty
+                    import struct
+                    import termios
+
+                    master, slave = pty.openpty()
+                    attrs = termios.tcgetattr(slave)
+                    attrs[3] &= ~termios.ECHO
+                    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+                    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 4096, 0, 0))
                 core._state.bump_generation(cc)
                 proc = subprocess.Popen(
                     ["/bin/sh", "-c", 'cd -P -- "/proc/self/fd/$0" || exit 126; exec "$@"',
                      str(directory), *argv],
                     cwd=core._root, env={**os.environ, **PROXY_ENV, **(env or {})},
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=slave if terminal else subprocess.PIPE,
+                    stdout=slave if terminal else subprocess.PIPE,
+                    stderr=slave if terminal else (
+                        subprocess.PIPE if separate_stderr else subprocess.STDOUT),
                     start_new_session=True, pass_fds=(directory,), close_fds=True,
                 )
+                if terminal:
+                    proc.stdin = os.fdopen(os.dup(master), "wb", buffering=0)
+                    proc.stdout = os.fdopen(master, "rb", buffering=0)
+                    master = None
                 running = _Running(cc, proc, handle)
                 core._running[key] = running
             except BaseException:
@@ -68,8 +88,11 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                 core._state.release(cc)
                 raise
             finally:
+                for fd in (master, slave):
+                    if fd is not None:
+                        os.close(fd)
                 os.close(directory)
-    output, pending = bytearray(), bytearray()
+    output, pending, errors = bytearray(), bytearray(), bytearray()
     incoming = bytearray(stdin)
     total = 0
     deadline = time.monotonic() + wall_seconds
@@ -90,9 +113,13 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
             for stream in (proc.stdin, proc.stdout):
                 os.set_blocking(stream.fileno(), False)
             selector.register(proc.stdout, selectors.EVENT_READ)
+            if proc.stderr is not None:
+                os.set_blocking(proc.stderr.fileno(), False)
+                selector.register(proc.stderr, selectors.EVENT_READ)
             writing = False
             eof = False
-            while not eof or proc.poll() is None:
+            stderr_eof = proc.stderr is None
+            while not eof or not stderr_eof or proc.poll() is None:
                 if input_source is not None:
                     incoming.extend(input_source())
                     if len(incoming) > output_bytes:
@@ -123,16 +150,29 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                             selector.unregister(proc.stdin)
                             writing = False
                         continue
-                    data = os.read(proc.stdout.fileno(), 65536)
+                    try:
+                        data = os.read(event.fileobj.fileno(), 65536)
+                    except OSError as exc:
+                        import errno
+
+                        if not terminal or exc.errno != errno.EIO:
+                            raise
+                        data = b""  # Linux PTY EOF after its slave closes.
                     if not data:
-                        selector.unregister(proc.stdout)
-                        eof = True
+                        selector.unregister(event.fileobj)
+                        if event.fileobj is proc.stdout:
+                            eof = True
+                        else:
+                            stderr_eof = True
                         continue
                     total += len(data)
                     if total > output_bytes:
                         if line_handler is None:
                             output.extend(data[:max(0, output_bytes - len(output))])
                         raise bounded("output_limit")
+                    if event.fileobj is proc.stderr:
+                        errors.extend(data)
+                        continue
                     if output_handler is not None:
                         output_handler(data)
                     if line_handler is None:
@@ -151,12 +191,15 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                                     raise BoxError("owner process input exceeded its bound")
             if pending:
                 raise BoxError("owner process ended with an incomplete frame")
-            return subprocess.CompletedProcess(list(argv), proc.returncode, bytes(output), b"")
+            return subprocess.CompletedProcess(list(argv), proc.returncode,
+                                               bytes(output), bytes(errors))
     finally:
         kill()
         proc.wait()
         proc.stdin.close()
         proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
         with core._lock(cc):
             core._state.bump_generation(cc)
             core._state.release(cc)
