@@ -573,6 +573,21 @@ jobs:
           sudo docker inspect -f '{{.Config.User}} {{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}}' tinyassets-daemon
           df -h / /var/lib/boxhostd /var/lib/boxhostd/owners
           sudo ls -la /var/lib/boxhostd/owners /opt/tinyassets/boxhostd
+          # Every container's output, including candidates the fail-safe has
+          # since removed, rests in journald through the logs container.
+          mkdir -p "${RUNNER_TEMP}/diagnostics"
+          sudo journalctl -t tinyassets-logs -o cat --no-pager > "${RUNNER_TEMP}/diagnostics/container-logs.jsonl"
+          echo "----- daemon and broker stderr, all containers (tail) -----"
+          grep -E '"container_name":"/tinyassets-(daemon|broker)"' "${RUNNER_TEMP}/diagnostics/container-logs.jsonl" \
+            | grep '"source":"stderr"' | grep -v 'tinyassets-healthcheck' | tail -150
+
+      - name: Upload host diagnostics (synthetic host)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-like-diagnostics-${{ matrix.case }}
+          path: ${{ runner.temp }}/diagnostics
+          if-no-files-found: ignore
 
       - name: Stop the local S3 endpoint
         if: ${{ always() }}
