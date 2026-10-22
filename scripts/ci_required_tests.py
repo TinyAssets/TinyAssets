@@ -50,6 +50,7 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 ROOT_TEST_FILES = frozenset({
     "tests/test_broker_deletion_jobs.py",
     "tests/test_cutover_deletion_jobs.py",
+    "tests/test_cutover_shared_metadata.py",
     "tests/test_backup_owner_box.py",
     "tests/test_owner_cutover_apply.py",
     "tests/test_box_admission.py",

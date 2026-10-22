@@ -2281,6 +2281,59 @@ def _claim_sqlite_sidecars(path: Path) -> None:
             os.fchown(fd, 0, 0)
 
 
+def _shared_directory_metadata(root: Path) -> dict:
+    """Directory custody is part of the staged generation, like file bytes."""
+    result = {}
+    for directory, dirs, _ in os.walk(root):
+        for name in dirs:
+            path = Path(directory) / name
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError("unsafe shared directory inode")
+            result[path.relative_to(root).as_posix()] = [
+                info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)]
+    return result
+
+
+def _stage_shared_directories(data: Path, shared: Path) -> dict:
+    """Retain live custody; assign new directories by their service role.
+
+    Broker/platform children are private to the broker; published content is
+    broker-written and group-readable. Router runtime traversal is granted to
+    the broker only at its socket parent, never at private runtime children.
+    Other router directories retain the router's default 0750 custody.
+    """
+    from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
+
+    for relative in _shared_directory_metadata(shared):
+        live, staged = data / relative, shared / relative
+        try:
+            info = live.lstat()
+        except FileNotFoundError:
+            parts = PurePosixPath(relative).parts
+            uid = BROKER_UID if parts[0] in {".broker", ".platform", ".published"} else DAEMON_UID
+            gid = BROKER_READ_GID if parts[0] == ".published" else uid
+            mode = 0o700 if parts[0] in {".broker", ".platform", ".connect", ".runtime"} else 0o750
+            if parts == (".platform",):
+                uid, gid, mode = DAEMON_UID, DAEMON_UID, 0o711
+            elif parts == (".runtime",):
+                uid, gid, mode = DAEMON_UID, BROKER_READ_GID, 0o710
+        else:
+            if not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError("unsafe live shared directory inode")
+            uid, gid, mode = info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)
+        os.chown(staged, uid, gid)
+        os.chmod(staged, mode)
+    return _shared_directory_metadata(shared)
+
+
+def _verify_shared_stage(shared: Path, journal: dict) -> None:
+    if _durable_tree(shared) != journal["shared"]:
+        raise RuntimeError("staged shared manifest changed")
+    if _shared_directory_metadata(shared) != journal.get("shared_directories"):
+        raise RuntimeError("staged shared directory metadata changed or missing")
+
+
 def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     inventory = {}
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
@@ -2433,20 +2486,16 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     (shared / ".broker/credential-custody.db").unlink(missing_ok=True)
     for marker in (shared / ".broker/accounts").glob("*/.deleted"):
         marker.unlink()
-    for directory, dirs, files in os.walk(shared, followlinks=False):
-        for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
+    for directory, _, files in os.walk(shared, followlinks=False):
+        for path in (Path(directory) / name for name in files):
             relative = path.relative_to(shared).parts
-            uid = (BROKER_UID if relative and relative[0] in
+            uid = (BROKER_UID if relative[0] in
                    {".broker", ".platform", ".published"} else DAEMON_UID)
-            if relative == (".platform",):
-                uid = DAEMON_UID
-            gid = BROKER_READ_GID if relative and relative[0] == ".published" else uid
+            gid = BROKER_READ_GID if relative[0] == ".published" else uid
             os.chown(path, uid, gid)
-            private = relative and relative[0] in {".broker", ".platform", ".connect"}
-            mode = 0o700 if private else 0o750
-            if relative == (".platform",):
-                mode = 0o711
-            os.chmod(path, mode if path.is_dir() else (0o600 if private else 0o640))
+            private = relative[0] in {".broker", ".platform", ".connect"}
+            os.chmod(path, 0o600 if private else 0o640)
+    shared_directories = _stage_shared_directories(data, shared)
     from tinyassets.cutover_control import protect_root
 
     protect_root(shared)
@@ -2458,6 +2507,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     _repair_staged_databases(shared)
     report["workflow_definitions"] = workflow_counts
     journal.update(phase="publish", report=report, shared=_durable_tree(shared),
+                   shared_directories=shared_directories,
                    owner_manifests=owner_manifests,
                    databases=sorted({database for database, _ in inventory["tables"]}),
                    centers=sorted(set(inventory["centers"]) | inventory["dropped_centers"]),
@@ -2477,16 +2527,15 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
 
     shared = store / ".cutover-shared"
     protect_root(data)
-    if _durable_tree(shared) != journal["shared"]:
-        raise RuntimeError("staged shared manifest changed")
+    _verify_shared_stage(shared, journal)
     _verify_owner_volumes(store, journal)
-    for directory, dirs, _ in os.walk(shared):
-        for name in dirs:
-            original = Path(directory) / name
-            destination = data / original.relative_to(shared)
-            destination.mkdir(parents=True, exist_ok=True)
-            os.chown(destination, original.stat().st_uid, original.stat().st_gid)
-            os.chmod(destination, stat.S_IMODE(original.stat().st_mode))
+    for relative, (uid, gid, mode) in journal["shared_directories"].items():
+        destination = data / relative
+        destination.mkdir(parents=True, exist_ok=True)
+        if not stat.S_ISDIR(destination.lstat().st_mode):
+            raise RuntimeError("unsafe live shared directory inode")
+        os.chown(destination, uid, gid)
+        os.chmod(destination, mode)
     for relative, digest in journal["shared"].items():
         source, target = shared / relative, data / relative
         # Copy to a destination-filesystem temporary then replace, so the
@@ -2569,8 +2618,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 if journal.get("store") != str(store.resolve()):
                     raise RuntimeError("cutover store changed after publication")
                 if journal.get("phase") != "complete":
-                    if _durable_tree(store / ".cutover-shared") != journal["shared"]:
-                        raise RuntimeError("staged shared manifest changed")
+                    _verify_shared_stage(store / ".cutover-shared", journal)
                     _verify_owner_volumes(store, journal)
                     journal["phase"] = "complete"
                     journal["identity_manifest"] = cutover_identity_manifest(data)

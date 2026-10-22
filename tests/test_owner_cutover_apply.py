@@ -334,6 +334,11 @@ def cutover(source, tmp_path, monkeypatch):
                        (owner + "-legacy", owner, destination))
     for center in ('a1', 'a2', 'b1', 'b2'):
         os.chown(source / center, 1001, 300001 if center[0] == 'a' else 300002)
+    # Model live service custody: publication now preserves existing directories
+    # rather than repairing this root-created fixture's accidental 0755 mode.
+    for relative in ('.broker', '.broker/state'):
+        os.chown(source / relative, 1002, 1002)
+        (source / relative).chmod(0o700)
     destination = tmp_path / 'volume/_data'
     destination.parent.mkdir()
     source.rename(destination)
@@ -868,7 +873,10 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
     identity_path = data / '.broker/state/owner-identities.db'
     identity_path.parent.chmod(0o700)
     identity_path.chmod(0o600)
+    # This root-process fixture seeds the database before restoring live custody.
+    os.chown(identity_path.parent, os.getuid(), os.getgid())
     identities = OwnerIdentities(identity_path)
+    os.chown(identity_path.parent, 1002, 1002)
     # Replace only this synthetic fixture's abbreviated main schema with the
     # application's actual schema before creating history and requests.
     (data / '.tinyassets.db').unlink()
