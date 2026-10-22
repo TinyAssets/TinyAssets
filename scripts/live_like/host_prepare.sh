@@ -137,6 +137,9 @@ setenv CLOUDFLARE_TUNNEL_TOKEN "$CLOUDFLARE_TUNNEL_TOKEN"
 setenv TINYASSETS_WIKI_CANARY_TOKEN "$TINYASSETS_WIKI_CANARY_TOKEN"
 setenv TINYASSETS_MCP_CANARY_URL "http://127.0.0.1:8001/mcp"
 setenv BACKUP_DEST "$BACKUP_DEST"
+# Operator opt-in the droplet carries (openspec archive
+# 2026-10-11-prod-disk-retention-and-grant-errors).
+setenv TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY 1
 # The deploy installs these two set-once; the host already holds the same
 # values from its earlier deploys, exactly as the droplet does.
 for pair in "agent-interchange:TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" \
