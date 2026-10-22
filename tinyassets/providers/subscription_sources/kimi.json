@@ -1,0 +1,82 @@
+{
+  "id": "kimi",
+  "display_name": "Kimi",
+  "install": {
+    "manager": "npm",
+    "package": "@moonshot-ai/kimi-code",
+    "version": "2.3.0",
+    "integrity": "sha512-/70t2bZV5ynYwYn13yjeA0EuQwY2v0UboH+Ks3LW/69+05eDNe29HZlwEg0F4iU0SvA2rWPcDRSfCRj5MqAJrA==",
+    "bin": "kimi",
+    "verify_argv": [
+      "{bin}",
+      "--version"
+    ]
+  },
+  "files": {
+    "agent.md": "---\nname: owner-inference\ntools: []\nsubagents: []\n---\nFollow the supplied conversation and return only the requested response.\n"
+  },
+  "login": {
+    "argv": [
+      "{bin}",
+      "login",
+      "--region",
+      "mainland-cn"
+    ],
+    "url_pattern": "(https://(?:www\\.kimi\\.com|auth\\.kimi\\.com)/[^\\s\\u001b]+)",
+    "code_pattern": "enter code: ([A-Za-z0-9-]+)",
+    "state_checks": [
+      {
+        "path": ".kimi-code/credentials/kimi-code.json",
+        "present": [
+          "access_token",
+          "refresh_token"
+        ]
+      }
+    ]
+  },
+  "invoke": {
+    "argv": [
+      "{bin}",
+      "--agent-file",
+      "{config}/agent.md",
+      "--prompt",
+      "{system}\n\n{prompt}",
+      "--output-format",
+      "stream-json"
+    ],
+    "model_argv": [
+      "--model",
+      "{model}"
+    ],
+    "format": "jsonl",
+    "match": {
+      "role": "assistant"
+    },
+    "text_path": "content",
+    "max_prompt_bytes": 100000
+  },
+  "egress": {
+    "registry": [
+      "registry.npmjs.org"
+    ],
+    "login": [
+      "auth.kimi.com",
+      "api.kimi.com",
+      "www.kimi.com"
+    ],
+    "provider": [
+      "auth.kimi.com",
+      "api.kimi.com"
+    ]
+  },
+  "state_paths": [
+    ".kimi-code/credentials/kimi-code.json",
+    ".kimi-code/config.toml"
+  ],
+  "models": [
+    {
+      "id": "default",
+      "context": 32768
+    }
+  ]
+}

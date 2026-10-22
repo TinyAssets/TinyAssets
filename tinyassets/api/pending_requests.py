@@ -2015,6 +2015,13 @@ def _model_connect_request(*, connected: bool = False) -> dict[str, object]:
     setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
                                 "sign_in_sources": sign_in_cards(),
                                 "daily_caps": daily_cap_offers()}
+    from tinyassets.owner_runtime import current
+    from tinyassets.providers.subscription_source import sources
+
+    runtime = current()
+    setup["subscription_sources"] = [{"id": doc["id"], "name": doc["display_name"],
+        "label": "Continue with " + doc["display_name"]}
+        for doc in sources(getattr(runtime, "root", None)).values()]
     primary = None if connected else _first_power_preset()
     if primary is not None:
         setup["primary"] = primary

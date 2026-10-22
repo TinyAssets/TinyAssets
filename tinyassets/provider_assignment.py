@@ -118,7 +118,7 @@ def _is_open_provider(name: str) -> bool:
     """True for an open compute provider serving name (``api_key_http:<def-id>``).
     Its credential is a connection grant, not a subscription snapshot — the authority
     + budget paths branch on this."""
-    return name.startswith("api_key_http:")
+    return name.startswith(("api_key_http:", "subscription_cli:"))
 
 #: Rolling window for the invocation runaway guard (Codex 2026-08-19 reject #3).
 #: The per-binding-generation invocation ceiling counts only rows CREATED within
@@ -1217,7 +1217,8 @@ def accepted_connected_model_access(assignment, owner, provider):
         member = next((item for item in assignment.candidates if item.provider == provider), None)
         if member is not None:
             return member.access
-    elif assignment.provider == provider and provider.startswith("api_key_http:"):
+    elif (assignment.provider == provider
+          and provider.startswith(("api_key_http:", "subscription_cli:"))):
         # A legacy single-provider HTTP binding accepted exactly the model the
         # owner connected it with, free-only: what the legacy lane always ran
         # and what the model picker shows as its `legacy_source`. Nothing
@@ -1225,10 +1226,11 @@ def accepted_connected_model_access(assignment, owner, provider):
         from tinyassets.providers.definition import get_definition
 
         definition = get_definition(
-            assignment.universe_id, provider.removeprefix("api_key_http:"),
+            assignment.universe_id, provider.split(":", 1)[-1],
         )
         if (definition is not None and definition.owner_user_id == owner
-                and definition.access_method == "api_key_http" and definition.model):
+                and definition.access_method in {"api_key_http", "subscription_cli"}
+                and definition.model):
             return ModelAccess("explicit", (definition.model,), None)
     raise PermissionError("model source is outside accepted access")
 
@@ -1251,12 +1253,12 @@ def _selected_chain(store, base_path, universe, capability, agent, selection):
             assignment, capability.principal_id, selection.connection_id,
         )
         conn.rollback()
-    if selection.connection_id.startswith("api_key_http:"):
+    if selection.connection_id.startswith(("api_key_http:", "subscription_cli:")):
         from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
         refresh_model_discovery(
             owner_user_id=capability.principal_id, universe_id=universe.name,
-            definition_id=selection.connection_id.removeprefix("api_key_http:"),
+            definition_id=selection.connection_id.split(":", 1)[-1],
         )
     return selection.connection_id, custody, access
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -170,9 +171,12 @@ class OwnerRouter:
 
 
 def _public_host() -> bytes:
-    from tinyassets.auth.wellknown import protected_resource_metadata
-
-    resource = str(protected_resource_metadata().get("resource", ""))
+    resource = os.environ.get(
+        "UNIVERSE_SERVER_URL",
+        f"http://localhost:{os.environ.get('UNIVERSE_SERVER_PORT', '8001')}",
+    )
+    if os.environ.get("UNIVERSE_SERVER_AUTH", "").strip().lower() == "workos":
+        resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip() or resource
     return urlsplit(resource).netloc.lower().encode("ascii")
 
 

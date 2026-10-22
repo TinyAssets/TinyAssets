@@ -2055,6 +2055,7 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.owner_unread import handle_unread
     from tinyassets.onboarding.public_run import handle_public_run
     from tinyassets.onboarding.soul import handle_soul
+    from tinyassets.onboarding.subscription_connect import handle as subscription_connect
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.onboarding.wakes import handle_wakes
     from tinyassets.owner_door import owner_door_routes
@@ -2078,6 +2079,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/api-keys", handle_api_keys, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
+        Route("/app/subscription-connect/{operation}", subscription_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
         # Public (carve-out in `_auth_challenge_path`): an authorization server
         # fetches this client metadata document with no bearer.

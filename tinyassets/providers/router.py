@@ -1076,7 +1076,7 @@ class ProviderRouter:
                     invocation_carrier is not None
                     and provider_name == invocation_carrier.provider
                 )
-            ) and provider_name.startswith("api_key_http:"):
+            ) and provider_name.startswith(("api_key_http:", "subscription_cli:")):
                 # Do NOT trust the mutable registry for an authorized OPEN provider.
                 # A substituted same-name object could receive the prompt without
                 # using the definition's current grant or credential-blind proxy.
@@ -1096,7 +1096,7 @@ class ProviderRouter:
                         raise PermissionError(
                             "open provider invocation requires a command center context"
                         )
-                    _def_id = provider_name.split("api_key_http:", 1)[-1]
+                    _def_id = provider_name.split(":", 1)[-1]
                     _definition = get_definition(_uid, _def_id)
                     if _definition is None:
                         raise PermissionError(

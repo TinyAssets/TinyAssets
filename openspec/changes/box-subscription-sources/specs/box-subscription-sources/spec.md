@@ -27,3 +27,14 @@ The page SHALL offer native subscription login controls from definitions alongsi
 #### Scenario: Native code handoff
 - **WHEN** the CLI requires a returned code because its callback cannot be reached
 - **THEN** the page relays the code to the same owner-bound login process and does not report success before verification
+
+### Requirement: Evidence-based default selection
+The system SHALL include connected subscription sources in ordinary automatic model ordering, using only declared comparable evidence with a bounded freshness period and preserving explicit owner preferences.
+
+#### Scenario: Stronger source connected
+- **WHEN** a newly connected source has stronger fresh comparable evidence than the current automatic choice
+- **THEN** automatic ordering selects it without replacing an explicit saved preference
+
+#### Scenario: Unknown native default
+- **WHEN** the native default alias has no comparable model evidence
+- **THEN** it remains unranked rather than receiving an invented vendor quality score

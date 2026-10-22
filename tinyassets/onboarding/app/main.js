@@ -2717,7 +2717,11 @@
     // levels, because the server replaces the whole policy document.
     automatic(){return {version:2,mode:"automatic",saved_default:null,fallbacks:[],efforts:[]};},
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
-    label(ref){return ref.provider_ref+" · "+(ref.model_id||"Provider default");},
+    sourceLabel(provider){
+      const source=(this.snapshot?.sources||[]).find(item=>item.provider_ref===provider);
+      return typeof source?.display_name==="string"?source.display_name:provider;
+    },
+    label(ref){return this.sourceLabel(ref.provider_ref)+" · "+(ref.model_id||"Provider default");},
     // ---- effort ---------------------------------------------------------
     //
     // "effort level controls should also be avalible" (founder, 2026-10-03).
@@ -3058,7 +3062,7 @@
       const accessList=$("model-access-sources");accessList.replaceChildren();
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
         const proposal=this.accessProposal(source),li=document.createElement("li");
-        const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
+        const label=document.createElement("span");label.textContent=this.sourceLabel(source.provider_ref);li.appendChild(label);
         if(proposal){
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
           btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
@@ -7633,6 +7637,94 @@
   // Sources completed by SIGNING IN (installed data on the setup request). One tap
   // asks the server for the platform's own connect request, then hands it to the
   // generic sign-in client: the browser names only the source's id.
+  const SubscriptionSources={
+    signature:"",busy:false,
+    render(sources){
+      let host=$("connect-subscription-sources");
+      if(!host){host=document.createElement("div");host.id="connect-subscription-sources";
+        $("connect-sign-in-sources").after(host);}
+      const valid=(Array.isArray(sources)?sources:[]).filter(s=>s&&
+        /^[a-z0-9][a-z0-9-]{1,63}$/.test(s.id)&&typeof s.label==="string");
+      const signature=JSON.stringify(valid);if(signature===this.signature)return;
+      this.signature=signature;host.replaceChildren();
+      for(const source of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const button=document.createElement("button");button.type="button";
+        button.className="btn btn--ghost";button.textContent=source.label;
+        const note=document.createElement("p");note.textContent="Use your subscription models with your agent.";
+        const status=document.createElement("p");status.setAttribute("role","status");
+        const input=document.createElement("input");input.type="text";input.autocomplete="off";
+        input.placeholder="Code returned after sign-in";input.setAttribute("aria-label",input.placeholder);
+        const submit=document.createElement("button");submit.type="button";submit.textContent="Finish sign-in";
+        const cancel=document.createElement("button");cancel.type="button";cancel.textContent="Cancel";
+        input.hidden=submit.hidden=cancel.hidden=true;
+        card.append(button,note,status,input,submit,cancel);host.append(card);
+        button.onclick=()=>this.start(source,{button,status,input,submit,cancel});
+      }
+    },
+    async post(operation,body,epoch){
+      await ensureFreshToken();
+      if(epoch!==MCP._loginEpoch||!token())throw new Error("Sign in again to continue.");
+      const response=await fetch("/app/subscription-connect/"+operation,{
+        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
+      const result=await response.json();
+      if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
+      if(!response.ok||result.error)throw new Error("Connection did not finish. Sign in to the owner view and retry.");
+      return result;
+    },
+    async start(source,ui){
+      if(this.busy)return;
+      const external=NATIVE||DESKTOP_SHELL;
+      const popup=external?null:window.open("about:blank","_blank");
+      if(!external&&!popup){ui.status.textContent="Allow the sign-in popup and retry.";return;}
+      if(popup)popup.opener=null;
+      const epoch=MCP._loginEpoch;let flow="",opened=false,cancelled=false;
+      this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
+      ui.status.textContent="Preparing your subscription sign-in…";
+      ui.cancel.onclick=()=>{cancelled=true;};
+      try{
+        let state=await this.post("begin",{source_id:source.id},epoch);flow=state.flow;
+        ui.submit.onclick=async()=>{
+          if(!ui.input.value.trim())return;
+          ui.submit.disabled=true;
+          try{await this.post("code",{flow,code:ui.input.value.trim()},epoch);ui.input.value="";}
+          catch(error){ui.status.textContent=error.message;}
+          finally{ui.submit.disabled=false;}
+        };
+        const deadline=Date.now()+900000;
+        while(Date.now()<deadline){
+          if(cancelled)throw new Error("Sign-in cancelled.");
+          if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
+          if(state.status==="failed"||state.status==="cancelled")throw new Error("Sign-in did not complete. Retry to connect.");
+          if(state.authorize_url&&!opened){
+            const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
+            if(external)await openExternal(url.href);else popup.location.href=url.href;
+            opened=true;
+          }
+          ui.input.hidden=ui.submit.hidden=!(state.accepts_code&&opened&&state.status==="waiting");
+          ui.status.textContent=state.status==="installing"?"Preparing your subscription sign-in…":
+            state.code?"Approve sign-in using code: "+state.code:"Finish sign-in in your browser.";
+          if(state.status==="connected"){
+            const result=await this.post("finish",{flow},epoch);
+            if(result.status!=="connected")throw new Error("Signed in. Model setup still needs attention.");
+            ui.status.textContent="Connected. Your agent can use this subscription.";
+            await refreshRail();return;
+          }
+          await sleep(1000);state=await this.post("poll",{flow},epoch);
+        }
+        throw new Error("Sign-in expired. Retry to connect.");
+      }catch(error){
+        ui.status.textContent=error.message;
+        if(flow&&epoch===MCP._loginEpoch){try{await this.post("cancel",{flow},epoch);}catch(_e){}}
+      }finally{
+        if(popup&&!popup.closed)popup.close();
+        ui.input.value="";ui.input.hidden=ui.submit.hidden=ui.cancel.hidden=true;
+        ui.button.disabled=false;this.busy=false;
+      }
+    }
+  };
+
   const SignInSourceCards={
     signature:"",busy:false,
     render(sources){
@@ -8883,6 +8975,7 @@
     const screen = !setup.service;
     $("connect-intro").hidden = !screen;
     if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
+    SubscriptionSources.render(screen ? setup.subscription_sources : []);
     const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
     $("connect-paste").hidden = !keyCards.length;
     $("connect-paste-summary").textContent = keyCards.length
