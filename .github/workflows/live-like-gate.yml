@@ -219,8 +219,15 @@ jobs:
       - name: Start the live image and make it live
         env:
           BASE_IMAGE: ${{ steps.live_base.outputs.image_ref }}
+          BASE_REVISION: ${{ steps.live_base.outputs.revision }}
         run: |
           set -euo pipefail
+          # The receipt the live revision's deploy published, by the same
+          # phase; this host holds no older image to roll back to.
+          GIT_SHA="${BASE_REVISION}" IMAGE_TAG="${BASE_IMAGE%@*}:${BASE_REVISION:0:12}" \
+            IMAGE_DIGEST="${BASE_IMAGE##*@}" IMAGE_REF="${BASE_IMAGE}" DEPLOYED_IMAGE="${BASE_IMAGE}" \
+            PREV_IMAGE='' BUILD_RUN_ID="${GITHUB_RUN_ID}" \
+            bash deploy/deploy_host.sh publish-release-receipt
           sudo bash scripts/live_like/make_live.sh start "${BASE_IMAGE}"
           sudo bash scripts/live_like/make_live.sh check
 
