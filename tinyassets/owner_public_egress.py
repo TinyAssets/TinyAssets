@@ -24,15 +24,17 @@ class OwnerPublicForwarder:
     admission, reads and writes, then joins every worker before returning.
     """
 
-    def __init__(self, relay: Path):
+    def __init__(self, relay: Path, *, listen=LISTEN_ADDRESS, allowed_hosts=None):
         self.relay = relay
+        self.allowed_hosts = None if allowed_hosts is None else frozenset(allowed_hosts)
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._workers = {}
         self._listener = socket.socket()
         try:
             self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._listener.bind(LISTEN_ADDRESS)
+            self._listener.bind(listen)
+            self.address = self._listener.getsockname()
             self._listener.listen(64)
             self._listener.settimeout(.2)
             self._thread = threading.Thread(target=self._accept, daemon=True)
@@ -59,10 +61,25 @@ class OwnerPublicForwarder:
                 worker.start()
 
     def _serve(self, guest, relay):
+        from tinyassets.boxes.network import EgressRefused
+
         try:
             with guest, relay:
                 guest.settimeout(30)
                 relay.settimeout(30)
+                head = bytearray()
+                if self.allowed_hosts is not None:
+                    from tinyassets.boxes.network import _destination
+
+                    while b"\r\n\r\n" not in head:
+                        part = guest.recv(1)
+                        if not part or len(head) >= 16384:
+                            return
+                        head.extend(part)
+                    host, port, _ = _destination(bytes(head))
+                    if host.lower() not in self.allowed_hosts or port != 443:
+                        guest.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                        return
                 relay.connect(str(self.relay))
                 relay.sendall(rf.control(rf.CONNECTION, {"op": "BOX_PUBLIC"}))
                 answer = rf.read_frame_blocking(relay)
@@ -70,6 +87,8 @@ class OwnerPublicForwarder:
                         or answer.stream != rf.CONNECTION
                         or answer.control() != {"op": "BOX_CONNECTED"}):
                     return
+                if head:
+                    relay.sendall(head)
                 readers = [guest, relay]
                 while readers and not self._stop.is_set():
                     ready, _, _ = select.select(readers, [], [], 1)
@@ -81,7 +100,7 @@ class OwnerPublicForwarder:
                         else:
                             readers.remove(source)
                             destination.shutdown(socket.SHUT_WR)
-        except (OSError, ValueError, rf.FrameError):
+        except (OSError, ValueError, rf.FrameError, EgressRefused):
             pass  # EOF is a refusal, never a direct-network fallback.
         finally:
             with self._lock:

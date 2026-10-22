@@ -18,7 +18,7 @@ class OwnerProcessCancelled(BoxError):
 
 
 def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
-        line_handler=None, should_cancel=None):
+        line_handler=None, should_cancel=None, input_source=None, output_handler=None):
     from tinyassets.boxes.boxd import _Running
     from tinyassets.owner_public_egress import PROXY_ENV
 
@@ -93,6 +93,10 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
             writing = False
             eof = False
             while not eof or proc.poll() is None:
+                if input_source is not None:
+                    incoming.extend(input_source())
+                    if len(incoming) > output_bytes:
+                        raise BoxError("owner process input exceeded its bound")
                 if running.cancel.is_set() or should_cancel is not None and should_cancel():
                     raise OwnerProcessCancelled("owner cancelled the execution")
                 if time.monotonic() >= deadline:
@@ -102,7 +106,8 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                 if incoming and not writing and not proc.stdin.closed:
                     selector.register(proc.stdin, selectors.EVENT_WRITE)
                     writing = True
-                elif not incoming and line_handler is None and not proc.stdin.closed:
+                elif (not incoming and line_handler is None and input_source is None
+                      and not proc.stdin.closed):
                     if writing:
                         selector.unregister(proc.stdin)
                         writing = False
@@ -128,6 +133,8 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                         if line_handler is None:
                             output.extend(data[:max(0, output_bytes - len(output))])
                         raise bounded("output_limit")
+                    if output_handler is not None:
+                        output_handler(data)
                     if line_handler is None:
                         output.extend(data)
                     else:
