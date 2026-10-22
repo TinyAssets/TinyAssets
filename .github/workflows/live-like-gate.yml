@@ -33,6 +33,11 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
   merge_group:
   workflow_dispatch:
+    inputs:
+      base_revision:
+        description: 'Start the host from this revision instead of the one production serves (full SHA)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -79,10 +84,17 @@ jobs:
         id: live_base
         env:
           GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ inputs.base_revision }}
         run: |
           set -euo pipefail
-          # Public, unauthenticated: the build header production's /app sends.
-          served="$(python scripts/deployed_sha.py --json | python -c 'import json,sys; print(json.load(sys.stdin)["deployed_sha"])')"
+          if [ -n "${PINNED:-}" ]; then
+            # A manual run may replay a specific transition (for example from
+            # the layout production had before a cutover).
+            served="${PINNED}"
+          else
+            # Public, unauthenticated: the build header production's /app sends.
+            served="$(python scripts/deployed_sha.py --json | python -c 'import json,sys; print(json.load(sys.stdin)["deployed_sha"])')"
+          fi
           [[ "${served}" =~ ^[0-9a-f]{40}$ ]]
           image="ghcr.io/$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/tinyassets-daemon"
           echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin >/dev/null
