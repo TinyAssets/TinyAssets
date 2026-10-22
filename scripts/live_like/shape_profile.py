@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.live_like.reviewed_columns import REVIEWED_COLUMNS
 from tinyassets.box_layout_migration import CENSUS_RULES, _census_files
 from tinyassets.storage_accounting import ROOT_ENTRIES
 
@@ -53,7 +54,15 @@ CREATE = re.compile(
     r"[\"`\[]?([A-Za-z_][A-Za-z_0-9]*)",
     re.I,
 )
-IDENT = re.compile(r"^[\"`\[]?([A-Za-z_][A-Za-z_0-9]*)")
+ALTER = re.compile(
+    r"\bALTER\s+TABLE\s+([A-Za-z_][A-Za-z_0-9]*)\s+ADD\s+COLUMN\s+"
+    r'["`\[]?([A-Za-z_][A-Za-z_0-9]*)\s+(INTEGER|TEXT|REAL|BLOB|NUMERIC)\b',
+    re.I,
+)
+IDENT = re.compile(
+    r'^(?:"([A-Za-z_][A-Za-z_0-9]*)"|`([A-Za-z_][A-Za-z_0-9]*)`|'
+    r'\[([A-Za-z_][A-Za-z_0-9]*)\]|([A-Za-z_][A-Za-z_0-9]*))'
+)
 STORE_LITERAL = re.compile(r"^[A-Za-z0-9_./*-]+\.(?:db|sqlite3)$")
 FIXED_PATH_PARTS = (
     frozenset(part for path in CENSUS_RULES for part in path.split("/") if part != "*")
@@ -175,7 +184,7 @@ def bucket(value: int) -> str:
 
 
 def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str]]:
-    """Find literal CREATE statements and literal schema migrations without evaluating source."""
+    """Find code-owned SQL columns without executing source or opening a live store."""
     found: dict[str, dict[str, str]] = {}
     sources = sorted((*source.rglob("*.py"), *source.rglob("*.sql")))
     if (REPO / "scripts/live_like/fixture.py").is_file():
@@ -183,10 +192,162 @@ def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str
     for path in sources:
         code = path.read_text(encoding="utf-8")
         tree = ast.parse(code) if path.suffix == ".py" else None
+        # Keep the raw scan for split/dynamic table names in older code. AST
+        # fragments supply the accurate column bodies for Python SQL strings.
+        sql_fragments: list[str] = [code]
         migrations: list[tuple[str, str, str]] = []
         replacements: set[tuple[str, str]] = set()
         if tree is not None:
+            constants: dict[str, str] = {}
+
+            def literal_string(node: ast.AST) -> str | None:
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    return node.value
+                if isinstance(node, ast.Name):
+                    return constants.get(node.id)
+                if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                    left, right = literal_string(node.left), literal_string(node.right)
+                    return left + right if left is not None and right is not None else None
+                if isinstance(node, ast.JoinedStr):
+                    return "".join(
+                        part.value if isinstance(part, ast.Constant) else "{dynamic}"
+                        for part in node.values
+                    )
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    template = literal_string(node.func.value)
+                    if (
+                        template is not None
+                        and "CREATE TABLE" in template
+                        and node.func.attr == "format"
+                    ):
+                        kwargs = {kw.arg: literal_string(kw.value) for kw in node.keywords}
+                        if all(value is not None for value in kwargs.values()):
+                            try:
+                                return template.format(**kwargs)
+                            except (IndexError, KeyError, ValueError):
+                                pass
+                return None
+
+            for node in tree.body:
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    value = literal_string(node.value)
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    if value is not None:
+                        for target in targets:
+                            if isinstance(target, ast.Name):
+                                constants[target.id] = value
+
+            def static_value(node: ast.AST, env: dict[str, object]) -> object | None:
+                if isinstance(node, ast.Name):
+                    return env.get(node.id)
+                try:
+                    return ast.literal_eval(node)
+                except (ValueError, TypeError):
+                    return None
+
+            def sql_value(node: ast.AST, env: dict[str, object]) -> str | None:
+                if isinstance(node, ast.JoinedStr):
+                    parts = []
+                    for part in node.values:
+                        if isinstance(part, ast.Constant):
+                            parts.append(str(part.value))
+                        elif isinstance(part, ast.FormattedValue):
+                            value = static_value(part.value, env)
+                            parts.append(
+                                str(value) if isinstance(value, (str, int)) else "{dynamic}"
+                            )
+                    return "".join(parts)
+                return literal_string(node)
+
+            def scan_statements(
+                statements: list[ast.stmt], env: dict[str, object]
+            ) -> dict[str, object]:
+                local = dict(env)
+                for statement in statements:
+                    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                        value = static_value(statement.value, local)
+                        targets = (
+                            statement.targets
+                            if isinstance(statement, ast.Assign)
+                            else [statement.target]
+                        )
+                        for target in targets:
+                            if isinstance(target, ast.Name) and value is not None:
+                                local[target.id] = value
+                    elif (
+                        isinstance(statement, ast.Expr)
+                        and isinstance(statement.value, ast.Call)
+                        and isinstance(statement.value.func, ast.Attribute)
+                        and statement.value.func.attr == "append"
+                        and isinstance(statement.value.func.value, ast.Name)
+                    ):
+                        target = statement.value.func.value.id
+                        item = static_value(statement.value.args[0], local)
+                        if isinstance(local.get(target), list) and item is not None:
+                            local[target] = [*local[target], item]
+                    elif isinstance(statement, ast.For):
+                        values = static_value(statement.iter, local)
+                        if isinstance(values, (tuple, list)):
+                            for value in values:
+                                branch = dict(local)
+                                if isinstance(statement.target, ast.Name):
+                                    branch[statement.target.id] = value
+                                elif (
+                                    isinstance(statement.target, (ast.Tuple, ast.List))
+                                    and isinstance(value, (tuple, list))
+                                ):
+                                    for target, item in zip(statement.target.elts, value):
+                                        if isinstance(target, ast.Name):
+                                            branch[target.id] = item
+                                scan_statements(statement.body, branch)
+                        continue
+                    for node in ast.walk(statement):
+                        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                            if node.func.attr in {"execute", "executescript"} and node.args:
+                                value = sql_value(node.args[0], local)
+                                if value is not None:
+                                    sql_fragments.append(value)
+                        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                            if (
+                                node.func.id in {"_ensure_column", "_add_column"}
+                                and len(node.args) >= 4
+                            ):
+                                args = [static_value(arg, local) for arg in node.args[-3:]]
+                                if all(isinstance(arg, str) for arg in args):
+                                    migrations.append((args[0], args[1], args[2]))
+                            if node.func.id == "_alter" and len(node.args) == 2:
+                                args = [static_value(arg, local) for arg in node.args]
+                                if all(isinstance(arg, str) for arg in args):
+                                    migrations.append(("runs", args[0], args[1]))
+                    if isinstance(statement, ast.If):
+                        test = statement.test
+                        decision = None
+                        if (
+                            isinstance(test, ast.Compare)
+                            and len(test.ops) == len(test.comparators) == 1
+                        ):
+                            left = static_value(test.left, local)
+                            right = static_value(test.comparators[0], local)
+                            if left is not None and right is not None:
+                                if isinstance(test.ops[0], ast.Eq):
+                                    decision = left == right
+                                elif isinstance(test.ops[0], ast.NotEq):
+                                    decision = left != right
+                        if decision is not False:
+                            local = scan_statements(statement.body, local)
+                        if decision is not True:
+                            local = scan_statements(statement.orelse, local)
+                    elif isinstance(statement, (ast.Try, ast.With)):
+                        local = scan_statements(statement.body, local)
+                return local
+
             for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    scan_statements(node.body, {})
+            for node in ast.walk(tree):
+                value = literal_string(node)
+                if value is not None:
+                    sql_fragments.append(value)
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                     if any(
@@ -215,43 +376,43 @@ def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str
                     )
                 ):
                     replacements.add((node.args[0].value, node.args[1].value))
-        for match in CREATE.finditer(code):
-            table = match.group(1)
-            # SQL is frequently assembled from adjacent Python string literals.
-            # The name is enough to detect drift even if columns cannot be parsed.
-            start = code.find("(", match.end())
-            if start < 0 or start - match.end() > 80:
-                found.setdefault(table, {})
-                continue
-            depth, end = 0, start
-            for end in range(start, min(len(code), start + 30000)):
-                if code[end] == "(":
-                    depth += 1
-                elif code[end] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-            body = code[start + 1 : end]
-            columns: dict[str, str] = {}
-            for fragment in re.split(r",\s*(?![^()]*\))", body):
-                token = IDENT.match(fragment.strip())
-                if not token or token.group(1).upper() in {
-                    "PRIMARY",
-                    "FOREIGN",
-                    "UNIQUE",
-                    "CHECK",
-                    "CONSTRAINT",
-                }:
+        # Python joins adjacent quoted strings into one AST constant. Scanning
+        # source text instead silently loses every column after a quote boundary.
+        for sql in sql_fragments:
+            for match in CREATE.finditer(sql):
+                table = match.group(1)
+                start = sql.find("(", match.end())
+                if start < 0 or start - match.end() > 80:
+                    found.setdefault(table, {})
                     continue
-                name = token.group(1)
-                tail = fragment.strip()[token.end() :].strip()
-                kind = re.match(r"(INTEGER|TEXT|REAL|BLOB|NUMERIC)\b", tail, re.I)
-                if kind:
-                    columns[name] = kind.group(1).upper()
-            if len(columns) > len(found.get(table, {})):
-                found[table] = columns
-            else:
-                found.setdefault(table, {})
+                depth, end = 0, start
+                for end in range(start, min(len(sql), start + 30000)):
+                    if sql[end] == "(":
+                        depth += 1
+                    elif sql[end] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                body = re.sub(r"--[^\n]*", "", sql[start + 1 : end])
+                columns: dict[str, str] = {}
+                for fragment in re.split(r",\s*(?![^()]*\))", body):
+                    token = IDENT.match(fragment.strip())
+                    if not token or next(g for g in token.groups() if g is not None).upper() in {
+                        "PRIMARY",
+                        "FOREIGN",
+                        "UNIQUE",
+                        "CHECK",
+                        "CONSTRAINT",
+                    }:
+                        continue
+                    name = next(group for group in token.groups() if group is not None)
+                    tail = fragment.strip()[token.end() :].strip()
+                    kind = re.match(r"(INTEGER|TEXT|REAL|BLOB|NUMERIC)\b", tail, re.I)
+                    if kind:
+                        columns[name] = kind.group(1).upper()
+                found.setdefault(table, {}).update(columns)
+            for match in ALTER.finditer(sql):
+                found.setdefault(match.group(1), {})[match.group(2)] = match.group(3).upper()
         for template, actual in replacements:
             if template in found:
                 found.setdefault(actual, {}).update(found[template])
@@ -260,6 +421,17 @@ def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str
             if table in found and kind:
                 found[table][column] = kind.group(1).upper()
     return found
+
+
+def column_vocabulary(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str]]:
+    """Current code plus reviewed retained or dependency-owned columns."""
+    schema = source_schema(source)
+    if source.resolve() == (REPO / "tinyassets").resolve():
+        for table, columns in REVIEWED_COLUMNS.items():
+            allowed = schema.setdefault(table, {})
+            for column in columns:
+                allowed.setdefault(column, "TEXT")
+    return schema
 
 
 def source_stores(source: Path = REPO / "tinyassets") -> list[str]:
@@ -394,7 +566,7 @@ def profile(
     root: Path, source: Path = REPO / "tinyassets", *, findings: list[str] | None = None
 ) -> dict:
     root = root.resolve(strict=True)
-    schema = source_schema(source)
+    schema = column_vocabulary(source)
     stores = known_stores(schema)
     owners: dict[str, int] = {}
     centers: dict[str, set[str]] = {}
@@ -462,7 +634,7 @@ def profile(
         },
         "stores": stores,
         "files": _file_shapes(root, centers, owners, databases),
-        "code_tables": sorted(schema),
+        "code_tables": sorted(source_schema(source)),
         "code_stores": source_stores(source),
     }
     if drift:
@@ -473,7 +645,7 @@ def profile(
 
 
 def check_redaction(document: dict, source: Path = REPO / "tinyassets") -> None:
-    schema = source_schema(source)
+    schema = column_vocabulary(source)
     known_columns = set().union(*(set(cols) for cols in schema.values()))
     for rules in CENSUS_RULES.values():
         for rule in rules.values():
@@ -511,7 +683,7 @@ def check_redaction(document: dict, source: Path = REPO / "tinyassets") -> None:
                 "NUMERIC",
             }:
                 raise ValueError(f"unapproved schema vocabulary: {table}")
-    if set(document["code_tables"]) - set(schema):
+    if set(document["code_tables"]) - set(source_schema(source)):
         raise ValueError("unapproved CREATE TABLE vocabulary")
     if set(document["code_stores"]) - set(source_stores(source)):
         raise ValueError("unapproved store class vocabulary")

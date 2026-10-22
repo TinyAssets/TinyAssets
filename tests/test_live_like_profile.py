@@ -5,7 +5,9 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -198,3 +200,72 @@ def test_universe_leases_migration_is_reviewed(tmp_path: Path) -> None:
     result = shape_profile.profile(tmp_path)
     assert "run_id" in result["stores"][".automations.db"]["tables"]["universe_leases"]["columns"]
     shape_profile.check_redaction(result)
+
+
+def test_fresh_code_owned_store_columns_are_in_vocabulary(tmp_path: Path) -> None:
+    """Exercise real initializers, including migrations that add columns later."""
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    from tinyassets import engine_admissions, runs, workspace_pool
+    from tinyassets.connection_oauth import pkce
+    from tinyassets.storage.agent_request_usage import UsageStore
+    from tinyassets.storage.agent_turn_journal import ensure_schema as turns_schema
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    db_paths: list[Path] = []
+    common = tmp_path / "common.db"
+    with closing(sqlite3.connect(common)) as db:
+        workspace_pool.ensure_schema(db)
+        engine_admissions._ensure_schema(db)
+        pkce._ensure_schema(db)
+        db.commit()
+        turns_schema(db)
+    db_paths.append(common)
+
+    db_paths.append(runs.initialize_runs_db(tmp_path))
+    outbound = tmp_path / "outbound.db"
+    ConnectionLedger(outbound)
+    db_paths.append(outbound)
+    usage = tmp_path / "usage.db"
+    store = UsageStore(tmp_path, broker_ledger=SimpleNamespace(_db_path=usage))
+    with store._connection():
+        pass
+    db_paths.append(usage)
+    checkpoint = tmp_path / "checkpoint.db"
+    with closing(sqlite3.connect(checkpoint)) as db:
+        SqliteSaver(db).setup()
+    db_paths.append(checkpoint)
+
+    vocabulary = shape_profile.column_vocabulary()
+    for path in db_paths:
+        with closing(sqlite3.connect(path)) as db:
+            tables = db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for (table,) in tables:
+                actual = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
+                assert table in vocabulary, (path.name, table)
+                assert actual <= set(vocabulary[table]), (
+                    path.name, table, sorted(actual - set(vocabulary[table]))
+                )
+
+
+def test_literal_schema_builders_and_migrations_are_extracted(tmp_path: Path) -> None:
+    source = tmp_path / "tinyassets"
+    source.mkdir()
+    (source / "store.py").write_text(
+        'DDL = "CREATE TABLE IF NOT EXISTS built (" "id TEXT, \\"key\\" INTEGER)"\n'
+        'def ensure(conn):\n'
+        '    conn.execute(DDL)\n'
+        '    for column, kind in (("after", "TEXT"), ("count", "INTEGER")):\n'
+        '        conn.execute(f"ALTER TABLE built ADD COLUMN {column} {kind}")\n'
+        '    _ensure_column(conn, "built", "helper", "REAL")\n',
+        encoding="utf-8",
+    )
+    assert shape_profile.source_schema(source)["built"] == {
+        "id": "TEXT",
+        "key": "INTEGER",
+        "after": "TEXT",
+        "count": "INTEGER",
+        "helper": "REAL",
+    }
