@@ -86,7 +86,7 @@ for _ in range(2):
 @pytest.mark.verifies('owner-daemon-in-box:T4')
 def test_running_broker_reregisters_after_real_host_process_restart(tmp_path):
     if os.geteuid() != 0:
-        pytest.skip("requires linux_oracle.py --as-root; root host and real service UIDs")
+        pytest.skip("owner=cowork-agent runs-in=linux-oracle-as-root: needs a root host and real service UIDs")
     tmp_path.chmod(0o755)
     # /tmp/b's pytest parents are private; use a directly traversable root.
     import tempfile
