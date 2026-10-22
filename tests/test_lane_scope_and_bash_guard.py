@@ -11,8 +11,6 @@ import pytest
 from scripts import drain_review_gate as review
 
 _ROOT = Path(__file__).resolve().parents[1]
-_LANE = "development-coordination-runtime:A pull request stays inside its declared lane"
-_GUARD = "development-coordination-runtime:Agent shell commands that lost time are refused"
 _ENV = {
     **os.environ,
     "GIT_AUTHOR_NAME": "t",
@@ -41,7 +39,9 @@ def _lane_cli(tmp_path, body, paths, *flags):
     )
 
 
-@pytest.mark.verifies(_LANE)
+@pytest.mark.verifies(
+    "development-coordination-runtime:A pull request stays inside its declared lane"
+)
 def test_a_smuggled_lineage_is_refused(tmp_path):
     body = "Drain-Review-Verdict: APPROVE\n\nLane: `scripts/peer_agent.py`, tests/\n"
     assert review.declared_lane(body) == ["scripts/peer_agent.py", "tests/"]
@@ -52,14 +52,18 @@ def test_a_smuggled_lineage_is_refused(tmp_path):
     assert "deploy/deploy_fail_safe.sh" in out.stderr and "scripts/peer_agent.py" not in out.stderr
 
 
-@pytest.mark.verifies(_LANE)
+@pytest.mark.verifies(
+    "development-coordination-runtime:A pull request stays inside its declared lane"
+)
 def test_a_release_critical_change_must_declare_a_lane(tmp_path):
     refused = _lane_cli(tmp_path, "no lane here", ["deploy/deploy_fail_safe.sh"], "--require")
     assert refused.returncode == 2
     assert _lane_cli(tmp_path, "no lane here", ["scripts/peer_agent.py"]).returncode == 0
 
 
-@pytest.mark.verifies(_GUARD)
+@pytest.mark.verifies(
+    "development-coordination-runtime:Agent shell commands that lost time are refused"
+)
 def test_heredoc_and_pkill_hazards_are_refused():
     guard = _guard()
     assert guard.heredoc_backslash("cat > f <<'EOF'\na\\nb\nEOF\n")
@@ -69,7 +73,9 @@ def test_heredoc_and_pkill_hazards_are_refused():
     assert guard.self_matching_pkill("pkill -9 node") is None
 
 
-@pytest.mark.verifies(_GUARD)
+@pytest.mark.verifies(
+    "development-coordination-runtime:Agent shell commands that lost time are refused"
+)
 def test_a_push_that_did_not_land_is_reported(tmp_path):
     def git(cwd, *args):
         subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
