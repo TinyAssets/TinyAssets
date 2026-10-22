@@ -38,6 +38,9 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -782,6 +785,56 @@ def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
 
 
 # ---- PR-time affected tests ----------------------------------------------------
+
+
+@pytest.mark.parametrize("oracle", [False, True])
+@pytest.mark.parametrize(
+    ("selection", "pytest_exit", "slow_only", "expected"),
+    [
+        ([], None, [], 0),
+        (["tests/test_slow.py"], 5, ["tests/test_slow.py"], 0),
+        (["tests/test_slow.py"], 5, [], 1),
+        (["tests/test_slow.py"], 0, [], 1),
+        (["tests/test_slow.py"], 1, ["tests/test_slow.py"], 1),
+        (["tests/test_slow.py"], 2, ["tests/test_slow.py"], 1),
+        (["tests/test_slow.py"], 4, ["tests/test_slow.py"], 1),
+    ],
+)
+def test_affected_shard_only_waives_proven_empty_runs(
+    tmp_path, monkeypatch, capsys, oracle, selection, pytest_exit, slow_only, expected,
+):
+    junit = tmp_path / "junit.xml"
+    monkeypatch.setattr(_ci, "_read_selection", lambda args: selection)
+    monkeypatch.setattr(
+        _ci, "collectible_under_gate", lambda files: ([], slow_only),
+    )
+
+    def run(cmd, **kwargs):
+        ET.ElementTree(ET.Element("testsuites")).write(junit, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, pytest_exit)
+
+    monkeypatch.setattr(_ci, "run_oracle_venues", lambda cmd, **kwargs: run(cmd))
+    monkeypatch.setattr(_ci.subprocess, "run", run)
+    monkeypatch.setattr(
+        sys, "argv", [
+            "ci_required_tests.py", "--junit", str(junit),
+            "--affected", str(tmp_path / "affected.txt"),
+            "--shard", "2/4", "--profile", "affected",
+            *(["--oracle-venues"] if oracle else []),
+        ],
+    )
+
+    assert _ci.main() == expected
+    assert _ci.json.loads(junit.with_suffix(".json").read_text())["pytest_exit"] == (
+        0 if expected == 0 else pytest_exit
+    )
+    output = capsys.readouterr().out
+    if expected == 0:
+        assert "nothing to run" in output
+    elif pytest_exit == 0:
+        assert "non-empty selection reported no test cases" in output
+    else:
+        assert f"pytest exited {pytest_exit}" in output
 
 
 def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> None:
