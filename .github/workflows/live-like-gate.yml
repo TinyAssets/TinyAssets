@@ -317,6 +317,17 @@ jobs:
           sudo bash scripts/live_like/make_live.sh start "${BASE_IMAGE}"
           sudo bash scripts/live_like/make_live.sh check
 
+      - name: Record every daemon container's health probes
+        run: |
+          # A candidate the fail-safe refuses is removed with its health log;
+          # keep each probe result so "unhealthy" carries its cause.
+          log="${RUNNER_TEMP}/daemon-health.log"
+          nohup sudo bash -c 'last=""; while :; do
+              h="$(docker inspect -f "{{.Id}} {{.Config.Image}} {{json .State.Health}}" tinyassets-daemon 2>/dev/null)"
+              [ -n "$h" ] && [ "$h" != "$last" ] && { printf "%s %s\n" "$(date -u +%T)" "$h"; last="$h"; }
+              sleep 3
+            done' > "${log}" 2>&1 &
+
       # ---- deploy-prod's driver phases, in its order, with its wiring ----
       # Names, ids, `if:`, `timeout-minutes` and env names match deploy-prod.yml
       # (tests/test_deploy_phase_parity.py); the values are this host's.
@@ -580,6 +591,8 @@ jobs:
           echo "----- daemon and broker stderr, all containers (tail) -----"
           grep -E '"container_name":"/tinyassets-(daemon|broker)"' "${RUNNER_TEMP}/diagnostics/container-logs.jsonl" \
             | grep '"source":"stderr"' | grep -v 'tinyassets-healthcheck' | tail -150
+          echo "----- daemon health probes, every container (changes only) -----"
+          tail -c 20000 "${RUNNER_TEMP}/daemon-health.log"
 
       - name: Upload host diagnostics (synthetic host)
         if: ${{ failure() }}
