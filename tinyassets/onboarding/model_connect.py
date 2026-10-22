@@ -194,7 +194,13 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     except LookupError:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
-    except Exception:  # noqa: BLE001 - credentials and provider payloads never enter errors
+    except Exception as exc:  # noqa: BLE001 - credentials and provider payloads never enter errors
+        import logging
+
+        # Only the exception's type and the operation: never its message or payload.
+        logging.getLogger(__name__).warning(
+            "model connect %s failed: %s.%s", operation,
+            type(exc).__module__, type(exc).__qualname__)
         return JSONResponse({"error": "model_connection_incomplete"}, 503, headers=_HEADERS)
 
 
