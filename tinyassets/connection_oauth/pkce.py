@@ -51,7 +51,24 @@ def is_callback_path(path: str) -> bool:
         HANDLE_RE.fullmatch(path[len(CALLBACK_PREFIX):]))
 
 
+_FLOW_COLUMNS = {
+    "hosted_model_flows": ["handle_digest", "owner_user_id", "preset_id", "preset_digest",
+                           "challenge", "callback_origin", "created_at", "expires_at",
+                           "request_ref"],
+    "connection_oauth_flows": ["handle_digest", "owner_user_id", "request_id", "action_digest",
+                               "challenge", "client_id", "redirect_uri", "created_at",
+                               "expires_at", "definition_json", "approved_owner"],
+}
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    # Pending flows live five minutes, so a table with another layout (an older
+    # release's) is rebuilt rather than read: positional inserts into it shift
+    # every column and the sweep then deletes each new flow (2026-10-22).
+    for table, columns in _FLOW_COLUMNS.items():
+        found = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]  # noqa: S608
+        if found and found != columns:
+            conn.execute(f"DROP TABLE {table}")  # noqa: S608 - fixed names
     conn.execute("CREATE TABLE IF NOT EXISTS hosted_model_flows ("
                  "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
                  "preset_id TEXT NOT NULL, preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
