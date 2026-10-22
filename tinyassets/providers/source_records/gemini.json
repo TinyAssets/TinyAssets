@@ -1,0 +1,98 @@
+{
+  "id": "gemini",
+  "display_name": "Gemini",
+  "invoke": {
+    "cli": {
+      "argv": [
+        "{bin}",
+        "--prompt",
+        "{system}\n\nFollow the input conversation.",
+        "--output-format",
+        "json"
+      ],
+      "model_argv": [
+        "--model",
+        "{model}"
+      ],
+      "format": "json",
+      "text_path": "response",
+      "stdin": "{prompt}"
+    }
+  },
+  "egress": {
+    "registry": [
+      "registry.npmjs.org"
+    ],
+    "login": [
+      "accounts.google.com",
+      "oauth2.googleapis.com",
+      "www.googleapis.com",
+      "cloudcode-pa.googleapis.com",
+      "codeassist.google.com"
+    ],
+    "provider": [
+      "oauth2.googleapis.com",
+      "www.googleapis.com",
+      "cloudcode-pa.googleapis.com"
+    ]
+  },
+  "models": [
+    {
+      "id": "default",
+      "context": 200000
+    }
+  ],
+  "origin": "declared",
+  "addresses": [
+    "https://gemini.google.com",
+    "https://ai.google.dev"
+  ],
+  "suggested": false,
+  "free": false,
+  "sign_in": {
+    "cli_login": {
+      "install": {
+        "manager": "npm",
+        "package": "@google/gemini-cli",
+        "version": "0.65.0",
+        "integrity": "sha512-B+flaYBNqX2zO71I5/gu7ZsnI38NlpOl654HWz+bK8I/P5sGILQsbkTOQ5a9V+w1Q6QO3wf9PlqtuMsl7XxpNQ==",
+        "bin": "gemini",
+        "verify_argv": [
+          "{bin}",
+          "--version"
+        ]
+      },
+      "login": {
+        "argv": [
+          "{bin}"
+        ],
+        "url_pattern": "(https://accounts\\.google\\.com/[^\\s\\u001b]+)",
+        "accepts_code": true,
+        "state_checks": [
+          {
+            "path": ".ta-cli/gemini/config/.gemini/oauth_creds.json",
+            "present": [
+              "access_token",
+              "refresh_token"
+            ]
+          }
+        ],
+        "terminal": true,
+        "complete_on_state": true
+      },
+      "env": {
+        "NO_BROWSER": "true",
+        "GEMINI_CLI_HOME": "{config}"
+      },
+      "files": {
+        ".gemini/settings.json": "{\"security\": {\"auth\": {\"selectedType\": \"oauth-personal\", \"enforcedType\": \"oauth-personal\"}}, \"tools\": {\"core\": []}, \"mcp\": {\"allowed\": []}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}}"
+      }
+    }
+  },
+  "state": {
+    "location": "owner_box",
+    "paths": [
+      ".ta-cli/gemini/config/.gemini/oauth_creds.json"
+    ]
+  }
+}

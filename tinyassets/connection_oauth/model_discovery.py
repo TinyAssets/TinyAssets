@@ -21,8 +21,6 @@ with the owner's key, and nothing becomes a model source if that read fails.
 from __future__ import annotations
 
 import hashlib
-import json
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from tinyassets.connection_oauth.transport import OAuthError, validate_https_url
@@ -35,17 +33,13 @@ _CONTROL_PATH = "/.tinyassets-discovery-control"
 _MAX_ISSUERS = 2
 
 
-def addresses():
-    """Installed address suggestions, without a provider-specific dispatch path."""
-    return json.loads(Path(__file__).parent.parent.joinpath(
-        "providers/model_discovery_addresses.json").read_text("utf-8"))
-
-
 def address_url(address):
     if not isinstance(address, str):
         raise OAuthError("invalid_oauth_url")
     address = address.strip()
-    return validate_https_url(address if "://" in address else "https://" + address).rstrip("/")
+    parts = urlsplit(validate_https_url(address if "://" in address else "https://" + address))
+    return urlunsplit((parts.scheme, parts.netloc.lower().removesuffix(":443"),
+                      parts.path.rstrip("/"), "", ""))
 
 
 def catalogue_rows(payload):
@@ -148,6 +142,9 @@ def _authorization_server(fetch, record, issuer):
             "kind": "openid" if "openid-configuration" in url else "rfc8414",
             "authorization_endpoint": doc.get("authorization_endpoint") or "",
             "token_endpoint": doc.get("token_endpoint") or "",
+            "registration_endpoint": doc.get("registration_endpoint") or "",
+            "iss_parameter_supported": doc.get(
+                "authorization_response_iss_parameter_supported") is True,
             "dynamic_registration": bool(doc.get("registration_endpoint")),
             "client_id_metadata_document": doc.get(
                 "client_id_metadata_document_supported") is True,
@@ -315,21 +312,65 @@ def choose(record):
             "key_style": "bearer", "reason": "; ".join(reasons)}
 
 
-def discover(address):
-    """The connectable definition for an address, or ``no_model_api_found``."""
-    record = detect(address)
-    chosen = record["chosen"]
+def discover(address, *, fetch=transport_fetch):
+    """Produce the same source record as an editable declaration."""
+    from tinyassets.providers.source_record import SourceRecord, resolve
+
+    declared = resolve(address)
+    if declared is not None:
+        return declared
+    evidence = detect(address, fetch=fetch)
+    chosen = evidence["chosen"]
     if chosen["verdict"] == "not_connectable":
         raise OAuthError("no_model_api_found", chosen["reason"])
-    found = definition(chosen["models_url"], chosen["inference_url"], record["address"])
-    resource = (record["model_api"].get("catalogue") or {}).get("base") or record["address"]
-    found.update(sign_in=chosen["sign_in"], reason=chosen.get("reason", ""),
-                 discovery_hosts=[resource])
-    return found
+    found = definition(chosen["models_url"], chosen["inference_url"], evidence["address"])
+    http = {"base_url": chosen["inference_url"].removesuffix("/chat/completions"),
+            "models_url": chosen["models_url"], "inference_url": chosen["inference_url"],
+            "wire": "chat_completions"}
+    sign_in = {"api_key": {"header_style": "bearer", "help_url": evidence["address"]}}
+    hosts = {ep["host"] for ep in found["endpoints"]}
+    if chosen["verdict"] == "oauth":
+        server = next(s for s in evidence["sign_in"]["authorization_servers"]
+                      if s["issuer"] == chosen["issuer"])
+        oauth = {k: server[k] for k in ("issuer", "authorization_endpoint", "token_endpoint",
+                                       "registration_endpoint", "iss_parameter_supported")}
+        oauth.update(pkce="S256", client_strategy=("dcr" if server["dynamic_registration"]
+                     else "metadata_document"), resource=(evidence["sign_in"].get(
+                         "protected_resource") or {}).get("resource", ""))
+        hosts.update(urlsplit(oauth[k]).hostname for k in (
+            "issuer", "authorization_endpoint", "token_endpoint", "registration_endpoint")
+                     if oauth[k])
+        sign_in = {"oauth": oauth}
+    return SourceRecord.parse(dict(id=found["destination"],
+        display_name=urlsplit(evidence["address"]).hostname, origin="detected",
+        addresses=[evidence["address"]], sign_in=sign_in, invoke={"http": http},
+        egress={"provider": sorted(hosts)}, state={"location": "broker"}))
+
+
+def connection_definition(record):
+    http = record.invoke["http"]
+    return definition(http["models_url"], http["inference_url"], record.addresses[0])
+
+
+def oauth_offer(record, callback):
+    """Adapt frozen source metadata to the existing mechanism-only PKCE engine."""
+    from tinyassets.onboarding.source_connect import CLIENT_METADATA_PATH
+
+    oauth = record.sign_in["oauth"]
+    strategy = oauth["client_strategy"]
+    parts = urlsplit(callback)
+    client = (parts.scheme + "://" + parts.netloc + CLIENT_METADATA_PATH
+              if strategy == "metadata_document" else oauth.get("client_id", ""))
+    return {"issuer": oauth["issuer"], "authorize_url": oauth["authorization_endpoint"],
+            "token_url": oauth["token_endpoint"], "client_id": client,
+            "registration_url": oauth.get("registration_endpoint", ""),
+            "registration_method": strategy, "scopes": oauth.get("scopes", []),
+            "iss_parameter_supported": oauth.get("iss_parameter_supported", False),
+            "resource": oauth.get("resource", ""), "source": record.origin}
 
 
 def definition(models_url, inference_url, address):
-    from tinyassets.onboarding.connection_definition import policy
+    from tinyassets.storage.outbound_connections import _parse_allowed_endpoints
 
     endpoints = []
     for url, method in ((models_url, "GET"), (inference_url, "POST")):
@@ -339,11 +380,11 @@ def definition(models_url, inference_url, address):
         endpoints.append({"host": parts.hostname, "path_template": parts.path,
                           "methods": [method]})
     # Parse now: rejects wildcards, private names and template authority.
-    selected = policy(endpoints)
-    if len({ep["host"] for ep in selected["endpoints"]}) != 1:
+    selected = [ep.as_dict() for ep in _parse_allowed_endpoints(endpoints)]
+    if len({ep["host"] for ep in selected}) != 1:
         raise OAuthError("model_api_hosts_unsupported")
     return {"destination": "model-" + hashlib.sha256(inference_url.encode()).hexdigest()[:24],
-            "endpoints": selected["endpoints"], "discovery_hosts": [address],
+            "endpoints": selected, "discovery_hosts": [address],
             "models_url": models_url, "inference_url": inference_url}
 
 

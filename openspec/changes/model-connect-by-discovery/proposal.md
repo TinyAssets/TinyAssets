@@ -1,22 +1,13 @@
 ## Why
-
-Connecting an unfamiliar model source currently requires endpoint knowledge and model confirmation only recognizes installed presets. The default must accept a provider address and discover its capabilities without provider code.
+The two connection lanes expose competing source shapes and controls.
 
 ## What Changes
-
-- Add address-based model API and OAuth discovery, reusing PKCE and broker custody.
-- Offer a discovered API-key fallback and refuse unknown model APIs.
-- Compose discovered sources into the existing HTTP model shape.
-- Add a small top entry in the connect dialog, compatible with lane U2.
+Unify both under one SourceRecord and one address field. Declared aliases resolve to their mechanism; other addresses use discovery. Retain exact egress and credential custody.
 
 ## Capabilities
-
-### New Capabilities
-- `model-source-discovery`: address-based model connection and exact endpoint binding.
-
 ### Modified Capabilities
-None.
+- model-source-discovery: unified records and address-only connection.
+- box-subscription-sources: declared source records and address aliases.
 
 ## Impact
-
-Router onboarding ingress and flow, broker discovery, box source composition, onboarding dialog, focused fake-provider tests. No production actions. Owner: Lane X; branch: feat/model-connect-by-discovery; draft PR targets conv/c6-forward-deploy.
+Router, broker, owner-box harness and page. Owner: WX; branch: conv/source-records. Production is expressly out of scope.

@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tinyassets.io/schemas/source-record.json",
+  "title": "SourceRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "display_name",
+    "origin",
+    "addresses",
+    "sign_in",
+    "invoke",
+    "egress",
+    "state"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{1,63}$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "enum": [
+        "declared",
+        "detected"
+      ]
+    },
+    "addresses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://"
+      }
+    },
+    "suggested": {
+      "type": "boolean",
+      "default": false
+    },
+    "free": {
+      "type": "boolean",
+      "default": false
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "context"
+        ]
+      }
+    },
+    "ranking": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "egress": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
+        }
+      }
+    },
+    "state": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "location"
+          ],
+          "properties": {
+            "location": {
+              "const": "broker"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "location",
+            "paths"
+          ],
+          "properties": {
+            "location": {
+              "const": "owner_box"
+            },
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sign_in": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "oauth"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "oauth": {
+              "type": "object",
+              "required": [
+                "issuer",
+                "authorization_endpoint",
+                "token_endpoint",
+                "pkce",
+                "client_strategy"
+              ],
+              "properties": {
+                "pkce": {
+                  "const": "S256"
+                },
+                "client_strategy": {
+                  "enum": [
+                    "dcr",
+                    "metadata_document",
+                    "public_client"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "cli_login"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cli_login": {
+              "type": "object",
+              "required": [
+                "install",
+                "login"
+              ],
+              "properties": {}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "api_key"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "api_key": {
+              "type": "object",
+              "required": [
+                "header_style"
+              ],
+              "properties": {
+                "header_style": {
+                  "const": "bearer"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "invoke": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "http"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "http": {
+              "type": "object",
+              "required": [
+                "wire",
+                "base_url",
+                "models_url",
+                "inference_url"
+              ],
+              "properties": {
+                "wire": {
+                  "const": "chat_completions"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "cli"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cli": {
+              "type": "object",
+              "required": [
+                "argv",
+                "format"
+              ],
+              "properties": {
+                "format": {
+                  "enum": [
+                    "json",
+                    "jsonl",
+                    "text"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sign_in": {
+            "required": [
+              "cli_login"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "invoke": {
+            "required": [
+              "cli"
+            ]
+          },
+          "state": {
+            "properties": {
+              "location": {
+                "const": "owner_box"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "invoke": {
+            "required": [
+              "http"
+            ]
+          },
+          "state": {
+            "properties": {
+              "location": {
+                "const": "broker"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

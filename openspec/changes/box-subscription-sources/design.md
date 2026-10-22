@@ -21,6 +21,8 @@ Source models are data. Optional ranking evidence names its source and expiry; n
 Most sources accept prompts over stdin. The bundled argv-only source declares a conservative 32K context and 100KB invocation envelope to stay below Linux's per-argument limit.
 
 ## Hotfix roles
+
+WX converges this data into SourceRecord. The current copy manifest is `../model-connect-by-discovery/hotfix-files.md`; the inventory below records the inherited W implementation.
 - Owner daemon: subscription source loader/runtime/catalog/provider; source JSON files; model discovery, selection, provider resolution/routing, serving bindings/assignments, work candidates and authority persistence; connection completion and pending-request projection.
 - Box harness: `boxes/boxd.py`, `owner_process.py`, `owner_public_egress.py` (supervised interactive input, PTY, separate stderr and phase-specific egress forwarding).
 - Broker: `broker/owner_sources.py`, plus the shared provider definition schema in `providers/definition.py`.
@@ -68,10 +70,10 @@ No Dockerfile, dependency manifest, native service, firewall or image changes. I
 - `tinyassets/providers/subscription_provider.py`
 - `tinyassets/providers/subscription_runtime.py`
 - `tinyassets/providers/subscription_source.py`
-- `tinyassets/providers/subscription_sources/claude-code.json`
-- `tinyassets/providers/subscription_sources/codex.json`
-- `tinyassets/providers/subscription_sources/gemini.json`
-- `tinyassets/providers/subscription_sources/kimi.json`
+- `tinyassets/providers/source_records/claude-code.json`
+- `tinyassets/providers/source_records/codex.json`
+- `tinyassets/providers/source_records/gemini.json`
+- `tinyassets/providers/source_records/kimi.json`
 - `tinyassets/providers/work_candidate_data.py`
 - `tinyassets/storage/provider_work_authority.py`
 

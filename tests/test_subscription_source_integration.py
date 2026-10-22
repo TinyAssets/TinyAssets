@@ -151,9 +151,9 @@ def test_engine_tool_protocol_and_large_stdin(connected):
     from tinyassets.providers.model_selection import prepare_selected_model
     from tinyassets.providers.provider_resolver import provider_for_definition
 
-    doc = connected.source
-    doc['invoke']['argv'] = ['{bin}', 'engine']
-    doc['invoke']['stdin'] = '{prompt}'
+    doc = connected.source.document()
+    doc['invoke']['cli']['argv'] = ['{bin}', 'engine']
+    doc['invoke']['cli']['stdin'] = '{prompt}'
     (connected.home / '.ta-cli/sources/fake-cli.json').write_text(json.dumps(doc))
     definition = register_definition(universe_id='center', owner_user_id='owner',
         access_method='subscription_cli', protocol='cli_json', model='default', ref='fake-cli')
@@ -195,13 +195,14 @@ def test_pip_hash_locked_owner_install_and_invoke(connected):
     with zipfile.ZipFile(wheel, 'w') as archive:
         for name, data in files.items():
             archive.writestr(name, data)
-    doc = json.loads(json.dumps(connected.source))
+    doc = connected.source.document()
     doc['id'] = 'fixture-pip'
-    doc['install'] = {'manager': 'pip', 'package': 'fixture-pip', 'version': '1.0.0',
+    doc['sign_in']['cli_login']['install'] = {
+        'manager': 'pip', 'package': 'fixture-pip', 'version': '1.0.0',
         'bin': 'fixture-pip', 'wheelhouse': 'wheels', 'requirements': [{'package': 'fixture-pip',
         'version': '1.0.0',
         'hashes': ['sha256:' + hashlib.sha256(wheel.read_bytes()).hexdigest()]}]}
-    doc['invoke'] = {'argv': ['{bin}'], 'format': 'text'}
+    doc['invoke']['cli'] = {'argv': ['{bin}'], 'format': 'text'}
     (connected.home / '.ta-cli/sources/fixture-pip.json').write_text(json.dumps(doc))
     runtime = SubscriptionRuntime('fixture-pip')
     runtime.install()
@@ -212,7 +213,7 @@ def test_pip_hash_locked_owner_install_and_invoke(connected):
     (runtime.directory / 'installed.json').unlink()
     wheel.write_bytes(wheel.read_bytes() + b'tampered')
     # Force pip to verify the wheel again rather than accepting installed metadata.
-    doc['install']['requirements'][0]['hashes'] = ['sha256:' + '0' * 64]
+    doc['sign_in']['cli_login']['install']['requirements'][0]['hashes'] = ['sha256:' + '0' * 64]
     (connected.home / '.ta-cli/sources/fixture-pip.json').write_text(json.dumps(doc))
     from tinyassets.providers.subscription_runtime import SubscriptionError
     with pytest.raises(SubscriptionError):
@@ -230,7 +231,7 @@ def test_connect_strongest_declared_source_and_keep_explicit_preference(connecte
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime
     from tinyassets.storage.model_preferences import ModelPreferenceStore
 
-    doc = connected.source
+    doc = connected.source.document()
     doc['ranking'] = {'source': 'fixture-benchmark',
         'expires_at': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
         'scores': {'default': {'agentic': 50}}}

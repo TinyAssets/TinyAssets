@@ -1,9 +1,5 @@
-## 1. Discovery and composition
-- [x] 1.1 Add broker model discovery and authenticated address ingress.
-- [x] 1.2 Compose a discovered connection into an existing HTTP model source.
-- [x] 1.3 Add isolated top dialog entry and discovered key fallback.
-
-## 2. Verification and delivery
-- [x] 2.1 Prove fake-provider discovery, DCR, PKCE, connect and broker model call; report milestone.
-- [x] 2.2 Verify missing metadata, insecure addresses, host changes and touched regression tests.
-- [ ] 2.3 Sync spec, inspect floor diff, commit and open draft PR with role file lists.
+## Convergence
+- [x] 1. Unify declared and detected source records, validation and runtime consumers.
+- [x] 2. Replace source lists with address-only connection and preserve return behavior.
+- [x] 3. Verify targeted lane tests, provider guard, Linux owner-box proof and browser flows.
+- [x] 4. Sync specifications, merge latest subscription fixes, commit and report role manifest and floor files.

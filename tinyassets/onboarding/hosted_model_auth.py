@@ -5,17 +5,17 @@ The broker owns the exchange transport and credential custody.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
-import json
 import secrets
 import sqlite3  # noqa: F401 - the flow store's driver, patched here by tests
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from tinyassets.connection_oauth import pkce
 from tinyassets.providers.discovery_presets import bundled_discovery_documents
+
+# Import compatibility for pending-flow consumers in the live image; one record type.
+from tinyassets.providers.source_record import SourceRecord as AcquisitionPreset
 
 # The PKCE store, handle grammar and callback are shared with the generic
 # OAuth connection flow (``connection_oauth``): one transport, two flows.
@@ -34,23 +34,6 @@ class HostedAuthError(Exception):
         super().__init__(code)
         self.code = code
         self.status = status
-
-
-@dataclass(frozen=True)
-class AcquisitionPreset:
-    id: str
-    digest: str
-    display_name: str
-    authorize_url: str
-    exchange_url: str
-    manage_url: str
-    inference_url: str
-    catalogue_url: str
-    benchmark_url: str
-    #: Fixed, non-secret query parameters the provider documents for its
-    #: authorize page (e.g. a key label). Data only; the flow's own
-    #: parameters can never be overridden.
-    authorize_params: tuple[tuple[str, str], ...] = ()
 
 
 _FLOW_PARAMS = frozenset({"callback_url", "code_challenge", "code_challenge_method"})
@@ -73,8 +56,11 @@ def _authorize_params(value: object) -> tuple[tuple[str, str], ...]:
 
 def load_preset(preset_id: str, *, require_manual_key: bool = False) -> AcquisitionPreset:
     """Only installed data, including its matching discovery contract, is trusted."""
-    path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
-    docs = json.loads(path.read_text(encoding="utf-8"))
+    from tinyassets.providers.source_record import records
+
+    installed = records()
+    docs = {r.id: r.acquisition_document for r in installed.values()
+            if r.sign_in.get("oauth", {}).get("protocol") == "pkce_user_key_v1"}
     if require_manual_key and (
         not isinstance(docs.get(preset_id), dict)
         or docs[preset_id].get("manual_key_entry") is not True
@@ -105,13 +91,9 @@ def load_preset(preset_id: str, *, require_manual_key: bool = False) -> Acquisit
                 raise ValueError("manual acquisition requires owner-filtered bearer discovery")
         except (KeyError, TypeError, ValueError):
             raise HostedAuthError("invalid_acquisition_preset", 503) from None
-    digest = hashlib.sha256(json.dumps(
-        [doc, discovery[preset_id]], sort_keys=True, separators=(",", ":"),
-    ).encode()).hexdigest()
-    return AcquisitionPreset(id=preset_id, digest=digest,
-                             display_name=doc["display_name"],
-                             authorize_params=_authorize_params(doc.get("authorize_params")),
-                             **{field: doc[field] for field in fields})
+    _authorize_params(doc.get("authorize_params"))
+    return installed[preset_id]
+
 
 
 @dataclass(frozen=True)

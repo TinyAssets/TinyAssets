@@ -11,7 +11,8 @@ def validate(document):
 
     action = document.get("action")
     if action == "model_discover":
-        if (set(document) != {"action", "address", "callback"}
+        if (not {"action", "address", "callback"} <= set(document)
+                <= {"action", "address", "callback", "source"}
                 or any(not isinstance(document[k], str) or len(document[k]) > 2048
                        for k in ("address", "callback"))):
             raise ValueError("invalid discovery fields")
@@ -59,18 +60,22 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         from tinyassets.connection_oauth.model_discovery import discover
 
         try:
-            definition = discover(document["address"])
-            if definition["sign_in"] != "authorization_code_pkce":
-                return {"definition": definition, "offer": None,
-                        "reason": definition["reason"]}
-            answer = local_operation(ledger, principal=principal, command_center=command_center,
-                committed_via=committed_via, document={
-                    "action": "oauth_offer", "requested": {},
-                    "hosts": definition["discovery_hosts"], "callback": document["callback"],
-                    "registration_url": ""})
-            return {"definition": definition, **answer}
+            if "source" in document:
+                from tinyassets.connection_oauth.model_discovery import address_url
+                from tinyassets.providers.source_record import SourceRecord
+
+                record = SourceRecord.parse(document["source"])
+                if (record.origin != "declared" or "http" not in record.invoke
+                        or address_url(document["address"]) not in {
+                            address_url(a) for a in record.addresses}):
+                    raise ValueError("declared source does not answer this address")
+            else:
+                record = discover(document["address"])
+            return {"source": record.document()}
         except OAuthError as exc:
             return {"error": exc.code}
+        except (ValueError, KeyError, TypeError):
+            return {"error": "invalid_source_record"}
     if action == "oauth_offer":
         from urllib.parse import urlsplit
 

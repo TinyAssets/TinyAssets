@@ -154,6 +154,19 @@ def test_requires_owner_session(provider, app):
     assert result.status_code == 403
 
 
+def test_suggested_record_goes_directly_to_declared_pkce(provider, app):
+    from tinyassets.providers.source_record import resolve, suggested_address
+
+    address = suggested_address()
+    record = resolve(address)
+    with _as(OWNER):
+        result = begin(address)
+    assert result.status_code == 200, result.text
+    assert result.json()["exchange"] == "exchange"
+    assert result.json()["authorize_url"].startswith(record.authorize_url + "?")
+    assert not provider.clients
+
+
 def test_changed_issuer_refused(provider, app):
     with _as(OWNER):
         begun = begin()
@@ -196,3 +209,66 @@ def test_advertised_api_rejects_wildcards_and_split_hosts():
     with pytest.raises(OAuthError, match="model_api_hosts_unsupported"):
         definition("https://catalogue.example/models", "https://api.example/chat",
                    "https://api.example")
+
+
+def test_native_discovery_return_is_browser_bound_and_exchanged_once(provider, app):
+    import asyncio
+
+    import httpx
+    from starlette.applications import Starlette
+
+    from tests.owner_answer import session_cookie
+    from tinyassets import onboarding
+
+    with _as(OWNER):
+        cookie = session_cookie()
+        begun = _post("discover_inline", {"address": API, "client": "desktop"}, cookie=cookie)
+        assert begun.status_code == 200, begun.text
+        flow = begun.json()["flow"]
+
+        async def approve():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(
+                app=Starlette(routes=onboarding.onboarding_routes())),
+                base_url="https://tinyassets.io",
+            ) as client:
+                launch = await client.get(begun.json()["launch_path"], headers={
+                    "cookie": cookie, "sec-fetch-dest": "document"})
+                assert launch.status_code == 307, launch.text
+                callback = provider.authorize(launch.headers["location"])
+                back = urlsplit(callback)
+                response = await client.get(back.path + "?" + back.query)
+                assert response.status_code == 200, response.text
+                assert "tinyassets-desktop://auth?completion=" + flow in response.text
+
+        asyncio.run(approve())
+        done = _post("inline_poll", {"flow": flow})
+        assert done.status_code == 200, done.text
+        assert done.json()["status"] == "provisioned"
+        assert _post("inline_poll", {"flow": flow}).json()["status"] == "consumed"
+
+
+def test_declared_http_record_uses_same_broker_path(provider, app):
+    from tests.owner_answer import session_cookie
+    from tinyassets.providers.source_record import SourceRecord
+
+    with _as(OWNER):
+        record = SourceRecord.parse({"id": "owner-declaration", "display_name": "Owner source",
+            "origin": "declared", "addresses": ["https://" + API],
+            "sign_in": {"oauth": {"issuer": "https://" + AUTH,
+                "authorization_endpoint": f"https://{AUTH}/authorize",
+                "token_endpoint": f"https://{AUTH}/token",
+                "registration_endpoint": f"https://{AUTH}/register",
+                "pkce": "S256", "client_strategy": "dcr"}},
+            "invoke": {"http": {"wire": "chat_completions", "base_url": f"https://{API}/v1",
+                "models_url": f"https://{API}/v1/models",
+                "inference_url": f"https://{API}/v1/chat/completions"}},
+            "egress": {"provider": [API, AUTH]}, "state": {"location": "broker"}}).document()
+        result = _post("discover", {"address": API, "source": record,
+                                   "code_challenge": CHALLENGE}, cookie=session_cookie())
+        assert result.status_code == 200, result.text
+        assert result.json()["authorize_host"] == AUTH
+        record["sign_in"]["oauth"]["token_endpoint"] = "https://changed.example/token"
+        rejected = _post("discover", {"address": API, "source": record,
+                                     "code_challenge": CHALLENGE}, cookie=session_cookie())
+        assert rejected.status_code == 409
+        assert rejected.json()["error"] == "invalid_source_record"

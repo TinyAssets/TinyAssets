@@ -48,7 +48,7 @@ async def handle(request):
     except PermissionError:
         return JSONResponse({"error": "interactive_approval_required"}, 403, headers=HEADERS)
     action = request.path_params["operation"]
-    fields = {"begin": {"source_id"}, "poll": {"flow"}, "cancel": {"flow"},
+    fields = {"resolve": {"address"}, "begin": {"source_id"}, "poll": {"flow"}, "cancel": {"flow"},
               "code": {"flow", "code"}, "finish": {"flow"}}
     try:
         raw = await onboarding._read_bounded_body(request, 4096)
@@ -56,7 +56,13 @@ async def handle(request):
         if (action not in fields or not isinstance(doc, dict) or set(doc) != fields[action]
                 or any(not isinstance(v, str) or not 0 < len(v) <= 2048 for v in doc.values())):
             raise ValueError("invalid login request")
-        if action == "finish":
+        if action == "resolve":
+            from tinyassets.providers.source_record import resolve
+
+            record = resolve(doc["address"], runtime.root)
+            result = ({"source_id": record.id} if "cli_login" in record.sign_in
+                      else {"source": record.document()}) if record else {}
+        elif action == "finish":
             state = login_operation("poll", flow=doc["flow"])
             if state["status"] != "connected":
                 raise PermissionError("native login is not complete")

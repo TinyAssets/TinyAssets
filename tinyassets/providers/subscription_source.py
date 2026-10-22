@@ -8,7 +8,6 @@ import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-SOURCES = Path(__file__).with_name("subscription_sources")
 _ID = re.compile(r"[a-z0-9][a-z0-9-]{1,63}\Z")
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
 _VERSION = re.compile(r"\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?\Z")
@@ -21,7 +20,7 @@ def relative(value):
     return value
 
 
-def validate(doc):
+def validate_cli(doc):
     if not isinstance(doc, dict) or not _ID.fullmatch(doc.get("id", "")):
         raise ValueError("invalid subscription source id")
     if not isinstance(doc.get("display_name"), str) or not doc["display_name"].strip():
@@ -115,22 +114,21 @@ def validate(doc):
     return doc
 
 
+def validate(doc):
+    from tinyassets.providers.source_record import SourceRecord
+
+    return SourceRecord.parse(doc)
+
+
 def sources(home: Path | None = None):
-    result = {}
-    directories = [SOURCES]
-    if home is not None:
-        directories.append(home / ".ta-cli" / "sources")
-    for directory in directories:
-        for path in sorted(directory.glob("*.json")):
-            doc = validate(json.loads(path.read_text("utf-8")))
-            if path.stem != doc["id"]:
-                raise ValueError("source filename must match its id")
-            result[doc["id"]] = doc
-    return result
+    from tinyassets.providers.source_record import records
+
+    return {key: record for key, record in records(home).items() if "cli" in record.invoke}
 
 
 def digest(doc):
-    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+    encoded = json.dumps(doc, sort_keys=True, default=lambda value: value.document()).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def select(value, path):

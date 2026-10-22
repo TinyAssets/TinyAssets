@@ -27,7 +27,7 @@ The system SHALL invoke subscription_cli only through the owner box using defini
 - **THEN** a model call returns the CLI response without a provider-specific Python adapter
 
 ### Requirement: Definition-generated connect controls
-The page SHALL offer native subscription login controls from definitions alongside HTTP sources.
+The page SHALL resolve declared address aliases to the same SourceRecord schema used by detected HTTP sources, then offer the native login handoff from the single address field. There SHALL be no separate subscription source list.
 
 #### Scenario: Native code handoff
 - **WHEN** the CLI requires a returned code because its callback cannot be reached

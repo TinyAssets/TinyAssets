@@ -139,8 +139,8 @@ def app_config(build: str | None = None) -> dict[str, Any]:
     drift from what ``/mcp`` itself accepts. Contains public values only.
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
-    from tinyassets.connection_oauth.model_discovery import addresses
     from tinyassets.onboarding.realtime_voice import public_voice_config
+    from tinyassets.providers.source_record import suggested_address
 
     prm = protected_resource_metadata()
     resource = str(prm.get("resource", "")).rstrip("/")
@@ -164,7 +164,7 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
         "voice": public_voice_config(),
-        "model_discovery_addresses": addresses(),
+        "model_source_address": suggested_address(),
     }
 
 

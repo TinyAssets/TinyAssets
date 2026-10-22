@@ -121,6 +121,11 @@ def fixture_package(root):
         },
         "state_paths": [".fake-login"],
     }
+    definition.update(origin="declared", addresses=["https://fixture.example"],
+        sign_in={"cli_login": {"install": definition.pop("install"),
+                               "login": definition.pop("login")}},
+        invoke={"cli": definition["invoke"]},
+        state={"location": "owner_box", "paths": definition.pop("state_paths")})
     directory = root / ".ta-cli" / "sources"
     directory.mkdir(parents=True)
     (directory / "fake-cli.json").write_text(json.dumps(definition))
@@ -194,8 +199,8 @@ def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
     for root in (alice, bob):
         doc = fixture_package(root)
         if terminal:
-            doc["login"].update(terminal=True, complete_on_state=True)
-            doc["env"] = {"FAKE_INTERACTIVE": "1"}
+            doc["sign_in"]["cli_login"]["login"].update(terminal=True, complete_on_state=True)
+            doc["sign_in"]["cli_login"]["env"] = {"FAKE_INTERACTIVE": "1"}
             (root / ".ta-cli/sources/fake-cli.json").write_text(json.dumps(doc))
     first, second = Box(alice), Box(bob)
     try:

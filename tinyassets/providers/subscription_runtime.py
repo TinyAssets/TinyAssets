@@ -29,10 +29,11 @@ class SubscriptionRuntime:
             raise PermissionError("subscription CLI requires an admitted owner box")
         self.home = self.owner.root
         self.source = sources(self.home)[source_id]
+        self.cli_login = self.source.sign_in["cli_login"]
         self.directory = self.home / ".ta-cli" / source_id
-        self.binary = self.directory / "node_modules" / ".bin" / self.source["install"]["bin"]
-        if self.source["install"]["manager"] == "pip":
-            self.binary = self.directory / "venv" / "bin" / self.source["install"]["bin"]
+        self.binary = self.directory / "node_modules" / ".bin" / self.cli_login["install"]["bin"]
+        if self.cli_login["install"]["manager"] == "pip":
+            self.binary = self.directory / "venv" / "bin" / self.cli_login["install"]["bin"]
 
     @contextlib.contextmanager
     def lock(self):
@@ -50,7 +51,7 @@ class SubscriptionRuntime:
         # The fixture path can install an integrity-pinned local archive offline.
         # Networked operation always requires the startup-mounted owner relay.
         if self.owner.relay is None:
-            if not {"archive", "wheelhouse"}.intersection(self.source["install"]):
+            if not {"archive", "wheelhouse"}.intersection(self.cli_login["install"]):
                 raise SubscriptionError("owner egress relay unavailable")
             yield {"HOME": str(self.home)}
             return
@@ -85,7 +86,7 @@ class SubscriptionRuntime:
     def run(self, argv, *, phase, timeout=120, **kwargs):
         with self.environment(phase) as env:
             env.update({key: self.argv([value])[0]
-                        for key, value in self.source.get("env", {}).items()})
+                        for key, value in self.cli_login.get("env", {}).items()})
             # Definition environment cannot move HOME or bypass the proxy.
             env.update({"HOME": str(self.home)})
             return self.owner.tools.run(
@@ -106,13 +107,13 @@ class SubscriptionRuntime:
         return [pattern.sub(lambda match: str(values[match.group(1)]), arg) for arg in template]
 
     def install_digest(self):
-        return digest({"install": self.source["install"],
+        return digest({"install": self.cli_login["install"],
                        "registry": self.source["egress"]["registry"]})
 
     def install(self):
         with self.lock():
-            install = self.source["install"]
-            for name, content in self.source.get("files", {}).items():
+            install = self.cli_login["install"]
+            for name, content in self.cli_login.get("files", {}).items():
                 target = self.directory / "config" / name
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 target.write_text(self.argv([content])[0])
@@ -188,7 +189,7 @@ class SubscriptionRuntime:
 
     def install_pip(self):
         """Wheels only: every transitive dependency must be version/hash locked."""
-        install = self.source["install"]
+        install = self.cli_login["install"]
         lockfile = self.directory / "requirements.lock"
         locked = "\n".join(
             item["package"] + "==" + item["version"] + " "
@@ -224,7 +225,7 @@ class SubscriptionRuntime:
 
     def verify_lock(self, path):
         packages = json.loads(path.read_text())["packages"]
-        install = self.source["install"]
+        install = self.cli_login["install"]
         root = packages["node_modules/" + install["package"]]
         if (
             root.get("version") != install["version"]
@@ -251,9 +252,9 @@ class SubscriptionRuntime:
     def authenticated(self):
         if not self.binary.is_file():
             return False
-        if not all((self.home / path).exists() for path in self.source["state_paths"]):
+        if not all((self.home / path).exists() for path in self.source["state"]["paths"]):
             return False
-        for check in self.source["login"].get("state_checks", []):
+        for check in self.cli_login["login"].get("state_checks", []):
             try:
                 value = json.loads((self.home / check["path"]).read_text())
                 if any(not select(value, key) for key in check.get("present", [])):
@@ -263,13 +264,13 @@ class SubscriptionRuntime:
                     return False
             except (ValueError, OSError):
                 return False
-        argv = self.source["login"].get("status_argv")
+        argv = self.cli_login["login"].get("status_argv")
         if not argv:
-            return bool(self.source["login"].get("state_checks"))
+            return bool(self.cli_login["login"].get("state_checks"))
         result = self.run(self.argv(argv), phase="login", timeout=30, separate_stderr=True)
         if result.returncode:
             return False
-        expected = self.source["login"].get("status_equals", {})
+        expected = self.cli_login["login"].get("status_equals", {})
         if expected:
             try:
                 value = json.loads(result.stdout)
@@ -277,12 +278,12 @@ class SubscriptionRuntime:
                 return False
             if any(select(value, path) != item for path, item in expected.items()):
                 return False
-        return all((self.home / path).exists() for path in self.source["state_paths"])
+        return all((self.home / path).exists() for path in self.source["state"]["paths"])
 
     def invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
         if not self.authenticated():
             raise SubscriptionError("subscription sign-in required")
-        invoke = self.source["invoke"]
+        invoke = self.source["invoke"]["cli"]
         limit = invoke.get("max_prompt_bytes", 4 * 1024 * 1024)
         if len((system + prompt).encode()) > limit:
             raise SubscriptionError("prompt exceeds the source's invocation capacity")
@@ -353,7 +354,7 @@ class Login:
                 "status": self.status,
                 "authorize_url": self.url,
                 "code": self.code,
-                "accepts_code": self.runtime.source["login"].get("accepts_code", False),
+                "accepts_code": self.runtime.cli_login["login"].get("accepts_code", False),
             }
 
     def input(self):
@@ -364,7 +365,7 @@ class Login:
 
     def submit(self, value):
         if (
-            not self.runtime.source["login"].get("accepts_code")
+            not self.runtime.cli_login["login"].get("accepts_code")
             or self.status != "waiting"
             or not isinstance(value, str)
             or not 0 < len(value) <= 2048
@@ -380,7 +381,7 @@ class Login:
         with self._lock:
             self._output = (self._output + data.decode("utf-8", errors="replace"))[-32768:]
             output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", self._output)
-            login = self.runtime.source["login"]
+            login = self.runtime.cli_login["login"]
             for key, attribute in (("url_pattern", "url"), ("code_pattern", "code")):
                 match = re.search(login[key], output) if login.get(key) else None
                 if not match:
@@ -408,7 +409,7 @@ class Login:
                     renewed = False
                     if not self.runtime.authenticated():
                         self.status = "waiting"
-                        login = self.runtime.source["login"]
+                        login = self.runtime.cli_login["login"]
                         state_complete = False
 
                         def stop():

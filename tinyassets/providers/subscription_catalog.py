@@ -46,7 +46,7 @@ def snapshot(definition):
                                   availability_basis="owner_configured_contract")
     connection = replace(contract.model_decoder(None, connection=connection), owner_filtered=True)
     now = datetime.now(timezone.utc)
-    ranking = runtime.source.get("ranking")
+    ranking = runtime.source.ranking
     if ranking is not None:
         freshness = "fresh" if now < datetime.fromisoformat(ranking["expires_at"]) else "stale"
         contract = replace(contract, ranking_source=ranking["source"])

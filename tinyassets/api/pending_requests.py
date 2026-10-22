@@ -1963,23 +1963,14 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
 _MODEL_CONNECT_SHAPES = ("api_key", "local")
 
 def _first_power_preset() -> dict[str, object] | None:
-    """The bundled guided sign-in the setup request offers first, as display data.
-
-    It is installed data (``acquisition_presets.json``), not code: the app shows
-    whatever preset is installed and names no provider itself. An unreadable
-    preset drops the button rather than offering one that cannot work.
-    """
-    import json as _json
-    from pathlib import Path
-
+    """Compatibility projection for existing guided-sign-in recovery flows."""
     from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
+    from tinyassets.providers.source_record import records
 
     try:
-        path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
-        docs = _json.loads(path.read_text(encoding="utf-8"))
-        preset_id = next(iter(docs))
-        preset = load_preset(preset_id)
-        manual = docs[preset_id].get("manual_key_entry") is True
+        record = next(r for r in records().values() if r.suggested and r.free)
+        preset = load_preset(record.id)
+        manual = record.sign_in["oauth"].get("manual_key_entry") is True
     except (OSError, ValueError, StopIteration, HostedAuthError, KeyError, TypeError):
         return None
     return {
@@ -2003,25 +1994,9 @@ def _model_connect_request(*, connected: bool = False) -> dict[str, object]:
     entry stays -- it is the only route to a second source -- but it is
     ``optional``: offered, answerable, and outstanding to nobody.
     """
-    from tinyassets.providers.free_sources import (
-        daily_cap_offers,
-        sign_in_cards,
-        source_cards,
-    )
+    from tinyassets.providers.free_sources import daily_cap_offers
 
-    # One connect screen: the guided sign-in (``primary``), the sources completed
-    # by signing in, the key cards, the subscriptions, and the provider-stated daily
-    # limits the app's daily-cap card is worded from. All data, none in the page.
-    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
-                                "sign_in_sources": sign_in_cards(),
-                                "daily_caps": daily_cap_offers()}
-    from tinyassets.owner_runtime import current
-    from tinyassets.providers.subscription_source import sources
-
-    runtime = current()
-    setup["subscription_sources"] = [{"id": doc["id"], "name": doc["display_name"],
-        "label": "Continue with " + doc["display_name"]}
-        for doc in sources(getattr(runtime, "root", None)).values()]
+    setup: dict[str, object] = {"daily_caps": daily_cap_offers()}
     primary = None if connected else _first_power_preset()
     if primary is not None:
         setup["primary"] = primary

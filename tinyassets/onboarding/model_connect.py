@@ -35,7 +35,7 @@ async def handle_model_connect(request):
     if not allowed:
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
-    fields = {"discover": {"address", "code_challenge"},
+    fields = {"discover_inline": {"address"}, "discover": {"address", "code_challenge"},
               "inline_begin": {"preset_id"}, "inline_poll": {"flow"},
               "inline_cancel": {"flow"}, "begin": {"preset_id", "code_challenge"},
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
@@ -48,6 +48,10 @@ async def handle_model_connect(request):
     if operation not in fields:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
     optional = {"request_ref"}
+    if operation in {"discover", "discover_inline"}:
+        optional.add("source")
+    if operation == "discover_inline":
+        optional.add("client")
     if operation == "oauth_begin":
         optional |= {"definition", "destination"}
     if operation == "oauth_exchange":
@@ -58,7 +62,7 @@ async def handle_model_connect(request):
         if (not isinstance(data, dict)
                 or not fields[operation] <= set(data) <= fields[operation] | optional
                 or any(not isinstance(v, str) or not v or len(v) > 2048
-                       for k, v in data.items() if k != "definition")
+                       for k, v in data.items() if k not in {"definition", "source"})
                 or len(data.get("request_ref", "")) > 512):
             raise ValueError
         if "definition" in data and (not isinstance(data["definition"], dict)
@@ -97,29 +101,63 @@ async def handle_model_connect(request):
             center = owner
             ref = data.get("request_ref", "")
             approval = None
-            if operation in {"discover", "oauth_begin", "inline_begin", "source_sign_in"}:
+            if operation in {"discover", "discover_inline", "oauth_begin",
+                             "inline_begin", "source_sign_in"}:
                 try:
                     approval = require(request, owner=owner)
                 except PermissionError:
                     raise FlowError("interactive_approval_required", 403) from None
 
-            if operation == "discover":
+            if operation in {"discover", "discover_inline"}:
                 from tinyassets.onboarding.connection_definition import policy
 
                 answer = broker_request(base, owner=owner, center=center, document={
                     "action": "model_discover", "address": data["address"],
-                    "callback": sign_in.redirect_uri(resource)})
+                    "callback": sign_in.redirect_uri(resource),
+                    **({"source": data["source"]} if "source" in data else {})})
                 if answer.get("error"):
                     raise FlowError(answer["error"], 409)
-                found, offer = answer["definition"], answer["offer"]
+                from tinyassets.connection_oauth.model_discovery import (
+                    connection_definition,
+                    oauth_offer,
+                )
+                from tinyassets.providers.source_record import SourceRecord
+
+                record = SourceRecord.parse(answer["source"])
+                if "cli_login" in record.sign_in:
+                    return {"status": "cli_login_required", "source_id": record.id}
+                verifier = ""
+                challenge = data.get("code_challenge", "")
+                if operation == "discover_inline":
+                    import secrets
+
+                    verifier = secrets.token_urlsafe(32)
+                    challenge = hosted._challenge(verifier)
+
+                def handoff(result, exchange="oauth_exchange"):
+                    if operation == "discover_inline":
+                        return inline.stage(owner=owner, result=result, verifier=verifier,
+                            owner_session=approval, exchange=exchange,
+                            client=data.get("client", "web"))
+                    return {**result, "exchange": exchange, "source_id": record.id}
+
+                oauth = record.sign_in.get("oauth")
+                if oauth and oauth.get("protocol") == "pkce_user_key_v1":
+                    return handoff(hosted.begin_flow(owner=owner, preset_id=record.id,
+                        challenge=challenge, public_resource=resource,
+                        request_ref=ref), "exchange")
+                found = connection_definition(record)
                 definition = {k: found[k] for k in ("destination", "endpoints")}
-                if offer is None:
+                if "api_key" in record.sign_in:
                     return {"status": "api_key_required", "definition": definition,
-                            "endpoint": found["inference_url"], "reason": answer["reason"]}
-                return sign_in.begin(owner=owner, request_id=ref,
-                    challenge=data["code_challenge"], public_resource=resource,
+                            "endpoint": found["inference_url"],
+                            "help_url": record.sign_in["api_key"].get(
+                                "help_url", record.addresses[0])}
+                return handoff(sign_in.begin(owner=owner, request_id=ref,
+                    challenge=challenge, public_resource=resource,
                     owner_session=approval, definition={"destination": found["destination"],
-                        "policy": policy(found["endpoints"], "oauth2"), "oauth": offer})
+                        "policy": policy(found["endpoints"], "oauth2"),
+                        "oauth": oauth_offer(record, sign_in.redirect_uri(resource))}))
             if operation == "rotate":
                 return rotate_connection(base, owner=owner, center=center,
                     destination=data["destination"], incarnation=data["incarnation"],
@@ -152,6 +190,10 @@ async def handle_model_connect(request):
                 result = inline.take(owner=owner, handle=data["flow"],
                                      cancel=operation == "inline_cancel")
                 if result.get("status") == "ready":
+                    if result.get("exchange") == "oauth_exchange":
+                        return sign_in.complete(owner=owner, handle=data["flow"],
+                            code=result["code"], verifier=result["verifier"],
+                            iss=result.get("iss", ""))
                     return exchange(result["code"], result["verifier"])
                 return result
             if operation in {"oauth_begin", "source_sign_in"}:

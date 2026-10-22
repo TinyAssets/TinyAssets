@@ -1,5 +1,4 @@
 """The standards detector chooses from published standards alone, never by name."""
-import json
 import re
 from pathlib import Path
 
@@ -122,6 +121,14 @@ def test_insecure_and_private_addresses_refused_before_any_probe():
 
 # ---- guard: no provider name or host in the connect, detector or exchange code ----
 CODE_PATH = [
+    "tinyassets/providers/free_sources.py",
+    "tinyassets/providers/discovery_presets.py",
+    "tinyassets/onboarding/hosted_model_auth.py",
+    "tinyassets/providers/source_record.py",
+    "tinyassets/providers/subscription_runtime.py",
+    "tinyassets/providers/subscription_catalog.py",
+    "tinyassets/providers/subscription_provider.py",
+    "tinyassets/onboarding/subscription_connect.py",
     "tinyassets/connection_oauth/model_discovery.py",
     "tinyassets/connection_oauth/discovery.py",
     "tinyassets/connection_oauth/flow.py",
@@ -139,8 +146,10 @@ PROVIDERS = ("openrouter", "openai", "anthropic", "claude", "gemini", "google", 
 
 
 def test_no_provider_names_in_the_connect_path():
-    data = json.loads(Path("tinyassets/providers/model_discovery_addresses.json").read_text())
-    hosts = {re.sub(r"^https://|/.*$", "", e["address"]) for e in data}
+    from tinyassets.providers.source_record import records
+
+    hosts = {re.sub(r"^https://|/.*$", "", address)
+             for record in records().values() for address in record.addresses}
     for path in CODE_PATH:
         text = Path(path).read_text("utf-8").lower()
         for token in (*PROVIDERS, *hosts):

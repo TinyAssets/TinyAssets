@@ -4,6 +4,7 @@ The callback only deposits a sealed code. Only the authenticated originating
 app can consume it through the existing hosted exchange and bootstrap path.
 """
 
+import html
 import json
 import secrets
 import time
@@ -36,6 +37,8 @@ def discard_hosted(handle, owner):
     from tinyassets.connection_oauth.pkce import handle_digest
 
     with hosted._flows(_base_path()) as (conn, _):
+        conn.execute("DELETE FROM connection_oauth_flows WHERE handle_digest=? "
+                     "AND owner_user_id=?", (handle_digest(handle), owner))
         conn.execute("DELETE FROM hosted_model_flows WHERE handle_digest=? "
                      "AND owner_user_id=?",
                      (handle_digest(handle), owner))
@@ -74,16 +77,25 @@ def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
     result = hosted.begin_flow(owner=owner, preset_id=preset_id,
                                challenge=hosted._challenge(verifier), public_resource=resource,
                                request_ref=request_ref)
+    return stage(owner=owner, result=result, verifier=verifier,
+                 owner_session=owner_session, exchange="exchange")
+
+
+def stage(*, owner, result, verifier, owner_session, exchange, client="web"):
+    from tinyassets.onboarding.approval_handoff import CLIENTS
+
+    if client not in CLIENTS:
+        raise ValueError("invalid return client")
     handle = result["flow"]
     with flows() as conn:
         conn.execute("INSERT INTO inline_model_flows "
                      "(handle_hash,owner,sealed,status,expires) VALUES (?,?,?,?,?)",
                      (hashed(handle), owner, seal(handle, {
                          "verifier": verifier, "authorize_url": result["authorize_url"],
-                         "preset_id": preset_id, "owner_session": owner_session}),
+                         "exchange": exchange, "client": client, "owner_session": owner_session}),
                       "waiting", time.time() + result["expires_in"]))
-    return {"flow": handle, "authorize_url": hosted.load_preset(preset_id).authorize_url,
-            "launch_path": hosted.CALLBACK_PREFIX + handle + "?launch=1",
+    return {"flow": handle, "launch_path": hosted.CALLBACK_PREFIX + handle + "?launch=1",
+            "authorize_url": result["authorize_url"].split("?", 1)[0],
             "expires_in": result["expires_in"]}
 
 
@@ -113,6 +125,11 @@ def take(*, owner, handle, cancel=False):
 def callback(request):
     """Public navigation, browser-bound; never exchange or grant on GET."""
     handle = request.url.path.rsplit("/", 1)[-1]
+    if handle == "connect":
+        states = request.query_params.getlist("state")
+        if len(states) != 1 or not hosted._HANDLE.fullmatch(states[0]):
+            return None
+        handle = states[0]
     cookie_name = "__Host-ta-model-" + handle
     from tinyassets.onboarding.owner_sessions import COOKIE, lookup
 
@@ -154,13 +171,20 @@ def callback(request):
                  and 0 < len(codes[0]) <= 2048)
         if valid:
             data["code"] = codes[0]
+            data["iss"] = request.query_params.get("iss", "")
         conn.execute("UPDATE inline_model_flows SET status=?,sealed=? WHERE handle_hash=?",
                      ("ready" if valid else "cancelled", seal(handle, data if valid else {}),
                       hashed(handle)))
         if not valid:
             discard_hosted(handle, row["owner"])
-        response = HTMLResponse("You can return to chat. " + (
-            "Your connection will finish there." if valid else "Sign-in was cancelled."),
-            headers=HEADERS)
+        body = "You can return to chat. " + (
+            "Your connection will finish there." if valid else "Sign-in was cancelled.")
+        if data.get("client", "web") != "web":
+            from tinyassets.onboarding.approval_handoff import completion_url
+
+            target = completion_url(handle, data["client"])
+            body += (' <a href="' + html.escape(target, quote=True) + '">Return to TinyAssets</a>'
+                     '<script>location.href=' + json.dumps(target) + ';</script>')
+        response = HTMLResponse(body, headers=HEADERS)
         response.delete_cookie(cookie_name, secure=True, httponly=True, samesite="lax")
         return response

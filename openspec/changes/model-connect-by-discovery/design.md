@@ -1,26 +1,12 @@
 ## Context
-
-Generic connection OAuth already implements RFC 8414/OIDC, RFC 9728, RFC 7591, PKCE, issuer/callback DCR caching and credential custody. Model onboarding still requires installed source data or manually supplied endpoints.
-
-## Goals / Non-Goals
-
-An address discovers an OpenAI-compatible catalogue and OAuth; successful authorization uses the existing HTTP connection and model definition. No production work or changes to routing/model selection.
+Lane WX converges declared CLI sources and detected HTTP sources into SourceRecord, a small standard-library dataclass and JSON schema. The existing branch already includes both lanes.
 
 ## Decisions
+One record contains identity, address aliases, data-only suggested/free labels, one sign-in mechanism (OAuth, CLI login, API key), one invocation mechanism (HTTP or CLI), exact egress hosts, and broker or owner-box state. Installed and owner-edited declarations use the same schema. Resolve exact address aliases before discovery; never dispatch by provider name or host. OAuth metadata is frozen before authorization. Existing PKCE key acquisition is an OAuth protocol declared in record data; its working exchange adapter remains import compatible for live pending flows.
 
-Discovery executes in the broker through the existing hardened transport. Probe an address-relative models endpoint and /v1/models; accept only a real catalogue response or explicitly advertised model endpoints. An authentication challenge alone does not prove a model API. Advertised endpoints come from protected-resource metadata. Store exact paths and hosts in the existing frozen flow definition. Never re-discover token destinations during exchange.
+The connect dialog has one address and Connect. The sole suggested free record supplies the initial address. No source lists or categories. Missing sign-in offers a key field and help link. Preserve browser same-tab authorization, native sheets and desktop external return. CLI login persists its opaque flow reference across navigation and resumes polling in the owner box. Credentials remain in their existing custody; owner-authored legacy CLI declarations must adopt the new record schema.
 
-The page posts an address and PKCE challenge. No OAuth returns an API-key option with the discovered endpoints. Existing presets remain usable until discovery covers their acquisition protocol. Generic model composition requires owner confirmation and does not claim unknown pricing is free.
+## Verification and delivery
+Targeted detector, fake-provider exchange, real owner-box login and model selection, browser tests, ruff and heavy-file checks only. No production actions. No sub-agents. Floor changes require independent review by the integration owner before deployment. Report runtime-role copy manifests and import dependencies. Merge the subscription branch again before completion.
 
-Page integration is a delimited block plus one connectBody hook, avoiding lane U2's row implementation. No schema migration is needed.
-
-## Risks / Trade-offs
-
-- Private catalogues without advertised endpoints cannot be identified safely before authentication: report no model API instead of guessing.
-- Unknown billing must be shown at confirmation; never manufacture free pricing from a bare catalogue.
-- Floor files: broker discovery/dispatch, onboarding ingress/definition and source composition (authority and money), OAuth flow if modified (credentials).
-- Independent floor review remains required before merge; this lane expressly prohibits sub-agents.
-
-## Migration Plan
-
-Draft PR to conv/c6-forward-deploy; coordinated router, broker, box and page release by the deployment lane. Retain legacy acquisition until covered. No production changes in this lane.
+The former acquisition, free-source and discovery-preset data now live in source records. Compatibility functions project those records for existing live consumers and pending flows; they are not separate source catalogues. See `hotfix-files.md` for role copies, retired paths and validation evidence.
