@@ -23,32 +23,36 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
 
 ## Live state
 
-| Kind | Home |
-|---|---|
-| Queued work | `openspec/changes/` |
-| Findings | `docs/concerns/`; delete a file to resolve |
-| Founder-only | `docs/host-actions.md` |
-| Who has what | branches and open PRs |
-| Narrative | git log: your commit message |
+Queued: `openspec/changes/`. Findings: `docs/concerns/` (delete =
+resolve). Founder-only: `docs/host-actions.md`. Claims: branches, PRs.
+Narrative: commits.
 
 Orient: Direction, § Shape registry, "Shape reconciliation" issue.
 Converge a shape; add no second path. Write durable state before replying.
 
 ## The loop
 
-1. One intent, one worktree, disjoint files, one PR; new scope is a new lane.
+1. One intent, one PR; parallel lanes by default, split by file around a
+   written contract (tests too).
 2. A one-sentence diff gets no plan. Spec first: public MCP/API, storage shape,
    authority, migrations, money.
 3. Run touched tests, affected heavy files and `ruff`; CI does the rest.
    Mutation tables only for data-loss/cross-user guards.
-4. Review only floor-class (ADR-015) and gate-file changes: one adversarial
-   round by a separate reviewer told to break the change (any model family,
-   not the author), floor/correctness findings, `AGREE`/`DISAGREE_EVIDENCE`.
-   Older text's "cross-family review" means this round.
-5. No lane cap: fold colliding or superseded lanes; serialize merges.
-6. Done = sha asserted deployed, one naive-user pass through the app agent, spec
-   synced. A pasted chat is a bug report.
-7. Repeat error/finding, or round 3: escalate (Astra, Fable, simplify).
+4. Review only floor-class (ADR-015) and gate-file changes, from push, beside
+   CI: one "cross-family review" by a non-author told to break it, from
+   `git diff --stat origin/main...`; floor/correctness findings,
+   `AGREE`/`DISAGREE_EVIDENCE`; fix rounds see only new product hunks.
+   Others: the lead stamps.
+5. Never serialize independent steps; non-blockers gate nothing. Prove it
+   live-like (real deploy path) first; a known fix goes into practice (host
+   or deploy window) once that passes at the last failure point (candidate
+   image, live inputs), PR in parallel. Cache costly state on the first run.
+   Watch long work; post unasked milestones, all lanes, minutes from now.
+   Fold colliding lanes.
+6. Done = `deployed_sha.py --assert-contains <sha>`, one naive-user pass via
+   the app agent, spec synced. A pasted chat is a bug report.
+7. Repeat error/finding, or round 3: escalate: Codex astra, Opus xhigh,
+   simplify.
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
 ## Facts (numbers are cited repo-wide)
@@ -57,22 +61,17 @@ Converge a shape; add no second path. Write durable state before replying.
 2. Reuse the LanceDB connection; never recreate it.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
-   agreed work (host-only: a minimal host-actions row, blocking nothing else).
-5. Accumulating state needs `Annotated[list, operator.add]` —
-   `tinyassets/graph_compiler.py`.
-6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
-7. Python 3.11+ — `pyproject.toml`.
+   agreed work (host-only: a host-actions row that blocks nothing).
+5. Accumulating state needs `Annotated[list, operator.add]`.
+6. `FactWithContext` carries truth-value typing.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.
 11. Doors: `tinyassets.io/mcp`, `/api` (keyed), `/hooks/inbound`; `mcp.`
-    internal. After DNS/tunnel/connector edits:
-    `python scripts/mcp_public_canary.py --assert-handles`.
+    internal; after DNS/tunnel/connector edits, run the handles canary.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
-14. `python scripts/deployed_sha.py --assert-contains <sha>` before "shipped".
 
-Required CI omits `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
-Sandbox, filesystem or process-limit work needs `python scripts/linux_oracle.py`;
-a skip is not a pass. No temp root in the repo. Secrets:
-`set -a; source scripts/load_secrets.sh; set +a`.
+Sandbox, filesystem or process-limit work needs `scripts/linux_oracle.py`;
+a skip is not a pass. Secrets: `set -a; source scripts/load_secrets.sh;
+set +a`.

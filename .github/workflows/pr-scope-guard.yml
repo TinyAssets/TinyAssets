@@ -268,6 +268,31 @@ jobs:
           HITS="$(classify "$SENSITIVE_RE" "")" || exit 1
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
+          # Declared lane (drain_review_gate.py `declared_lane`): a PR touching a
+          # release-critical path names its files with `Lane:`, and any PR that
+          # names them is held to them. Before the receipt, so a smuggled
+          # lineage is refused before anyone reviews it. Bases that predate
+          # the check skip it, as with the forbidden-paths script above.
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-lane.md"
+          if grep -q -- '--lane-scope' scripts/drain_review_gate.py; then
+            LANE_REQUIRE=""
+            [ "$HIT_COUNT" -eq 0 ] || LANE_REQUIRE="--require"
+            if ! printf '%s\n' "$CHANGED" \
+                | python scripts/drain_review_gate.py --lane-scope \
+                  --body-file "$RUNNER_TEMP/pr-body-lane.md" ${LANE_REQUIRE} \
+                  2> "$RUNNER_TEMP/lane-why.txt"; then
+              {
+                echo "### PR scope guard"
+                echo ""
+                echo "**Blocked — diff outside the declared lane.**"
+                echo ""
+                sed 's/^/> /' "$RUNNER_TEMP/lane-why.txt"
+              } >> "$GITHUB_STEP_SUMMARY"
+              cat "$RUNNER_TEMP/lane-why.txt"
+              exit 1
+            fi
+          fi
+
           # EVERY PR needs a review receipt (2026-10-02). This used to be a
           # narrow set -- gate-defining files plus an authority-path regex, with AST and
           # deletion-only-ledger exemptions -- on the reasoning that a blanket

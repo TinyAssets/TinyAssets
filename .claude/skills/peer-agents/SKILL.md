@@ -51,8 +51,9 @@ HARD CONSTRAINTS ON HOW YOU WORK:
 
 Two more habits that fell out of the same incident:
 
-- **One dispatch at a time.** Two concurrent reviews multiplied the spawn storm
-  and made it much harder to tell which tree of processes belonged to what.
+- **Parallel dispatches are fine once every brief carries the block above.**
+  The storm came from peers dispatching peers, not from two siblings; give
+  each its own `--out` and worktree so its processes stay attributable.
 - **Set `--timeout` to what you will actually wait** (900s over the 1800s
   default). A peer with nothing at the halfway mark is not about to produce;
   check its `Get-CimInstance Win32_Process` command line instead of waiting.
@@ -71,13 +72,13 @@ Two more habits that fell out of the same incident:
 - **Default (read-only-ish).** claude: plain `-p` (Read/Glob/Grep allowed, edit/bash denied). codex: `-s read-only -c approval_policy=never`. Safe to point at the live checkout.
 - **`--write` (full agent).** claude: `--dangerously-skip-permissions`. codex: `--full-auto` (workspace-write sandbox — weak on Windows). **Always point `--cwd` at a `wf-*` worktree in write mode, never the live checkout or main.** The peer can then edit, run tests, and iterate on its own.
 
-Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — the GPT-6 models reject it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
+Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (both CLIs; `low` for trivial tasks, `xhigh` to escalate). **Never `--effort minimal` — the GPT-6 models reject it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are classes, never versions; each resolves to its newest.** claude: `--model fable`. codex: `luna` mechanical, `sol` (default) build/verify, `astra` hard/escalation; resolved from `~/.codex/models_cache.json`, one retry on the next-newest, model printed. Pin a slug only with a stated reason. A failed run writes `[peer_agent] ERROR` + stderr to `--out`.
+**Models are classes, never versions; each resolves to its newest.** claude: `--model opus` (over fable). codex: `luna` mechanical, `sol` (default) build/verify, `astra` hard/escalation; resolved from `~/.codex/models_cache.json`, one retry on the next-newest, model printed. Pin a slug only with a stated reason. A failed run writes `[peer_agent] ERROR` + stderr to `--out`.
 
 ## When to use which peer
 
-- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed, dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, started as soon as the diff is pushed and run alongside CI; this skill owns the mechanics. When one is owed, dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 

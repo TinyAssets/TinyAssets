@@ -243,6 +243,45 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 - **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
 - **THEN** the guard reports the authority hit and requires the receipt
 
+### Requirement: A new skip names its owner and where it runs
+
+A new skip or xfail that is not an environment guard SHALL carry `owner=` and
+either `expires=YYYY-MM-DD` in its reason or `runs-in=`. `owner=` and `runs-in=`
+MAY instead sit in a comment on the marker's lines or the line directly before or
+after it, so wrapping a reason never fails the gate.
+
+#### Scenario: Metadata on the following line passes
+- **WHEN** a new skipif's reason is wrapped and `# owner=x runs-in=linux-ci` follows it
+- **THEN** the hygiene gate accepts the marker
+
+### Requirement: A pull request stays inside its declared lane
+
+A pull request whose body declares `Lane: <glob> <dir/> ...` SHALL be refused
+when any changed path (including a rename's previous path) is outside those
+globs. A pull request touching a release-critical path SHALL declare a lane. The
+check SHALL run from the trusted base checkout, before the receipt is read.
+
+#### Scenario: A smuggled lineage is refused
+- **WHEN** a lane declares `Lane: scripts/peer_agent.py` and its diff also carries `deploy/deploy_fail_safe.sh`
+- **THEN** the scope guard refuses it and names `deploy/deploy_fail_safe.sh`
+
+#### Scenario: A release-critical change must declare a lane
+- **WHEN** a pull request touches `deploy/` and its body has no `Lane:` line
+- **THEN** the scope guard refuses it
+
+### Requirement: Agent shell commands that lost time are refused
+
+The Claude Code Bash guard SHALL refuse a heredoc whose body holds a backslash
+(quoting the delimiter does not keep it on this host), a `pkill -f` whose pattern
+lacks the bracket trick, and a receipt naming a head that is not the pull
+request's current head. After a `git push` it SHALL report a pushed branch whose
+ref on the pushed remote is not the local branch. A guard that cannot run SHALL
+allow the call.
+
+#### Scenario: A self-matching pkill is refused
+- **WHEN** the agent runs `ssh host 'pkill -f rehearse'`
+- **THEN** the guard refuses it and suggests `'[r]ehearse'`
+
 ### Requirement: Worktree inspection supports narrowed provider scope
 
 The worktree status tool SHALL accept a provider filter and MUST apply it before

@@ -1,10 +1,13 @@
 # Executable gates
 
-Builder done-check: `python scripts/linux_oracle.py --ci`. It fetches
-`origin/main`, selects the branch and working tree, then runs structural guards,
-four PR affected-test shards, six queue shards, and the queue aggregate in Linux.
-Compare its PR digest with CI `affected-tests` and its queue digest with CI
-`select` for the same diff. A queue group with other PRs has a different diff.
+Builder done-check: touched tests and `ruff`; after a red CI job, rerun only its
+failing tests, then push. `python scripts/linux_oracle.py --ci` reproduces all
+of CI in Linux (structural guards, four PR shards, six queue shards, the queue
+aggregate; digests match CI `affected-tests` and `select`): for a CI failure that
+will not reproduce, never per push.
+
+A receipt binds to the exact head (or its tree-diff). A trivial commit after
+review gets a one-round delta review, the reviewer told only that delta.
 
 | Gate | Entry point |
 |---|---|

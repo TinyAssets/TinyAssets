@@ -144,8 +144,9 @@ def resolve_prompt(args: argparse.Namespace) -> str:
 
 
 def build_claude_cmd(args: argparse.Namespace) -> list[str]:
-    # Default model "fable": the alias tracks the latest Claude model on a Max
-    # subscription (currently claude-fable-5). Bare `claude -p` does not
+    # Default model "opus": preferred over "fable" for building and review
+    # (founder, 2026-10-22 UTC). Each alias tracks the latest model of its class on a Max
+    # subscription. Bare `claude -p` does not
     # default to the frontier model.
     #
     # WORKFLOW_CLAUDE_MODEL overrides that default, mirroring WORKFLOW_CODEX_MODEL on
@@ -154,8 +155,11 @@ def build_claude_cmd(args: argparse.Namespace) -> list[str]:
     # while the dispatcher reports success, and a dead lane is indistinguishable from
     # a working one from outside. Four lanes were lost that way on 2026-07-21 before
     # anyone noticed. An explicit --model still wins.
-    model = args.model or os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip() or "fable"
+    model = args.model or os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip() or "opus"
     cmd = [resolve_claude(), "-p", "--model", model, "--output-format", "stream-json", "--verbose"]
+    if args.effort:
+        # Escalation is the same class at higher effort (AGENTS.md loop 7).
+        cmd.extend(["--effort", args.effort])
     if args.write:
         cmd.append("--dangerously-skip-permissions")
     if args.system:
@@ -413,7 +417,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "or an exact slug to pin one.",
     )
     p.add_argument(
-        "--effort", default=None, help="Codex reasoning effort (minimal/low/medium/high/xhigh)."
+        "--effort", default=None, help="Reasoning effort (low/medium/high/xhigh), codex or claude."
     )
     return p
 
