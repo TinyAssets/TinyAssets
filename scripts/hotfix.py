@@ -5,7 +5,7 @@ apply --branch <pushed-branch> [--files auto | path ...], revert <id>, list.
 Requires DO_DROPLET_HOST, DO_SSH_USER, DO_SSH_KEY_PATH (default ~/.ssh/do_deploy),
 and TINYASSETS_WIKI_CANARY_TOKEN. Floor changes also require gh and an approved PR.
 New/deleted files, incompatible diffs and unbounded test selections deploy normally.
-Deploys verify candidate bytes or inclusion of the merged PR, including squash merges.
+Deploys verify candidate bytes or the hotfix bytes in an included merged PR.
 """
 
 import argparse
@@ -302,7 +302,7 @@ def record_key(record):
 
 
 def guard_revision(revision):
-    """Runner attests merged PR inclusion; the host checks actual image bytes."""
+    """Runner attests merged hotfix bytes; the host checks actual image bytes."""
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("invalid candidate revision")
     active = json.loads(remote("list"))
@@ -325,8 +325,13 @@ def guard_revision(revision):
                 )
                 if pr["state"] == "MERGED" and pr["baseRefName"] == "main":
                     sha = pr["mergeCommit"]["oid"]
-                    git("merge-base", "--is-ancestor", sha, revision)
-                    merged = sha
+                    if all(
+                        digest(run("git", "-C", str(ROOT), "show", f"{sha}:{entry['path']}"))
+                        == entry["after_sha256"]
+                        for entry in record["files"]
+                    ):
+                        git("merge-base", "--is-ancestor", sha, revision)
+                        merged = sha
             except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
                 # GitHub/history may be unavailable. This removes only the PR
                 # exemption: the host still checks every applied file hash.

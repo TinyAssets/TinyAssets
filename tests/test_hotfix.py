@@ -492,9 +492,13 @@ def test_runner_proves_pr_merge_not_branch_ancestry(
     monkeypatch.setattr(
         hotfix,
         "run",
-        lambda *a: json.dumps(
-            {"state": state, "baseRefName": base, "mergeCommit": {"oid": "d" * 40}}
-        ).encode(),
+        lambda *a: (
+            b"patched"
+            if a[0] == "git"
+            else json.dumps(
+                {"state": state, "baseRefName": base, "mergeCommit": {"oid": "d" * 40}}
+            ).encode()
+        ),
     )
 
     def git(*args):
@@ -505,6 +509,38 @@ def test_runner_proves_pr_merge_not_branch_ancestry(
     monkeypatch.setattr(hotfix, "git", git)
     proof = json.loads(hotfix.base64.b64decode(hotfix.guard_revision("c" * 40)))
     assert proof["records"][legacy["id"]]["merge"] == expected
+
+
+def test_merged_pr_without_hotfix_bytes_cannot_archive(legacy, monkeypatch):
+    legacy["pr"] = 5206
+    legacy["files"]["tinyassets/second.py"] = hotfix.digest(b"second fix")
+    hotfix.save_record(legacy)
+    monkeypatch.setattr(hotfix, "remote", lambda *a: json.dumps(hotfix.records()).encode())
+
+    def run(*args):
+        if args[0] == "gh":
+            return json.dumps(
+                {"state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": "d" * 40}}
+            ).encode()
+        if args[0] == "git":
+            return b"patched" if args[-1].endswith(":tinyassets/example.py") else b"wrong"
+        if args[:2] == ("docker", "create"):
+            return b"candidate"
+        if args[-1] == "tinyassets-daemon" and args[:2] == ("docker", "inspect"):
+            return ("c" * 40).encode()
+        return ("c" * 40).encode()
+
+    monkeypatch.setattr(hotfix, "run", run)
+    monkeypatch.setattr(
+        hotfix, "git", lambda *a: pytest.fail("unverified merge reached ancestor check")
+    )
+    monkeypatch.setattr(hotfix, "file_bytes", lambda *a: (b"missing fix", 0o644))
+    proof = hotfix.guard_revision("c" * 40)
+    record = hotfix.records()[0]
+    assert json.loads(hotfix.base64.b64decode(proof))["records"][record["id"]]["merge"] is None
+    with pytest.raises(ValueError, match="candidate lacks hotfix"):
+        hotfix.host_archive(proof, "c" * 40)
+    assert hotfix.records()[0]["status"] == "active"
 
 
 @pytest.mark.parametrize(
