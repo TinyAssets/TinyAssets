@@ -410,6 +410,11 @@ def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str
                     kind = re.match(r"(INTEGER|TEXT|REAL|BLOB|NUMERIC)\b", tail, re.I)
                     if kind:
                         columns[name] = kind.group(1).upper()
+                    elif "VIRTUAL" in match.group(0).upper() and tail.upper() in {
+                        "",
+                        "UNINDEXED",
+                    }:
+                        columns[name] = ""
                 found.setdefault(table, {}).update(columns)
             for match in ALTER.finditer(sql):
                 found.setdefault(match.group(1), {})[match.group(2)] = match.group(3).upper()

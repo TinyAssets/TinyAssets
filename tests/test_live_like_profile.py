@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sqlite3
@@ -269,3 +270,37 @@ def test_literal_schema_builders_and_migrations_are_extracted(tmp_path: Path) ->
         "count": "INTEGER",
         "helper": "REAL",
     }
+
+
+def test_every_executable_literal_create_is_in_vocabulary() -> None:
+    """SQLite independently parses the code's literal CREATE statements."""
+    vocabulary = shape_profile.column_vocabulary()
+    for path in (shape_profile.REPO / "tinyassets").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            sql = node.value
+            for match in shape_profile.CREATE.finditer(sql):
+                start = sql.find("(", match.end())
+                if start < 0 or start - match.end() > 80:
+                    continue
+                depth = 0
+                for end in range(start, len(sql)):
+                    depth += (sql[end] == "(") - (sql[end] == ")")
+                    if depth == 0:
+                        break
+                else:
+                    continue  # A fragment assembled by code; fresh-store tests cover these.
+                ddl = sql[match.start() : end + 1]
+                with closing(sqlite3.connect(":memory:")) as db:
+                    try:
+                        db.execute(ddl)
+                    except sqlite3.OperationalError:
+                        continue  # A template or partial statement, not executable alone.
+                    table = match.group(1)
+                    actual = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
+                    assert table in vocabulary, (path, table)
+                    assert actual <= set(vocabulary[table]), (
+                        path, table, sorted(actual - set(vocabulary[table]))
+                    )
