@@ -45,10 +45,13 @@ Converge a shape; add no second path. Write durable state before replying.
    round by a separate reviewer told to break the change (any model family,
    not the author), floor/correctness findings, `AGREE`/`DISAGREE_EVIDENCE`.
    Older text's "cross-family review" means this round.
-5. No lane cap: fold colliding or superseded lanes; serialize merges.
+5. No lane cap; parallel by default. Put each known fix into practice now (on the
+   host if faster; the durable PR follows); nothing non-blocking gates the next
+   try; retest from the last failure point, never the long path. Fold colliding
+   or superseded lanes; serialize merges.
 6. Done = sha asserted deployed, one naive-user pass through the app agent, spec
    synced. A pasted chat is a bug report.
-7. Repeat error/finding, or round 3: escalate (Astra, Fable, simplify).
+7. Repeat error/finding, or round 3: escalate (Astra, Opus, simplify).
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
 ## Facts (numbers are cited repo-wide)
