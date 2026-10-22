@@ -22,15 +22,23 @@ def load(root: Path) -> bytes:
         fcntl.flock(directory, fcntl.LOCK_EX)
         name = ".session-seal.key"
         try:
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            # Write aside, then rename: an interrupted first start leaves at
+            # most a stale temporary file, never an empty key. The lock above
+            # makes this the only writer, so the fixed temporary name is safe.
+            partial = name + ".partial"
+            try:
+                os.unlink(partial, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=directory)
-        except FileExistsError:
-            pass
-        else:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(secrets.token_bytes(32))
                 stream.flush()
                 os.fsync(stream.fileno())
+            os.rename(partial, name, src_dir_fd=directory, dst_dir_fd=directory)
             os.fsync(directory)
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         with os.fdopen(fd, "rb") as stream:
