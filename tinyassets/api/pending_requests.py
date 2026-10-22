@@ -1962,34 +1962,6 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
 #: has none. A ``command`` runner joins this list when one exists to run it.
 _MODEL_CONNECT_SHAPES = ("api_key", "local")
 
-def _first_power_preset() -> dict[str, object] | None:
-    """The bundled guided sign-in the setup request offers first, as display data.
-
-    It is installed data (``acquisition_presets.json``), not code: the app shows
-    whatever preset is installed and names no provider itself. An unreadable
-    preset drops the button rather than offering one that cannot work.
-    """
-    import json as _json
-    from pathlib import Path
-
-    from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
-
-    try:
-        path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
-        docs = _json.loads(path.read_text(encoding="utf-8"))
-        preset_id = next(iter(docs))
-        preset = load_preset(preset_id)
-        manual = docs[preset_id].get("manual_key_entry") is True
-    except (OSError, ValueError, StopIteration, HostedAuthError, KeyError, TypeError):
-        return None
-    return {
-        "preset_id": preset.id,
-        "name": preset.display_name,
-        "label": f"Continue with {preset.display_name}",
-        "manage_url": preset.manage_url,
-        "manual_key": manual,
-    }
-
 
 def _model_connect_request(*, connected: bool = False) -> dict[str, object]:
     """A blocking setup entry, or an optional additional-source entry when ready.
@@ -2005,26 +1977,24 @@ def _model_connect_request(*, connected: bool = False) -> dict[str, object]:
     """
     from tinyassets.providers.free_sources import (
         daily_cap_offers,
+        hosted_source_cards,
         sign_in_cards,
         source_cards,
     )
 
-    # One connect screen: the guided sign-in (``primary``), the sources completed
-    # by signing in, the key cards, the subscriptions, and the provider-stated daily
-    # limits the app's daily-cap card is worded from. All data, none in the page.
-    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
-                                "sign_in_sources": sign_in_cards(),
-                                "daily_caps": daily_cap_offers()}
-    primary = None if connected else _first_power_preset()
-    if primary is not None:
-        setup["primary"] = primary
+    # Every supported installed source is offered without a preferred provider.
+    setup: dict[str, object] = {
+        "shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
+        "hosted_sources": hosted_source_cards(), "sign_in_sources": sign_in_cards(),
+        "daily_caps": daily_cap_offers(),
+    }
     return {
         "request_id": _LLM_REQUEST_ID,
         "kind": "LLM",
         "title": ("Connect another LLM" if connected
                   else "Connect the model your command center runs on"),
         "body": (
-            "Add another model source. Your command center keeps running on the one it has."
+            "Add another model source. Your agent can use the sources you authorize."
             if connected else
             "Your agent needs a model to think with. It only ever uses "
             "connections you authorize."

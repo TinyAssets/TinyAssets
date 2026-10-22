@@ -124,7 +124,6 @@ PINNED: dict[str, list[str]] = {
         "load: .read_text()",
     ],
     "tinyassets/api/pending_requests.py": [
-        "_first_power_preset: .read_text()",
     ],
     "tinyassets/api/status.py": [
         # Fixed platform data-root marker, outside universe-writable mounts.
