@@ -56,9 +56,11 @@ from __future__ import annotations
 import argparse
 import ast
 import datetime as dt
+import io
 import re
 import subprocess
 import sys
+import tokenize
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -187,6 +189,7 @@ class FileModel:
     bodies: dict[str, str]
     markers: list[inv.Marker]
     lines: list[str]
+    comments: dict[int, str] = field(default_factory=dict)
 
 
 def _assertions(func: ast.AST) -> int:
@@ -219,6 +222,7 @@ def model(text: str | None, rel: str) -> FileModel:
         bodies={k: inv._norm_body(f) for k, f in tests.items()},
         markers=inv.scan_markers(tree, rel),
         lines=text.splitlines(),
+        comments=_comments(text),
     )
 
 
@@ -235,12 +239,30 @@ def _enclosing(m: inv.Marker, fm: FileModel) -> str | None:
 # ---- the rules ----------------------------------------------------------------
 
 
-def marker_problem(m: inv.Marker, today: dt.date) -> str | None:
-    """Why an ADDED marker is not acceptable, or None."""
+def _comments(text: str) -> dict[int, str]:
+    """Line number -> the `#` comment on that line, tokenized (never a string)."""
+    out: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                out[tok.start[0]] = tok.string
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass
+    return out
+
+
+def marker_problem(m: inv.Marker, today: dt.date, comments: str = "") -> str | None:
+    """Why an ADDED marker is not acceptable, or None.
+
+    `owner=` and `runs-in=` may sit in the reason or in `comments` -- the
+    comments on the marker's lines and the line before or after it -- so
+    wrapping a reason never fails the gate. `expires=` must be in the reason:
+    the weekly inventory reads it from there.
+    """
     if m.kind != "xfail" and inv.is_environment_guard(m.reason):
         return None
     missing = []
-    if not OWNER_RE.search(m.reason):
+    if not OWNER_RE.search(m.reason) and not OWNER_RE.search(comments):
         missing.append("`owner=<who>`")
     hit = inv.EXPIRY_RE.search(m.reason)
     if hit:
@@ -252,7 +274,7 @@ def marker_problem(m: inv.Marker, today: dt.date) -> str | None:
             return f"expires={when} is already past"
         if (when - today).days > MAX_EXPIRY_DAYS:
             return f"expires={when} is more than {MAX_EXPIRY_DAYS} days out"
-    elif not RUNS_IN_RE.search(m.reason):
+    elif not RUNS_IN_RE.search(m.reason) and not RUNS_IN_RE.search(comments):
         missing.append("`expires=YYYY-MM-DD` or `runs-in=<where this case does run>`")
     if missing:
         return "not an environment guard; the reason needs " + " and ".join(missing)
@@ -556,7 +578,9 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                         f"new `{m.kind}` on a test that already existed: {m.reason!r}",
                     )
                 )
-            why = marker_problem(m, today)
+            last = (m.end_line or m.line) + 1
+            near = " ".join(a.comments.get(n, "") for n in range(m.line - 1, last + 1))
+            why = marker_problem(m, today, near)
             if why:
                 delta.unexplained_markers.append(
                     Finding(f"{rel}:{m.line}", f"new `{m.kind}` -- {why}")

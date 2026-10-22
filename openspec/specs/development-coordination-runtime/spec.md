@@ -223,25 +223,36 @@ The OpenSpec flow inspector SHALL support a caller-selected validated Git ref an
 - **THEN** inspection exits non-zero with a bounded diagnostic
 - **AND** it emits no fallback report from the working tree
 
-### Requirement: Gate-defining and authority-critical changes need an exact-head review receipt
+### Requirement: A review receipt is bound to the reviewed change, not the commit
 
-A pull request touching gate-defining or authority-critical paths SHALL carry an
-exact-head review receipt in the pull-request BODY naming an APPROVE verdict, the
-unchanged head SHA, and a durable artifact. Gate-defining paths are
-`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
-`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`, and
-`scripts/drain_review_gate.py`; authority-critical paths are `tinyassets/auth/`,
-`tinyassets/credential_vault.py`, and
-`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`. The check SHALL run
-from the trusted base checkout so a pull request cannot weaken the rule judging
-it. Matching SHALL cover renames (via the previous path) and SHALL be
-case-insensitive, and SHALL include the packaging runtime mirror of those paths.
-A deletion-only edit to the quarantine ledger SHALL be exempt, because it only
-tightens the ratchet; any addition SHALL keep the receipt requirement.
+Every pull request SHALL carry a review receipt at the top of its BODY naming an
+APPROVE verdict, the reviewed head SHA or the change's diff key, and a trusted
+comment on that pull request that itself opens with the same approval. The check
+SHALL run from the trusted base checkout so a pull request cannot weaken the rule
+judging it. A receipt for an earlier head SHALL stay valid when the current change
+differs from the reviewed one only in collected test modules (`tests/**/test_*.py`
+or `*_test.py`, never `conftest.py` or the shape registry test), and every test
+module the reviewed change touched is still touched; any other byte voids it. The
+gate SHALL compute that from both heads' diffs, never from a claim in the body.
 
-#### Scenario: Renaming a protected file does not evade the receipt
-- **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
-- **THEN** the guard reports the authority hit and requires the receipt
+#### Scenario: A test-only follow-up keeps the receipt
+- **WHEN** the reviewed head is followed by a commit that edits only a test module
+- **THEN** the receipt still allows the new head
+
+#### Scenario: A product edit or a dropped reviewed test voids the receipt
+- **WHEN** a later commit changes a non-test path or reverts a test module the review saw
+- **THEN** the gate requires a new receipt
+
+### Requirement: A new skip names its owner and where it runs
+
+A new skip or xfail that is not an environment guard SHALL carry `owner=` and
+either `expires=YYYY-MM-DD` in its reason or `runs-in=`. `owner=` and `runs-in=`
+MAY instead sit in a comment on the marker's lines or the line directly before or
+after it, so wrapping a reason never fails the gate.
+
+#### Scenario: Metadata on the following line passes
+- **WHEN** a new skipif's reason is wrapped and `# owner=x runs-in=linux-ci` follows it
+- **THEN** the hygiene gate accepts the marker
 
 ### Requirement: Worktree inspection supports narrowed provider scope
 

@@ -51,8 +51,9 @@ HARD CONSTRAINTS ON HOW YOU WORK:
 
 Two more habits that fell out of the same incident:
 
-- **One dispatch at a time.** Two concurrent reviews multiplied the spawn storm
-  and made it much harder to tell which tree of processes belonged to what.
+- **Parallel dispatches are fine once every brief carries the block above.**
+  The storm came from peers dispatching peers, not from two siblings; give
+  each its own `--out` and worktree so its processes stay attributable.
 - **Set `--timeout` to what you will actually wait** (900s over the 1800s
   default). A peer with nothing at the halfway mark is not about to produce;
   check its `Get-CimInstance Win32_Process` command line instead of waiting.
@@ -77,7 +78,7 @@ Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (
 
 ## When to use which peer
 
-- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed, dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, started as soon as the diff is pushed and run alongside CI; this skill owns the mechanics. When one is owed, dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 

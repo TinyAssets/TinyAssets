@@ -289,6 +289,8 @@ class Marker:
     scope: str  # "module" | "class" | "function" | "call"
     date: str | None = None
     expires: str | None = None
+    #: Last source line of the marker expression (None when unknown).
+    end_line: int | None = None
 
 
 @dataclass
@@ -410,7 +412,9 @@ def scan_markers(tree: ast.Module, rel: str) -> list[Marker]:
             if kind:
                 decorator_ids.add(id(deco))
                 reason = _reason(deco, kind) if isinstance(deco, ast.Call) else ""
-                markers.append(Marker(rel, deco.lineno, kind, reason, scope))
+                markers.append(
+                    Marker(rel, deco.lineno, kind, reason, scope, end_line=deco.end_lineno)
+                )
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -430,14 +434,21 @@ def scan_markers(tree: ast.Module, rel: str) -> list[Marker]:
                 if kind:
                     decorator_ids.add(id(val))
                     reason = _reason(val, kind) if isinstance(val, ast.Call) else ""
-                    markers.append(Marker(rel, val.lineno, kind, reason, "module"))
+                    markers.append(
+                        Marker(rel, val.lineno, kind, reason, "module", end_line=val.end_lineno)
+                    )
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and id(node) not in decorator_ids:
             kind = _marker_kind(node.func, aliases)
             # A bare call of pytest.mark.skipif(...) not used as a decorator is
             # usually a pytest.param(marks=...) entry; count it as a marker too.
             if kind:
-                markers.append(Marker(rel, node.lineno, kind, _reason(node, kind), "call"))
+                markers.append(
+                    Marker(
+                        rel, node.lineno, kind, _reason(node, kind), "call",
+                        end_line=node.end_lineno,
+                    )
+                )
             # pytest.param(..., marks=pytest.mark.skip) -- a mark that is
             # neither a decorator nor a call, alone or in a list.
             for kw in node.keywords:

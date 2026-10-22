@@ -36,21 +36,20 @@ Converge a shape; add no second path. Write durable state before replying.
 
 ## The loop
 
-1. One intent, one worktree, disjoint files, one PR; new scope is a new lane.
+1. One intent, one worktree, disjoint files, one PR.
 2. A one-sentence diff gets no plan. Spec first: public MCP/API, storage shape,
    authority, migrations, money.
 3. Run touched tests, affected heavy files and `ruff`; CI does the rest.
    Mutation tables only for data-loss/cross-user guards.
-4. Review only floor-class (ADR-015) and gate-file changes: one adversarial
-   round by a separate reviewer told to break the change (any model family,
-   not the author), floor/correctness findings, `AGREE`/`DISAGREE_EVIDENCE`.
-   Older text's "cross-family review" means this round.
-5. No lane cap; parallel by default. Put each known fix into practice now (on the
-   host if faster; the durable PR follows); nothing non-blocking gates the next
-   try; retest from the last failure point, never the long path. Fold colliding
-   or superseded lanes; serialize merges.
-6. Done = sha asserted deployed, one naive-user pass through the app agent, spec
-   synced. A pasted chat is a bug report.
+4. Review only floor-class (ADR-015) and gate-file changes, from push, beside
+   CI: one round ("cross-family review") by a non-author told to break it;
+   floor/correctness findings, `AGREE`/`DISAGREE_EVIDENCE`; fix rounds see
+   only new product hunks. Others: the lead stamps.
+5. Parallel, no lane cap. Use each known fix now (on the host if faster;
+   the PR follows); non-blockers never gate the next try; retest from the last
+   failure. Fold colliding or superseded lanes; serialize merges.
+6. Done = `deployed_sha.py --assert-contains <sha>`, one naive-user pass via
+   the app agent, spec synced. A pasted chat is a bug report.
 7. Repeat error/finding, or round 3: escalate (Astra, Opus, simplify).
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
@@ -60,7 +59,7 @@ Converge a shape; add no second path. Write durable state before replying.
 2. Reuse the LanceDB connection; never recreate it.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
-   agreed work (host-only: a minimal host-actions row, blocking nothing else).
+   agreed work (host-only: a host-actions row that blocks nothing).
 5. Accumulating state needs `Annotated[list, operator.add]` —
    `tinyassets/graph_compiler.py`.
 6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
@@ -69,13 +68,11 @@ Converge a shape; add no second path. Write durable state before replying.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.
 11. Doors: `tinyassets.io/mcp`, `/api` (keyed), `/hooks/inbound`; `mcp.`
-    internal. After DNS/tunnel/connector edits:
-    `python scripts/mcp_public_canary.py --assert-handles`.
+    internal; after DNS/tunnel/connector edits, run the handles canary.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
-14. `python scripts/deployed_sha.py --assert-contains <sha>` before "shipped".
 
 Required CI omits `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
-Sandbox, filesystem or process-limit work needs `python scripts/linux_oracle.py`;
+Sandbox, filesystem or process-limit work needs `scripts/linux_oracle.py`;
 a skip is not a pass. No temp root in the repo. Secrets:
 `set -a; source scripts/load_secrets.sh; set +a`.

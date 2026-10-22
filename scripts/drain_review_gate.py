@@ -319,6 +319,11 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
 
     Raises on any git failure; callers must treat that as "no key" (deny).
     """
+    return diff_key_from_raw(_raw_diff(base, head, cwd=cwd))
+
+
+def _raw_diff(base: str, head: str, *, cwd: Path | None = None) -> bytes:
+    """`git diff --raw -z` from merge-base(base, head) to head, full ids."""
     def git(*args: str) -> bytes:
         return subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True, check=True
@@ -328,7 +333,7 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
     # `--no-abbrev` is what makes the ids full: `--full-index` alone still
     # prints abbreviated ids in --raw output, and two different blobs can share
     # an abbreviation (cross-family review 2026-09-27 built such a pair).
-    raw = git(
+    return git(
         "diff",
         "--raw",
         "--no-renames",
@@ -341,21 +346,28 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
         merge_base,
         head,
     )
-    return diff_key_from_raw(raw)
 
 
-def diff_key_from_raw(raw: bytes) -> str:
-    """Hash `git diff --raw -z --no-abbrev` output; refuse anything else."""
+def _raw_records(raw: bytes) -> list[tuple[bytes, bytes]]:
+    """(path, meta) of `git diff --raw -z --no-abbrev`, sorted; refuse anything else."""
     fields = raw.split(b"\0")
     if fields and fields[-1] == b"":
         fields.pop()
     if len(fields) % 2:
         raise ValueError("unexpected `git diff --raw -z` output")
     pairs = sorted(zip(fields[1::2], fields[0::2]))
-    digest = hashlib.sha256()
-    for path, meta in pairs:
+    for _path, meta in pairs:
         if _RAW_META_RE.fullmatch(meta) is None:
             raise ValueError(f"unexpected `git diff --raw` record: {meta!r}")
+    return pairs
+
+
+def diff_key_from_raw(raw: bytes, *, keep: Callable[[bytes], bool] | None = None) -> str:
+    """Hash `git diff --raw -z --no-abbrev` output, or only its `keep` paths."""
+    digest = hashlib.sha256()
+    for path, meta in _raw_records(raw):
+        if keep is not None and not keep(path):
+            continue
         # Length-prefixed, never delimiter-joined: a path may contain a tab or
         # a newline, and joining would let one path spell two entries.
         for part in (path, meta):
@@ -376,10 +388,56 @@ def _read_text(path: Path | None) -> str | None:
         return None
 
 
+# Test modules pytest collects. `.dockerignore` keeps tests/ out of the
+# production image, so a commit that changes only these ships nothing.
+# conftest.py and test helpers are NOT test modules here: they run under every
+# test. The shape registry test is itself a gate, so it never counts.
+_TEST_MODULE_RE = re.compile(rb"tests/(?:[^/]+/)*(?:test_[^/]*|[^/]*_test)\.py")
+_GATE_TESTS = frozenset({b"tests/test_shape_registry.py"})
+
+
+def is_test_module(path: bytes) -> bool:
+    return _TEST_MODULE_RE.fullmatch(path) is not None and path not in _GATE_TESTS
+
+
+def _product(path: bytes) -> bool:
+    return not is_test_module(path)
+
+
+def carries_review(reviewed_raw: bytes, current_raw: bytes) -> bool:
+    """Does a review of one change (`git diff --raw` bytes) cover another?
+
+    Yes when they are identical, or when they differ ONLY in test modules:
+    every other path's before/after blob is the same, and every test module
+    the reviewed change touched is still touched (a later commit may edit a
+    reviewed test, never drop it). So a `verifies` tag, a skip reason or a new
+    test keeps the receipt, and any byte outside test modules voids it. Test
+    hygiene still judges every head, so a later commit that removes, skips or
+    loosens a test is refused there.
+    """
+    if diff_key_from_raw(reviewed_raw) == diff_key_from_raw(current_raw):
+        return True
+    if diff_key_from_raw(reviewed_raw, keep=_product) != diff_key_from_raw(
+        current_raw, keep=_product
+    ):
+        return False
+    reviewed_tests = {p for p, _ in _raw_records(reviewed_raw) if is_test_module(p)}
+    current_tests = {p for p, _ in _raw_records(current_raw) if is_test_module(p)}
+    return reviewed_tests <= current_tests
+
+
 def same_change_as(
-    base: str, current_key: str, *, cwd: Path | None = None
+    base: str,
+    current_key: str,
+    *,
+    head: str | None = None,
+    cwd: Path | None = None,
 ) -> Callable[[str], bool]:
-    """True when `cited` has the same tree-diff against `base` as `current_key`.
+    """True when a review of `cited` still covers the current change.
+
+    Without `head`: `cited` has the same tree-diff against `base` as
+    `current_key`. With `head`, whose diff must hash to `current_key`: also
+    when the two changes differ only in test modules (`carries_review`).
 
     Any git failure is "not the same change". A receipt must not carry across
     a commit we cannot read.
@@ -389,7 +447,14 @@ def same_change_as(
         if not _SHA_RE.fullmatch(cited) or not _DIFF_KEY_RE.fullmatch(current_key):
             return False
         try:
-            return diff_key(base, cited, cwd=cwd) == current_key
+            if head is None:
+                return diff_key(base, cited, cwd=cwd) == current_key
+            if not _SHA_RE.fullmatch(head):
+                return False
+            current_raw = _raw_diff(base, head, cwd=cwd)
+            if diff_key_from_raw(current_raw) != current_key:
+                return False
+            return carries_review(_raw_diff(base, cited, cwd=cwd), current_raw)
         except (subprocess.CalledProcessError, ValueError, OSError):
             return False
 
@@ -401,7 +466,7 @@ def _carry_comparer(args: argparse.Namespace) -> Callable[[str], bool] | None:
     base = getattr(args, "base", "") or ""
     if not base or not _DIFF_KEY_RE.fullmatch(key):
         return None
-    return same_change_as(base, key)
+    return same_change_as(base, key, head=args.head)
 
 
 def _blocking_review(args: argparse.Namespace) -> int:
