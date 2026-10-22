@@ -34,8 +34,8 @@ class VolumeLifecycle:
             if status["awake"]:
                 self.lifecycle.awake.add(owner)
                 idle = status["idle_seconds"]
-                if idle is None or (idle < self.lifecycle.config.idle_limit
-                                    and status["uptime"] < 86400):
+                if not status.get("draining") and (idle is None or (
+                        idle < self.lifecycle.config.idle_limit and status["uptime"] < 86400)):
                     return record
             return await self.sleep(owner)
         if not work or work["kind"] == "create":
@@ -56,9 +56,13 @@ class VolumeLifecycle:
 
     async def prepare(self, owner, launch):
         status = await self.host(owner, "status")
-        if status["awake"] and launch["quota"] > status["volume_size"]:
-            await self.sleep(owner)
         record = self.volume(owner, "pending")
+        if status["awake"] and (status.get("draining") or
+                launch["quota"] > status["volume_size"] or
+                (record["work"] and record["work"]["kind"] == "snapshot")):
+            # A failed drain closed the box's work admission. Preserve its
+            # pending stop until acknowledged; marking it running strands it.
+            record = await self.sleep(owner)
         if record["work"] and record["work"]["kind"] in {"restore", "evict"}:
             record = await self.recover(owner)
         if not status["awake"]:

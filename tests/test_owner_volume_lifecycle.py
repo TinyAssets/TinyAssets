@@ -26,9 +26,13 @@ class Images:
         self.fail_upload = False
 
     @contextmanager
-    def operation(self, uid):
-        with self.locks[uid]:
+    def operation(self, uid, *, blocking=True):
+        if not self.locks[uid].acquire(blocking=blocking):
+            raise BlockingIOError("volume operation in progress")
+        try:
             yield
+        finally:
+            self.locks[uid].release()
 
     def create(self, uid, size):
         if uid in self.images:

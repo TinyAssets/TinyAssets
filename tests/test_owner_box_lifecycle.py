@@ -162,6 +162,72 @@ def test_restore_executor_accepts_only_broker_bound_uid(fleet):
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("recover_by", ["wake", "tick"])
+def test_failed_drain_retains_intent_until_stop_and_recovers(fleet, recover_by):
+    uid = fleet.wake("a")
+    activity = fleet.states[uid]
+    with activity.enter():
+        with pytest.raises(BoxError, match="must drain"):
+            drive(fleet.routing.sleep("a"))
+        pending = fleet.admission.volume("a")["work"]
+        assert pending["kind"] == "snapshot" and activity.draining
+        with pytest.raises(BoxError, match="must drain"):
+            fleet.wake("a", scheduled=True)
+        assert fleet.admission.volume("a")["work"] == pending
+    if recover_by == "tick":
+        fleet.tick()
+        assert fleet.admission.volume("a")["work"] is None
+        assert fleet.admission.volume("a")["snapshot_id"] == pending["snapshot_id"]
+    assert fleet.wake("a", scheduled=True) == uid
+    assert not fleet.states[uid].draining
+    assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+    assert fleet.runtime.stops == [uid]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_status_does_not_queue_behind_real_volume_lock(fleet, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets.boxes.volumes import OwnerVolumes
+
+    # Exercise the production flock, without requiring an XFS image for a
+    # stopped box. A held copy lock must not consume a status socket deadline.
+    volumes = OwnerVolumes.__new__(OwnerVolumes)
+    volumes.store = tmp_path
+    volumes.locks = tmp_path / "locks"
+    volumes.locks.mkdir()
+    volumes._held = threading.local()
+    fleet.manager.volumes = volumes
+    uid = fleet.identities.owner_machine("a")
+    with ThreadPoolExecutor(1) as pool:
+        with volumes.operation(uid):
+            result = pool.submit(fleet.manager.status, uid)
+            with pytest.raises(BlockingIOError):
+                result.result(timeout=2)
+        assert pool.submit(fleet.manager.status, uid).result(timeout=2)["awake"] is False
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("recover_by", ["wake", "tick"])
+def test_preexisting_running_record_with_draining_box_recovers(fleet, recover_by):
+    uid = fleet.wake("a")
+    with fleet.states[uid].enter():
+        with pytest.raises(BoxError, match="must drain"):
+            drive(fleet.routing.sleep("a"))
+        # Reproduce the old wake path losing the pending stop before launch
+        # refused a still-draining box. Host facts must repair that old state.
+        fleet.routing.volumes.volume("a", "wake")
+    assert fleet.manager.status(uid)["draining"]
+    assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+    if recover_by == "tick":
+        fleet.tick()
+        assert fleet.admission.volume("a")["work"] is None
+    fleet.wake("a", scheduled=True)
+    assert not fleet.states[uid].draining
+    assert fleet.runtime.stops == [uid]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 @pytest.mark.parametrize("failure", ["suspended", "auth", "refused", "transport"])
 def test_broker_admission_failure_refuses_wake_without_host_callback(fleet, monkeypatch, failure):
     from tinyassets.broker import box_admission
