@@ -1,6 +1,8 @@
 """The synthetic workload must reach the real owner-split census."""
 
 import json
+import os
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -44,3 +46,27 @@ def test_workload_shells_parse():
     root = Path(__file__).resolve().parents[1]
     for name in ("s3_remote.sh", "make_live.sh"):
         subprocess.run(["bash", "-n", str(root / "scripts/live_like" / name)], check=True)
+
+
+def test_built_fixture_passes_snapshot_inventory_with_live_socket(tmp_path):
+    root = tmp_path / "_data"
+    root.mkdir()
+    build(root)
+    sidecar = root / ".universe-sidecars/a1" / f"egress-{os.getpid()}.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(sidecar))
+        listener.listen(1)
+        assert stat.S_ISSOCK(sidecar.stat().st_mode)
+
+        archive = tmp_path / "snapshot.tar.gz"
+        subprocess.run([
+            "tar", "-czf", str(archive), "--numeric-owner", "--acls", "--xattrs",
+            "--exclude=_data/.broker/browser-vault", "-C", str(tmp_path), "_data",
+        ], check=True)
+        backup = (Path(__file__).resolve().parents[1] / "deploy/backup.sh").read_text()
+        inventory = backup.split("<<'INVENTORY_PY'\n", 1)[1].split("\nINVENTORY_PY", 1)[0]
+        result = subprocess.run(
+            ["python3", "-c", inventory, str(root), str(archive)],
+            capture_output=True, text=True, check=True,
+        )
+        assert int(result.stdout.strip()) > 0
