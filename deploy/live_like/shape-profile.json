@@ -58,6 +58,7 @@
     "credential-custody.db",
     "daemon_brain.db",
     "history.db",
+    "identities.db",
     "ingress-v1.sqlite3",
     "knowledge.db",
     "mcp-events.sqlite3",
