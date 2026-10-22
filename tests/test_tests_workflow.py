@@ -37,6 +37,7 @@ transitive.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -785,6 +786,57 @@ def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
 
 
 # ---- PR-time affected tests ----------------------------------------------------
+
+
+@pytest.mark.parametrize("oracle", [False, True])
+def test_affected_shard_accepts_passing_cases_from_each_invocation(
+    tmp_path, monkeypatch, oracle,
+):
+    """Leaf testcase elements must count in direct and merged venue reports."""
+    if oracle and os.name != "posix":
+        pytest.skip("oracle venue coordinator requires POSIX")
+    junit = tmp_path / "junit.xml"
+    user_file = "tests/test_owner_box_deploy.py"
+    root_file = "tests/test_owner_volumes_proof.py"
+    selection = [user_file, root_file] if oracle else [user_file]
+    monkeypatch.setattr(_ci, "_read_selection", lambda args: selection)
+    calls = []
+    real_run = subprocess.run
+
+    def run(cmd, **kwargs):
+        if cmd[:3] != [sys.executable, "-m", "pytest"]:
+            return real_run(cmd, **kwargs)
+        report = Path(next(arg.split("=", 1)[1] for arg in cmd
+                           if arg.startswith("--junitxml=")))
+        files = [file for file in selection if file in cmd]
+        calls.append(files)
+        suites = ET.Element("testsuites")
+        suite = ET.SubElement(suites, "testsuite")
+        for file in files:
+            for index in range(2):
+                ET.SubElement(suite, "testcase", file=file, name=f"test_pass_{index}")
+        ET.ElementTree(suites).write(report, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    # Exercise the real venue merger; only the child pytest processes and
+    # privileged identity operations are replaced in this focused regression.
+    monkeypatch.setattr(_ci.subprocess, "run", run)
+    if oracle:
+        monkeypatch.setattr(_ci.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(_ci.os, "chown", lambda *args: None)
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py", "--junit", str(junit),
+        "--affected", str(tmp_path / "affected.txt"),
+        "--shard", "1/1", "--profile", "affected",
+        *(["--oracle-venues"] if oracle else []),
+    ])
+
+    assert _ci.main() == 0
+    assert calls == ([[user_file], [root_file]] if oracle else [[user_file]])
+    cases = list(ET.parse(junit).getroot().iter("testcase"))
+    assert len(cases) == 2 * len(selection)
+    assert all(len(case) == 0 for case in cases)
+    assert _ci.json.loads(junit.with_suffix(".json").read_text())["pytest_exit"] == 0
 
 
 @pytest.mark.parametrize("oracle", [False, True])

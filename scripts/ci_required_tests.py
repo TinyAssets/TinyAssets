@@ -1402,7 +1402,9 @@ def main() -> int:
     exits = [proc.returncode]
     if args.affected:
         heading = f"### Affected tests{_shard_label(args)}"
-        reported_case = any(ET.parse(junit).getroot().iter("testcase"))
+        # Passing testcase elements usually have no children, so their XML
+        # truth value is false. Check existence, not element truthiness.
+        reported_case = next(ET.parse(junit).getroot().iter("testcase"), None) is not None
         # Exit 5 is honest only when every selected file positively collects
         # tests without the marker filter and none survives `not slow`.
         # The oracle may also return 5 when a proof vanished, so never waive
