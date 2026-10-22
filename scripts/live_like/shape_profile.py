@@ -101,6 +101,9 @@ FIXED_PATH_PARTS = (
 )
 
 
+TEMPLATE_FILL = re.compile(r'\.replace\(\s*"(__[A-Z]+__)"\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\)')
+
+
 def bucket(value: int) -> str:
     if value == 0:
         return BUCKETS[0]
@@ -158,6 +161,11 @@ def source_schema(source: Path = REPO / "tinyassets") -> dict[str, dict[str, str
                 found[table] = columns
             else:
                 found.setdefault(table, {})
+        # A templated CREATE (automations.py's `__TABLE__`) names its tables
+        # where the template is filled: `.replace("__TABLE__", "automations")`.
+        for placeholder, table in TEMPLATE_FILL.findall(code):
+            if placeholder in found and len(found[placeholder]) >= len(found.get(table, {})):
+                found[table] = dict(found[placeholder])
     return found
 
 

@@ -123,6 +123,7 @@
     "automation_activations_new",
     "automation_attempts",
     "automations",
+    "automations__rebuild",
     "background_branch_attempts",
     "background_branch_authority_owners",
     "background_branch_bindings",
@@ -1013,8 +1014,24 @@
         "automations": {
           "columns": {
             "automation_id": "TEXT",
+            "branch_def_id": "TEXT",
+            "created_at": "TEXT",
+            "cron_expr": "TEXT",
+            "desired_state": "TEXT",
+            "inputs_json": "TEXT",
+            "interval_seconds": "INTEGER",
+            "last_due_at": "TEXT",
+            "last_finished_at": "TEXT",
+            "last_reason": "TEXT",
+            "last_run_id": "TEXT",
+            "name": "TEXT",
             "owner_principal_id": "TEXT",
-            "universe_id": "TEXT"
+            "pause_reason": "TEXT",
+            "retired_at": "TEXT",
+            "revision": "INTEGER",
+            "trigger_kind": "TEXT",
+            "universe_id": "TEXT",
+            "updated_at": "TEXT"
           },
           "rows": "0"
         },
@@ -1607,8 +1624,10 @@
       "tables": {
         "admissions": {
           "columns": {
+            "kind": "TEXT",
             "owner_user_id": "TEXT",
             "run_id": "TEXT",
+            "ts": "REAL",
             "universe_id": "TEXT"
           },
           "rows": "0"
@@ -3721,7 +3740,9 @@
         },
         "universe_owner": {
           "columns": {
+            "bound_at": "REAL",
             "owner_id": "TEXT",
+            "source": "TEXT",
             "universe_id": "TEXT"
           },
           "rows": "1-10"

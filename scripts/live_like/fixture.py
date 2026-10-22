@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import sqlite3
@@ -18,6 +19,7 @@ from tinyassets.storage import platform_state_move as psm
 
 BUCKETS = shape_profile.BUCKETS
 DEFAULT = shape_profile.DEFAULT
+REPO = Path(__file__).resolve().parents[2]
 
 OWNERS = (("alice", 300001), ("bob", 300002), ("carol", 300003))
 CENTERS = (("a1", "alice"), ("a2", "alice"), ("b1", "bob"), ("b2", "bob"), ("c1", "carol"))
@@ -45,6 +47,19 @@ def sql(path: Path, statements: str, rows: list[tuple] = ()) -> None:
         db.executescript(statements)
         if rows:
             db.executemany("INSERT INTO fixture_rows VALUES (?,?,?)", rows)
+
+
+def _automations_schema() -> str:
+    """tinyassets/automations.py's own DDL, read without importing its deps."""
+    source = (REPO / "tinyassets/automations.py").read_text(encoding="utf-8")
+    names = {"_AUTOMATIONS_TABLE", "_SCHEMA"}
+    body = [
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.Assign) and {getattr(t, "id", "") for t in node.targets} & names
+    ]
+    namespace: dict = {}
+    exec(compile(ast.Module(body=body, type_ignores=[]), "automations.py", "exec"), namespace)
+    return namespace["_SCHEMA"]
 
 
 def fixture_coverage(profile: dict) -> list[str]:
@@ -214,14 +229,30 @@ def build(root: Path, profile: dict | None = None) -> dict:
         INSERT INTO center_admissions VALUES {admission_rows};
     """,
     )
-    bindings = ",".join(f"('{center}','{owner}')" for center, owner in CENTERS)
-    turns = ",".join(f"('{owner}','{center}','turn-{center}')" for center, owner in CENTERS)
+    # Tables the fixture fills carry the code's own DDL (universe_owner.py,
+    # storage/agent_turn_journal.py): a short table makes the code's
+    # CREATE ... IF NOT EXISTS a no-op and its indexes and queries fail on
+    # columns production has.
+    bindings = ",".join(f"('{center}','{owner}',1,'creation')" for center, owner in CENTERS)
+    turns = ",".join(
+        f"('{owner}','{center}','turn-{center}',1,1,'completed',0,'{{}}','2026-01-01T00:00:00Z')"
+        for center, owner in CENTERS
+    )
     sql(
         root / ".tinyassets.db",
         f"""
-        CREATE TABLE universe_owner (universe_id TEXT, owner_id TEXT);
+        CREATE TABLE universe_owner (
+            universe_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bound_at REAL NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('creation', 'founder_home')));
+        CREATE INDEX idx_universe_owner_owner ON universe_owner(owner_id);
         INSERT INTO universe_owner VALUES {bindings};
-        CREATE TABLE agent_turns (owner_user_id TEXT, universe_id TEXT, turn_id TEXT);
+        CREATE TABLE agent_turns (
+            owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK(version = 1),
+            generation INTEGER NOT NULL CHECK(generation > 0),
+            state TEXT NOT NULL, round_ordinal INTEGER NOT NULL CHECK(round_ordinal >= 0),
+            input_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(owner_user_id, universe_id, turn_id));
         INSERT INTO agent_turns VALUES {turns};
     """,
     )
@@ -246,16 +277,15 @@ def build(root: Path, profile: dict | None = None) -> dict:
             ('run-c1','branch-c1','thread-c1','carol','carol',1,'c1');
     """,
     )
-    sql(
-        root / ".automations.db",
-        """
-        CREATE TABLE automations (automation_id TEXT, owner_principal_id TEXT, universe_id TEXT);
-    """,
-    )
+    sql(root / ".automations.db", _automations_schema())
     sql(
         root / ".engine_run_admissions.db",
         """
-        CREATE TABLE admissions (run_id TEXT, owner_user_id TEXT, universe_id TEXT);
+        CREATE TABLE admissions (universe_id TEXT NOT NULL, ts REAL NOT NULL,
+                                 kind TEXT NOT NULL DEFAULT 'write',
+                                 run_id TEXT NOT NULL DEFAULT '');
+        CREATE TABLE settlements (run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, ts REAL NOT NULL);
+        CREATE INDEX admissions_ts ON admissions(ts);
     """,
     )
     files = 0
