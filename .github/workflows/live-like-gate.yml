@@ -38,6 +38,19 @@ on:
         description: 'Start the host from this revision instead of the one production serves (full SHA)'
         required: false
         default: ''
+      candidate_revision:
+        description: 'Deploy this revision instead of the run''s own (full SHA); the driver and live-like harness stay the gate''s'
+        required: false
+        default: ''
+      cases:
+        description: 'Which cases to run'
+        type: choice
+        options: [both, cutover, rollback]
+        default: both
+      skip_ahead:
+        description: 'Reuse the candidate image a previous run built for this revision instead of rebuilding (manual runs only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -62,7 +75,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [cutover, rollback]
+        # Manual runs may pick one case; every other event runs both.
+        case: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.cases != 'both') && format('["{0}"]', inputs.cases) || '["cutover","rollback"]') }}
     env:
       LIVE_LIKE_HOST: '1'
       DEPLOY_TARGET: local
@@ -109,20 +123,53 @@ jobs:
           echo "revision=${served}" >> "$GITHUB_OUTPUT"
           echo "live base: ${ref} (${served})"
 
+      # The candidate: this run's revision, or on a manual run any revision
+      # (a red replay of an old one, say). The workspace becomes that
+      # revision for the image and for everything the deploy ships to the
+      # host; only the caller-side driver and the live-like harness, which
+      # older revisions lack, are restored from the gate after the build.
+      - name: Check out the candidate revision
+        id: candidate
+        env:
+          CANDIDATE_REVISION: ${{ inputs.candidate_revision }}
+        run: |
+          set -euo pipefail
+          gate="$(git rev-parse HEAD)"
+          rev="${CANDIDATE_REVISION:-${gate}}"
+          [[ "${rev}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate_revision must be a full SHA"; exit 1; }
+          if [ "${rev}" != "${gate}" ]; then
+            git checkout -q --detach "${rev}"
+          fi
+          echo "gate=${gate}" >> "$GITHUB_OUTPUT"
+          echo "revision=${rev}" >> "$GITHUB_OUTPUT"
+          echo "candidate ${rev} (gate ${gate})"
+
+      # Skip-ahead (manual runs only): a candidate image an earlier run built
+      # and pushed for this revision. merge_group and pull_request always build.
+      - name: Reuse a built candidate (skip-ahead)
+        id: reuse
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ahead }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/llg-candidate
+          key: llg-candidate-${{ steps.candidate.outputs.revision }}
+
       - name: Set up Docker Buildx
+        if: ${{ steps.reuse.outputs.cache-hit != 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Build this change's image
         id: build
+        if: ${{ steps.reuse.outputs.cache-hit != 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           outputs: type=image,name=ghcr.io/tinyassets/tinyassets-daemon,push-by-digest=true,name-canonical=true,push=true
           build-args: |
-            TINYASSETS_BUILD_SHA=${{ github.sha }}
+            TINYASSETS_BUILD_SHA=${{ steps.candidate.outputs.revision }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.candidate.outputs.revision }}
           cache-from: |
             type=gha,scope=tinyassets-daemon
             type=gha,scope=live-like-gate
@@ -131,19 +178,44 @@ jobs:
       - name: Resolve image tag -> immutable digest
         id: tag
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          BUILT: ${{ steps.build.outputs.digest }}
+          REVISION: ${{ steps.candidate.outputs.revision }}
+          GATE_REVISION: ${{ steps.candidate.outputs.gate }}
         run: |
           set -euo pipefail
+          cached="${RUNNER_TEMP}/llg-candidate/digest"
+          if [ -n "${BUILT:-}" ]; then
+            DIGEST="${BUILT}"
+            mkdir -p "$(dirname "${cached}")"
+            printf '%s\n' "${DIGEST}" > "${cached}"
+          else
+            DIGEST="$(cat "${cached}")"
+            echo "skip-ahead: reusing ${DIGEST} built earlier for ${REVISION}"
+          fi
           [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
           image=ghcr.io/tinyassets/tinyassets-daemon
           {
             # Informational (the receipt's image_tag); the push carries no tag.
-            echo "tag=${GITHUB_SHA:0:12}"
+            echo "tag=${REVISION:0:12}"
             echo "image=${image}"
             echo "image_ref=${image}@${DIGEST}"
             echo "digest=${DIGEST}"
-            echo "revision=${GITHUB_SHA}"
+            echo "revision=${REVISION}"
           } >> "$GITHUB_OUTPUT"
+          # The caller-side driver and the harness are the gate's own.
+          if [ "${REVISION}" != "${GATE_REVISION}" ]; then
+            git checkout -q "${GATE_REVISION}" -- \
+              deploy/deploy_host.sh deploy/wait_for_turns.sh deploy/live_like \
+              scripts/live_like scripts/live_preflight.py scripts/roll_owner_boxes.py
+          fi
+
+      - name: Record the built candidate for skip-ahead
+        if: ${{ steps.build.outputs.digest != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/llg-candidate
+          key: llg-candidate-${{ steps.candidate.outputs.revision }}
+        continue-on-error: true
 
       # Caller-owned inputs, all synthetic and fresh per run. Production's
       # values come from the production environment, which this job never binds.
@@ -257,7 +329,7 @@ jobs:
         id: canary_gate
         run: echo "provisioned=1" >> "$GITHUB_OUTPUT"
 
-      - name: Live preflight (read-only)
+      - name: Finalize previous rollback, then live preflight
         id: live_preflight
         env:
           CORE_CANARY_PROVISIONED: ${{ steps.canary_gate.outputs.provisioned }}
