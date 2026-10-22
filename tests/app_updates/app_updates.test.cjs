@@ -59,6 +59,15 @@ test('the 0.1.1 desktop bridge without a version stays usable', async () => {
   assert.equal(p.elements.get('app-update-required').hidden, true);
 });
 
+test('a newer desktop release produces a dismissible banner', async () => {
+  const p = page({ ua: 'Electron/43', version: '0.1.1' });
+  const policy = { ...versions, desktop: { ...versions.desktop, latest: '0.1.2' } };
+  assert.equal(await p.updates.init(policy), true);
+  assert.equal(p.elements.get('app-update-banner').hidden, false);
+  await p.elements.get('app-update-banner-open').onclick();
+  assert.equal(p.opened[0], versions.desktop.url);
+});
+
 test('available update can be dismissed and required update cannot', async () => {
   const p = page({ native: true, version: '1.0.7' });
   const policy = { ...versions, android: { ...versions.android, latest: '1.0.8' } };
