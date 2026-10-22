@@ -417,7 +417,7 @@ def _change_key(base: str, head: str) -> tuple[str | None, object]:
         key = diff_key(base, head, cwd=REPO_ROOT)
     except (subprocess.CalledProcessError, ValueError, OSError):
         return None, None
-    return key, same_change_as(base, key, head=head, cwd=REPO_ROOT)
+    return key, same_change_as(base, key, cwd=REPO_ROOT)
 
 
 def _benign_enqueue_error(detail: str) -> bool:

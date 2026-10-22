@@ -6,6 +6,9 @@ of CI in Linux (structural guards, four PR shards, six queue shards, the queue
 aggregate; digests match CI `affected-tests` and `select`): for a CI failure that
 will not reproduce, never per push.
 
+A receipt binds to the exact head (or its tree-diff). A trivial commit after
+review gets a one-round delta review, the reviewer told only that delta.
+
 | Gate | Entry point |
 |---|---|
 | Structural | `python -m scripts.ci_structural_guards` |

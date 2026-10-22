@@ -223,31 +223,25 @@ The OpenSpec flow inspector SHALL support a caller-selected validated Git ref an
 - **THEN** inspection exits non-zero with a bounded diagnostic
 - **AND** it emits no fallback report from the working tree
 
-### Requirement: A review receipt is bound to the reviewed change, not the commit
+### Requirement: Gate-defining and authority-critical changes need an exact-head review receipt
 
-Every pull request SHALL carry a review receipt at the top of its BODY naming an
-APPROVE verdict, the reviewed head SHA or the change's diff key, and a trusted
-comment on that pull request that itself opens with the same approval. The check
-SHALL run from the trusted base checkout so a pull request cannot weaken the rule
-judging it. A receipt for an earlier head SHALL stay valid when the current change
-differs from the reviewed one only in metadata lines of test files both changes
-keep: every added or removed line, read by the tokenizer from the `git diff -U0`
-hunks, is a `@pytest.mark.verifies(...)` decorator or the file's only
-`pytestmark = pytest.mark.verifies(...)`, a comment-only line, or a skip or xfail
-marker line whose only change is its `reason=` string. Any other line, and any
-new, deleted, renamed or re-moded file, voids it, for every pull request, floor
-class included. The gate SHALL compute that from both heads' diffs, never from a
-claim in the body.
+A pull request touching gate-defining or authority-critical paths SHALL carry an
+exact-head review receipt in the pull-request BODY naming an APPROVE verdict, the
+unchanged head SHA, and a durable artifact. Gate-defining paths are
+`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
+`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`, and
+`scripts/drain_review_gate.py`; authority-critical paths are `tinyassets/auth/`,
+`tinyassets/credential_vault.py`, and
+`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`. The check SHALL run
+from the trusted base checkout so a pull request cannot weaken the rule judging
+it. Matching SHALL cover renames (via the previous path) and SHALL be
+case-insensitive, and SHALL include the packaging runtime mirror of those paths.
+A deletion-only edit to the quarantine ledger SHALL be exempt, because it only
+tightens the ratchet; any addition SHALL keep the receipt requirement.
 
-#### Scenario: A metadata fix keeps the receipt
-- **WHEN** the reviewed head is followed by a commit that only edits verifies ids,
-  comments, or a skip's reason in an existing test
-- **THEN** the receipt still allows the new head
-
-#### Scenario: Any other edit voids the receipt
-- **WHEN** a later commit adds a test file, changes a skip condition, or changes any
-  code line, even inside a string that looks like a comment
-- **THEN** the gate requires a new receipt
+#### Scenario: Renaming a protected file does not evade the receipt
+- **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
+- **THEN** the guard reports the authority hit and requires the receipt
 
 ### Requirement: A new skip names its owner and where it runs
 

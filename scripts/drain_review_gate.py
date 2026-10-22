@@ -24,12 +24,10 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
-import io
 import json
 import re
 import subprocess
 import sys
-import tokenize
 from collections.abc import Callable
 from pathlib import Path
 
@@ -322,11 +320,6 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
 
     Raises on any git failure; callers must treat that as "no key" (deny).
     """
-    return diff_key_from_raw(_raw_diff(base, head, cwd=cwd))
-
-
-def _raw_diff(base: str, head: str, *, cwd: Path | None = None) -> bytes:
-    """`git diff --raw -z` from merge-base(base, head) to head, full ids."""
     def git(*args: str) -> bytes:
         return subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True, check=True
@@ -336,7 +329,7 @@ def _raw_diff(base: str, head: str, *, cwd: Path | None = None) -> bytes:
     # `--no-abbrev` is what makes the ids full: `--full-index` alone still
     # prints abbreviated ids in --raw output, and two different blobs can share
     # an abbreviation (cross-family review 2026-09-27 built such a pair).
-    return git(
+    raw = git(
         "diff",
         "--raw",
         "--no-renames",
@@ -349,28 +342,21 @@ def _raw_diff(base: str, head: str, *, cwd: Path | None = None) -> bytes:
         merge_base,
         head,
     )
+    return diff_key_from_raw(raw)
 
 
-def _raw_records(raw: bytes) -> list[tuple[bytes, bytes]]:
-    """(path, meta) of `git diff --raw -z --no-abbrev`, sorted; refuse anything else."""
+def diff_key_from_raw(raw: bytes) -> str:
+    """Hash `git diff --raw -z --no-abbrev` output; refuse anything else."""
     fields = raw.split(b"\0")
     if fields and fields[-1] == b"":
         fields.pop()
     if len(fields) % 2:
         raise ValueError("unexpected `git diff --raw -z` output")
     pairs = sorted(zip(fields[1::2], fields[0::2]))
-    for _path, meta in pairs:
+    digest = hashlib.sha256()
+    for path, meta in pairs:
         if _RAW_META_RE.fullmatch(meta) is None:
             raise ValueError(f"unexpected `git diff --raw` record: {meta!r}")
-    return pairs
-
-
-def diff_key_from_raw(raw: bytes, *, keep: Callable[[bytes], bool] | None = None) -> str:
-    """Hash `git diff --raw -z --no-abbrev` output, or only its `keep` paths."""
-    digest = hashlib.sha256()
-    for path, meta in _raw_records(raw):
-        if keep is not None and not keep(path):
-            continue
         # Length-prefixed, never delimiter-joined: a path may contain a tab or
         # a newline, and joining would let one path spell two entries.
         for part in (path, meta):
@@ -391,223 +377,10 @@ def _read_text(path: Path | None) -> str | None:
         return None
 
 
-# The only edit a receipt survives: metadata lines in an existing test file.
-# Analysing what new test code does was a losing game (round 3 of PR #5201:
-# aliases, operator.setitem, annotations, an unscoped MonkeyPatch all slipped
-# through), and what actually cost cycles was re-reviewing metadata. So every
-# changed line must be a verifies line, a comment-only line, or a skip/xfail
-# line whose only change is its `reason=` string. The shapes are read with the
-# tokenizer, so a `#` or `@` inside a string or an open bracket is code.
-_TEST_FILE_RE = re.compile(rb"tests/(?:[^/]+/)*[^/]+\.py")
-_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_SKIP_CALLS = frozenset(
-    {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfail", "pytest.skip", "pytest.xfail"}
-)
-_VERIFIES = ["pytest", ".", "mark", ".", "verifies", "("]
-_SKIPPED_TOKENS = (
-    tokenize.COMMENT, tokenize.NL, tokenize.INDENT, tokenize.DEDENT, tokenize.NEWLINE
-)
-_SPAN_STARTS = tuple(
-    getattr(tokenize, n) for n in ("FSTRING_START", "TSTRING_START") if hasattr(tokenize, n)
-)
-_SPAN_ENDS = tuple(
-    getattr(tokenize, n) for n in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, n)
-)
-
-
-def _verifies_call(sig: list[tokenize.TokenInfo]) -> bool:
-    """`pytest.mark.verifies("literal", ...)`, the whole token list."""
-    head = [t.string for t in sig[: len(_VERIFIES)]]
-    return (
-        head == _VERIFIES
-        and len(sig) > len(_VERIFIES)
-        and sig[-1].string == ")"
-        and all(t.type == tokenize.STRING or t.string == "," for t in sig[len(_VERIFIES) : -1])
-    )
-
-
-def _metadata_lines(text: str) -> tuple[set[int], dict[int, tuple], set[int]] | None:
-    """(free rows, row -> tokens with skip reasons blanked, reason rows).
-
-    Free rows are comment-only rows and rows of a `@pytest.mark.verifies(...)`
-    decorator or `pytestmark = pytest.mark.verifies(...)` statement. None when
-    the text does not tokenize.
-    """
-    try:
-        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        return None
-    lines = text.split("\n")
-    spanned: set[int] = set()
-    opened: list[int] = []
-    for tok in toks:
-        if tok.type in _SPAN_STARTS:
-            opened.append(tok.start[0])
-        elif tok.type in _SPAN_ENDS and opened:
-            spanned.update(range(opened.pop(), tok.end[0] + 1))
-        elif tok.type not in (tokenize.NL, tokenize.NEWLINE) and tok.end[0] > tok.start[0]:
-            spanned.update(range(tok.start[0], tok.end[0] + 1))
-    free: set[int] = set()
-    for tok in toks:
-        row, col = tok.start
-        if (
-            tok.type == tokenize.COMMENT
-            and not lines[row - 1][:col].strip()
-            and row not in spanned
-            and not (row <= 2 and re.search(r"coding[:=]", tok.string))
-        ):
-            free.add(row)
-    masked: dict[int, list[tuple[int, str]]] = {}
-    reason_rows: set[int] = set()
-    marks: list[set[int]] = []
-    logical: list[tokenize.TokenInfo] = []
-    for tok in toks:
-        if tok.type != tokenize.NEWLINE and tok.type != tokenize.ENDMARKER:
-            logical.append(tok)
-            continue
-        sig = [t for t in logical if t.type not in _SKIPPED_TOKENS]
-        logical = []
-        if not sig:
-            continue
-        rows = set(range(sig[0].start[0], sig[-1].end[0] + 1))
-        if sig[0].string == "@" and _verifies_call(sig[1:]):
-            free |= rows
-        elif sig[0].string == "pytestmark" and sig[1].string == "=" and _verifies_call(sig[2:]):
-            marks.append(rows)
-        stack: list[str | None] = []
-        for i, t in enumerate(sig):
-            shown = (t.type, t.string)
-            if t.string == "(":
-                j = i
-                while j >= 2 and sig[j - 1].type == tokenize.NAME and sig[j - 2].string == ".":
-                    j -= 2
-                callee = sig[j - 1].string if j >= 1 and sig[j - 1].type == tokenize.NAME else ""
-                stack.append(callee + "".join(s.string for s in sig[j:i]))
-            elif t.string in ("[", "{"):
-                stack.append(None)
-            elif t.string in (")", "]", "}") and stack:
-                stack.pop()
-            elif (
-                t.type == tokenize.STRING
-                and i >= 2
-                and sig[i - 1].string == "="
-                and sig[i - 2].string == "reason"
-                and (i < 3 or sig[i - 3].string != ".")
-                and stack
-                and stack[-1] in _SKIP_CALLS
-                and t.start[0] == t.end[0]
-            ):
-                shown = (t.type, '""')
-                reason_rows.add(t.start[0])
-            masked.setdefault(t.start[0], []).append(shown)
-    # A new `pytestmark =` could replace a marker bound earlier, so verifies
-    # assignments are free only when they are the file's only `pytestmark`.
-    if text.count("pytestmark") == len(marks):
-        for rows in marks:
-            free |= rows
-    return free - spanned, {r: tuple(v) for r, v in masked.items()}, reason_rows - spanned
-
-
-def _hunks(diff: str) -> list[tuple[list[int], list[int]]]:
-    """(removed rows, added rows) of each `git diff -U0` hunk."""
-    hunks: list[tuple[list[int], list[int]]] = []
-    old = new = 0
-    for line in diff.split("\n"):
-        hit = _HUNK_RE.match(line)
-        if hit:
-            old, new = int(hit.group(1)), int(hit.group(3))
-            hunks.append(([], []))
-        elif hunks and line.startswith("-"):
-            hunks[-1][0].append(old)
-            old += 1
-        elif hunks and line.startswith("+"):
-            hunks[-1][1].append(new)
-            new += 1
-    return hunks
-
-
-def metadata_only(old: str, new: str, diff: str) -> bool:
-    """Is every line `diff` (old -> new, `git diff -U0`) changes test metadata?
-
-    A verifies line or a comment-only line may come or go freely. Any other
-    removed line must pair, in order, with an added line identical but for a
-    skip or xfail marker's `reason=` string.
-    """
-    before, after = _metadata_lines(old), _metadata_lines(new)
-    hunks = _hunks(diff)
-    if before is None or after is None or not hunks:
-        return False
-    for removed, added in hunks:
-        removed = [r for r in removed if r not in before[0]]
-        added = [r for r in added if r not in after[0]]
-        if len(removed) != len(added):
-            return False
-        for o, n in zip(removed, added):
-            if o not in before[2] or n not in after[2] or before[1][o] != after[1][n]:
-                return False
-    return True
-
-
-def carries_review(
-    reviewed_raw: bytes,
-    current_raw: bytes,
-    *,
-    read_blob: Callable[[str], bytes] | None = None,
-    diff_blobs: Callable[[str, str], str] | None = None,
-) -> bool:
-    """Does a review of one change (`git diff --raw` bytes) cover another?
-
-    Yes when they are identical, or, given the blob readers, when every file
-    they differ in is a test file both changes leave in place whose current
-    text differs from the reviewed text only in `metadata_only` lines. Any new,
-    deleted, renamed or re-moded file voids the receipt.
-    """
-    if diff_key_from_raw(reviewed_raw) == diff_key_from_raw(current_raw):
-        return True
-    if read_blob is None or diff_blobs is None:
-        return False
-    reviewed = dict(_raw_records(reviewed_raw))
-    current = dict(_raw_records(current_raw))
-    for path in sorted(reviewed.keys() | current.keys()):
-        was, now = reviewed.get(path), current.get(path)
-        if was == now:
-            continue
-        if now is None or _TEST_FILE_RE.fullmatch(path) is None:
-            return False
-        fields = now.decode("ascii").split(" ")
-        if fields[1] != "100644" or fields[4] not in ("M", "A"):
-            return False
-        if was is None:
-            if fields[0] != ":100644" or fields[4] != "M":
-                return False
-            old_blob = fields[2]
-        else:
-            prior = was.decode("ascii").split(" ")
-            if [prior[i] for i in (0, 1, 2, 4)] != [fields[i] for i in (0, 1, 2, 4)]:
-                return False
-            old_blob = prior[3]
-        try:
-            old = read_blob(old_blob).decode("utf-8")
-            new = read_blob(fields[3]).decode("utf-8")
-        except UnicodeDecodeError:
-            return False
-        if not metadata_only(old, new, diff_blobs(old_blob, fields[3])):
-            return False
-    return True
-
-
 def same_change_as(
-    base: str,
-    current_key: str,
-    *,
-    head: str | None = None,
-    cwd: Path | None = None,
+    base: str, current_key: str, *, cwd: Path | None = None
 ) -> Callable[[str], bool]:
-    """True when a review of `cited` still covers the current change.
-
-    Without `head`: `cited` has the same tree-diff against `base` as
-    `current_key`. With `head`, whose diff must hash to `current_key`: also
-    when the current change differs only in test metadata (`carries_review`).
+    """True when `cited` has the same tree-diff against `base` as `current_key`.
 
     Any git failure is "not the same change". A receipt must not carry across
     a commit we cannot read.
@@ -617,26 +390,7 @@ def same_change_as(
         if not _SHA_RE.fullmatch(cited) or not _DIFF_KEY_RE.fullmatch(current_key):
             return False
         try:
-            if head is None:
-                return diff_key(base, cited, cwd=cwd) == current_key
-            if not _SHA_RE.fullmatch(head):
-                return False
-            current_raw = _raw_diff(base, head, cwd=cwd)
-            if diff_key_from_raw(current_raw) != current_key:
-                return False
-            def git(*args: str) -> bytes:
-                return subprocess.run(
-                    ["git", *args], cwd=cwd, capture_output=True, check=True
-                ).stdout
-
-            return carries_review(
-                _raw_diff(base, cited, cwd=cwd),
-                current_raw,
-                read_blob=lambda sha: git("cat-file", "blob", sha),
-                diff_blobs=lambda a, b: git(
-                    "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-U0", a, b
-                ).decode("utf-8", "replace"),
-            )
+            return diff_key(base, cited, cwd=cwd) == current_key
         except (subprocess.CalledProcessError, ValueError, OSError):
             return False
 
@@ -648,7 +402,7 @@ def _carry_comparer(args: argparse.Namespace) -> Callable[[str], bool] | None:
     base = getattr(args, "base", "") or ""
     if not base or not _DIFF_KEY_RE.fullmatch(key):
         return None
-    return same_change_as(base, key, head=args.head)
+    return same_change_as(base, key)
 
 
 def _blocking_review(args: argparse.Namespace) -> int:
