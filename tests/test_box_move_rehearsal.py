@@ -400,6 +400,7 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     from tinyassets import box_layout_migration as migration
     from tinyassets.conversation_store import record_turn
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
+    from tinyassets.onboarding import owner_sessions
     from tinyassets.owner_lease import lease_db
     from tinyassets.runs import initialize_runs_db
     from tinyassets.storage.outbound_connections import ConnectionLedger
@@ -470,6 +471,22 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     home = source / ".platform/owners/300001/agent-home"
     home.mkdir(parents=True)
     (home / "session").write_text("synthetic retired CLI state")
+    # A live pre-cutover archive already has service-owned shared directories.
+    # Root-created fixture directories hid custody regressions (and cannot be
+    # preserved as production custody by the publish metadata fix).
+    with owner_sessions.store() as db:
+        db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                   (owner_sessions.hashed('synthetic-existing-session'),
+                    json.dumps({'user_id': 'alice'}), 4000000000))
+    for path in (source / '.broker', *(source / '.broker').rglob('*')):
+        os.chown(path, 1002, 1002)
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    os.chown(source / '.platform', 1001, 1001)
+    (source / '.platform').chmod(0o711)
+    os.chown(source / '.runtime', 1001, 1102)
+    (source / '.runtime').chmod(0o710)
+    os.chown(source / '.runtime/owner-sessions.db', 1001, 1102)
+    (source / '.runtime/owner-sessions.db').chmod(0o640)
     report = migration.census(source)
     assert report["ready"], report["refusals"]
     assert {table["class"] for table in report["tables"].values() if table["total"]} == {
