@@ -243,7 +243,7 @@ def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T1')
-def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
+def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes, admitted):
     async def exercise():
         from fastmcp import Client
         from fastmcp.client.transports import StreamableHttpTransport
@@ -261,10 +261,14 @@ def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
             response = await client.post("/app/api/file", headers={
                 "authorization": "Bearer bob"}, json={"graph_id": "cc-alice", "path": "hello.txt"})
             assert response.status_code == 404, response.text
+            served = {admitted.owner_machine(owner) for owner in ("alice", "bob")}
             for owner in ("reserved", "unknown"):
                 response = await client.post("/app/api/file", headers={
                     "authorization": "Bearer " + owner}, json={"graph_id": "cc-alice"})
-                assert response.status_code == 404, response.text
+                # A first sign-in is admitted into its own box (C5/C6). This
+                # fixture provisions no box for it: unavailable, never alice's.
+                assert response.status_code == 503, response.text
+                assert admitted.owner_machine(owner) not in served | {None}
             response = await client.get("/api/command-centers/cc-alice/status", headers={
                 "authorization": "Bearer " + boxes.keys["alice"]})
             assert response.status_code == 200, response.text

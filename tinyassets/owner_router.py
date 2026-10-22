@@ -63,6 +63,21 @@ def resolve_box(owner: str) -> BoxRoute:
     return BoxRoute(route.socket, route.secret)
 
 
+def admit_box(owner: str) -> None:
+    """Ask the broker to admit an authenticated owner with no route yet.
+
+    A refusal (erased, recovery) answers like an unknown owner; an unreachable
+    broker stays a retryable 503.
+    """
+    from tinyassets.broker.owner_identities import admit_owner
+    from tinyassets.storage import data_dir
+
+    try:
+        admit_owner(data_dir(), principal=owner)
+    except PermissionError:
+        raise LookupError("owner admission refused") from None
+
+
 def _headers(headers, *, private=False):
     blocked = set(_HOP)
     for name, value in headers:
@@ -74,8 +89,8 @@ def _headers(headers, *, private=False):
 
 
 class OwnerRouter:
-    def __init__(self, app, *, resolver=resolve_box):
-        self.app, self.resolver = app, resolver
+    def __init__(self, app, *, resolver=resolve_box, admitter=admit_box):
+        self.app, self.resolver, self.admitter = app, resolver, admitter
 
     def __getattr__(self, name):
         return getattr(self.app, name)
@@ -136,7 +151,14 @@ class OwnerRouter:
                 identity = replace(identity, metadata={**identity.metadata,
                                                        "router_owner_session": session})
         try:
-            route = await run_in_threadpool(self.resolver, identity.user_id)
+            try:
+                route = await run_in_threadpool(self.resolver, identity.user_id)
+            except LookupError:
+                # A first sign-in: the broker's admission authority decides,
+                # exactly as it decides a cold wake (C5, C6). Erased owners and
+                # recovery are refused there; the router only asks.
+                await run_in_threadpool(self.admitter, identity.user_id)
+                route = await run_in_threadpool(self.resolver, identity.user_id)
         except LookupError:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)

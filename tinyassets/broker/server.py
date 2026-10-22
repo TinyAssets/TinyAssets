@@ -688,6 +688,12 @@ class _Connection:
 
     async def _admit_owner(self, doc):
         try:
+            from tinyassets.broker.admission import read
+
+            # A deleted account's late request must not queue behind its own
+            # deletion job's owner lock; the lock-free record answers it.
+            if read(self._server._owner_identities, doc["principal"]).state == "erased":
+                return {"op": "OWNER_ADMIT_REFUSED"}
             return await owner_call(self._server._owner_identities.path, doc["principal"],
                                     self._admit_owner_locked, doc)
         except Exception:

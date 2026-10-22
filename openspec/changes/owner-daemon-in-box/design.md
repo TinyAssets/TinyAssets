@@ -277,7 +277,13 @@ all owner-content manifests and other shared authority remain compared unchanged
 The router authenticates, looks the owner up in its **in-memory routing snapshot**
 (owner → admission state, box socket, per-box secret), and forwards. The broker
 pushes that snapshot to the router and updates it on admission changes. On a
-An absent or non-admitted owner record denies. For an admitted owner whose box
+A suspended or erased owner record denies. An absent record is a first sign-in:
+the router asks the broker's admission authority (`ADMIT_OWNER`), exactly as it
+asks for a cold wake, and the broker reserves the permanent identity, admits,
+provisions the box and publishes before it answers. The broker refuses erased
+owners, digest-only tombstones and recovery (C3) before spending a label; a
+refusal answers 404. The canary service principal and the core canary are such
+owners, each in its own box (D11). For an admitted owner whose box
 is asleep, the router requests a wake from the broker's lifecycle authority. The
 broker serializes the wake with admission changes and supplies boxhostd with the
 operation's bound owner, UID, volume state and secret. The router forwards after
@@ -1751,6 +1757,15 @@ again. `images.json` contains one current image; there is no per-owner image
 history, rollout or automatic rollback. Root calls the broker; only the broker
 can select the host's image. No host callback, new clock or authority store is
 introduced.
+
+**Canary owners (2026-10-22).** Two canaries, both ordinary owners admitted
+through C5's first-sign-in path: the core canary (`TINYASSETS_CANARY_USER_ID`,
+signed in through `/app/canary-sign-in`, which the router serves itself, even
+under closed admission) and the probe service principal `canary` (the
+`TINYASSETS_WIKI_CANARY_TOKEN` bearer). `GET /mcp/pulse` stays a router read;
+the service bearer's `/mcp` routes to the `canary` box, whose middleware keeps
+the probe-only allowlist. Neither has a router special case beyond
+`router_traffic.admits`.
 
 Canary preflight reaches `/app/me` through the authenticated public router, so
 the canary participates in the ordinary drain. After successful control, canary
