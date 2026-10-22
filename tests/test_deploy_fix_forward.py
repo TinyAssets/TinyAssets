@@ -241,11 +241,32 @@ def test_legacy_cutover_without_original_bundle_refuses_before_stopping(box, mon
 
 def test_fix_forward_preflight_failure_holds_bundle_and_admission(box):
     _, env, control = committed(box)
-    result = box.run(NEW_IMAGE, CORE_CANARY_PROVISIONED="0", **env)
+    box.set_docker_state(turns_rc=10)
+    result = box.run(NEW_IMAGE, **env)
     assert _result(result) == "post_commit_held", result.stdout + result.stderr
     assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
     assert not _daemon_starts(box)
     assert json.loads((control / "state.json").read_text())["state"] == "pre_traffic"
+
+
+def test_consumed_owner_box_deploy_without_canary_warns_and_continues(box):
+    _, env, control = committed(box)
+    state = json.loads((control / "state.json").read_text())
+    (control / "state.json").write_text(json.dumps({**state, "state": "consumed"}))
+
+    result = box.run(NEW_IMAGE, CORE_CANARY_PROVISIONED="0", **env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _result(result) == "deployed"
+    assert "WARNING: core canary is not provisioned" in result.stdout
+    assert "::warning::core canary is not provisioned" in result.stderr
+    assert "box layout: already owner-box; no move" in result.stdout
+    calls = box.docker_calls_text()
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+    assert _daemon_starts(box)
+    assert json.loads((control / "state.json").read_text())["state"] == "consumed"
 
 
 @pytest.mark.parametrize("receipt", ["consumed", "archived"])
