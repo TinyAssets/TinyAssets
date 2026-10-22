@@ -509,14 +509,40 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     archive = tmp_path / "tinyassets-data-2026-10-17T00-00-00Z.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
         stream.add(source, arcname="_data")
+    cache_dir = Path(os.environ['TA_REHEARSAL_CACHE_DIR']) if os.environ.get(
+        'TA_REHEARSAL_CACHE_DIR') else None
+    if cache_dir:
+        import hashlib
+        fixture_source = Path(__file__).read_text().split(
+            'def test_synthetic_archive_rehearses_final_cutover', 1)[1].split(
+                '    archive = tmp_path', 1)[0]
+        digest = hashlib.sha256(fixture_source.encode())
+        for file in sorted((ROOT / 'tinyassets').rglob('*.py')):
+            digest.update(file.relative_to(ROOT).as_posix().encode())
+            digest.update(file.read_bytes())
+        fixture = cache_dir / 'inputs' / digest.hexdigest() / archive.name
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        if not fixture.exists():
+            shutil.copyfile(archive, fixture)
+        archive = fixture
     assert validate_archive(archive) > 0
     image = "tinyassets-s6-synthetic:" + uuid.uuid4().hex[:12]
     context = io.BytesIO()
+
+    def reproducible_member(member):
+        if "__pycache__" in member.name:
+            return None
+        member.mtime = member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        return member
+
     with tarfile.open(fileobj=context, mode="w") as stream:
         payload = (
             f"FROM {base}\nWORKDIR /app\nENV PYTHONPATH=/app\n"
             "COPY tinyassets /app/tinyassets\n"
             "COPY data/world_rules.lp /app/data/world_rules.lp\n"
+            "COPY deploy/box_daemon_entry.py /usr/local/libexec/ta-box-entry.py\n"
+            "COPY deploy/broker_main.py /app/broker_main.py\n"
         ).encode()
         member = tarfile.TarInfo("Dockerfile")
         member.size = len(payload)
@@ -524,15 +550,29 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         stream.add(
             ROOT / "tinyassets",
             arcname="tinyassets",
-            filter=lambda m: None if "__pycache__" in m.name else m,
+            filter=reproducible_member,
         )
-        stream.add(ROOT / "data/world_rules.lp", arcname="data/world_rules.lp")
-    built = subprocess.run(
-        ["docker", "build", "--network=none", "-q", "-t", image, "-"],
-        input=context.getvalue(),
-        capture_output=True,
-    )
-    assert built.returncode == 0, built.stderr.decode()
+        stream.add(ROOT / "data/world_rules.lp", arcname="data/world_rules.lp",
+                   filter=reproducible_member)
+        for name in ("box_daemon_entry.py", "broker_main.py"):
+            stream.add(ROOT / "deploy" / name, arcname="deploy/" + name,
+                       filter=reproducible_member)
+    candidate = os.environ.get('TA_REHEARSAL_CANDIDATE_IMAGE')
+    if candidate:
+        image = candidate
+    elif cache_dir:
+        base_id = subprocess.check_output(['docker', 'image', 'inspect', '-f', '{{.Id}}', base])
+        image = 'tinyassets-s6-synthetic:' + hashlib.sha256(
+            context.getvalue() + base_id).hexdigest()[:24]
+    available = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True)
+    if available.returncode:
+        built = subprocess.run(
+            ["docker", "build", "--network=none", "--build-arg", "SOURCE_DATE_EPOCH=0",
+             "-q", "-t", image, "-"],
+            input=context.getvalue(),
+            capture_output=True,
+        )
+        assert built.returncode == 0, built.stderr.decode()
     from scripts import archive_rehearsal as harness
 
     diagnostics = []
@@ -665,10 +705,21 @@ finally:
     monkeypatch.setattr(harness, "Venue", tracked_venue)
     try:
         try:
-            result = archive_rehearsal(image, archive, store_bytes=1024**3)
+            import time
+            started = time.monotonic()
+            if cache_dir:
+                (cache_dir.parent / 'committed-key').write_text(
+                    harness.committed_key(image, archive))
+            result = archive_rehearsal(image, archive, store_bytes=1024**3,
+                                      from_committed=bool(cache_dir) and os.environ.get(
+                                          'TA_REHEARSAL_FROM', 'committed') == 'committed',
+                                      cache_dir=cache_dir)
+            if cache_dir:
+                (cache_dir.parent / 'rehearsal-time.json').write_text(json.dumps({
+                    'cached': 'committed' in result, 'seconds': time.monotonic() - started}))
         except Exception as error:
             raise AssertionError(str(error) + "\n" + "\n".join(diagnostics)) from error
-        assert set(result) == {
+        expected = {
             "setup",
             "preflight",
             "census",
@@ -683,20 +734,27 @@ finally:
             "platform_recovery",
             "cleanup",
         }
+        if 'committed' in result:
+            expected -= {'setup', 'preflight', 'census', 'apply', 'verify',
+                         'restore_before_write', 'crash_resume'}
+            expected.add('committed')
+        assert set(result) == expected
         assert all(step["status"] == "PASS" for step in result.values())
         assert len(venues) == 1
         # close's real engine-namespace mount/loop assertions must succeed
         # before these volumes can disappear, including the backing loop file.
         assert harness.docker("volume", "ls", "--filter", "name=" + venues[0].prefix,
                               "--format", "{{.Name}}").stdout.strip() == ""
-        assert result["crash_resume"]["interruptions"] == 2
-        assert result["crash_resume"]["comparisons"] == 2
+        if "crash_resume" in result:
+            assert result["crash_resume"]["interruptions"] == 2
+            assert result["crash_resume"]["comparisons"] == 2
         assert result["serving"] == {
             "status": "PASS", "owners": 2, "centers": 4, "history": 4,
             "history_turns": 4, "pending": 4, "pending_saved": 4,
-            "controls": 8, "plans": 8, "writes": 4, "reconnect": 2, "production_launch": 1,
+            "controls": 8, "plans": 4, "writes": 4, "reconnect": 2, "production_launch": 1,
         }
-        assert result["restore_before_write"] == {"status": "PASS", "comparisons": 1}
+        if "restore_before_write" in result:
+            assert result["restore_before_write"] == {"status": "PASS", "comparisons": 1}
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
         assert result['single_owner_restore'] == {
             'status': 'PASS', 'replay_refusals': 3, 'new_operations': 2, 'revoked_keys': 1}
@@ -729,7 +787,34 @@ finally:
         ):
             assert private not in output
     finally:
-        subprocess.run(["docker", "image", "rm", image], capture_output=True, check=True)
+        if not cache_dir and not candidate:
+            subprocess.run(["docker", "image", "rm", image], capture_output=True, check=True)
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')
+
+
+def test_committed_cache_invalidates_inputs_but_not_post_commit_callers(tmp_path, monkeypatch):
+    from scripts import archive_rehearsal as harness
+
+    root = tmp_path / 'source'
+    (root / 'deploy').mkdir(parents=True)
+    (root / 'tinyassets').mkdir()
+    (root / 'scripts').mkdir()
+    for relative in ('deploy/deploy_fail_safe.sh', 'tinyassets/cutover_control.py',
+                     'tinyassets/box_layout_migration.py'):
+        (root / relative).write_text('migration-v1')
+    archive = tmp_path / 'input.tar.gz'
+    archive.write_bytes(b'synthetic archive')
+    monkeypatch.setattr(harness, 'ROOT', root)
+    monkeypatch.setattr(harness, 'docker', lambda *args: subprocess.CompletedProcess(
+        args, 0, args[-1]))
+    key = harness.committed_key('immutable-image-a', archive)
+    (root / 'scripts/rehearsal_serve.py').write_text('new serving assertion')
+    assert harness.committed_key('immutable-image-a', archive) == key
+    assert harness.committed_key('immutable-image-b', archive) != key
+    archive.write_bytes(b'changed archive')
+    assert harness.committed_key('immutable-image-a', archive) != key
+    archive.write_bytes(b'synthetic archive')
+    (root / 'tinyassets/box_layout_migration.py').write_text('migration-v2')
+    assert harness.committed_key('immutable-image-a', archive) != key

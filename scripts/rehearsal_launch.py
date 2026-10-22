@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -16,10 +18,9 @@ def extract(image_id):
     start = source.index("extract_box_harness() {")
     function = source[start:source.index("\n}", start) + 2]
     stage = Path(tempfile.mkdtemp(prefix=".stage-", dir="/harness"))
-    with Path("/support/image.tar").open("rb") as archive:
-        subprocess.run(["bash", "-euo", "pipefail", "-c",
-                        function + '\nextract_box_harness "$1" "$2"',
-                        "extract", str(stage), image_id], stdin=archive, check=True)
+    subprocess.run(["bash", "-euo", "pipefail", "-c",
+                    function + '\nextract_box_harness "$1" "$2"',
+                    "extract", str(stage), image_id], stdin=sys.stdin.buffer, check=True)
     assert stage.stat().st_mode & 0o777 == 0o555
     stage.rename(Path("/harness") / ("harness-" + image_id.removeprefix("sha256:")))
 
@@ -40,6 +41,10 @@ def production_host(output, *, runsc=Path("/support/gvisor/runsc")):
     (installed / "harness-current").symlink_to(rootfs.name)
     (installed / "current").mkdir()
     (installed / "current/runsc").symlink_to(runsc)
+    service_files = ("boxhostd.py", "boxhostd_idle.py", "box-store-check.sh")
+    for name in service_files:
+        shutil.copyfile(Path("/support/deploy") / name, installed / name)
+        (installed / name).chmod(0o555)
     cgroup = Path("/sys/fs/cgroup") / ("boxhostd@" + uuid.uuid4().hex + ".service")
     cgroup.mkdir()  # systemd creates the unit; no owner cgroup or controller writes here.
     # systemd applies the unit's limits, but leaves subtree delegation to ExecStart.
@@ -47,7 +52,8 @@ def production_host(output, *, runsc=Path("/support/gvisor/runsc")):
                         ("cpu.max", "300000 100000")):
         (cgroup / name).write_text(value)
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-           "HOME": "/root", "BACKUP_DEST": ":local:/snapshots/owner-snapshots"}
+           "HOME": "/root", "PYTHONPATH": str(installed),
+           "BACKUP_DEST": ":local:/snapshots/owner-snapshots"}
     code = """
 import os, sys
 from pathlib import Path
@@ -55,12 +61,12 @@ parent = Path(sys.argv[1])
 (parent / 'cgroup.procs').write_text(str(os.getpid()))
 assert (parent / 'cgroup.procs').read_text().split() == [str(os.getpid())]
 assert not (parent / 'cgroup.subtree_control').read_text().strip()
-os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
+os.execve(sys.executable, [sys.executable, '-B', '/opt/tinyassets/boxhostd/boxhostd.py',
                           '--data-root', '/data'], os.environ)
 """
     process = None
     try:
-        subprocess.run(["bash", "/support/deploy/box-store-check.sh"],
+        subprocess.run([str(installed / "box-store-check.sh")],
                        env=env, stdout=output, stderr=output, check=True)
         # Match ExecStart's host interpreter. Application site-packages must
         # not hide an import dependency unavailable to the production host.
@@ -110,6 +116,8 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
             (installed / "current/runsc").unlink()
             (installed / "current").rmdir()
             (installed / "harness-current").unlink()
+            for name in service_files:
+                (installed / name).unlink()
 
 
 def published_sleep(owner_name):
@@ -147,85 +155,21 @@ def published_sleep(owner_name):
         time.sleep(.05)
 
 
-def production_launch(owner_name):
-    """UID1001 asks the broker to wake, using production volumes, relay and runsc."""
-    import sqlite3
-    from contextlib import closing
-
-    def snapshot():
-        with closing(sqlite3.connect('/data/.broker/state/owner-identities.db')) as db:
-            return db.execute('SELECT snapshot_id,work FROM owner_volumes WHERE principal=?',
-                              (owner_name,)).fetchone()
-
-    previous_snapshot = snapshot()[0]
-    with tempfile.TemporaryFile() as output:
-        broker = None
-        try:
-            with production_host(output) as (cgroup, env):
-                broker = subprocess.Popen([
-                    sys.executable, "-B", "/support/rehearsal_serve.py", "registered-broker",
-                    "/run/tinyassets-boxhostd/broker"], env=env, stdout=output, stderr=output)
-                deadline = time.monotonic() + 30
-                while not Path("/run/tinyassets-boxhostd/broker/broker.sock").exists():
-                    if broker.poll() is not None or time.monotonic() > deadline:
-                        raise RuntimeError("launch broker did not start")
-                    time.sleep(.05)
-                code = """
-import asyncio, json, sys
-from pathlib import Path
-from tinyassets.boxes.daemon_control import request
-from tinyassets.broker.owner_identities import wake_owner
-from tinyassets.broker.supervisor import BrokerSupervisor
-from tinyassets.router_credentials import serving
-supervisor = BrokerSupervisor.from_boxhost(
-    Path('/data'), socket_path=Path('/run/tinyassets-boxhostd/broker/broker.sock'),
-    proof='synthetic-rehearsal-proof' * 2)
-supervisor.start()
-owner = sys.argv[1]
-async def launch():
-    async with serving(Path('/data')):
-        await asyncio.to_thread(wake_owner, Path('/data'), principal=owner)
-        status = await asyncio.to_thread(request, 'status', owner)
-        assert status['awake']
-        print(json.dumps({'uid': status['uid']}))
-asyncio.run(launch())
-"""
-                # The broker returns only after authenticated owner app readiness.
-                result = subprocess.run([
-                    "setpriv", "--reuid=1001", "--regid=1001", "--groups=1100,1101,1102",
-                    "--bounding-set=-all", "--no-new-privs",
-                    sys.executable, "-B", "-c", code, owner_name],
-                    env={**env, "PYTHONPATH": "/app"},
-                    capture_output=True, text=True, timeout=90, check=True)
-                uid = json.loads(result.stdout)["uid"]
-                owner = cgroup / f"owner-{uid}"
-                assert owner.is_dir() and owner.parent == (cgroup / "supervisor").parent
-                assert int((owner / "memory.max").read_text()) == 1024**3
-                assert int((owner / "pids.max").read_text()) == 1024
-                assert int((owner / "cpu.weight").read_text()) > 0
-                subprocess.run([
-                    "/support/gvisor/runsc", "--root", "/var/lib/boxhostd/state/runsc",
-                    "exec", "--user", f"{uid}:{uid}", f"owner-{uid}",
-                    "/opt/venv/bin/python", "-B", "-c",
-                    "import os; os.chdir('/'); os.listdir('/'); os.chdir('/app'); "
-                    "import tinyassets; assert os.getuid() >= 300001"],
-                    check=True, stdout=output, stderr=output, timeout=30)
-                # C13: the broker coordinates sleep and publication while the
-                # executor is still available. Host shutdown only executes.
-                published_sleep(owner_name)
-            current_snapshot, pending = snapshot()
-            assert current_snapshot != previous_snapshot and pending is None, (
-                "production shutdown did not publish its completed owner snapshot")
-        except BaseException as exc:
-            output.seek(0)
-            detail = getattr(exc, "stderr", "") or ""
-            raise RuntimeError("production entry launch failed: " + detail +
-                               output.read().decode(errors="replace")) from exc
-        finally:
-            if broker is not None:
-                broker.terminate()
-                broker.wait(15)
-
-
 if __name__ == "__main__":
-    {"extract": extract}[sys.argv[1]](*sys.argv[2:])
+    if sys.argv[1] == "host":
+        # Only service-manager placement is emulated in the disposable VM.
+        # The production entry point owns delegation, sockets and all owners.
+        import threading
+        stop = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: stop.set())
+        with tempfile.TemporaryFile() as output:
+            try:
+                with production_host(output) as (cgroup, _):
+                    Path('/run/tinyassets-boxhostd/rehearsal-ready').write_text(str(cgroup))
+                    stop.wait()
+            except BaseException:
+                output.seek(0)
+                sys.stderr.write(output.read().decode(errors='replace'))
+                raise
+    else:
+        {"extract": extract}[sys.argv[1]](*sys.argv[2:])

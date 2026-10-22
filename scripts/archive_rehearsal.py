@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import os
@@ -11,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -18,6 +20,22 @@ ROOT = Path(__file__).resolve().parents[1]
 STAMP = "2026-10-17T00-00-00Z"
 DATA_ARCHIVE = f"tinyassets-snapshot-{STAMP}.tar.gz"
 BOX_ARCHIVE = f"tinyassets-box-store-{STAMP}.tar.gz"
+
+
+def committed_key(image, archive):
+    """A changed archive, migration implementation or image requires full apply."""
+    digest = hashlib.sha256(b"owner-box-committed-v1\0")
+    for path in sorted({ROOT / "deploy/deploy_fail_safe.sh",
+                        *ROOT.glob("tinyassets/box_layout*.py"),
+                        *ROOT.glob("tinyassets/box_migration*.py"),
+                        ROOT / "tinyassets/cutover_control.py"}):
+        digest.update(path.relative_to(ROOT).as_posix().encode())
+        digest.update(path.read_bytes())
+    with Path(archive).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    digest.update(docker("image", "inspect", "-f", "{{.Id}}", image).stdout.strip().encode())
+    return digest.hexdigest()
 
 
 class ImageNotFound(RuntimeError):
@@ -137,7 +155,8 @@ class Venue:
         self.prefix = "ta-s6-" + uuid.uuid4().hex[:12]
         self.names = {
             k: self.prefix + "-" + k
-            for k in ("image", "store", "parent", "data", "backup", "support", "harness", "control")
+            for k in ("image", "store", "parent", "data", "backup", "support", "harness",
+                      "control", "runtime")
         }
         self.volumes, self.containers = [], []
         self.device = ""
@@ -148,10 +167,11 @@ class Venue:
         self.containers.append(name)
         return docker("run", "--name", name, "--network", "none", *argv, check=check)
 
-    def setup(self, archive):
+    def setup(self, archive, *, committed=None):
         if docker("image", "inspect", self.image, check=False).returncode:
             raise ImageNotFound(f"image not found: {self.image}")
-        for key in ("image", "store", "parent", "backup", "support", "harness", "control"):
+        for key in ("image", "store", "parent", "backup", "support", "harness",
+                      "control", "runtime"):
             docker("volume", "create", self.names[key])
             self.volumes.append(self.names[key])
 
@@ -177,7 +197,8 @@ class Venue:
             "true",
             self.image,
         )
-        docker("cp", str(archive), name + ":/backup/input.tar.gz")
+        if committed is None:
+            docker("cp", str(archive), name + ":/backup/input.tar.gz")
         docker("cp", str(ROOT / "deploy"), name + ":/support/deploy")
         docker(
             "cp", str(ROOT / "scripts/rehearsal_serve.py"), name + ":/support/rehearsal_serve.py"
@@ -186,20 +207,30 @@ class Venue:
                name + ":/support/rehearse_box_move.py")
         docker("cp", str(ROOT / "scripts/rehearsal_launch.py"),
                name + ":/support/rehearsal_launch.py")
-        # Export the candidate image once. The extraction function below is the
-        # same one install_box_harness calls in deploy_fail_safe.sh.
-        with tempfile.TemporaryDirectory(prefix="ta-harness-") as temporary:
-            image_tar = Path(temporary) / "image.tar"
-            docker("export", "--output", str(image_tar), name)
-            docker("cp", str(image_tar), name + ":/support/image.tar")
-        # No chroot fallback: a missing pinned runtime must fail this proof.
+        # Stream the candidate filesystem through production extraction. Avoid
+        # writing and uploading a multi-GB intermediate tar on every retry.
         docker("cp", os.environ["TA_REHEARSAL_RUNSC_DIR"], name + ":/support/gvisor")
         image_id = docker("image", "inspect", "-f", "{{.Id}}", self.image).stdout.strip()
-        self.container("--rm", "--user", "0",
-                       "-v", self.names["support"] + ":/support:ro",
-                       "-v", self.names["harness"] + ":/harness",
-                       "--entrypoint", "python", self.image, "-B",
-                       "/support/rehearsal_launch.py", "extract", image_id)
+        extraction = self.prefix + "-extract"
+        self.containers.append(extraction)
+        exporter = subprocess.Popen(["docker", "export", name], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+        try:
+            result = subprocess.run(
+                ["docker", "run", "--rm", "-i", "--name", extraction, "--network", "none",
+                 "--user", "0", "-v", self.names["support"] + ":/support:ro",
+                 "-v", self.names["harness"] + ":/harness", "--entrypoint", "python",
+                 self.image, "-B", "/support/rehearsal_launch.py", "extract", image_id],
+                stdin=exporter.stdout, capture_output=True)
+            exporter.stdout.close()
+            _, error = exporter.communicate(timeout=30)
+            if result.returncode or exporter.returncode:
+                raise RuntimeError("production extraction failed: " +
+                                   (result.stderr + error).decode(errors="replace"))
+        finally:
+            if exporter.poll() is None:
+                exporter.kill()
+                exporter.communicate()
         self.container(
             "--rm",
             "--user",
@@ -226,6 +257,10 @@ class Venue:
             self.names["data"],
         )
         self.volumes.append(self.names["data"])
+        if committed is not None:
+            self.committed_state(committed, restore=True, initial=True)
+            self.mounted = True
+            return
         self.container(
             "--rm",
             "--privileged",
@@ -360,6 +395,232 @@ class Venue:
             *args,
         )
 
+    def committed_state(self, path, *, restore=False, initial=False):
+        """Copy a quiescent XFS filesystem, preserving project IDs and custody.
+
+        Export happens before any service starts; imports always go into this
+        run's disposable volumes, never mutate the cached committed generation.
+        """
+        if not initial:
+            self.container("--rm", "--privileged", "--pid=host", "--user", "0",
+                           "--entrypoint", "sh", self.image, "-ec",
+                           'nsenter -t 1 -m umount "$1"', "sh", self.store)
+        name = self.prefix + "-cache-" + uuid.uuid4().hex[:8]
+        self.containers.append(name)
+        docker("create", "--name", name, "--user", "0",
+               "-v", self.names["image"] + ":/cache/image",
+               "-v", self.names["parent"] + ":/cache/parent",
+               "-v", self.names["control"] + ":/cache/control",
+               "-v", self.names["backup"] + ":/cache/backup",
+               "--entrypoint", "sh", self.image, "-ec",
+               ("find /cache/parent /cache/control /cache/backup -mindepth 1 -delete; "
+                "tar -xzf /state.tar.gz -C /cache --numeric-owner --acls --xattrs"
+                if restore else
+                "tar -czSf /state.tar.gz -C /cache --numeric-owner --acls --xattrs "
+                "image parent control backup"))
+        try:
+            if restore:
+                docker("cp", str(path), name + ":/state.tar.gz")
+            docker("start", "-a", name)
+            status = docker("inspect", "-f", "{{.State.ExitCode}}", name).stdout.strip()
+            if status != "0":
+                raise RuntimeError("committed-state copy failed")
+            if not restore:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".partial")
+                docker("cp", name + ":/state.tar.gz", str(temporary))
+                temporary.replace(path)
+        finally:
+            if initial:
+                self.container("--rm", "--privileged", "--pid=host", "--user", "0",
+                               "--entrypoint", "sh", self.image, "-ec",
+                               'nsenter -t 1 -m mount --bind "$1" "$1"; '
+                               'nsenter -t 1 -m mount --make-private "$1"', "sh", self.store)
+            self.container("--rm", "--privileged", "--pid=host", "--user", "0",
+                           "--entrypoint", "sh", self.image, "-ec",
+                           'nsenter -t 1 -m mount -o loop,prjquota "$1" "$2"',
+                           "sh", self.loop_image, self.store)
+            self.device = self.container("--rm", "-v", self.names["store"] + ":/box-store",
+                                         "--entrypoint", "findmnt", self.image,
+                                         "--mountpoint", "/box-store",
+                                         "-no", "SOURCE").stdout.strip()
+
+    def compose(self, *args, check=True):
+        return docker("compose", "--project-name", self.prefix,
+                      "--env-file", str(self.compose_dir / "env"),
+                      "-f", str(ROOT / "deploy/compose.yml"),
+                      "-f", str(self.compose_dir / "paths.yml"), *args, check=check)
+
+    def start_stack(self):
+        # Caller-owned canary credential; production's healthcheck is unchanged.
+        self.container("--rm", "--user", "1001:1001", "-v", self.names["data"] + ":/data",
+                       "--entrypoint", "python", self.image, "-c",
+                       "import json; from pathlib import Path; "
+                       "p=Path('/data/.router-credentials.json'); "
+                       "d=json.loads(p.read_text()) if p.exists() else {}; "
+                       "d['TINYASSETS_WIKI_CANARY_TOKEN']='synthetic-rehearsal-canary-credential'; "
+                       "p.write_text(json.dumps(d)); p.chmod(0o600); "
+                       "Path('/data/platform-expected-instance.json').write_text(json.dumps({"
+                       "'schema':'platform_expected_instance','version':1,"
+                       "'expected_instance_id':'9462001'})); "
+                       "Path('/data/release-state.json').write_text(json.dumps({"
+                       "'git_sha':Path('/etc/tinyassets-build-sha').read_text().strip(),"
+                       "'image_tag':'synthetic-rehearsal','deployed_at':'2026-10-17T00:00:00Z'}))")
+        self.compose_dir = Path(tempfile.mkdtemp(prefix="ta-compose-"))
+        empty = self.compose_dir / "empty.env"
+        empty.write_text("")
+        daemon_env = self.compose_dir / "daemon.env"
+        daemon_env.write_text("UNIVERSE_SERVER_AUTH=oauth\n"
+                              "UNIVERSE_SERVER_URL=https://rehearsal.invalid/mcp\n"
+                              "TINYASSETS_WIKI_CANARY_TOKEN=synthetic-rehearsal-canary-credential\n")
+        broker_env = self.compose_dir / "broker.env"
+        broker_env.write_text("TINYASSETS_BOX_AWAKE_CAP=2\n"
+                              "BACKUP_DEST=:local:/var/lib/ta-broker/owner-snapshots\n")
+        def mount(key):
+            return docker("volume", "inspect", "-f", "{{.Mountpoint}}",
+                          self.names[key]).stdout.strip()
+        # The only compose inputs are caller names, paths, env files and image.
+        values = dict(TINYASSETS_IMAGE=self.image,
+                      TINYASSETS_DAEMON_NAME=self.prefix + "-daemon",
+                      TINYASSETS_BROKER_NAME=self.prefix + "-broker",
+                      TINYASSETS_DATA_VOLUME=self.names["data"],
+                      TINYASSETS_BROWSER_KEYS_VOLUME=self.names["backup"],
+                      TINYASSETS_NETWORK_NAME=self.prefix + "-net",
+                      TINYASSETS_BOXHOST_RUN=mount("runtime"),
+                      TINYASSETS_BROKER_RCLONE=mount("support") + "/broker-rclone.conf",
+                      TINYASSETS_DAEMON_ENV=str(daemon_env),
+                      TINYASSETS_BROKER_ENV=str(broker_env),
+                      TINYASSETS_INTERCHANGE_ENV=str(empty),
+                      TINYASSETS_IDEMPOTENCY_ENV=str(empty), TINYASSETS_INGRESS_ENV=str(empty))
+        # Replace only env-file paths; no service command or authority override.
+        (self.compose_dir / "paths.yml").write_text(
+            "services:\n  daemon:\n    env_file: !override\n"
+            "      - ${TINYASSETS_DAEMON_ENV}\n"
+            "      - ${TINYASSETS_INTERCHANGE_ENV}\n"
+            "      - ${TINYASSETS_IDEMPOTENCY_ENV}\n"
+            "      - ${TINYASSETS_INGRESS_ENV}\n"
+            "  broker:\n    env_file: !override\n"
+            "      - path: ${TINYASSETS_BROKER_ENV}\n        required: false\n")
+        (self.compose_dir / "env").write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+        self.container("--rm", "--user", "0", "-v", self.names["support"] + ":/support",
+                       "--entrypoint", "touch", self.image, "/support/broker-rclone.conf")
+        result = self.container(
+            "-d", "--privileged", "--user", "0", "--cgroupns=host", "--pid=host",
+            "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+            "-v", self.names["data"] + ":/data",
+            "--mount", "type=bind,src=" + self.store + ",dst=/var/lib/boxhostd/owners",
+            "-v", self.names["support"] + ":/support:ro",
+            "-v", self.names["runtime"] + ":/run/tinyassets-boxhostd",
+            "-v", self.names["harness"] + ":/harness:ro",
+            "-v", self.names["harness"] + ":/opt/tinyassets/boxhostd",
+            "-v", self.names["backup"] + ":/snapshots",
+            "--entrypoint", "python", self.image, "-B", "/support/rehearsal_launch.py", "host")
+        self.host_container = result.stdout.strip()
+        deadline = time.monotonic() + 45
+        while docker("exec", self.host_container, "test", "-f",
+                     "/run/tinyassets-boxhostd/rehearsal-ready", check=False).returncode:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("production host startup failed: " + docker(
+                    "logs", self.host_container, check=False).stdout)
+            time.sleep(.2)
+        self.compose("up", "-d", "daemon", "broker")
+        self.start_metadata()
+        deadline = time.monotonic() + 120
+        while True:
+            broker_logs = docker("logs", self.prefix + "-broker", check=False)
+            if "broker role identity is not retired" in broker_logs.stderr:
+                raise RuntimeError("broker role identity is not retired")
+            state = json.loads(docker("inspect", self.prefix + "-daemon").stdout)[0]["State"]
+            if state.get("Health", {}).get("Status") == "healthy":
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("compose stack not healthy: " + self.compose(
+                    "logs", "--no-color", check=False).stdout)
+            time.sleep(1)
+
+    def start_metadata(self):
+        """Synthetic external metadata, scoped to this daemon's bridge address.
+
+        No resolver patch or cloud-admission bypass is installed in the image.
+        Only this disposable source IP's literal metadata request is redirected.
+        """
+        self.metadata = self.prefix + "-metadata"
+        self.containers.append(self.metadata)
+        code = """
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class Metadata(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != '/metadata/v1/id':
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'9462001')
+    def log_message(self, *args):
+        pass
+HTTPServer(('0.0.0.0', 8000), Metadata).serve_forever()
+"""
+        docker("run", "-d", "--name", self.metadata, "--network", self.prefix + "-net",
+               "--user", "1001:1001", "--cap-drop", "ALL",
+               "--security-opt", "no-new-privileges=true",
+               "--entrypoint", "python", self.image, "-c", code)
+
+        def address(name):
+            details = json.loads(docker("inspect", name).stdout)[0]
+            return details["NetworkSettings"]["Networks"][self.prefix + "-net"]["IPAddress"]
+
+        daemon_ip, metadata_ip = address(self.prefix + "-daemon"), address(self.metadata)
+        import ipaddress
+        ipaddress.IPv4Address(daemon_ip)
+        ipaddress.IPv4Address(metadata_ip)
+        rule = ["PREROUTING", "-s", daemon_ip + "/32", "-d", "169.254.169.254/32",
+                "-p", "tcp", "--dport", "80", "-j", "DNAT",
+                "--to-destination", metadata_ip + ":8000"]
+        docker("exec", self.host_container, "nsenter", "-t", "1", "-m", "-n",
+               "iptables", "-w", "-t", "nat", "-I", *rule)
+        self.metadata_rule = rule
+
+    def owner_operations(self, row, action, operations=None):
+        from scripts.rehearsal_serve import owner_operations
+
+        source = ("import asyncio,json,sys\n" + inspect.getsource(owner_operations) +
+                  "\nprint(json.dumps(asyncio.run(owner_operations(*json.loads(sys.argv[1])))))")
+        uid = row["uid"]
+        result = docker("exec", self.host_container, "/support/gvisor/runsc",
+                        "--root", "/var/lib/boxhostd/state/runsc", "exec", "--user", f"{uid}:{uid}",
+                        f"owner-{uid}", "/opt/venv/bin/python", "-B", "-c", source,
+                        json.dumps([action, row["centers"][0], operations, row["principal"]]))
+        return json.loads(result.stdout)
+
+    def host_call(self, code):
+        return docker("exec", self.host_container, "python", "-B", "-c", code)
+
+    def sleep(self, owner):
+        return json.loads(self.host_call(
+            "import json,sys; sys.path.insert(0,'/support'); "
+            "from rehearsal_launch import published_sleep; "
+            f"print(json.dumps(published_sleep({owner!r})))").stdout)
+
+    def stop_stack(self):
+        if getattr(self, "metadata_rule", None):
+            self.container("--rm", "--privileged", "--user", "0", "--pid=host",
+                           "--entrypoint", "nsenter", self.image, "-t", "1", "-m", "-n",
+                           "iptables", "-w", "-t", "nat", "-D", *self.metadata_rule)
+            self.metadata_rule = None
+        if getattr(self, "metadata", None):
+            result = docker("rm", "-f", self.metadata, check=False)
+            if result.returncode and "No such container" not in result.stderr:
+                raise RuntimeError("metadata fixture cleanup failed")
+            self.metadata = None
+        if hasattr(self, "compose_dir"):
+            if (self.compose_dir / "paths.yml").exists() and (self.compose_dir / "env").exists():
+                self.compose("down", "--timeout", "30")
+            shutil.rmtree(self.compose_dir)
+            del self.compose_dir
+        if getattr(self, "host_container", None):
+            docker("stop", "--time", "200", self.host_container)
+            self.host_container = None
+
     def manifests(self):
         return json.loads(self.helper(
             "import json, runpy; print(json.dumps(runpy.run_path('/support/rehearse_box_move.py')"
@@ -441,6 +702,7 @@ with tempfile.TemporaryDirectory() as temporary:
             raise KeyboardInterrupt
 
     def _cleanup(self):
+        self.stop_stack()
         failures = 0
         for name in reversed(self.containers):
             result = docker("rm", "-f", name, check=False)
@@ -479,7 +741,7 @@ with tempfile.TemporaryDirectory() as temporary:
             raise RuntimeError("cleanup failed")
 
 
-def archive_rehearsal(image, archive, *, store_bytes):
+def archive_rehearsal(image, archive, *, store_bytes, from_committed=False, cache_dir=None):
     report, step = {}, "setup"
     venue = Venue(image, store_bytes)
 
@@ -494,113 +756,95 @@ def archive_rehearsal(image, archive, *, store_bytes):
             raise RuntimeError("step failed")
 
     try:
-        venue.setup(archive)
-        venue.initialize_cutover()
-        passed(step, mounts=1)
-        step = "preflight"
-        required(venue.migration(step))
-        passed(step)
-        step = "census"
-        result = venue.migration(step)
-        required(result)
-        census = json.loads(result.stdout)
-        if not census["ready"] or not census["owners"]:
-            raise RuntimeError("census refused")
-        passed(
-            step,
-            owners=census["owners"],
-            centers=census["admitted_centers"],
-            rows=sum(table["total"] for table in census["tables"].values()),
-        )
-        step = "apply"
-        required(venue.migration(step))
-        passed(step)
-        step = "verify"
-        required(venue.migration(step))
-        baseline = venue.manifests()
-        passed(step, manifests=len(baseline[1]) + 1)
-        step = "restore_before_write"
-        venue.restore()
-        passed(step, comparisons=1)
-        step = "crash_resume"
-        venue.reset_fixture()
-        venue.initialize_cutover()
-        required(venue.migration("preflight"))
-        required(venue.migration("census"))
-        plan = json.loads(
-            venue.helper(
-                "import json; from pathlib import Path; "
-                "from tinyassets.box_layout_migration import _owner_plan; "
-                'print(json.dumps([o.uid for o in _owner_plan(Path("/data"))]))'
-            ).stdout
-        )
-        if len(plan) < 2:
-            raise RuntimeError("two owners required for tree interruption")
-        for boundary in ("after_owner_tree:1", "after_seeding"):
-            result = venue.migration("apply", interrupt=boundary)
-            if result.returncode != 137:
-                raise RuntimeError(
-                    f"interruption did not fire boundary={boundary} rc={result.returncode}"
-                )
-            required(venue.migration("apply"))
-            required(venue.migration("verify"))
-            if venue.manifests() != baseline:
-                raise RuntimeError("resumed manifests differ")
-            if boundary == "after_owner_tree:1":
-                venue.restore()
-                venue.reset_fixture()
-                venue.initialize_cutover()
-                required(venue.migration("preflight"))
-                required(venue.migration("census"))
-        passed(step, interruptions=2, comparisons=2)
+        cache = (Path(cache_dir) / committed_key(image, archive)) if cache_dir else None
+        cached = bool(from_committed and cache and (cache / "state.tar.gz").is_file()
+                      and (cache / "report.json").is_file())
+        if cached:
+            venue.setup(archive, committed=cache / "state.tar.gz")
+            previous = json.loads((cache / "report.json").read_text())
+            # Cache hits report only work actually run in this invocation.
+            census = previous["census"]
+            passed("committed", owners=census["owners"])
+        else:
+            venue.setup(archive)
+            venue.initialize_cutover()
+            passed(step, mounts=1)
+            step = "preflight"
+            required(venue.migration(step))
+            passed(step)
+            step = "census"
+            result = venue.migration(step)
+            required(result)
+            census = json.loads(result.stdout)
+            if not census["ready"] or not census["owners"]:
+                raise RuntimeError("census refused")
+            passed(
+                step,
+                owners=census["owners"],
+                centers=census["admitted_centers"],
+                rows=sum(table["total"] for table in census["tables"].values()),
+            )
+            step = "apply"
+            required(venue.migration(step))
+            passed(step)
+            step = "verify"
+            required(venue.migration(step))
+            baseline = venue.manifests()
+            passed(step, manifests=len(baseline[1]) + 1)
+            step = "restore_before_write"
+            venue.restore()
+            passed(step, comparisons=1)
+            step = "crash_resume"
+            venue.reset_fixture()
+            venue.initialize_cutover()
+            required(venue.migration("preflight"))
+            required(venue.migration("census"))
+            plan = json.loads(
+                venue.helper(
+                    "import json; from pathlib import Path; "
+                    "from tinyassets.box_layout_migration import _owner_plan; "
+                    'print(json.dumps([o.uid for o in _owner_plan(Path("/data"))]))'
+                ).stdout
+            )
+            if len(plan) < 2:
+                raise RuntimeError("two owners required for tree interruption")
+            for boundary in ("after_owner_tree:1", "after_seeding"):
+                result = venue.migration("apply", interrupt=boundary)
+                if result.returncode != 137:
+                    raise RuntimeError(
+                        f"interruption did not fire boundary={boundary} rc={result.returncode}"
+                    )
+                required(venue.migration("apply"))
+                required(venue.migration("verify"))
+                if venue.manifests() != baseline:
+                    raise RuntimeError("resumed manifests differ")
+                if boundary == "after_owner_tree:1":
+                    venue.restore()
+                    venue.reset_fixture()
+                    venue.initialize_cutover()
+                    required(venue.migration("preflight"))
+                    required(venue.migration("census"))
+            passed(step, interruptions=2, comparisons=2)
+            if cache:
+                venue.committed_state(cache / "state.tar.gz")
+                (cache / "report.json").write_text(json.dumps(report))
         step = "host_startup"
-        result = venue.container(
-            "--rm", "--privileged", "--user", "0",
-            "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-            "-v", venue.names["data"] + ":/data",
-            "--mount", "type=bind,src=" + venue.store + ",dst=/var/lib/boxhostd/owners",
-            "-v", venue.names["support"] + ":/support:ro",
-            "-v", venue.names["harness"] + ":/harness:ro",
-            "-v", venue.names["harness"] + ":/opt/tinyassets/boxhostd",
-            "-v", venue.names["backup"] + ":/snapshots",
-            "-v", venue.names["control"] + ":/deployment",
-            "--entrypoint", "python", image, "-B", "/support/rehearsal_serve.py", "host-startup",
-            check=False)
-        required(result)
-        startup = json.loads(result.stdout)
-        if startup != {"owners": census["owners"]}:
-            raise RuntimeError("incomplete host startup proof")
-        passed(step, **startup)
+        venue.start_stack()
+        passed(step, services=2)
         step = "serving"
-        result = venue.container(
-            "--rm",
-            "--privileged",
-            "--cgroupns=host",
-            "--user",
-            "0",
-            "-v",
-            venue.names["data"] + ":/data",
-            "--mount",
-            "type=bind,src=" + venue.store + ",dst=/box-store",
-            "--mount",
-            "type=bind,src=" + venue.store + ",dst=/var/lib/boxhostd/owners",
-            "-v",
-            venue.names["support"] + ":/support:ro",
-            # Match production's host filesystem: runsc prepares mountpoints;
-            # the OCI root remains readonly to the owner inside the sandbox.
-            "-v", venue.names["harness"] + ":/harness",
-            "-v", venue.names["harness"] + ":/opt/tinyassets/boxhostd",
-            "-v", venue.names["backup"] + ":/snapshots",
-            "-v", venue.names["control"] + ":/deployment",
-            "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-            "--entrypoint",
-            "python",
-            image,
-            "-B",
-            "/support/rehearsal_serve.py",
-            check=False,
-        )
-        required(result)
+        venue.helper("from tinyassets.cutover_control import admit; "
+                     "admit(Path('/deployment/cutover'), Path('/data'))")
+        daemon = venue.prefix + "-daemon"
+        docker("cp", str(ROOT / "scripts/rehearsal_serve.py"), daemon + ":/tmp/rehearsal_serve.py")
+        plan = venue.host_call("import json; from pathlib import Path; "
+                               "print(json.dumps(json.loads(Path('/data/.owner-cutover.json')"
+                               ".read_text())['plan']))").stdout
+        seeded = docker("exec", daemon, "python", "/tmp/rehearsal_serve.py", "seed", plan).stdout
+        result = docker("exec", daemon, "python", "/tmp/rehearsal_serve.py", "smoke", seeded,
+                        check=False)
+        if result.returncode:
+            logs = venue.compose("logs", "--no-color", "--tail", "100", check=False)
+            raise RuntimeError("serving failed: " + result.stderr + logs.stdout + logs.stderr)
         counts = json.loads(result.stdout)
         expected = {
             "owners",
@@ -614,7 +858,6 @@ def archive_rehearsal(image, archive, *, store_bytes):
             "writes",
             "reconnect",
             "production_launch",
-            "restore_replay_refusals", "restore_new_operations", "restore_revoked_keys",
         }
         if (
             set(counts) != expected
@@ -624,10 +867,45 @@ def archive_rehearsal(image, archive, *, store_bytes):
             or counts["reconnect"] < 1
         ):
             raise RuntimeError("incomplete serving proof")
-        restored = {key.removeprefix('restore_'): counts.pop(key) for key in (
-            'restore_replay_refusals', 'restore_new_operations', 'restore_revoked_keys')}
+        venue.host_call("from pathlib import Path; "
+                        "ready=Path('/run/tinyassets-boxhostd/rehearsal-ready'); "
+                        "parent=Path(ready.read_text()); "
+                        "owners=list(parent.glob('owner-*')); assert owners; "
+                        "assert all(int((p/'memory.max').read_text())>0 and "
+                        "int((p/'pids.max').read_text())>0 and "
+                        "int((p/'cpu.weight').read_text())>0 for p in owners)")
         passed(step, **counts)
-        passed('single_owner_restore', **restored)
+        step = "single_owner_restore"
+        inputs = json.loads(seeded)
+        row = inputs["plan"][0]
+        token = inputs["credentials"][row["principal"]]
+
+        def key_call(operation, key_id=""):
+            return json.loads(docker("exec", daemon, "python", "/tmp/rehearsal_serve.py", "key",
+                                     token, row["centers"][0], operation, key_id).stdout)
+
+        key = key_call("create")
+        operations = venue.owner_operations(row, "prepare")
+        snapshot = venue.sleep(row["principal"])
+        # HTTP admission, not a separate owner launcher, wakes the sleeping box.
+        token = inputs["credentials"][row["principal"]]
+        wake = ("import httpx; r=httpx.post('http://127.0.0.1:8001/app/api/status', "
+                f"headers={{'Authorization':'Bearer {token}', 'Host':'rehearsal.invalid'}}, "
+                f"json={{'universe_id':{row['centers'][0]!r}}}, timeout=120); "
+                "assert r.status_code==200, r.text")
+        docker("exec", daemon, "python", "-c", wake)
+        venue.owner_operations(row, "mutate", operations)
+        key_call("revoke", key["key_id"])
+        venue.host_call("from tinyassets.broker.lifecycle_control import request; "
+                        f"request('restore', owner={row['principal']!r}, snapshot_id={snapshot!r})")
+        docker("exec", daemon, "python", "-c", wake)
+        restored = venue.owner_operations(row, "verify", operations)
+        listing = key_call("list")
+        assert next(k for k in listing["keys"] if k["key_id"] == key["key_id"])["revoked_at"]
+        passed(step, **restored, revoked_keys=1)
+        for item in inputs["plan"]:
+            venue.sleep(item["principal"])
+        venue.stop_stack()
         step = 'normal_restore_after_traffic_refuses'
         venue.restore(refuse=True, refusal_reason='consumed')
         passed(step, refusals=1)
@@ -660,7 +938,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--from", dest="start", choices=("full", "committed"), default="full")
+    parser.add_argument("--cache-dir", type=Path)
     args = parser.parse_args()
+    if args.start == "committed" and args.cache_dir is None:
+        parser.error("--from committed requires --cache-dir")
 
     def terminate(*_):
         raise KeyboardInterrupt
@@ -669,7 +951,8 @@ def main():
     try:
         size = validate_archive(args.archive)
         archive_rehearsal(
-            args.image, args.archive, store_bytes=max(1024**3, int(size * 1.25) + 512 * 1024**2)
+            args.image, args.archive, store_bytes=max(1024**3, int(size * 1.25) + 512 * 1024**2),
+            from_committed=args.start == "committed", cache_dir=args.cache_dir
         )
     except ImageNotFound as exc:
         print(str(exc), flush=True)
@@ -677,3 +960,10 @@ def main():
     except (ValueError, RuntimeError, OSError, KeyboardInterrupt):
         print("rehearsal FAIL", flush=True)
         raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    main()

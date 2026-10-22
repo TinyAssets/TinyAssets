@@ -68,7 +68,7 @@ services:
     # Required immutable image reference. Production writes a digest ref
     # resolved from the short-SHA tag emitted by build-image.yml.
     image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}
-    container_name: tinyassets-daemon
+    container_name: ${TINYASSETS_DAEMON_NAME:-tinyassets-daemon}
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
     # How long a stopping daemon may drain before SIGKILL. SHORT ON PURPOSE.
@@ -190,7 +190,7 @@ services:
     volumes:
       - tinyassets-data:/data
       # boxhostd's bootstrap and admission sockets; the daemon only connects.
-      - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro
+      - ${TINYASSETS_BOXHOST_RUN:-/run/tinyassets-boxhostd}:/run/tinyassets-boxhostd:ro
     healthcheck:
       # Liveness from release facts as the canary service principal. The token
       # is installed in /etc/tinyassets/env by deploy-prod before compose starts;
@@ -214,7 +214,7 @@ services:
     # The credential broker: the one process that holds connection secrets
     # and the owner-box egress floor. Same immutable image, its own identity.
     image: ${TINYASSETS_IMAGE:?Set immutable TINYASSETS_IMAGE}
-    container_name: tinyassets-broker
+    container_name: ${TINYASSETS_BROKER_NAME:-tinyassets-broker}
     user: "1002:1002"
     group_add: ["1102"]
     cap_drop: [ALL]
@@ -233,13 +233,13 @@ services:
       - tinyassets-data:/data
       # Separate broker-only keys. Never included in data-volume backups.
       - type: bind
-        source: /etc/tinyassets/broker-rclone.conf
+        source: ${TINYASSETS_BROKER_RCLONE:-/etc/tinyassets/broker-rclone.conf}
         target: /etc/tinyassets/broker-rclone.conf
         read_only: true
         bind:
           create_host_path: false
       - tinyassets-browser-keys:/var/lib/ta-broker
-      - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd
+      - ${TINYASSETS_BOXHOST_RUN:-/run/tinyassets-boxhostd}:/run/tinyassets-boxhostd
     logging: *tinyassets_log_forwarding
     labels:
       org.tinyassets.component: broker
@@ -311,13 +311,13 @@ services:
 
 volumes:
   tinyassets-browser-keys:
-    name: tinyassets-browser-keys
+    name: ${TINYASSETS_BROWSER_KEYS_VOLUME:-tinyassets-browser-keys}
   tinyassets-data:
-    name: tinyassets-data
+    name: ${TINYASSETS_DATA_VOLUME:-tinyassets-data}
     # Local named volume backed by Docker's default driver. Backups
     # (Row J) snapshot this to Hetzner Storage Box.
 
 networks:
   default:
-    name: tinyassets-net
+    name: ${TINYASSETS_NETWORK_NAME:-tinyassets-net}
     # Default bridge; cloudflared reaches daemon via `daemon:8001`.

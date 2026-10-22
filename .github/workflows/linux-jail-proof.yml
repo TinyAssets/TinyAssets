@@ -62,6 +62,7 @@ on:
       - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
       - "tinyassets/boxes/**"
+      - "deploy/compose.yml"
       - "deploy/deploy_fail_safe.sh"
       - "deploy/install-boxhostd-preflight.sh"
       - "deploy/boxhostd*"
@@ -138,6 +139,7 @@ on:
       - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
       - "tinyassets/boxes/**"
+      - "deploy/compose.yml"
       - "deploy/deploy_fail_safe.sh"
       - "deploy/install-boxhostd-preflight.sh"
       - "deploy/boxhostd*"
@@ -316,10 +318,34 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Cache the immutable rehearsal image
+        id: image
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rehearsal-image.tar.gz
+          key: >-
+            rehearsal-image-v1-${{ hashFiles('Dockerfile', 'pyproject.toml',
+            'tinyassets/**', 'domains/**', 'data/world_rules.lp', 'deploy/native/**',
+            'deploy/docker-entrypoint.sh', 'deploy/box_daemon_entry.py',
+            'deploy/broker_main.py', 'scripts/check_privileged_chain.py',
+            'scripts/mcp_public_canary.py', 'scripts/_canary_common.py') }}
       - name: Build the candidate harness image
         env:
-          SHA: ${{ github.sha }}
-        run: docker build --build-arg TINYASSETS_BUILD_SHA="$SHA" -t ta-launch-proof .
+          IMAGE_ARCHIVE: ${{ runner.temp }}/rehearsal-image.tar.gz
+        run: |
+          # A post-commit rehearsal script change must not change the image input.
+          if test -f "$IMAGE_ARCHIVE"; then
+            gzip -dc "$IMAGE_ARCHIVE" | docker load
+            exit 0
+          fi
+          sha=$(git ls-tree -r HEAD Dockerfile pyproject.toml tinyassets domains \
+            data/world_rules.lp deploy/native deploy/docker-entrypoint.sh \
+            deploy/box_daemon_entry.py deploy/broker_main.py \
+            scripts/check_privileged_chain.py scripts/mcp_public_canary.py \
+            scripts/_canary_common.py | sha256sum | cut -d ' ' -f 1)
+          docker build --build-arg SOURCE_DATE_EPOCH=0 \
+            --build-arg TINYASSETS_BUILD_SHA="$sha" -t ta-launch-proof .
+          docker save ta-launch-proof | gzip -1 > "$IMAGE_ARCHIVE"
       - name: Fetch the production-pinned runsc release
         env:
           OUT: ${{ runner.temp }}/owner-launch
@@ -334,6 +360,13 @@ jobs:
             -o "$OUT/gvisor.tar.bz2"
           echo "$digest  $OUT/gvisor.tar.bz2" | sha256sum --strict -c -
           tar -xjf "$OUT/gvisor.tar.bz2" -C "$OUT/gvisor"
+      - name: Restore the most recent committed rehearsal generation
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/owner-launch/committed
+          # The harness validates the full archive/migration/image hash before use.
+          key: rehearsal-committed-v1-${{ github.run_id }}
+          restore-keys: rehearsal-committed-v1-
       - name: Launch an owner from the production extraction
         # Disposable synthetic archive only. Starts the production entry point
         # in a populated, undelegated service cgroup; it must evacuate itself,
@@ -344,9 +377,29 @@ jobs:
         run: |
           python scripts/linux_oracle.py --as-root --docker-engine --out "$OUT" \
             --env TA_REHEARSAL_BASE_IMAGE=ta-launch-proof \
+            --env TA_REHEARSAL_CANDIDATE_IMAGE=ta-launch-proof \
             --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
+            --env TA_REHEARSAL_CACHE_DIR=/out/committed \
             -- tests/test_box_move_rehearsal.py::test_synthetic_archive_rehearses_final_cutover \
             -q --junitxml=/out/owner-launch.xml
+      - name: Read the validated committed-state key
+        if: always()
+        id: committed
+        env:
+          OUT: ${{ runner.temp }}/owner-launch
+        run: |
+          if test -f "$OUT/committed-key"; then
+            key=$(cat "$OUT/committed-key")
+            if test -f "$OUT/committed/$key/report.json"; then
+              echo "key=$key" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: Save the verified generation even when startup fails
+        if: always() && steps.committed.outputs.key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/owner-launch/committed
+          key: rehearsal-committed-v1-${{ steps.committed.outputs.key }}
       - name: Refuse absent or skipped launch proof
         if: always()
         env:
