@@ -7,6 +7,8 @@ import pytest
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.provider import BoxError
 
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T1')
+
 
 def test_box_config_carries_only_explicit_public_url(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
