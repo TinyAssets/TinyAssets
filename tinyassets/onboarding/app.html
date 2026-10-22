@@ -422,11 +422,6 @@
     dialog.request-sheet{position:fixed;inset:auto 0 0;margin:0 auto;width:min(42rem,100%);max-width:100%;max-height:88dvh;box-sizing:border-box;overflow:auto;border:1px solid var(--line);border-radius:20px 20px 0 0;padding:1.1rem;background:var(--surface);color:var(--ink);}
     dialog.request-sheet:not([open]){display:none!important}
     dialog.request-sheet[open]{display:block!important;width:min(42rem,100%)!important;max-height:calc(var(--app-h,100dvh) - 1rem)!important;padding:1.1rem max(1.1rem,env(safe-area-inset-right)) max(1.1rem,env(safe-area-inset-bottom)) max(1.1rem,env(safe-area-inset-left))!important}
-    @media (min-width:761px){
-      dialog.request-sheet[open]{inset:0;margin:auto;border-radius:20px;height:fit-content;max-height:calc(100dvh - 3rem)!important}
-    }
-    .connect-source>summary{font-size:1rem;font-weight:600;padding:.7rem .3rem;cursor:pointer}
-    .connect-source{margin:0;border-top:1px solid var(--line)}
     dialog.request-sheet::backdrop{background:rgb(0 0 0 / .45)}
     #request-rail[open]>:not([hidden]){display:block}
     #request-rail [hidden]{display:none!important}
@@ -608,14 +603,21 @@
                the notification request"). ONE node: renderRail moves it into the
                request's tab, so what the user typed survives the rail refresh. -->
           <div id="connect-panel" class="connect-panel" hidden>
-            <!-- Every supported source comes from installed registry data. -->
+            <!-- The connect screen (founder 2026-10-02): the guided free sign-in
+                 first, a backup free source, a subscription for more volume, and
+                 pasted keys folded away. Every provider name arrives as data. -->
             <div id="connect-intro" hidden>
-              <h3 class="connect-heading">Connect AI</h3>
+              <h3 class="connect-heading">Connect free AI</h3>
               <span class="rtab-help">Your agent thinks with AI you connect. Each source runs on
                 your own account there, and you approve it at the provider.</span>
             </div>
-            <button id="btn-hosted-resume" class="btn btn--ghost" type="button" hidden>Resume setup</button>
-            <button id="btn-hosted-start-over" class="btn btn--link" type="button" hidden>Start over</button>
+            <div id="connect-primary">
+              <button id="btn-hosted-model" class="btn btn--primary connect-go" type="button"></button>
+              <span id="connect-primary-note" class="rtab-help">Free models only; nothing is bought.
+                Sign in there and approve. If sign-up leaves you on their site, come back to
+                this tab and tap it again.</span>
+            </div>
+            <button id="btn-hosted-resume" class="btn btn--primary connect-go" type="button" hidden>Finish connecting</button>
             <p id="hosted-model-grant" class="rtab-grant" hidden></p>
             <div id="hosted-model-status" class="rtab-note" role="status" aria-live="polite"></div>
             <div id="connect-key" hidden>
@@ -629,15 +631,16 @@
             </div>
             <a id="hosted-manage-link" class="rtab-link" data-external target="_blank"
               rel="noreferrer noopener" hidden>Manage your keys there</a>
-            <!-- No source category is hidden behind an alternative path. -->
-            <div id="connect-hosted-sources"></div>
-            <div id="connect-paste" hidden>
-              <span id="connect-paste-summary" hidden></span>
+            <!-- Ordered by what an agent can actually run on: the guided sign-in
+                 above, then pasted keys (largest daily allowances first, as data),
+                 then the small monthly sign-in source, then a subscription. -->
+            <details id="connect-paste" class="connect-other" hidden>
+              <summary id="connect-paste-summary">Paste a key</summary>
               <div id="free-source-cards"></div>
-            </div>
+            </details>
             <div id="connect-sign-in-sources"></div>
             <details id="connect-other" class="connect-other">
-              <summary>Connect any model endpoint</summary>
+              <summary>Other ways to connect</summary>
               <div id="connect-shapes" class="connect-shapes" role="group" aria-label="How to connect"></div>
               <div id="connect-endpoint" hidden>
                 <span id="endpoint-help" class="rtab-help"></span>
@@ -850,7 +853,7 @@
         Requests already sent may still finish.</p>
         <button class="btn" type="button" id="settings-connect">Connect a service</button>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
-        <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect AI</button>
+        <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
         <h3>Website sessions</h3>
