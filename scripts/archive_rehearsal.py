@@ -384,13 +384,14 @@ with tempfile.TemporaryDirectory() as temporary:
         path.chmod(0o700)
     os.environ['PATH'] = str(binaries) + os.pathsep + os.environ['PATH']
     rollback_live(Path('/deployment/cutover'), Path('/parent/_data'),
-                  deploy_script=binaries / 'old-deploy')
+                  deploy_script=binaries / 'old-deploy', store=Path('/box-store'))
 """
         result = self.container(
             "--rm", "--user", "0",
             "-v", self.names["parent"] + ":/parent",
             "-v", self.names["backup"] + ":/backup:ro",
             "-v", self.names["control"] + ":/deployment",
+            "--mount", "type=bind,src=" + self.store + ",dst=/box-store",
             "--entrypoint", "python", self.image, "-B", "-c", code, check=False)
         if refuse:
             if result.returncode == 0 or (refusal_reason and refusal_reason not in result.stderr):

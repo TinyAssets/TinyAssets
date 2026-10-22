@@ -871,6 +871,11 @@ clear_dirty() {
 # printed because the image DID change and the operator has to know which.
 finish() {
   local result="$1" image="$2" code="$3"
+  # Acceptance is terminal even if dirty-marker cleanup failed. Reporting that
+  # bookkeeping error must never restore a snapshot over the accepted system.
+  if [ "$result" = deployed ]; then
+    trap cleanup_bundle_work EXIT
+  fi
   if [ "$MARKER_STALE" = "1" ]; then
     err "the run reached '${result}' but ${BUNDLE_DIRTY} is still present"
     [ -n "$image" ] && echo "deployed_image=${image}"
@@ -1659,11 +1664,101 @@ if ! ensure_state_dir; then
   exit 1
 fi
 
+HARNESS_INSTALLED_THIS_RUN=""
+HARNESS_PREVIOUS_LINK=""
+MIGRATION_COMMITTED=0
+
+discard_candidate_harness() {  # a refused or rolled-back run keeps only the harness it started with
+  local root name
+  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
+  name="$HARNESS_INSTALLED_THIS_RUN"
+  [ -n "$name" ] || return 0
+  [ "$MIGRATION_COMMITTED" != "1" ] || return 0  # the committed layout runs on it
+  HARNESS_INSTALLED_THIS_RUN=""
+  if [ -n "$HARNESS_PREVIOUS_LINK" ] && [ -d "${root}/${HARNESS_PREVIOUS_LINK}" ]; then
+    ln -s "$HARNESS_PREVIOUS_LINK" "${root}/.harness-current.$$" \
+      && mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" \
+      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 0; }
+  elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
+    rm -f -- "${root}/harness-current"
+  fi
+  case "$name" in
+    harness-[0-9a-f]*)
+      # extract_box_harness made the tree read-only; writable again before rm.
+      chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
+      rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
+        || err "could not remove candidate harness ${name}" ;;
+  esac
+}
+
+finish_cutover_rollback() {  # caller holds host mutation lock; image was observed/accepted
+  local data_root
+  data_root="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')" || return 1
+  PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+    python3 -m tinyassets.cutover_control finish-rollback \
+    --state "${BUNDLE_STATE_DIR}/cutover" --data "$data_root" \
+    --store "${BOX_STORE_DIR:-/var/lib/boxhostd/owners}" --old-image "$1" \
+    --host-state "${BOX_HOST_STATE:-/var/lib/boxhostd/state}" \
+    --runsc "${BOX_RUNSC:-/opt/tinyassets/boxhostd/current/runsc}"
+}
+
 # Restore the snapshot recorded before the failed install, and clear the dirty
-# marker only if that restore completes. Used by every post-install failure
-# path so none of them can report success over a mixed tree.
+# marker only if that restore completes. The EXIT handler also owns the stopped
+# data restore after a failed pre-traffic cutover.
 recover_from_failed_install() {
   local result="$1"
+  if [ "$result" = --on-exit ]; then
+    local status="$2" old_image data_root attempt
+    trap - EXIT
+    cleanup_bundle_work
+    [ "$status" != 0 ] || return 0
+    if [ ! -d "${BUNDLE_STATE_DIR}/cutover" ] || [ -z "${MIGRATION_SNAPSHOT:-}" ]; then
+      if declare -F discard_candidate_harness >/dev/null; then
+        discard_candidate_harness
+      fi
+      return "$status"
+    fi
+    # Never adopt a previous run's eligibility after taking a new backup.
+    [ "${CUTOVER_INITIALIZE_STARTED:-0}" = 1 ] || return "$status"
+    # Keep fd 9's host lock throughout the stopped restore AND convergence.
+    # A nested deploy would deadlock on that lock; only startup is deferred.
+    if [ "${CUTOVER_APPLY_STARTED:-0}" != 1 ]; then
+      # No apply, no restore. Retire authority before restarting writers.
+      PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+        python3 -m tinyassets.cutover_control cancel-initialization \
+        --state "${BUNDLE_STATE_DIR}/cutover" \
+        --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" || return 3
+      old_image="$PREV_IMAGE"
+    else
+      data_root="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')" || return 3
+      old_image="$(PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+        python3 -m tinyassets.cutover_control rollback --state "${BUNDLE_STATE_DIR}/cutover" \
+        --data "$data_root" --store "${BOX_STORE_DIR:-/var/lib/boxhostd/owners}" \
+        --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" --defer-start)" || {
+        err "automatic pre-traffic restore refused or failed; consumed authority is never replayed"
+        return 3
+      }
+    fi
+    MIGRATION_COMMITTED=0
+    MIGRATION_COMMIT_UNVERIFIED=0
+    if [ "$INSTALLED_THIS_RUN" = 1 ] && ! restore_previous_bundle; then
+      mark_dirty "$SNAPSHOT_PATH" || true
+      return 3
+    fi
+    clear_dirty || return 3
+    set_image "$old_image" || return 3
+    for attempt in 1 2; do
+      if restart_stack && { [ "$VECTOR_CHANGED" != 1 ] || recreate_logs; } \
+          && accept "$old_image"; then break; fi
+      if [ "$attempt" = 2 ]; then
+        echo "deploy_result=rollback_unhealthy"
+        return 3
+      fi
+    done
+    finish_cutover_rollback "$old_image" || return 3
+    discard_candidate_harness || return 3
+    finish rolled_back "$old_image" 2
+  fi
   err "restoring ${SNAPSHOT_PATH} and leaving the pointer where it was"
   if restore_bundle_from "$SNAPSHOT_PATH"; then
     clear_dirty || true
@@ -1685,7 +1780,36 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
     exit 3
   fi
   clear_dirty || true
+  # Restore is its own transaction. Falling through the forward-deploy path
+  # used to retry PREV_IMAGE and return 2 even when the requested old image
+  # became healthy. cutover_control had already consumed authority and raised.
+  # Retry only the explicitly requested image, never the failed candidate.
+  if ! set_image "$NEW_IMAGE"; then
+    echo "deploy_result=rollback_env_write_failed"
+    exit 3
+  fi
+  for restore_attempt in 1 2; do
+    if restart_stack; then
+      if { [ "$VECTOR_CHANGED" != 1 ] || recreate_logs; } && accept "$NEW_IMAGE"; then
+        HARNESS_INSTALLED_THIS_RUN="$(readlink "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current" 2>/dev/null || true)"
+        restore_image_id="$(docker image inspect -f '{{.Id}}' "$NEW_IMAGE")" || exit 3
+        [[ "$restore_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 3
+        HARNESS_PREVIOUS_LINK="harness-${restore_image_id#sha256:}"
+        if [ ! -d "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/${HARNESS_PREVIOUS_LINK}" ]; then
+          HARNESS_PREVIOUS_LINK=""
+        fi
+        discard_candidate_harness || exit 3
+        finish deployed "$NEW_IMAGE" 0
+      fi
+    fi
+    err "restore attempt ${restore_attempt} did not converge the requested image"
+  done
+  echo "deploy_result=rollback_unhealthy"
+  exit 3
 else
+  # Preserve the existing work-copy cleanup and cover every nonzero exit after
+  # eligibility, including image-only deploys and failures before acceptance.
+  trap 'recover_from_failed_install --on-exit "$?"; exit $?' EXIT
   if [ -f "$BUNDLE_DIRTY" ]; then
     err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
     err "refusing: snapshotting this tree would legitimize a mixed bundle as the rollback target."
@@ -1805,36 +1929,18 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
     mv -- "$stage" "$target" || return 1
     HARNESS_INSTALLED_THIS_RUN="$target_name"
   fi
+  if [ "$NEW_IMAGE" != "$PREV_IMAGE" ]; then
+    HARNESS_INSTALLED_THIS_RUN="$target_name"
+    # A failed earlier attempt may have left this same candidate selected.
+    # It is not the old serving harness to restore on another refusal.
+    if [ "$HARNESS_PREVIOUS_LINK" = "$target_name" ]; then HARNESS_PREVIOUS_LINK=""; fi
+  fi
   [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
   chmod 0555 "$target" || return 1
   [ ! -e "$target/data" ] && [ ! -e "$target/.broker" ] && \
     [ ! -e "$target/.platform" ] && [ ! -e "$target/.runtime" ] || return 1
   ln -s "$target_name" "${root}/.harness-current.$$" || return 1
   mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" || return 1
-}
-HARNESS_INSTALLED_THIS_RUN=""
-HARNESS_PREVIOUS_LINK=""
-discard_candidate_harness() {  # a refused or rolled-back run keeps only the harness it started with
-  local root name
-  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
-  name="$HARNESS_INSTALLED_THIS_RUN"
-  [ -n "$name" ] || return 0
-  [ "$MIGRATION_COMMITTED" != "1" ] || return 0  # the committed layout runs on it
-  HARNESS_INSTALLED_THIS_RUN=""
-  if [ -n "$HARNESS_PREVIOUS_LINK" ] && [ -d "${root}/${HARNESS_PREVIOUS_LINK}" ]; then
-    ln -s "$HARNESS_PREVIOUS_LINK" "${root}/.harness-current.$$" \
-      && mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" \
-      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 0; }
-  elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
-    rm -f -- "${root}/harness-current"
-  fi
-  case "$name" in
-    harness-[0-9a-f]*)
-      # extract_box_harness made the tree read-only; writable again before rm.
-      chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
-      rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
-        || err "could not remove candidate harness ${name}" ;;
-  esac
 }
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
@@ -1863,8 +1969,9 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
 # leaves the service down with the exact restore command for the snapshot this
 # block took (`rollback_needs_restore`), never the image-only rollback.
 MIGRATION_OK=1
-MIGRATION_COMMITTED=0
 MIGRATION_COMMIT_UNVERIFIED=0
+CUTOVER_INITIALIZE_STARTED=0
+CUTOVER_APPLY_STARTED=0
 MIGRATION_SNAPSHOT=""
 MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
@@ -1923,14 +2030,17 @@ migration_snapshot() {  # prints the archive name backup.sh took
   printf '%s\n' "$id"
 }
 migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic eligibility only
-  printf 'rollback through deployment control: sudo env PYTHONPATH=%q python3 -m tinyassets.cutover_control rollback --state %q --data "$(docker volume inspect tinyassets-data --format '\''{{ .Mountpoint }}'\'')" --deploy-script %q' \
+  printf 'rollback through deployment control: sudo env PYTHONPATH=%q python3 -m tinyassets.cutover_control rollback --state %q --data "$(docker volume inspect tinyassets-data --format '\''{{ .Mountpoint }}'\'')" --deploy-script %q --store %q' \
     "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
-    "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")"
+    "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")" "${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
+}
+cutover_in_flight() {  # this run created eligibility, so the EXIT handler owns the restart
+  [ "${CUTOVER_INITIALIZE_STARTED:-0}" = 1 ] && [ -d "${BUNDLE_STATE_DIR}/cutover" ]
 }
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  if [ "${2:-}" != "pre_stop" ]; then
+  if [ "${2:-}" != "pre_stop" ] && ! cutover_in_flight; then
     start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
     start_line="$(printf '%s\n' "$start_out" | one_line)"
     [ -n "$start_line" ] || start_line="<none>"
@@ -1938,7 +2048,8 @@ migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon 
     err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
     }
   fi
-  discard_candidate_harness
+  # Keep recovery code until the EXIT rollback has completed.
+  if ! cutover_in_flight; then discard_candidate_harness; fi
   if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     recover_from_failed_install migration_refused
   fi
@@ -2053,6 +2164,12 @@ else
       echo "deploy_result=harness_invalid"
       exit 1
     fi
+  fi
+  if [ -d "${BUNDLE_STATE_DIR}/cutover" ]; then
+    if ! finish_cutover_rollback "$PREV_IMAGE"; then
+      migration_refused "check=cutover_retry_cleanup unsafe_or_unconsumed=yes" pre_stop
+    fi
+    log "previous rollback cleaned and archived; retry preflight may proceed"
   fi
   log "migration: asking ${NEW_IMAGE} whether this volume still holds agent bindings"
   probe_out="$(migration_container check /data 2>&1)"
@@ -2201,11 +2318,21 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # C4: only this stopped, verified cutover may create eligibility.
           # An existing directory (including an interrupted initialization)
           # refuses: a workflow restart never recreates pre_traffic.
+          if [ -e "${BUNDLE_STATE_DIR}/cutover" ]; then
+            migration_refused "check=cutover_eligibility existing=yes" pre_stop
+          fi
+          CUTOVER_INITIALIZE_STARTED=1
           PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
             python3 -m tinyassets.cutover_control initialize \
             --state "${BUNDLE_STATE_DIR}/cutover" \
             --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" \
-            --old-image "$PREV_IMAGE" || migration_refused "check=cutover_eligibility"
+            --old-image "$PREV_IMAGE" || {
+              if [ -d "${BUNDLE_STATE_DIR}/cutover" ]; then
+                migration_refused "check=cutover_eligibility" pre_stop
+              fi
+              migration_refused "check=cutover_eligibility"
+            }
+          CUTOVER_APPLY_STARTED=1
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
             --box-backup "/backup/${box_backup}" 2>&1)"

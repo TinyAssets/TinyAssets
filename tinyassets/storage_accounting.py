@@ -709,6 +709,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
     # Immutable extracted image identity under /opt/tinyassets/boxhostd, not owner storage.
     ".box-image-id",
+    # Temporary verified archive extraction for cutover identity census, outside data root.
+    "identities.db",
     # Ephemeral boxhostd socket exports and per-start secrets under /run, never owner data.
     "app.sock", "secret", "secrets", "daemon.sock",
     ".git", ".agents", ".author_server.db", ".workflow.db",
