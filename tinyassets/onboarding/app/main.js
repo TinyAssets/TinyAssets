@@ -4614,9 +4614,9 @@
          "While your agent works, the line under the box says what it is doing, and Stop ends the turn."},
       {head:"Connect the AI your agent thinks with",
        text:"Your agent thinks with an AI source you connect, running on your own account there. "+
-         "The first time it needs one, the chat opens a “Connect free AI” panel: choose a "+
+         "The first time it needs one, the chat opens a “Connect AI” panel: choose a "+
          "source, sign in there and approve. You can open it again whenever you like from "+
-         "⋯ → Account → Connect free AI."},
+         "⋯ → Account → Connect AI."},
       {head:"Share what you build, and copy what others built",
        text:"Ask your agent in the chat to build you a screen, an app or a game. "+
          "“Browse / Switch command centers” at the top of the chat opens “Try someone "+
@@ -4786,11 +4786,11 @@
   }
   function cloudDefaultState(hasLayout, stage){
     const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
-    const w=m ? Math.min(440,stage.w-2*m) : stage.w;
-    const h=m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6);
+    const w=m ? Math.min(hasLayout?440:960,stage.w-2*m) : stage.w;
+    const h=m ? (hasLayout?Math.min(620,stage.h-2*m):stage.h-2*m) : Math.round(stage.h*.6);
     return cloudClamp({
       mode:hasLayout ? "bubble" : "open",
-      open:{x:stage.w-w-m, y:stage.h-h-m, w:w, h:h},
+      open:{x:hasLayout?stage.w-w-m:(stage.w-w)/2, y:hasLayout?stage.h-h-m:m, w:w, h:h},
       bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
       userSet:false,
     }, stage);
@@ -5141,8 +5141,6 @@
     if(connected){ $("composer-input").focus(); refreshRail(); return; }
     if(HostedModelConnect.setup==="unavailable")
       HostedModelConnect.status("Could not confirm your command center's connections. Nothing new was started; try again in a moment.");
-    else if(HostedModelConnect.setup==="recovery"&&!HostedModelConnect.busy&&!HostedModelConnect.request)
-      HostedModelConnect.status("A connection was started earlier. Tap Finish connecting to complete it; your settings are kept.");
     openConnectRequest();
   }
   // ---- plan / subscription -------------------------------------------
@@ -5478,9 +5476,8 @@
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
 
-  // The guided sign-in the connect request offers first. Its preset (name,
-  // button label, key page) comes from the SERVER's request, so this page
-  // names no provider. Nothing here starts on its own: the owner taps.
+  // Connection choices come from the server registry. Nothing starts until
+  // the owner chooses a source from the full list.
   // Provider sign-in saves a connection. The existing owner request then
   // discloses model access and waits for the owner's confirmation.
   // Generic connection card. The server supplies the provider; the message is
@@ -5502,18 +5499,17 @@
       const box=document.createElement('section');box.className='needs-connection';
       box.setAttribute('aria-label','Needs a connection');
       const note=document.createElement('p');note.setAttribute('role','status');
-      const primary=request.action&&request.action.setup&&request.action.setup.primary;
-      note.textContent='To reply I need an AI model. '+(primary?primary.name+' offers free models — connect your account, or connect another AI.':'Connect your own AI account to continue.');
+      note.textContent='To reply I need an AI model. Connect any AI account or model source you use.';
       const controls=document.createElement('div');controls.className='rtab-actions';
       const connect=document.createElement('button');connect.className='btn btn--primary';
-      connect.textContent=primary?'Connect '+primary.name:'Connect AI';
-      const other=document.createElement('button');other.className='btn btn--ghost';other.textContent='Other AI';
+      connect.textContent='Confirm model access';connect.hidden=!record.modelConfirmation;
+      const other=document.createElement('button');other.className='btn btn--primary';other.textContent='Connect';
       const cancel=document.createElement('button');cancel.className='btn btn--link';cancel.textContent='Cancel sign-in';cancel.hidden=true;
       controls.append(connect,other,cancel);box.append(note,controls);
       this.card=box;this.note=note;this.connect=connect;this.cancel=cancel;
       appendMessage('platform','',box);
       other.onclick=()=>{if(this.current(record))openConnectRequest();};
-      connect.onclick=()=>primary?this.begin(primary):openConnectRequest();
+      connect.onclick=()=>record.modelConfirmation?this.begin(null):openConnectRequest();
       if(record.modelConfirmation){
         note.textContent=record.modelConfirmation.grant_sentence||'Connection saved. Confirm model access to continue.';
         connect.textContent='Confirm model access';
@@ -5574,8 +5570,9 @@
       this.busy=true;
       try{
         if(record.connectionFlow){
-          const result=await HostedModelConnect.post('inline_poll',{flow:record.connectionFlow});
-          if(!this.current(record))return;
+          const flow=record.connectionFlow;
+          const result=await HostedModelConnect.post('inline_poll',{flow});
+          if(!this.current(record)||record.connectionFlow!==flow)return;
           if(result.status==='confirmation_required'){
             if(!result.request||result.request.request_id!==result.request_id||
                !result.request.action||result.request.action.type!=='bind_model_access')
@@ -5620,53 +5617,107 @@
     }
   };
   const HostedModelConnect={
-    storageKey:"ta_hosted_model_pkce_v1",preset:"",primary:null,
+    storageKey:"ta_hosted_model_pkce_v1",preset:"",selected:null,abandoned:new Set(),choosing:false,
     setup:"unavailable",busy:false,request:null,epoch:0,keyOpen:false,
     status(text){$("hosted-model-status").textContent=text;},
-    // The request's primary preset, validated: a preset id, a label, and an
-    // https key page. Anything else hides the button rather than guessing.
-    configure(primary){
-      const ok=primary&&typeof primary.preset_id==="string"&&/^[a-z0-9_]{1,64}$/.test(primary.preset_id)&&
-        typeof primary.label==="string"&&primary.label.length>0&&primary.label.length<=80;
-      this.primary=ok?primary:null;
-      if(this.primary&&!this.busy) this.preset=this.primary.preset_id;
+    // Only an explicit source choice sets the selected preset.
+    configure(selected){
+      const ok=selected&&typeof selected.preset_id==="string"&&/^[a-z0-9_]{1,64}$/.test(selected.preset_id)&&
+        typeof selected.label==="string"&&selected.label.length>0&&selected.label.length<=80;
+      this.selected=ok?selected:null;
+      if(this.selected&&!this.busy) this.preset=this.selected.preset_id;
       this.paint();
     },
     // The one pending free-model confirmation in the rail belongs to the setup
     // it finishes, so it is finished HERE (one tap), not as a second card.
     adopt(request){
       if(this.busy) return;
-      if(request){ this.request=Object.assign({},request,{adopted:true}); }
+      if(request&&!this.abandoned.has(request.request_id)){ this.request=Object.assign({},request,{adopted:true}); }
       else if(this.request&&this.request.adopted){ this.request=null; }
     },
     paint(){
-      const idle=["empty","disconnected"].includes(this.setup);
-      const primary=NATIVE?null:this.primary;
-      $("connect-primary").hidden=!(primary&&idle&&!this.request);
-      $("btn-hosted-model").textContent=primary?primary.label:"";
-      $("btn-hosted-model").disabled=this.busy||!idle;
-      const finish=this.setup!=="connected"&&
-        (!!this.request||(!NATIVE&&this.setup==="recovery"&&!!primary));
+      const idle=this.setup!=="unavailable";
+      const selected=NATIVE?null:this.selected;
+      const finish=this.setup!=="connected"&&!!this.request;
       $("btn-hosted-resume").hidden=!finish;
       $("btn-hosted-resume").disabled=this.busy;
-      $("btn-hosted-resume").textContent=this.request?"Confirm model access":"Finish connecting";
+      $("btn-hosted-resume").textContent=this.request?"Confirm model access":"Resume "+(this.selected?.name||"earlier")+" setup";
+      $("btn-hosted-start-over").hidden=true;
+      $("btn-hosted-start-over").disabled=this.choosing;
       const grant=$("hosted-model-grant");
       grant.textContent=this.request&&this.request.grant_sentence||"";
       grant.hidden=!grant.textContent;
-      const keyable=!!(primary&&primary.manual_key===true&&idle&&!this.request);
+      const keyable=!!(selected&&selected.manual_key===true&&idle&&!this.request);
       $("connect-key").hidden=!keyable;
-      $("btn-hosted-key").textContent=primary?"Already have a key? Paste it instead":"";
+      $("btn-hosted-key").textContent=selected?"Already have a key? Paste it instead":"";
       $("btn-hosted-key").setAttribute("aria-expanded",String(keyable&&this.keyOpen));
       $("hosted-key-entry").hidden=!(keyable&&this.keyOpen);
       $("btn-hosted-deposit").disabled=this.busy||!idle;
       const manage=$("hosted-manage-link");
       let href="";
-      try{ const u=new URL(primary&&primary.manage_url||""); if(u.protocol==="https:"&&!u.username&&!u.password) href=u.href; }catch(_e){}
+      try{ const u=new URL(selected&&selected.manage_url||""); if(u.protocol==="https:"&&!u.username&&!u.password) href=u.href; }catch(_e){}
       manage.hidden=!(href&&(this.keyOpen||this.setup==="recovery"));
       if(href) manage.href=href; else manage.removeAttribute("href");
     },
+    async startOver(){
+      if(this.choosing)throw new Error("A source choice is already in progress.");
+      this.choosing=true;
+      const login=MCP._loginEpoch,record=InlineConnection.record;
+      const flow=InlineConnection.current(record)&&record.connectionFlow;
+      this.epoch++; // late callbacks must not restore abandoned setup
+      try{
+        if(flow){
+          record.connectionFlow=null;InlineConnection.save();
+          // Cancellation cannot hold the new choice hostage to an expired flow
+          // or an offline response. Epoch/flow checks discard late replies.
+          void this.post("inline_cancel",{flow}).catch(()=>{});
+        }
+        if(login!==MCP._loginEpoch)throw new Error("Your sign-in changed. Choose a source again.");
+        if(this.request)this.abandoned.add(this.request.request_id);
+        if(InlineConnection.current(record)){
+          if(record.modelConfirmation)this.abandoned.add(record.modelConfirmation.request_id);
+          record.modelConfirmation=null;InlineConnection.save();
+          if(InlineConnection.popup)InlineConnection.popup.close();
+        }
+        this.request=null;this.selected=null;this.preset="";this.keyOpen=false;this.busy=false;
+        sessionStorage.removeItem(this.storageKey);
+        if(typeof ConnectOAuth!=="undefined"){
+          ConnectOAuth.pending=null;sessionStorage.removeItem(ConnectOAuth.storageKey);
+        }
+        $("hosted-key-input").value="";
+        this.status("");this.paint();
+      }finally{this.choosing=false;this.paint();}
+    },
+    renderSources(sources){
+      const host=$("connect-hosted-sources"),signature=JSON.stringify(sources);
+      if(host.dataset.sources===signature)return;
+      host.dataset.sources=signature;host.replaceChildren();
+      $("hosted-key-sources").replaceChildren();
+      for(const source of sources){
+        const card=document.createElement("div");card.className="connect-oauth-source";
+        const button=document.createElement("button");button.type="button";button.className="btn btn--primary connect-go";
+        button.textContent=source.label;card.appendChild(button);
+        const choose=async(key=false)=>{
+          button.disabled=true;
+          try{
+            await this.startOver();this.configure(source);
+            if(key){this.keyOpen=true;this.paint();$("hosted-key-input").focus();}
+            else if(NATIVE&&InlineConnection.waiting())await InlineConnection.begin(source);
+            else await this.begin();
+          }catch(error){this.status(error.message||"Could not change source. Try again.");}
+          finally{button.disabled=false;}
+        };
+        button.addEventListener("click",()=>choose());
+        if(source.manual_key){
+          const key=document.createElement("button");key.type="button";key.className="btn btn--ghost";
+          key.textContent=source.name;key.addEventListener("click",()=>choose(true));
+          $("hosted-key-sources").appendChild(key);
+        }
+        host.appendChild(card);
+      }
+    },
     reset(){
-      this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";this.keyOpen=false;
+      this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";this.keyOpen=false;this.selected=null;this.preset="";this.abandoned.clear();
       const input=$("hosted-key-input"); if(input) input.value="";
       sessionStorage.removeItem(this.storageKey);
     },
@@ -5678,7 +5729,7 @@
       if(this.keyOpen) $("hosted-key-input").focus({preventScroll:true});
     },
     async depositKey(){
-      if(!this.keyOpen||this.busy||NATIVE||!this.preset||!["empty","disconnected"].includes(this.setup)) return;
+      if(!this.keyOpen||this.busy||NATIVE||!this.preset||this.setup==="unavailable") return;
       let key=$("hosted-key-input").value;$("hosted-key-input").value="";
       if(typeof key!=="string"||!key.length||key.length>2048||!/^[\x21-\x7e]+$/.test(key)){
         key="";this.status("Paste only the key, without spaces or other text.");return;
@@ -5771,7 +5822,7 @@
       return result;
     },
     async begin(){
-      if(this.busy||NATIVE||!this.preset||!["empty","disconnected"].includes(this.setup)) return;
+      if(this.busy||NATIVE||!this.preset||this.setup==="unavailable") return;
       const epoch=this.epoch,preset=this.preset;this.busy=true;this.paint();
       this.status("Opening sign-in. You choose whether to approve there.");
       try{
@@ -5849,7 +5900,10 @@
             :"Your saved connection is not ready yet. Tap Finish connecting again in a moment, or connect another way below.");
         }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
-      if(req&&epoch===this.epoch) this.status("Connection saved. Review model access, then confirm.");
+      if(req&&epoch===this.epoch){
+        if(callback) await this.answer(true);
+        else this.status("Connection saved. Review model access, then confirm.");
+      }
     },
     async finish(){
       if(this.busy) return;
@@ -5890,6 +5944,7 @@
       if(epoch!==this.epoch) return;
       if(this.setup==="connected"){
         this.request=null;this.status("");this.paint();
+        if($("request-rail").open) $("request-rail").close();
         appendMessage("system","Your command center is connected. Say hello.");
         return;
       }
@@ -5898,11 +5953,11 @@
         :"Not connected yet, and nothing was lost. Tap Finish connecting to try again.");
     },
     wire(){
-      $("btn-hosted-model").addEventListener("click",()=>this.begin());
       $("btn-hosted-key").addEventListener("click",()=>this.toggleKey());
       $("btn-hosted-deposit").addEventListener("click",()=>this.depositKey());
       $("hosted-key-input").addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); this.depositKey(); } });
       $("btn-hosted-resume").addEventListener("click",()=>this.finish());
+      $("btn-hosted-start-over").addEventListener("click",()=>this.startOver().catch(error=>this.status(error.message)));
     },
   };
   // End hosted model connection controller.
@@ -6685,12 +6740,11 @@
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });
-    $("connect-shapes").addEventListener("click",e=>{
+    $("connect-shapes").addEventListener("click",async e=>{
       const b=e.target&&e.target.closest?e.target.closest("button[data-shape]"):null;
       if(b){
-        // Leaving the sign-in shape stops its poll. A timer left running against a
-        // flow the owner walked away from would keep polling the source forever.
-        ConnectShapes.select(b.dataset.shape);
+        try{await HostedModelConnect.startOver();ConnectShapes.select(b.dataset.shape);}
+        catch(error){$("endpoint-result").textContent=error.message;}
       }
     });
     $("btn-endpoint-connect").addEventListener("click",connectEndpoint);
@@ -7520,6 +7574,7 @@
     },
     async begin(req,note,button,opts){
       if(NATIVE) return;
+      const selection=HostedModelConnect.epoch;
       // Server-confirmed platform provenance survives retries from the rail.
       const source=req.origin==="platform"||!!(opts&&opts.source);
       button.disabled=true;
@@ -7538,6 +7593,7 @@
               ...(action.oauth?.client_id?{client_id:action.oauth.client_id}:{}),
               ...(action.oauth?.use?{use:action.oauth.use}:{})}};
         const result=await this.post(opts&&opts.preset_id?"source_sign_in":"oauth_begin",payload);
+        if(selection!==HostedModelConnect.epoch)return;
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||url.searchParams.get("state")!==result.flow||
@@ -7561,6 +7617,7 @@
     // After the app has signed its user in again: redeem the returned code.
     async finish(){
       const cb=this.pending; this.pending=null;
+      const selection=HostedModelConnect.epoch;
       if(!cb) return;
       if(cb.error){
         appendMessage("system","The sign-in was cancelled or expired. The request is still waiting; open it and sign in again.");
@@ -7571,8 +7628,12 @@
         if(cb.iss) payload.iss=cb.iss;
         if(cb.center)payload.center=cb.center;
         const result=await this.post("oauth_exchange",payload);
+        if(selection!==HostedModelConnect.epoch)return;
         if(result.status==="confirmation_required"){
+          if(!result.request||result.request.request_id!==result.request_id||
+             result.request.action?.type!=="bind_model_access")throw new Error("invalid_connection_response");
           HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+          if(cb.source){await HostedModelConnect.answer(true);return;}
           HostedModelConnect.paint();openConnectRequest("Connection saved. Review model access, then confirm.");
           return;
         }
@@ -7644,16 +7705,9 @@
       if(this.signature===signature) return;
       this.signature=signature;host.replaceChildren();
       for(const source of valid){
-        const card=document.createElement("div");card.className="connect-source";
-        const name=document.createElement("strong");name.className="connect-source-name";
-        name.textContent=source.name;card.appendChild(name);
-        const offer=document.createElement("p");offer.className="connect-terms";
-        offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
-        const terms=document.createElement("p");terms.className="connect-terms";
-        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
-        card.appendChild(terms);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
-        button.textContent=source.label;card.appendChild(button);
+        const card=document.createElement("div");card.className="connect-oauth-source";
+        const button=document.createElement("button");button.type="button";button.className="btn btn--primary connect-go";
+        button.textContent="Continue with "+source.name;card.appendChild(button);
         const status=document.createElement("p");status.className="rtab-note";
         status.setAttribute("role","status");card.appendChild(status);
         button.addEventListener("click",()=>this.start(source,button,status));
@@ -7664,6 +7718,7 @@
       if(this.busy||NATIVE) return;
       this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
       try{
+        await HostedModelConnect.startOver();
         await ConnectOAuth.begin({title:source.name,origin:"platform"},status,button,
           {source:true,preset_id:source.id});
       }catch(error){
@@ -8165,24 +8220,6 @@
   // refresh whose rows are unchanged keeps the live DOM rather than replacing
   // it. What the user has typed lives in those nodes. See renderRail.
   let railNodes = new Map();
-  // Did the USER open "Other ways to connect"? Kept here rather than read back
-  // off the <details>, because the setup panel node is PARKED and reused across
-  // every rail refresh: once anything had opened it, the element stayed open and
-  // no later render closed it again (render only ever set open = true). Live
-  // 2026-09-26 on an unpowered free account, the primary one-tap button came up
-  // with the API key / Model URL / Model id form already unfolded beneath it,
-  // which is three ways to do the same thing in front of a first-time user.
-  //
-  // So the element's state is now DERIVED from this flag on every render, and the
-  // flag only changes when the user taps the summary. Same shape as
-  // `connectWasBlocking` + `railOpen`: remember the intent, reset it on the
-  // transition, never infer it from the DOM.
-  let connectOtherOpen = false;
-  //: The last value the RENDERER wrote to that <details>. The toggle event is
-  //: queued and fires for a programmatic assignment as well as a tap, so this is
-  //: how the listener tells its own echo from a human.
-  let connectOtherWritten = false;
-
   function railFieldControl(field, reqId){
     const id = "f_" + reqId + "_" + field.name;
     if(field.type === "choice"){
@@ -8252,8 +8289,6 @@
       if(railOpen === setup.request_id) railOpen = null;
       const other = $("connect-other");
       if(other) other.open = false;
-      connectOtherWritten = false;
-      connectOtherOpen = false;
     }
     connectWasBlocking = blocking;
   }
@@ -8877,18 +8912,18 @@
     const setup = (req.action && req.action.setup) || {};
     // Which source this card is FOR. A reconnect card names it; the setup card does
     // not, because it is connecting something new.
-    HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
+    HostedModelConnect.paint();
+    // Legacy payloads still expose their installed hosted source during rollout.
+    HostedModelConnect.renderSources(setup.hosted_sources || (setup.primary ? [setup.primary] : []));
     // The connect screen is every setup card that names no source; a reconnect
     // card names the one it repairs and shows only that.
     const screen = !setup.service;
     $("connect-intro").hidden = !screen;
     if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
-    const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
-    $("connect-paste").hidden = !keyCards.length;
-    $("connect-paste-summary").textContent = keyCards.length
-      ? "Paste a key: " + keyCards.map(s => s && s.name).filter(Boolean).join(", ") : "Paste a key";
+    $("connect-paste").hidden = false;
+    $("connect-paste-summary").textContent = "Use an API key instead";
     if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
-    ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
+    ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : []);
     const panel = $("connect-panel");
     panel.hidden = false;
     box.appendChild(panel);
@@ -8906,8 +8941,14 @@
       if(this.signature===signature) return;
       this.signature=signature;host.replaceChildren();
       for(const source of sources){
-        const card=document.createElement("details");
+        const card=document.createElement("details");card.className="connect-source";
         const title=document.createElement("summary");title.textContent=source.name;card.appendChild(title);
+        title.addEventListener("click",async event=>{
+          if(card.open)return;
+          event.preventDefault();
+          try{await HostedModelConnect.startOver();card.open=true;}
+          catch(error){HostedModelConnect.status(error.message);}
+        });
         const offer=document.createElement("p");offer.textContent=source.offer;card.appendChild(offer);
         const help=document.createElement("a");help.textContent="Get your API key";
         help.href=source.help_url;help.target="_blank";help.rel="noopener noreferrer";card.appendChild(help);
@@ -8922,7 +8963,7 @@
         const terms=document.createElement("p");
         terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
         card.appendChild(terms);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--primary";
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
         button.textContent="Connect this source";card.appendChild(button);
         const status=document.createElement("p");status.setAttribute("role","status");card.appendChild(status);
         button.addEventListener("click",async()=>{
@@ -8932,9 +8973,12 @@
           const epoch=MCP._loginEpoch;
           this.busy=true;button.disabled=true;status.textContent="Checking your models…";
           try{
+            await HostedModelConnect.startOver();
+            if(epoch!==MCP._loginEpoch)return;
+            const selection=HostedModelConnect.epoch;
             const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
             const result=await pending;
-            if(epoch!==MCP._loginEpoch)return;
+            if(epoch!==MCP._loginEpoch||selection!==HostedModelConnect.epoch)return;
             if(result.status!=="confirmation_required"||!result.request)
               throw new Error("invalid_connection_response");
             HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
@@ -8952,7 +8996,7 @@
 
   const ConnectShapes={
     shape:"",
-    labels:{api_key:"API key", local:"Your own server"},
+    labels:{api_key:"OpenAI-compatible or other API", local:"Your own server"},
     help:{
       api_key:"From your provider's API page: the chat URL, a key, and the model id.",
       local:"A model server you run must be reachable over HTTPS, for example through a tunnel. TinyAssets can't reach localhost.",
@@ -8961,7 +9005,7 @@
       api_key:"https://api.example.com/v1/chat/completions",
       local:"https://your-tunnel.example.com/v1/chat/completions",
     },
-    render(shapes,open){
+    render(shapes){
       const host=$("connect-shapes");
       host.replaceChildren();
       const known=shapes.filter(s=>Object.prototype.hasOwnProperty.call(this.labels,s));
@@ -8973,38 +9017,18 @@
       });
       const other=$("connect-other");
       other.hidden=!known.length;
-      // The user's own tap is the only thing that opens this, so it is the only
-      // thing that may record the intent. Wired HERE, next to the state it feeds
-      // and idempotently, rather than in page init: a listener wired somewhere the
-      // renderer's own tests cannot reach is a listener nothing proves runs.
-      //
-      // A real <details> fires `toggle` on ANY change to `open`, including the
-      // assignment two lines below, and fires it QUEUED rather than inline. A
-      // listener that trusted the event therefore recorded the RENDERER's open as
-      // the user's intent (review of PR #4002): render a no-primary ask, which the
-      // renderer legitimately opens, and every later sticky-with-primary card came
-      // up unfolded -- the founder's exact first-time path. So compare against what
-      // the renderer last wrote: equal means it was our own assignment echoing
-      // back, different means a human moved it.
       if(!other.dataset.taWired){
         other.dataset.taWired="1";
-        other.addEventListener("toggle",()=>{
-          if(!!other.open === connectOtherWritten) return;
-          // A human moved it. Record the intent AND re-baseline, or the NEXT user
-          // move back to the renderer's last value would look like our own echo --
-          // close it then re-open it on an optional row and the re-open was ignored.
-          connectOtherOpen=!!other.open;
-          connectOtherWritten=connectOtherOpen;
+        other.querySelector("summary").addEventListener("click",async event=>{
+          if(other.open)return;
+          event.preventDefault();
+          try{
+            await HostedModelConnect.startOver();
+            other.open=true;this.select("api_key");
+          }catch(error){HostedModelConnect.status(error.message);}
         });
       }
-      // CLOSED unless the user opened it, or there is no primary path at all (in
-      // which case these fields ARE the path and hiding them hides the only way
-      // through). Assigned both ways on purpose: the parked node would otherwise
-      // carry a stale `open` into every later render. `connectOtherWritten` is what
-      // the listener above compares the queued toggle against.
-      connectOtherWritten = !!open || connectOtherOpen;
-      other.open=connectOtherWritten;
-      this.select(known.includes(this.shape)?this.shape:(known[0]||""));
+      this.select(known.includes(this.shape)?this.shape:"");
     },
     select(shape){
       this.shape=shape;
@@ -9038,6 +9062,8 @@
     endpointBusy=true; btn.disabled=true; out.textContent="Connecting…";
     const epoch=MCP._loginEpoch;
     try{
+      await HostedModelConnect.startOver();
+      if(epoch!==MCP._loginEpoch)return;
       const asked=await MCP.requestFromUser({
         kind:"LLM", title:"Connect "+host+" as a model",
         body:"You asked to connect this model through the secure connection door.",

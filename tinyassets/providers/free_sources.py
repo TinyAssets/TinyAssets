@@ -40,6 +40,23 @@ def source_cards():
                      if row.get("available", True) and "sign_in" not in row])
 
 
+def hosted_source_cards():
+    """Every available installed hosted acquisition preset, without a default."""
+    from tinyassets.onboarding.hosted_model_auth import load_preset
+
+    docs = json.loads(Path(__file__).with_name("acquisition_presets.json").read_text("utf-8"))
+    cards = []
+    for preset_id, row in docs.items():
+        if not row.get("available", True):
+            continue
+        preset = load_preset(preset_id)
+        cards.append({"preset_id": preset.id, "name": preset.display_name,
+                      "label": f"Continue with {preset.display_name}",
+                      "manage_url": preset.manage_url,
+                      "manual_key": row.get("manual_key_entry") is True})
+    return sorted(cards, key=lambda card: card["name"].casefold())
+
+
 def source_preset(source_id):
     return next((row for row in source_cards() if row["id"] == source_id), None)
 
