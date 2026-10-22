@@ -140,6 +140,11 @@ jobs:
           if [ "${rev}" != "${gate}" ]; then
             git checkout -q --detach "${rev}"
           fi
+          # The rollback case forces its fault through the candidate's own
+          # cutover control; a candidate without the hook would just deploy.
+          if [ "${GATE_CASE}" = rollback ] && ! grep -q CUTOVER_ROLLBACK_FAULT tinyassets/cutover_control.py; then
+            echo "::error::candidate ${rev} predates the forced-rollback hook; run cases=cutover"; exit 1
+          fi
           echo "gate=${gate}" >> "$GITHUB_OUTPUT"
           echo "revision=${rev}" >> "$GITHUB_OUTPUT"
           echo "candidate ${rev} (gate ${gate})"

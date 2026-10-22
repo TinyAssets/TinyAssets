@@ -136,6 +136,8 @@ setenv TINYASSETS_IMAGE "$TINYASSETS_IMAGE"
 setenv CLOUDFLARE_TUNNEL_TOKEN "$CLOUDFLARE_TUNNEL_TOKEN"
 setenv TINYASSETS_WIKI_CANARY_TOKEN "$TINYASSETS_WIKI_CANARY_TOKEN"
 setenv TINYASSETS_MCP_CANARY_URL "http://127.0.0.1:8001/mcp"
+# The droplet's daemon advertises the URL its canary probes; here both are local.
+setenv WORKOS_MCP_RESOURCE "http://127.0.0.1:8001/mcp"
 setenv BACKUP_DEST "$BACKUP_DEST"
 # Operator opt-in the droplet carries (openspec archive
 # 2026-10-11-prod-disk-retention-and-grant-errors).
