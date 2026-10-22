@@ -69,3 +69,14 @@ def test_existing_unsafe_key_is_never_replaced(tmp_path, kind):
     with pytest.raises((OSError, RuntimeError)):
         load(tmp_path)
     assert path.lstat().st_ino == inode
+
+
+def test_interrupted_first_start_never_leaves_an_unloadable_key(tmp_path):
+    # A crash after the write began leaves only the aside file; the key is absent.
+    partial = tmp_path / ".session-seal.key.partial"
+    partial.write_bytes(b"")
+    partial.chmod(0o600)
+    key = load(tmp_path)
+    assert len(key) == 32
+    assert not partial.exists()
+    assert load(tmp_path) == key
