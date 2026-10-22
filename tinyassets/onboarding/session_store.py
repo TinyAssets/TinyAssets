@@ -169,10 +169,15 @@ def _load_key() -> bytes:
         _durable_key = True
         return key
 
+    from tinyassets.boxes.layout import BROKER_UID
     from tinyassets.storage import data_dir
     from tinyassets.universe_files import read_data_path
 
-    restored_key = read_data_path(data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
+    # The broker holds no sessions and is barred from the router's .runtime;
+    # importing this module there must not read it (2026-10-22: that read
+    # refused every model sign-in exchange).
+    restored_key = None if os.geteuid() == BROKER_UID else read_data_path(
+        data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
     if restored_key is not None:
         raw = restored_key.decode("ascii").strip()
     if raw.strip():
