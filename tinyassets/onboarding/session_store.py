@@ -35,6 +35,12 @@ the scrub precedes the app build, the reconciler threads and uvicorn — the
 onboarding route being dark (``TINYASSETS_ONBOARDING_APP`` off) must not leave the
 key sitting in the environment.
 
+Inside an admitted owner box the key instead lives in that owner's durable
+volume, loaded before the app serves, without entering the environment. The
+box is the isolation boundary: a backup of the entire owner volume includes
+its key as well as ciphertext, so encryption does not protect against a reader
+of that whole volume. Shared authentication continues to use the router key.
+
 **Handles rotate.** A refresh mints a NEW handle and replaces the old record with
 a sealed tombstone naming the successor, expiring after a short grace. So a
 captured handle stops working roughly one rotation after capture instead of
@@ -153,6 +159,16 @@ def _load_key() -> bytes:
     # without the key. Popping BEFORE the parse means even a rejected value
     # does not survive in the environment.
     raw = os.environ.pop(SEAL_KEY_ENV, "")
+    from tinyassets.owner_runtime import current
+
+    runtime = current()
+    if runtime is not None:
+        from tinyassets.boxes.session_key import load
+
+        key = load(runtime.root)
+        _durable_key = True
+        return key
+
     from tinyassets.storage import data_dir
     from tinyassets.universe_files import read_data_path
 
