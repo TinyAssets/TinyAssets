@@ -911,6 +911,17 @@ jobs:
           if [ -z "${PREV_IMAGE}" ]; then
             echo "::error::no previous image captured; manual rollback required"; exit 3
           fi
+          # A cutover this run COMMITTED (layout moved, traffic not yet opened)
+          # must never take the image-only rollback: it reinstalls the previous
+          # bundle under the committed layout and the new image, which crash-loops
+          # (cutover attempt 10, 2026-10-22). Hold the committed stack and say how
+          # to fix forward or roll back data and image together.
+          cutover_state="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo cat /var/lib/tinyassets-deploy/cutover/state.json 2>/dev/null" || true)"
+          if printf '%s' "${cutover_state}" | grep -q '"state": *"pre_traffic"'; then
+            echo "::error::HOLDING: this deploy committed the owner-box cutover and a public check went red. The committed stack is left as it is (admission closed). Fix forward: dispatch deploy-prod again with a fixed candidate; it skips the migration and resumes the post-deploy steps. Or roll back data and image together: sudo env PYTHONPATH=/opt/tinyassets/boxhostd/harness-current/app python3 -m tinyassets.cutover_control rollback --state /var/lib/tinyassets-deploy/cutover --data \"\$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')\" --deploy-script /tmp/deploy_fail_safe.sh"
+            exit 1
+          fi
           # --restore-bundle, not a plain invocation: the forward deploy installed
           # a new compose.yml / vector config / systemd unit inside its
           # transaction, so converging the previous IMAGE against the new CONFIG
