@@ -28,6 +28,7 @@ endpoints, the MCP resource). No secret is ever injected or logged.
 
 from __future__ import annotations
 
+import json
 import os
 import re as _re
 import secrets
@@ -163,6 +164,9 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
         "voice": public_voice_config(),
+        "app_versions": json.loads(
+            (Path(__file__).with_name("app_versions.json")).read_text("utf-8")
+        ),
     }
 
 
@@ -226,6 +230,7 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace("__TA_CREDENTIAL_REQUESTS__", credential_requests_source())
+        .replace("__TA_APP_UPDATES__", _HTML_PATH.with_name("app_updates.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])

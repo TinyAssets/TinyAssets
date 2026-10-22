@@ -51,7 +51,7 @@
   }
   async function openExternal(url){
     if(DESKTOP_SHELL){
-      if(!window.tinyassetsDesktop)throw new Error('Update the desktop app to open the system browser.');
+      if(!window.tinyassetsDesktop){ AppUpdates.requireDesktopUpdate(CFG.app_versions); throw new Error('Update required'); }
       await window.tinyassetsDesktop.openExternal(url);return;
     }
     const B = NATIVE ? nativePlugin("Browser") : null;
@@ -9846,6 +9846,7 @@
   __TA_CREDENTIAL_REQUESTS__
 
   async function boot(){
+    if(!(await AppUpdates.init(CFG.app_versions))) return;
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
     // Native shells return from approvals in an external browser. In a web tab,

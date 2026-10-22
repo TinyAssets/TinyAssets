@@ -82,9 +82,15 @@ identities (host-owned, like the Android keystore):
   `win.certificateFile`/`certificatePassword` (or Azure Trusted Signing).
 - **macOS:** an Apple Developer ID ($99/yr) + notarization
   (`electron-builder` `mac.notarize`).
-- **Auto-update:** add `electron-updater` + a release feed (GitHub Releases or an
-  S3/R2 bucket), analogous to the tray daemon's own updater
-  (`tinyassets/desktop/updater.py`).
+- **Windows auto-update:** signed NSIS builds use `electron-updater` and the
+  `desktop-chat-latest` GitHub release feed. The shell checks at startup and
+  every four hours, downloads in the background, then installs on the next
+  normal quit. Unsigned CI artifacts keep this channel disabled. The manual
+  `desktop-chat-release.yml` workflow enables it and publishes only
+  after verifying the installer and app signatures. Add the signing secrets
+  and dispatch it from `main`; see `docs/host-actions.md`. Raise
+  `desktop.latest` in `tinyassets/onboarding/app_versions.json` only after
+  the release is available. macOS and Linux packages remain manual downloads.
 
 ## Follow-ups (tracked in the design note, not MVP-blocking)
 
