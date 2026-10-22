@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -53,7 +54,7 @@ def production_host(output, *, runsc=Path("/support/gvisor/runsc")):
         (cgroup / name).write_text(value)
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            "HOME": "/root", "PYTHONPATH": str(installed),
-           "BACKUP_DEST": ":local:/snapshots/owner-snapshots"}
+           "BACKUP_DEST": os.environ["BACKUP_DEST"]}
     code = """
 import os, sys
 from pathlib import Path

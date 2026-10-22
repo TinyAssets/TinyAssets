@@ -597,7 +597,31 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         original_migration = venue.migration
         original_reset = venue.reset_fixture
         original_restore = venue.restore
+        original_start = venue.start_stack
         tested_corruption = False
+
+        def checked_start():
+            original_start()
+            broker = venue.prefix + '-broker'
+            details = json.loads(harness.docker('inspect', broker).stdout)[0]
+            mounts = {item['Destination']: item for item in details['Mounts']}
+            assert mounts['/var/lib/ta-broker']['Name'] == venue.names['browser-keys']
+            assert mounts['/snapshots/owner-snapshots']['Source'] == (
+                venue.backup + '/owner-snapshots')
+            assert all(item.get('Name') != venue.names['backup']
+                       for item in details['Mounts'])
+            harness.docker('exec', broker, 'python', '-c',
+                           "import os; from pathlib import Path; "
+                           "p=Path('/var/lib/ta-broker'); s=p.stat(); "
+                           "assert (s.st_uid,s.st_gid,s.st_mode & 0o777)==(1002,1002,0o700); "
+                           "config=os.environ['RCLONE_CONFIG']; "
+                           "assert config=='/etc/tinyassets/broker-rclone.conf'; "
+                           "assert '[spaces]' in Path(os.environ['RCLONE_CONFIG']).read_text(); "
+                           "assert not Path('/backup/input.tar.gz').exists(); "
+                           "assert not Path('/var/lib/ta-broker/original.tar.gz').exists()")
+            for name in ('broker.env', 'boxhostd.env'):
+                assert 'BACKUP_DEST=spaces:/snapshots/owner-snapshots' in (
+                    venue.compose_dir / name).read_text()
 
         def checked_restore(**kwargs):
             nonlocal tested_corruption
@@ -698,6 +722,7 @@ finally:
             return result
 
         venue.migration = checked_migration
+        venue.start_stack = checked_start
         venue.reset_fixture = checked_reset
         venues.append(venue)
         return venue
@@ -709,7 +734,7 @@ finally:
             started = time.monotonic()
             if cache_dir:
                 (cache_dir.parent / 'committed-key').write_text(
-                    harness.committed_key(image, archive))
+                    harness.committed_key(image, archive, 1024**3))
             result = archive_rehearsal(image, archive, store_bytes=1024**3,
                                       from_committed=bool(cache_dir) and os.environ.get(
                                           'TA_REHEARSAL_FROM', 'committed') == 'committed',
@@ -802,19 +827,27 @@ def test_committed_cache_invalidates_inputs_but_not_post_commit_callers(tmp_path
     (root / 'tinyassets').mkdir()
     (root / 'scripts').mkdir()
     for relative in ('deploy/deploy_fail_safe.sh', 'tinyassets/cutover_control.py',
-                     'tinyassets/box_layout_migration.py'):
+                     'tinyassets/box_layout_migration.py', 'scripts/archive_rehearsal.py',
+                     'scripts/rehearsal_launch.py', 'scripts/rehearse_box_move.py'):
         (root / relative).write_text('migration-v1')
     archive = tmp_path / 'input.tar.gz'
     archive.write_bytes(b'synthetic archive')
     monkeypatch.setattr(harness, 'ROOT', root)
     monkeypatch.setattr(harness, 'docker', lambda *args: subprocess.CompletedProcess(
         args, 0, args[-1]))
-    key = harness.committed_key('immutable-image-a', archive)
+    key = harness.committed_key('immutable-image-a', archive, 1024**3)
     (root / 'scripts/rehearsal_serve.py').write_text('new serving assertion')
-    assert harness.committed_key('immutable-image-a', archive) == key
-    assert harness.committed_key('immutable-image-b', archive) != key
+    assert harness.committed_key('immutable-image-a', archive, 1024**3) == key
+    assert harness.committed_key('immutable-image-b', archive, 1024**3) != key
+    assert harness.committed_key('immutable-image-a', archive, 2 * 1024**3) != key
     archive.write_bytes(b'changed archive')
-    assert harness.committed_key('immutable-image-a', archive) != key
+    assert harness.committed_key('immutable-image-a', archive, 1024**3) != key
     archive.write_bytes(b'synthetic archive')
     (root / 'tinyassets/box_layout_migration.py').write_text('migration-v2')
-    assert harness.committed_key('immutable-image-a', archive) != key
+    assert harness.committed_key('immutable-image-a', archive, 1024**3) != key
+
+    for relative in ('scripts/archive_rehearsal.py', 'scripts/rehearsal_launch.py',
+                     'scripts/rehearse_box_move.py'):
+        before = harness.committed_key('immutable-image-a', archive, 1024**3)
+        (root / relative).write_text('changed generation setup')
+        assert harness.committed_key('immutable-image-a', archive, 1024**3) != before

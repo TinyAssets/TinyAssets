@@ -22,10 +22,14 @@ DATA_ARCHIVE = f"tinyassets-snapshot-{STAMP}.tar.gz"
 BOX_ARCHIVE = f"tinyassets-box-store-{STAMP}.tar.gz"
 
 
-def committed_key(image, archive):
-    """A changed archive, migration implementation or image requires full apply."""
-    digest = hashlib.sha256(b"owner-box-committed-v1\0")
+def committed_key(image, archive, store_bytes):
+    """Hash every input to the saved generation, including venue construction."""
+    digest = hashlib.sha256(b"owner-box-committed-v2\0")
+    digest.update(str(store_bytes).encode() + b"\0")
     for path in sorted({ROOT / "deploy/deploy_fail_safe.sh",
+                        ROOT / "scripts/archive_rehearsal.py",
+                        ROOT / "scripts/rehearsal_launch.py",
+                        ROOT / "scripts/rehearse_box_move.py",
                         *ROOT.glob("tinyassets/box_layout*.py"),
                         *ROOT.glob("tinyassets/box_migration*.py"),
                         ROOT / "tinyassets/cutover_control.py"}):
@@ -156,7 +160,7 @@ class Venue:
         self.names = {
             k: self.prefix + "-" + k
             for k in ("image", "store", "parent", "data", "backup", "support", "harness",
-                      "control", "runtime")
+                      "control", "runtime", "browser-keys")
         }
         self.volumes, self.containers = [], []
         self.device = ""
@@ -171,7 +175,7 @@ class Venue:
         if docker("image", "inspect", self.image, check=False).returncode:
             raise ImageNotFound(f"image not found: {self.image}")
         for key in ("image", "store", "parent", "backup", "support", "harness",
-                      "control", "runtime"):
+                      "control", "runtime", "browser-keys"):
             docker("volume", "create", self.names[key])
             self.volumes.append(self.names[key])
 
@@ -456,7 +460,7 @@ class Venue:
         self.container("--rm", "--user", "0", "-v", self.names["backup"] + ":/backup",
                        "--entrypoint", "sh", self.image, "-ec",
                        "mkdir -p /backup/owner-snapshots/platform; "
-                       "chown 1002:1002 /backup/owner-snapshots/platform")
+                       "chown -R 1002:1002 /backup/owner-snapshots")
         # Caller-owned canary credential; production's healthcheck is unchanged.
         self.container("--rm", "--user", "1001:1001", "-v", self.names["data"] + ":/data",
                        "--entrypoint", "python", self.image, "-c",
@@ -475,12 +479,35 @@ class Venue:
         empty = self.compose_dir / "empty.env"
         empty.write_text("")
         daemon_env = self.compose_dir / "daemon.env"
-        daemon_env.write_text("UNIVERSE_SERVER_AUTH=oauth\n"
-                              "UNIVERSE_SERVER_URL=https://rehearsal.invalid/mcp\n"
-                              "TINYASSETS_WIKI_CANARY_TOKEN=synthetic-rehearsal-canary-credential\n")
         broker_env = self.compose_dir / "broker.env"
-        broker_env.write_text("TINYASSETS_BOX_AWAKE_CAP=2\n"
-                              "BACKUP_DEST=:local:/var/lib/ta-broker/owner-snapshots\n")
+        source_env = self.compose_dir / "source.env"
+        source_env.write_text("UNIVERSE_SERVER_AUTH=oauth\n"
+                              "UNIVERSE_SERVER_URL=https://rehearsal.invalid/mcp\n"
+                              "TINYASSETS_WIKI_CANARY_TOKEN=synthetic-rehearsal-canary-credential\n"
+                              "BACKUP_DEST=spaces:/snapshots/owner-snapshots\n")
+        renderer = self.prefix + "-render-env"
+        self.containers.append(renderer)
+        docker("create", "--name", renderer, "--network", "none", "--user", "0",
+               "-v", self.names["support"] + ":/support",
+               "-v", self.names["backup"] + ":/backup:ro",
+               "-e", "TINYASSETS_RCLONE_CONFIG=/backup/rclone/rclone.conf",
+               "-e", "TINYASSETS_DAEMON_ENV_SOURCE=/support/source.env",
+               "-e", "TINYASSETS_DAEMON_ENV_FILE=/support/daemon.env",
+               # The image has setpriv, not the host's sudo. Keep production
+               # ownership/modes and prove service readability below as UID1001.
+               "-e", "TINYASSETS_ENV_READ_USER=",
+               "--entrypoint", "bash", self.image,
+               "/support/deploy/install-tinyassets-env.sh", "render-daemon-env")
+        docker("cp", str(source_env), renderer + ":/support/source.env")
+        docker("start", "-a", renderer)
+        if docker("inspect", "-f", "{{.State.ExitCode}}", renderer).stdout.strip() != "0":
+            raise RuntimeError("production env renderer failed")
+        self.container("--rm", "--user", "1001:1001",
+                       "-v", self.names["support"] + ":/support:ro",
+                       "--entrypoint", "sh", self.image, "-ec",
+                       "for name in daemon broker boxhostd; do test -r /support/$name.env; done")
+        for name in ("daemon.env", "broker.env", "boxhostd.env"):
+            docker("cp", renderer + ":/support/" + name, str(self.compose_dir / name))
         def mount(key):
             return docker("volume", "inspect", "-f", "{{.Mountpoint}}",
                           self.names[key]).stdout.strip()
@@ -489,7 +516,8 @@ class Venue:
                       TINYASSETS_DAEMON_NAME=self.prefix + "-daemon",
                       TINYASSETS_BROKER_NAME=self.prefix + "-broker",
                       TINYASSETS_DATA_VOLUME=self.names["data"],
-                      TINYASSETS_BROWSER_KEYS_VOLUME=self.names["backup"],
+                      TINYASSETS_BROWSER_KEYS_VOLUME=self.names["browser-keys"],
+                      TINYASSETS_SNAPSHOT_PATH=self.backup + "/owner-snapshots",
                       TINYASSETS_NETWORK_NAME=self.prefix + "-net",
                       TINYASSETS_BOXHOST_RUN=mount("runtime"),
                       TINYASSETS_BROKER_RCLONE=mount("support") + "/broker-rclone.conf",
@@ -497,7 +525,8 @@ class Venue:
                       TINYASSETS_BROKER_ENV=str(broker_env),
                       TINYASSETS_INTERCHANGE_ENV=str(empty),
                       TINYASSETS_IDEMPOTENCY_ENV=str(empty), TINYASSETS_INGRESS_ENV=str(empty))
-        # Replace only env-file paths; no service command or authority override.
+        # Env paths and a local synthetic snapshot remote; preserve service authority.
+        # Mount only the remote subtree: the broker never receives raw input archives.
         (self.compose_dir / "paths.yml").write_text(
             "services:\n  daemon:\n    env_file: !override\n"
             "      - ${TINYASSETS_DAEMON_ENV}\n"
@@ -505,10 +534,9 @@ class Venue:
             "      - ${TINYASSETS_IDEMPOTENCY_ENV}\n"
             "      - ${TINYASSETS_INGRESS_ENV}\n"
             "  broker:\n    env_file: !override\n"
-            "      - path: ${TINYASSETS_BROKER_ENV}\n        required: false\n")
+            "      - path: ${TINYASSETS_BROKER_ENV}\n        required: false\n"
+            "    volumes:\n      - ${TINYASSETS_SNAPSHOT_PATH}:/snapshots/owner-snapshots\n")
         (self.compose_dir / "env").write_text("".join(f"{k}={v}\n" for k, v in values.items()))
-        self.container("--rm", "--user", "0", "-v", self.names["support"] + ":/support",
-                       "--entrypoint", "touch", self.image, "/support/broker-rclone.conf")
         result = self.container(
             "-d", "--privileged", "--user", "0", "--cgroupns=host", "--pid=host",
             "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
@@ -518,7 +546,11 @@ class Venue:
             "-v", self.names["runtime"] + ":/run/tinyassets-boxhostd",
             "-v", self.names["harness"] + ":/harness:ro",
             "-v", self.names["harness"] + ":/opt/tinyassets/boxhostd",
-            "-v", self.names["backup"] + ":/snapshots",
+            "--mount", "type=bind,src=" + self.backup +
+            "/owner-snapshots,dst=/snapshots/owner-snapshots",
+            "--mount", "type=bind,src=" + self.backup +
+            "/rclone,dst=/root/.config/rclone,readonly",
+            "--env-file", str(self.compose_dir / "boxhostd.env"),
             "--entrypoint", "python", self.image, "-B", "/support/rehearsal_launch.py", "host")
         self.host_container = result.stdout.strip()
         deadline = time.monotonic() + 45
@@ -761,7 +793,8 @@ def archive_rehearsal(image, archive, *, store_bytes, from_committed=False, cach
             raise RuntimeError("step failed")
 
     try:
-        cache = (Path(cache_dir) / committed_key(image, archive)) if cache_dir else None
+        cache = (Path(cache_dir) / committed_key(image, archive, store_bytes)
+                 if cache_dir else None)
         cached = bool(from_committed and cache and (cache / "state.tar.gz").is_file()
                       and (cache / "report.json").is_file())
         if cached:
