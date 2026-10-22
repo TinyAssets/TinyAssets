@@ -177,17 +177,28 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
       if [ "$1" = "apply" ]; then
         data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
       fi
+      local snapshot_dest rclone_dir=/root/.config/rclone
       if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ]; then
-        # Synthetic remote, preserved across disposable migration containers.
-        extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots" \
-          -e BACKUP_DEST=:local:/snapshots/owner-snapshots)
+        # The isolated rehearsal supplies only caller data: a local "spaces"
+        # remote in a real rclone.conf, read through the same file lookup.
+        snapshot_dest=spaces:/snapshots/owner-snapshots
+        rclone_dir="${MIGRATION_BACKUP_DIR}/rclone"
+        # Written through the engine: a rehearsal runner may not share the
+        # engine host's filesystem, which is where bind sources resolve.
+        docker run --rm --network none --user 0 -v "${MIGRATION_BACKUP_DIR}:/snapshots" \
+          --entrypoint sh "$NEW_IMAGE" -c \
+          'mkdir -p /snapshots/rclone && printf "[spaces]\ntype = local\n" > /snapshots/rclone/rclone.conf' \
+          >/dev/null || return 1
+        extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots")
       else
-        local snapshot_dest
         snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
-        extra+=(-e "BACKUP_DEST=$snapshot_dest" \
-          -v /root/.config/rclone:/root/.config/rclone:ro)
-        [ "$1" != "apply" ] || network=bridge
       fi
+      # The image bakes HOME=/home/tinyassets, so rclone must be pointed at
+      # root's mounted config explicitly (cutover attempt 6, 2026-10-21).
+      extra+=(-v "$rclone_dir:/root/.config/rclone:ro" \
+        -e "BACKUP_DEST=$snapshot_dest" \
+        -e RCLONE_CONFIG=/root/.config/rclone/rclone.conf)
+      [ "$1" != "apply" ] || network=bridge
     else
       extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
     fi
@@ -1654,44 +1665,25 @@ if ! ensure_state_dir; then
 fi
 
 discard_candidate_harness() {  # a refused or rolled-back run keeps only the harness it started with
-  local root name image_id current previous_id
+  local root name
   root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
-  name="${HARNESS_INSTALLED_THIS_RUN:-}"
-  if [ -z "$name" ] && [ "${BOX_CANDIDATE_LAYOUT:-}" = owner-box ]; then
-    # install_box_harness may reuse a rootfs left by an earlier refused run.
-    # It still switched harness-current; clean that candidate too, but never
-    # remove the harness belonging to the image that was already serving.
-    image_id="$(docker image inspect -f '{{.Id}}' "$NEW_IMAGE" 2>/dev/null)" || return 1
-    previous_id="$(docker image inspect -f '{{.Id}}' "$PREV_IMAGE" 2>/dev/null)" || return 1
-    [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ && "$previous_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-    current="$(readlink "${root}/harness-current" 2>/dev/null || true)"
-    if [ "$image_id" != "$previous_id" ] && [ "$current" = "harness-${image_id#sha256:}" ]; then
-      name="$current"
-    fi
-  fi
+  name="$HARNESS_INSTALLED_THIS_RUN"
   [ -n "$name" ] || return 0
-  # Initialization can itself fail after publishing eligibility (including the
-  # gate fault). Keep the candidate's recovery code until the EXIT handler has
-  # restored the stopped data, even when migration_refused calls us first.
-  if [ -d "${BUNDLE_STATE_DIR}/cutover" ] && [ -n "${MIGRATION_SNAPSHOT:-}" ] \
-      && [ "${CUTOVER_RESTORED:-0}" != 1 ]; then return 0; fi
-  [ "${MIGRATION_COMMITTED:-0}" != "1" ] || return 0  # the committed layout runs on it
-  [[ "$name" =~ ^harness-[0-9a-f]{64}$ ]] || return 1
-  [ "$name" != "${HARNESS_PREVIOUS_LINK:-}" ] || return 0
+  [ "$MIGRATION_COMMITTED" != "1" ] || return 0  # the committed layout runs on it
   HARNESS_INSTALLED_THIS_RUN=""
   if [ -n "$HARNESS_PREVIOUS_LINK" ] && [ -d "${root}/${HARNESS_PREVIOUS_LINK}" ]; then
     ln -s "$HARNESS_PREVIOUS_LINK" "${root}/.harness-current.$$" \
       && mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" \
-      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 1; }
+      || { err "could not restore harness-current to ${HARNESS_PREVIOUS_LINK}; keeping ${name}"; return 0; }
   elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
-    rm -f -- "${root}/harness-current" || return 1
+    rm -f -- "${root}/harness-current"
   fi
   case "$name" in
     harness-[0-9a-f]*)
       # extract_box_harness made the tree read-only; writable again before rm.
       chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
       rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
-        || { err "could not remove candidate harness ${name}"; return 1; } ;;
+        || err "could not remove candidate harness ${name}" ;;
   esac
 }
 
