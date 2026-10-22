@@ -12,6 +12,8 @@ from tests.test_broker_server import broker  # noqa: F401
 from tests.test_owner_router import admitted, boxes, initialized_ledger  # noqa: F401
 from tinyassets.boxes.session_key import load
 
+pytestmark = pytest.mark.verifies('owner-box:Owner session sealing survives box restarts')
+
 
 def test_owner_daemon_key_survives_sleep_wake_and_is_not_shared(boxes, broker):  # noqa: F811
     roots = boxes.roots
