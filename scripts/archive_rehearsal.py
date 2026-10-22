@@ -383,8 +383,13 @@ with tempfile.TemporaryDirectory() as temporary:
     for path in binaries.iterdir():
         path.chmod(0o700)
     os.environ['PATH'] = str(binaries) + os.pathsep + os.environ['PATH']
-    rollback_live(Path('/deployment/cutover'), Path('/parent/_data'),
-                  deploy_script=binaries / 'old-deploy', store=Path('/box-store'))
+    control = Path('/deployment/cutover')
+    if not control.exists():
+        # Admission archives consumption; exercise refusal against that receipt.
+        control, = Path('/deployment').glob('cutover-committed-*')
+    rollback_live(control, Path('/parent/_data'),
+                  deploy_script=binaries / 'old-deploy', store=Path('/box-store'),
+                  runsc=Path('/support/gvisor/runsc'))
 """
         result = self.container(
             "--rm", "--user", "0",
@@ -392,6 +397,7 @@ with tempfile.TemporaryDirectory() as temporary:
             "-v", self.names["backup"] + ":/backup:ro",
             "-v", self.names["control"] + ":/deployment",
             "--mount", "type=bind,src=" + self.store + ",dst=/box-store",
+            "-v", self.names["support"] + ":/support:ro",
             "--entrypoint", "python", self.image, "-B", "-c", code, check=False)
         if refuse:
             if result.returncode == 0 or (refusal_reason and refusal_reason not in result.stderr):

@@ -518,6 +518,7 @@ def test_fail_safe_cleans_before_migration_preflight(box, cutover, source, xfs_s
                                                 empty_boxhost, receipt_kind):
     from tinyassets.cutover_control import _write
 
+    _, env, _, _ = _owner_box_cutover(box)
     control, _ = cutover
     state = json.loads((control / "state.json").read_text())
     _write(control / "state.json", {**state, "state": "consumed",
@@ -541,14 +542,17 @@ def test_fail_safe_cleans_before_migration_preflight(box, cutover, source, xfs_s
         '            if os.environ["RECEIPT_KIND"] != "committed":',
         '                assert not os.listdir(os.environ["BOX_STORE_DIR"])',
         '            print("migration_preflight=ok")',
+        '            return 1  # stop after observing cleanup, before a new migration',
     ]))
     docker.write_text(body)
     before = _fingerprint(source)
     before_store = _fingerprint(xfs_store)
-    result = box.run(NEW_IMAGE, BOX_STORE_DIR=str(xfs_store),
-                     RECEIPT_KIND=receipt_kind, FAKE_DOCKER_VOLUME_DIR=str(source))
+    env.update(BOX_STORE_DIR=str(xfs_store), RECEIPT_KIND=receipt_kind,
+               FAKE_DOCKER_VOLUME_DIR=str(source))
+    result = box.run(NEW_IMAGE, **env)
     if receipt_kind != "wrong-image":
-        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert _result(result) == "migration_refused"
         assert (result.stdout.index("cleaned and archived")
                 < result.stdout.index("migration_preflight=ok"))
     else:
