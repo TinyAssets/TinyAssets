@@ -818,7 +818,7 @@ write_daemon_env() {
     read_file_exactly "${DAEMON_ENV_SOURCE}" \
         || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
     local rest="${READ_CONTENT}" line selected=0 out="# GENERATED OAuth broker environment"$'\n'
-    local box_out="# GENERATED boxhostd environment: the snapshot remote only"$'\n'
+    local box_out="# GENERATED boxhostd environment: snapshot remote and public URL"$'\n'
     QUOTE_OPEN=""
     while [ -n "${rest}" ]; do
         if [[ "${rest}" == *$'\n'* ]]; then
@@ -836,6 +836,10 @@ write_daemon_env() {
         selected=0
         if parse_env_assignment "${line}"; then
             classify_env_value || true # Already validated by render_daemon_content.
+            if [ "${ENV_KEY}" = UNIVERSE_SERVER_URL ]; then
+                [ -z "${QUOTE_OPEN}" ] || refuse_render "UNIVERSE_SERVER_URL must be on one line"
+                box_out+="${line}"$'\n'
+            fi
             # C6: the broker deletion job invokes billing and identity erasure.
             if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
                   "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == STRIPE_WEBHOOK_SECRET ||
@@ -863,7 +867,7 @@ write_daemon_env() {
     fi
     out+="RCLONE_CONFIG=/etc/tinyassets/broker-rclone.conf"$'\n'
     ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )
-    # boxhostd reads only its snapshot remote; root's HOME keeps root's rclone config.
+    # root's HOME keeps root's rclone config; boxes also receive the public URL.
     ( ENV_FILE="${BOXHOSTD_ENV_FILE}"; atomic_install "${box_out}"; assert_readable )
     echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
 }

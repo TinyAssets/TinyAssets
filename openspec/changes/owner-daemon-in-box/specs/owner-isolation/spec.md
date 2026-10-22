@@ -1,5 +1,17 @@
 ## ADDED Requirements
 
+### Requirement: Owner boxes know the platform public URL
+The env renderer SHALL include `UNIVERSE_SERVER_URL` in `boxhostd.env`.
+The production gVisor launcher SHALL pass that public value from its own
+environment into every box and SHALL refuse startup if it is absent or empty.
+Owner app origin checks SHALL use that configured public resource even when
+the internal transport uses HTTP and an internal Host.
+
+#### Scenario: Browser writes through the internal socket
+- **WHEN** the public URL is `https://tinyassets.io` and the box receives an HTTP request
+- **THEN** preferences and uploads accept that public Origin and reject a foreign Origin
+- **AND** no public Host rewrite is needed in the router
+
 ### Requirement: The wake index holds only the next owner wake
 The shared wake index SHALL have exactly two columns, `owner` and `next_wake_at`.
 Schedule definitions, pause state and occurrence execution SHALL live in the box.

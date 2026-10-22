@@ -21,6 +21,14 @@ TMP_BYTES = 256 * 1024 * 1024
 PIDS = 1024
 
 
+def public_url() -> str:
+    """Production boxes must use boxhostd's explicit public origin."""
+    value = os.environ.get("UNIVERSE_SERVER_URL", "").strip()
+    if not value:
+        raise BoxError("UNIVERSE_SERVER_URL is required to start an owner box")
+    return value
+
+
 class GvisorRuntime:
     """One delegated service cgroup, one sandbox per permanent owner UID."""
 
@@ -87,6 +95,7 @@ class GvisorRuntime:
                 "HOME=/home/owner",
                 f"TINYASSETS_VOLUME_GENERATION={volume_generation}",
                 "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
+                f"UNIVERSE_SERVER_URL={public_url()}",
             ],
         )
         # runsc spec may include host binds (/etc/hosts, resolv.conf, etc.).
@@ -144,6 +153,7 @@ class GvisorRuntime:
               rootfs: Path | None = None) -> None:
         box = self.box_id(uid)
         bundle = self.bundle_root / box
+        public_url()  # Refuse before creating a bundle or invoking runsc.
         bundle.mkdir(mode=0o700, exist_ok=False)
         self._command("spec", "--bundle", str(bundle), timeout=5)
         config_path = bundle / "config.json"
