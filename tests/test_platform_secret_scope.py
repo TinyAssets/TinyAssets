@@ -322,7 +322,8 @@ def test_render_removes_every_compose_spelling_of_a_forbidden_name(tmp_path):
 
 @_POSIX_SHELL
 @pytest.mark.verifies("owner-daemon-in-box:C2")
-def test_boxhostd_receives_snapshot_remote_and_public_url(tmp_path):
+def test_boxhostd_receives_only_its_snapshot_remote(tmp_path):
+    # Exactly the snapshot remote and the public origin, which is not a secret.
     source = tmp_path / "env"
     daemon = tmp_path / "daemon.env"
     source.write_text(

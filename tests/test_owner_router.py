@@ -326,6 +326,7 @@ def test_shared_owner_session_authenticates_and_carries_protected_view_proof(rou
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T1')
 @pytest.mark.parametrize("rewrite_host", [True, False])
 def test_box_public_origin_preferences_and_upload(router, boxes, monkeypatch, rewrite_host):
     if not rewrite_host:
