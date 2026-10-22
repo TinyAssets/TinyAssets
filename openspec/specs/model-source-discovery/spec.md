@@ -49,3 +49,10 @@ An expired or wrong-account approval handoff (409 `handoff_expired_or_wrong_acco
 #### Scenario: Stale link
 - **WHEN** an owner opens a stale approval URL
 - **THEN** the app retains unrelated query parameters and fragment and loads normally
+
+### Requirement: Named source model groups
+The model menu SHALL show Automatic first and selected unless an explicit preference exists. Models SHALL start collapsed beneath their source's preset display name or API host, never an internal identifier, including unavailable models with their reasons.
+
+#### Scenario: Expand one source
+- **WHEN** the owner opens a source group
+- **THEN** only that source's models expand and the current selection remains indicated

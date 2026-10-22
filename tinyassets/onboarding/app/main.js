@@ -2719,7 +2719,8 @@
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
     sourceLabel(provider){
       const source=(this.snapshot?.sources||[]).find(item=>item.provider_ref===provider);
-      return typeof source?.display_name==="string"?source.display_name:provider;
+      if(typeof source?.display_name==="string"&&source.display_name)return source.display_name;
+      return "Connected source";
     },
     label(ref){return this.sourceLabel(ref.provider_ref)+" · "+(ref.model_id||"Provider default");},
     // ---- effort ---------------------------------------------------------
@@ -2853,20 +2854,47 @@
       // Everything the command center can actually use, then - only if there are any -
       // the ones that cannot be used yet, greyed under one small divider with
       // their reason. A model is never silently absent.
-      const usable=[],blocked=[],refreshing=[];
-      for(const row of this.rows()) (this.usable(row)?usable:
-        (row.reasons||[]).some(r=>this.refreshLabel(r.reason))?refreshing:blocked).push(row);
+      const usable=this.rows().filter(row=>this.usable(row));
       const isCurrent=key=>!!current&&this.key(current)===key;
-      for(const row of usable){
-        const key=this.key(row.reference);
-        this.menuRow(this.label(row.reference),isCurrent(key),pickable?()=>this.choose(key):null);
+      // Models are grouped under their source and start collapsed: Automatic
+      // above already uses the strongest connected source, so most people never
+      // open a group. A group holding the current choice is ticked.
+      this.expanded=this.expanded||new Set();
+      const groups=new Map();
+      for(const row of this.rows()){
+        const provider=row.reference.provider_ref;
+        if(!groups.has(provider))groups.set(provider,[]);
+        groups.get(provider).push(row);
+      }
+      for(const [provider,rows] of groups){
+        const open=this.expanded.has(provider);
+        const holds=rows.some(row=>isCurrent(this.key(row.reference)));
+        const head=this.menuRow((open?"\u25be ":"\u25b8 ")+this.sourceLabel(provider)+
+          " ("+rows.length+")",holds&&!open,()=>{
+            if(open)this.expanded.delete(provider);else this.expanded.add(provider);
+            this.renderMenu();
+            const again=this.menuItems().find(node=>node.dataset.group===provider);
+            if(again)again.focus();
+          });
+        head.dataset.group=provider;head.classList.add("model-menu-group");
+        head.setAttribute("aria-expanded",open?"true":"false");
+        if(!open)continue;
+        for(const row of rows){
+          const key=this.key(row.reference);
+          const item=this.menuRow(row.reference.model_id||"Provider default",isCurrent(key),
+            pickable&&this.usable(row)?()=>this.choose(key):null,
+            this.usable(row)?null:(row.reasons||[]).map(r=>
+              this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", ")||
+              "availability unconfirmed");
+          item.classList.add("model-menu-item--nested");item.style.paddingLeft="2em";
+        }
       }
       // The current choice is ALWAYS shown as current, at the top of the list,
       // even when it can no longer be used - whether its model went away entirely
       // or merely stopped being available. The command center is configured that way and
       // a list that showed it unticked, or only down under "needs access", would
       // misreport what the command center is set to.
-      if(current&&!usable.some(row=>isCurrent(this.key(row.reference)))){
+      if(current&&!this.rows().some(row=>isCurrent(this.key(row.reference)))){
         const row=this.row(current);
         const why=row ? "— currently unavailable" : "— unavailable";
         this.menuRow(this.label(current),true,null,why);
@@ -2876,18 +2904,6 @@
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
         const labels=source.reasons.map(r=>this.refreshLabel(r.reason)).filter(Boolean);
         if(labels.length) this.menuNote(source.provider_ref+" — "+labels.join(", "));
-      }
-      if(refreshing.length){
-        this.menuNote("Checking availability","model-menu-divider");
-        for(const row of refreshing) this.menuRow(this.label(row.reference),false,null,
-          "— "+row.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", "));
-      }
-      if(blocked.length){
-        this.menuNote("Needs access","model-menu-divider");
-        for(const row of blocked){
-          const reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
-          this.menuRow(this.label(row.reference),false,null,"— "+(reasons||"availability unconfirmed"));
-        }
       }
       // Effort for the current model, offering exactly the levels its source
       // advertised. Absent entirely when the model has none, so the control
