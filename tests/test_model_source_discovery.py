@@ -105,6 +105,22 @@ def test_no_oauth_offers_discovered_key(provider, app):
     assert result.status_code == 200, result.text
     assert result.json()["status"] == "api_key_required"
     assert result.json()["endpoint"] == f"https://{API}/v1/chat/completions"
+    # The same connect path continues: deposit the key, then a model call.
+    key = "sk-synthetic-" + "k" * 24
+    provider.access[key] = time.time() + 3600
+    with _as(OWNER):
+        from tests.owner_answer import session_cookie
+
+        saved = _post("deposit", {"definition": result.json()["definition"], "secret": key},
+                      cookie=session_cookie())
+    assert saved.status_code == 200, saved.text
+    assert key not in saved.text
+    grant = saved.json()["grant_id"]
+    response = _broker(app, UID, OWNER, grant, None)(grant, "POST", {
+        "url": f"https://{API}/v1/chat/completions",
+        "body": {"model": "test-chat", "messages": [{"role": "user", "content": "Hi"}]}})
+    assert response["status"] == 200
+    assert provider.api_calls[-1] == key
 
 
 def test_no_model_api_does_not_guess(provider, app):
