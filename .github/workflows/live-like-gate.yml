@@ -168,7 +168,10 @@ jobs:
             echo "TINYASSETS_CANARY_USER_ID=live-like-canary"
             echo "TINYASSETS_APP_INGRESS_HMAC_KEY=$(b64)"
           } > "$f"
-          while IFS='=' read -r key value; do
+          # Split at the first '=' only: `IFS='=' read` drops a base64 key's
+          # trailing '=', and the deploy would then see a rotated key.
+          while IFS= read -r line; do
+            key="${line%%=*}"; value="${line#*=}"
             case "${key}" in
               TINYASSETS_IMAGE|BASE_REVISION|LIVE_LIKE_INSTANCE_ID) continue ;;
             esac
