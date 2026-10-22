@@ -49,8 +49,13 @@ PROD_ONLY = {
 # Gate-only conjuncts: the rollback case stops at the fail-safe's verdict.
 CASE_GUARD = "matrix.case == 'cutover'"
 ROLLBACK_CONTINUE = "${{ matrix.case == 'rollback' }}"
-# The gate's own verdict, which reruns the read-only preflight after a rollback.
-GATE_VERDICT = "Assert the host is live on the expected image"
+# The gate's own steps outside the deploy: host setup recreating the live
+# revision's deploy (its receipt), and the verdict, which reruns the
+# read-only preflight after a rollback.
+GATE_OWN = {
+    "Start the live image and make it live",
+    "Assert the host is live on the expected image",
+}
 
 
 def steps(path: Path) -> list[dict]:
@@ -62,7 +67,7 @@ def steps(path: Path) -> list[dict]:
 def phase_steps(path: Path) -> list[tuple[str, dict]]:
     found = []
     for step in steps(path):
-        if step.get("name") == GATE_VERDICT:
+        if step.get("name") in GATE_OWN:
             continue
         phases = PHASE.findall(step.get("run", ""))
         assert len(phases) <= 1, f"{step.get('name')}: one driver phase per step"
