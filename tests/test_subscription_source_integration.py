@@ -291,3 +291,18 @@ def test_authorized_router_calls_subscription(connected):
     finally:
         budget.close()
         auth.revoke_provider_request(capability)
+
+
+def test_disconnect_removes_only_declared_login_and_marker(connected):
+    from tinyassets.onboarding.subscription_connect import connected_sources, disconnect
+
+    assert connected_sources() == {"sources": [{"id": "fake-cli", "name": "Fixture"}]}
+    installed = connected.binary.read_bytes()
+    other = connected.home / ".other-login"
+    other.write_text("keep")
+    assert disconnect("fake-cli")["status"] == "disconnected"
+    assert not (connected.home / ".fake-login").exists()
+    assert not (connected.directory / "connection").exists()
+    assert connected.binary.read_bytes() == installed
+    assert other.read_text() == "keep"
+    assert connected_sources() == {"sources": []}

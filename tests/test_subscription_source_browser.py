@@ -18,6 +18,7 @@ def test_native_subscription_connect_controls(native):
     calls, approved = [], []
     script = """
       const $=id=>document.getElementById(id),NATIVE=NATIVE_VALUE,DESKTOP_SHELL=false;
+      const ConnectedAI={load(){}};
       const CFG={model_source_address:'https://fixture.example'},MCP={_loginEpoch:1};
       const pkceStore=sessionStorage,queueOwner='owner',queueScope='center';
       const token=()=>true,ensureFreshToken=async()=>{},authHeaders=()=>({});

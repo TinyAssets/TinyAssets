@@ -46,6 +46,43 @@ def finish(source_id):
     return {"status": "connected", "provider": "subscription_cli:" + definition.id}
 
 
+def connected_sources():
+    """The subscription sources this owner's box has connected (no CLI is run)."""
+    from tinyassets.owner_runtime import current
+    from tinyassets.providers.subscription_source import sources
+
+    home = current().root
+    return {"sources": [{"id": doc["id"], "name": doc["display_name"]}
+                        for doc in sources(home).values()
+                        if (home / ".ta-cli" / doc["id"] / "connection").is_file()]}
+
+
+def disconnect(source_id):
+    """Remove one subscription source's login and connection marker, preserving installed software.
+
+    Only the login files the source's own record declares are removed, and only
+    inside the owner's box. The provider account itself is unchanged.
+    """
+    import shutil
+
+    from tinyassets.owner_runtime import current
+    from tinyassets.providers.subscription_source import sources
+
+    home = current().root
+    doc = sources(home)[source_id]
+    resolved_home = home.resolve()
+    for path in doc["state"]["paths"]:
+        target = (home / path).resolve()
+        if not target.relative_to(resolved_home).parts:
+            raise ValueError("login state cannot be the owner home")
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.is_file():
+            target.unlink()
+    (home / ".ta-cli" / doc["id"] / "connection").unlink(missing_ok=True)
+    return {"status": "disconnected", "source_id": doc["id"]}
+
+
 async def handle(request):
     from tinyassets import onboarding
     from tinyassets.auth.middleware import current_identity
@@ -62,7 +99,8 @@ async def handle(request):
         return JSONResponse({"error": "interactive_approval_required"}, 403, headers=HEADERS)
     action = request.path_params["operation"]
     fields = {"resolve": {"address"}, "begin": {"source_id"}, "poll": {"flow"}, "cancel": {"flow"},
-              "code": {"flow", "code"}, "finish": {"flow"}}
+              "code": {"flow", "code"}, "finish": {"flow"},
+              "list": set(), "disconnect": {"source_id"}}
     try:
         raw = await onboarding._read_bounded_body(request, 4096)
         doc = json.loads(raw) if raw is not None else None
@@ -80,6 +118,10 @@ async def handle(request):
             if state["status"] != "connected":
                 raise PermissionError("native login is not complete")
             result = await run_in_threadpool(finish, state["source_id"])
+        elif action == "list":
+            result = await run_in_threadpool(connected_sources)
+        elif action == "disconnect":
+            result = await run_in_threadpool(disconnect, doc["source_id"])
         else:
             result = login_operation(action, **doc)
         return JSONResponse(result, headers=HEADERS)

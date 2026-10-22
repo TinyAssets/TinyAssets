@@ -47,3 +47,10 @@ The system SHALL include connected subscription sources in ordinary automatic mo
 #### Scenario: Unknown native default
 - **WHEN** the native default alias has no comparable model evidence
 - **THEN** it remains unranked rather than receiving an invented vendor quality score
+
+### Requirement: Disconnect connected sources
+The connect dialog SHALL list connected sources first and offer Disconnect. HTTP sources SHALL use the existing connections disconnect endpoint. Subscription disconnect SHALL remove only the record's declared owner-local state paths and connection marker, preserving installed CLI software.
+
+#### Scenario: Reconnect without reinstalling
+- **WHEN** an owner disconnects a subscription source
+- **THEN** its login and connection are removed while its installed CLI remains available for a later sign-in

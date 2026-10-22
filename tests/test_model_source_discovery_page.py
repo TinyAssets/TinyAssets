@@ -24,7 +24,8 @@ def test_discovery_page_fallback_and_secret_clear(width):
                          'class="connect-panel"><button>Existing sources</button></div>')
         page.add_script_tag(content="""
           const $=id=>document.getElementById(id), NATIVE=false, DESKTOP_SHELL=false;
-          const CFG={model_source_address:"https://known.example"};
+          const ConnectedAI={load(){}};
+      const CFG={model_source_address:"https://known.example"};
           const MCP={_loginEpoch:1};
           const SubscriptionSources={post:async()=>({}),saved:()=>null};
           const queueScope='center';const randToken=()=> 'v'.repeat(43);

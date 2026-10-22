@@ -8960,12 +8960,75 @@
     return box;
   }
 
+  // ---- Connected AI: what is connected, and Disconnect beside each ----
+  const ConnectedAI={
+    seq:0,
+    async load(host){
+      if(!host)return;
+      const seq=++this.seq;
+      let http={connections:[]},subs={sources:[]};
+      try{
+        await ensureFreshToken();
+        const headers=Object.assign({"Content-Type":"application/json"},authHeaders());
+        [http,subs]=await Promise.all([
+          fetch("/app/connections",{headers:authHeaders(),credentials:"same-origin",cache:"no-store"})
+            .then(r=>r.ok?r.json():{connections:[]}).catch(()=>({connections:[]})),
+          fetch("/app/subscription-connect/list",{method:"POST",credentials:"same-origin",
+            cache:"no-store",headers,body:"{}"})
+            .then(r=>r.ok?r.json():{sources:[]}).catch(()=>({sources:[]}))]);
+      }catch(_e){}
+      if(seq!==this.seq)return;
+      const rows=[];
+      for(const c of (http&&Array.isArray(http.connections)?http.connections:[]))
+        rows.push({name:typeof c.label==="string"&&c.label?c.label:c.destination,
+          path:"/app/connections",body:{destination:c.destination,incarnation:c.incarnation}});
+      for(const s of (subs&&Array.isArray(subs.sources)?subs.sources:[]))
+        rows.push({name:s.name,path:"/app/subscription-connect/disconnect",body:{source_id:s.id}});
+      host.replaceChildren();host.hidden=!rows.length;
+      if(!rows.length)return;
+      const title=document.createElement("p");title.textContent="Connected";host.append(title);
+      for(const row of rows)host.append(this.row(row,host));
+    },
+    row(row,host){
+      const item=document.createElement("div");item.className="connection-row";
+      const name=document.createElement("span");name.textContent=row.name+" ";
+      const go=document.createElement("button");go.type="button";go.className="btn btn--ghost";
+      go.textContent="Disconnect";
+      const cancel=document.createElement("button");cancel.type="button";cancel.className="btn btn--ghost";
+      cancel.textContent="Cancel";cancel.hidden=true;
+      const note=document.createElement("span");note.setAttribute("role","status");
+      let armed=false;
+      cancel.onclick=()=>{armed=false;go.textContent="Disconnect";go.className="btn btn--ghost";
+        cancel.hidden=true;note.textContent="";};
+      go.onclick=async()=>{
+        if(!armed){armed=true;go.textContent="Confirm disconnect";go.className="btn btn--danger";
+          cancel.hidden=false;note.textContent=" Removes "+row.name+
+            "'s sign-in from TinyAssets. Your provider account and your conversations stay.";return;}
+        go.disabled=cancel.disabled=true;note.textContent=" Disconnecting…";
+        try{
+          await ensureFreshToken();
+          const response=await fetch(row.path,{method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify(row.body)});
+          const result=await response.json().catch(()=>({}));
+          if(!response.ok||result.error)throw new Error("unconfirmed");
+          appendMessage("system","Disconnected "+row.name+". Connect it again any time from Change model.");
+          this.load(host);refreshRail();
+        }catch(_e){
+          note.textContent=" Disconnect is not confirmed. Close and reopen this to check.";
+          go.disabled=cancel.disabled=false;
+        }
+      };
+      item.append(name,go,cancel,note);return item;
+    },
+  };
+
   // ---- Unified address connection ----
   const ModelDiscovery={
     incoming:new URLSearchParams(window.location.search).get("connect_ai"),
     render(panel,visible){
       let card=$("model-discovery");
-      if(card){card.hidden=!visible;return;}
+      if(card){card.hidden=!visible;if(visible)ConnectedAI.load($("connected-ai"));return;}
       card=document.createElement("div");card.id="model-discovery";card.hidden=!visible;
       const address=document.createElement("input");address.type="text";
       address.setAttribute("aria-label","Provider address");address.autocomplete="url";
@@ -9046,7 +9109,9 @@
         finally{key="";go.disabled=false;address.disabled=false;}
       });
       address.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();go.click();}});
-      card.append(address,keyLabel,help,go,note,input,submit,cancel);panel.prepend(card);
+      const connected=document.createElement("div");connected.id="connected-ai";connected.hidden=true;
+      card.append(connected,address,keyLabel,help,go,note,input,submit,cancel);panel.prepend(card);
+      if(visible)ConnectedAI.load(connected);
       const incoming=this.incoming;
       if(incoming){address.value=incoming;const clean=new URL(window.location.href);
         clean.searchParams.delete("connect_ai");history.replaceState({},"",clean.pathname+clean.search);}
