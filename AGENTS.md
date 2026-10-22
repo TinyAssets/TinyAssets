@@ -21,40 +21,6 @@ Where any older doc disagrees with this section, this section wins.
 
 Map, why: `docs/architecture.md`, `docs/decisions/`.
 
-## Live state
-
-Queued: `openspec/changes/`. Findings: `docs/concerns/` (delete =
-resolve). Founder-only: `docs/host-actions.md`. Claims: branches, PRs.
-Narrative: commits.
-
-Orient: Direction, § Shape registry, "Shape reconciliation" issue.
-Converge a shape; add no second path. Write durable state before replying.
-
-## The loop
-
-1. One intent, one PR; parallel lanes by default, split by file around a
-   written contract (tests too).
-2. A one-sentence diff gets no plan. Spec first: public MCP/API, storage shape,
-   authority, migrations, money.
-3. Run touched tests, affected heavy files and `ruff`; CI does the rest.
-   Mutation tables only for data-loss/cross-user guards.
-4. Review only floor-class (ADR-015) and gate-file changes, from push, beside
-   CI: one "cross-family review" by a non-author told to break it, from
-   `git diff --stat origin/main...`; floor/correctness findings,
-   `AGREE`/`DISAGREE_EVIDENCE`; fix rounds see only new product hunks.
-   Others: the lead stamps.
-5. Never serialize independent steps; non-blockers gate nothing. Prove it
-   live-like (real deploy path) first; a known fix goes into practice (host
-   or deploy window) once that passes at the last failure point (candidate
-   image, live inputs), PR in parallel. Cache costly state on the first run.
-   Watch long work; post unasked milestones, all lanes, minutes from now.
-   Fold colliding lanes.
-6. Done = `deployed_sha.py --assert-contains <sha>`, one naive-user pass via
-   the app agent, spec synced. A pasted chat is a bug report.
-7. Repeat error/finding, or round 3: escalate: Codex astra, Opus xhigh,
-   simplify.
-8. A new rule deletes an old one; a rule a script can enforce gets no line.
-
 ## Facts (numbers are cited repo-wide)
 
 1. `SqliteSaver`, never `AsyncSqliteSaver`.

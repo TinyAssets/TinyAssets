@@ -61,32 +61,12 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/supervisor_record.py\""
-          }
-        ]
-      },
-      {
         "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
             "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/bash_guard.py\"; [ -f \"$f\" ] || exit 0; python \"$f\"",
             "timeout": 40
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/supervisor_check.py\""
           }
         ]
       }
