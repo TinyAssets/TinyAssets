@@ -50,6 +50,7 @@ import struct
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,8 @@ from tinyassets.broker.ops import OpIdInvalid, OpStore
 from tinyassets.storage.outbound_connections import BrokerStreamStop
 
 _LOG = logging.getLogger(__name__)
+_DISCOVERY_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="model-discovery")
+_DISCOVERY_SLOTS = threading.BoundedSemaphore(2)
 
 OWNER = "owner"
 BOX = "box"
@@ -547,7 +550,15 @@ class _Connection:
         elif op == "HTTP_CONNECT":
             _owner(doc.get("principal"))
             self._principals.add(doc["principal"])
-            answer = await asyncio.to_thread(self._http_connect, doc)
+            if isinstance(doc.get("document"), dict) and doc["document"].get(
+                    "action") == "model_discover":
+                if not _DISCOVERY_SLOTS.acquire(blocking=False):
+                    answer = {"op": "HTTP_CONNECT_RESULT", "result": {"error": "discovery_busy"}}
+                else:
+                    answer = await asyncio.shield(asyncio.get_running_loop().run_in_executor(
+                        _DISCOVERY_POOL, self._discovery_work, doc))
+            else:
+                answer = await asyncio.to_thread(self._http_connect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_POLICY":
             answer = await asyncio.to_thread(self._owner_policy, doc)
@@ -904,6 +915,36 @@ class _Connection:
         except Exception:  # noqa: BLE001 - fixed refusal, no storage details on wire
             return {"op": "USAGE_REFUSED"}
 
+    def _discovery_work(self, doc):
+        try:
+            return self._http_connect(doc)
+        finally:
+            _DISCOVERY_SLOTS.release()
+
+    def _discover_unfenced(self, doc):
+        """Credential-free probes do not hold the send lock or open a ledger."""
+        from tinyassets.broker.admission import require_admitted
+        from tinyassets.broker.egress import identity
+        from tinyassets.broker.model_connect import local_operation
+
+        def check():
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._closed.is_set():
+                    raise PermissionError("connection cancelled")
+                require_admitted(self._server._owner_identities, doc["principal"])
+
+        check()
+        binding = identity.set((self._server._owner_identities, doc["principal"]))
+        try:
+            result = local_operation(None, principal=doc["principal"],
+                command_center=doc["principal"], document=doc["document"], committed_via="door")
+        finally:
+            identity.reset(binding)
+        check()
+        answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
+        rf.control(rf.CONNECTION, answer)
+        return answer
+
     def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.admission import OwnerErased, require_admitted
         from tinyassets.broker.http_connect import local_operation, validate
@@ -923,6 +964,8 @@ class _Connection:
                 raise PermissionError("credential deposits require the door")
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
+            if doc["document"]["action"] == "model_discover":
+                return self._discover_unfenced(doc)
             with self._server._fence.send(doc["generation"], doc["token"]):
                 if self._closed.is_set():
                     raise PermissionError("connection cancelled")

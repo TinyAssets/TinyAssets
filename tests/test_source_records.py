@@ -34,7 +34,7 @@ def test_oauth_record_freezes_endpoints_and_egress():
     oauth = record.sign_in["oauth"]
     assert oauth["client_strategy"] == "dcr" and oauth["pkce"] == "S256"
     assert oauth["token_endpoint"] == AS + "/token"
-    assert record.egress == {"provider": ["api.example", "login.example"]}
+    assert record.egress == {"provider": ["api.provider.example", "login.provider.example"]}
     document = record.document()
     document["sign_in"]["oauth"]["token_endpoint"] = "https://changed.example/token"
     with pytest.raises(ValueError, match="egress"):
@@ -76,3 +76,15 @@ def test_page_connect_controllers_have_no_provider_names():
         block = source[source.index(start):source.index(end, source.index(start))].lower()
         for name in PROVIDERS:
             assert name not in block
+
+
+def test_malformed_record_does_not_hide_other_sources(tmp_path):
+    directory = tmp_path / ".ta-cli/sources"
+    directory.mkdir(parents=True)
+    before = records(tmp_path)
+    (directory / "broken.json").write_text("{")
+    assert records(tmp_path) == before
+    ident = next(iter(before))
+    (directory / (ident + ".json")).write_text("{")
+    assert ident not in records(tmp_path)
+    assert len(records(tmp_path)) == len(before) - 1

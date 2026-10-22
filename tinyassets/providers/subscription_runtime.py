@@ -341,7 +341,24 @@ class SubscriptionRuntime:
                 return False
         return all((self.home / path).exists() for path in self.source["state"]["paths"])
 
+    def accept(self):
+        """Bind this explicit login to the exact source the owner connected."""
+        if sources(self.home).get(self.source.id) != self.source:
+            raise PermissionError("source changed during sign-in")
+        (self.directory / "connection").write_text(json.dumps({
+            "source": digest(self.source), "incarnation": secrets.token_hex(32)}))
+
+    def require_accepted(self):
+        try:
+            marker = json.loads((self.directory / "connection").read_text())
+            if marker["source"] == digest(self.source) and marker["incarnation"]:
+                return
+        except (ValueError, TypeError, KeyError, OSError):
+            pass
+        raise PermissionError("source changed or has not been accepted; reconnect required")
+
     def invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
+        self.require_accepted()
         if not self.authenticated():
             raise SubscriptionError("subscription sign-in required")
         invoke = self.source["invoke"]["cli"]
@@ -468,7 +485,6 @@ class Login:
             with activity.enter():
                 self.runtime.install()
                 with self.runtime.lock():
-                    renewed = False
                     if not self.runtime.authenticated():
                         self.status = "waiting"
                         login = self.runtime.cli_login["login"]
@@ -493,10 +509,7 @@ class Login:
                             succeeded = state_complete and not self.cancelled.is_set()
                         if not succeeded or not self.runtime.authenticated():
                             raise SubscriptionError("native login did not complete")
-                        renewed = True
-                    marker = self.runtime.directory / "connection"
-                    if renewed or not marker.exists():
-                        marker.write_text(secrets.token_hex(32))
+                    self.runtime.accept()
                     self.status = "connected"
         except Exception:
             # CLI output can contain credentials; only safe state crosses the page boundary.

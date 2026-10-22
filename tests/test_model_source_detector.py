@@ -7,8 +7,8 @@ import pytest
 from tinyassets.connection_oauth.model_discovery import detect
 from tinyassets.connection_oauth.transport import OAuthError
 
-API = "https://api.example"
-AS = "https://login.example"
+API = "https://api.provider.example"
+AS = "https://login.provider.example"
 CATALOGUE = {"object": "list", "data": [{"id": "m1", "object": "model"}]}
 
 
@@ -113,7 +113,7 @@ def test_device_only_server_is_not_oauth():
 
 def test_insecure_and_private_addresses_refused_before_any_probe():
     fetch = fetcher({})
-    for address in ("http://api.example", "https://user@api.example", "https://api.example:8443"):
+    for address in ("http://api.example", "https://user@api.example", "https://api.provider.example:8443"):
         with pytest.raises(OAuthError):
             detect(address, fetch=fetch)
     assert not fetch.seen

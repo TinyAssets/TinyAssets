@@ -28,7 +28,8 @@ class ModelProvider(FakeProvider):
 
     def route(self, method, host, path, headers, body):
         if host == API and path == "/v1/models" and self.model_api:
-            return 200, {"data": [{"id": "test-chat"}]}
+            return 200, {"data": [{"id": "test-chat",
+                                   "pricing": {"prompt": "0", "completion": "0"}}]}
         if host == API and path == "/v1/chat/completions":
             token = headers.get("Authorization", "").removeprefix("Bearer ")
             self.api_calls.append(token)

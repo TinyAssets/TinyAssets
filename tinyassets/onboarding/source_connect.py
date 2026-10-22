@@ -12,6 +12,29 @@ _PAID_USAGE_NOTE = ("Use a free/trial account with paid usage disabled. "
                     "TinyAssets cannot enforce the provider's billing settings.")
 
 
+def _discovered_free_models(payload):
+    """Discovery is not an owner declaration of flat or free billing."""
+    from decimal import Decimal, InvalidOperation
+
+    from tinyassets.connection_oauth.model_discovery import catalogue_rows
+
+    entries = []
+    for row in catalogue_rows(payload):
+        prices = row.get("pricing")
+        if not isinstance(prices, dict) or not {"prompt", "completion"} <= prices.keys():
+            continue
+        try:
+            if not all(not isinstance(value, bool) and Decimal(str(value)) == 0
+                       for value in prices.values()):
+                continue
+        except InvalidOperation:
+            continue
+        entries.append({"id": row["id"], "tools": True, "context": 32768})
+    if not entries:
+        raise HostedAuthError("no_verified_free_models", 409)
+    return entries[:64]
+
+
 def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
     """Raise the owner's explicit confirmation adding this source to their agent.
 
@@ -187,16 +210,13 @@ def offer_connection_access(*, base, uid, owner, grant_id):
                     universe_id=uid, url=(preset["catalogue_url"] if preset.get("discovered")
                         else preset["base_url"].rstrip("/") + "/models"))
                 if preset.get("discovered"):
-                    from tinyassets.connection_oauth.model_discovery import catalogue_rows
-
-                    entries = [{"id": row["id"], "tools": True, "context": 32768}
-                               for row in catalogue_rows(payload)[:64]]
+                    entries = _discovered_free_models(payload)
                 else:
                     entries = discovered_agent_models(preset, payload)
             definition_id = _definition_for(uid, owner, grant_id, preset["wire"],
                                             entries[0]["id"]).id
             descriptor = {"wire": preset["wire"], "models": entries,
-                          "billing": "flat" if preset.get("discovered") else "free"}
+                          "billing": "free"}
             args = dict(principal=owner, command_center=uid, grant_id=grant_id,
                         connection_id=resource["connection_id"], capability_kind="model_use")
             existing = capability_operation(base, **args)

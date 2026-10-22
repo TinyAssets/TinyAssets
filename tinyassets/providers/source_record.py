@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -152,16 +153,32 @@ class SourceRecord(Mapping):
                 allow_query = url in [http["models_url"], http["inference_url"]]
                 if urlsplit(validate_https_url(url, allow_query=allow_query)).hostname not in hosts:
                     raise ValueError("source endpoint outside declared egress")
+            if oauth:
+                from tinyassets.connection_oauth.site_identity import site
+
+                if len({site(url) for url in urls}) != 1:
+                    raise ValueError("source authorization must share the model API site")
         return record
 
 
-def records(home: Path | None = None):
+def records(home: Path | None = None, *, strict=False):
+    from tinyassets.connection_oauth.transport import OAuthError
+
     result = {}
     for directory in [SOURCES, *([home / ".ta-cli" / "sources"] if home else [])]:
         for path in sorted(directory.glob("*.json")):
-            record = SourceRecord.parse(json.loads(path.read_text("utf-8")))
-            if record.origin != "declared" or path.stem != record.id:
-                raise ValueError("declared source filename must match its id")
+            try:
+                record = SourceRecord.parse(json.loads(path.read_text("utf-8")))
+                if record.origin != "declared" or path.stem != record.id:
+                    raise ValueError("declared source filename must match its id")
+            except (ValueError, TypeError, KeyError, AttributeError, OSError, OAuthError):
+                if strict:
+                    raise  # A broken shipped record must fail the image build.
+                logging.getLogger(__name__).warning(
+                    "Ignoring malformed source record: %s", path.name)
+                # A malformed override must not silently reactivate the built-in source.
+                result.pop(path.stem, None)
+                continue
             result[record.id] = record
     return result
 

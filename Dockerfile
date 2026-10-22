@@ -184,6 +184,7 @@ RUN set -e; \
         git \
         gnupg \
         libgomp1 \
+        libpsl5 \
         ffmpeg \
         ripgrep \
         rclone \

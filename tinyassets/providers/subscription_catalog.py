@@ -17,6 +17,7 @@ def context(definition, owner, universe):
             or definition.access_method != "subscription_cli"):
         raise PermissionError("subscription source scope mismatch")
     runtime = SubscriptionRuntime(definition.ref)
+    runtime.require_accepted()
     if not runtime.authenticated():
         raise PermissionError("subscription login is unavailable")
     # This is a credential-free connection incarnation; native token refresh

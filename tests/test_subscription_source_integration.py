@@ -26,7 +26,7 @@ def connected(box):  # noqa: F811
     runtime = SubscriptionRuntime("fake-cli")
     runtime.install()
     (root / ".fake-login").write_text("fixture-login")
-    (runtime.directory / "connection").write_text("fixture-incarnation")
+    runtime.accept()
     with identity_context(Identity(user_id="owner", username="owner", capabilities=["write"])):
         yield runtime
 
@@ -155,6 +155,9 @@ def test_engine_tool_protocol_and_large_stdin(connected):
     doc['invoke']['cli']['argv'] = ['{bin}', 'engine']
     doc['invoke']['cli']['stdin'] = '{prompt}'
     (connected.home / '.ta-cli/sources/fake-cli.json').write_text(json.dumps(doc))
+    from tinyassets.providers.subscription_runtime import SubscriptionRuntime
+
+    SubscriptionRuntime('fake-cli').accept()
     definition = register_definition(universe_id='center', owner_user_id='owner',
         access_method='subscription_cli', protocol='cli_json', model='default', ref='fake-cli')
     provider = provider_for_definition(definition)
@@ -206,6 +209,7 @@ def test_pip_hash_locked_owner_install_and_invoke(connected):
     (connected.home / '.ta-cli/sources/fixture-pip.json').write_text(json.dumps(doc))
     runtime = SubscriptionRuntime('fixture-pip')
     runtime.install()
+    runtime.accept()
     assert runtime.invoke('hello') == 'fixture pip reply'
     previous = runtime.binary.stat().st_mtime_ns
     runtime.install()
@@ -236,6 +240,7 @@ def test_connect_strongest_declared_source_and_keep_explicit_preference(connecte
         'expires_at': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
         'scores': {'default': {'agentic': 50}}}
     (connected.home / '.ta-cli/sources/fake-cli.json').write_text(json.dumps(doc))
+    SubscriptionRuntime('fake-cli').accept()
     first = finish('fake-cli')
     assert first['status'] == 'connected'
     stronger = json.loads(json.dumps(doc))
@@ -244,7 +249,7 @@ def test_connect_strongest_declared_source_and_keep_explicit_preference(connecte
     (connected.home / '.ta-cli/sources/stronger-cli.json').write_text(json.dumps(stronger))
     runtime = SubscriptionRuntime('stronger-cli')
     runtime.install()
-    (runtime.directory / 'connection').write_text('second-incarnation')
+    runtime.accept()
     second = finish('stronger-cli')
     assert second['status'] == 'connected'
     agent, = serving_binding_candidates(connected.home, universe_id='center', owner_user_id='owner')
@@ -306,3 +311,18 @@ def test_disconnect_removes_only_declared_login_and_marker(connected):
     assert connected.binary.read_bytes() == installed
     assert other.read_text() == "keep"
     assert connected_sources() == {"sources": []}
+
+
+def test_changed_record_invalidates_acceptance_before_running_cli(connected, monkeypatch):
+    from tinyassets.onboarding.subscription_connect import finish
+    from tinyassets.providers.subscription_runtime import SubscriptionRuntime
+
+    doc = connected.source.document()
+    doc["invoke"]["cli"]["argv"].append("changed")
+    (connected.home / ".ta-cli/sources/fake-cli.json").write_text(json.dumps(doc))
+    changed = SubscriptionRuntime("fake-cli")
+    monkeypatch.setattr(SubscriptionRuntime, "run", lambda *a, **k: pytest.fail("unaccepted CLI"))
+    with pytest.raises(PermissionError, match="reconnect required"):
+        changed.invoke("hello")
+    with pytest.raises(PermissionError, match="reconnect required"):
+        finish("fake-cli")

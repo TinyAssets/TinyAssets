@@ -54,18 +54,21 @@ def catalogue_rows(payload):
     return rows
 
 
-def transport_fetch(url, *, large=False):
+def transport_fetch(url, *, large=False, timeout=15):
     """The product fetch: the SSRF-hardened transport, GET only, no redirects."""
     from tinyassets.connection_oauth.transport import request_json_with_headers
 
     return request_json_with_headers(
-        "GET", url, **({"max_body_bytes": LARGE_BODY_BYTES} if large else {}))
+        "GET", url, timeout=timeout,
+        **({"max_body_bytes": LARGE_BODY_BYTES} if large else {}))
 
 
 def _get(fetch, record, url, *, large=False):
     try:
         status, doc, headers = fetch(validate_https_url(url), large=large)
     except OAuthError as exc:
+        if exc.code == "discovery_timeout":
+            raise
         record["probes"].append({"url": url, "error": exc.code})
         return None, None, {}
     record["probes"].append({"url": url, "status": status})
@@ -183,15 +186,28 @@ def _protected_resource(fetch, record, resource, challenge):
     return None
 
 
+#: Whole-discovery budget; each probe also has its own timeout (below 60s total).
+DETECT_BUDGET_S = 35
+
+
 def detect(address, *, fetch=transport_fetch):
     """Probe ``address`` for published standards; return the capability record."""
     address = address_url(address)
     origin, bases = _bases(address)
     seen, network = {}, fetch
+    import time
+
+    deadline = time.monotonic() + DETECT_BUDGET_S
 
     def fetch(url, *, large=False):
         if url not in seen:
-            seen[url] = network(url, large=large)
+            if time.monotonic() >= deadline:
+                raise OAuthError("discovery_timeout")
+            options = {"timeout": min(15, deadline - time.monotonic())} if (
+                network is transport_fetch) else {}
+            seen[url] = network(url, large=large, **options)
+            if time.monotonic() >= deadline:
+                raise OAuthError("discovery_timeout")
         return seen[url]
     record = {"address": address, "probes": [], "model_api": {}, "sign_in": {}}
     api = record["model_api"]
@@ -244,7 +260,9 @@ def detect(address, *, fetch=transport_fetch):
     for issuer in (prm or {}).get("authorization_servers", []):
         try:
             found = _authorization_server(fetch, record, validate_https_url(issuer))
-        except OAuthError:
+        except OAuthError as exc:
+            if exc.code == "discovery_timeout":
+                raise
             found = {"issuer": issuer, "error": "invalid_oauth_url"}
         if found:
             servers.append(found)
@@ -255,6 +273,16 @@ def detect(address, *, fetch=transport_fetch):
 
 def catalogue_challenge(api):
     return (api.get("catalogue") or {}).get("challenge") or {}
+
+
+def _site(url):
+    """Registrable site, including private suffixes such as shared hosting domains.
+
+    Without the system suffix database, only an exact host can be trusted.
+    """
+    from tinyassets.connection_oauth.site_identity import site
+
+    return site(url)
 
 
 def choose(record):
@@ -284,7 +312,10 @@ def choose(record):
     usable = [s for s in sign_in.get("authorization_servers", [])
               if not s.get("error") and "authorization_code" in s["grant_types"]
               and "S256" in s["pkce_methods"]
-              and (s["dynamic_registration"] or s["client_id_metadata_document"])]
+              and (s["dynamic_registration"] or s["client_id_metadata_document"])
+              and _site(s["issuer"]) == _site(models) == _site(inference)
+              and all(_site(s[k]) == _site(models) for k in (
+                  "authorization_endpoint", "token_endpoint", "registration_endpoint") if s[k])]
     if usable:
         server = usable[0]
         return {**chosen, "verdict": "oauth", "sign_in": "authorization_code_pkce",

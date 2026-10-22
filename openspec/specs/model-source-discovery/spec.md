@@ -56,3 +56,10 @@ The model menu SHALL show Automatic first and selected unless an explicit prefer
 #### Scenario: Expand one source
 - **WHEN** the owner opens a source group
 - **THEN** only that source's models expand and the current selection remains indicated
+
+### Requirement: Bounded and conservative discovery
+Discovery SHALL have a 35-second overall budget, shorten each transport timeout to the remaining budget, and run outside the broker fence reader lock on a dedicated two-worker pool with no pending queue. Admission and fencing SHALL be checked before and after probing. Authorization metadata and endpoints SHALL share the model API's registrable site, including private public suffix boundaries. Discovered models SHALL not be assumed flat-rate or free: only explicit zero-price catalogue entries may be offered as free, pending owner acceptance.
+
+#### Scenario: Slow or untrusted address
+- **WHEN** discovery is slow, saturated, or advertises another site's authorization server
+- **THEN** it fails within its budget or refuses that sign-in without blocking other broker work

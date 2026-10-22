@@ -227,7 +227,7 @@ def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
         assert lockfile.stat().st_mtime_ns == previous
         assert second.call("install") == {"installed": True}
         assert second.call("status") == {"authenticated": False}
-        assert second.call("invoke", prompt="hello")["error"] == "SubscriptionError"
+        assert second.call("invoke", prompt="hello")["error"] == "PermissionError"
         assert second.call("visible", path=str(alice / ".fake-login")) == {"visible": False}
     finally:
         first.close()

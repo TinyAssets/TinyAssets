@@ -30,6 +30,7 @@ def finish(source_id):
 
     runtime = current()
     source = SubscriptionRuntime(source_id)
+    source.require_accepted()
     if not source.authenticated():
         raise PermissionError("native login is not connected")
     center = get_founder_home(runtime.root, runtime.principal)

@@ -54,3 +54,10 @@ The connect dialog SHALL list connected sources first and offer Disconnect. HTTP
 #### Scenario: Reconnect without reinstalling
 - **WHEN** an owner disconnects a subscription source
 - **THEN** its login and connection are removed while its installed CLI remains available for a later sign-in
+
+### Requirement: Record-bound acceptance
+A connected subscription marker SHALL bind the full source record fingerprint. A changed or legacy unbound record SHALL require reconnection before discovery, selection or invocation runs its CLI. A malformed record file SHALL not prevent other records loading; malformed overrides SHALL not reactivate a bundled record. Image builds SHALL fail on malformed shipped records.
+
+#### Scenario: Record changes after connection
+- **WHEN** a source's package, arguments, egress, state or other record content changes
+- **THEN** its previous connection is not accepted for the changed source

@@ -28,7 +28,7 @@ class ImageInstaller(SubscriptionRuntime):
 
 
 def build(root=SubscriptionRuntime.IMAGE_ROOT):
-    for source in records().values():
+    for source in records(strict=True).values():
         if "cli_login" in source.sign_in:
             ImageInstaller(source, root).build()
 
