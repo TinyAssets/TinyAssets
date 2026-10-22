@@ -94,7 +94,7 @@ def _ask_body(preset):
                      + "; there is no key to copy."))
 
 
-def model_source(endpoints):
+def model_source(endpoints, destination=""):
     """Recognize installed model data only when its full policy is granted."""
     from tinyassets.api.http_connection import _canonical_endpoint_set
     from tinyassets.onboarding.connection_definition import preset_definition
@@ -120,7 +120,9 @@ def model_source(endpoints):
                     for path, method in paths]
         if _canonical_endpoint_set(required) <= actual:
             return preset
-    return None
+    from tinyassets.connection_oauth.model_discovery import source
+
+    return source(endpoints, destination)
 
 
 def offer_connection_access(*, base, uid, owner, grant_id):
@@ -139,7 +141,8 @@ def offer_connection_access(*, base, uid, owner, grant_id):
                                        grant_id=grant_id)
         if resource.get("committed_via") != "door":
             raise PermissionError("model confirmation requires a door connection")
-        preset = model_source(json.loads(resource["allowed_endpoints_json"]))
+        preset = model_source(json.loads(resource["allowed_endpoints_json"]),
+                              resource["destination"])
         if preset is None:
             raise HostedAuthError("unknown_model_connection", 404)
         if isinstance(preset, AcquisitionPreset):
@@ -163,11 +166,19 @@ def offer_connection_access(*, base, uid, owner, grant_id):
             else:
                 payload = read_granted_discovery_document(
                     db_path=base / "outbound.db", grant_id=grant_id, owner_user_id=owner,
-                    universe_id=uid, url=preset["base_url"].rstrip("/") + "/models")
-                entries = discovered_agent_models(preset, payload)
+                    universe_id=uid, url=(preset["catalogue_url"] if preset.get("discovered")
+                        else preset["base_url"].rstrip("/") + "/models"))
+                if preset.get("discovered"):
+                    from tinyassets.connection_oauth.model_discovery import catalogue_rows
+
+                    entries = [{"id": row["id"], "tools": True, "context": 32768}
+                               for row in catalogue_rows(payload)[:64]]
+                else:
+                    entries = discovered_agent_models(preset, payload)
             definition_id = _definition_for(uid, owner, grant_id, preset["wire"],
                                             entries[0]["id"]).id
-            descriptor = {"wire": preset["wire"], "models": entries, "billing": "free"}
+            descriptor = {"wire": preset["wire"], "models": entries,
+                          "billing": "flat" if preset.get("discovered") else "free"}
             args = dict(principal=owner, command_center=uid, grant_id=grant_id,
                         connection_id=resource["connection_id"], capability_kind="model_use")
             existing = capability_operation(base, **args)

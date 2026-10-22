@@ -8890,10 +8890,91 @@
     if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
+    ModelDiscovery.render(panel, screen);
     panel.hidden = false;
     box.appendChild(panel);
     return box;
   }
+
+  // ---- Lane X: address discovery (independent of installed source rows) ----
+  const ModelDiscovery={
+    incoming:new URLSearchParams(window.location.search).get("connect_ai"),
+    render(panel,visible){
+      let card=$("model-discovery");
+      if(card){card.hidden=!visible;return;}
+      card=document.createElement("div");card.id="model-discovery";card.hidden=!visible;
+      const title=document.createElement("h3");title.textContent="Connect any AI";
+      const label=document.createElement("label");label.textContent="Provider address";
+      const address=document.createElement("input");address.type="text";
+      address.placeholder="provider.example or https://provider.example/v1";
+      address.autocomplete="url";label.appendChild(address);
+      const choices=document.createElement("div");
+      for(const entry of CFG.model_discovery_addresses||[]){
+        const choice=document.createElement("button");choice.type="button";
+        choice.className="btn btn--ghost";choice.textContent=entry.name;
+        choice.addEventListener("click",()=>{address.value=entry.address;
+          address.dispatchEvent(new Event("input"));address.focus();});
+        choices.appendChild(choice);
+      }
+      const go=document.createElement("button");go.type="button";
+      go.className="btn btn--primary";go.textContent="Continue";
+      const note=document.createElement("p");note.setAttribute("role","status");
+      const keyLabel=document.createElement("label");keyLabel.textContent="API key";keyLabel.hidden=true;
+      const keyInput=document.createElement("input");keyInput.type="password";keyInput.autocomplete="off";
+      keyLabel.appendChild(keyInput);
+      let fallback=null;
+      address.addEventListener("input",()=>{fallback=null;keyInput.value="";keyLabel.hidden=true;go.textContent="Continue";});
+      go.addEventListener("click",async()=>{
+        if(go.disabled)return;
+        const selected=address.value.trim();if(!selected){note.textContent="Enter your provider's address.";return;}
+        let key=keyInput.value;keyInput.value="";
+        go.disabled=true;address.disabled=true;note.textContent="Finding your provider's model API and sign-in…";
+        try{
+          if(NATIVE||DESKTOP_SHELL){
+            await openExternal(window.location.origin+"/app?connect_ai="+encodeURIComponent(selected));
+            note.textContent="Continue connecting in your system browser.";return;
+          }
+          if(fallback){
+            if(!key)throw new Error("Paste your API key.");
+            const pending=ConnectOAuth.post("deposit",{definition:fallback,secret:key});key="";
+            const result=await pending;
+            if(result.status!=="confirmation_required")throw new Error("Model access needs review.");
+            HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+            HostedModelConnect.paint();note.textContent="Connection saved. Review model access, then confirm.";
+            refreshRail();return;
+          }
+          const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+          const result=await ConnectOAuth.post("discover",{address:selected,code_challenge});
+          if(result.status==="api_key_required"){
+            fallback=result.definition;keyLabel.hidden=false;
+            go.textContent="Use an API key";
+            note.textContent="Use an API key for "+new URL(result.endpoint).host+". Model endpoint: "+result.endpoint;
+            keyInput.focus();return;
+          }
+          const url=new URL(result.authorize_url);
+          if(url.protocol!=="https:"||url.username||url.password||
+             !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||url.searchParams.get("state")!==result.flow||
+             !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600)
+            throw new Error("invalid_sign_in_response");
+          sessionStorage.setItem(ConnectOAuth.storageKey,JSON.stringify({verifier,
+            title:"Connect "+selected,source:true,center:queueScope||"",flow:result.flow,
+            expires:Date.now()+result.expires_in*1000}));
+          window.location.assign(url.href);
+        }catch(error){
+          note.textContent=error.message==="no_model_api_found"
+            ?"No model API was found at this address. Check the provider's API address."
+            :error.message==="invalid_oauth_url"?"Use a domain or an HTTPS address.":"Could not connect: "+error.message;
+          if(error.signIn){const link=document.createElement("a");link.href="/app/owner-sign-in";
+            link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";note.append(" ",link);}
+        }finally{key="";go.disabled=false;address.disabled=false;}
+      });
+      card.append(title,label,choices,keyLabel,go,note);panel.prepend(card);
+      const incoming=this.incoming;
+      if(incoming){address.value=incoming;const clean=new URL(window.location.href);
+        clean.searchParams.delete("connect_ai");history.replaceState({},"",clean.pathname+clean.search);}
+    },
+  };
+  // ---- End Lane X: address discovery ----
 
   // "Other ways to connect": each shape is explicit fields completed through
   // the same connect request an agent would raise. Nothing is inferred - an
@@ -9887,6 +9968,7 @@
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){
       await enterSignedIn();
+      if(ModelDiscovery.incoming)openConnectRequest();
       if(modelCallback) await HostedModelConnect.complete(modelCallback);
     } else {
       enterSignedOut();

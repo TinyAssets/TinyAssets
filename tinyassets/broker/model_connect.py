@@ -10,6 +10,12 @@ def validate(document):
     from tinyassets.connection_oauth.pkce import VERIFIER_RE
 
     action = document.get("action")
+    if action == "model_discover":
+        if (set(document) != {"action", "address", "callback"}
+                or any(not isinstance(document[k], str) or len(document[k]) > 2048
+                       for k in ("address", "callback"))):
+            raise ValueError("invalid discovery fields")
+        return
     if action == "oauth_offer":
         if set(document) != {"action", "requested", "hosts", "callback", "registration_url"}:
             raise ValueError("invalid offer fields")
@@ -49,6 +55,19 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
 
     validate(document)
     action = document["action"]
+    if action == "model_discover":
+        from tinyassets.connection_oauth.model_discovery import discover
+
+        try:
+            definition = discover(document["address"])
+            answer = local_operation(ledger, principal=principal, command_center=command_center,
+                committed_via=committed_via, document={
+                    "action": "oauth_offer", "requested": {},
+                    "hosts": definition["discovery_hosts"], "callback": document["callback"],
+                    "registration_url": ""})
+            return {"definition": definition, **answer}
+        except OAuthError as exc:
+            return {"error": exc.code}
     if action == "oauth_offer":
         from urllib.parse import urlsplit
 
