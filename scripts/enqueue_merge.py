@@ -37,7 +37,6 @@ from scripts.drain_review_gate import (  # noqa: E402
     _TRUSTED_ASSOCIATIONS,
     binding_head,
     diff_key,
-    is_floor_class,
     published_approval_urls,
     review_allows_merge,
     same_change_as,
@@ -61,7 +60,7 @@ _PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){
 repository(owner:$owner,name:$name){pullRequest(number:$number){
 id state isDraft baseRefName baseRefOid headRefOid
 headRepository { nameWithOwner }
-title body
+body
 labels(first:100){pageInfo{hasNextPage} nodes{name}}
 mergeQueueEntry { state }
 commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
@@ -411,14 +410,14 @@ def _capped(repo: str, number: int) -> bool:
     return proc.returncode == 3
 
 
-def _change_key(base: str, head: str, *, floor: bool) -> tuple[str | None, object]:
+def _change_key(base: str, head: str) -> tuple[str | None, object]:
     """Diff key and the same-change comparer, or (None, None) when unreadable."""
     _fetch_commits([base, head])
     try:
         key = diff_key(base, head, cwd=REPO_ROOT)
     except (subprocess.CalledProcessError, ValueError, OSError):
         return None, None
-    return key, same_change_as(base, key, head=head, cwd=REPO_ROOT, test_carry=not floor)
+    return key, same_change_as(base, key, head=head, cwd=REPO_ROOT)
 
 
 def _benign_enqueue_error(detail: str) -> bool:
@@ -501,8 +500,7 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         if comments is None:
             reason = "could not read review comments"
         else:
-            floor = is_floor_class(pr.get("title"), ",".join(labels or ()))
-            key, carry = _change_key(base_sha, head, floor=floor)
+            key, carry = _change_key(base_sha, head)
             _fetch_commits(_cited_heads(pr.get("body") or "", comments, head=head))
             if not trusted_receipt(
                 head=head,

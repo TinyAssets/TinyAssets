@@ -1,4 +1,4 @@
-"""A receipt survives test-only commits; skip metadata may follow the marker."""
+"""A receipt survives metadata-only test commits; skip metadata may follow the marker."""
 
 import datetime as dt
 import os
@@ -17,7 +17,6 @@ _ENV = {
     "GIT_COMMITTER_EMAIL": "t@example.invalid",
 }
 
-
 def _git(root, *args):
     return subprocess.run(
         ["git", "-C", str(root), *args], capture_output=True, text=True, check=True, env=_ENV
@@ -31,10 +30,40 @@ def _commit(root, files):
             path.unlink()
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "c")
     return _git(root, "rev-parse", "HEAD")
+
+
+_M = (
+    "import pytest\n"
+    "\n"
+    "# a note\n"
+    "@pytest.mark.verifies(\n"
+    '    "spec:Old"\n'
+    ")\n"
+    "def test_m():\n"
+    '    TEXT = """\n'
+    "# inside a string\n"
+    '"""\n'
+    "    X = (1\n"
+    "    )\n"
+    "    assert TEXT and X\n"
+    "\n"
+    "\n"
+    "@pytest.mark.skipif(\n"
+    "    True,\n"
+    '    reason="old reason",\n'
+    ")\n"
+    "def test_s():\n"
+    "    assert True\n"
+    "\n"
+    "\n"
+    '@pytest.mark.xfail(True, reason="old", strict=True)\n'
+    "def test_x():\n"
+    '    check(reason="a")  # trailing\n'
+)
 
 
 @pytest.fixture
@@ -46,12 +75,9 @@ def repo(tmp_path):
             "tinyassets/a.py": "A = 1\n",
             "tests/test_a.py": "def test_a():\n    assert True\n",
             "tests/conftest.py": "",
-            "tests/test_old.py": "def test_old():\n    assert 1 == 1\n",
-            ".github/workflows/w.yml": "on:\n  pull_request:\n    paths:\n"
-            "      - 'tests/test_box_*.py'\n      - scripts/x.py\n"
-            "jobs: {run: pytest tests/test_named.py}\n"
-            "# SENSITIVE_RE='^(tests/test_shape_registry\\.py$)'\n",
-            "scripts/inv.py": "from tests.test_scanned import _scan\n",
+            "tests/helpers.py": "X = 1\n",
+            "tests/test_m.py": _M,
+            "tests/test_pm.py": 'import pytest\n\npytestmark = pytest.mark.skip(reason="x")\n',
         },
     )
     reviewed = _commit(
@@ -60,52 +86,14 @@ def repo(tmp_path):
     return tmp_path, base, reviewed
 
 
-def _carries(root, base, reviewed, head, *, test_carry=True):
+def _carries(root, base, reviewed, head):
     key = review.diff_key(base, head, cwd=root)
-    return review.same_change_as(base, key, head=head, cwd=root, test_carry=test_carry)(reviewed)
+    return review.same_change_as(base, key, head=head, cwd=root)(reviewed)
 
 
-_APPENDED = (
-    '"""New."""\n'
-    "import os\n\n"
-    "import pytest\n\n\n"
-    '@pytest.mark.parametrize("n", [1, 2])\n'
-    "def test_b(n, monkeypatch):\n"
-    '    monkeypatch.setenv("X", "1")\n'
-    "    seen = {}\n"
-    "    seen[n] = os.sep\n"
-    "    assert seen[n]\n\n\n"
-    "class TestC:\n"
-    "    def test_c(self):\n"
-    "        self.x = 1\n"
-    "        assert self.x\n"
-)
-
-
-@pytest.mark.verifies(
-    "development-coordination-runtime:"
-    "A review receipt is bound to the reviewed change, not the commit"
-)
-def test_an_appended_inert_test_module_keeps_the_receipt(repo):
-    root, base, reviewed = repo
-    head = _commit(root, {"tests/unit/test_b.py": _APPENDED})
-    assert _carries(root, base, reviewed, head)
-
-
-@pytest.mark.verifies(
-    "development-coordination-runtime:"
-    "A review receipt is bound to the reviewed change, not the commit"
-)
-def test_the_floor_class_gets_no_test_carry(repo):
-    root, base, reviewed = repo
-    head = _commit(root, {"tests/unit/test_b.py": _APPENDED})
-    assert not _carries(root, base, reviewed, head, test_carry=False)
-    assert review.is_floor_class("[floor] C6: x", "") and review.is_floor_class("x", "a,floor")
-    assert review.is_floor_class(None, "") and not review.is_floor_class("Docs: x", "a")
-
-
-def _test(body):
-    return "def test_b():\n" + body + "    assert 1\n"
+def _m(old, new, count=1):
+    assert old in _M
+    return {"tests/test_m.py": _M.replace(old, new, count)}
 
 
 @pytest.mark.verifies(
@@ -115,35 +103,90 @@ def _test(body):
 @pytest.mark.parametrize(
     "files",
     [
-        {"tinyassets/a.py": "A = 3\n"},
-        {"tests/conftest.py": "import os\n"},
-        {"tests/helpers.py": "X = 1\n"},
-        {"tests/test_a.py": "def test_a():\n    assert True\n"},
-        {"tests/test_a.py": "def test_a():\n    assert 2  # wrapped\n"},
-        {"tests/test_a.py": None},
-        {"tests/test_old.py": "def test_old():\n    assert 1 == 2 or True\n"},
-        {"tests/test_shape_registry.py": "def test_x():\n    assert 1\n"},
-        {"tests/test_named.py": _test("")},
-        {"tests/test_box_new.py": _test("")},
-        {"tests/test_scanned.py": _test("")},
-        {"tests/test_b.py": "import tinyassets.a\ntinyassets.a.A = 0\n" + _test("")},
-        {"tests/test_b.py": "import tinyassets.a\n" + _test("    tinyassets.a.A = 0\n")},
-        {"tests/test_b.py": "import os\n" + _test('    os.environ["X"] = "1"\n')},
-        {"tests/test_b.py": "import os\n" + _test('    os.environ.update(X="1")\n')},
-        {"tests/test_b.py": "import os\n" + _test('    setattr(os, "sep", "x")\n')},
-        {"tests/test_b.py": "import os\n\n@os.fspath\n" + _test("")},
-        {"tests/test_b.py": "import os\n\ndef test_b(x=os.chdir('/')):\n    assert 1\n"},
-        {"tests/test_b.py": "from os import *\n" + _test("")},
-        {"tests/test_b.py": "class T(object):\n    x = print()\n"},
-        {"tests/test_b.py": _test("    global G\n")},
-        {"tests/test_b.py": "def test_b(:\n"},
+        _m('"spec:Old"', '"spec:New",\n    "spec:Other"'),
+        _m("def test_x", '@pytest.mark.verifies("spec:X")\ndef test_x'),
+        _m("@pytest.mark.verifies(\n", '@pytest.mark.verifies(\n    "spec:Extra",\n'),
+        _m("import pytest\n", 'import pytest\npytestmark = pytest.mark.verifies("spec:M")\n'),
+        _m('reason="old reason"', 'reason="new reason owner=x"'),
+        _m('reason="old",', 'reason="runs-in=linux-ci",'),
+        _m("# a note\n", "# a better note\n#   and more\n"),
+        _m("# a note\n", ""),
+        {"tests/test_a.py": "# reviewed file, now commented\ndef test_a():\n    assert 2\n"},
+        {
+            **_m('reason="old reason",', 'reason="r",  # owner=x'),
+            "tests/test_a.py": "def test_a():\n    # why\n    assert 2\n",
+        },
     ],
     ids=[
-        "product", "conftest", "helper", "reviewed-test-reverted", "reviewed-test-edited",
-        "reviewed-test-deleted", "existing-test-weakened", "shape-registry",
-        "workflow-named", "workflow-paths-glob", "script-imported", "module-statement",
-        "patch-module-attr", "patch-environ", "mutate-environ", "setattr", "foreign-decorator",
-        "default-arg-call", "star-import", "class-body", "global", "unparsable",
+        "verifies-ids", "verifies-decorator-added", "verifies-continuation", "pytestmark-added",
+        "skip-reason", "xfail-reason", "comment-edit", "comment-removed",
+        "comment-in-reviewed-file", "several-files",
+    ],
+)
+def test_a_metadata_only_commit_keeps_the_receipt(repo, files):
+    root, base, reviewed = repo
+    head = _commit(root, files)
+    assert _carries(root, base, reviewed, head)
+
+
+# Bypasses from both reviews of PR #5201, as a new file and as lines in an
+# existing test; each must void the receipt.
+_BYPASSES = {
+    "alias": "import tinyassets\nm = tinyassets\nm.check = lambda *a: True\n",
+    "setitem": "import operator, os\noperator.setitem(os.environ, 'K', 'v')\n",
+    "annotation": "import operator, os\ndef f(a: operator.setitem(os.environ, 'K', 'v')): pass\n",
+    "monkeypatch": "import os, pytest\n"
+    "mp = pytest.MonkeyPatch()\nmp.setattr(os, 'getuid', lambda: 0)\n",
+    "environ": "import os\nos.environ['K'] = 'v'\n",
+    "setattr": "import os\nsetattr(os, 'sep', 'x')\n",
+    "global": "def test_b():\n    global G\n",
+    "default-arg-call": "import os\ndef test_b(x=os.chdir('/')):\n    assert 1\n",
+    "star-import": "from os import *\n",
+    "inert-test": "def test_b():\n    assert 1\n",
+}
+
+
+@pytest.mark.verifies(
+    "development-coordination-runtime:"
+    "A review receipt is bound to the reviewed change, not the commit"
+)
+@pytest.mark.parametrize(
+    "files",
+    [
+        *({"tests/test_aaa_new.py": text} for text in _BYPASSES.values()),
+        *(_m("@pytest.mark.skipif(", text + "@pytest.mark.skipif(") for text in _BYPASSES.values()),
+        {"tinyassets/a.py": "A = 3\n"},
+        {"tests/conftest.py": "import os\n"},
+        {"tests/helpers.py": "X = 2\n"},
+        {"tests/test_a.py": "def test_a():\n    assert True\n"},
+        {"tests/test_a.py": None},
+        {"tests/test_m.py": None},
+        {"tests/test_unit/test_new_comment.py": "# only a comment\n"},
+        _m("    True,\n", "    False,\n"),
+        _m("strict=True", "strict=False"),
+        _m('reason="old"', 'reason=f"{print()}"'),
+        _m('reason="old reason"', 'reason="x" + str(print())'),
+        _m('check(reason="a")', 'check(reason="b")'),
+        _m("# inside a string", "# changed inside a string"),
+        _m("    X = (1\n", '    X = (1\n    @pytest.mark.verifies("spec:Y")\n'),
+        _m('"spec:Old"', "str(print())"),
+        _m("# a note\n", "# a note\n\n"),
+        _m("  # trailing", "  # changed trailing"),
+        _m('@pytest.mark.xfail(True, reason="old", strict=True)\n', ""),
+        _m("import pytest\n", "# -*- coding: utf-7 -*-\nimport pytest\n"),
+        {
+            "tests/test_pm.py": 'import pytest\n\npytestmark = pytest.mark.skip(reason="x")\n'
+            'pytestmark = pytest.mark.verifies("spec:A")\n'
+        },
+    ],
+    ids=[
+        *(f"new-file-{name}" for name in _BYPASSES),
+        *(f"lines-{name}" for name in _BYPASSES),
+        "product", "conftest", "helper", "reviewed-test-reverted", "reviewed-test-deleted",
+        "test-deleted", "new-comment-only-file", "skip-condition", "xfail-strict",
+        "reason-fstring", "reason-expression", "reason-of-other-call", "comment-in-string",
+        "verifies-inside-parens", "verifies-non-literal", "blank-line", "trailing-comment",
+        "marker-removed", "coding-cookie", "pytestmark-overrides-skip",
     ],
 )
 def test_anything_else_voids_the_receipt(repo, files):
@@ -156,9 +199,20 @@ def test_anything_else_voids_the_receipt(repo, files):
     "development-coordination-runtime:"
     "A review receipt is bound to the reviewed change, not the commit"
 )
+def test_a_mode_change_voids_the_receipt(repo):
+    root, base, reviewed = repo
+    _git(root, "update-index", "--chmod=+x", "tests/test_m.py")
+    _git(root, "commit", "-q", "-m", "x")
+    assert not _carries(root, base, reviewed, _git(root, "rev-parse", "HEAD"))
+
+
+@pytest.mark.verifies(
+    "development-coordination-runtime:"
+    "A review receipt is bound to the reviewed change, not the commit"
+)
 def test_a_key_for_a_different_head_never_carries(repo):
     root, base, reviewed = repo
-    head = _commit(root, {"tests/test_a.py": "def test_a():\n    assert 3\n"})
+    head = _commit(root, {"tests/test_a.py": "# note\ndef test_a():\n    assert 2\n"})
     wrong_key = review.diff_key(base, reviewed, cwd=root)
     assert not review.same_change_as(base, wrong_key, head=head, cwd=root)(reviewed)
 

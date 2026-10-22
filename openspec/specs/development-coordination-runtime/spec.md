@@ -230,22 +230,23 @@ APPROVE verdict, the reviewed head SHA or the change's diff key, and a trusted
 comment on that pull request that itself opens with the same approval. The check
 SHALL run from the trusted base checkout so a pull request cannot weaken the rule
 judging it. A receipt for an earlier head SHALL stay valid when the current change
-is the reviewed one plus only appended test modules: each new against the base,
-untouched by the reviewed change, named by no workflow `paths:` entry or by any
-workflow or script, and holding only imports, docstrings, `pytest`-decorated defs
-and plain classes, with no write to an imported module, `os.environ`, `setattr`
-or `global`. Any other byte, including an edit to an existing test, voids it. A
-floor-class pull request (a `[floor]` title or `floor` label, or an unknown
-title) gets no such carry. The gate SHALL compute that from both heads' diffs,
-never from a claim in the body.
+differs from the reviewed one only in metadata lines of test files both changes
+keep: every added or removed line, read by the tokenizer from the `git diff -U0`
+hunks, is a `@pytest.mark.verifies(...)` decorator or the file's only
+`pytestmark = pytest.mark.verifies(...)`, a comment-only line, or a skip or xfail
+marker line whose only change is its `reason=` string. Any other line, and any
+new, deleted, renamed or re-moded file, voids it, for every pull request, floor
+class included. The gate SHALL compute that from both heads' diffs, never from a
+claim in the body.
 
-#### Scenario: An appended inert test keeps the receipt
-- **WHEN** the reviewed head is followed by a commit that only adds a new inert test module
-- **THEN** the receipt still allows the new head, unless the pull request is floor-class
+#### Scenario: A metadata fix keeps the receipt
+- **WHEN** the reviewed head is followed by a commit that only edits verifies ids,
+  comments, or a skip's reason in an existing test
+- **THEN** the receipt still allows the new head
 
-#### Scenario: Any edit to a test voids the receipt
-- **WHEN** a later commit edits a test the review saw, weakens an existing test, adds a
-  module-level statement or monkeypatch, or adds a test a workflow or script names
+#### Scenario: Any other edit voids the receipt
+- **WHEN** a later commit adds a test file, changes a skip condition, or changes any
+  code line, even inside a string that looks like a comment
 - **THEN** the gate requires a new receipt
 
 ### Requirement: A new skip names its owner and where it runs

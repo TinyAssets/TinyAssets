@@ -22,13 +22,14 @@ exact head its reviewer had BLOCKED.
 from __future__ import annotations
 
 import argparse
-import ast
 import fnmatch
 import hashlib
+import io
 import json
 import re
 import subprocess
 import sys
+import tokenize
 from collections.abc import Callable
 from pathlib import Path
 
@@ -390,163 +391,160 @@ def _read_text(path: Path | None) -> str | None:
         return None
 
 
-# Test modules pytest collects. `.dockerignore` keeps tests/ out of the
-# production image. conftest.py and helpers run under every test, so they are
-# never test modules here.
-_TEST_MODULE_RE = re.compile(rb"tests/(?:[^/]+/)*(?:test_[^/]*|[^/]*_test)\.py")
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_FLOOR_TITLE_RE = re.compile(r"\s*\[floor\]", re.I)
-
-
-def is_floor_class(title: str | None, labels: str | None) -> bool:
-    """ADR-015 floor class: a `[floor]` title or a `floor` label. Unknown = floor."""
-    if title is None:
-        return True
-    names = {n.strip().lower() for n in (labels or "").split(",")}
-    return bool(_FLOOR_TITLE_RE.match(title)) or "floor" in names
-
-
-def gate_test_patterns(root: Path = _REPO_ROOT) -> tuple[set[str], set[str]]:
-    """(path globs, basenames) of test files a workflow or script names.
-
-    Workflows' `paths:` entries and literal `tests/...py` names, and every
-    `test_*.py` or `tests.<module>` a script names or imports: changing one
-    changes a gate, so it never carries a review.
-    """
-    globs: set[str] = set()
-    names: set[str] = set()
-    workflows = sorted((root / ".github" / "workflows").glob("*.y*ml"))
-    for path in [*workflows, *sorted((root / "scripts").rglob("*.py"))]:
-        try:
-            # A regex names `test_x\.py`; read it as the file it names.
-            text = path.read_text(encoding="utf-8", errors="replace").replace("\\.", ".")
-        except OSError:
-            continue
-        lines = text.splitlines()
-        for i, line in enumerate(lines):
-            if path.suffix in (".yml", ".yaml") and re.fullmatch(r"\s*paths:\s*", line):
-                for item in lines[i + 1 :]:
-                    entry = re.fullmatch(r"\s*-\s*['\"]?([^'\"#]+?)['\"]?\s*", item)
-                    if entry is None:
-                        break
-                    if entry.group(1).startswith("tests/"):
-                        globs.add(entry.group(1))
-        globs.update(re.findall(r"tests/[\w./-]*?\.py\b", text))
-        names.update(re.findall(r"\b(?:test_\w+|\w+_test)\.py\b", text))
-        for module in re.findall(r"\btests((?:\.\w+)+)", text):
-            globs.add("tests" + module.replace(".", "/") + ".py")
-    return globs, names
-
-
-def is_gate_test(path: bytes, patterns: tuple[set[str], set[str]]) -> bool:
-    text = path.decode("utf-8", "replace")
-    globs, names = patterns
-    return text.rsplit("/", 1)[-1] in names or any(fnmatch.fnmatchcase(text, g) for g in globs)
-
-
-_BANNED_NAMES = frozenset({"setattr", "delattr", "exec", "eval", "globals", "vars", "__import__"})
-
-
-_MUTATORS = frozenset(
-    {"update", "setdefault", "pop", "popitem", "clear", "append", "extend", "insert",
-     "remove", "discard", "add", "putenv", "unsetenv", "chdir", "umask"}
+# The only edit a receipt survives: metadata lines in an existing test file.
+# Analysing what new test code does was a losing game (round 3 of PR #5201:
+# aliases, operator.setitem, annotations, an unscoped MonkeyPatch all slipped
+# through), and what actually cost cycles was re-reviewing metadata. So every
+# changed line must be a verifies line, a comment-only line, or a skip/xfail
+# line whose only change is its `reason=` string. The shapes are read with the
+# tokenizer, so a `#` or `@` inside a string or an open bracket is code.
+_TEST_FILE_RE = re.compile(rb"tests/(?:[^/]+/)*[^/]+\.py")
+_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_SKIP_CALLS = frozenset(
+    {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfail", "pytest.skip", "pytest.xfail"}
+)
+_VERIFIES = ["pytest", ".", "mark", ".", "verifies", "("]
+_SKIPPED_TOKENS = (
+    tokenize.COMMENT, tokenize.NL, tokenize.INDENT, tokenize.DEDENT, tokenize.NEWLINE
+)
+_SPAN_STARTS = tuple(
+    getattr(tokenize, n) for n in ("FSTRING_START", "TSTRING_START") if hasattr(tokenize, n)
+)
+_SPAN_ENDS = tuple(
+    getattr(tokenize, n) for n in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, n)
 )
 
 
-def _literal(node: ast.expr) -> bool:
+def _verifies_call(sig: list[tokenize.TokenInfo]) -> bool:
+    """`pytest.mark.verifies("literal", ...)`, the whole token list."""
+    head = [t.string for t in sig[: len(_VERIFIES)]]
+    return (
+        head == _VERIFIES
+        and len(sig) > len(_VERIFIES)
+        and sig[-1].string == ")"
+        and all(t.type == tokenize.STRING or t.string == "," for t in sig[len(_VERIFIES) : -1])
+    )
+
+
+def _metadata_lines(text: str) -> tuple[set[int], dict[int, tuple], set[int]] | None:
+    """(free rows, row -> tokens with skip reasons blanked, reason rows).
+
+    Free rows are comment-only rows and rows of a `@pytest.mark.verifies(...)`
+    decorator or `pytestmark = pytest.mark.verifies(...)` statement. None when
+    the text does not tokenize.
+    """
     try:
-        ast.literal_eval(node)
-    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-        return False
-    return True
-
-
-def _root(node: ast.expr) -> ast.expr:
-    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
-        node = node.func if isinstance(node, ast.Call) else node.value
-    return node
-
-
-def _inert_decorator(node: ast.expr) -> bool:
-    while isinstance(node, (ast.Call, ast.Attribute)):
-        if isinstance(node, ast.Call):
-            if not all(_literal(a) for a in node.args) or not all(
-                _literal(k.value) for k in node.keywords
+        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    lines = text.split("\n")
+    spanned: set[int] = set()
+    opened: list[int] = []
+    for tok in toks:
+        if tok.type in _SPAN_STARTS:
+            opened.append(tok.start[0])
+        elif tok.type in _SPAN_ENDS and opened:
+            spanned.update(range(opened.pop(), tok.end[0] + 1))
+        elif tok.type not in (tokenize.NL, tokenize.NEWLINE) and tok.end[0] > tok.start[0]:
+            spanned.update(range(tok.start[0], tok.end[0] + 1))
+    free: set[int] = set()
+    for tok in toks:
+        row, col = tok.start
+        if (
+            tok.type == tokenize.COMMENT
+            and not lines[row - 1][:col].strip()
+            and row not in spanned
+            and not (row <= 2 and re.search(r"coding[:=]", tok.string))
+        ):
+            free.add(row)
+    masked: dict[int, list[tuple[int, str]]] = {}
+    reason_rows: set[int] = set()
+    marks: list[set[int]] = []
+    logical: list[tokenize.TokenInfo] = []
+    for tok in toks:
+        if tok.type != tokenize.NEWLINE and tok.type != tokenize.ENDMARKER:
+            logical.append(tok)
+            continue
+        sig = [t for t in logical if t.type not in _SKIPPED_TOKENS]
+        logical = []
+        if not sig:
+            continue
+        rows = set(range(sig[0].start[0], sig[-1].end[0] + 1))
+        if sig[0].string == "@" and _verifies_call(sig[1:]):
+            free |= rows
+        elif sig[0].string == "pytestmark" and sig[1].string == "=" and _verifies_call(sig[2:]):
+            marks.append(rows)
+        stack: list[str | None] = []
+        for i, t in enumerate(sig):
+            shown = (t.type, t.string)
+            if t.string == "(":
+                j = i
+                while j >= 2 and sig[j - 1].type == tokenize.NAME and sig[j - 2].string == ".":
+                    j -= 2
+                callee = sig[j - 1].string if j >= 1 and sig[j - 1].type == tokenize.NAME else ""
+                stack.append(callee + "".join(s.string for s in sig[j:i]))
+            elif t.string in ("[", "{"):
+                stack.append(None)
+            elif t.string in (")", "]", "}") and stack:
+                stack.pop()
+            elif (
+                t.type == tokenize.STRING
+                and i >= 2
+                and sig[i - 1].string == "="
+                and sig[i - 2].string == "reason"
+                and (i < 3 or sig[i - 3].string != ".")
+                and stack
+                and stack[-1] in _SKIP_CALLS
+                and t.start[0] == t.end[0]
             ):
+                shown = (t.type, '""')
+                reason_rows.add(t.start[0])
+            masked.setdefault(t.start[0], []).append(shown)
+    # A new `pytestmark =` could replace a marker bound earlier, so verifies
+    # assignments are free only when they are the file's only `pytestmark`.
+    if text.count("pytestmark") == len(marks):
+        for rows in marks:
+            free |= rows
+    return free - spanned, {r: tuple(v) for r, v in masked.items()}, reason_rows - spanned
+
+
+def _hunks(diff: str) -> list[tuple[list[int], list[int]]]:
+    """(removed rows, added rows) of each `git diff -U0` hunk."""
+    hunks: list[tuple[list[int], list[int]]] = []
+    old = new = 0
+    for line in diff.split("\n"):
+        hit = _HUNK_RE.match(line)
+        if hit:
+            old, new = int(hit.group(1)), int(hit.group(3))
+            hunks.append(([], []))
+        elif hunks and line.startswith("-"):
+            hunks[-1][0].append(old)
+            old += 1
+        elif hunks and line.startswith("+"):
+            hunks[-1][1].append(new)
+            new += 1
+    return hunks
+
+
+def metadata_only(old: str, new: str, diff: str) -> bool:
+    """Is every line `diff` (old -> new, `git diff -U0`) changes test metadata?
+
+    A verifies line or a comment-only line may come or go freely. Any other
+    removed line must pair, in order, with an added line identical but for a
+    skip or xfail marker's `reason=` string.
+    """
+    before, after = _metadata_lines(old), _metadata_lines(new)
+    hunks = _hunks(diff)
+    if before is None or after is None or not hunks:
+        return False
+    for removed, added in hunks:
+        removed = [r for r in removed if r not in before[0]]
+        added = [r for r in added if r not in after[0]]
+        if len(removed) != len(added):
+            return False
+        for o, n in zip(removed, added):
+            if o not in before[2] or n not in after[2] or before[1][o] != after[1][n]:
                 return False
-            node = node.func
-        else:
-            node = node.value
-    return isinstance(node, ast.Name) and node.id == "pytest"
-
-
-def _inert_def(node: ast.stmt) -> bool:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        args = node.args
-        defaults = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
-        return all(_inert_decorator(d) for d in node.decorator_list) and all(
-            _literal(d) for d in defaults
-        )
-    if isinstance(node, ast.ClassDef):
-        return (
-            not node.decorator_list
-            and not node.bases
-            and not node.keywords
-            and all(_inert_body(s, in_class=True) for s in node.body)
-        )
-    return False
-
-
-def _inert_body(node: ast.stmt, *, in_class: bool = False) -> bool:
-    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-        return True
-    if isinstance(node, (ast.Import, ast.ImportFrom)) and not in_class:
-        return True
-    if isinstance(node, ast.Pass):
-        return True
-    return _inert_def(node)
-
-
-def appendable_test(source: bytes) -> bool:
-    """Only imports, docstrings, `pytest`-decorated defs and plain classes at
-    module level, and no write to anything shared anywhere: a new module that
-    collection runs cannot change what another test sees."""
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return False
-    if not all(_inert_body(s) for s in tree.body):
-        return False
-    imported = {
-        (a.asname or a.name).split(".")[0]
-        for s in ast.walk(tree)
-        if isinstance(s, (ast.Import, ast.ImportFrom))
-        for a in s.names
-    }
-    if "*" in imported:
-        return False
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Global, ast.Nonlocal)):
-            return False
-        if isinstance(node, ast.Name) and node.id in _BANNED_NAMES:
-            return False
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-            return False
-        shared = None
-        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(
-            node.ctx, (ast.Store, ast.Del)
-        ):
-            shared = _root(node.value)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in _MUTATORS
-        ):
-            shared = _root(node.func.value)
-        if shared is not None and (
-            not isinstance(shared, ast.Name) or shared.id in imported
-        ):
-            return False
     return True
 
 
@@ -555,40 +553,47 @@ def carries_review(
     current_raw: bytes,
     *,
     read_blob: Callable[[str], bytes] | None = None,
-    gate_patterns: tuple[set[str], set[str]] | None = None,
+    diff_blobs: Callable[[str, str], str] | None = None,
 ) -> bool:
     """Does a review of one change (`git diff --raw` bytes) cover another?
 
-    Yes when they are identical, or, given `read_blob`, when the current change
-    is the reviewed one plus ONLY appended test modules: each new against the
-    base, untouched by the reviewed change, named by no workflow or script, and
-    `appendable_test`. An edit to any existing test, or to a test the review
-    saw, voids the receipt.
+    Yes when they are identical, or, given the blob readers, when every file
+    they differ in is a test file both changes leave in place whose current
+    text differs from the reviewed text only in `metadata_only` lines. Any new,
+    deleted, renamed or re-moded file voids the receipt.
     """
     if diff_key_from_raw(reviewed_raw) == diff_key_from_raw(current_raw):
         return True
-    if read_blob is None:
+    if read_blob is None or diff_blobs is None:
         return False
-    patterns = gate_test_patterns() if gate_patterns is None else gate_patterns
-    reviewed_paths = {p for p, _ in _raw_records(reviewed_raw)}
-    appended: set[bytes] = set()
-    for path, meta in _raw_records(current_raw):
-        if path in reviewed_paths:
+    reviewed = dict(_raw_records(reviewed_raw))
+    current = dict(_raw_records(current_raw))
+    for path in sorted(reviewed.keys() | current.keys()):
+        was, now = reviewed.get(path), current.get(path)
+        if was == now:
             continue
-        fields = meta.split(b" ")
-        if (
-            fields[0] != b":000000"
-            or fields[1] not in (b"100644", b"100755")
-            or fields[-1] != b"A"
-            or _TEST_MODULE_RE.fullmatch(path) is None
-            or is_gate_test(path, patterns)
-            or not appendable_test(read_blob(fields[3].decode("ascii")))
-        ):
+        if now is None or _TEST_FILE_RE.fullmatch(path) is None:
             return False
-        appended.add(path)
-    return diff_key_from_raw(reviewed_raw) == diff_key_from_raw(
-        current_raw, keep=lambda p: p not in appended
-    )
+        fields = now.decode("ascii").split(" ")
+        if fields[1] != "100644" or fields[4] not in ("M", "A"):
+            return False
+        if was is None:
+            if fields[0] != ":100644" or fields[4] != "M":
+                return False
+            old_blob = fields[2]
+        else:
+            prior = was.decode("ascii").split(" ")
+            if [prior[i] for i in (0, 1, 2, 4)] != [fields[i] for i in (0, 1, 2, 4)]:
+                return False
+            old_blob = prior[3]
+        try:
+            old = read_blob(old_blob).decode("utf-8")
+            new = read_blob(fields[3]).decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        if not metadata_only(old, new, diff_blobs(old_blob, fields[3])):
+            return False
+    return True
 
 
 def same_change_as(
@@ -597,14 +602,12 @@ def same_change_as(
     *,
     head: str | None = None,
     cwd: Path | None = None,
-    test_carry: bool = False,
 ) -> Callable[[str], bool]:
     """True when a review of `cited` still covers the current change.
 
     Without `head`: `cited` has the same tree-diff against `base` as
-    `current_key`. With `head`, whose diff must hash to `current_key`, and
-    `test_carry` (never for the floor class): also when the current change only
-    appends test modules (`carries_review`).
+    `current_key`. With `head`, whose diff must hash to `current_key`: also
+    when the current change differs only in test metadata (`carries_review`).
 
     Any git failure is "not the same change". A receipt must not carry across
     a commit we cannot read.
@@ -621,16 +624,18 @@ def same_change_as(
             current_raw = _raw_diff(base, head, cwd=cwd)
             if diff_key_from_raw(current_raw) != current_key:
                 return False
-            def read_blob(sha: str) -> bytes:
+            def git(*args: str) -> bytes:
                 return subprocess.run(
-                    ["git", "cat-file", "blob", sha], cwd=cwd, capture_output=True, check=True
+                    ["git", *args], cwd=cwd, capture_output=True, check=True
                 ).stdout
 
             return carries_review(
                 _raw_diff(base, cited, cwd=cwd),
                 current_raw,
-                read_blob=read_blob if test_carry else None,
-                gate_patterns=gate_test_patterns(cwd or _REPO_ROOT) if test_carry else None,
+                read_blob=lambda sha: git("cat-file", "blob", sha),
+                diff_blobs=lambda a, b: git(
+                    "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-U0", a, b
+                ).decode("utf-8", "replace"),
             )
         except (subprocess.CalledProcessError, ValueError, OSError):
             return False
@@ -643,12 +648,7 @@ def _carry_comparer(args: argparse.Namespace) -> Callable[[str], bool] | None:
     base = getattr(args, "base", "") or ""
     if not base or not _DIFF_KEY_RE.fullmatch(key):
         return None
-    return same_change_as(
-        base,
-        key,
-        head=args.head,
-        test_carry=not is_floor_class(args.title, args.labels),
-    )
+    return same_change_as(base, key, head=args.head)
 
 
 def _blocking_review(args: argparse.Namespace) -> int:
@@ -812,13 +812,6 @@ def main() -> int:
         "against this base equals the current head's. Empty means only the "
         "exact head (or an explicit Drain-Review-Diff) can match.",
     )
-    parser.add_argument(
-        "--title",
-        default=None,
-        help="PR title. Absent, or a [floor] title or `floor` label: no "
-        "test-module carry (ADR-015 floor class).",
-    )
-    parser.add_argument("--labels", default="", help="PR labels, comma-separated.")
     parser.add_argument(
         "--diff-key",
         default="",
