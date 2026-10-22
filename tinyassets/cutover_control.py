@@ -151,6 +151,15 @@ def open_admission(directory, *, open_ordinary):
     with _locked(directory) as (directory, state):
         _write(directory / "state.json", {**state, "state": "consumed"})
         open_ordinary()
+        _archive_receipt(directory, "committed")
+
+
+def _archive_receipt(directory, outcome):
+    """Caller holds the receipt lock through rename and parent durability."""
+    import time
+
+    directory.rename(directory.with_name(f"{directory.name}-{outcome}-{time.time_ns()}"))
+    _fsync_directory(directory.parent)
 
 
 def cancel_initialization(directory, *, backup):
@@ -321,12 +330,11 @@ def finish_rollback(directory, root, *, store, old_image,
     old_image is the running or last-accepted image observed by the deploy
     caller, never the requested candidate. No data or backup writes occur.
     """
-    import time
-
     with _locked(directory, expected_state="consumed") as (directory, state):
-        if old_image != state["old_image"]:
-            raise CutoverRefused("rollback cleanup image mismatch: old_image is not accepted")
-        marker, uids, legacy = _attempt_inventory(state)
+        # Admission can succeed just before the process dies during archiving.
+        # This is committed authority, not permission to erase owner images.
+        from tinyassets.router_traffic import NAME
+
         # Open read-only, without creating/chmodding anything on the volume.
         fd = os.open(root / ".layout.lock", os.O_RDONLY | os.O_NOFOLLOW)
         try:
@@ -334,6 +342,22 @@ def finish_rollback(directory, root, *, store, old_image,
             marker_fd = os.open(root / ".layout.json", os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(marker_fd) as stream:
                 actual = json.load(stream)
+            if actual.get("state") == "stable" and actual.get("box_layout") == "owner-box":
+                try:
+                    gate_fd = os.open(root / NAME, os.O_RDONLY | os.O_NOFOLLOW)
+                    with os.fdopen(gate_fd) as stream:
+                        gate = json.load(stream)
+                except (OSError, ValueError) as error:
+                    raise CutoverRefused("committed layout admission unavailable") from error
+                if (not isinstance(gate, dict) or set(gate) != {"ordinary"}
+                        or gate["ordinary"] is not True):
+                    raise CutoverRefused(
+                        "committed layout requires open admission; cleanup refused")
+                _archive_receipt(directory, "committed")
+                return
+            if old_image != state["old_image"]:
+                raise CutoverRefused("rollback cleanup image mismatch: old_image is not accepted")
+            marker, uids, legacy = _attempt_inventory(state)
             if (actual != marker or actual.get("state") != "stable"
                     or actual.get("box_layout", actual.get("split")) != "owner-split"):
                 raise CutoverRefused("rollback cleanup requires the stable OLD layout marker")
@@ -345,9 +369,7 @@ def finish_rollback(directory, root, *, store, old_image,
                 with host_lock(host_state):
                     _no_owner_boxes(host_state, runsc)
                     _clear_attempt_store(store, uids, legacy)
-                    directory.rename(directory.with_name(
-                        f"{directory.name}-rolled-back-{time.time_ns()}"))
-                    _fsync_directory(directory.parent)
+                    _archive_receipt(directory, "rolled-back")
             except BlockingIOError as error:
                 raise CutoverRefused(
                     "boxhostd is active; owner boxes may be registered or running") from error
@@ -420,7 +442,8 @@ def _restore_box_store(backup, store):
 
 
 def rollback_live(directory, root, *, deploy_script, store, start_old=None,
-                  expected_backup=None):
+                  expected_backup=None, host_state=Path("/var/lib/boxhostd/state"),
+                  runsc=Path("/opt/tinyassets/boxhostd/current/runsc")):
     """Stopped, one-shot old-layout install. Owner volumes are not an input."""
     import shutil
     import subprocess
@@ -462,7 +485,8 @@ def rollback_live(directory, root, *, deploy_script, store, start_old=None,
     if start_old is None:
         with _locked(directory, expected_state="consumed") as (_, state):
             old_image = state["old_image"]
-        finish_rollback(directory, root, store=store, old_image=old_image)
+        finish_rollback(directory, root, store=store, old_image=old_image,
+                        host_state=host_state, runsc=runsc)
 
 
 def main():
@@ -504,7 +528,8 @@ def main():
         else:
             rollback_live(args.state, args.data, deploy_script=args.deploy_script,
                           store=args.store, start_old=print if args.defer_start else None,
-                          expected_backup=args.backup)
+                          expected_backup=args.backup, host_state=args.host_state,
+                          runsc=args.runsc)
 
 
 if __name__ == "__main__":

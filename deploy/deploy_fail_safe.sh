@@ -2037,7 +2037,7 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  if [ "${2:-}" != "pre_stop" ] && [ ! -d "${BUNDLE_STATE_DIR}/cutover" ]; then
+  if [ "${2:-}" != "pre_stop" ] && [ "${CUTOVER_INITIALIZE_STARTED:-0}" != 1 ]; then
     start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
     start_line="$(printf '%s\n' "$start_out" | one_line)"
     [ -n "$start_line" ] || start_line="<none>"

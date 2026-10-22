@@ -32,14 +32,13 @@ def cutover(tmp_path, source):
     return control, backup
 
 
-def test_cutover_consumption_is_durable_before_open_and_cannot_be_reinitialized(cutover,
-                                                                             monkeypatch):
+def test_cutover_consumption_is_durable_before_open_and_archived(cutover, monkeypatch):
     import os
     import stat
 
-    from tinyassets.cutover_control import CutoverRefused, initialize, open_admission, rollback
+    from tinyassets.cutover_control import CutoverRefused, open_admission, rollback
 
-    control, backup = cutover
+    control, _ = cutover
     events = []
     flushed = []
     fsync = os.fsync
@@ -57,14 +56,16 @@ def test_cutover_consumption_is_durable_before_open_and_cannot_be_reinitialized(
 
     open_admission(control, open_ordinary=open_ordinary)
     assert events == ["open"]
-    with pytest.raises(CutoverRefused, match="consumed"):
+    assert not control.exists()
+    archived, = control.parent.glob(control.name + "-committed-*")
+    assert json.loads((archived / "state.json").read_text())["state"] == "consumed"
+    assert flushed == [False, True, True]
+    with pytest.raises(CutoverRefused):
         open_admission(control, open_ordinary=lambda: pytest.fail("reopened"))
     with pytest.raises(CutoverRefused, match="consumed"):
-        rollback(control, stop_new=lambda: pytest.fail("stopped"),
+        rollback(archived, stop_new=lambda: pytest.fail("stopped"),
                  install_old=lambda _: pytest.fail("restored"),
                  start_old=lambda _: pytest.fail("started"))
-    with pytest.raises(FileExistsError):
-        initialize(control, backup=backup, old_image="old-image-digest")
 
 
 def test_cutover_pretraffic_rollback_stops_restores_exact_old_layout_then_starts(cutover, source,
@@ -158,8 +159,10 @@ open_admission(Path(sys.argv[1]), open_ordinary=lambda: print('opened', flush=Tr
         output, error = process.communicate(timeout=10)
         assert process.returncode == 0, error
         assert output.strip() == "opened"
-        assert control.stat().st_ino == inode
-        assert json.loads((control / "state.json").read_text())["state"] == "consumed"
+        assert not control.exists()
+        archived, = control.parent.glob(control.name + "-committed-*")
+        assert archived.stat().st_ino == inode
+        assert json.loads((archived / "state.json").read_text())["state"] == "consumed"
     finally:
         os.close(descriptor)
         if process.poll() is None:

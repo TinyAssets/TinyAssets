@@ -302,7 +302,7 @@ def test_store_restore_retains_archived_legacy_bytes_links_and_modes(cutover, tm
 
 @pytest.mark.parametrize("unsafe", [None, "new-layout", "unstable", "running", "registered",
                                     "image", "foreign-image", "attached", "host-active",
-                                    "owner-process"])
+                                    "owner-process", "new-owner-directory"])
 def test_consumed_retry_cleans_only_safe_attempt(cutover, source, xfs_store, empty_boxhost,
                                                unsafe):
     from tinyassets.boxes.host_service import host_lock
@@ -332,6 +332,9 @@ def test_consumed_retry_cleans_only_safe_attempt(cutover, source, xfs_store, emp
         old_image = "different-image"
     if unsafe == "foreign-image":
         (store / "399999.img").write_bytes(b"unrelated")
+    if unsafe == "new-owner-directory":
+        (store / "300003").mkdir()
+        (store / "300003/new-write").write_bytes(b"accepted after rollback")
     attached = None
     if unsafe == "attached":
         with (store / "300001.img").open("wb") as stream:
@@ -415,11 +418,8 @@ def test_manual_rollback_cleans_and_archives(cutover, source, xfs_store, empty_b
         return real_run(args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", commands)
-    finish = cutover_control.finish_rollback
-    monkeypatch.setattr(cutover_control, "finish_rollback", lambda *a, **kw:
-                        finish(*a, **kw, host_state=host_state, runsc=runsc))
     cutover_control.rollback_live(control, source, deploy_script=tmp_path / "deploy.sh",
-                                  store=xfs_store)
+                                  store=xfs_store, host_state=host_state, runsc=runsc)
     assert accepted == ["old-image-digest"]
     if legacy:
         assert (xfs_store / "300002/legacy").read_text() == "old deletion target"
@@ -431,9 +431,84 @@ def test_manual_rollback_cleans_and_archives(cutover, source, xfs_store, empty_b
     assert _fingerprint(source) == before
 
 
-@pytest.mark.parametrize("image_matches", [True, False])
+@pytest.mark.parametrize("interrupted_archive", [False, True])
+@pytest.mark.parametrize("refused", [False, True])
+def test_deploy_after_successful_admit_preserves_store_and_daemon(
+        box, cutover, source, xfs_store, interrupted_archive, refused):
+    from tinyassets.cutover_control import admit, close_admission
+
+    control, backup = cutover
+    control.rename(box.state_dir / "cutover")
+    control = box.state_dir / "cutover"
+    volume, env, _, _ = _owner_box_cutover(box)
+    shutil.copytree(source, volume, dirs_exist_ok=True)
+    marker = volume / ".layout.json"
+    marker.write_text(json.dumps({"layout": 2, "state": "stable", "box_layout": "owner-box"}))
+    close_admission(volume)
+    admit(control, volume)
+    assert not control.exists()
+    receipt, = box.state_dir.glob("cutover-committed-*/state.json")
+    assert json.loads(receipt.read_text())["state"] == "consumed"
+    if interrupted_archive:
+        receipt.parent.rename(control)
+    # These are live owner writes, never rollback residue; neither cleanup nor
+    # restore may touch them even though the receipt records a different image.
+    (xfs_store / "300001.img").write_bytes(b"accepted owner writes")
+    env["BOX_STORE_DIR"] = str(xfs_store)
+    env["FAKE_DOCKER_BOX_STORE_DIR"] = str(xfs_store)
+    before = _fingerprint(volume), _fingerprint(xfs_store), backup.read_bytes()
+    if refused:
+        box.set_docker_state(migration_probe_error="synthetic later deploy refusal")
+    result = box.run(NEW_IMAGE, **env)
+    assert result.returncode == (1 if refused else 0), result.stdout + result.stderr
+    assert _result(result) == ("migration_refused" if refused else "deployed")
+    assert not control.exists()
+    assert (_fingerprint(volume), _fingerprint(xfs_store), backup.read_bytes()) == before
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["status"] == "running"
+
+
+def test_missing_initialization_receipt_never_grants_cleanup(cutover, source, xfs_store,
+                                                           empty_boxhost):
+    from tinyassets.cutover_control import CutoverRefused, cancel_initialization, finish_rollback
+
+    control, backup = cutover
+    (control / "state.json").unlink()
+    cancel_initialization(control, backup=backup)
+    before = _fingerprint(source), _fingerprint(xfs_store), backup.read_bytes()
+    host_state, runsc = empty_boxhost
+    with pytest.raises(CutoverRefused, match="unreadable"):
+        finish_rollback(control, source, store=xfs_store, old_image=OLD_IMAGE,
+                        host_state=host_state, runsc=runsc)
+    assert (_fingerprint(source), _fingerprint(xfs_store), backup.read_bytes()) == before
+
+
+@pytest.mark.parametrize("in_flight", [False, True])
+def test_refusal_restart_depends_on_this_attempt_not_receipt_directory(box, in_flight):
+    # Exercise the real refusal handler after a stopped snapshot. A stale
+    # committed receipt must not suppress startup; an active cutover must.
+    repo = Path(__file__).resolve().parents[2]
+    script = (repo / "deploy/deploy_fail_safe.sh").read_text()
+    handler = script[script.index("migration_refused() {"):script.index('TURNS_PROBE="')]
+    (box.state_dir / "cutover").mkdir()
+    containers = box.docker_state_json()["containers"]
+    containers["tinyassets-daemon"]["status"] = "exited"
+    box.set_docker_state(containers=containers)
+    result = subprocess.run(
+        ["bash", "-c", 'log() { :; }; err() { :; }; discard_candidate_harness() { :; };\n'
+         + handler + '\nmigration_refused "synthetic backup refusal"'],
+        env=box.env(DAEMON_CONTAINER="tinyassets-daemon", INSTALLED_THIS_RUN="0",
+                    CUTOVER_INITIALIZE_STARTED=str(int(in_flight)),
+                    MIGRATION_DETAIL_FILE=str(box.root / "detail")),
+        capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert _result(result) == "migration_refused"
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["status"] == (
+        "exited" if in_flight else "running")
+
+
+@pytest.mark.parametrize("receipt_kind", ["rollback", "wrong-image", "committed"])
 def test_host_driver_cleans_before_live_preflight(box, cutover, source, xfs_store,
-                                                empty_boxhost, image_matches):
+                                                empty_boxhost, receipt_kind):
     import sys
 
     from tinyassets.cutover_control import _write
@@ -441,7 +516,14 @@ def test_host_driver_cleans_before_live_preflight(box, cutover, source, xfs_stor
     control, _ = cutover
     state = json.loads((control / "state.json").read_text())
     _write(control / "state.json", {**state, "state": "consumed",
-                                    "old_image": OLD_IMAGE if image_matches else NEW_IMAGE})
+                                    "old_image": OLD_IMAGE if receipt_kind == "rollback"
+                                    else NEW_IMAGE})
+    if receipt_kind == "committed":
+        from tinyassets.router_traffic import NAME
+
+        (source / ".layout.json").write_text(json.dumps(
+            {"layout": 2, "state": "stable", "box_layout": "owner-box"}))
+        (source / NAME).write_text('{"ordinary": true}')
     control.rename(box.state_dir / "cutover")
     (xfs_store / "300001.img").write_bytes(b"residue")
     (xfs_store / ".locks").mkdir()
@@ -452,18 +534,22 @@ def test_host_driver_cleans_before_live_preflight(box, cutover, source, xfs_stor
     python.write_text(
         '#!/bin/sh\nif [ "$1" = "-" ]; then\n'
         '  test ! -d "$BUNDLE_STATE_DIR/cutover" || exit 19\n'
-        '  test -z "$(ls -A "$BOX_STORE_DIR")" || exit 20\n'
+        '  if [ "$RECEIPT_KIND" != committed ]; then\n'
+        '    test -z "$(ls -A "$BOX_STORE_DIR")" || exit 20\n'
+        '  fi\n'
         '  echo live_preflight=ok; exit 0\nfi\n'
         f'exec "{sys.executable}" "$@"\n')
     python.chmod(0o755)
     repo = Path(__file__).resolve().parents[2]
     before = _fingerprint(source)
+    before_store = _fingerprint(xfs_store)
     result = subprocess.run(
         ["bash", str(repo / "deploy/deploy_host.sh"), "live-preflight"],
         env=box.env(DEPLOY_TARGET="local", BOX_STORE_DIR=str(xfs_store),
+                    RECEIPT_KIND=receipt_kind,
                     FAKE_DOCKER_VOLUME_DIR=str(source)),
         capture_output=True, text=True)
-    if image_matches:
+    if receipt_kind != "wrong-image":
         assert result.returncode == 0, result.stdout + result.stderr
         assert (result.stdout.index("cleaned and archived")
                 < result.stdout.index("live_preflight=ok"))
@@ -474,3 +560,6 @@ def test_host_driver_cleans_before_live_preflight(box, cutover, source, xfs_stor
         assert (box.state_dir / "cutover/state.json").exists()
         assert (xfs_store / "300001.img").read_bytes() == b"residue"
     assert _fingerprint(source) == before
+    if receipt_kind == "committed":
+        assert _fingerprint(xfs_store) == before_store
+        assert list(box.state_dir.glob("cutover-committed-*/state.json"))
