@@ -86,13 +86,18 @@ def test_custom_key_header_is_reported_not_guessed():
     assert chosen["verdict"] == "not_connectable" and "header:x-key" in chosen["reason"]
 
 
-def test_blanket_401_is_not_a_model_api():
-    fetch = fetcher({API + "/v1/models": (401, None),
-                     API + "/v1/.tinyassets-discovery-control": (401, None),
-                     API + "/models": (401, None),
-                     API + "/.tinyassets-discovery-control": (401, None)})
+@pytest.mark.parametrize("status", [401, 403])
+def test_blanket_auth_is_unverified_key_or_refused(status):
+    fetch = fetcher({API + p: (status, None) for p in (
+        "/v1/models", "/v1/.tinyassets-discovery-control", "/models",
+        "/.tinyassets-discovery-control", "/v1/chat/completions", "/v1/responses")})
     chosen = detect(API, fetch=fetch)["chosen"]
-    assert chosen["verdict"] == "not_connectable" and "credential" in chosen["reason"]
+    if status == 401:
+        # Nothing is proven without a key: the owner's key is checked first.
+        assert chosen["verdict"] == "api_key" and chosen["verified"] is False
+        assert chosen["models_url"] == API + "/v1/models"
+    else:
+        assert chosen["verdict"] == "not_connectable" and "403" in chosen["reason"]
 
 
 def test_device_only_server_is_not_oauth():
