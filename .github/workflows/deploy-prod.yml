@@ -745,6 +745,21 @@ jobs:
           set -euo pipefail
           python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles
 
+      # No waiver or password-grant fallback: prove the OAuth bearer users get.
+      # Dependency/setup failures are red and use the same recovery as a refusal.
+      - name: Real user AuthKit sign-in probe
+        id: signin_probe
+        timeout-minutes: 5
+        env:
+          TINYASSETS_CANARY_EMAIL: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
+          TINYASSETS_CANARY_PASSWORD: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
+        run: |
+          set -euo pipefail
+          python -m pip install httpx==0.28.1 playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          python scripts/live_signin_probe.py
+
       # The app is the second public surface this deploy can break, and the MCP
       # canary says nothing about it: the connector can be perfectly green while
       # /app 404s. Folded into the same rollback condition below.
@@ -1073,8 +1088,8 @@ jobs:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           ON_POST_COMMIT_FAILURE: ${{ inputs.on_post_commit_failure || 'hold' }}
-          IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
-          POST_COMMIT_REASON: deploy=${{ steps.deploy.outcome }},mcp=${{ steps.canary.outcome }},app=${{ steps.app_probe.outcome }},core=${{ steps.core_canary.outcome }},owner_boxes=${{ steps.owner_boxes.outcome }}
+          IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.signin_probe.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
+          POST_COMMIT_REASON: deploy=${{ steps.deploy.outcome }},mcp=${{ steps.canary.outcome }},signin=${{ steps.signin_probe.outcome }},app=${{ steps.app_probe.outcome }},core=${{ steps.core_canary.outcome }},owner_boxes=${{ steps.owner_boxes.outcome }}
         run: |
           set +e
           set -uo pipefail
@@ -1206,6 +1221,7 @@ jobs:
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"
+            echo "- real user sign-in: \`${{ steps.signin_probe.outcome }}\`"
             echo "- app surface probe: \`${{ steps.app_probe.outcome }}\`"
             echo "- protected receipt assertion: \`${{ steps.deployed_sha.outcome }}\`"
             echo "- image retention: \`${{ steps.retention.outcome }}\`"

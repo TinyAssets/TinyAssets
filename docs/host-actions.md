@@ -10,6 +10,10 @@ whose next step is *"the founder logs into Cloudflare."*
 
 **Delete a row when it's done.** Git holds the history.
 
+| Item | Founder-only setup |
+|---|---|
+| Lane P: hosted sign-in probe | Confirm `TINYASSETS_CANARY_EMAIL` / `TINYASSETS_CANARY_PASSWORD` secrets and `TINYASSETS_CANARY_USER_ID` variable name a dedicated, verified password account; allow `https://tinyassets.io/app` on the app OAuth client. The existing canary records a headless human-verification challenge: obtain WorkOS-supported unattended hosted login for this account/runner (including any MFA/email policy). Do not bypass challenges or disable protection globally. The required probe fails until hosted login works. |
+
 ---
 
 | Item | Lead-only deploy action |
