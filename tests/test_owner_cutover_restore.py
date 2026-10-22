@@ -184,47 +184,6 @@ def test_interruption_after_consumption_keeps_both_paths_closed(cutover):
                  start_old=None)
 
 
-def _shim(directory, name, body):
-    path = directory / name
-    path.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
-    path.chmod(0o755)
-
-
-def test_live_cutover_rollback_installs_old_layout_and_only_then_restarts(cutover, source,
-                                                                      tmp_path, monkeypatch):
-    import os
-
-    from tinyassets.cutover_control import rollback_live
-
-    control, _ = cutover
-    root = tmp_path / "live"
-    shutil.copytree(source, root)
-    (root / ".layout.json").write_text(json.dumps({"state": "stable", "box_layout": "owner-box"}))
-    shutil.rmtree(root / "a1")
-    commands = tmp_path / "commands"
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("CUTOVER_TEST_LOG", str(commands))
-    _shim(binaries, "systemctl", 'printf "systemctl %s\\n" "$*" >> "$CUTOVER_TEST_LOG"\n')
-    _shim(binaries, "docker", 'printf "docker %s\\n" "$*" >> "$CUTOVER_TEST_LOG"\n'
-          '[ "$*" = "ps -q --filter volume=tinyassets-data" ]\n')
-    deploy = binaries / "old-deploy"
-    _shim(binaries, deploy.name, 'printf "deploy %s\\n" "$*" >> "$CUTOVER_TEST_LOG"\n'
-          f'test -f "{root}/a1/notes.txt"\n'
-          f'python -c "import json; assert json.load(open(\'{control}/state.json\'))'
-          '[\'state\'] == \'consumed\'"\n')
-    rollback_live(control, root, deploy_script=deploy)
-    assert _fingerprint(root) == _fingerprint(source)
-    assert commands.read_text().splitlines() == [
-        "systemctl stop tinyassets-daemon.service boxhostd.service",
-        "docker ps -q --filter volume=tinyassets-data",
-        "docker ps -q --filter volume=tinyassets-data",
-        "deploy --restore-bundle old-image-digest",
-    ]
-    assert not list(tmp_path.glob(".cutover-rollback-*"))
-
-
 @pytest.mark.parametrize("interruption", ["copied_tree", "box_records", "removed_host_tree"])
 def test_paired_restore_after_half_move_is_byte_exact(source, tmp_path, interruption):
     volume = tmp_path / "volume/_data"

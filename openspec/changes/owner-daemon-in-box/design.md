@@ -273,6 +273,22 @@ and deletes paired-restore/provider adapters. Independent crash trials validate
 each opaque snapshot's digest and map binding before comparing logical map rows;
 all owner-content manifests and other shared authority remain compared unchanged.
 
+Retry cleanup shares rollback's finalization. A consumed receipt alone grants
+no deletion authority: admission also consumes it. Under the host-mutation lock,
+cleanup checks the exact archived OLD marker while holding a read-only shared
+layout lock, requires the observed/accepted image to equal recorded old_image,
+and takes boxhostd's lifecycle lock and checks runsc plus bundle registrations.
+It derives owner UIDs from the verified stopped archive. Only their images,
+validated locks, .cutover-shared and interrupted .cutover-store-* staging may be
+removed; unknown entries, attachments and nested mounts refuse before deletion.
+The state directory is timestamp-archived only after store cleanup is durable.
+A crash before archival can retry this idempotent cleanup. Data and backups are
+never changed by finalization. Automatic and manual rollback finalize only
+after the recorded old image passes acceptance; retry startup runs it before
+preflight and before taking a new backup. The shared deploy driver streams the
+current cleanup implementation ahead of its earlier live store preflight under
+the same host-mutation lock, using the retained recovery harness dependencies.
+
 ### C5. The router only routes (T1)
 The router authenticates, looks the owner up in its **in-memory routing snapshot**
 (owner → admission state, box socket, per-box secret), and forwards. The broker

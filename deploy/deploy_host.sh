@@ -125,12 +125,44 @@ phase_capture_current_image() {
 }
 
 phase_live_preflight() {
-  # Env: CORE_CANARY_PROVISIONED (the resolved canary gate, waiver included).
-  # Read-only. Refuses, before the first host mutation, on the conditions only
-  # a live host has: box-store contents, disk above the low-water mark, special
-  # files outside the regenerated runtime directories, and an unprovisioned
-  # canary when a data move is pending. scripts/live_preflight.py has the rules.
-  set -euo pipefail
+  # Retire a completed old-layout rollback before the read-only store check.
+  # Stream this candidate's control code: the installed harness may predate
+  # finish-rollback. Its dependencies come from the retained recovery harness.
+  # No receipt means no imports and no mutation on an ordinary deploy.
+  local retry
+  retry="$(cat <<'PY'
+import os, subprocess, sys
+from pathlib import Path
+state = Path(os.environ.get("BUNDLE_STATE_DIR", "/var/lib/tinyassets-deploy")) / "cutover"
+if not os.path.lexists(state):
+    sys.exit(0)
+harness = Path(os.environ.get("BOX_HARNESS_ROOT", "/opt/tinyassets/boxhostd"))
+sys.path.insert(0, str(harness / "harness-current/app"))
+control = {"__name__": "cutover_retry"}
+exec(compile(sys.stdin.read(), "cutover_control.py", "exec"), control)
+run = control["_run"]
+root = Path(run("docker", "volume", "inspect", "tinyassets-data", "--format", "{{ .Mountpoint }}"))
+try:
+    image_id = run("docker", "inspect", "-f", "{{.Image}}", "tinyassets-daemon")
+    image = run("docker", "image", "inspect", "-f", "{{index .RepoDigests 0}}", image_id)
+except subprocess.CalledProcessError:
+    image = ""
+if "@sha256:" not in image:
+    env = Path(os.environ.get("ENV_FILE", "/etc/tinyassets/env"))
+    image = next((line.split("=", 1)[1] for line in env.read_text().splitlines()
+                  if line.startswith("TINYASSETS_IMAGE=")), "")
+control["finish_rollback"](
+    state, root, old_image=image,
+    store=Path(os.environ.get("BOX_STORE_DIR", "/var/lib/boxhostd/owners")),
+    host_state=Path(os.environ.get("BOX_HOST_STATE", "/var/lib/boxhostd/state")),
+    runsc=Path(os.environ.get("BOX_RUNSC", "/opt/tinyassets/boxhostd/current/runsc")))
+print("previous rollback cleaned and archived before live preflight")
+PY
+)"
+  remote "sudo flock -w 120 '${LOCK_FILE:-/var/lock/tinyassets-host-mutation.lock}' python3 -c $(printf '%q' "$retry")" \
+    < tinyassets/cutover_control.py
+  # The remaining preflight is read-only. Recovery above changes only attempt
+  # artifacts and the deployment receipt, never data or backups.
   remote "sudo env CORE_CANARY_PROVISIONED='${CORE_CANARY_PROVISIONED:-}' python3 - --data-volume tinyassets-data --box-store /var/lib/boxhostd/owners --harness-root /opt/tinyassets/boxhostd --env-file /etc/tinyassets/env" \
     < scripts/live_preflight.py
 }

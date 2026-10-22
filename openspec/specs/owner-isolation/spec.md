@@ -399,3 +399,46 @@ shared layer SHALL hold no center admission table and no per-center store.
 - **THEN** the shared flow record is bound to that owner and an opaque flow handle, with no center column or comparison
 - **AND** a caller-supplied center field is refused, and foreign owners cannot consume the flow
 - **AND** PKCE, interactive-session proof and one-shot consumption remain required
+
+
+### Requirement: Cutover rollback requires durable pre-traffic eligibility
+Old-layout rollback SHALL be possible only while ordinary writable admission has
+never opened. Deployment control SHALL consume rollback eligibility durably and
+permanently before opening admission. Missing or unreadable deployment state
+SHALL permit neither rollback nor opening traffic.
+
+#### Scenario: Retry after an old manual rollback left consumed state
+- **WHEN** deployment finds a consumed cutover receipt before preflight
+- **THEN** it verifies the recorded backup, stable OLD marker, recorded old image,
+  and absence of registered or running owner boxes under the lifecycle lock
+- **AND** it removes only that attempt's owner images, locks, shared cutover tree
+  and interrupted store staging, then archives the receipt with a timestamp
+- **AND** unknown artifacts, image mismatch, unstable or new layout, attached
+  images or registered/running boxes refuse without deleting anything
+- **AND** cleanup writes neither the data volume nor backups; automatic and manual
+  rollback perform this same finalization after the old image is accepted
+- **AND** a fresh attempt creates new eligibility rather than replaying consumption
+
+#### Scenario: A restarted workflow cannot roll back after traffic opened
+- **WHEN** a deploy workflow is re-run after ordinary admission has opened
+- **THEN** old-layout rollback is refused
+
+#### Scenario: A failed apply restores the paired store on its own device
+- **WHEN** this deploy entered apply and fails before acceptance with unused eligibility
+- **THEN** deployment control restores the verified stopped pair under the host lock
+- **AND** store extraction and rename remain on the store filesystem, preserving numeric ownership and hardlinks
+- **AND** old-image acceptance returns rollback status 2; explicit bundle restore returns 0
+
+#### Scenario: Initialization fails before apply
+- **WHEN** this deploy created eligibility but never invoked apply
+- **THEN** the EXIT handler retires that attempt's eligibility and restarts the old image without restoring data
+- **AND** refusal does not start a writable daemon before the handler owns recovery
+- **AND** an existing attempt's directory is never adopted by a new run
+
+#### Scenario: An accepted committed deploy cannot clear its dirty marker
+- **WHEN** an accepted deploy reports marker_clear_failed
+- **THEN** automatic rollback is disarmed and the committed data and running service remain intact
+
+#### Scenario: Rollback fault injection is inadmissible on production volumes
+- **WHEN** CUTOVER_ROLLBACK_FAULT is set without the exact synthetic volume label
+- **THEN** initialization refuses before publishing any eligibility
