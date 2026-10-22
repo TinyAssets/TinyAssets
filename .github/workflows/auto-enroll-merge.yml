@@ -109,7 +109,7 @@ jobs:
           }
 
           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefOid,baseRefOid)"
+            --json autoMergeRequest,body,headRefOid,baseRefOid,title,labels)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
@@ -143,11 +143,18 @@ jobs:
           done < <(python scripts/drain_review_gate.py --list-carry-heads \
               --head "$HEAD_OID" \
               --body-file "$RUNNER_TEMP/pr-body.md" || true)
+          # Floor class (title/labels) gets no test-module carry. A base whose
+          # script predates --title omits it, which the script reads as floor.
+          CLASS_ARGS=()
+          if grep -q -- '"--title"' scripts/drain_review_gate.py; then
+            CLASS_ARGS=(--title "$(jq -r '.title' <<<"$PR_JSON")" \
+              --labels "$(jq -r '[.labels[].name] | join(",")' <<<"$PR_JSON")")
+          fi
           if python scripts/drain_review_gate.py \
               --head "$HEAD_OID" \
               --base "$BASE_OID" \
               --diff-key "$DIFF_KEY" \
-              --body-file "$RUNNER_TEMP/pr-body.md"; then
+              --body-file "$RUNNER_TEMP/pr-body.md" "${CLASS_ARGS[@]}"; then
             REVIEW_GATE="allow"
           else
             REVIEW_GATE="deny"
@@ -161,7 +168,7 @@ jobs:
               # This is not an atomic compare-and-disable; the final
               # read-to-mutation gap remains.
               CURRENT_PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-                --json autoMergeRequest,body,headRefOid,baseRefOid)"
+                --json autoMergeRequest,body,headRefOid,baseRefOid,title,labels)"
               if [ "$CURRENT_PR_JSON" != "$PR_JSON" ]; then
                 echo "PR state changed since receipt evaluation; leaving current enrollment alone."
                 exit 0

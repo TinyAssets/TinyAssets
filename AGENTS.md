@@ -23,9 +23,9 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
 
 ## Live state
 
-Queued work: `openspec/changes/`. Findings: `docs/concerns/` (delete =
+Queued: `openspec/changes/`. Findings: `docs/concerns/` (delete =
 resolve). Founder-only: `docs/host-actions.md`. Claims: branches, PRs.
-Narrative: commit messages.
+Narrative: commits.
 
 Orient: Direction, § Shape registry, "Shape reconciliation" issue.
 Converge a shape; add no second path. Write durable state before replying.
@@ -37,32 +37,33 @@ Converge a shape; add no second path. Write durable state before replying.
 2. A one-sentence diff gets no plan. Spec first: public MCP/API, storage shape,
    authority, migrations, money.
 3. Run touched tests, affected heavy files and `ruff`; CI does the rest.
-   Mutation tables only for data-loss/cross-user guards. Prove it live-like
-   (real deploy path) first.
+   Mutation tables only for data-loss/cross-user guards.
 4. Review only floor-class (ADR-015) and gate-file changes, from push, beside
-   CI: one round ("cross-family review") by a non-author told to break it,
-   from `git diff --stat origin/main...`; floor/correctness findings,
+   CI: one "cross-family review" by a non-author told to break it, from
+   `git diff --stat origin/main...`; floor/correctness findings,
    `AGREE`/`DISAGREE_EVIDENCE`; fix rounds see only new product hunks.
    Others: the lead stamps.
-5. Never serialize independent steps; non-blockers gate nothing. Known fixes
-   go live now (host; PR follows). Cache costly state on the first run; a
-   retry replays the last failure first (candidate image, live inputs).
+5. Never serialize independent steps; non-blockers gate nothing. Prove it
+   live-like (real deploy path) first; a known fix goes into practice (host
+   or deploy window) once that passes at the last failure point (candidate
+   image, live inputs), PR in parallel. Cache costly state on the first run.
    Watch long work; post unasked milestones, all lanes, minutes from now.
    Fold colliding lanes.
 6. Done = `deployed_sha.py --assert-contains <sha>`, one naive-user pass via
    the app agent, spec synced. A pasted chat is a bug report.
-7. Repeat error/finding, or round 3: escalate (Astra, Opus, simplify).
+7. Repeat error/finding, or round 3: escalate: Codex astra, Opus xhigh,
+   simplify.
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
 ## Facts (numbers are cited repo-wide)
 
+1. `SqliteSaver`, never `AsyncSqliteSaver`.
 2. Reuse the LanceDB connection; never recreate it.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
    agreed work (host-only: a host-actions row that blocks nothing).
-5. Accumulating state needs `Annotated[list, operator.add]` —
-   `tinyassets/graph_compiler.py`.
-6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
+5. Accumulating state needs `Annotated[list, operator.add]`.
+6. `FactWithContext` carries truth-value typing.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.

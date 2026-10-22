@@ -166,6 +166,7 @@ jobs:
           # environment and never interpolated into this script, so a body
           # containing shell metacharacters is data, not code.
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         shell: bash
         run: |
           set -euo pipefail
@@ -350,7 +351,13 @@ jobs:
           # The receipt parse and its corroboration are one decision in one
           # unit-tested place. stderr names the head and diff key a receipt
           # must carry, so it can be shown on the PR either way.
-          if ! python scripts/drain_review_gate.py --blocking-review \
+          # Floor class (title/labels) gets no test-module carry. A base whose
+          # script predates --title omits it, which the script reads as floor.
+          CLASS_ARGS=()
+          if grep -q -- '"--title"' scripts/drain_review_gate.py; then
+            CLASS_ARGS=(--title "${PR_TITLE}" --labels "${LABELS}")
+          fi
+          if ! python scripts/drain_review_gate.py --blocking-review "${CLASS_ARGS[@]}" \
               --head "${HEAD_OID}" \
               --base "${BASE_OID}" \
               --diff-key "${DIFF_KEY}" \
@@ -402,9 +409,9 @@ jobs:
               echo "only blank lines may precede it."
               echo "A head receipt names the reviewed commit. It stays valid for a"
               echo "later head when that head's diff against the base is the same"
-              echo "change (the tree-diff hash), or differs only in test modules"
-              echo "(tests/**/test_*.py, not conftest.py), so a conflict-free rebase or a"
-              echo "test-only follow-up does not need a new receipt. Any other edit does. A"
+              echo "change (the tree-diff hash), or, outside the floor class, only adds"
+              echo "new inert test modules no gate names, so a conflict-free rebase or an"
+              echo "appended test does not need a new receipt. Any other edit does. A"
               echo "\`Drain-Review-Diff:\` receipt states that hash explicitly."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "scope guard: BLOCKED — no Drain-Review receipt for head ${HEAD_OID}${DIFF_KEY:+ / diff key ${DIFF_KEY}}"

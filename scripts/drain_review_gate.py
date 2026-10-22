@@ -22,6 +22,7 @@ exact head its reviewer had BLOCKED.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import hashlib
 import json
@@ -390,41 +391,204 @@ def _read_text(path: Path | None) -> str | None:
 
 
 # Test modules pytest collects. `.dockerignore` keeps tests/ out of the
-# production image, so a commit that changes only these ships nothing.
-# conftest.py and test helpers are NOT test modules here: they run under every
-# test. The shape registry test is itself a gate, so it never counts.
+# production image. conftest.py and helpers run under every test, so they are
+# never test modules here.
 _TEST_MODULE_RE = re.compile(rb"tests/(?:[^/]+/)*(?:test_[^/]*|[^/]*_test)\.py")
-_GATE_TESTS = frozenset({b"tests/test_shape_registry.py"})
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_FLOOR_TITLE_RE = re.compile(r"\s*\[floor\]", re.I)
 
 
-def is_test_module(path: bytes) -> bool:
-    return _TEST_MODULE_RE.fullmatch(path) is not None and path not in _GATE_TESTS
+def is_floor_class(title: str | None, labels: str | None) -> bool:
+    """ADR-015 floor class: a `[floor]` title or a `floor` label. Unknown = floor."""
+    if title is None:
+        return True
+    names = {n.strip().lower() for n in (labels or "").split(",")}
+    return bool(_FLOOR_TITLE_RE.match(title)) or "floor" in names
 
 
-def _product(path: bytes) -> bool:
-    return not is_test_module(path)
+def gate_test_patterns(root: Path = _REPO_ROOT) -> tuple[set[str], set[str]]:
+    """(path globs, basenames) of test files a workflow or script names.
+
+    Workflows' `paths:` entries and literal `tests/...py` names, and every
+    `test_*.py` or `tests.<module>` a script names or imports: changing one
+    changes a gate, so it never carries a review.
+    """
+    globs: set[str] = set()
+    names: set[str] = set()
+    workflows = sorted((root / ".github" / "workflows").glob("*.y*ml"))
+    for path in [*workflows, *sorted((root / "scripts").rglob("*.py"))]:
+        try:
+            # A regex names `test_x\.py`; read it as the file it names.
+            text = path.read_text(encoding="utf-8", errors="replace").replace("\\.", ".")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if path.suffix in (".yml", ".yaml") and re.fullmatch(r"\s*paths:\s*", line):
+                for item in lines[i + 1 :]:
+                    entry = re.fullmatch(r"\s*-\s*['\"]?([^'\"#]+?)['\"]?\s*", item)
+                    if entry is None:
+                        break
+                    if entry.group(1).startswith("tests/"):
+                        globs.add(entry.group(1))
+        globs.update(re.findall(r"tests/[\w./-]*?\.py\b", text))
+        names.update(re.findall(r"\b(?:test_\w+|\w+_test)\.py\b", text))
+        for module in re.findall(r"\btests((?:\.\w+)+)", text):
+            globs.add("tests" + module.replace(".", "/") + ".py")
+    return globs, names
 
 
-def carries_review(reviewed_raw: bytes, current_raw: bytes) -> bool:
+def is_gate_test(path: bytes, patterns: tuple[set[str], set[str]]) -> bool:
+    text = path.decode("utf-8", "replace")
+    globs, names = patterns
+    return text.rsplit("/", 1)[-1] in names or any(fnmatch.fnmatchcase(text, g) for g in globs)
+
+
+_BANNED_NAMES = frozenset({"setattr", "delattr", "exec", "eval", "globals", "vars", "__import__"})
+
+
+_MUTATORS = frozenset(
+    {"update", "setdefault", "pop", "popitem", "clear", "append", "extend", "insert",
+     "remove", "discard", "add", "putenv", "unsetenv", "chdir", "umask"}
+)
+
+
+def _literal(node: ast.expr) -> bool:
+    try:
+        ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False
+    return True
+
+
+def _root(node: ast.expr) -> ast.expr:
+    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node
+
+
+def _inert_decorator(node: ast.expr) -> bool:
+    while isinstance(node, (ast.Call, ast.Attribute)):
+        if isinstance(node, ast.Call):
+            if not all(_literal(a) for a in node.args) or not all(
+                _literal(k.value) for k in node.keywords
+            ):
+                return False
+            node = node.func
+        else:
+            node = node.value
+    return isinstance(node, ast.Name) and node.id == "pytest"
+
+
+def _inert_def(node: ast.stmt) -> bool:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        args = node.args
+        defaults = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+        return all(_inert_decorator(d) for d in node.decorator_list) and all(
+            _literal(d) for d in defaults
+        )
+    if isinstance(node, ast.ClassDef):
+        return (
+            not node.decorator_list
+            and not node.bases
+            and not node.keywords
+            and all(_inert_body(s, in_class=True) for s in node.body)
+        )
+    return False
+
+
+def _inert_body(node: ast.stmt, *, in_class: bool = False) -> bool:
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+        return True
+    if isinstance(node, (ast.Import, ast.ImportFrom)) and not in_class:
+        return True
+    if isinstance(node, ast.Pass):
+        return True
+    return _inert_def(node)
+
+
+def appendable_test(source: bytes) -> bool:
+    """Only imports, docstrings, `pytest`-decorated defs and plain classes at
+    module level, and no write to anything shared anywhere: a new module that
+    collection runs cannot change what another test sees."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    if not all(_inert_body(s) for s in tree.body):
+        return False
+    imported = {
+        (a.asname or a.name).split(".")[0]
+        for s in ast.walk(tree)
+        if isinstance(s, (ast.Import, ast.ImportFrom))
+        for a in s.names
+    }
+    if "*" in imported:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            return False
+        if isinstance(node, ast.Name) and node.id in _BANNED_NAMES:
+            return False
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            return False
+        shared = None
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            shared = _root(node.value)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _MUTATORS
+        ):
+            shared = _root(node.func.value)
+        if shared is not None and (
+            not isinstance(shared, ast.Name) or shared.id in imported
+        ):
+            return False
+    return True
+
+
+def carries_review(
+    reviewed_raw: bytes,
+    current_raw: bytes,
+    *,
+    read_blob: Callable[[str], bytes] | None = None,
+    gate_patterns: tuple[set[str], set[str]] | None = None,
+) -> bool:
     """Does a review of one change (`git diff --raw` bytes) cover another?
 
-    Yes when they are identical, or when they differ ONLY in test modules:
-    every other path's before/after blob is the same, and every test module
-    the reviewed change touched is still touched (a later commit may edit a
-    reviewed test, never drop it). So a `verifies` tag, a skip reason or a new
-    test keeps the receipt, and any byte outside test modules voids it. Test
-    hygiene still judges every head, so a later commit that removes, skips or
-    loosens a test is refused there.
+    Yes when they are identical, or, given `read_blob`, when the current change
+    is the reviewed one plus ONLY appended test modules: each new against the
+    base, untouched by the reviewed change, named by no workflow or script, and
+    `appendable_test`. An edit to any existing test, or to a test the review
+    saw, voids the receipt.
     """
     if diff_key_from_raw(reviewed_raw) == diff_key_from_raw(current_raw):
         return True
-    if diff_key_from_raw(reviewed_raw, keep=_product) != diff_key_from_raw(
-        current_raw, keep=_product
-    ):
+    if read_blob is None:
         return False
-    reviewed_tests = {p for p, _ in _raw_records(reviewed_raw) if is_test_module(p)}
-    current_tests = {p for p, _ in _raw_records(current_raw) if is_test_module(p)}
-    return reviewed_tests <= current_tests
+    patterns = gate_test_patterns() if gate_patterns is None else gate_patterns
+    reviewed_paths = {p for p, _ in _raw_records(reviewed_raw)}
+    appended: set[bytes] = set()
+    for path, meta in _raw_records(current_raw):
+        if path in reviewed_paths:
+            continue
+        fields = meta.split(b" ")
+        if (
+            fields[0] != b":000000"
+            or fields[1] not in (b"100644", b"100755")
+            or fields[-1] != b"A"
+            or _TEST_MODULE_RE.fullmatch(path) is None
+            or is_gate_test(path, patterns)
+            or not appendable_test(read_blob(fields[3].decode("ascii")))
+        ):
+            return False
+        appended.add(path)
+    return diff_key_from_raw(reviewed_raw) == diff_key_from_raw(
+        current_raw, keep=lambda p: p not in appended
+    )
 
 
 def same_change_as(
@@ -433,12 +597,14 @@ def same_change_as(
     *,
     head: str | None = None,
     cwd: Path | None = None,
+    test_carry: bool = False,
 ) -> Callable[[str], bool]:
     """True when a review of `cited` still covers the current change.
 
     Without `head`: `cited` has the same tree-diff against `base` as
-    `current_key`. With `head`, whose diff must hash to `current_key`: also
-    when the two changes differ only in test modules (`carries_review`).
+    `current_key`. With `head`, whose diff must hash to `current_key`, and
+    `test_carry` (never for the floor class): also when the current change only
+    appends test modules (`carries_review`).
 
     Any git failure is "not the same change". A receipt must not carry across
     a commit we cannot read.
@@ -455,7 +621,17 @@ def same_change_as(
             current_raw = _raw_diff(base, head, cwd=cwd)
             if diff_key_from_raw(current_raw) != current_key:
                 return False
-            return carries_review(_raw_diff(base, cited, cwd=cwd), current_raw)
+            def read_blob(sha: str) -> bytes:
+                return subprocess.run(
+                    ["git", "cat-file", "blob", sha], cwd=cwd, capture_output=True, check=True
+                ).stdout
+
+            return carries_review(
+                _raw_diff(base, cited, cwd=cwd),
+                current_raw,
+                read_blob=read_blob if test_carry else None,
+                gate_patterns=gate_test_patterns(cwd or _REPO_ROOT) if test_carry else None,
+            )
         except (subprocess.CalledProcessError, ValueError, OSError):
             return False
 
@@ -467,7 +643,12 @@ def _carry_comparer(args: argparse.Namespace) -> Callable[[str], bool] | None:
     base = getattr(args, "base", "") or ""
     if not base or not _DIFF_KEY_RE.fullmatch(key):
         return None
-    return same_change_as(base, key, head=args.head)
+    return same_change_as(
+        base,
+        key,
+        head=args.head,
+        test_carry=not is_floor_class(args.title, args.labels),
+    )
 
 
 def _blocking_review(args: argparse.Namespace) -> int:
@@ -631,6 +812,13 @@ def main() -> int:
         "against this base equals the current head's. Empty means only the "
         "exact head (or an explicit Drain-Review-Diff) can match.",
     )
+    parser.add_argument(
+        "--title",
+        default=None,
+        help="PR title. Absent, or a [floor] title or `floor` label: no "
+        "test-module carry (ADR-015 floor class).",
+    )
+    parser.add_argument("--labels", default="", help="PR labels, comma-separated.")
     parser.add_argument(
         "--diff-key",
         default="",

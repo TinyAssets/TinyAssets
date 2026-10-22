@@ -88,11 +88,21 @@ def test_a_push_that_did_not_land_is_reported(tmp_path):
     git(work, "add", "-A")
     git(work, "commit", "-q", "-m", "a")
     git(work, "remote", "add", "origin", str(origin))
-    git(work, "push", "-q", "origin", "lane")
+    git(work, "branch", "other")
+    git(work, "push", "-q", "origin", "lane", "other")
     guard = _guard()
     assert guard.push_did_not_land("git push", work) is None
     (work / "a.txt").write_text("b", encoding="utf-8")
     git(work, "commit", "-q", "-am", "b")
     command = f"cd '{work.as_posix()}' && git push"
     assert "did not land" in guard.push_did_not_land(command, tmp_path)
+    assert "did not land" in guard.push_did_not_land("git push -u origin lane", work)
     assert guard.push_did_not_land("git push origin HEAD:other", work) is None
+    # The branch or remote actually pushed is the one checked.
+    assert guard.push_did_not_land("git push origin other", work) is None
+    fork = tmp_path / "fork.git"
+    git(tmp_path, "init", "-q", "--bare", str(fork))
+    git(work, "remote", "add", "fork", str(fork))
+    git(work, "push", "-q", "fork", "lane")
+    assert guard.push_did_not_land("git push fork lane", work) is None
+    assert guard.push_did_not_land("git push fork", work) is None

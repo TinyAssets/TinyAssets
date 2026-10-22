@@ -4,8 +4,8 @@
 Each check replaces a rule line. Exit 2 with stderr is fed back to the agent.
 
 Pre (refuse before running):
-  * a heredoc whose body holds a backslash -- it reached the file unescaped
-    and broke a patch; file contents go through the Write tool;
+  * a heredoc (quoted or not) whose body holds a backslash -- it reached the
+    file unescaped and broke a patch; file contents go through the Write tool;
   * `pkill -f PATTERN` without the `[x]yz` bracket trick -- the pattern also
     sits in the command line of the shell running it, so it killed its own
     ssh session;
@@ -15,8 +15,9 @@ Post (after running):
   * `git push` whose branch did not land on origin -- a silent push failure
     looked like a pushed fix.
 
-Network failures pass: the merge gate still refuses a stale receipt, so this
-hook only saves time and must never block on its own outage.
+Network failures and a guard that cannot run pass (settings.json skips a
+missing script): the merge gate still refuses a stale receipt, so this hook
+only saves time and must never block on its own outage.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ def _git(cwd: Path, *args: str) -> str | None:
 
 def heredoc_backslash(command: str) -> str | None:
     for match in _HEREDOC.finditer(command):
+        # Quoting the delimiter does not help here: on 2026-10-21 a <<'EOF'
+        # body's `one\\two` still landed as `one\two`.
         if "\\" in match.group(3):
             return ("a heredoc body holds a backslash, and heredocs on this host "
                     "unescape it; write the file with the Write tool instead")
@@ -114,26 +117,45 @@ def push_did_not_land(command: str, cwd: Path) -> str | None:
         if words[:1] != ["git"] or "push" not in words:
             continue
         rest = words[words.index("push") + 1:]
-        if any(":" in w or w in ("--dry-run", "-n", "--delete", "-d", "--tags") for w in rest):
+        if any(":" in w or w in ("--dry-run", "-n", "--delete", "-d", "--tags", "--all",
+                                 "--mirror") for w in rest):
             continue
         where = cwd
         if "-C" in words[:words.index("push")]:
             where = _path(cwd, words[words.index("-C") + 1])
-        branch = _git(where, "rev-parse", "--abbrev-ref", "HEAD")
-        head = _git(where, "rev-parse", "HEAD")
+        # Positional words are `[remote [branch...]]`; check only one named or
+        # current branch on a named remote, never guess.
+        positional = [w for w in rest if not w.startswith("-")]
+        if len(positional) > 2 or any(w.startswith(("-o", "--push-option", "--repo"))
+                                      for w in rest):
+            continue
+        remote_name = positional[0] if positional else "origin"
+        if len(positional) == 2:
+            branch = positional[1].removeprefix("refs/heads/")
+            head = _git(where, "rev-parse", "--verify", "-q", f"refs/heads/{branch}")
+        else:
+            branch = _git(where, "rev-parse", "--abbrev-ref", "HEAD")
+            head = _git(where, "rev-parse", "HEAD")
         if not branch or branch == "HEAD" or not head:
             continue
-        remote = _git(where, "ls-remote", "origin", f"refs/heads/{branch}")
+        remote = _git(where, "ls-remote", remote_name, f"refs/heads/{branch}")
         if remote is None:
             continue
         landed = remote.split()[0] if remote else "(absent)"
         if landed != head:
-            return (f"push did not land: origin/{branch} is {landed[:12]}, "
-                    f"HEAD is {head[:12]}; read the push output and push again")
+            return (f"push did not land: {remote_name}/{branch} is {landed[:12]}, "
+                    f"{branch} is {head[:12]}; read the push output and push again")
     return None
 
 
 def main() -> int:
+    try:
+        return _main()
+    except Exception:  # noqa: BLE001 - a broken guard must never block a call
+        return 0
+
+
+def _main() -> int:
     try:
         payload = json.load(sys.stdin)
     except (ValueError, OSError):

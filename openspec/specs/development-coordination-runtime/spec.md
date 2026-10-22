@@ -230,17 +230,22 @@ APPROVE verdict, the reviewed head SHA or the change's diff key, and a trusted
 comment on that pull request that itself opens with the same approval. The check
 SHALL run from the trusted base checkout so a pull request cannot weaken the rule
 judging it. A receipt for an earlier head SHALL stay valid when the current change
-differs from the reviewed one only in collected test modules (`tests/**/test_*.py`
-or `*_test.py`, never `conftest.py` or the shape registry test), and every test
-module the reviewed change touched is still touched; any other byte voids it. The
-gate SHALL compute that from both heads' diffs, never from a claim in the body.
+is the reviewed one plus only appended test modules: each new against the base,
+untouched by the reviewed change, named by no workflow `paths:` entry or by any
+workflow or script, and holding only imports, docstrings, `pytest`-decorated defs
+and plain classes, with no write to an imported module, `os.environ`, `setattr`
+or `global`. Any other byte, including an edit to an existing test, voids it. A
+floor-class pull request (a `[floor]` title or `floor` label, or an unknown
+title) gets no such carry. The gate SHALL compute that from both heads' diffs,
+never from a claim in the body.
 
-#### Scenario: A test-only follow-up keeps the receipt
-- **WHEN** the reviewed head is followed by a commit that edits only a test module
-- **THEN** the receipt still allows the new head
+#### Scenario: An appended inert test keeps the receipt
+- **WHEN** the reviewed head is followed by a commit that only adds a new inert test module
+- **THEN** the receipt still allows the new head, unless the pull request is floor-class
 
-#### Scenario: A product edit or a dropped reviewed test voids the receipt
-- **WHEN** a later commit changes a non-test path or reverts a test module the review saw
+#### Scenario: Any edit to a test voids the receipt
+- **WHEN** a later commit edits a test the review saw, weakens an existing test, adds a
+  module-level statement or monkeypatch, or adds a test a workflow or script names
 - **THEN** the gate requires a new receipt
 
 ### Requirement: A new skip names its owner and where it runs
@@ -271,10 +276,12 @@ check SHALL run from the trusted base checkout, before the receipt is read.
 
 ### Requirement: Agent shell commands that lost time are refused
 
-The Claude Code Bash guard SHALL refuse a heredoc whose body holds a backslash, a
-`pkill -f` whose pattern lacks the bracket trick, and a receipt naming a head that
-is not the pull request's current head. After a `git push` it SHALL report a
-branch whose origin ref is not the local head.
+The Claude Code Bash guard SHALL refuse a heredoc whose body holds a backslash
+(quoting the delimiter does not keep it on this host), a `pkill -f` whose pattern
+lacks the bracket trick, and a receipt naming a head that is not the pull
+request's current head. After a `git push` it SHALL report a pushed branch whose
+ref on the pushed remote is not the local branch. A guard that cannot run SHALL
+allow the call.
 
 #### Scenario: A self-matching pkill is refused
 - **WHEN** the agent runs `ssh host 'pkill -f rehearse'`
