@@ -178,7 +178,7 @@ broker and waker get no new business logic.
 
 - [ ] 8.1 Subscription CLI logins in broker custody, leased into a per-run tmpfs,
       refresh written back, nothing persistent in the box (T6; ADR-022 P2b;
-      closes `docs/concerns/c6-cli-vault-box-copy.md`). Branch `conv/source-custody`.
+      subscription credentials stay in broker custody, #5227, ADR-012). Branch `conv/source-custody`.
       Existing logins move into custody on first use.
 - [ ] 8.2 Address discovery runs in the owner's box through its egress path; the
       broker keeps only the OAuth code exchange, client registration and deposit.
