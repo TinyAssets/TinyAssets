@@ -23,10 +23,10 @@ from tinyassets.universe_bundle import seed_okf_bundle
 
 pytestmark = [
     pytest.mark.verifies(
-        "knowledge-retrieval-and-memory:Owner knowledge files are authoritative",
+        "c12-knowledge-files-export:Owner knowledge files are authoritative",
     ),
     pytest.mark.verifies(
-        "knowledge-retrieval-and-memory:Selected memory uses the same file authority",
+        "c12-knowledge-files-export:Selected memory uses the same file authority",
     ),
 ]
 
