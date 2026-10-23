@@ -16,8 +16,8 @@ N3 needs live two-way voice and video without creating a second agent or model-c
 
 ### Modified Capabilities
 
-- `realtime-voice-conversation`: Retire the separate Voice bridge and turn path in favor of realtime model sessions.
+- `realtime-voice-conversation`, `provider-routing`, `provider-capability-negotiation`, `credential-vault`, `identity-auth-and-access-control`: Retire all requirements for the separate Voice bridge, capability, signaling and turn path.
 
 ## Impact
 
-`model_call.py`, S3 session/loop, broker transport, owner-box media storage and the shared app Voice UI. Depends on C3, C9 and `broker-streaming-contract`; this change specifies behavior only.
+`model_call.py`, S3 session/loop, broker transport, owner-box media storage and the shared app Voice UI. Builds on N9's media-part storage rule; also depends on C3, C9 and `broker-streaming-contract`. This change specifies behavior only.

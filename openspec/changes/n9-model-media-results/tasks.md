@@ -5,5 +5,5 @@
 
 ## 2. Receipt and callers
 
-- [ ] 2.1 Bind each call's emitted part references and outcome to exactly one C3 receipt, including partial failure and cancellation. Verify `test_media_receipt_per_call` with two calls and distinct usage IDs.
+- [ ] 2.1 Bind each call's emitted part references, metered media usage and outcome to exactly one C3 receipt, including cap exhaustion, partial failure and cancellation. Add `test_media_receipt_per_call` with two calls and distinct usage IDs.
 - [ ] 2.2 Update rendering and `ta` consumers to handle typed parts without another model path. Verify `call-sites`, targeted tests through `python scripts/linux_oracle.py -- <files>`, and Ruff.
