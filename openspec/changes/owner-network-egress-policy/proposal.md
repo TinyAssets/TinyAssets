@@ -5,7 +5,7 @@ N5 lets the owner restrict their box's internet access independently of agent in
 ## What Changes
 
 - Add owner-selected `open` (default), `allowlist`, and `ask` modes to the existing proxy decision.
-- Keep policy and approval authority owner-only; reuse the in-box request/approval path and expose a read-only agent projection.
+- Treat owner-bound credential destinations as allowed in restrictive modes; approval writes a standing entry through the sole owner policy writer. Keep authority owner-only; reuse the in-box request/approval path and expose a read-only agent projection.
 - Specify the planned `egress-gate` guard without implementing it.
 
 ## Capabilities

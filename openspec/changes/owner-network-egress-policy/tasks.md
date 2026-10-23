@@ -5,8 +5,8 @@
 ## 2. Implement after close-out
 
 - [ ] 2.1 Add the egress section to the existing broker policy store/protected owner write path and read-only projection; prove initialization, generation conflicts and `policy-writers` remain sound.
-- [ ] 2.2 Extend only `broker.egress.destination` with the three modes and existing proxy challenge plumbing; prove all transport paths, redirects, public-address pinning, custody and change/open ordering.
-- [ ] 2.3 Wire in-box Needs you requests and owner policy UI to existing consent; prove one-use scoped approval, expiry, denial, replay refusal and raw proxy retry.
+- [ ] 2.2 Extend only `broker.egress.destination` with the three modes and existing proxy refusal plumbing; prove all transport paths, redirects, public-address pinning, custody and change/open ordering.
+- [ ] 2.3 Wire in-box Needs you requests and owner policy UI to existing consent; prove standing-entry approval through the sole writer, bound-credential permission/revocation, denial, stale proposal refusal and raw proxy retry.
 
 ## 3. Acceptance
 

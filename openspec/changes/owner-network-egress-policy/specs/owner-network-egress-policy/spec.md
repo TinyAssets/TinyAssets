@@ -5,8 +5,8 @@ Every box upstream connection SHALL pass the existing broker `destination` check
 
 #### Scenario: Every transport uses the owner policy
 - **WHEN** model HTTP, connector HTTP, public HTTP/CONNECT or git opens a destination, including a redirect destination
-- **THEN** the same check permits public targets in `open`, permits only exact normalized host/IP and port entries in `allowlist`, and requires a current one-use approval in `ask`
-- **AND** direct native egress cannot bypass it, and a credential never grants egress permission
+- **THEN** the same check permits public targets in `open`, permits exact normalized host/IP and port standing entries or active owner-bound credential destinations in both `allowlist` and `ask`, and refuses other targets (`ask` offers owner approval)
+- **AND** direct native egress cannot bypass it, and credential bindings never bypass admission or public-address safety; each redirect is checked independently without provider-specific code
 
 #### Scenario: A permitted hostname resolves unsafely
 - **WHEN** an allowed or approved destination resolves to private, loopback, link-local or metadata addresses
@@ -22,17 +22,22 @@ The existing broker policy authority SHALL accept writes only through its protec
 
 #### Scenario: Restriction races an existing connection
 - **WHEN** the owner changes egress policy while connections or approvals exist
-- **THEN** opens serialize with the change, prior approvals become invalid, and existing owner connections close before the change is acknowledged effective
+- **THEN** opens serialize with the change, stale proposals conflict, and existing owner connections close before the change is acknowledged effective
 
 ### Requirement: Ask uses existing owner consent
-The box SHALL raise a blocked `ask` connection through the existing request/approval path; only protected owner confirmation SHALL authorize one retry, without changing standing policy.
+The box SHALL raise a blocked `ask` connection through the existing request/approval path; only protected owner confirmation SHALL write a standing destination/port entry through the same protected policy writer.
 
 #### Scenario: Approval and retry
 - **WHEN** a blocked client, including a raw proxy client through the in-box relay, requests internet access
-- **THEN** it receives refusal while one deduplicated Needs you request shows destination, port and connection-wide scope; no upstream is held open
-- **AND** owner confirmation authorizes one retry for that owner, challenge, destination/port, policy and volume generation for five minutes
-- **AND** the proxy atomically consumes that authorization and rechecks admission and public addresses
+- **THEN** it receives refusal while one deduplicated Needs you request shows destination, port and permission for future connections until removal; no upstream is held open
+- **AND** owner confirmation commits the standing entry via `PolicyStore.write` with the expected policy generation; no one-use grant store exists
+- **AND** each retry rechecks current policy, admission and public addresses
 
 #### Scenario: Approval cannot escape its scope
-- **WHEN** an authorization is reused, expired, denied, forged, from an earlier generation, or applied to another owner or destination
-- **THEN** no upstream opens; Clear/Deny/mute use the existing request lifecycle and never silently grant access
+- **WHEN** a policy proposal is denied, forged, stale, or submitted without that owner's protected session
+- **THEN** no permission is written; Clear/Deny/mute use the existing request lifecycle and never silently grant access
+
+#### Scenario: Connected services and revocation
+- **WHEN** an owner uses a bound model or connector destination in either restrictive mode
+- **THEN** the generic active credential binding satisfies the restriction while secrets remain in broker custody
+- **AND** revocation removes that permission unless a standing entry independently allows it; an unbound redirect needs its own permission

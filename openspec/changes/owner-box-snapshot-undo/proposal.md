@@ -1,11 +1,11 @@
 ## Why
 
-N6 gives an owner a coherent recovery point before agent work changes their box. Reusing C1/C2 snapshots preserves the single S27 backup and restore path.
+N6 gives an owner coherent recovery from retained sleep snapshots or an explicitly requested restore point. Reusing C1/C2 snapshots preserves the single S27 backup and restore path.
 
 ## What Changes
 
-- Checkpoint once before each agent turn's execution, including scheduled turns, through the existing lifecycle snapshot call.
-- Restore the whole owner volume, including files, owner DB and history, only after owner confirmation in the app.
+- Reuse automatic sleep snapshots and owner-requested checkpoints; no per-turn/per-session stop.
+- Restore the whole owner volume, including files, owner DB and history, only through N10 protected owner confirmation, publishing current state first so undo is itself undoable.
 - Share C2 retention and recovery pins; document free-tier cost and the planned `box-snapshot` guard.
 
 ## Capabilities
