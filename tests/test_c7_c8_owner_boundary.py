@@ -74,7 +74,7 @@ def test_public_broker_destination_uses_only_its_own_credential(box, chain, host
 def test_broker_neither_stores_nor_decides_owner_actions(box):
     store = box.broker.server._policy_store
     document = store.read("owner").document
-    assert set(document) == {"entries", "spend"}
+    assert set(document) == {"entries", "spend", "egress"}
     for action in ("workspace.files", "workspace.shell", "workspace.workflows", "app.read",
                    "app.write"):
         with pytest.raises(PermissionError, match="spending action required"):
