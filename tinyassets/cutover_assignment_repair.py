@@ -1,14 +1,54 @@
 """One-shot stopped-cutover repair. Delete with box_layout_migration after cutover.
 
-Reads one mounted owner volume and the stopped broker's grant ledger. No network,
-catalogue, credential probe, or runtime caller; absence alone removes membership.
+Reads one mounted owner volume and the stopped broker's grant ledger. No catalogue,
+credential probe, or runtime caller; absence alone removes membership.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import socket
 import sqlite3
 from pathlib import Path
+
+from tinyassets.boxes.bootstrap import RUNTIME
+
+BROKER_SOCKET = RUNTIME / "broker/broker.sock"
+PROC_ROOT = Path("/proc")
+
+
+def require_stopped(owner_root):
+    # A successful connect is enough: do not send any broker operation.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(1)
+        try:
+            channel.connect(str(BROKER_SOCKET))
+        except (FileNotFoundError, ConnectionRefusedError):
+            pass
+        except OSError as exc:
+            raise RuntimeError("cannot establish that the broker is stopped") from exc
+        else:
+            raise RuntimeError("broker is still answering; stop it before repair")
+    # boxhostd/gofer attachments live in private mount namespaces. Checking
+    # only our mount table would miss exactly the live volume we must refuse.
+    device = owner_root.stat().st_dev
+    device_id = f"{os.major(device)}:{os.minor(device)}"
+    seen = {(PROC_ROOT / "self/mountinfo").read_text()}
+    for process in PROC_ROOT.iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            mounts = (process / "mountinfo").read_text()
+            if mounts in seen:
+                continue
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # Process exited during the census.
+        except OSError as exc:
+            raise RuntimeError("cannot establish that owner volume is detached") from exc
+        seen.add(mounts)
+        if any(line.split()[2] == device_id for line in mounts.splitlines()):
+            raise RuntimeError("owner volume is attached in another process namespace")
 
 
 def repair(owner_root: Path, ledger: Path):
@@ -17,6 +57,7 @@ def repair(owner_root: Path, ledger: Path):
     from tinyassets.providers.definition import _verified_definition
     from tinyassets.storage import db_path
 
+    require_stopped(owner_root)
     changes = []
     # mode=rw/ro refuses a misspelled path rather than inventing an empty ledger.
     with sqlite3.connect(ledger.resolve().as_uri() + "?mode=ro", uri=True) as grants:

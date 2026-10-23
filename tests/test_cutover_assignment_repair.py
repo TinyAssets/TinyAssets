@@ -9,6 +9,32 @@ import pytest
 from tinyassets.cutover_assignment_repair import repair
 
 
+@pytest.mark.parametrize("live", ["broker", "volume"])
+def test_repair_refuses_live_writers_before_opening_owner_data(tmp_path, monkeypatch, live):
+    import os
+    import socket
+
+    from tinyassets import cutover_assignment_repair as cutover
+
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/mountinfo").write_text("")
+    monkeypatch.setattr(cutover, "PROC_ROOT", proc, raising=False)
+    sockpath = tmp_path / "broker.sock"
+    monkeypatch.setattr(cutover, "BROKER_SOCKET", sockpath, raising=False)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        if live == "broker":
+            listener.bind(str(sockpath))
+            listener.listen()
+        else:
+            (proc / "123").mkdir(parents=True)
+            dev = tmp_path.stat().st_dev
+            (proc / "123/mountinfo").write_text(
+                f"31 20 {os.major(dev)}:{os.minor(dev)} / /home/owner rw - xfs /dev/loop0 rw\n")
+        with pytest.raises(RuntimeError, match="broker|attached"):
+            repair(tmp_path, tmp_path / "absent-ledger.db")
+
+
 @pytest.mark.parametrize("absence", ["grant", "definition", "all_definitions"])
 def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
     from tinyassets.provider_assignment import (
