@@ -35,6 +35,23 @@ code must say why the path it guards still exists (research.md:119).
 
 ## Corrections to the as-built slices (2026-10-19)
 
+**S24 durable send (shape-convergence C11, lane 8.11).** Measured before:
+three browser `MCP.converse` call sites, steering POST, destructive claim then
+resend, and batch resend; box ordinary admission, separate selected-run
+admission, and a disabled experimental ingress adapter. After: one browser
+transport call and one `owner_door.send.deliver_owner_send` intake. Intake
+atomically commits identity/options and the verbatim transcript row in the
+box's conversation database. Nonblocking per-thread locks serialize work after
+that commit; selected runs project onto the admitted row. Retry returns the
+stored result. The box resumes pending requests on startup without a browser;
+started work with no result remains explicitly uncertain and is never replayed.
+Only a proved pre-execution setup hold can resume under the same identity.
+The browser keeps one outbox key per unacknowledged identity, never claims a
+server message, and imports legacy unidentified drafts as explicit choices.
+The obsolete intake, claim and batch paths are deleted. Old steering data has
+no producer and retains its in-box drain. No shared service gains owner logic.
+`tests/test_send_path.py` enforces the transport/intake boundary in CI.
+
 The research-based audit of `d057f96fad2` returned DRIFT_BLOCKS_CUTOVER.
 Each correction below replaces a shared path; none adds a guard to a path the target
 shape deletes. Spec v1 (`2346ab1fc3b`) was independently reviewed against

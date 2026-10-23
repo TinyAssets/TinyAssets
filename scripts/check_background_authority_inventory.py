@@ -126,9 +126,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # Starlette `request.stream()`. It grants no execution authority; the
     # owner authenticates the forwarded request exactly as it would directly.
     CallSite("tinyassets/frontend.py", "Frontend.__call__", "request.stream"),
-    # L7 durable ingress: bounded Starlette HTTP-body reads, not graph streams.
-    # Acceptance grants no execution authority; register both shipped copies.
-    CallSite("tinyassets/ingress.py", "AppIngressMiddleware.__call__", "request.stream"),
     # Reviewed 2026-08-05 (added by 64f27fe7, "Wire cloud drain epoch-2 Branch
     # consumer" #2182, without registration here). `recover_expired()` is
     # queue-owner maintenance over the canonical store: it grants no execution
@@ -238,6 +235,13 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = CLASSIFICATION
 
 
 REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
+    "owner_send_recovery": (
+        SourceReference("tinyassets/owner_runtime.py", "start_recovery(runtime, stop)"),
+        SourceReference("tinyassets/owner_send_recovery.py", "principal_id=runtime.principal"),
+        SourceReference("tinyassets/owner_send_recovery.py", "revoke_provider_request(capability)"),
+        SourceReference("tinyassets/owner_door/send.py",
+                        "store.owner_send_records(home, pending_only=True)"),
+    ),
     "activities": (
         SourceReference("tinyassets/control_plane/activity_session.py",
                         "with owner_run_identity(base, universe, owner) as bound:\n"

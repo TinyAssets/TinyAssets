@@ -1062,7 +1062,6 @@ def box(tmp_path: Path) -> Box:
     for extra in (
         "agent-interchange.env",
         "request-idempotency.env",
-        "app-ingress.env",
     ):
         (fake.env_file.parent / extra).write_text("", encoding="utf-8")
 

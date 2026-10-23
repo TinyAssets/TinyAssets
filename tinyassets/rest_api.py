@@ -239,7 +239,8 @@ async def send_message(request):
     """One agent turn, exactly as ``converse``; the reply returns when it ends."""
     data = await _body(request)
     if (data is None or not isinstance(data.get("message"), str) or not data["message"].strip()
-            or set(data) - {"message", "agent_id"}
+            or set(data) - {"message", "agent_id", "client_send_id"}
+            or not isinstance(data.get("client_send_id", ""), str)
             or not isinstance(data.get("agent_id", ""), str)):
         return _error(400, "invalid_request", "body is {message: string, agent_id?: string}")
     agent = data.get("agent_id") or "main"
@@ -262,7 +263,8 @@ async def send_message(request):
         capability = claim_provider_request(reserve, tool_name="converse")
         try:
             return converse(message=data["message"], graph_id=universe,
-                            agent_id="" if agent == "main" else agent, input_method="unknown")
+                            agent_id="" if agent == "main" else agent, input_method="unknown",
+                            client_send_id=data.get("client_send_id", ""))
         finally:
             revoke_provider_request(capability)
 

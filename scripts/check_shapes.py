@@ -246,7 +246,14 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/graph_compiler.py", "tinyassets/providers/call.py"),
         forbid=(r"\b_force_mock\b", r"\[MOCK\]"),
     ),
-    "S24": Shape(("tinyassets/owner_door/**",)),
+    "S24": Shape(
+        ("tinyassets/owner_door/**", "tinyassets/conversation_store.py",
+         "tinyassets/onboarding/app/**", "tinyassets/universe_server.py"),
+        (("tinyassets/ingress.py", ""),
+         ("tinyassets/agent_steering.py", r"\bdef\s+(?:enqueue|hold|claim)\("),
+         ("tinyassets/onboarding/app/**/*.js", r"/app/turn/steer|claimHeldLines")),
+        ceiling=0,
+    ),
     "S25": Shape(
         ("tinyassets/universe_server.py", "tinyassets/onboarding/**", "tinyassets/api/**")
     ),

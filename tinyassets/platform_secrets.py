@@ -23,7 +23,7 @@ Credential groups classified by their readers:
     daemon's environment.
 
 ``DAEMON_AUTH_ENV``
-    Admission/interchange signing, ingress, canary and session credentials.
+    Admission/interchange signing, canary and session credentials.
     Engine tools do not serve these daemon authentication surfaces.
 
 This limits environment inheritance. Engine endpoints run in the owner box
@@ -67,7 +67,6 @@ DAEMON_ONLY_ENV: frozenset[str] = frozenset({
 DAEMON_AUTH_ENV: frozenset[str] = frozenset({
     "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
     "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
-    "TINYASSETS_APP_INGRESS_HMAC_KEY",
     "TINYASSETS_WIKI_CANARY_TOKEN",
     # The deploy canary's sign-in door key (onboarding/canary_sign_in.py).
     "TINYASSETS_CANARY_DOOR_KEY",

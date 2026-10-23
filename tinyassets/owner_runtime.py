@@ -260,12 +260,16 @@ def serving():
         runtime.root, stop_event=stop, stopped_event=stopped,
     )
     consumer = AssignedQueueConsumer(runtime.root)
+    from tinyassets.owner_door.send import start_recovery
+
+    send_recovery = start_recovery(runtime, stop)
     try:
         consumer.start()
         yield
     finally:
         consumer.stop()
         stop.set()
+        send_recovery.join(5)
         if watcher is not None:
             watcher.set()
         if maintenance is not None:

@@ -1649,6 +1649,8 @@ def get_status(
                             "ts": getattr(t, "ts", None),
                             **({"client_send_id": t.client_send_id}
                                if getattr(t, "client_send_id", "") else {}),
+                            **({"reply_to_client_send_id": t.reply_to_client_send_id}
+                               if getattr(t, "reply_to_client_send_id", "") else {}),
                             **({"consumer_turn_id": t.consumer_turn_id}
                                if getattr(t, "consumer_turn_id", None) else {}),
                             **({"failure": failure} if (
