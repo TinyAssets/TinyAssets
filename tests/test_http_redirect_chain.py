@@ -122,6 +122,8 @@ def _redirect(url, status=302, **overrides):
     return {"status": status, "headers": [("Location", url)], **overrides}
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
 @pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
 def test_redirect_rechecks_owner_policy_without_inherited_permission(
         chain, admitted_egress, mode):  # noqa: F811 -- shared fixture

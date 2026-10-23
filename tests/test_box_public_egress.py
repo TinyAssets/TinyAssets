@@ -109,6 +109,8 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
     assert not proxy._public_egress.active
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [OSError, TimeoutError])
 async def test_failed_tunnel_close_leaves_policy_and_generation_unchanged(proxy, failure):

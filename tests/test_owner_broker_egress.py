@@ -59,6 +59,8 @@ def _egress_mode(rig, mode, destinations=()):
     rig.store.write("alice", rig.cookie, policy.generation, policy.document)
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
 @pytest.mark.parametrize("mode", ["allowlist", "ask"])
 @pytest.mark.parametrize("action,initial", [
     ("commit", "box"), ("extend", "box"), ("full", "box"),
@@ -104,6 +106,8 @@ def test_box_committed_binding_does_not_satisfy_allowlist_or_ask(egress_policy, 
                            resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
 @pytest.mark.parametrize("mode", ["allowlist", "ask"])
 @pytest.mark.parametrize("later", ["host", "approved", "scope"])
 def test_box_widen_never_becomes_owner_egress_on_later_door_extend(egress_policy, mode, later):
@@ -183,6 +187,8 @@ def test_box_widen_never_becomes_owner_egress_on_later_door_extend(egress_policy
             open_host("other.example.com", 443)
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
 @pytest.mark.parametrize("host", [
     "my_host.example.com", "_sip._tcp.example.com", "my_host.example.com.",
 ])
@@ -195,6 +201,8 @@ def test_underscore_dns_labels_resolve_in_open_mode(egress_policy, host):
                        resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
 @pytest.mark.parametrize("host", [
     "*.example.com", "foo..bar", "-bad.example.com", "bad-.example.com",
     "exa mple.com", "foo/bar.example.com", "bad\x00.example.com",
@@ -207,6 +215,8 @@ def test_unsafe_destination_hosts_rejected_before_resolution(host):
         normalize_destination(host, 443)
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
 @pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
 def test_egress_standing_entries_remain_subject_to_public_address_safety(egress_policy, mode):
     from tinyassets.broker.egress import destination
@@ -221,6 +231,8 @@ def test_egress_standing_entries_remain_subject_to_public_address_safety(egress_
     assert rig.store.receipts("alice")[0]["decision"] == "deny_public_address"
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
 def test_missing_policy_cannot_reopen_egress(egress_policy):
     from tinyassets.broker.egress import destination
     from tinyassets.broker.policy import PolicyRefused
@@ -234,6 +246,8 @@ def test_missing_policy_cannot_reopen_egress(egress_policy):
         rig.store.read("alice")
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Ask uses existing owner consent')
 @pytest.mark.parametrize("mode", ["allowlist", "ask"])
 @pytest.mark.parametrize("host", ["service.example.com", "git.example.com"])
 def test_owner_scope_revocation_and_missing_provenance(egress_policy, mode, host):
@@ -270,6 +284,8 @@ def test_owner_scope_revocation_and_missing_provenance(egress_policy, mode, host
     assert open_service() == ["8.8.8.8"]
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
 def test_provisioning_upgrades_once_without_importing_legacy_egress(egress_policy):
     from tinyassets.broker.policy import PolicyRefused, _canonical, _digest
 
@@ -957,6 +973,8 @@ def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_
     assert not list(box.root.rglob("owner-sessions.db"))
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
 @pytest.mark.parametrize("proof_kind", ["valid", "foreign", "expired", "missing"])
 def test_connection_committer_comes_from_live_owner_session(box, monkeypatch, proof_kind):
     import hashlib

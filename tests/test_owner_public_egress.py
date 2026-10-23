@@ -98,6 +98,8 @@ def run(native, code, **kwargs):
                            wall_seconds=5, output_bytes=16384, **kwargs)
 
 
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Ask uses existing owner consent')
 @pytest.mark.parametrize("method", ["GET", "CONNECT"])
 @pytest.mark.parametrize("answer", ["approve", "deny", "clear", "mute"])
 def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, method, answer):

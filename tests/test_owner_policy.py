@@ -292,7 +292,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, lo
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T2')
-def test_spend_caps_stay_under_approvals_with_egress_policy(tmp_path):
+def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
     _legacy(tmp_path, "alpha", "do")
     cookie = "interactive-cookie-" + "f" * 32
     _session(tmp_path, "alice", cookie)
