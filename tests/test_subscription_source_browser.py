@@ -33,7 +33,8 @@ def test_native_subscription_connect_controls(native):
       const refreshRail=async()=>{},closeExternal=async()=>{};
       const appendMessage=()=>{};
       const closeConnectRequest=()=>{document.body.dataset.connected='yes';};
-      const openExternal=async url=>{window.externalUrl=url;};
+      const openSignIn=async url=>{
+        if(NATIVE)window.externalUrl=url;else window.location.assign(url);};
       const sleep=ms=>new Promise(resolve=>setTimeout(resolve,25));
       const randToken=()=> 'v'.repeat(43),challengeFor=async()=> 'c'.repeat(43);
       const ConnectOAuth={post:async()=>{throw Error('CLI must resolve before discovery');}};

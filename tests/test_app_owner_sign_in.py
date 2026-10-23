@@ -210,6 +210,7 @@ let ref='old-account-handle', cookieOnly=false;
 function clearSessionRef(){ref='';}
 async function refreshAccessToken(value){cookieOnly=value; return true;}
 const window={location:{href:'',search:'?owner_login=1'}};
+async function openSignIn(url){window.location.href=url;}
 const history={replaceState:()=>{}};
 function redirectUri(){return 'https://tinyassets.io/app';}
 """ + "async function beginSignIn(){" + start +

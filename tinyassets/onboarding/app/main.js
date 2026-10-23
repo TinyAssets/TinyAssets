@@ -60,6 +60,33 @@
     if(NATIVE) throw new Error("The system browser could not open. Update the app and try again.");
     window.open(url, "_blank", "noopener");
   }
+  // All sign-in entry points preserve the surface that initiated them.
+  async function signInClient(){
+    if(!NATIVE)return DESKTOP_SHELL?'desktop':'web';
+    const info=await nativePlugin('App').getInfo();
+    if(!['io.tinyassets.app','io.tinyassets.app.debug'].includes(info?.id))
+      throw new Error('Unknown app install. Update the app and try again.');
+    return window.Capacitor.getPlatform()==='ios'?'ios':
+      info.id==='io.tinyassets.app.debug'?'android-debug':'android';
+  }
+  async function openSignIn(value,{appLogin=false}={}){
+    const url=new URL(value,location.origin);
+    if(url.protocol!=='https:'||url.username||url.password)
+      throw new Error('A secure sign-in URL is required.');
+    if(!NATIVE&&!DESKTOP_SHELL){window.location.assign(url.href);return;}
+    if(url.origin===location.origin&&url.pathname==='/app/owner-sign-in'){
+      await beginSignIn();return;
+    }
+    if(appLogin&&NATIVE&&window.Capacitor.getPlatform()==='ios'){
+      const auth=nativePlugin('SystemAuth');
+      if(!auth)throw new Error('Update the app to use secure system sign-in.');
+      const returned=await auth.open({url:url.href});
+      if(!returned?.url||!(await handleAppReturn(returned.url)))
+        throw new Error('Sign-in returned to a different session. Start again.');
+      return;
+    }
+    await openExternal(url.href);
+  }
   async function closeExternal(){ const B=NATIVE?nativePlugin("Browser"):null; if(B){ try{ await B.close(); }catch(_e){} } }
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
@@ -85,21 +112,13 @@
     if(!NATIVE && !DESKTOP_SHELL){
       // One browser-bound, server-PKCE login establishes app renewal AND owner
       // proof. Never upgrade a page/MCP bearer into an approval session.
-      window.location.href = "/app/owner-sign-in?app=1";
+      await openSignIn("/app/owner-sign-in?app=1");
       return;
     }
     const notice=document.getElementById('signin-notice'),signInButton=document.getElementById('btn-signin');
     if(signInButton.disabled)return;signInButton.disabled=true;
     try{
-      let client='desktop';
-      if(NATIVE){
-        const A=nativePlugin('App');let info;
-        try{info=A&&await A.getInfo();}catch(_e){}
-        if(!info?.id)throw new Error("This app didn't say which install it is. Update it and try again.");
-        if(!['io.tinyassets.app','io.tinyassets.app.debug'].includes(info.id))throw new Error('Unknown app install.');
-        client=window.Capacitor.getPlatform()==='ios'?'ios':
-          (info.id==='io.tinyassets.app.debug'?'android-debug':'android');
-      }
+      const client=await signInClient();
       const verifier=randToken(48), code_challenge=await challengeFor(verifier);
       const response=await fetch('/app/native-sign-in',{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({client,code_challenge})});
@@ -107,12 +126,7 @@
       if(!response.ok||!/^[A-Za-z0-9_-]{43}$/.test(flow.ref))throw new Error(flow.message||'Sign-in could not start. Try again.');
       pkceStore.setItem(PKCE_KEY,JSON.stringify({verifier,native_ref:flow.ref,expires:Date.now()+600000}));
       notice.textContent="Finish signing in in your browser, then return here.";
-      if(client==='ios'){
-        const auth=nativePlugin('SystemAuth');
-        if(!auth)throw new Error('Update the app to use secure system sign-in.');
-        const returned=await auth.open({url:flow.url});
-        if(!returned?.url || !(await handleAppReturn(returned.url)))throw new Error('Sign-in returned to a different session. Start again.');
-      }else await openExternal(flow.url);
+      await openSignIn(flow.url,{appLogin:true});
     }catch(error){
       pkceStore.removeItem(PKCE_KEY);notice.textContent=error.message;
     }finally{signInButton.disabled=false;}
@@ -5602,25 +5616,21 @@
         finally{this.busy=false;this.schedule();}
         return;
       }
-      // Reserve the popup inside the gesture, before network or token renewal.
-      const popup=NATIVE?null:window.open('about:blank','_blank');
-      if(!NATIVE&&!popup){this.failed('Allow the sign-in popup to connect.');return;}
-      if(popup)popup.opener=null;
       this.busy=true;this.connect.disabled=true;this.note.textContent='Opening sign-in. Free models only; no paid access is approved.';
       try{
-        const result=await HostedModelConnect.post('inline_begin',{preset_id:primary.preset_id});
-        if(!this.current(record)){if(popup)popup.close();return;}
+        const result=await HostedModelConnect.post('inline_begin',{preset_id:primary.preset_id,client:await signInClient()});
+        if(!this.current(record))return;
         if(!/^\/app\/model-callback\/[A-Za-z0-9_-]{43}\?launch=1$/.test(result.launch_path))throw new Error('Invalid sign-in response.');
         record.connectionFlow=result.flow;this.save();this.cancel.hidden=false;
         const url=new URL(result.launch_path,CFG.resource||location.origin).href;
-        if(NATIVE)await openExternal(url);else popup.location.href=url;
-        this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
+        await openSignIn(url);
+        this.note.textContent='Finish signing in, then return here. Your message is kept.';
       }catch(error){
         if(this.current(record)){
           this.failed('Sign-in could not start. Your message is kept.');
           if(error.signIn){
             const link=document.createElement('a');link.href='/app/owner-sign-in';
-            link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
+            link.onclick=event=>{event.preventDefault();void openSignIn(link.href);};link.textContent='Sign in to approve';
             this.note.append(' ',link);
           }
         }
@@ -5645,9 +5655,6 @@
           }else if(result.status==='cancelled')this.failed('Sign-in was cancelled. Your message is kept.');
           else if(result.status==='consumed'){
             this.failed('Connection needs recovery. Use Other AI to finish the saved setup.');
-          }else if(this.popup&&this.popup.closed){
-            await HostedModelConnect.post('inline_cancel',{flow:record.connectionFlow});
-            if(this.current(record))this.failed('The sign-in window closed. Your message is kept.');
           }
         }
         const response=await fetch('/app/me',{headers:authHeaders(),credentials:'same-origin',cache:'no-store'});
@@ -5845,7 +5852,7 @@
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset,
           center:typeof queueScope!=="undefined"?queueScope:"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
-        window.location.assign(url.href);
+        await openSignIn(url.href);
       }catch(_e){
         if(epoch!==this.epoch) return;
         sessionStorage.removeItem(this.storageKey);
@@ -7619,13 +7626,13 @@
         }
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
           center:req.universe_id||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
-        window.location.assign(url.href);
+        await openSignIn(url.href);
       }catch(err){
         sessionStorage.removeItem(this.storageKey);
         note.textContent="Could not start the sign-in: "+((err&&err.message)||"unknown error")+".";
         if(err&&err.signIn){
           const link=document.createElement('a');link.href='/app/owner-sign-in';
-          link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
+          link.onclick=event=>{event.preventDefault();void openSignIn(link.href);};link.textContent='Sign in to approve';
           note.append(' ',link);
         }
         button.disabled=false;
@@ -7768,13 +7775,13 @@
                 const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
                   JSON.stringify({...saved,opened:true}));
                 openConnectRequest();
-                if(external)openExternal(url.href);else window.location.assign(url.href);};
+                void openSignIn(url.href);};
               appendMessage("system",source.name+" is ready to sign in.",signIn);
             }else{
               const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
                 JSON.stringify({...saved,opened:true}));
-              if(external)await openExternal(url.href);
-              else{window.location.assign(url.href);return;}
+              await openSignIn(url.href);
+              if(!external)return;
             }
             opened=true;
           }
@@ -8405,12 +8412,7 @@
     ref:new URLSearchParams(location.search).get('approval'), requestId:null, returnUrl:null,
     async start(id,ready=()=>true){
       const epoch=MCP._loginEpoch;
-      let client=DESKTOP_SHELL?'desktop':'web';
-      if(NATIVE){
-        const info=await nativePlugin('App').getInfo();
-        client=window.Capacitor.getPlatform()==='ios'?'ios':
-          info.id==='io.tinyassets.app.debug'?'android-debug':'android';
-      }
+      const client=await signInClient();
       if(epoch!==MCP._loginEpoch)throw new Error('Account changed.');
       const response=await fetch('/app/approval-handoff',{
         method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},
@@ -8423,7 +8425,7 @@
       if(url.origin!==location.origin||!url.pathname.startsWith('/app/approval-handoff/'))
         throw new Error('Invalid request link. Try again.');
       if(!ready(url.href))return;
-      await openExternal(url.href);
+      await openSignIn(url.href);
     },
     async restore(){
       if(!this.ref)return true;
@@ -8848,7 +8850,7 @@
         busy=true;retry.disabled=true;error.hidden=true;
         status.textContent='Opening this request in your browser…';
         try{
-          if(reuse)await openExternal(link.href);
+          if(reuse)await openSignIn(link.href);
           else await ApprovalHandoff.start(req.request_id,url=>{
             if(!current())return false;
             link.href=url;link.hidden=false;return true;
@@ -9142,12 +9144,7 @@
           const local=await SubscriptionSources.post("resolve",{address:selected},MCP._loginEpoch);
           if(local.source_id){await SubscriptionSources.start({id:local.source_id},ui);return;}
           const external=NATIVE||DESKTOP_SHELL;
-          let client=DESKTOP_SHELL?"desktop":"web";
-          if(NATIVE){
-            const info=await nativePlugin("App").getInfo();
-            client=window.Capacitor.getPlatform()==="ios"?"ios":
-              info.id==="io.tinyassets.app.debug"?"android-debug":"android";
-          }
+          const client=await signInClient();
           const verifier=randToken(32),code_challenge=await challengeFor(verifier);
           const detected=await fetch("/app/model-discovery",{
             method:"POST",credentials:"same-origin",cache:"no-store",
@@ -9169,7 +9166,7 @@
           if(external){
             if(!/^\/app\/model-callback\/[A-Za-z0-9_-]{43}\?launch=1$/.test(result.launch_path))
               throw new Error("invalid_sign_in_response");
-            await openExternal(new URL(result.launch_path,CFG.resource||location.origin).href);
+            await openSignIn(new URL(result.launch_path,CFG.resource||location.origin).href);
             const deadline=Date.now()+result.expires_in*1000;
             while(Date.now()<deadline){
               await sleep(1000);
@@ -9187,7 +9184,7 @@
           sessionStorage.setItem(hosted?HostedModelConnect.storageKey:ConnectOAuth.storageKey,
             JSON.stringify({verifier,preset:result.source_id,title:"Connect "+selected,
               source:true,center:queueScope||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
-          window.location.assign(url.href);
+          await openSignIn(url.href);
         }catch(_error){note.textContent="That address has no AI we can connect to";}
         finally{key="";go.disabled=false;address.disabled=false;}
       });
@@ -10190,4 +10187,12 @@
       $("composer-input").focus();
     }
   });
+  document.addEventListener('click',event=>{
+    const link=event.target.closest?.('a[href]');
+    if(!link)return;
+    const url=new URL(link.href,location.origin);
+    if(url.origin!==location.origin||url.pathname!=='/app/owner-sign-in')return;
+    event.preventDefault();event.stopImmediatePropagation();
+    openSignIn(url.href).catch(error=>AppRecovery.fail(error));
+  },true);
   boot().then(()=>AppRecovery.started(),error=>AppRecovery.fail(error));

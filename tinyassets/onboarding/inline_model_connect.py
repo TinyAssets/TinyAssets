@@ -4,7 +4,6 @@ The callback only deposits a sealed code. Only the authenticated originating
 app can consume it through the existing hosted exchange and bootstrap path.
 """
 
-import html
 import json
 import secrets
 import time
@@ -69,7 +68,7 @@ def unseal(handle, value):
     return json.loads(AESGCM(seal_key()).decrypt(value[:12], value[12:], handle.encode()))
 
 
-def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
+def begin(*, owner, preset_id, resource, owner_session=None, request_ref="", client="web"):
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise hosted.HostedAuthError("interactive_approval_required", 403)
@@ -78,7 +77,7 @@ def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
                                challenge=hosted._challenge(verifier), public_resource=resource,
                                request_ref=request_ref)
     return stage(owner=owner, result=result, verifier=verifier,
-                 owner_session=owner_session, exchange="exchange")
+                 owner_session=owner_session, exchange="exchange", client=client)
 
 
 def stage(*, owner, result, verifier, owner_session, exchange, client="web"):
@@ -177,14 +176,11 @@ def callback(request):
                       hashed(handle)))
         if not valid:
             discard_hosted(handle, row["owner"])
-        body = "You can return to chat. " + (
-            "Your connection will finish there." if valid else "Sign-in was cancelled.")
-        if data.get("client", "web") != "web":
-            from tinyassets.onboarding.approval_handoff import completion_url
+        from tinyassets.onboarding.approval_handoff import completion_url
+        from tinyassets.onboarding.native_sign_in import app_return_page
 
-            target = completion_url(handle, data["client"])
-            body += (' <a href="' + html.escape(target, quote=True) + '">Return to TinyAssets</a>'
-                     '<script>location.href=' + json.dumps(target) + ';</script>')
-        response = HTMLResponse(body, headers=HEADERS)
+        target = completion_url(handle, data.get("client", "web"))
+        response = (RedirectResponse(target, status_code=303, headers=HEADERS)
+                    if data.get("client", "web") == "web" else app_return_page(target))
         response.delete_cookie(cookie_name, secure=True, httponly=True, samesite="lax")
         return response
