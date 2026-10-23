@@ -21,6 +21,7 @@ from tinyassets.exceptions import (
     ProviderAuthorityHeldError,
     ProviderProtocolError,
     SelectedModelContextError,
+    SelectedModelUnavailableError,
 )
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_capacity_boundary import (
@@ -134,6 +135,7 @@ class AgentTurnCoordinator:
         self._owns_request_budget = self.request_budget is None
         self._free_request = False
         self._budget_skipped = set()
+        self._local_model_failures = []
         self._text_only = (
             type(config.agent_request) is AgentInferenceRequest and config.agent_request.text_only
         )
@@ -517,6 +519,14 @@ class AgentTurnCoordinator:
                     # the budget line included (tests/test_one_agent_definition.py).
                     instructions = self.system + (
                         "\n\n" + budget.prompt_line() if budget is not None else "")
+                    final_reply = await off_loop(self._last_reply_attempt, turn_deadline)
+                    if final_reply:
+                        instructions += (
+                            "\n\nThis is the turn's final request. Tools are disabled. "
+                            "Reply to the user in words: summarize what was completed, "
+                            "the results, and anything left unfinished. Do not claim "
+                            "unfinished work succeeded or promise an automatic continuation."
+                        )
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
@@ -537,7 +547,7 @@ class AgentTurnCoordinator:
                             history=codec.compact_history(
                                 self._history(), self.compaction,
                             ),
-                            tool_choice="none" if self._text_only else "auto",
+                            tool_choice="none" if self._text_only or final_reply else "auto",
                         ),
                     )
                     prompt, system, observer = self.prompt, instructions, self._begin
@@ -553,6 +563,7 @@ class AgentTurnCoordinator:
                         request_purpose="tool_review" if self._completed_tools() else "reply",
                     )
                     self.inference_system = system
+                    before_attempts = self.request_budget.receipt()["reserved"]
                     try:
                         inference = self.adapter.infer(
                             router=self.router, prompt=prompt, system=system, config=config,
@@ -572,7 +583,8 @@ class AgentTurnCoordinator:
                                     reply=None,
                                 )
                         if (
-                            self._next_after_request_budget(exc)
+                            self._next_after_local_model_failure(exc, before_attempts)
+                            or self._next_after_request_budget(exc)
                             or self._next_after_capacity(exc)
                             or self._next_after_signin(exc)
                             or self._next_after_refusal(exc)
@@ -585,6 +597,10 @@ class AgentTurnCoordinator:
                         raise
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
+                    if final_reply and response.agent_reply.tool_requests:
+                        response = replace(response, agent_reply=replace(
+                            response.agent_reply, stop="completed", tool_requests=(),
+                        ))
                     await self._journal_write("finish_inference",
                             self.owner,
                             uid,
@@ -671,6 +687,91 @@ class AgentTurnCoordinator:
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
 
+    def _last_reply_attempt(self, turn_deadline=None):
+        """Reserve an answer across the eligible turn, without granting dispatch."""
+        budget = self.request_budget
+        # Leave the configured first-progress window for an answer. Deadline
+        # admission still belongs to the budget; this is a conservative reserve,
+        # not a prediction of how long the provider or a tool will take.
+        answer_window = self.config.stream_timeout_profile().first_progress_s
+        if (budget.deadline is not None
+                and budget.deadline - budget.clock() <= answer_window):
+            return True
+        if turn_deadline is not None and turn_deadline - time.monotonic() <= answer_window:
+            return True
+        active = [a for a in budget.receipt()["attempts"] if a["state"] != "not_sent"]
+        remaining = []
+        if budget.max_requests is not None:
+            remaining.append(budget.max_requests - len(active))
+        free = (candidate_is_metered_free(self.context, self.plan.catalog, owner=self.owner)
+                if self.plan is not None else self._free_request)
+        if free:
+            if budget.free_pool_limit is not None:
+                remaining.append(budget.free_pool_limit - sum(a["free"] for a in active))
+            current = self.context.model_selection
+            sources = {current.connection_id}
+            if self.plan is not None:
+                order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+                for item in order.candidates:
+                    candidate = item.ref
+                    if candidate in self.visited or candidate in self._budget_skipped:
+                        continue
+                    if (self._text_only and self.router.selected_agent_execution_kind(candidate)
+                            != "engine_inference"):
+                        continue
+                    if candidate_is_metered_free(
+                        replace(self.context, model_selection=candidate), self.plan.catalog,
+                        owner=self.owner,
+                    ):
+                        sources.add(candidate.connection_id)
+            slots = 0
+            for source in sources:
+                attempts = [a for a in active if a["free"] and a["source_ref"] == source]
+                limit = budget.source_limits.get(source, budget.free_limit)
+                available = float("inf") if limit is None else limit - len(attempts)
+                if budget.failure_limit is not None:
+                    failures = 0
+                    for attempt in reversed(attempts):
+                        if attempt["state"] == "succeeded":
+                            break
+                        if attempt["state"] in {"failed", "unknown"}:
+                            failures += 1
+                    available = min(available, budget.failure_limit - failures)
+                slots += max(0, available)
+            remaining.append(slots)
+        return bool(remaining) and min(remaining) <= 1
+
+    def _next_after_local_model_failure(self, exc, before_attempts):
+        """A proven unsent model failure excludes that model only, inside the box."""
+        if (self.plan is None or self.execution_kind != "engine_inference"
+                or self.turn.state not in {"ready", "held_transport"}):
+            return False
+        attempts = self.request_budget.receipt()["attempts"][before_attempts:]
+        unsent = (isinstance(exc, AllProvidersExhaustedError) and attempts
+                  and all(a["state"] == "not_sent" for a in attempts)
+                  and all(a.failure_class not in {"provider_refused", "auth_invalid"}
+                          for a in (exc.attempts or ())))
+        if not isinstance(exc, SelectedModelUnavailableError) and not unsent:
+            return False
+        from tinyassets.providers.diagnostics import redacted_failure_detail
+
+        failed = self.context.model_selection
+        detail = "; ".join(a.detail for a in (getattr(exc, "attempts", None) or ()))
+        self._local_model_failures.append(
+            f"{failed.model_id}: {redacted_failure_detail(detail or str(exc))}")
+        self._budget_skipped.add(failed)
+        self.visited.add(failed)
+        candidate = self._request_budget_fallback()
+        if candidate is None:
+            raise ProviderAuthorityHeldError(
+                "No eligible connected model remains. Failed before provider dispatch: "
+                + "; ".join(self._local_model_failures)
+            ) from exc
+        self.spent_attempts += list(getattr(exc, "attempts", None) or ())
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
+
     def _request_budget_fallback(self):
         # Do not manufacture remote Exhaustion records from a local allocation:
         # even model-scoped exhaustion can exclude another connection when its
@@ -680,6 +781,9 @@ class AgentTurnCoordinator:
             return (fallback(self.owner, self.context.universe_dir.name, self.request_budget)
                     if fallback is not None else None)
         order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+        free_only = self._free_request or candidate_is_metered_free(
+            self.context, self.plan.catalog, owner=self.owner,
+        )
         for item in order.candidates:
             candidate = item.ref
             if (candidate == self.context.model_selection or candidate in self.visited
@@ -692,6 +796,8 @@ class AgentTurnCoordinator:
                 replace(self.context, model_selection=candidate), self.plan.catalog,
                 owner=self.owner,
             )
+            if free_only and not limited:
+                continue
             try:
                 self.request_budget.check_available(
                     source_ref=candidate.connection_id, free=limited,
