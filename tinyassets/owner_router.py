@@ -211,8 +211,6 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
         async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
             async with client.stream(scope["method"], url, headers=headers,
                                      content=Request(scope, receive).stream()) as response:
-                if response.status_code >= 500:
-                    return await _unavailable()(scope, receive, send)
                 await send({"type": "http.response.start", "status": response.status_code,
                             "headers": _headers(response.headers.raw)})
                 started = True
