@@ -106,6 +106,10 @@ class OwnerDaemons:
         launch_options = {}
         if self.images is not None:
             image = self.images.current
+            selected = self.images.directory / image
+            current_link = self.images.directory / "harness-current"
+            if not selected.is_dir() and current_link.is_symlink():
+                image = current_link.resolve(strict=True).name
             if not self.images.compatible(image):
                 raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
             launch_options["rootfs"] = self.images.path(image)

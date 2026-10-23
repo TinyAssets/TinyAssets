@@ -12,7 +12,10 @@ from pathlib import Path
 import pytest
 
 from scripts.daemon_image_retention import (
+    KEEP_OLDER,
+    PULL_FREE_BYTES,
     Refusal,
+    candidates,
     check_pull_headroom,
     image_refs,
     main,
@@ -336,3 +339,189 @@ def test_apply_repairs_host_modes_before_retain_can_refuse(monkeypatch):
     monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
     assert main(["--apply", "--prepare-pull"]) == 2
     assert calls == ["repair"]
+
+
+def _headroom_docker():
+    class Docker:
+        def json(self, *args):
+            assert args[0] == "info"
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+    return Docker()
+
+
+def test_pull_headroom_uses_the_post_cutover_root_reserve():
+    usage = namedtuple("Usage", "total used free")
+    total = 468 * 1024**3 // 10  # 46.8 GiB root after the C6 harness extract
+    free = total - (85 * total // 100)
+    assert free > PULL_FREE_BYTES
+    check_pull_headroom(
+        docker=_headroom_docker(),
+        disk_fn=lambda _path: usage(total, total - free, free),
+    )
+    big = 200 * 1024**3
+    free_at_ninety = big // 10
+    assert free_at_ninety > PULL_FREE_BYTES
+    with pytest.raises(Refusal, match="deploy_disk_headroom_insufficient"):
+        check_pull_headroom(
+            docker=_headroom_docker(),
+            disk_fn=lambda _path: usage(big, big - free_at_ninety, free_at_ninety),
+        )
+    modest = 40 * 1024**3
+    tight = (4 * 1024**3) + (1024**3 // 2)
+    assert 100 * (1 - tight / modest) < 90
+    assert tight < PULL_FREE_BYTES
+    with pytest.raises(Refusal, match="deploy_disk_headroom_insufficient"):
+        check_pull_headroom(
+            docker=_headroom_docker(),
+            disk_fn=lambda _path: usage(modest, modest - tight, tight),
+        )
+    floor = PULL_FREE_BYTES
+    assert 100 * (1 - floor / modest) < 90
+    check_pull_headroom(
+        docker=_headroom_docker(),
+        disk_fn=lambda _path: usage(modest, modest - floor, floor),
+    )
+    assert PULL_FREE_BYTES == 5 * 1024**3
+
+
+def test_retention_does_not_keep_an_extra_older_image():
+    assert KEEP_OLDER == 0
+    images = [
+        {
+            "Id": IMAGE,
+            "RepoDigests": [REF],
+            "RepoTags": [REF],
+            "Created": "2026-10-02T00:00:00+00:00",
+        },
+        {
+            "Id": OTHER,
+            "RepoDigests": [OTHER_REF],
+            "RepoTags": [OTHER_REF],
+            "Created": "2026-10-01T00:00:00+00:00",
+        },
+    ]
+    choices, protected = candidates(
+        images, [{"Image": IMAGE}], {"Image": IMAGE}, REF, {"rollback_target": REF},
+    )
+    assert OTHER not in protected
+    assert IMAGE in protected
+    assert [item["image_id"] for item in choices] == [OTHER]
+
+
+def test_threshold_default_stays_quiet_below_ninety_percent():
+    class Docker:
+        def json(self, *args):
+            assert args[0] == "info"
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+        def inventory(self):
+            raise AssertionError("88% is below the post-C6 trigger")
+
+    report = retain(dry_run=False, mode="threshold", docker=Docker(), measure=lambda _path: 88.0)
+    assert report["status"] == "below_threshold"
+    assert report["removed"] == []
+
+
+def test_main_watermark_defaults_are_post_cutover(monkeypatch):
+    seen = {}
+
+    def fake_retain(**kwargs):
+        seen.update(kwargs)
+        return {"status": "below_threshold", "after_pct": 10}
+
+    monkeypatch.setattr("scripts.daemon_image_retention.retain", fake_retain)
+    monkeypatch.delenv("DISK_AUTOPRUNE_PCT", raising=False)
+    monkeypatch.delenv("DISK_AUTOPRUNE_LOW_PCT", raising=False)
+    monkeypatch.delenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", raising=False)
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    assert main([]) == 0
+    assert seen["high"] == 90.0
+    assert seen["low"] == 80.0
+
+
+def _legacy_gvisor_snapshots(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    host = tmp_path / "host"
+    deploy = host / "var/lib/tinyassets-deploy"
+    stamp = deploy / "bundle-snapshots" / "2026-10-01T00-00-00Z-aaaaaa" / "host" / "root"
+    paths: dict[str, Path] = {}
+    for name in ("current", "release-20260928.0"):
+        tree = stamp / name
+        (tree / "gvisor-bin").mkdir(parents=True)
+        (tree / "runsc").write_text("bin\n", encoding="utf-8")
+        tree.chmod(0o555)
+        paths[name] = tree
+    kept = stamp / "harness-current"
+    kept.mkdir()
+    (kept / "keep").write_text("keep\n", encoding="utf-8")
+    paths["kept"] = kept
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "safe").write_text("safe\n", encoding="utf-8")
+    (stamp / "release-link").symlink_to(outside, target_is_directory=True)
+    paths["outside"] = outside
+    cutover = deploy / "cutover" / "bundle" / "host" / "root"
+    old = cutover / "release-old"
+    old.mkdir(parents=True)
+    (old / "runsc").write_text("old\n", encoding="utf-8")
+    (cutover / "current").symlink_to("release-old")
+    paths["cutover_release"] = old
+    paths["cutover_link"] = cutover / "current"
+    return host, paths
+
+
+def test_prune_removes_legacy_gvisor_snapshot_directories(tmp_path: Path):
+    host, paths = _legacy_gvisor_snapshots(tmp_path)
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    removed = prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=root,
+        repair_host=True, host_root=host,
+    )
+    assert not paths["current"].exists()
+    assert not paths["release-20260928.0"].exists()
+    assert not paths["cutover_release"].exists()
+    assert paths["cutover_link"].is_symlink()
+    assert (paths["kept"] / "keep").read_text(encoding="utf-8") == "keep\n"
+    assert (paths["outside"] / "safe").read_text(encoding="utf-8") == "safe\n"
+    assert (host / "var/lib/tinyassets-deploy/bundle-snapshots").is_dir()
+    assert set(removed) == {
+        "bundle-snapshots/2026-10-01T00-00-00Z-aaaaaa/host/root/current",
+        "bundle-snapshots/2026-10-01T00-00-00Z-aaaaaa/host/root/release-20260928.0",
+        "cutover/bundle/host/root/release-old",
+    }
+
+
+def test_legacy_snapshots_stay_until_the_host_repair_pass(tmp_path: Path):
+    host, paths = _legacy_gvisor_snapshots(tmp_path)
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    assert prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=root, host_root=host,
+    ) == []
+    assert paths["current"].is_dir()
+    assert paths["cutover_release"].is_dir()
+    assert paths["cutover_link"].is_symlink()
+
+
+def test_production_harness_root_clears_legacy_snapshots(tmp_path: Path, monkeypatch):
+    host, paths = _legacy_gvisor_snapshots(tmp_path)
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    monkeypatch.setattr("scripts.daemon_image_retention.BOX_HARNESS_ROOT", root)
+    removed = prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=root, host_root=host,
+    )
+    assert "cutover/bundle/host/root/release-old" in removed
+    assert not paths["current"].exists()
+    assert not paths["release-20260928.0"].exists()
