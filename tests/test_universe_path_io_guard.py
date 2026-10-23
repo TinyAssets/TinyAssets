@@ -169,9 +169,6 @@ PINNED: dict[str, list[str]] = {
         "erase_owner: .unlink()",
         "erase_owner: .unlink()",  # Subscription custody in the same broker namespace.
     ],
-    "tinyassets/credential_vault.py": [
-        "load_credential_vault: .read_text()",
-    ],
     "tinyassets/daemon_brain.py": [
         "_promote_daemon_memory_to_wiki: .open()",
         "_promote_daemon_memory_to_wiki: .write_text()",

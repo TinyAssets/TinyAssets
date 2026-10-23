@@ -63,10 +63,4 @@ def local_erase(ledger, *, principal, command_center, erase_external_keys=True):
     from tinyassets.broker.vault import erase_owner
 
     erase_owner(ledger._data_root, principal)
-    from tinyassets.broker.browser_vault import key_path
-
-    path = key_path(ledger, principal)
-    if erase_external_keys:
-        path.unlink(missing_ok=True)
-    (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
     return counts
