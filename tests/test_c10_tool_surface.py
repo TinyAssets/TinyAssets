@@ -1,8 +1,12 @@
 """The one tool implementation retains per-request context without module copies."""
 import asyncio
 
+import pytest
+
 from tinyassets import universe_tools
 from tinyassets.engine_endpoint import EngineEndpoint, binding, current_server, grant_key
+
+pytestmark = pytest.mark.verifies("shape-convergence:C10")
 
 
 def test_concurrent_transports_share_handlers_without_sharing_context():
