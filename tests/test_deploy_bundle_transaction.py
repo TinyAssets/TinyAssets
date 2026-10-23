@@ -1228,6 +1228,12 @@ mv -Tf "${BOX_HARNESS_ROOT}/.current.new" "${BOX_HARNESS_ROOT}/current"
                      and Path(path).parts[0] in {"deploy", "scripts"}
                      and Path(path).name != "__init__.py")
     expected = {path.split("/", 1)[0] for path in installed}
+    # Snapshot names follow host_snapshot_names: the new install closure plus
+    # every top-level name in the previous manifest. domains stays in that
+    # manifest after the tree was retired, so restore can put it back or
+    # remove the copy this release's installer created.
+    previous = json.loads((host / ".host-service-files.json").read_text())
+    expected.update(path.split("/", 1)[0] for path in previous)
     expected.update({".host-service-files.json", "current", "harness-current"})
     snap = Path(box.pointer.read_text().strip())
     assert set((snap / "host/root-manifest").read_text().splitlines()) == expected
