@@ -4,17 +4,29 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tinyassets.universe_files import read_data_path, write_data_path
+
 
 def result_path(root: Path) -> Path:
     return Path(root) / ".owner-boxd" / "restore-result.json"
 
 
+def _load_result(root: Path) -> dict | None:
+    """The recorded restore result, or None when this generation has none."""
+    raw = read_data_path(result_path(root))
+    if raw is None:
+        return None
+    document = json.loads(raw)
+    if not isinstance(document, dict):
+        raise RuntimeError("restore result is unreadable")
+    return document
+
+
 def rewind_paused(root: Path) -> bool:
     """True while a rewind has been recorded and the owner has not resumed."""
-    path = result_path(root)
-    if not path.is_file():
+    document = _load_result(root)
+    if document is None:
         return False
-    document = json.loads(path.read_text(encoding="utf-8"))
     outcome = document.get("outcome")
     if outcome == "paused":
         return True
@@ -49,9 +61,7 @@ def settle_rewind(root: Path, generation: int) -> dict:
         "paused_triggers": TriggerStore(root).pause_all(),
         "paused_runs": paused_runs,
     }
-    path = result_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document), encoding="utf-8")
+    write_data_path(result_path(root), json.dumps(document))
     return document
 
 
@@ -61,13 +71,14 @@ def resume(root: Path, generation: int, operation_id: str) -> dict:
         raise PermissionError("explicit resumption requires a fresh generation id")
     if not operation_id.startswith(f"{generation}:"):
         raise PermissionError("explicit resumption requires a fresh generation id")
-    path = result_path(root)
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = _load_result(root)
+    if document is None:
+        raise FileNotFoundError("restore result is missing")
     if document.get("generation") != generation or document.get("outcome") != "paused":
         raise PermissionError("restore generation changed")
     document["outcome"] = "resumed"
     document["resumed_by"] = operation_id
-    path.write_text(json.dumps(document), encoding="utf-8")
+    write_data_path(result_path(root), json.dumps(document))
     return document
 
 
