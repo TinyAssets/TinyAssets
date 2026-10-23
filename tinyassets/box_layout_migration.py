@@ -1918,6 +1918,35 @@ def _database_target(database: str, table: str, placement: str) -> str:
     return database
 
 
+def _current_table_ddl(database, table, source, legacy_ddl):
+    """Carry legacy rows into the storage-owned layout during stopped cutover.
+
+    Column order from historical ADD COLUMN runs is not a runtime layout.
+    Copy by name into the current declaration; never silently discard an
+    unknown column. Missing current columns receive their declared defaults.
+    """
+    if database != ".tinyassets.db" or table == "deleted_principals":
+        return legacy_ddl
+    from tinyassets.storage.schema import TABLES
+
+    declaration = TABLES.get(table)
+    if declaration is None:
+        return legacy_ddl
+    with closing(sqlite3.connect(":memory:")) as model:
+        model.execute(declaration)
+        columns = list(model.execute(f'PRAGMA table_info({_quoted(table)})'))
+        expected = {row[1] for row in columns}
+        required = {row[1] for row in columns if row[3] and row[4] is None}
+    existing = {row[1] for row in source.execute(f'PRAGMA table_xinfo({_quoted(table)})')}
+    if required - existing:
+        # Older partial stores have no values for these facts. Preserve their
+        # schema verbatim; runtime validation must not manufacture those facts.
+        return legacy_ddl
+    if existing - expected:
+        raise RuntimeError(f"cutover would lose columns in {table}: {sorted(existing - expected)}")
+    return declaration
+
+
 def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> dict:
     """Extract using one census snapshot; preserve DDL and every selected value."""
     jobs: dict[Path, dict] = {}
@@ -1968,6 +1997,8 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
                         ".tinyassets.db", "deleted_principals")
                     if legacy_tombstones:
                         ddl = "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)"
+                    else:
+                        ddl = _current_table_ddl(database, table, source, ddl)
                     destination.execute(ddl)
                     columns = [row[1] for row in source.execute(
                         f"PRAGMA table_info({_quoted(table)})")]

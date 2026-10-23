@@ -1,19 +1,6 @@
-"""Accounts bounded context — user accounts, auth, sessions, capabilities.
+"""User accounts, sessions and owner-local capabilities.
 
-Third R7 commit target (after __init__.py scaffolding). Owns the
-``user_accounts`` / ``user_sessions`` / ``capability_grants`` tables
-and the 10 functions that manage them.
-
-Schema CREATE TABLE statements for these three tables remain in
-``tinyassets.storage.__init__.initialize_author_server()`` until the R7
-split completes; the split moves behavior (functions) before it moves
-state (schema) to keep each commit reviewable.
-
-TODO(R7): the in-function ``from tinyassets.daemon_server import
-initialize_author_server`` imports are a lazy-import workaround for the
-circular dep (storage→daemon_server→storage) that exists only while the
-split is in flight. Remove once ``initialize_author_server`` migrates to
-``tinyassets/storage/__init__.py`` alongside the schema.
+Table declarations live in storage.accounts_schema.
 """
 
 from __future__ import annotations
@@ -35,6 +22,7 @@ from tinyassets.storage import (
     _now,
     _slugify,
 )
+from tinyassets.storage.accounts_schema import TABLES as ACCOUNT_TABLES
 
 PRIORITY_REQUEST_CAPABILITY = "submit_priority_request"
 
@@ -43,22 +31,6 @@ class CapabilityGrantAuthorizationError(PermissionError):
     """An issuer lacks exact-universe capability-administration authority."""
 
 
-_CAPABILITY_GRANTS_V2_SCHEMA = """
-CREATE TABLE capability_grants (
-    user_id TEXT NOT NULL,
-    capability TEXT NOT NULL,
-    scope TEXT NOT NULL DEFAULT '*',
-    granted_by TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    expires_at REAL,
-    revoked_at REAL,
-    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
-    PRIMARY KEY(user_id, capability, scope, generation),
-    CHECK (expires_at IS NULL OR expires_at > created_at),
-    CHECK (revoked_at IS NULL OR revoked_at >= created_at),
-    FOREIGN KEY(user_id) REFERENCES user_accounts(user_id) ON DELETE CASCADE
-)
-"""
 
 
 def migrate_capability_grants_schema(conn: sqlite3.Connection) -> None:
@@ -95,7 +67,7 @@ def migrate_capability_grants_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE capability_grants "
             "RENAME TO capability_grants_legacy"
         )
-        conn.execute(_CAPABILITY_GRANTS_V2_SCHEMA)
+        conn.execute(ACCOUNT_TABLES["capability_grants"])
         conn.execute(
             """
             INSERT INTO capability_grants (
@@ -153,7 +125,7 @@ def create_or_update_account(
     capabilities: list[str] | tuple[str, ...] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     normalized_capabilities = _ordinary_capabilities(capabilities or ())
     initialize_author_server(base_path)
@@ -202,7 +174,7 @@ def get_account(
     user_id: str | None = None,
     username: str | None = None,
 ) -> dict[str, Any] | None:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     if not user_id and not username:
         return None
@@ -229,7 +201,7 @@ def get_account(
 
 
 def list_accounts(base_path: str | Path) -> list[dict[str, Any]]:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     initialize_author_server(base_path)
     with _connect(base_path) as conn:
@@ -257,7 +229,7 @@ def list_capabilities(
     universe_id: str | None = None,
     evaluated_at: float | None = None,
 ) -> list[str]:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     initialize_author_server(base_path)
     scopes = ["*"]
@@ -292,7 +264,7 @@ def grant_capabilities(
     granted_by: str,
     universe_id: str | None = None,
 ) -> None:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     normalized = _ordinary_capabilities(capabilities)
     if not normalized:
@@ -360,7 +332,7 @@ def issue_priority_grant(
     No host/environment/caller-supplied authorization shortcut is accepted.
     """
 
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     subject, universe, issuer = _priority_grant_identity(
         subject_id=subject_id,
@@ -464,7 +436,7 @@ def revoke_priority_grant(
 ) -> dict[str, Any] | None:
     """Prospectively revoke the latest generation; repeated calls are stable."""
 
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     subject, universe, issuer = _priority_grant_identity(
         subject_id=subject_id,
@@ -531,7 +503,7 @@ def get_active_priority_grant(
     universe_id: str,
     evaluated_at: float | None = None,
 ) -> dict[str, Any] | None:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     subject, universe, _ = _priority_grant_identity(
         subject_id=subject_id,
@@ -561,7 +533,7 @@ def list_capability_grant_history(
     universe_id: str | None = None,
     capability: str | None = None,
 ) -> list[dict[str, Any]]:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     initialize_author_server(base_path)
     clauses = ["user_id = ?"]
@@ -845,7 +817,7 @@ def resolve_bearer_token(
     master_api_key: str = "",
     master_username: str = "host",
 ) -> dict[str, Any] | None:
-    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.schema import initialize_author_server
 
     initialize_author_server(base_path)
     if master_api_key and token == master_api_key:

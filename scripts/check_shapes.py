@@ -152,7 +152,7 @@ SHAPES: dict[str, Shape] = {
     "S10": Shape(
         ("tinyassets/storage/**",),
         (("tinyassets/daemon_server.py", r"\bCREATE TABLE\b"),),
-        ceiling=27,
+        ceiling=0,
     ),
     "S11": Shape(
         ("tinyassets/owner_door/**", "tinyassets/api/**"),
