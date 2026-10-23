@@ -27,7 +27,7 @@ The router uses the same pure verifier for URL-capability digests and pinned pub
 | Slack | One shared app endpoint; raw-body HMAC, then fixed installation-identity extraction below |
 | WhatsApp | Shared app with embedded signup; a distinct per-binding callback for each owner's business account, installed through the provider's per-account callback override; raw-body HMAC, **no body-field routing** |
 | Generic webhook | Existing per-binding URL capability, header token or HMAC |
-| Connected email | Owner-account per-binding subscription callback; supported token/HMAC/pinned-key proof; mailbox work stays in the box |
+| Connected email | Owner-account per-binding event source and subscription callback; supported token/HMAC/pinned-key proof; mailbox work stays in the box |
 | Teams | **Follow-up, out of N1** until a fixture proves authenticated per-installation identity and installation-scoped outbound credentials |
 
 WhatsApp eligibility requires a provider fixture proving the override is available for the selected signup flow and deliveries to that URL contain only that account's events, including batching. If unavailable or unproved, WhatsApp is out of N1: no shared-account selector, array indexing or payload splitting fallback. The [provider override documentation](https://developers.facebook.com/docs/whatsapp/embedded-signup/webhooks/override) is the implementation reference, not a claim of tested availability.
@@ -50,7 +50,7 @@ The platform installation authority derives identity from the provider's server-
 
 Publish atomically. On a competing install, validate the **existing** credential with the provider: a live credential keeps its owner; an indeterminate check defers the new install; a confirmed revoked credential retires the old record/revision before replacement. A refused second install discards its local result and **never revokes provider tokens**, which may be the existing installation's token.
 
-Disconnect withdraws mapping/revision and scoped credentials, and uninstalls that installation at the provider. Provider-side uninstall/revocation is reconciled by the box when it wakes, against its routing snapshot view and provider credential status through the broker; it requests retirement through installation authority. No shared notification retry queue. Conflict checks also retire stale records while an old box is suspended; erasure removes that owner's installation records. Reconnect creates a new installation revision; other installations and the platform signing secret remain intact.
+Disconnect withdraws mapping/revision and scoped credentials, and uninstalls that installation at the provider. Provider-side uninstall/revocation is reconciled by the box when it wakes, against its owner-filtered routing snapshot view and provider credential status through the broker; it requests retirement through installation authority. Authority accepts retirement only for the calling owner's installation and confirms revocation with the provider. No shared notification retry queue. Conflict checks also retire stale records while an old box is suspended; erasure removes that owner's installation records. Reconnect creates a new installation revision; other installations and the platform signing secret remain intact.
 
 Slack `url_verification` and Meta verification GET are one-time platform setup outside the steady-state door, handled by installation authority with broker-held setup proof. They neither select a box nor start a session; the setup responder is not a permanent event handler or alternate ingress. Owner-specific subscription challenges remain in their mapped box.
 
@@ -62,11 +62,12 @@ Forward raw bytes verbatim with trusted binding, body digest and **installation 
 |---|---|
 | Invalid/stale proof | Refuse; no parse, wake or forward |
 | Authenticated unsupported Slack shape, or unmapped/disconnected/unadmitted installation on a shared endpoint | 200 no-op; no wake, persistence or accepted-event receipt |
+| Authenticated shared-app installation with tripped delivery breaker | 200 no-op for that installation only; no wake, persistence or accepted-event receipt |
 | Unknown/revoked/unadmitted per-binding callback | 404 `not_found`; no wake/forward |
 | Admitted delivery during maintenance, verification outage or cold-start timeout | Retryable 503; no shared payload spool |
 | Accepted event | 2xx only after raw envelope and pending dispatch commit in the box |
 
-No-op responses take precedence over maintenance for already-authenticated unroutable shared deliveries. This keeps dead installations from spending the whole app's failure budget. [Slack disables subscriptions after more than 95% failed attempts over 60 minutes](https://docs.slack.dev/apis/events-api/); bound maintenance by its retry/failure budget and verify recovery, without falsely acknowledging admitted events. Overlong outages can still disable delivery; N1 makes no lossless-outage promise.
+No-op responses take precedence over maintenance for already-authenticated unroutable shared deliveries. This keeps dead installations from spending the whole app's failure budget. [Slack disables subscriptions after more than 95% failed attempts over 60 minutes](https://docs.slack.dev/apis/events-api/). After three failed attempts (429, 503 or timeout) for one authenticated shared-app installation in a rolling 60 seconds, the router trips that installation's breaker in T1 routing state; its 200 no-op row survives router restart. A success does not erase failures still in that window. The owner sees the degraded state through its owner-filtered app view; on wake, its box reconciles with the provider where supported and reports readiness before routing clears the breaker. No shared payload or owner logic is added. Bound maintenance by the provider retry/failure budget and verify recovery. Overlong outages can still disable delivery; N1 makes no lossless-outage promise.
 
 The box parses, enforces current grants/pause and chooses `session.start(agent_ref, input, parent)` with its receipt as parent. Missing packages, malformed content or revoked grants get explicit refusal/defer receipts, never a fallback agent. Protocol/no-op acknowledgements are not accepted agent events.
 

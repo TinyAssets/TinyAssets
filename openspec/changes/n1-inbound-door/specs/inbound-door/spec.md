@@ -29,6 +29,7 @@ The platform SHALL expose one external-event route template, `/hooks/inbound/{bi
 - **WHEN** a per-binding callback is unknown/revoked/unadmitted, or an admitted event cannot be delivered
 - **THEN** the former returns stable 404 `not_found`; maintenance, verification outage or cold-start timeout returns retryable 503 without acceptance or shared payload storage
 - **AND** maintenance must fit the provider retry/failure budget; a 2xx no-op SHALL NOT be used to hide loss of an admitted event
+- **EXCEPT** after three failed attempts for one authenticated shared-app installation within 60 seconds, the router trips that installation's routing-state breaker and returns 200 no-op for its later deliveries; other installations keep routing, the owner sees the degraded state in the app, and its box reconciles with the provider on wake before the breaker clears
 
 ### Requirement: Installation authority owns shared profiles and mappings
 Only platform installation authority SHALL write shared-app profiles and installation records, including extraction/encoding data, keys, issuer/audience, secret references and revisions. Identity SHALL come from server-side provider token exchange/inspection. OAuth state SHALL be single-use, bound to the starting owner and authenticated browser session, and checked in that same session before publication. Client signup IDs and callback query IDs SHALL NOT authorize a mapping.
@@ -42,6 +43,7 @@ Only platform installation authority SHALL write shared-app profiles and install
 - **WHEN** an owner disconnects, is erased, or the provider revokes an installation
 - **THEN** disconnect withdraws its mapping/revision and scoped credentials and uninstalls at the provider; erasure removes its records; provider revocation is reconciled through installation authority when the box wakes or another install conflicts
 - **AND** the box reconciles its snapshot view and credential status on wake; no notification retry queue exists, and neither another installation nor the shared signing secret is removed
+- **AND** authority accepts a box-requested retirement only for that box's owner's installation after confirming provider revocation; each box's routing-snapshot view contains only its owner's installation records
 
 #### Scenario: Setup has no owner destination
 - **WHEN** Slack sends `url_verification` or Meta sends a verification GET during app/callback setup
