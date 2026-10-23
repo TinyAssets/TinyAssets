@@ -65,7 +65,7 @@ def test_app_and_records_stay_in_the_owner_box(tmp_path: Path):
     assert sync(other, "chess", since=0, caller="bob", owner="bob") == {
         "seq": 0, "records": [],
     }
-    assert (owner / "apps" / "chess" / "state.sqlite").is_file()
+    assert (owner / "apps" / "chess" / "state.json").is_file()
     assert committed["writer"] == "bob"
     with pytest.raises(PermissionError):
         bind(tmp_path, "bob", "chess", "Chess")
@@ -116,7 +116,7 @@ def test_unpublished_app_is_owner_only_and_shared_code_has_no_room(tmp_path: Pat
     for rel in _SHARED:
         source = (_REPO / rel).read_text(encoding="utf-8")
         assert "app_room" not in source
-        assert "state.sqlite" not in source
+        assert "state.json" not in source
 
 
 def test_forged_caller_does_not_select_the_box(tmp_path: Path, monkeypatch):
