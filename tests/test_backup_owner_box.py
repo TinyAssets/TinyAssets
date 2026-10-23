@@ -83,7 +83,7 @@ else:
 
 @pytest.mark.verifies('owner-daemon-in-box:C3')
 def test_installed_service_publishes_shared_backup_without_owner_bytes(shared_backup, tmp_path):
-    from tests.test_host_uptime_installers import _install_env, _run_installer
+    from tests.host_uptime_helpers import _install_env, _run_installer
 
     root, remote, owners, binary = shared_backup
     installation = tmp_path / "installation"
