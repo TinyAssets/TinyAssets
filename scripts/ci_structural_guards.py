@@ -177,12 +177,6 @@ def targets() -> list[str]:
 
 def repair(nodeid: str) -> str:
     name = nodeid.split("::", 1)[0].replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".py")
-    if name == "test_converse_turn_cost":
-        return (
-            "Fix: Move detailed agent instructions verbatim into an on-demand handbook "
-            "chapter, leaving a short pointer; do not raise the static prompt budgets. "
-            f"Reproduce: python -m pytest -q {nodeid}"
-        )
     hint = GUARDS.get(
         name, "Install dev,browser extras and fix the reported collection/import error."
     )
