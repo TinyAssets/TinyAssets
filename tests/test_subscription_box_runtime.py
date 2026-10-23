@@ -275,7 +275,30 @@ def test_image_package_is_verified_and_reused_without_owner_install(tmp_path, mo
     from tinyassets.providers.subscription_runtime import SubscriptionError, SubscriptionRuntime
 
     doc = fixture_package(tmp_path)
+    from tinyassets.providers import subscription_image
+
+    install = doc["sign_in"]["cli_login"]["install"]
+    committed = tmp_path / "locks" / doc["id"]
+    committed.mkdir(parents=True)
+    manifest = {"name": "owner-subscription-source", "version": "1.0.0", "private": True,
+                "dependencies": {install["package"]: install["version"]}}
+    (committed / "package.json").write_text(json.dumps(manifest))
+    lock = {"name": manifest["name"], "version": "1.0.0", "lockfileVersion": 3,
+            "packages": {"": manifest, "node_modules/" + install["package"]: {
+                "version": install["version"], "integrity": install["integrity"],
+                "resolved": "file:" + str(tmp_path / install["archive"]),
+                "bin": {install["bin"]: "cli.js"}}}}
+    raw = json.dumps(lock).encode()
+    (committed / "package-lock.json").write_bytes(raw)
+    install["lock_sha256"] = hashlib.sha256(raw).hexdigest()
+    monkeypatch.setattr(subscription_image, "LOCKS", committed.parent)
     image = ImageInstaller(SourceRecord.parse(doc), tmp_path)
+    real_run = image.run
+    def checked_run(*args, **kwargs):
+        result = real_run(*args, **kwargs)
+        assert result.returncode == 0, result.stderr.decode()
+        return result
+    monkeypatch.setattr(image, "run", checked_run)
     image.build()
     owner = tmp_path / "owner"
     owner.mkdir()

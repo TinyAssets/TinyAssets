@@ -1914,3 +1914,18 @@ be absent or its model absent from a successfully read catalogue; cooldown and
 unavailable catalogues preserve the saved choice. Bootstrap recovery keeps the
 newest matching pending request: a changed agent revision produces a distinct
 consent snapshot/dedupe key while an older pending request can remain.
+
+## Immutable subscription dependency closure (2026-10-22)
+
+Each npm image source has a committed package manifest and package-lock under
+`tinyassets/providers/source_locks/<source-id>/`. The image builder checks the
+lock SHA256 against `sign_in.cli_login.install.lock_sha256` before invoking npm,
+verifies the pinned package and registry closure, and uses only `npm ci` with a
+minimal environment and isolated npm configuration. Owner runtime installation
+and credential custody are unchanged by this lane.
+
+**Integration dependency:** the subscription records are reserved for lane A.
+Their four digest-only additions are prepared in `subscription-lock-digests.patch`
+and have not been applied. The lead/lane A must apply that patch before building
+an image from this change; a missing digest intentionally refuses the build.
+The patch changes no custody fields. Delete the patch after integration.
