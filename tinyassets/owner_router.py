@@ -300,6 +300,18 @@ def _public_host() -> bytes:
     return urlsplit(resource).netloc.lower().encode("ascii")
 
 
+def _forward_timeout(scope) -> httpx.Timeout:
+    """Inbound replies are small JSON. A silent box must become a counted 503.
+
+    Other owner doors stream, so they keep an unbounded read. Connect, write and
+    pool limits stay the same. The inbound read budget is what turns a hung box
+    into the 429/503/timeout failure the per-installation breaker counts.
+    """
+    if scope.get("inbound_revalidate") is not None:
+        return httpx.Timeout(connect=5, read=30, write=30, pool=5)
+    return httpx.Timeout(connect=5, read=None, write=30, pool=5)
+
+
 async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
     proof_headers = (_INBOUND_PROOF | set(scope.get("inbound_proof_headers", ()))
@@ -325,7 +337,7 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
     started = False
     try:
         transport = httpx.AsyncHTTPTransport(uds=str(route.socket))
-        timeout = httpx.Timeout(connect=5, read=None, write=30, pool=5)
+        timeout = _forward_timeout(scope)
         async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
             async with client.stream(scope["method"], url, headers=headers,
                                      content=Request(scope, receive).stream()) as response:

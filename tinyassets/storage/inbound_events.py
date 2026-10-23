@@ -133,6 +133,14 @@ def accept(base: Path, *, binding: str, revision: int, event_id: str,
             raise
 
 
+def find_event(base: Path, binding: str, revision: int, event_id: str) -> dict | None:
+    """Receipt already committed for this installation revision and event, if any."""
+    with closing(_connect(base)) as db:
+        row = db.execute("SELECT * FROM inbound_receipts WHERE binding=? AND revision=? "
+                         "AND event_id=?", (binding, revision, event_id)).fetchone()
+        return dict(row) if row else None
+
+
 def pending(base: Path, *, limit: int = 100) -> list[dict]:
     with closing(_connect(base)) as db:
         return [dict(row) for row in db.execute(

@@ -88,6 +88,8 @@ _ROUTER_IMPORTS = {
     "tinyassets.auth.middleware",
     "tinyassets.auth.provider",
     "tinyassets.broker.owner_identities",
+    "tinyassets.broker.inbound_verification",  # Router asks the broker to verify; no profile.
+    "tinyassets.inbound_routing",  # Router-owned per-installation breaker, not an owner store.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
     "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.

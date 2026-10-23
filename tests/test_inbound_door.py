@@ -16,6 +16,13 @@ from tinyassets.broker.inbound_verification import (
 from tinyassets.owner_router import _headers
 from tinyassets.storage.inbound_events import accept, pending
 
+pytestmark = pytest.mark.verifies(
+    'n1-inbound-door:One verified ingress maps positively to one box',
+    'n1-inbound-door:Installation authority owns shared profiles and mappings',
+    'n1-inbound-door:Verification custody and forwarding have one authority',
+    'n1-inbound-door:Durable accepted events enter session start inside the box',
+)
+
 
 def _slack(body, *, timestamp=None, secret=b"signing-secret"):
     raw = json.dumps(body, separators=(",", ":")).encode()
@@ -324,6 +331,12 @@ def test_authenticated_router_no_ops_precede_maintenance_and_breaker(tmp_path, m
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url='http://test') as client:
             assert (await client.post('/hooks/inbound/shared', content=b'raw')).status_code == 200
+            proof = {'proof': 'setup', 'challenge': 'abc'}
+            setup = await client.post('/hooks/inbound/shared', content=b'challenge')
+            assert setup.status_code == 200 and setup.json()['challenge'] == 'abc'
+            proof = {**mapped, 'owner': 'carol'}
+            gone = await client.post('/hooks/inbound/shared', content=b'raw')
+            assert gone.status_code == 200 and gone.json()['error'] == 'no_op'
             proof = mapped
             for _ in range(3):
                 response = await client.post('/hooks/inbound/shared', content=b'raw')
@@ -433,6 +446,127 @@ def test_missing_agent_is_a_durable_refusal(tmp_path, monkeypatch):
     again, replay = receiver.handle_verified(
         proof=proof, body=body, headers=headers, base=tmp_path, owner='alice', now=now)
     assert again == 200 and replay['deduped'] and replay['state'] == 'refused'
+
+
+def _shared_body(event_id='Ev1', event_time=None):
+    when = int(time.time()) if event_time is None else event_time
+    return json.dumps({'event_id': event_id, 'event_time': when,
+                       'type': 'event_callback'}).encode(), when
+
+
+def test_shared_withdrawn_binding_is_a_durable_refusal(tmp_path, monkeypatch):
+    from tinyassets import conversation_store
+    from tinyassets import webhook_inbound as receiver
+    from tinyassets.control_plane import session
+    from tinyassets.storage import inbound_events as inbox
+
+    _runtime(tmp_path, monkeypatch)
+    (tmp_path / 'center').mkdir()
+    inbox.configure(tmp_path, 'binding', 1, 'center', 'main', enabled=False)
+    starts = []
+    monkeypatch.setattr(session, 'load_agent', lambda *a, **kw: starts.append(a))
+    body, now = _shared_body()
+    proof = {'binding': 'binding', 'revision': 1, 'shared': True,
+             'digest': hashlib.sha256(body).hexdigest()}
+    status, payload = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert status == 200 and payload['state'] == 'refused'
+    assert payload['error'] == 'binding_withdrawn' and payload['receipt'].startswith('inb_')
+    assert starts == []
+    assert conversation_store.owner_send_records(tmp_path / 'center') == []
+    assert inbox.pending(tmp_path) == []
+    again, replay = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert again == 200 and replay['deduped'] and replay['receipt'] == payload['receipt']
+    assert starts == []
+
+
+def test_shared_missing_or_stale_binding_does_not_fail_the_delivery(tmp_path):
+    from tinyassets import webhook_inbound as receiver
+    from tinyassets.storage import inbound_events as inbox
+
+    body, now = _shared_body()
+    proof = {'binding': 'binding', 'revision': 1, 'shared': True,
+             'digest': hashlib.sha256(body).hexdigest()}
+    status, payload = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert status == 200 and payload == {'state': 'refused', 'error': 'binding_withdrawn'}
+    assert inbox.pending(tmp_path) == []
+    inbox.configure(tmp_path, 'binding', 2, 'center', 'main')
+    moved, payload = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert moved == 200 and payload['error'] == 'binding_withdrawn'
+    assert 'receipt' not in payload
+    malformed = b'{}'
+    bad, payload = receiver.handle_verified(
+        proof={'binding': 'binding', 'revision': 2, 'shared': True,
+               'digest': hashlib.sha256(malformed).hexdigest()},
+        body=malformed, headers={}, base=tmp_path, owner='alice', now=now)
+    assert bad == 200 and payload['error'] == 'event_identity_required'
+    stale_body, _ = _shared_body(event_time=now - 86401)
+    stale, payload = receiver.handle_verified(
+        proof={'binding': 'binding', 'revision': 2, 'shared': True,
+               'digest': hashlib.sha256(stale_body).hexdigest()},
+        body=stale_body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert stale == 200 and payload['error'] == 'stale_event'
+    assert inbox.pending(tmp_path) == []
+
+
+def test_shared_redelivery_after_withdrawal_does_not_open_another_session(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets import conversation_store
+    from tinyassets import webhook_inbound as receiver
+    from tinyassets.control_plane import session
+    from tinyassets.storage import inbound_events as inbox
+
+    _runtime(tmp_path, monkeypatch)
+    (tmp_path / 'center').mkdir()
+    inbox.configure(tmp_path, 'binding', 1, 'center', 'main')
+    monkeypatch.setattr(session, 'load_agent', lambda *a, **kw: SimpleNamespace(agent_id='main'))
+    body, now = _shared_body()
+    proof = {'binding': 'binding', 'revision': 1, 'shared': True,
+             'digest': hashlib.sha256(body).hexdigest()}
+    status, payload = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert status == 202 and payload['state'] == 'admitted'
+    saved = conversation_store.owner_send_records(tmp_path / 'center')
+    assert len(saved) == 1
+    inbox.configure(tmp_path, 'binding', 1, 'center', 'main', enabled=False)
+    again, replay = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert again == 202 and replay['deduped'] and replay['receipt'] == payload['receipt']
+    assert conversation_store.owner_send_records(tmp_path / 'center') == saved
+    inbox.configure(tmp_path, 'binding', 4, 'center', 'other')
+    moved, replay = receiver.handle_verified(
+        proof=proof, body=body, headers={}, base=tmp_path, owner='alice', now=now)
+    assert moved == 202 and replay['receipt'] == payload['receipt']
+    assert conversation_store.owner_send_records(tmp_path / 'center') == saved
+
+
+def test_per_binding_withdrawn_callback_stays_not_found(tmp_path):
+    from tinyassets import webhook_inbound as receiver
+    from tinyassets.storage import inbound_events as inbox
+
+    now = int(time.time())
+    inbox.configure(tmp_path, 'binding', 1, 'center', 'main', enabled=False)
+    body = b'hello'
+    status, payload = receiver.handle_verified(
+        proof={'binding': 'binding', 'revision': 1,
+               'digest': hashlib.sha256(body).hexdigest()},
+        body=body, headers={'Idempotency-Key': 'one', 'X-Event-Timestamp': str(now)},
+        base=tmp_path, owner='alice', now=now)
+    assert (status, payload['error']) == (404, 'binding_not_configured')
+    assert inbox.pending(tmp_path) == []
+
+
+def test_inbound_read_timeout_counts_and_other_doors_keep_streaming():
+    from tinyassets.owner_router import _forward_timeout
+
+    inbound = _forward_timeout({'inbound_revalidate': lambda: None})
+    streamed = _forward_timeout({})
+    assert inbound.read == 30 and inbound.connect == 5
+    assert streamed.read is None and streamed.connect == 5
 
 
 def test_subscription_challenge_admits_nothing(tmp_path):
