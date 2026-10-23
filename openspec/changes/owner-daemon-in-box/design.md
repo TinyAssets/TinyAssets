@@ -1895,3 +1895,22 @@ credential flow. The broker retains registered-client lookup, registration,
 code exchange and deposit only. The broker discovery RPC, worker pool and total
 detect deadline are deleted. Per-probe time/body limits, same-site model issuers
 and box-side verified-free catalogue admission remain.
+
+## Cutover assignment repair (2026-10-22)
+
+Runtime source additions preserve every accepted member and the accepted root;
+model-access confirmation cannot omit an unresolved member. The one-shot stopped
+repair removes only missing definitions or missing HTTP grant rows, preserves
+subscription members, repoints a missing root to a survivor, and rebuilds the
+assignment/work-binding digests and agent pointer atomically. No survivors means
+an unassigned setup. Config projections are refreshed on rerun; reports contain
+IDs only. Delete this command with the cutover migration:
+
+`python -m tinyassets.cutover_assignment_repair --owner-root <mounted-owner-volume> --ledger <broker-outbound.db> --stopped`
+
+Run once per owner volume with both services stopped. A transient probe failure
+is never evidence for this repair. Saved-default fallback requires the source to
+be absent or its model absent from a successfully read catalogue; cooldown and
+unavailable catalogues preserve the saved choice. Bootstrap recovery keeps the
+newest matching pending request: a changed agent revision produces a distinct
+consent snapshot/dedupe key while an older pending request can remain.

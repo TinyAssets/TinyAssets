@@ -41,11 +41,17 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 _LOG = logging.getLogger("universe_server.served_model_plan")
 
 
-def _recover_stale_default(plan, admitted, owner, universe):
+def _recover_stale_default(plan, catalogues, connected, owner, universe):
     policy = plan.policy
+    saved = policy.saved_default
+    stale = saved is not None and (
+        saved.connection_id not in connected or any(
+            c.connection_id == saved.connection_id
+            and all(m.model_id != saved.model_id for m in c.models)
+            for c in catalogues))
     if (plan.next_candidate(owner, universe) is None
             and policy.current_selection is None and policy.saved_default is not None
-            and any(connection.models for connection in admitted)):
+            and stale):
         policy = replace(policy, mode="automatic", saved_default=None, fallbacks=(),
                          stable_preference=None)
         return replace(plan, policy=policy)
@@ -332,7 +338,8 @@ def prepare_owned_model_plan(
             from types import SimpleNamespace
 
             chains, rejected = [], []
-            for provider in sorted(connected_sources(base, universe, owner, conn=conn)):
+            connected = connected_sources(base, universe, owner, conn=conn)
+            for provider in sorted(connected):
                 try:
                     custody = current_connected_source_custody(
                         conn, base=base, universe=universe, owner=owner, provider=provider,
@@ -414,7 +421,7 @@ def prepare_owned_model_plan(
         cooling_sources(owner, admitted),
     )
     if not allow_empty:
-        plan = _recover_stale_default(plan, admitted, owner, universe.name)
+        plan = _recover_stale_default(plan, all_models, connected, owner, universe.name)
         policy = plan.policy
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         pinned = policy.current_selection or policy.saved_default

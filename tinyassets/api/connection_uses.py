@@ -291,18 +291,8 @@ def _accept_additional_model_source(*, base, uid, actor, definition_id, model):
         if len(bindings) != 1:
             raise PermissionError("one owned serving agent required to accept model source")
         binding = bindings[0]
-        from tinyassets.provider_serving_binding import _resolve_serving_source
-
-        def alive(name):
-            try:
-                _resolve_serving_source(base, uid, actor, name, ModelAccess())
-            except Exception:  # noqa: BLE001 - a departed source cannot serve
-                return False
-            return True
-
         access = {m.provider.split(":", 1)[-1]: m.access
-                  for m in assignment.candidates
-                  if alive(m.provider.split(":", 1)[-1])}
+                  for m in assignment.candidates}
         root = assignment.provider.split(":", 1)[-1]
         if definition_id in access:
             return  # Reconnecting never broadens the owner's existing limits.
@@ -313,7 +303,7 @@ def _accept_additional_model_source(*, base, uid, actor, definition_id, model):
             base_path=base, universe_dir=base / uid, owner_user_id=actor, universe_id=uid,
             agent_binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
             expected_binding_updated_at=binding["updated_at"],
-            provider=root if root in access else definition_id, model_access=access,
+            provider=root, model_access=access,
             expected_assignment_digest=assignment.assignment_digest, require_current_home=True,
         )["agent_binding"]
         if binding["status"] == "serving" and bound["status"] != "serving":

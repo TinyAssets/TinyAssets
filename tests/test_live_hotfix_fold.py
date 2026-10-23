@@ -34,7 +34,8 @@ def test_bootstrap_reuses_newest_matching_confirmation(tmp_path, monkeypatch):
     assert result["request_id"] == "newer"
 
 
-def test_source_offer_omits_revoked_grant_and_uses_new_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("unassigned", [False, True])
+def test_source_offer_preserves_accepted_members_and_root(tmp_path, monkeypatch, unassigned):
     from tinyassets import commons_catalog, provider_assignment
     from tinyassets.api import pending_requests
     from tinyassets.broker import ledger_queries
@@ -43,7 +44,9 @@ def test_source_offer_omits_revoked_grant_and_uses_new_root(tmp_path, monkeypatc
     from tinyassets.providers import definition
 
     old = SimpleNamespace(provider="api_key_http:old", access=ModelAccess())
-    assignment = SimpleNamespace(owner_user_id="owner", candidates=[old],
+    assignment = SimpleNamespace(owner_user_id="owner",
+                                 state="unassigned" if unassigned else "ready",
+                                 candidates=[] if unassigned else [old],
                                  binding_id="binding", provider="api_key_http:old")
     monkeypatch.setattr(provider_assignment, "load_provider_assignment",
                         lambda *_, **__: assignment)
@@ -61,11 +64,11 @@ def test_source_offer_omits_revoked_grant_and_uses_new_root(tmp_path, monkeypatc
     monkeypatch.setattr(pending_requests, "request_from_user", capture)
     _offer_pool_access(base=tmp_path, uid="home", owner="owner", preset={"name": "New",
         "offer": "Use this source."}, definition_id="new", models=["free"])
-    assert offered["provider"] == "new"
-    assert set(offered["model_access"]) == {"new"}
+    assert offered["provider"] == ("new" if unassigned else "old")
+    assert set(offered["model_access"]) == ({"new"} if unassigned else {"old", "new"})
 
 
-def test_access_capture_ignores_unresolvable_previous_member(tmp_path, monkeypatch):
+def test_access_capture_preserves_unresolvable_previous_member(tmp_path, monkeypatch):
     from tinyassets import provider_serving_binding
     from tinyassets.api import model_access_requests
     from tinyassets.provider_assignment_manifest import ModelAccess
@@ -85,11 +88,11 @@ def test_access_capture_ignores_unresolvable_previous_member(tmp_path, monkeypat
     action = {"agent_binding_id": "agent", "expected_revision": 1,
               "provider": "subscription_cli:new",
               "model_access": {"subscription_cli:new": ModelAccess().document()}}
-    result = model_access_requests.capture_action("home", action)
-    assert set(result["proposed_membership"]) == {"subscription_cli:new"}
+    with pytest.raises(ValueError, match="preserve other accepted"):
+        model_access_requests.capture_action("home", action)
 
 
-def test_adding_source_drops_dead_members_and_replaces_dead_root(tmp_path, monkeypatch):
+def test_adding_source_preserves_all_members_and_root(tmp_path, monkeypatch):
     from tinyassets import (
         commons_catalog,
         provider_assignment,
@@ -119,8 +122,8 @@ def test_adding_source_drops_dead_members_and_replaces_dead_root(tmp_path, monke
     monkeypatch.setattr(provider_serving_binding, "bind_serving_provider", bind)
     _accept_additional_model_source(base=tmp_path, uid="home", actor="owner",
                                     definition_id="new", model={"models": [{"id": "free"}]})
-    assert published["provider"] == "new"
-    assert set(published["model_access"]) == {"new"}
+    assert published["provider"] == "old"
+    assert set(published["model_access"]) == {"old", "new"}
 
 
 def test_stale_saved_default_uses_connected_models(monkeypatch):
@@ -134,8 +137,7 @@ def test_stale_saved_default_uses_connected_models(monkeypatch):
                           Interaction(False, frozenset({"text"}), frozenset()))
     monkeypatch.setattr(AgentModelPlan, "next_candidate",
                         lambda self, *_: connected if self.policy.mode == "automatic" else None)
-    recovered = _recover_stale_default(plan, [SimpleNamespace(models=(connected,))],
-                                       "owner", "home")
+    recovered = _recover_stale_default(plan, [], {"live"}, "owner", "home")
     assert recovered.policy.mode == "automatic"
     assert recovered.policy.saved_default is None
     assert recovered.next_candidate("owner", "home") == connected
@@ -160,6 +162,7 @@ def test_npm_failure_discards_partial_files_and_cache(tmp_path, monkeypatch):
 
     runtime = object.__new__(SubscriptionRuntime)
     runtime.home = tmp_path
+    runtime.image_install = False
     runtime.directory = tmp_path / "source"
     runtime.directory.mkdir()
     runtime.cli_login = {"install": {"manager": "npm"}}
