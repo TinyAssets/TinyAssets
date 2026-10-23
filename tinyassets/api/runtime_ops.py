@@ -80,7 +80,7 @@ def _action_project_memory_get(kwargs: dict[str, Any]) -> str:
 
 def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.memory.project import project_memory_set
+    from tinyassets.knowledge_authority import write_project_memory
 
     project_id = kwargs.get("project_id", "").strip()
     key = kwargs.get("key", "").strip()
@@ -102,7 +102,7 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
 
     actor = _current_actor()
     try:
-        result = project_memory_set(
+        result = write_project_memory(
             _base_path(),
             project_id=project_id,
             key=key,

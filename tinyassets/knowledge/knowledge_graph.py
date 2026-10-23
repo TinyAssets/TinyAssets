@@ -19,84 +19,7 @@ from tinyassets.knowledge.models import (
     GraphEdge,
     GraphEntity,
 )
-from tinyassets.knowledge.tag_matrix import KnowledgeTags, knowledge_tags_from_mapping
-from tinyassets.memory.scoping import MemoryScope
-
-# Memory-scope Stage 2b: shared helpers for injecting scope column
-# values into the INSERT/UPSERT fragments. The columns are identical
-# across every scoped table (entities, edges, facts, communities) and
-# the caller always supplies the same four tiers, so a single pair of
-# helpers keeps the three write sites in sync.
-_SCOPE_COL_NAMES: tuple[str, ...] = (
-    "universe_id", "goal_id", "branch_id", "user_id",
-)
-_TAG_COL_NAMES: tuple[str, ...] = (
-    "tag_universes",
-    "tag_domains",
-    "tag_shapes",
-    "tag_general",
-    "tag_commons",
-    "tag_private_canon",
-    "promotion_record",
-)
-
-
-def _scope_insert_fragment(
-    scope: MemoryScope | None,
-) -> tuple[str, tuple[Any, ...]]:
-    """Return ``(", universe_id, goal_id, ...", (values...))`` or ``("", ())``.
-
-    Stage 2b threading: when ``scope`` is ``None`` we omit the scope
-    columns from the INSERT entirely — existing rows keep NULL, new
-    rows inherit NULL for any tiers the caller didn't set. When
-    ``scope`` is present, every tier is emitted (``None`` values land
-    as SQL NULL, matching the design §4 "broader than this tier"
-    semantic).
-    """
-    if scope is None:
-        return "", ()
-    cols = ", " + ", ".join(_SCOPE_COL_NAMES)
-    vals = (
-        scope.universe_id,
-        scope.goal_id,
-        scope.branch_id,
-        scope.user_id,
-    )
-    return cols, vals
-
-
-def _scope_upsert_fragment(scope: MemoryScope | None) -> str:
-    """Return the ``, <col>=excluded.<col>, ...`` fragment for UPSERT.
-
-    Skipped entirely when ``scope`` is ``None`` so pre-Stage-2b
-    callers produce byte-identical SQL to pre-2b.
-    """
-    if scope is None:
-        return ""
-    return "".join(
-        f", {col}=excluded.{col}" for col in _SCOPE_COL_NAMES
-    )
-
-
-def _tag_insert_fragment(
-    tags: KnowledgeTags | None,
-) -> tuple[str, tuple[Any, ...]]:
-    """Return tag columns/values for INSERT fragments."""
-    if tags is None:
-        return "", ()
-    metadata = tags.as_row_metadata()
-    cols = ", " + ", ".join(_TAG_COL_NAMES)
-    vals = tuple(metadata[col] for col in _TAG_COL_NAMES)
-    return cols, vals
-
-
-def _tag_upsert_fragment(tags: KnowledgeTags | None) -> str:
-    """Return the tag-column UPSERT fragment when tags are supplied."""
-    if tags is None:
-        return ""
-    return "".join(
-        f", {col}=excluded.{col}" for col in _TAG_COL_NAMES
-    )
+from tinyassets.knowledge.tag_matrix import knowledge_tags_from_mapping
 
 
 def _attach_row_tags(target: Any, row: sqlite3.Row) -> None:
@@ -302,61 +225,27 @@ class KnowledgeGraph:
         self._conn.commit()
         return total
 
-    # ------------------------------------------------------------------
-    # Entity CRUD
-    # ------------------------------------------------------------------
-
-    def add_entity(
-        self,
-        entity: GraphEntity,
-        scope: MemoryScope | None = None,
-        tags: KnowledgeTags | None = None,
-    ) -> None:
-        """Insert or update an entity.
-
-        Memory-scope Stage 2b: accepts an optional ``scope``. When set,
-        the entity row is tagged with the scope's tier values;
-        ``None`` leaves the four scope columns untouched (= NULL,
-        legacy/universe-public semantics per design §4). The write is
-        a no-op for reads until Stage 2c flips
-        ``TINYASSETS_TIERED_SCOPE`` on.
-
-        PR-139 slice 6: optional ``tags`` attach the tag-matrix labels
-        used by retrieval. Tags refine rows after hard MemoryScope
-        filtering; they do not replace scope columns.
-        """
-        scope_cols, scope_vals = _scope_insert_fragment(scope)
-        tag_cols, tag_vals = _tag_insert_fragment(tags)
-        self._conn.execute(
-            f"""
-            INSERT INTO entities (entity_id, entity_type, access_tier,
-                                  public_description, hidden_description,
-                                  secret_description, aliases{scope_cols}{tag_cols})
-            VALUES (?, ?, ?, ?, ?, ?, ?{', ?' * (len(scope_vals) + len(tag_vals))})
-            ON CONFLICT(entity_id) DO UPDATE SET
-                entity_type=excluded.entity_type,
-                access_tier=excluded.access_tier,
-                public_description=excluded.public_description,
-                hidden_description=excluded.hidden_description,
-                secret_description=excluded.secret_description,
-                aliases=excluded.aliases{_scope_upsert_fragment(scope)}{_tag_upsert_fragment(tags)}
-            """,
-            (
-                entity["entity_id"],
-                entity["entity_type"],
-                entity["access_tier"],
-                entity["public_description"],
-                entity["hidden_description"],
-                entity["secret_description"],
-                json.dumps(entity.get("aliases", [])),
-                *scope_vals,
-                *tag_vals,
-            ),
-        )
-        self._conn.commit()
-
     def get_entity(self, entity_id: str) -> GraphEntity | None:
-        """Retrieve an entity by ID."""
+        """Retrieve an entity by ID. A knowledge file outranks the database."""
+        from tinyassets.knowledge_authority import files_are_authority, read_graph_entity
+
+        owner = Path(self._db_path).parent
+        filed = read_graph_entity(owner, entity_id)
+        if filed is not None:
+            aliases = filed.get("aliases", [])
+            if isinstance(aliases, str):
+                aliases = json.loads(aliases or "[]")
+            return GraphEntity(
+                entity_id=str(filed.get("entity_id") or entity_id),
+                entity_type=str(filed.get("entity_type") or "unknown"),
+                access_tier=int(filed.get("access_tier") or 0),
+                public_description=str(filed.get("public_description") or ""),
+                hidden_description=str(filed.get("hidden_description") or ""),
+                secret_description=str(filed.get("secret_description") or ""),
+                aliases=list(aliases or []),
+            )
+        if files_are_authority(owner):
+            return None
         row = self._conn.execute(
             "SELECT * FROM entities WHERE entity_id = ?", (entity_id,)
         ).fetchone()
@@ -400,53 +289,6 @@ class KnowledgeGraph:
             for r in rows
         ]
 
-    # ------------------------------------------------------------------
-    # Edge CRUD
-    # ------------------------------------------------------------------
-
-    def add_edge(
-        self,
-        edge: GraphEdge,
-        scope: MemoryScope | None = None,
-        tags: KnowledgeTags | None = None,
-    ) -> None:
-        """Insert or update an edge.
-
-        Memory-scope Stage 2b: see :meth:`add_entity` for the ``scope``
-        contract. Scope tagging is advisory until 2c.
-        """
-        scope_cols, scope_vals = _scope_insert_fragment(scope)
-        tag_cols, tag_vals = _tag_insert_fragment(tags)
-        self._conn.execute(
-            f"""
-            INSERT INTO edges (source, target, relation_type, access_tier,
-                               temporal_scope, pov_characters, weight,
-                               valid_from_chapter, valid_to_chapter{scope_cols}{tag_cols})
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?{', ?' * (len(scope_vals) + len(tag_vals))})
-            ON CONFLICT(source, target, relation_type) DO UPDATE SET
-                access_tier=excluded.access_tier,
-                temporal_scope=excluded.temporal_scope,
-                pov_characters=excluded.pov_characters,
-                weight=excluded.weight,
-                valid_from_chapter=excluded.valid_from_chapter,
-                valid_to_chapter=excluded.valid_to_chapter{_scope_upsert_fragment(scope)}{_tag_upsert_fragment(tags)}
-            """,
-            (
-                edge["source"],
-                edge["target"],
-                edge["relation_type"],
-                edge["access_tier"],
-                edge["temporal_scope"],
-                json.dumps(edge.get("pov_characters", [])),
-                edge["weight"],
-                edge.get("valid_from_chapter"),
-                edge.get("valid_to_chapter"),
-                *scope_vals,
-                *tag_vals,
-            ),
-        )
-        self._conn.commit()
-
     def get_edges(
         self,
         entity_id: str | None = None,
@@ -489,71 +331,6 @@ class KnowledgeGraph:
             _attach_row_tags(edge, r)
             edges.append(edge)
         return edges
-
-    # ------------------------------------------------------------------
-    # Fact CRUD
-    # ------------------------------------------------------------------
-
-    def add_facts(
-        self,
-        facts: Sequence[FactWithContext],
-        scope: MemoryScope | None = None,
-        tags: KnowledgeTags | None = None,
-    ) -> None:
-        """Insert or update a batch of facts.
-
-        Memory-scope Stage 2b: see :meth:`add_entity` for the ``scope``
-        contract.
-        """
-        scope_cols, scope_vals = _scope_insert_fragment(scope)
-        tag_cols, tag_vals = _tag_insert_fragment(tags)
-        placeholders = ",".join(
-            ["?"] * (21 + len(scope_vals) + len(tag_vals))
-        )
-        for f in facts:
-            self._conn.execute(
-                f"""
-                INSERT INTO facts (fact_id, text, source_type, narrator,
-                    narrator_reliability, valid_from_chapter, valid_to_chapter,
-                    truth_value_initial, truth_value_final, truth_value_revealed,
-                    language_type, narrative_function, importance, weight,
-                    hardness, horizon, provenance, confidence, seeded_scene,
-                    access_tier, pov_characters{scope_cols}{tag_cols})
-                VALUES ({placeholders})
-                ON CONFLICT(fact_id) DO UPDATE SET
-                    text=excluded.text,
-                    source_type=excluded.source_type,
-                    narrator=excluded.narrator,
-                    narrator_reliability=excluded.narrator_reliability,
-                    valid_from_chapter=excluded.valid_from_chapter,
-                    valid_to_chapter=excluded.valid_to_chapter,
-                    truth_value_initial=excluded.truth_value_initial,
-                    truth_value_final=excluded.truth_value_final,
-                    truth_value_revealed=excluded.truth_value_revealed,
-                    language_type=excluded.language_type,
-                    narrative_function=excluded.narrative_function,
-                    importance=excluded.importance,
-                    weight=excluded.weight,
-                    hardness=excluded.hardness,
-                    horizon=excluded.horizon,
-                    provenance=excluded.provenance,
-                    confidence=excluded.confidence,
-                    seeded_scene=excluded.seeded_scene,
-                    access_tier=excluded.access_tier,
-                    pov_characters=excluded.pov_characters{_scope_upsert_fragment(scope)}{_tag_upsert_fragment(tags)}
-                """,
-                (
-                    f.fact_id, f.text, f.source_type.value, f.narrator,
-                    f.narrator_reliability, f.valid_from_chapter, f.valid_to_chapter,
-                    f.truth_value_initial, f.truth_value_final, f.truth_value_revealed,
-                    f.language_type.value, f.narrative_function.value, f.importance,
-                    f.weight, f.hardness, f.horizon, f.provenance, f.confidence,
-                    f.seeded_scene, f.access_tier, json.dumps(f.pov_characters),
-                    *scope_vals,
-                    *tag_vals,
-                ),
-            )
-        self._conn.commit()
 
     def query_facts(
         self,

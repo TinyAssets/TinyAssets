@@ -59,11 +59,9 @@ class PromotionGates:
         result = PromotionResult()
 
         # -- Fact promotion --
-        promotable = episodic.get_promotable_facts(
-            threshold=self._fact_threshold
-        )
+        promotable = _promotable_facts(episodic, self._fact_threshold)
         for fact in promotable:
-            episodic.mark_promoted(fact["fact_id"])
+            _promote_fact_file(episodic, fact)
             result.promoted_facts.append(fact)
             logger.info(
                 "Promoted fact %s (entity=%s, evidence=%d)",
@@ -122,3 +120,41 @@ class PromotionGates:
             return [r[0] for r in rows]
         except Exception:
             return []
+
+
+def _owner_of(episodic: Any):
+    from pathlib import Path
+
+    database = str(getattr(episodic, "_db_path", "") or "")
+    if not database or database == ":memory:":
+        return None
+    return Path(database).parent
+
+
+def _promotable_facts(episodic: Any, threshold: int) -> list[dict[str, Any]]:
+    from tinyassets.knowledge_authority import list_promotable_memory_facts
+
+    owner = _owner_of(episodic)
+    sql_facts = episodic.get_promotable_facts(threshold=threshold)
+    if owner is None:
+        return list(sql_facts)
+    return list_promotable_memory_facts(
+        owner,
+        getattr(episodic, "_universe_id", "default"),
+        threshold=threshold,
+        sql_facts=sql_facts,
+    )
+
+
+def _promote_fact_file(episodic: Any, fact: dict[str, Any]) -> None:
+    from tinyassets.knowledge_authority import promote_memory_fact
+
+    owner = _owner_of(episodic)
+    if owner is None:
+        raise ValueError("selected memory promotion requires an owner directory")
+    promote_memory_fact(
+        owner,
+        getattr(episodic, "_universe_id", "default"),
+        fact["fact_id"],
+        seed=fact,
+    )
