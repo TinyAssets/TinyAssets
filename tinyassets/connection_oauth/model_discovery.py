@@ -95,11 +95,21 @@ def _challenge(headers):
 
 
 def _bases(address):
+    from ipaddress import ip_address
+
     parts = urlsplit(address)
     origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
     path = parts.path.rstrip("/").removesuffix("/models")
     bases = [origin + path] if path else []
-    return origin, list(dict.fromkeys([*bases, origin + "/v1", origin]))
+    origins = [origin]
+    if not path and not parts.hostname.startswith("api."):
+        try:
+            ip_address(parts.hostname)
+        except ValueError:
+            origins.append(urlunsplit((parts.scheme, "api." + parts.netloc, "", "", "")))
+    candidates = [root + suffix for suffix in ("/v1", "/openai/v1", "/api/v1", "")
+                  for root in origins]
+    return origin, list(dict.fromkeys([*bases, *candidates]))
 
 
 def _openapi(fetch, record, origin, bases):

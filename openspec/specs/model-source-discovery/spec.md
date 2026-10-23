@@ -5,6 +5,16 @@ Connect a model source from one address using the same credential-free record fo
 
 ## Requirements
 
+### Requirement: Bare-domain API discovery
+For a bare domain the detector SHALL also try its `api.` subdomain, and SHALL
+probe `/v1`, `/openai/v1` and `/api/v1` on candidate origins through the same
+bounded hardened transport. The connect screen SHALL use its address field
+without a separate "Connect any OpenAI-compatible endpoint" prompt.
+
+#### Scenario: Provider website address
+- **WHEN** an owner enters a website domain whose model API is on its `api.` subdomain
+- **THEN** discovery can find its model catalogue on the common API paths
+
 ### Requirement: One source record
 Every source SHALL be a SourceRecord with a JSON schema: identity and origin, exact address aliases, data-only suggested/free flags, one sign-in mechanism, one invocation mechanism, exact egress hosts, and credential state location. HTTP credentials SHALL remain in the broker; CLI login state SHALL remain in the owner volume. Consumers SHALL select behavior by mechanism, never provider identity.
 

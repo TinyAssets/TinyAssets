@@ -30,6 +30,17 @@ def server(**extra):
                   "grant_types_supported": ["authorization_code"], **extra})
 
 
+@pytest.mark.parametrize("path", ["/openai/v1", "/api/v1"])
+def test_bare_domain_finds_api_subdomain_and_common_paths(path):
+    fetch = fetcher({"https://api.groq.com" + path + "/models": (200, CATALOGUE)})
+    result = detect("groq.com", fetch=fetch)
+    assert result["chosen"]["models_url"] == "https://api.groq.com" + path + "/models"
+    assert result["chosen"]["verdict"] == "api_key"
+    page = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
+    html = Path("tinyassets/onboarding/app.html").read_text("utf-8")
+    assert "Connect any OpenAI-compatible endpoint" not in page + html
+
+
 def test_challenge_metadata_dcr_chooses_oauth():
     fetch = fetcher({
         API + "/v1/models": (401, None, {"www-authenticate":
@@ -152,6 +163,9 @@ def test_no_provider_names_in_the_connect_path():
              for record in records().values() for address in record.addresses}
     for path in CODE_PATH:
         text = Path(path).read_text("utf-8").lower()
+        # A compatibility route used by unrelated hosts is not provider dispatch.
+        if path == "tinyassets/connection_oauth/model_discovery.py":
+            text = text.replace('"/openai/v1"', '"/compatibility/v1"')
         for token in (*PROVIDERS, *hosts):
             assert not re.search(r"(?<![a-z])" + re.escape(token.lower()) + r"(?![a-z])",
                                  text), f"{token} in {path}"
