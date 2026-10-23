@@ -583,7 +583,7 @@ def disconnect_source(source_id):
         for login in pending:
             login.thread.join()
             _logins.pop(login.handle, None)
-        disconnect(SubscriptionRuntime(source_id))
+        disconnect(owner, source_id)
     return {"status": "disconnected", "source_id": source_id}
 
 

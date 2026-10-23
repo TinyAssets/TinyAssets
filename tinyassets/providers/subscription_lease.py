@@ -6,8 +6,10 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 
 MAX_STATE = 2 * 1024 * 1024
@@ -27,13 +29,18 @@ def tmpfs_root():
 
 @contextlib.contextmanager
 def source_lock(runtime):
+    with named_source_lock(runtime.home, runtime.source.id, runtime._local):
+        yield
+
+
+@contextlib.contextmanager
+def named_source_lock(home, source_id, local):
     import fcntl
 
-    local = runtime._local
     if getattr(local, "locked", False):
         yield
         return
-    key = hashlib.sha256(str(runtime.home).encode() + runtime.source.id.encode()).hexdigest()
+    key = hashlib.sha256(str(home).encode() + source_id.encode()).hexdigest()
     path = tmpfs_root() / ("ta-native-lock-" + str(os.getuid()) + "-" + key)
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -163,14 +170,24 @@ def commit_login(runtime):
     runtime._local.login_committed = True
 
 
-def disconnect(runtime):
-    with runtime.lock():
-        custody(runtime, "delete")
-        remove_legacy(runtime)
-        if runtime.directory.is_symlink():
-            runtime.directory.unlink()
-        elif runtime.directory.exists():
-            shutil.rmtree(runtime.directory)
+def disconnect(owner, source_id):
+    from tinyassets.owner_channel import request
+    from tinyassets.providers.subscription_source import sources
+
+    if not isinstance(source_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", source_id):
+        raise ValueError("invalid subscription source id")
+    with named_source_lock(owner.root, source_id, threading.local()):
+        request(owner.principal, {"op": "SUBSCRIPTION_CUSTODY", "document": {
+            "action": "delete", "source": source_id}})
+        source = sources(owner.root).get(source_id)
+        if source is not None:
+            for name in source.state["paths"]:
+                state_path(owner.root, name).unlink(missing_ok=True)
+        directory = owner.root / ".ta-cli" / source_id
+        if directory.is_symlink():
+            directory.unlink()
+        elif directory.exists():
+            shutil.rmtree(directory)
 
 
 def upgrade_connection(runtime, marker):

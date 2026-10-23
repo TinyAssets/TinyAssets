@@ -68,6 +68,21 @@ def test_connection_upgrade_accepts_record_before_lock_digest(connected):
         connected.require_accepted()
 
 
+@pytest.mark.parametrize("record", [None, "{broken"])
+def test_disconnect_without_resolvable_record(connected, record):
+    from tinyassets.providers.subscription_runtime import disconnect_source
+
+    assert connected.authenticated()
+    path = connected.home / ".ta-cli/sources/fake-cli.json"
+    if record is None:
+        path.unlink()
+    else:
+        path.write_text(record)
+    assert disconnect_source("fake-cli")["status"] == "disconnected"
+    assert custody(connected, "read") == {"revision": None, "state": {}}
+    assert not connected.directory.exists()
+
+
 def test_legacy_login_moves_to_custody_and_status_uses_tmpfs(connected, monkeypatch):
     runtime = connected
     old = runtime.source.document()
