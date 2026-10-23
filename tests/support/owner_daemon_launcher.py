@@ -17,14 +17,18 @@ class ProcessRuntime:
         self.logs = []
 
     def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes,
-              volume_mount, volume_generation, rootfs=None):
+              volume_mount, volume_generation, rootfs=None, rewind: bool = False):
         log = tempfile.TemporaryFile()
         self.logs.append(log)
+        env = {**os.environ, "TINYASSETS_VOLUME_GENERATION": str(volume_generation)}
+        if rewind:
+            env["TINYASSETS_VOLUME_REWIND"] = "1"
+        else:
+            env.pop("TINYASSETS_VOLUME_REWIND", None)
         self.processes[uid] = subprocess.Popen([
             sys.executable, "-m", self.module, str(self.roots[uid]),
             str(relay), str(secret_file), str(app_dir / "app.sock"),
-        ], stdout=log, stderr=log, env={**os.environ,
-             "TINYASSETS_VOLUME_GENERATION": str(volume_generation)})
+        ], stdout=log, stderr=log, env=env)
 
     def alive(self, uid):
         return uid in self.processes and self.processes[uid].poll() is None

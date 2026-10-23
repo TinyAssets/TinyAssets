@@ -42,7 +42,9 @@ def fleet(tmp_path, monkeypatch):
             self.starts = []
             self.stops = []
 
-        def start(self, uid, gid, **kwargs):
+        def start(self, uid, gid, *, rewind: bool = False, **kwargs):
+            if rewind:
+                kwargs["rewind"] = True
             self.starts.append((uid, kwargs))
             self.live.add(uid)
 
