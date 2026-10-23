@@ -55,7 +55,7 @@ def install_image(image_ref, image_id, root):
     return target
 
 
-def run(control, canary, prepare):
+def run(control, canary, prepare, ready=lambda: None):
     receipt = {"counts": dict.fromkeys(OUTCOMES, 0),
                "canary": "failed", "control": "failed"}
     try:
@@ -70,6 +70,7 @@ def run(control, canary, prepare):
         if counts["incomplete"]:
             return receipt, 1
         receipt["control"] = "passed"
+        ready()
         if canary() is True:
             receipt["canary"] = "passed"
     except Exception:
@@ -131,8 +132,17 @@ def main(argv=None):
             check=True, capture_output=True, text=True, timeout=610)
         return json.loads(result.stdout)
 
+    def ready():
+        subprocess.run(
+            ["ssh", "-i", args.ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+             args.ssh_target,
+             "sudo env PYTHONPATH=/opt/tinyassets/boxhostd python3 -"],
+            input=(Path(__file__).with_name("wait_boxhostd_ready.py")
+                   .read_text(encoding="utf-8")),
+            check=True, capture_output=True, text=True, timeout=650)
+
     receipt, code = run(control, lambda: probe(args.origin, args.expected_sha),
-                        lambda: wake(args.origin))
+                        lambda: wake(args.origin), ready)
     args.receipt.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(receipt, sort_keys=True))
     return code

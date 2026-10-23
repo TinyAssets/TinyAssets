@@ -525,8 +525,8 @@ installs `compose.yml` over that path from the repo (below).
 ### Runtime bundle transaction
 
 `deploy/{compose.yml,vector.yaml,vector-betterstack.yaml,vector-entrypoint.sh,tinyassets-daemon.service}`
-are the **runtime bundle**. `deploy-prod.yml`'s "Sync runtime deploy files" step
-only *stages* them, into a per-run
+and the box-host install archive are the **runtime bundle**. `deploy-prod.yml`'s
+"Sync runtime deploy files" step only *stages* them, into a per-run
 `/tmp/tinyassets-bundle-<run id>-<attempt>/` passed to the script as
 `BUNDLE_DIR`; `deploy/deploy_fail_safe.sh` owns the transaction, so config and
 image succeed or fail together:
@@ -566,9 +566,17 @@ image succeed or fail together:
    not the forward install's contract — otherwise rolling back would rewrite
    `root:root` `compose.yml` as `tinyassets:tinyassets`, which is a rollback that
    changes something. The last 5 snapshots are kept, and **never** the one
-   `bundle-previous` names.
+     `bundle-previous` names. The same snapshot records every mutable box-host
+     path derived from the install manifest, the systemd units, the env source
+     and its rendered daemon, broker and box-host files, the selected box image
+     in `images.json`, and `harness-current`. That copy of `/etc/tinyassets/env`
+     and `daemon.env` is the pre-`set_image` pointer. A hold keeps the candidate
+     image in those files; a rollback restores this snapshot and converges it.
+     Immutable harness rootfs and pinned runtime directories remain in place.
 3. **install** — `tinyassets:tinyassets` `0644` (`0755` for the entrypoint script),
-   the unit `root:root 0644`, then `systemctl daemon-reload`. Only after this
+   the unit `root:root 0644`, then the staged box-host installer and
+   `systemctl daemon-reload`. The installer runs under this transaction's
+   dirty marker and host-mutation lock. Only after this
    succeeds does `/var/lib/tinyassets-deploy/bundle-previous` advance — written
    atomically (temp file + `mv -fT`) — to name the snapshot the install replaced.
    Failing to advance it is fatal, because every later rollback would then read
@@ -581,11 +589,12 @@ image succeed or fail together:
    healthy afterwards, and `accept()` re-checks `tinyassets-logs` **last**, after
    daemon health and the tunnel — it can be seen `running` and then die while the
    health probe is still waiting.
-5. **rollback restores config first, then the image.** Both paths — the script's
+5. **rollback restores the box host, config, then the image.** Both paths — the script's
    internal rollback on an unhealthy candidate, and
    `deploy_fail_safe.sh --restore-bundle <previous image>`, which the workflow's
-   "Roll back if the public canary is red" step calls — reinstall the snapshot,
-   `daemon-reload`, then converge the previous image (force-recreating `logs` if
+   "Roll back if the public canary is red" step calls — restore the snapshot's
+   box-host tree and `harness-current` first, then compose and the daemon unit,
+   `daemon-reload`, and the previous broker and daemon image (force-recreating `logs` if
    the restore moved a vector input). Converging the previous IMAGE against the
    new CONFIG would roll back half a change.
 
@@ -610,13 +619,23 @@ image succeed or fail together:
    commit in the same step. Do not 'fix' it by loosening the rollback
    ordering, and do not add a shell fallback to the probe.
 
-**Nothing reports success over a mixed tree.** A restore that does not complete
-leaves `/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that
+Before the deploy canaries, a bounded wait requires two consecutive signals
+with no active or queued host calls and no pending broker lifecycle work.
+Owner-box acceptance repeats this wait after fleet drain and before waking its
+canary. A timeout leaves the deploy red and holds the current image while work
+finishes. Request wakes take the reserved host slot ahead of scheduled wakes.
+
+**Nothing reports success over a mixed tree.** `bundle-dirty` stays set until
+the stack has converged. A hold keeps the candidate bundle and
+`TINYASSETS_IMAGE` and does not clear the marker. A rollback clears it only
+after `restart_stack` has converged, immediately before `rolled_back`. A
+restore or converge that does not finish leaves
+`/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that
 must go back*, written atomically like the pointer — and reports
 `deploy_result=rollback_failed` (exit 3). While that marker exists a normal
 deploy refuses with `bundle_dirty`, because snapshotting a half-installed tree
 would make the mixed state the next rollback target. `--restore-bundle` runs
-regardless and clears it.
+regardless and clears the marker only after the restored stack has converged.
 
 Two corners of that worth knowing before you meet them at 3am:
 

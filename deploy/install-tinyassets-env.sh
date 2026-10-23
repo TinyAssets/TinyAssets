@@ -872,10 +872,13 @@ print(f"{url.scheme}://{url.netloc.lower()}")
 PY
                 )" || refuse_render "WORKOS_MCP_RESOURCE must contain a valid HTTP(S) public origin"
             fi
+            # The broker owns outbound HTTP and its feature gate as well as
+            # credential custody; preserve the source flag in its private env.
             # C6: the broker deletion job invokes billing and identity erasure.
             if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
                   "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == STRIPE_WEBHOOK_SECRET ||
                   "${ENV_KEY}" == TINYASSETS_BILLING_ENTITLEMENT_KEY ||
+                  "${ENV_KEY}" == TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED ||
                   "${ENV_KEY}" == WORKOS_API_KEY ||
                   "${ENV_KEY}" == BACKUP_DEST ]]; then
                 selected=1

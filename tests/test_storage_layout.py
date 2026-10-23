@@ -218,7 +218,16 @@ def test_the_fail_safe_checks_the_layout_before_every_image_start():
         'log "mode: --restore-bundle (reinstall the previous bundle, '
         'then converge ${NEW_IMAGE})"'
     )
-    start = script.index('if ! set_image "$NEW_IMAGE"; then')
+    # hold_candidate_release may record NEW_IMAGE, then refuse_on_layout stops
+    # the daemon. That helper is defined above the check and does not start
+    # the image. The converge set_image is the call after the layout check.
+    hold = script.index("hold_candidate_release() {")
+    held = script.index('if ! set_image "$NEW_IMAGE"; then')
+    hold_end = script.index("\n}\n", hold)
+    assert hold < held < first
+    assert "refuse_on_layout" in script[held:hold_end]
+    assert "restart_stack" not in script[hold:hold_end]
+    start = script.index('if ! set_image "$NEW_IMAGE"; then', first)
     converge = script.index('restart_stack || CONVERGED=0')
     assert mode < first < start < converge
     # A failed guard on the target image refuses before that image is started.
@@ -226,7 +235,9 @@ def test_the_fail_safe_checks_the_layout_before_every_image_start():
     second =script.index('layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"', first + 1)
     rollback = script.index('if ! set_image "$PREV_IMAGE"; then')
     assert install < second < rollback
-    assert "refuse_on_layout" in script[second:rollback]
+    # A failed previous-image guard calls hold_candidate_release, which
+    # refuse_on_layout exits, before this script can set_image PREV_IMAGE.
+    assert "hold_candidate_release" in script[second:rollback]
     refusal = script[script.index("refuse_on_layout() {"):]
     assert 'docker stop "$DAEMON_CONTAINER"' in refusal.split("}", 1)[0]
 

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.support.admission import drive, projection
+from tinyassets.boxes.daemon_control import REQUEST_DRIVEN
 from tinyassets.broker import admission, box_admission, owner_volumes
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs
 from tinyassets.broker.owner_identities import OwnerIdentities
@@ -506,13 +507,13 @@ def test_scheduled_host_failure_recovers_without_restarting_waker(authority, fai
     async def exercise():
         await waker.tick()
         await asyncio.gather(*waker.pending.values(), return_exceptions=True)
-        assert routing._host_calls == 0
         assert "wake:alice" not in a.events
+        assert routing._background_host_slots._value == routing.config.volume_concurrency
         await waker.tick()
         await asyncio.gather(*waker.pending.values())
         await routing.close()
-        assert routing._host_calls == 0
         assert "wake:alice" in a.events
+        assert routing._background_host_slots._value == routing.config.volume_concurrency
         assert not admission.owner_lock(a.identities.path, "alice").locked()
 
     asyncio.run(exercise())
@@ -664,6 +665,7 @@ def test_broker_never_exceeds_configured_host_connection_bound(authority, bound)
 
     routing = authority.server.routing
     routing.config.volume_concurrency = bound
+    routing._background_host_slots = asyncio.Semaphore(bound)
     release = threading.Event()
     entered = queue.Queue()
     active = peak = 0
@@ -688,10 +690,46 @@ def test_broker_never_exceeds_configured_host_connection_bound(authority, bound)
                 await asyncio.to_thread(entered.get, timeout=2)
             await asyncio.sleep(.05)
             assert entered.empty()
-            assert active == peak == routing._host_calls == bound
+            assert active == peak == bound
         finally:
             release.set()
             await asyncio.gather(*tasks)
-        assert active == routing._host_calls == 0
+        assert active == 0
         assert peak == bound
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.verifies('owner-daemon-in-box:T1')
+def test_request_priority_covers_preflight_calls_before_the_wake(authority):
+    routing = authority.server.routing
+    seen = []
+
+    def host(operation, owner=None, **fields):
+        if operation == "status":
+            seen.append(REQUEST_DRIVEN.get())
+        return authority.host(operation, owner, **fields)
+
+    routing.volumes.execute = host
+
+    async def exercise():
+        await routing.wake("alice")
+        await routing.wake("bob", scheduled=True)
+        await routing.close()
+
+    asyncio.run(exercise())
+    assert seen == [True, False]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:T1')
+def test_readiness_distinguishes_awake_boxes_from_pending_snapshots(authority):
+    routing = authority.server.routing
+
+    async def exercise():
+        await routing.wake("alice")
+        await routing.wake("bob")
+        assert await routing.readiness() == {"ready": True}
+        await routing.sleep("alice")
+        assert await routing.readiness() == {"ready": False}
+
     asyncio.run(exercise())

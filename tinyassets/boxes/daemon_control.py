@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from pathlib import Path
 
 from tinyassets.boxes.bootstrap import connect
 from tinyassets.boxes.control_channel import receive, send
+
+REQUEST_DRIVEN = ContextVar("boxhostd_request_driven", default=False)
 
 
 def request(operation: str, owner: str | None = None, **fields) -> dict:
@@ -14,12 +17,16 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     # Keep the broker call alive through execution, then commit its result.
     volume_ops = {"create", "snapshot", "restore", "evict", "destroy",
                   "delete_snapshots"}
-    timeout = 4 * 3600 if operation in volume_ops else 65
+    # A requested wake may queue for 45 seconds before its 60 second startup.
+    timeout = 5 if operation == "readiness" else (
+        4 * 3600 if operation in volume_ops else 120)
     sock, identity = connect(root / "daemon.sock",
                              timeout=timeout)
     with sock:
         sock.settimeout(timeout)
         document = {"lifecycle": operation, **fields}
+        if REQUEST_DRIVEN.get():
+            document["_request_driven"] = True
         if owner is not None:
             document["owner"] = owner
         send(sock, document)

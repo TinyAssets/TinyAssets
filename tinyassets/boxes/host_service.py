@@ -10,6 +10,7 @@ import signal
 import socket
 import stat
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -23,6 +24,57 @@ from tinyassets.boxes.relay import OwnerRelays
 from tinyassets.boxes.volumes import OwnerVolumes
 
 
+class BrokerLifecycleSlots:
+    """Bounded host execution with request wake priority over clock wakes."""
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.background_capacity = max(1, capacity - 1)
+        self.active = 0
+        self.background_active = 0
+        self.waiting = 0
+        self.request_wakes = 0
+        self.condition = threading.Condition()
+
+    @property
+    def idle(self) -> bool:
+        with self.condition:
+            return self.active == self.waiting == 0
+
+    @contextmanager
+    def claim(self, *, request_driven: bool, timeout: float):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            self.waiting += 1
+            if request_driven:
+                self.request_wakes += 1
+            try:
+                while (self.active >= self.capacity or
+                       (not request_driven and
+                        self.background_active >= self.background_capacity) or
+                       (not request_driven and self.request_wakes)):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("boxhostd lifecycle wait timed out")
+                    self.condition.wait(remaining)
+                self.active += 1
+                if not request_driven:
+                    self.background_active += 1
+            finally:
+                self.waiting -= 1
+                if request_driven:
+                    self.request_wakes -= 1
+                self.condition.notify_all()
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.active -= 1
+                if not request_driven:
+                    self.background_active -= 1
+                self.condition.notify_all()
+
+
 class HostService:
     def __init__(self, admission: OwnerRegistry, volumes: OwnerVolumes,
                  relays: OwnerRelays, daemons: OwnerDaemons) -> None:
@@ -33,9 +85,27 @@ class HostService:
         self._slots = threading.BoundedSemaphore(32)
         from tinyassets.broker.lifecycle_config import LifecycleConfig
 
-        # The broker's persistent registration occupies one connection.
-        self._broker_slots = threading.BoundedSemaphore(LifecycleConfig().volume_concurrency + 1)
+        # One slot stays available for an interactive wake while background
+        # snapshot transfers use the configured volume concurrency.
+        self._broker_slots = self._new_broker_slots(LifecycleConfig().volume_concurrency + 1)
         self.daemons = daemons
+
+    @staticmethod
+    def _new_broker_slots(capacity):
+        return BrokerLifecycleSlots(capacity)
+
+    def broker_lifecycle(self, document, uid, *, timeout=45):
+        document = dict(document)
+        priority = document.pop("_request_driven", False)
+        if type(priority) is not bool:
+            return {"error": "invalid lifecycle priority"}
+        request_driven = priority or (document.get("lifecycle") == "wake" and
+                                      document.get("scheduled") is False)
+        try:
+            with self._broker_slots.claim(request_driven=request_driven, timeout=timeout):
+                return self.lifecycle(document, uid)
+        except TimeoutError as exc:
+            return {"error": str(exc)}
 
     def register(self, sock):
         identity = peer(sock)
@@ -98,7 +168,11 @@ class HostService:
                     send(sock, {"proof": broker[1], "broker_socket":
                                 str(self.admission.broker_socket)})
                 return
-            send(sock, self.lifecycle(document, identity[1]))
+            if identity[1] == 1002:
+                response = self.broker_lifecycle(document, identity[1])
+            else:
+                response = self.lifecycle(document, identity[1])
+            send(sock, response)
         except (EOFError, OSError, ValueError):
             pass
         finally:
@@ -113,6 +187,8 @@ class HostService:
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
             operation = document.get("lifecycle")
+            if uid == 0 and document == {"lifecycle": "readiness"}:
+                return {"ready": self.broker_ready.is_set() and self._broker_slots.idle}
             if (uid == 1002 and operation == "select_image"
                     and set(document) == {"lifecycle", "image"}):
                 self.daemons.images.select(document["image"])
@@ -205,8 +281,11 @@ class HostService:
                     sock, _ = listener.accept()
                 except TimeoutError:
                     continue
-                slots = self._broker_slots if peer(sock)[1] == 1002 else self._slots
-                if not slots.acquire(blocking=False):
+                # The broker is an authenticated local peer. Its lifecycle
+                # queue is bounded by broker_lifecycle's deadline, not by the
+                # unrelated transport capacity for router/root connections.
+                slots = None if peer(sock)[1] == 1002 else self._slots
+                if slots is not None and not slots.acquire(blocking=False):
                     send(sock, {"error": "boxhostd connection limit exceeded"})
                     sock.close()
                     continue
@@ -215,7 +294,8 @@ class HostService:
                     try:
                         handler(connection)
                     finally:
-                        capacity.release()
+                        if capacity is not None:
+                            capacity.release()
 
                 threading.Thread(target=run, daemon=True).start()
 

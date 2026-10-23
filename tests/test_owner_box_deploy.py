@@ -57,6 +57,17 @@ def test_deploy_uses_one_control_call_regardless_of_fleet_size():
     assert calls == ["deploy"]
 
 
+def test_acceptance_waits_for_post_drain_host_readiness():
+    events = []
+    receipt, code = driver.run(
+        lambda: events.append("drain") or {"slept": 1, "asleep": 0, "incomplete": 0},
+        lambda: events.append("canary") or True,
+        lambda: events.append("prepare"),
+        lambda: events.append("ready"))
+    assert code == 0 and receipt["canary"] == "passed"
+    assert events == ["prepare", "drain", "ready", "canary"]
+
+
 def test_canary_public_wake_precedes_drain_and_acceptance(router_box):
     origin, state = router_box
     events = []
@@ -178,7 +189,7 @@ def test_driver_cli_writes_one_receipt_and_invokes_canary(tmp_path, monkeypatch)
     assert driver.main(["--image-ref", "synthetic@sha256:" + "a" * 64,
                         "--ssh-target", "synthetic", "--ssh-key", "unused",
                         "--expected-sha", SHA, "--receipt", str(receipt)]) == 0
-    assert len(calls) == 1
+    assert len(calls) == 2  # control, then box-host readiness before public acceptance
     assert json.loads(receipt.read_text())["canary"] == "passed"
     assert set(tmp_path.iterdir()) == {receipt}
 
