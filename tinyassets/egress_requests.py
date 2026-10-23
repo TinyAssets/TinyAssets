@@ -9,10 +9,15 @@ def request_access(detail):
     from tinyassets.broker.client import owner_policy_operation
     from tinyassets.broker.egress import normalize_destination
     from tinyassets.owner_centers import Centers
-    from tinyassets.owner_runtime import current
+    from tinyassets.owner_runtime import admitted
 
-    runtime = current()
-    if runtime is None or detail.get("decision") != "ask":
+    # The owner-runtime boundary admits this process. A router caller has no
+    # request home, so the boundary refusal leaves the broker error unchanged.
+    try:
+        runtime = admitted()
+    except PermissionError:
+        return
+    if detail.get("decision") != "ask":
         return
     target = normalize_destination(detail["host"], detail["port"])
     snapshot = owner_policy_operation(runtime.root, runtime.principal, "read")

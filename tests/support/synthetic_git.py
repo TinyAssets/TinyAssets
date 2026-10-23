@@ -128,9 +128,15 @@ def synthetic(tmp_path, monkeypatch):
         seed_owner_admission(tmp_path, principal="alice", center="center")
         identities = OwnerIdentities(tmp_path / ".broker/state/owner-identities.db",
                                      plans=Plans(tmp_path))
+    from tinyassets.broker.policy import PolicyStore
+
+    # N10 fail-closed: the git bridge opens only after the one-time open policy.
+    policy_store = PolicyStore(tmp_path, identities)
+    policy_store.bootstrap_owner("alice")
     server = BrokerServer(ledger_for=ledger, dispatch_for=lambda *_: dispatch,
                           ops=OpStore(tmp_path / "ops.db"), fence=fence, roles={os.getuid(): OWNER},
-                          owner_identities=identities, data_root=tmp_path)
+                          owner_identities=identities, policy_store=policy_store,
+                          data_root=tmp_path)
     path = tmp_path / "b.sock"
     loop = asyncio.new_event_loop()
     listener = loop.run_until_complete(server.serve(path))
