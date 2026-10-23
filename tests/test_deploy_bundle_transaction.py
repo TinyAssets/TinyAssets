@@ -1603,6 +1603,133 @@ def test_restart_stack_failure_leaves_bundle_dirty(box: Box, post_deploy):
     assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "old\n"
 
 
+def _write_cutover_state(box: Box, state: str) -> None:
+    directory = box.state_dir / "cutover"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "state.json").write_text(
+        json.dumps({"state": state}) + "\n", encoding="utf-8",
+    )
+
+
+def _daemon_compose_ups(calls: list[str]) -> list[str]:
+    return [
+        line for line in calls
+        if "compose" in line and " up " in line and " daemon " in f" {line} "
+    ]
+
+
+def test_dirty_bundle_still_refuses_without_recovery(box: Box):
+    """A forward deploy with no recovery flag still refuses bundle-dirty."""
+    box.dirty.write_text(str(box.snapshots / "interrupted") + "\n", encoding="utf-8")
+    _write_cutover_state(box, "consumed")
+    box.stage_bundle()
+    before = box.live()
+
+    refused = box.run(NEW_IMAGE)
+
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert _result(refused) == "bundle_dirty"
+    assert "recovering dirty runtime bundle before forward deploy" not in refused.stdout
+    assert box.dirty.exists()
+    assert box.live() == before
+    assert "compose up" not in box.docker_calls_text()
+
+
+def test_recover_dirty_bundle_restores_files_then_deploys(box: Box):
+    """Consumed cutover: restore the dirty snapshot files, then install forward.
+
+    Recovery must not start OLD_IMAGE. The forward deploy snapshots the
+    restored baseline, so a later failure restores that snapshot.
+    """
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+    assert failed.returncode == 3, failed.stdout + failed.stderr
+    assert _result(failed) == "rollback_failed"
+    original = box.dirty.read_text(encoding="utf-8").strip()
+    assert original
+    assert box.live()["compose"] == OLD_COMPOSE
+    _write_cutover_state(box, "consumed")
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[], up_fail_images=[])
+    marked = len(box.docker_calls_text().splitlines())
+
+    recovered = box.run(NEW_IMAGE, RECOVER_DIRTY_BUNDLE="1", **host_env)
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert _result(recovered) == "deployed"
+    assert "recovering dirty runtime bundle before forward deploy" in recovered.stdout
+    assert f"restoring runtime bundle from {original}" in recovered.stdout
+    assert "mode: --restore-bundle" not in recovered.stdout
+    assert not box.dirty.exists()
+    assert box.live()["compose"] != OLD_COMPOSE
+    assert (box.stage / "compose.yml").read_text(encoding="utf-8") == box.live()["compose"]
+    assert box.pointer.read_text(encoding="utf-8").strip() != original
+    calls = box.docker_calls_text().splitlines()[marked:]
+    assert len(_daemon_compose_ups(calls)) == 1
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == NEW_IMAGE
+
+
+def test_recover_dirty_bundle_exit_restores_the_forward_snapshot(box: Box):
+    """A forward candidate that fails after install restores the new snapshot."""
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+    assert _result(failed) == "rollback_failed", failed.stdout + failed.stderr
+    original = box.dirty.read_text(encoding="utf-8").strip()
+    _write_cutover_state(box, "consumed")
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[], up_fail_images=[], box_layout_read_rc=1)
+
+    recovered = box.run(NEW_IMAGE, RECOVER_DIRTY_BUNDLE="1", **host_env)
+
+    assert recovered.returncode != 0, recovered.stdout + recovered.stderr
+    restoring = [
+        line for line in recovered.stderr.splitlines()
+        if "post-install failure: restoring" in line
+    ]
+    assert len(restoring) == 1, recovered.stderr
+    assert original not in restoring[0]
+    assert box.live()["compose"] == OLD_COMPOSE
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text(
+        encoding="utf-8",
+    ) == "old\n"
+    assert not box.dirty.exists()
+
+
+def test_recover_dirty_bundle_refuses_pre_traffic_cutover(box: Box):
+    """pre_traffic is still pending: recovery must not legitimize that tree."""
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+    assert _result(failed) == "rollback_failed", failed.stdout + failed.stderr
+    assert box.dirty.exists()
+    _write_cutover_state(box, "pre_traffic")
+    volume = box.root / "default-data-volume"
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-box"}\n',
+        encoding="utf-8",
+    )
+    box.set_docker_state(
+        unhealthy_images=[],
+        up_fail_images=[],
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+            OLD_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+        },
+    )
+    host_env = _stage_required_host_bundle(box)
+    before = box.live()
+
+    refused = box.run(NEW_IMAGE, RECOVER_DIRTY_BUNDLE="1", **host_env)
+
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert _result(refused) == "bundle_dirty"
+    assert "recovering dirty runtime bundle before forward deploy" not in refused.stdout
+    assert box.dirty.exists()
+    assert box.live() == before
+
+
 def test_restore_bundle_clears_dirty_marker_and_stops_broker(box: Box):
     """``--restore-bundle`` clears ``bundle-dirty`` after it converges.
 

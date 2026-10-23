@@ -1,25 +1,31 @@
 """CI FIXTURE ONLY: simulated process admission for image protocol checks.
 
 Mounted read-only by docker-build.yml, never copied into a release image.
-The separate unmodified-image test on layout-2 must refuse with exit 78. This harness
-proves the image's HTTP/auth/catalog wiring, not actual cloud provenance.
+The unmodified-image step runs /usr/local/libexec/ta-box-entry.py and refuses
+a non-owner-box marker (RuntimeError, process exit 1). This harness proves
+the image's HTTP/auth/catalog wiring, not actual cloud provenance.
 """
 
 import runpy
 import sys
-from pathlib import Path
 
-# Exercise the real fresh-volume bootstrap before any application import.
-# Only cloud provenance is simulated, after PID1 has retired its authority.
+# Load the image entry the Dockerfile CMD execs. runpy sets __name__ to
+# "<run_path>", so main() does not start the broker. The protocol smoke
+# serves universe_server itself after simulated provenance.
 if __name__ == "__main__":
-    launch = runpy.run_path("/usr/local/libexec/ta-launch.py")
-    launch["boot"](launch)
+    entry = runpy.run_path("/usr/local/libexec/ta-box-entry.py")
+    if not callable(entry.get("check_layout")) or not callable(entry.get("main")):
+        raise RuntimeError(
+            "image entry /usr/local/libexec/ta-box-entry.py has no layout gate"
+        )
     sys.path.insert(0, "/app")
 
 import tinyassets.platform_runtime_provenance as provenance
 
 
 def main() -> None:
+    from pathlib import Path
+
     module_path = Path(provenance.__file__).resolve()
     if Path("/app/tinyassets").resolve() not in module_path.parents:
         raise RuntimeError("fixture must import the built image's runtime")
