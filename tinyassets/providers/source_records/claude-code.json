@@ -98,7 +98,7 @@
     }
   },
   "state": {
-    "location": "owner_box",
+    "location": "broker",
     "paths": [
       ".claude/.credentials.json"
     ]

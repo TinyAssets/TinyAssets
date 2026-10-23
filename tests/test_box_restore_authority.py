@@ -966,3 +966,11 @@ def test_recovery_tick_returns_while_per_owner_deletion_is_blocked(startup, monk
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')
+
+
+def test_platform_recovery_resets_native_custody(platform):
+    target = platform / ".broker/accounts/synthetic/credentials/.subscription-state.json"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"fixture":"stale token"}')
+    recovery.reset_credentials(platform, now=2000000000)
+    assert not target.exists()

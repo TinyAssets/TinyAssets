@@ -59,35 +59,10 @@ def connected_sources():
 
 
 def disconnect(source_id):
-    """Remove one subscription source's login and owner-local installation.
+    """Cancel native sign-in and erase broker custody and local connection."""
+    from tinyassets.providers.subscription_runtime import disconnect_source
 
-    Only the login files the source's own record declares are removed, and only
-    inside the owner's box. The provider account itself is unchanged.
-    """
-    import shutil
-
-    from tinyassets.owner_runtime import current
-    from tinyassets.providers.subscription_source import sources
-
-    home = current().root
-    doc = sources(home)[source_id]
-    resolved_home = home.resolve()
-    for path in doc["state"]["paths"]:
-        target = (home / path).resolve()
-        if not target.relative_to(resolved_home).parts:
-            raise ValueError("login state cannot be the owner home")
-        if target.is_dir():
-            shutil.rmtree(target)
-        elif target.is_file():
-            target.unlink()
-    directory = home / ".ta-cli" / doc["id"]
-    if not directory.resolve().relative_to(resolved_home).parts:
-        raise ValueError("CLI installation cannot be the owner home")
-    if directory.is_symlink():
-        directory.unlink()
-    elif directory.exists():
-        shutil.rmtree(directory)
-    return {"status": "disconnected", "source_id": doc["id"]}
+    return disconnect_source(source_id)
 
 
 async def handle(request):

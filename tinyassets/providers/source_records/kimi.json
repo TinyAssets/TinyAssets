@@ -89,7 +89,7 @@
     }
   },
   "state": {
-    "location": "owner_box",
+    "location": "broker",
     "paths": [
       ".kimi-code/credentials/kimi-code.json",
       ".kimi-code/config.toml"

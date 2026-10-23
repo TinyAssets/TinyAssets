@@ -141,6 +141,7 @@ def reset_credentials(staged, now):
     for pattern in (
         ".runtime/app_refresh_sessions/*.json",
         ".broker/accounts/*/credentials/.credential-vault.json",
+        ".broker/accounts/*/credentials/.subscription-state.json",
     ):
         for path in staged.glob(pattern):
             _safe(staged, path.relative_to(staged)).unlink()

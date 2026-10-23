@@ -35,7 +35,7 @@ def test_pending_login_cancels_without_blocking_and_page_can_retry(
         raise OwnerProcessCancelled("cancelled")
 
     runtime = SimpleNamespace(
-        image_install=True, install=lambda: None, lock=nullcontext,
+        image_install=True, install=lambda: None, lease=lambda **kw: nullcontext(),
         authenticated=lambda: False, cli_login={"login": {"argv": []}},
         argv=lambda args: args, run=run,
         accept=lambda: pytest.fail("cancelled login was accepted"),

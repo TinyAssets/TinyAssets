@@ -261,3 +261,7 @@ def erase_owner(data_root, principal):
     namespace = custody_namespace(data_root, principal)
     with vault_lock(namespace):
         credential_vault_path(namespace).unlink(missing_ok=True)
+        from tinyassets.broker.subscription_custody import FILENAME
+
+        (_credential_root(namespace) / FILENAME).unlink(missing_ok=True)
+        _fsync_directory(_credential_root(namespace))

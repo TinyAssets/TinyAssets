@@ -31,6 +31,7 @@ class SubscriptionRuntime:
         if self.owner is None:
             raise PermissionError("subscription CLI requires an admitted owner box")
         self.home = self.owner.root
+        self._local = threading.local()
         self.source = sources(self.home)[source_id]
         self.cli_login = self.source.sign_in["cli_login"]
         self.directory = self.home / ".ta-cli" / source_id
@@ -62,12 +63,19 @@ class SubscriptionRuntime:
 
     @contextlib.contextmanager
     def lock(self):
-        import fcntl
+        from tinyassets.providers.subscription_lease import source_lock
 
-        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (self.directory / ".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with source_lock(self):
             yield
+
+    def lease(self, *, login=False, cancelled=None):
+        from tinyassets.providers.subscription_lease import lease
+
+        return lease(self, login=login, cancelled=cancelled)
+
+    @property
+    def state_home(self):
+        return getattr(self._local, "home", None) or self.home
 
     @contextlib.contextmanager
     def environment(self, phase):
@@ -109,11 +117,13 @@ class SubscriptionRuntime:
             proxy.close()
 
     def run(self, argv, *, phase, timeout=120, **kwargs):
+        if phase != "registry" and self.state_home == self.home:
+            raise PermissionError("native execution requires a credential lease")
         with self.environment(phase) as env:
             env.update({key: self.argv([value])[0]
                         for key, value in self.cli_login.get("env", {}).items()})
             # Definition environment cannot move HOME or bypass the proxy.
-            env.update({"HOME": str(self.home)})
+            env.update({"HOME": str(self.state_home), "TMPDIR": str(self.state_home)})
             return self.owner.tools.run(
                 argv,
                 cwd=self.home,
@@ -124,8 +134,8 @@ class SubscriptionRuntime:
             )
 
     def argv(self, template, **values):
-        values = {"bin": str(self.binary), "home": str(self.home),
-                  "config": str(self.directory / "config"), **values}
+        values = {"bin": str(self.binary), "home": str(self.state_home),
+                  "config": str(self.state_home / ".ta-cli" / self.source.id / "config"), **values}
         # Replace only known placeholders; literal JSON argv is common. Values
         # are substituted once, so braces in a prompt cannot become directives.
         pattern = re.compile(r"\{(" + "|".join(values) + r")\}")
@@ -137,6 +147,7 @@ class SubscriptionRuntime:
 
     def install(self):
         with self.lock():
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             install = self.cli_login["install"]
             for name, content in self.cli_login.get("files", {}).items():
                 target = self.directory / "config" / name
@@ -311,13 +322,25 @@ class SubscriptionRuntime:
                 raise SubscriptionError("CLI lock contains an unverified package or registry")
 
     def authenticated(self):
+        from tinyassets.providers.subscription_lease import capture, custody
+
+        if self.state_home != self.home:
+            return self._authenticated()
         if not self.binary.is_file():
             return False
-        if not all((self.home / path).exists() for path in self.source["state"]["paths"]):
+        if not custody(self, "read")["state"] and not capture(self, self.home):
+            return False
+        with self.lease():
+            return self._authenticated()
+
+    def _authenticated(self):
+        if not self.binary.is_file():
+            return False
+        if not all((self.state_home / path).is_file() for path in self.source["state"]["paths"]):
             return False
         for check in self.cli_login["login"].get("state_checks", []):
             try:
-                value = json.loads((self.home / check["path"]).read_text())
+                value = json.loads((self.state_home / check["path"]).read_text())
                 if any(not select(value, key) for key in check.get("present", [])):
                     return False
                 if any(select(value, key) != expected
@@ -339,7 +362,7 @@ class SubscriptionRuntime:
                 return False
             if any(select(value, path) != item for path, item in expected.items()):
                 return False
-        return all((self.home / path).exists() for path in self.source["state"]["paths"])
+        return all((self.state_home / path).is_file() for path in self.source["state"]["paths"])
 
     def accept(self):
         """Bind this explicit login to the exact source the owner connected."""
@@ -349,8 +372,16 @@ class SubscriptionRuntime:
             "source": digest(self.source), "incarnation": secrets.token_hex(32)}))
 
     def require_accepted(self):
+        with self.lock():
+            self._require_accepted()
+
+    def _require_accepted(self):
         try:
             marker = json.loads((self.directory / "connection").read_text())
+            if marker["source"] != digest(self.source):
+                from tinyassets.providers.subscription_lease import upgrade_connection
+
+                upgrade_connection(self, marker)
             if marker["source"] == digest(self.source) and marker["incarnation"]:
                 return
         except (ValueError, TypeError, KeyError, OSError):
@@ -358,7 +389,13 @@ class SubscriptionRuntime:
         raise PermissionError("source changed or has not been accepted; reconnect required")
 
     def invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
-        self.require_accepted()
+        with self.lock():
+            self.require_accepted()
+            with self.lease():
+                return self._invoke(prompt, system, model, should_cancel=should_cancel,
+                                    timeout=timeout)
+
+    def _invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
         if not self.authenticated():
             raise SubscriptionError("subscription sign-in required")
         invoke = self.source["invoke"]["cli"]
@@ -484,7 +521,7 @@ class Login:
         try:
             with activity.pending_login(self.cancelled):
                 self.runtime.install()
-                with self.runtime.lock():
+                with self.runtime.lease(login=True, cancelled=self.cancelled):
                     if self.cancelled.is_set():
                         raise SubscriptionError("native login cancelled")
                     if not self.runtime.authenticated():
@@ -514,9 +551,12 @@ class Login:
                     with activity.lock:
                         if self.cancelled.is_set():
                             raise SubscriptionError("native login cancelled")
+                        from tinyassets.providers.subscription_lease import commit_login
+
+                        commit_login(self.runtime)
                         self.runtime.accept()
-                        self.status = "connected"
                         activity.pending_logins.discard(self.cancelled)
+                self.status = "connected"
         except Exception:
             # CLI output can contain credentials; only safe state crosses the page boundary.
             self.status = "cancelled" if self.cancelled.is_set() else "failed"
@@ -526,6 +566,25 @@ class Login:
 
 _logins = {}
 _logins_lock = threading.Lock()
+
+
+def disconnect_source(source_id):
+    from tinyassets.owner_runtime import admitted
+    from tinyassets.providers.subscription_lease import disconnect
+
+    owner = admitted()
+    # Keep begin outside this boundary until cancelled processes have exited and
+    # the broker entry and local connection have both gone.
+    with _logins_lock:
+        pending = [login for login in _logins.values()
+                   if login.runtime.owner is owner and login.runtime.source.id == source_id]
+        for login in pending:
+            login.cancelled.set()
+        for login in pending:
+            login.thread.join()
+            _logins.pop(login.handle, None)
+        disconnect(SubscriptionRuntime(source_id))
+    return {"status": "disconnected", "source_id": source_id}
 
 
 def login_operation(action, *, source_id=None, flow=None, code=None):

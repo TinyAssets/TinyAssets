@@ -115,7 +115,7 @@
     }
   },
   "state": {
-    "location": "owner_box",
+    "location": "broker",
     "paths": [
       ".codex/auth.json"
     ]
