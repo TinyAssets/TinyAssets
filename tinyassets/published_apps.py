@@ -58,9 +58,6 @@ def owner_for(root, slug: str) -> str | None:
 
 def bind(root, owner: str, slug: str, name: str) -> dict:
     """Record one slug for this owner. Another owner's slug is refused."""
-    from tinyassets.owner_runtime import refuse_router_store
-
-    refuse_router_store("published-apps")
     slug = validate_slug(slug)
     if not isinstance(owner, str) or not owner:
         raise ValueError("invalid app publication")
@@ -77,9 +74,6 @@ def bind(root, owner: str, slug: str, name: str) -> dict:
 
 
 def unbind(root, owner: str, slug: str) -> dict:
-    from tinyassets.owner_runtime import refuse_router_store
-
-    refuse_router_store("published-apps")
     slug = validate_slug(slug)
     root = Path(root)
     with _LOCK:

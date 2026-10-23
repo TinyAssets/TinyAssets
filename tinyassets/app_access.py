@@ -70,13 +70,14 @@ def private_tool_refusal() -> str | None:
     from tinyassets.auth.middleware import current_identity_or_none
     from tinyassets.owner_runtime import current
 
-    runtime = current()
-    if runtime is None:
+    try:
+        principal = current().principal
+    except AttributeError:
         return None
     identity = current_identity_or_none()
     if identity is None:
         return None
     caller = (identity.metadata or {}).get("caller_user_id")
-    if not isinstance(caller, str) or caller == runtime.principal:
+    if not isinstance(caller, str) or caller == principal:
         return None
     return json.dumps({"error": "private_surface", "outcome": "not_sent"})

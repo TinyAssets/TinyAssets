@@ -107,7 +107,7 @@ class OwnerRouter:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        from tinyassets.auth.middleware import current_identity_or_none
+        from tinyassets.auth.middleware import current_identity_or_none, published_box_owner
         from tinyassets.router_traffic import admits
         from tinyassets.routing_snapshot import snapshot
         from tinyassets.storage import data_dir
@@ -156,16 +156,9 @@ class OwnerRouter:
 
                 identity = replace(identity, metadata={**identity.metadata,
                                                        "router_owner_session": session})
-        box_owner = identity.user_id
         try:
-            from tinyassets.app_access import app_slug
-            from tinyassets.published_apps import owner_for
-
-            slug = app_slug(scope["path"])
-            if slug is not None:
-                published = await run_in_threadpool(owner_for, data_dir(), slug)
-                if published:
-                    box_owner = published
+            box_owner = await run_in_threadpool(
+                published_box_owner, data_dir(), scope["path"], identity.user_id)
             try:
                 route = await run_in_threadpool(self.resolver, box_owner)
             except LookupError:
@@ -181,7 +174,10 @@ class OwnerRouter:
                 scope, receive, send)
         except (OSError, RuntimeError):
             return await _unavailable()(scope, receive, send)
-        await forward(scope, receive, send, identity, route, box_owner=box_owner)
+        if box_owner != identity.user_id:
+            await forward(scope, receive, send, identity, route, box_owner=box_owner)
+        else:
+            await forward(scope, receive, send, identity, route)
 
 
 def _inbound_query(scope, token: str) -> bytes:
@@ -396,7 +392,11 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True,
             return await _unavailable()(scope, receive, send)
         # ConnectError occurs before HTTP headers or the request body are sent.
         # Wake replies contain no route: always select the current projection.
-        await forward(scope, receive, send, identity, route, cold=False, box_owner=owner)
+        if box_owner is not None:
+            await forward(
+                scope, receive, send, identity, route, cold=False, box_owner=owner)
+        else:
+            await forward(scope, receive, send, identity, route, cold=False)
     except httpx.HTTPError:
         if started:
             raise  # A truncated stream must never look like a successful response.
