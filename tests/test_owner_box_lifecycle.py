@@ -513,53 +513,84 @@ def test_slow_owner_execution_does_not_hold_fleet_registry(fleet, monkeypatch, s
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_fifth_broker_connection_gets_explicit_refusal(tmp_path, monkeypatch):
+    """A fifth broker connection is admitted. Lifecycle work is queued with a
+    deadline, so a held registration cannot exhaust the transport pool. The
+    shared pool for every other peer still refuses the next connection."""
     import queue
     import socket
 
     from tinyassets.boxes.control_channel import receive
 
-    service = HostService(None, None, None, None)
+    peers = {"uid": 1002}
     monkeypatch.setattr("tinyassets.boxes.host_service.peer",
-                        lambda sock: (os.getpid(), 1002, 1002))
-    stop, release = threading.Event(), threading.Event()
-    listening = threading.Event()
-    entered = queue.Queue()
-    path = tmp_path / "host.sock"
+                        lambda sock: (os.getpid(), peers["uid"], peers["uid"]))
+    monkeypatch.setattr("tinyassets.boxes.host_service.os.chown", lambda *_: None)
+    state = {"listening": threading.Event()}
     listen = socket.socket.listen
 
     def ready(sock, backlog):
         listen(sock, backlog)
-        listening.set()
+        state["listening"].set()
     monkeypatch.setattr(socket.socket, "listen", ready)
 
-    def handler(sock):
-        entered.put(True)
+    def open_clients(service, path, count):
+        stop, release = threading.Event(), threading.Event()
+        entered = queue.Queue()
+
+        def handler(sock):
+            entered.put(True)
+            try:
+                assert release.wait(10)
+            finally:
+                sock.close()
+
+        thread = threading.Thread(target=service.serve, args=(path, 1002, handler, stop))
+        thread.start()
+        clients = []
         try:
-            assert release.wait(10)
-        finally:
-            sock.close()
-    thread = threading.Thread(target=service.serve, args=(path, 1002, handler, stop))
-    thread.start()
-    clients = []
-    try:
-        assert listening.wait(2)
-        for _ in range(4):
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            clients.append(client)
-            client.connect(str(path))
-            entered.get(timeout=2)
-        fifth = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        clients.append(fifth)
-        fifth.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        fifth.settimeout(2)
-        fifth.connect(str(path))
-        assert receive(fifth, (os.getpid(), os.geteuid(), os.getegid())) == {
-            "error": "boxhostd connection limit exceeded"}
-        assert entered.empty()
-    finally:
+            assert state["listening"].wait(2)
+            for _ in range(count):
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                clients.append(client)
+                client.connect(str(path))
+                assert entered.get(timeout=2) is True
+            return stop, release, entered, thread, clients
+        except Exception:
+            release.set()
+            stop.set()
+            for client in clients:
+                client.close()
+            thread.join(3)
+            raise
+
+    def finish(stop, release, thread, clients):
         release.set()
         stop.set()
         for client in clients:
             client.close()
         thread.join(3)
-    assert not thread.is_alive()
+        assert not thread.is_alive()
+
+    service = HostService(None, None, None, None)
+    broker = open_clients(service, tmp_path / "broker.sock", 5)
+    try:
+        assert broker[2].empty()
+    finally:
+        finish(*broker[:2], *broker[3:])
+    peers["uid"] = 1001
+    state["listening"] = threading.Event()
+    limited = HostService(None, None, None, None)
+    limited._slots = threading.BoundedSemaphore(4)
+    stop, release, entered, thread, clients = open_clients(
+        limited, tmp_path / "root.sock", 4)
+    try:
+        fifth = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        clients.append(fifth)
+        fifth.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        fifth.settimeout(2)
+        fifth.connect(str(tmp_path / "root.sock"))
+        assert receive(fifth, (os.getpid(), os.geteuid(), os.getegid())) == {
+            "error": "boxhostd connection limit exceeded"}
+        assert entered.empty()
+    finally:
+        finish(stop, release, thread, clients)
