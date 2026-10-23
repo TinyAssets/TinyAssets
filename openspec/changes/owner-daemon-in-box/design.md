@@ -1924,8 +1924,6 @@ verifies the pinned package and registry closure, and uses only `npm ci` with a
 minimal environment and isolated npm configuration. Owner runtime installation
 and credential custody are unchanged by this lane.
 
-**Integration dependency:** the subscription records are reserved for lane A.
-Their four digest-only additions are prepared in `subscription-lock-digests.patch`
-and have not been applied. The lead/lane A must apply that patch before building
-an image from this change; a missing digest intentionally refuses the build.
-The patch changes no custody fields. Delete the patch after integration.
+The four subscription records include the committed lock digests. A missing or
+mismatched digest refuses the image build. Legacy acceptance upgrades recognize
+the records before the digest addition and custody-location change.

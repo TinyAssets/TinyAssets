@@ -174,11 +174,16 @@ def disconnect(runtime):
 
 
 def upgrade_connection(runtime, marker):
-    """Only the custody-location change may preserve a legacy acceptance."""
+    """Preserve acceptance across the custody move and added dependency digest."""
     from tinyassets.providers.subscription_source import digest
 
     old = runtime.source.document()
     old["state"]["location"] = "owner_box"
-    if marker.get("source") == digest(old):
+    accepted = {digest(old)}
+    old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)
+    accepted.add(digest(old))
+    old["state"]["location"] = "broker"
+    accepted.add(digest(old))
+    if marker.get("source") in accepted:
         marker["source"] = digest(runtime.source)
         (runtime.directory / "connection").write_text(json.dumps(marker))

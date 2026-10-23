@@ -47,6 +47,27 @@ def test_broker_bounds_owner_custody(connected, monkeypatch):
              state={"long-path-" + "x" * 100: "eA=="})
 
 
+def test_connection_upgrade_accepts_record_before_lock_digest(connected):
+    from tinyassets.providers.source_record import SourceRecord
+    from tinyassets.providers.subscription_source import digest
+
+    old = connected.source.document()
+    old["state"]["location"] = "owner_box"
+    old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)
+    current = connected.source.document()
+    current["sign_in"]["cli_login"]["install"]["lock_sha256"] = "a" * 64
+    connected.source = SourceRecord.parse(current)
+    marker = connected.directory / "connection"
+    marker.write_text(json.dumps({"source": digest(old), "incarnation": "preserved"}))
+    connected.require_accepted()
+    assert json.loads(marker.read_text()) == {
+        "source": digest(connected.source), "incarnation": "preserved"}
+    old["sign_in"]["cli_login"]["install"]["version"] = "0.0.1"
+    marker.write_text(json.dumps({"source": digest(old), "incarnation": "preserved"}))
+    with pytest.raises(PermissionError):
+        connected.require_accepted()
+
+
 def test_legacy_login_moves_to_custody_and_status_uses_tmpfs(connected, monkeypatch):
     runtime = connected
     old = runtime.source.document()
