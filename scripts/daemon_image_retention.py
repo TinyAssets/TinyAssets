@@ -276,8 +276,19 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
     ], sorted(protected)
 
 
-def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage, image_ref=""):
-    """Check root and Docker's actual image filesystem, after retention."""
+def check_pull_headroom(
+    docker=None, environ=None, disk_fn=shutil.disk_usage, image_ref="", *,
+    repair_host_root: Path | None = None,
+):
+    """Check root and Docker's actual image filesystem, after retention.
+
+    ``repair_host_root`` is the fixture root for tests. Production repairs the
+    real host only when this process is root, which is the deploy prune step.
+    """
+    if repair_host_root is not None:
+        repair_host_symlink_modes(host_root=Path(repair_host_root))
+    elif hasattr(os, "geteuid") and os.geteuid() == 0:
+        repair_host_symlink_modes()
     docker = docker or Docker(time.monotonic() + 30)
     env = os.environ if environ is None else environ
     if image_ref:
@@ -340,17 +351,290 @@ def _grant_harness_write(entry):
             _chmod_dir(os.path.join(dirpath, dirname))
 
 
-def prune_box_harnesses(daemon, configured, refs, root=None):
+# Host paths a harness symlink must never reopen. The old walk chmod'd through
+# absolute links; these trees stay at whatever mode the operator set.
+_REPAIR_PROTECTED = (
+    "/etc/tinyassets",
+    "/etc/ssh",
+    "/etc/ssl/private",
+    "/root",
+    "/home",
+    "/var/lib/docker",
+    "/var/lib/tinyassets-deploy",
+)
+_REPAIR_DEVICES = (
+    "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
+    "/dev/urandom", "/dev/tty", "/dev/ptmx",
+)
+_REPAIR_STICKY = ("/run/lock", "/tmp", "/var/tmp")
+_REPAIR_SYSTEM_DIRS = (
+    "/run", "/etc", "/etc/ssl", "/etc/ssl/certs", "/etc/alternatives",
+    "/var", "/var/lib", "/var/spool", "/opt", "/usr",
+)
+_REPAIR_WALK = (
+    "/usr/bin", "/usr/sbin", "/usr/libexec", "/usr/local/bin",
+    "/usr/local/sbin", "/usr/local/libexec", "/usr/lib", "/usr/share",
+    "/etc/alternatives", "/etc/ssl/certs",
+)
+_REPAIR_DIR_ROOTS = ("/usr", "/etc/ssl/certs", "/etc/alternatives")
+_REPAIR_LINK_EXEC = (
+    "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/", "/usr/libexec/",
+    "/usr/local/bin/", "/usr/local/sbin/", "/usr/local/libexec/", "/opt/",
+)
+_REPAIR_DIRECT_EXEC = (
+    "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+    "/usr/local/bin/", "/usr/local/sbin/",
+)
+_REPAIR_DIRECT_ROOTS = (
+    "/usr/bin", "/usr/sbin", "/usr/libexec", "/usr/local/bin",
+    "/usr/local/sbin", "/usr/local/libexec", "/usr/lib", "/usr/share",
+    "/etc/ssl/certs",
+)
+_REPAIR_DIRECT_FILES = ("/etc/environment", "/etc/machine-id", "/etc/ssl/openssl.cnf")
+
+
+def _repair_real_host(host_root: Path) -> bool:
+    return os.path.realpath(host_root) == "/"
+
+
+def _repair_fs(host_root: Path, logical: str) -> str:
+    if _repair_real_host(host_root):
+        return logical
+    return os.path.join(str(host_root), logical.lstrip("/"))
+
+
+def _repair_logical(host_root: Path, fs_path: str) -> str:
+    if _repair_real_host(host_root):
+        return fs_path
+    relative = os.path.relpath(fs_path, host_root)
+    return "/" if relative == "." else "/" + relative
+
+
+def _repair_protected(logical: str) -> bool:
+    path = os.path.normpath(logical)
+    for prefix in _REPAIR_PROTECTED:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _repair_under(logical: str, roots: tuple[str, ...]) -> bool:
+    path = os.path.normpath(logical)
+    for root in roots:
+        base = root.rstrip("/") or "/"
+        if path == base or path.startswith(base + "/"):
+            return True
+    return False
+
+
+def _repair_resolve(host_root: Path, target: str) -> str | None:
+    """Resolve an absolute symlink target. Fixture roots stay inside host_root."""
+    if not target.startswith("/"):
+        return None
+    if _repair_real_host(host_root):
+        try:
+            resolved = os.path.realpath(target)
+        except OSError:
+            return None
+        return resolved if os.path.exists(resolved) else None
+    logical = os.path.normpath(target)
+    seen: set[str] = set()
+    while len(seen) < 32:
+        if logical in seen:
+            return None
+        seen.add(logical)
+        fs_path = _repair_fs(host_root, logical)
+        try:
+            if os.path.islink(fs_path):
+                nxt = os.readlink(fs_path)
+                if nxt.startswith("/"):
+                    logical = os.path.normpath(nxt)
+                else:
+                    logical = os.path.normpath(os.path.join(os.path.dirname(logical), nxt))
+                continue
+            if os.path.lexists(fs_path):
+                return logical
+        except OSError:
+            return None
+        return None
+    return None
+
+
+def _repair_file_mode(logical: str, fs_path: str, *, direct: bool) -> int:
+    prefixes = _REPAIR_DIRECT_EXEC if direct else _REPAIR_LINK_EXEC
+    if any(os.path.normpath(logical).startswith(prefix) for prefix in prefixes):
+        return 0o755
+    try:
+        with open(fs_path, "rb") as handle:
+            magic = handle.read(4)
+    except OSError:
+        return 0o644
+    if magic.startswith(b"\x7fELF") or magic.startswith(b"#!"):
+        return 0o755
+    return 0o644
+
+
+def repair_host_symlink_modes(
+    harness_root: Path = BOX_HARNESS_ROOT, *, host_root: Path = Path("/"),
+) -> list[str]:
+    """Undo host modes changed through absolute symlinks in a harness rootfs.
+
+    ``os.chmod`` follows links. An earlier prune ran as root inside
+    ``harness-*`` and set host targets of absolute links to ``0o600`` (files
+    and devices) or ``0o700`` (directories). ``/usr/bin/awk`` then failed with
+    EACCES even for root. ``host_root`` is ``/`` on the droplet and a temp
+    tree in tests, so the repair never resolves a fixture link against the
+    machine running the test.
+    """
+    host_root = Path(host_root)
+    harness_root = Path(harness_root)
+    repaired: list[str] = []
+
+    def _chmod(logical: str, fs_path: str, mode: int) -> None:
+        try:
+            os.chmod(fs_path, mode)
+        except OSError:
+            return
+        repaired.append(logical)
+
+    def _restore_named_dir(logical: str, mode: int, allowed: tuple[int, ...]) -> None:
+        fs_path = _repair_fs(host_root, logical)
+        if os.path.islink(fs_path):
+            return
+        try:
+            st = os.lstat(fs_path)
+        except OSError:
+            return
+        if stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) in allowed:
+            _chmod(logical, fs_path, mode)
+
+    for logical in _REPAIR_DEVICES:
+        fs_path = _repair_fs(host_root, logical)
+        try:
+            st = os.stat(fs_path)
+        except OSError:
+            continue
+        if stat.S_ISCHR(st.st_mode) and stat.S_IMODE(st.st_mode) != 0o666:
+            _chmod(logical, fs_path, 0o666)
+    for logical in _REPAIR_STICKY:
+        _restore_named_dir(logical, 0o1777, (0o700, 0o600))
+    for logical in _REPAIR_SYSTEM_DIRS:
+        _restore_named_dir(logical, 0o755, (0o700, 0o600))
+
+    def _restore_regular(logical: str, fs_path: str) -> None:
+        if _repair_protected(logical):
+            return
+        if not (
+            _repair_under(logical, _REPAIR_DIRECT_ROOTS) or logical in _REPAIR_DIRECT_FILES
+        ):
+            return
+        try:
+            st = os.lstat(fs_path)
+        except OSError:
+            return
+        imode = stat.S_IMODE(st.st_mode)
+        if not stat.S_ISREG(st.st_mode) or imode not in (0o600, 0o700):
+            return
+        mode = _repair_file_mode(logical, fs_path, direct=True)
+        # A symlink listed as a directory was chmod'd to 0o700. Only an
+        # executable is restored from that mode; a data file stays put.
+        if imode == 0o700 and mode != 0o755:
+            return
+        _chmod(logical, fs_path, mode)
+
+    def _restore_link(fs_path: str) -> None:
+        try:
+            target = os.readlink(fs_path)
+        except OSError:
+            return
+        if not target.startswith("/"):
+            return
+        logical = _repair_resolve(host_root, target)
+        if logical is None or _repair_protected(logical):
+            return
+        resolved = logical if _repair_real_host(host_root) else _repair_fs(host_root, logical)
+        try:
+            st = os.lstat(resolved)
+        except OSError:
+            return
+        imode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISCHR(st.st_mode) and logical.startswith("/dev/") and imode == 0o600:
+            _chmod(logical, resolved, 0o666)
+        elif stat.S_ISDIR(st.st_mode) and imode in (0o700, 0o600):
+            _chmod(
+                logical, resolved,
+                0o1777 if logical in _REPAIR_STICKY else 0o755,
+            )
+        elif stat.S_ISREG(st.st_mode) and imode in (0o600, 0o700):
+            mode = _repair_file_mode(logical, resolved, direct=False)
+            if imode == 0o700 and mode != 0o755:
+                return
+            _chmod(logical, resolved, mode)
+
+    def _restore_walk_dir(logical: str, fs_path: str) -> None:
+        if _repair_protected(logical) or os.path.islink(fs_path):
+            return
+        if not _repair_under(logical, _REPAIR_DIR_ROOTS):
+            return
+        try:
+            st = os.lstat(fs_path)
+        except OSError:
+            return
+        if stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) in (0o700, 0o600):
+            _chmod(logical, fs_path, 0o755)
+
+    for logical in _REPAIR_DIRECT_FILES:
+        _restore_regular(logical, _repair_fs(host_root, logical))
+
+    walk_roots = [_repair_fs(host_root, logical) for logical in _REPAIR_WALK]
+    if harness_root.is_dir():
+        for entry in sorted(harness_root.iterdir(), key=lambda item: item.name):
+            if (
+                entry.name.startswith("harness-")
+                and entry.is_dir()
+                and not entry.is_symlink()
+            ):
+                walk_roots.append(str(entry))
+    for walk_root in walk_roots:
+        if not os.path.isdir(walk_root) or os.path.islink(walk_root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(walk_root, followlinks=False):
+            logical_dir = _repair_logical(host_root, dirpath)
+            _restore_walk_dir(logical_dir, dirpath)
+            for name in dirnames:
+                path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    _restore_link(path)
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    _restore_link(path)
+                else:
+                    _restore_regular(_repair_logical(host_root, path), path)
+    return repaired
+
+
+def prune_box_harnesses(
+    daemon, configured, refs, root=None, *, repair_host=False, host_root=None,
+):
     """Remove unreferenced box rootfs copies and abandoned extract stages.
 
     ``harness-current``, the running daemon image, and the configured image
     stay. Every other ``harness-<64 hex>`` directory and ``.harness-stage.*``
     directory is a full unshared ``tar -x`` and is removed.
+
+    On the real host (or when a test passes ``repair_host=True``), restore
+    host modes that an earlier chmod followed out of these trees. That runs
+    before the trees are deleted, so their absolute symlinks are still evidence.
     """
     if root is None:
         root = Path(os.environ.get("TINYASSETS_BOX_HARNESS_ROOT", str(BOX_HARNESS_ROOT)))
     else:
         root = Path(root)
+    if repair_host or root == BOX_HARNESS_ROOT:
+        repair_host_symlink_modes(
+            root, host_root=Path("/") if host_root is None else Path(host_root),
+        )
     if not root.is_dir():
         return []
     keep = {"harness-current"}
@@ -677,6 +961,12 @@ def main(argv=None):
     parser.add_argument("--image-ref", default="")
     options = parser.parse_args(argv)
     try:
+        # Repair before retain(). A stopped daemon raises
+        # current_daemon_unavailable inside retain and would otherwise skip
+        # the host-mode repair on --apply --prepare-pull.
+        if ((options.apply or options.prepare_pull or options.check_headroom)
+                and hasattr(os, "geteuid") and os.geteuid() == 0):
+            repair_host_symlink_modes()
         if options.check_headroom:
             check_pull_headroom(image_ref=options.image_ref)
             print(json.dumps(dict(status="pull_headroom_ok")))

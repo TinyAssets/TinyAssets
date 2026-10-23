@@ -152,6 +152,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/boxd.py::BoxdCore.read_many": (
         CALL_SCOPED, "one coherent read waits for pending mutations up to busy_wait_s",
     ),
+    "tinyassets/boxes/volumes.py::OwnerVolumes._detach": (
+        CALL_SCOPED,
+        "bounded wait for deferred Linux loop-device teardown after losetup --detach",
+    ),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
         "one verified fence barrier cancels older streams then waits for active "

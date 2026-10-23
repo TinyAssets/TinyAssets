@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
+from collections import namedtuple
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -11,9 +13,12 @@ import pytest
 
 from scripts.daemon_image_retention import (
     Refusal,
+    check_pull_headroom,
     image_refs,
+    main,
     prune_box_harnesses,
     read_receipt,
+    repair_host_symlink_modes,
     retain,
 )
 
@@ -199,3 +204,135 @@ def test_retain_reclaims_harnesses_before_it_returns(tmp_path: Path, monkeypatch
     assert live.is_dir()
     assert stat.S_IMODE(live.stat().st_mode) == 0o555
     assert image_refs([row]) == {REF: IMAGE}
+
+
+def _guard_chmod(monkeypatch, host: Path) -> None:
+    """Refuse a repair that resolves a fixture link onto the machine running it."""
+    root = os.path.realpath(host)
+    real_chmod = os.chmod
+
+    def guarded(path, mode):
+        resolved = os.path.realpath(path)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            raise AssertionError(f"chmod escaped the fixture: {path}")
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(os, "chmod", guarded)
+
+
+def _damaged_host(tmp_path: Path) -> tuple[Path, Path, dict[str, Path]]:
+    host = tmp_path / "host"
+    mawk = host / "usr/bin/mawk"
+    mawk.parent.mkdir(parents=True)
+    mawk.write_bytes(b"\x7fELF" + b"\x00" * 12)
+    mawk.chmod(0o600)
+    nawk = host / "usr/bin/nawk"
+    nawk.write_bytes(b"\x7fELF" + b"\x00" * 12)
+    nawk.chmod(0o700)
+    script = host / "usr/bin/pager"
+    script.write_bytes(b"#!/bin/sh\ntrue\n")
+    script.chmod(0o600)
+    cert = host / "etc/ssl/certs/ca-certificates.crt"
+    cert.parent.mkdir(parents=True)
+    cert.write_bytes(b"not a program\n")
+    cert.chmod(0o600)
+    lib = host / "usr/lib/ssl"
+    lib.mkdir(parents=True)
+    lib.chmod(0o700)
+    secret = host / "etc/ssh/ssh_host_key"
+    secret.parent.mkdir(parents=True)
+    secret.write_bytes(b"secret")
+    secret.chmod(0o600)
+    note = host / "usr/share/doc-note"
+    note.parent.mkdir(parents=True)
+    note.write_bytes(b"not a program\n")
+    note.chmod(0o700)
+    harness_root = host / "opt/tinyassets/boxhostd"
+    leaked = harness_root / ("harness-" + "12" * 32) / "usr/bin"
+    leaked.mkdir(parents=True)
+    (leaked / "awk").symlink_to("/usr/bin/mawk")
+    (leaked / "pager").symlink_to("/usr/bin/pager")
+    (leaked / "certs").symlink_to("/etc/ssl/certs/ca-certificates.crt")
+    (leaked / "ssl").symlink_to("/usr/lib/ssl")
+    (leaked / "sshkey").symlink_to("/etc/ssh/ssh_host_key")
+    return host, harness_root, {
+        "mawk": mawk, "nawk": nawk, "script": script, "cert": cert, "lib": lib,
+        "secret": secret, "note": note,
+    }
+
+
+def test_repair_host_symlink_modes_restores_damaged_targets(tmp_path: Path, monkeypatch):
+    host, harness_root, paths = _damaged_host(tmp_path)
+    _guard_chmod(monkeypatch, host)
+
+    repaired = repair_host_symlink_modes(harness_root, host_root=host)
+
+    assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["script"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["note"].stat().st_mode) == 0o700
+    assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
+    assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["secret"].stat().st_mode) == 0o600
+    assert "/usr/bin/mawk" in repaired
+    assert "/etc/ssl/certs/ca-certificates.crt" in repaired
+    assert "/usr/lib/ssl" in repaired
+    assert "/etc/ssh/ssh_host_key" not in repaired
+
+
+def test_prune_repairs_host_modes_before_deleting_the_harness(tmp_path: Path, monkeypatch):
+    host, harness_root, paths = _damaged_host(tmp_path)
+    _guard_chmod(monkeypatch, host)
+
+    removed = prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=harness_root,
+        repair_host=True, host_root=host,
+    )
+
+    assert removed == ["harness-" + "12" * 32]
+    assert not (harness_root / ("harness-" + "12" * 32)).exists()
+    assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
+    assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["secret"].stat().st_mode) == 0o600
+
+
+def test_check_pull_headroom_repairs_when_asked(tmp_path: Path, monkeypatch):
+    host, _harness_root, paths = _damaged_host(tmp_path)
+    _guard_chmod(monkeypatch, host)
+    usage = namedtuple("Usage", "total used free")(100 * 1024**3, 10 * 1024**3, 90 * 1024**3)
+
+    class Docker:
+        def json(self, *args):
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+    check_pull_headroom(docker=Docker(), disk_fn=lambda _path: usage, repair_host_root=host)
+
+    assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
+    assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+
+
+def test_apply_repairs_host_modes_before_retain_can_refuse(monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "scripts.daemon_image_retention.repair_host_symlink_modes",
+        lambda *args, **kwargs: calls.append("repair") or [],
+    )
+
+    def retain(**kwargs):
+        assert calls == ["repair"]
+        raise Refusal("current_daemon_unavailable")
+
+    monkeypatch.setattr("scripts.daemon_image_retention.retain", retain)
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    assert main(["--apply", "--prepare-pull"]) == 2
+    assert calls == ["repair"]

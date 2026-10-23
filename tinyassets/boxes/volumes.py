@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -211,6 +212,12 @@ class OwnerVolumes:
         for device in devices:
             self._run("losetup", "--detach", device)
         # Linux loop detach can defer even when losetup exits successfully.
+        if devices:
+            deadline = time.monotonic() + 5.0
+            while (remaining := self._loops(uid)) and time.monotonic() < deadline:
+                time.sleep(0.05)
+                for device in remaining:
+                    self._run("losetup", "--detach", device)
         self._detached(uid)
 
     def detach(self, uid: int) -> None:
