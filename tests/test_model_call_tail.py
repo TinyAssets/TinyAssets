@@ -13,6 +13,8 @@ from tinyassets.providers.base import ProviderResponse, UniverseContext
 from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
 from tinyassets.providers.model_policy import ModelRef
 
+pytestmark = pytest.mark.verifies("shape-convergence:C3")
+
 
 @pytest.mark.parametrize("sync", [False, True])
 def test_real_router_returns_owner_allocation_receipt(served, sync):  # noqa: F811
