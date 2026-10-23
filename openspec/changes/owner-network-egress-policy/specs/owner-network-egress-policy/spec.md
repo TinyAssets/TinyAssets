@@ -5,7 +5,7 @@ Every box upstream connection SHALL pass the existing broker `destination` check
 
 #### Scenario: Every transport uses the owner policy
 - **WHEN** model HTTP, connector HTTP, public HTTP/CONNECT or git opens a destination, including a redirect destination
-- **THEN** the same check permits public targets in `open`, permits exact normalized host/IP and port standing entries or active owner-bound credential destinations in both `allowlist` and `ask`, and refuses other targets (`ask` offers owner approval)
+- **THEN** the same check permits public targets in `open`, permits exact normalized host/IP and port standing entries or active credential destinations committed or widened through the protected N10 owner session in both `allowlist` and `ask`, and refuses other targets (`ask` offers owner approval)
 - **AND** direct native egress cannot bypass it, and credential bindings never bypass admission or public-address safety; each redirect is checked independently without provider-specific code
 
 #### Scenario: A permitted hostname resolves unsafely
@@ -13,7 +13,7 @@ Every box upstream connection SHALL pass the existing broker `destination` check
 - **THEN** the connection refuses without an approvable ask; successful opens use validated pinned public addresses
 
 ### Requirement: Only the owner writes standing egress policy
-The existing broker policy authority SHALL accept writes only through its protected owner-session path with the expected policy generation, receipt every decision and provide only a read projection to agents.
+The existing broker policy authority SHALL accept writes only through its protected owner-session path with the expected policy generation, receipt every decision and provide only a read projection to agents. The owner SHALL be the sole writer of egress permission: credential bindings SHALL satisfy restrictive modes only for scope committed or widened through the protected N10 owner session. Binding creation and every `extend`/`full` update SHALL record `committed_via` from the authenticated channel; box-committed bindings, box-widened scopes and missing owner provenance SHALL never grant restrictive-mode permission.
 
 #### Scenario: Initialization and unauthorized mutation
 - **WHEN** a new policy is provisioned
@@ -39,5 +39,10 @@ The box SHALL raise a blocked `ask` connection through the existing request/appr
 
 #### Scenario: Connected services and revocation
 - **WHEN** an owner uses a bound model or connector destination in either restrictive mode
-- **THEN** the generic active credential binding satisfies the restriction while secrets remain in broker custody
+- **THEN** the generic active credential binding satisfies the restriction only for scope committed through the protected N10 owner session while secrets remain in broker custody
 - **AND** revocation removes that permission unless a standing entry independently allows it; an unbound redirect needs its own permission
+
+#### Scenario: A binding the box commits does not satisfy allowlist or ask
+- **WHEN** the box commits a credential binding or widens scope through `extend` or `full`, including on an originally owner-committed binding, and no independent owner permission covers the destination
+- **THEN** neither `allowlist` nor `ask` treats that binding or box-widened scope as permission; the connection refuses, with the existing owner approval path available in `ask`
+- **AND** creation and each update record the authenticated committer the same way; forged or missing owner provenance cannot grant permission, and only scope committed through the protected N10 owner session satisfies the restriction

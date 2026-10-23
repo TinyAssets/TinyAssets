@@ -6,7 +6,7 @@
 
 - [ ] 2.1 Add the egress section to the existing broker policy store/protected owner write path and read-only projection; prove initialization, generation conflicts and `policy-writers` remain sound.
 - [ ] 2.2 Extend only `broker.egress.destination` with the three modes and existing proxy refusal plumbing; prove all transport paths, redirects, public-address pinning, custody and change/open ordering.
-- [ ] 2.3 Wire in-box Needs you requests and owner policy UI to existing consent; prove standing-entry approval through the sole writer, bound-credential permission/revocation, denial, stale proposal refusal and raw proxy retry.
+- [ ] 2.3 Wire in-box Needs you requests and owner policy UI to existing consent; prove standing-entry approval through the sole writer, N10-committed credential scope/revocation, authenticated committer recording on creation and `extend`/`full`, and `test_box_committed_binding_does_not_satisfy_allowlist_or_ask` in `tests/test_owner_broker_egress.py`, denial, stale proposal refusal and raw proxy retry.
 
 ## 3. Acceptance
 
