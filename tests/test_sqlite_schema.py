@@ -82,3 +82,21 @@ def test_rebuild_respects_outer_transaction():
                      kind="ephemeral")
         conn.rollback()
         assert conn.execute('SELECT old FROM "flow cache"').fetchone() == ("keep until commit",)
+
+
+def test_rollback_failure_preserves_original_error():
+    from tinyassets.sqlite_schema import ensure_table
+
+    original = sqlite3.OperationalError("original create failure")
+
+    class RolledBackConnection(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith("CREATE TABLE"):
+                self.rollback()
+                raise original
+            return super().execute(sql, *args)
+
+    with closing(sqlite3.connect(":memory:", factory=RolledBackConnection)) as conn:
+        with pytest.raises(sqlite3.OperationalError) as caught:
+            ensure_table(conn, "CREATE TABLE records (value TEXT)", kind="ephemeral")
+        assert caught.value is original

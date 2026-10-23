@@ -7,7 +7,7 @@ the store lives, never by traversing owner stores from the shared router.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
+from contextlib import closing, suppress
 from functools import lru_cache
 from typing import Literal
 
@@ -56,7 +56,10 @@ def ensure_table(conn: sqlite3.Connection, sql: str, *,
             conn.execute(f"DROP TABLE {quoted}")  # noqa: S608 - quoted declared identifier
         conn.execute(sql)
     except BaseException:
-        conn.execute("ROLLBACK TO declared_table")
+        with suppress(sqlite3.Error):
+            conn.execute("ROLLBACK TO declared_table")
+        with suppress(sqlite3.Error):
+            conn.execute("RELEASE declared_table")
         raise
-    finally:
+    else:
         conn.execute("RELEASE declared_table")
