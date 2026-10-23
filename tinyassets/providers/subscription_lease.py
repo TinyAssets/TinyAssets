@@ -29,6 +29,17 @@ def tmpfs_root():
     raise RuntimeError("native credentials require tmpfs")
 
 
+def sweep_stale_leases():
+    """Startup only, before this box admits native work; retain flock inodes."""
+    for path in tmpfs_root().glob("ta-native-*"):
+        if path.name.startswith("ta-native-lock-"):
+            continue
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+
 @contextlib.contextmanager
 def source_lock(runtime):
     with named_source_lock(runtime.home, runtime.source.id, runtime._local):

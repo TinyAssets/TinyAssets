@@ -580,8 +580,11 @@ def disconnect_source(source_id):
                    if login.runtime.owner is owner and login.runtime.source.id == source_id]
         for login in pending:
             login.cancelled.set()
+        deadline = time.monotonic() + 5
         for login in pending:
-            login.thread.join()
+            login.thread.join(max(0, deadline - time.monotonic()))
+            if login.thread.is_alive():
+                raise SubscriptionError("native login is still stopping; retry disconnect")
             _logins.pop(login.handle, None)
         disconnect(owner, source_id)
     return {"status": "disconnected", "source_id": source_id}
@@ -595,7 +598,8 @@ def login_operation(action, *, source_id=None, flow=None, code=None):
         for key, login in list(_logins.items()):
             if time.monotonic() >= login.expires:
                 login.cancelled.set()
-                del _logins[key]
+                if not login.thread.is_alive():
+                    del _logins[key]
         if action == "begin":
             for login in _logins.values():
                 if (
@@ -611,7 +615,8 @@ def login_operation(action, *, source_id=None, flow=None, code=None):
             _logins[login.handle] = login
         else:
             login = _logins.get(flow)
-            if login is None or login.runtime.owner is not owner:
+            if (login is None or login.runtime.owner is not owner
+                    or time.monotonic() >= login.expires):
                 raise PermissionError("login flow is unavailable")
             if action == "cancel":
                 login.cancelled.set()
