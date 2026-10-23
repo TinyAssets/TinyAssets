@@ -1395,7 +1395,19 @@
     };
   }
 
+  // The platform relays a request answer to the agent as a turn of data. The
+  // person sees what they decided, never the relay's JSON.
+  function requestAnswerLine(text){
+    if(typeof text!=="string"||!text.startsWith("The owner answered your request."))return null;
+    try{
+      const outcome=JSON.parse(text.slice(text.indexOf("{"))).outcome||{};
+      const verb=outcome.decision==="allowed"?"You allowed":
+        outcome.decision==="denied"||outcome.decision==="declined"?"You declined":"You answered";
+      return verb+": "+(typeof outcome.title==="string"&&outcome.title?outcome.title:"a request");
+    }catch(_e){return "You answered a request.";}
+  }
   function appendMessage(role,text,extra,instant,queued){
+    if(role==="user"){const line=requestAnswerLine(text);if(line!==null)text=line;}
     if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
     const thread=$("thread"), el=document.createElement("div");
     el.className="msg msg--"+role;
@@ -4430,6 +4442,22 @@
   // platform's own blank one when the owner has chosen nothing (AppUI
   // mountDefault) -- so this only ever targets the frame. The #cc-blank
   // in-document stand-in it used to fall back to is gone with cc-package.
+  function copyButton(value,label){
+    const button=document.createElement("button");button.type="button";
+    button.className="btn btn--ghost";button.textContent=label||"Copy";
+    button.addEventListener("click",async()=>{
+      try{await navigator.clipboard.writeText(String(value));button.textContent="Copied";}
+      catch(_e){
+        const range=document.createRange();const holder=document.createElement("span");
+        holder.textContent=String(value);button.after(holder);range.selectNodeContents(holder);
+        const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+        button.textContent="Press Ctrl+C";
+      }
+      setTimeout(()=>{button.textContent=label||"Copy";},2000);
+    });
+    return button;
+  }
+
   function focusCommandCenter(){
     const frame=$("ui-frame");
     if(frame){
@@ -4707,11 +4735,16 @@
 
   function wireCommandCenter(){
     $("view-chat").addEventListener("pointerdown",event=>{
-      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
-        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
-        if(!event.target.closest("button")) event.preventDefault();
-        focusCommandCenter();
-      }
+      const target=event.target;
+      if(target.closest("#chat-cloud, #chat-cloud-bubble")) return;
+      // Text, fields and dialogs keep the browser's own selection and copy.
+      if(target.closest("a,input,textarea,select,label,dialog,[role=dialog],[role=status],"+
+        "p,span,li,pre,code,h1,h2,h3,h4,td,th,[contenteditable]")) return;
+      if(target.closest("button")){ focusCommandCenter(); return; }
+      if(Array.from(target.childNodes).some(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim())) return;
+      // Avoid the pointer's default focus step undoing the handoff.
+      event.preventDefault();
+      focusCommandCenter();
     });
     $("chat-cloud").addEventListener("pointerdown",event=>{
       if(event.target===$("chat-cloud")) event.preventDefault();
@@ -7687,6 +7720,7 @@
       const external=NATIVE||DESKTOP_SHELL;
       const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
       this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
+      ui.shown=null;
       ui.status.textContent="Setting up "+source.name+" for your agent. The first time takes about a minute…";
       ui.cancel.onclick=()=>{cancelled=true;};
       try{
@@ -7732,9 +7766,19 @@
             opened=true;
           }
           ui.input.hidden=ui.submit.hidden=!(state.accepts_code&&opened&&state.status==="waiting");
-          ui.status.textContent=state.status==="installing"?
-            "Setting up "+source.name+" for your agent. The first time takes about a minute…":
-            state.code?"Approve sign-in using code: "+state.code:"Finish sign-in in your browser.";
+          const shown=state.status==="installing"?"installing":state.code?"code:"+state.code:"browser";
+          if(ui.shown!==shown){
+            ui.shown=shown;
+            if(state.status==="installing")
+              ui.status.textContent="Setting up "+source.name+
+                " for your agent. The first time takes about a minute…";
+            else if(state.code){
+              const value=document.createElement("code");value.textContent=state.code;
+              value.style.userSelect="all";value.style.fontSize="1.1em";
+              ui.status.replaceChildren("Approve sign-in using code: ",value," ",copyButton(state.code));
+            }
+            else ui.status.textContent="Finish sign-in in your browser.";
+          }
           if(state.status==="connected"){
             const result=await this.post("finish",{flow},epoch);
             if(result.status!=="connected")throw new Error("Signed in. Model setup still needs attention.");

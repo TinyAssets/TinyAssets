@@ -13,6 +13,8 @@ def test_native_subscription_connect_controls(native):
     source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     cli = source[source.index("  const SubscriptionSources={"):
                  source.index("\n  };", source.index("  const SubscriptionSources={")) + 6]
+    cli = source[source.index("  function copyButton("):
+                 source.index("  function focusCommandCenter(")] + cli
     address = source[source.index("  const ModelDiscovery={"):
                      source.index("  // ---- End unified address connection ----")]
     calls, approved = [], []
