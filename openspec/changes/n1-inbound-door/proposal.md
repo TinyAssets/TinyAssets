@@ -4,9 +4,9 @@ N1 and frontier baseline #4624 require reaching the agent through connected chan
 
 ## What Changes
 
-- Converge the existing `/hooks/inbound/{binding}` door: verify, positively map to one admitted owner, wake and forward; parse and start the session inside that box.
+- Converge the existing `/hooks/inbound/{binding}` door: map the opaque route ID to one owner, verify declared proof without parsing payloads, wake and forward; parse and start the session inside that box.
 - Package Slack, Teams, WhatsApp, connected-account email and generic webhook behavior; keep credentials in broker custody and replies on the egress proxy.
-- **BREAKING:** replace direct branch/source-event dispatch with durable box-local acceptance followed by `session.start`; no legacy dispatcher or alternate ingress survives cutover.
+- **BREAKING:** replace direct branch/source-event dispatch with durable box-local acceptance followed by `session.start`; no legacy dispatcher or alternate ingress survives cutover. Existing generic senders must add event ID/timestamp headers. Secret-dependent verification explicitly requires the broker even for awake boxes.
 - Extend C2's folded wake-trigger contract, whose actual active directory is `automation-event-triggers`; do not create another scheduler or event bus.
 
 ## Capabilities

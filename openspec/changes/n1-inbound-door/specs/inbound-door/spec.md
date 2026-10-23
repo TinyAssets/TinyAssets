@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: One verified ingress maps positively to one box
-The platform SHALL expose one external-event route template, `/hooks/inbound/{binding}`, and SHALL verify signature or token with declarative package data before mapping the bound identity to exactly one admitted owner box. Shared code SHALL contain no provider-specific branches, owner-content access or agent routing.
+The platform SHALL expose one external-event route template, `/hooks/inbound/{binding}`, and SHALL map its opaque binding route ID to one owner, verify only the declared signature/token profile without parsing business content, then wake and forward the raw request to that admitted owner box. Each channel SHALL use an owner-controlled app/subscription with a distinct binding URL; shared app callbacks requiring body recipient selectors are unsupported. Shared code SHALL contain no provider-specific branches, owner-content access or agent routing.
 
 #### Scenario: Each supported channel uses the same door
 - **WHEN** Slack, Teams, WhatsApp, connected-account mail or generic webhook delivers a valid event
@@ -12,9 +12,23 @@ The platform SHALL expose one external-event route template, `/hooks/inbound/{bi
 - **WHEN** proof is forged, stale, ambiguous, or the caller substitutes another owner/box
 - **THEN** no substituted destination, wake or session is authorized
 
+#### Scenario: Exactly one route and one session entry
+- **WHEN** `tests/test_inbound_door.py` enumerates the deployed route table and sends an accepted fixture for each supported channel through the real router and box receiver
+- **THEN** there is exactly one distinct inbound template, `/hooks/inbound/{binding}`, serving GET/POST with no aliases
+- **AND** each fixture preserves raw payload bytes and reaches the real `session.start(agent_ref, input, parent)` exactly once with the expected owner, agent and receipt, with zero direct branch/source enqueue calls
+
 #### Scenario: Disconnection or admission withdrawal
-- **WHEN** the binding is unknown, disconnected or unadmitted, including withdrawal concurrent with a cold start
-- **THEN** delivery returns uniform 404 and cannot complete a wake or forward under withdrawn admission
+- **WHEN** the binding is unknown, disconnected, revoked or unadmitted outside a maintenance/cutover window, including withdrawal concurrent with a cold start
+- **THEN** delivery returns stable 404 `not_found` and cannot complete a wake or forward under withdrawn admission
+
+#### Scenario: Maintenance or cutover closure
+- **WHEN** ingress admission is temporarily closed for maintenance/cutover
+- **THEN** the door returns retryable 503 `maintenance`, taking precedence over stable admission refusal, without accepting or starting work
+
+#### Scenario: Awake box during control-plane outage
+- **WHEN** the routing snapshot is installed and the box is awake but control-plane lookups and lifecycle RPCs are unavailable
+- **THEN** URL-capability and pinned-public-key profiles still verify and forward
+- **AND** secret-dependent HMAC/token profiles require broker `INBOUND_VERIFY` and return retryable 503 without forwarding if it is unavailable; this is the explicit T1 exception needed to retain broker-only secret custody
 
 ### Requirement: Accepted events enter session start inside the box
 The box SHALL parse, select the agent, enforce current owner grants and dispatch each accepted event through `session.start(agent_ref, input, parent)` with the inbound receipt as parent. The platform SHALL remove direct webhook branch/source dispatch and reuse C2's existing wake machinery.
@@ -42,6 +56,15 @@ The router SHALL reuse its existing wake/forward transport without changing the 
 - **THEN** the durable inbox resumes pending work and returns the same receipt with at most one session start
 - **AND** a reused ID with different payload is rejected, while different IDs with equal payload remain distinct events
 
+#### Scenario: Legacy generic sender without event identity
+- **WHEN** any generic sender, including an existing token-URL hook, omits or malforms `Idempotency-Key` or `X-Event-Timestamp` (Unix seconds fixed across retries)
+- **THEN** the box returns 400 `event_identity_required` without acceptance or dispatch; cutover preserves valid URLs but requires sender changes, with no payload-digest fallback
+
+#### Scenario: Receipt expiry
+- **WHEN** the channel's finite event freshness window plus clock skew expires
+- **THEN** replay receipts and payload digests are pruned and that stale event is refused before dedupe or acceptance, even with a fresh request signature
+- **AND** generic hooks use 24 hours plus at most 5 minutes skew; retries never extend retention, and pending work retains only its dispatch/session-start key until completion
+
 #### Scenario: Rate or capacity limit
 - **WHEN** transport or box admission is exhausted
 - **THEN** a new event receives 413 for excessive size or 429 with retry guidance for rate/capacity limits, without acceptance
@@ -49,6 +72,11 @@ The router SHALL reuse its existing wake/forward transport without changing the 
 
 ### Requirement: Channels and connected email keep credentials in broker custody
 Connector packages SHALL perform channel parsing, subscriptions, local routing and replies inside the box. Channel credentials SHALL remain broker-held, and all outbound calls SHALL pass through the egress proxy with scoped credential injection. Email SHALL use the owner's connected account, never a platform mail domain.
+
+#### Scenario: Owner-scoped verification custody and pinned keys
+- **WHEN** a binding profile references credentials or public verification keys
+- **THEN** its credential reference resolves only in that binding owner's broker custody, rejecting foreign references at registration and verification
+- **AND** public keys are pinned through the bound box relay; shared services perform no key fetch or refresh and reject unsupported profiles, expired keys and request-supplied key URLs
 
 #### Scenario: Mail notification and reply
 - **WHEN** the owner's connected mail subscription delivers a verified notification
