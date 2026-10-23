@@ -23,6 +23,11 @@ The system SHALL run the native CLI login in the box and expose its URL or devic
 - **WHEN** a successful login is followed by box shutdown and restart
 - **THEN** that owner can invoke the source and another owner cannot see the login
 
+#### Scenario: Pending login interrupted by drain or sleep
+- **WHEN** the box drains or goes to sleep while a sign-in is pending
+- **THEN** the login cancellation event is set and the login does not count as active work or renew the idle clock
+- **AND** a failed poll or cancelled login shows "Sign-in was interrupted. Tap Connect to try again." with Connect enabled
+
 ### Requirement: Generic invocation and selection
 The system SHALL invoke subscription_cli only through the owner box using definition argv/output data, and include connected sources in normal owner model selection.
 

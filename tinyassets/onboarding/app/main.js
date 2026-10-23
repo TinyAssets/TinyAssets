@@ -7678,6 +7678,10 @@
       if(!response.ok||result.error)throw new Error("Connection did not finish. Sign in to the owner view and retry.");
       return result;
     },
+    async poll(flow,epoch){
+      try{return await this.post("poll",{flow},epoch);}
+      catch(_error){throw new Error("Sign-in was interrupted. Tap Connect to try again.");}
+    },
     async start(source,ui,resume=null){
       if(this.busy)return;
       const external=NATIVE||DESKTOP_SHELL;
@@ -7686,7 +7690,7 @@
       ui.status.textContent="Setting up "+source.name+" for your agent. The first time takes about a minute…";
       ui.cancel.onclick=()=>{cancelled=true;};
       try{
-        let state=await this.post(resume?"poll":"begin",resume?{flow}:{source_id:source.id},epoch);flow=state.flow;
+        let state=resume?await this.poll(flow,epoch):await this.post("begin",{source_id:source.id},epoch);flow=state.flow;
         source.name=state.display_name||source.name||"this source";
         if(state.status==="installing"){
           pending=true;
@@ -7706,7 +7710,8 @@
         while(Date.now()<deadline){
           if(cancelled)throw new Error("Sign-in cancelled.");
           if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
-          if(state.status==="failed"||state.status==="cancelled")throw new Error("Sign-in did not complete. Retry to connect.");
+          if(state.status==="cancelled")throw new Error("Sign-in was interrupted. Tap Connect to try again.");
+          if(state.status==="failed")throw new Error("Sign-in did not complete. Retry to connect.");
           if(state.authorize_url&&!opened){
             const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
             if(pending){
@@ -7738,7 +7743,7 @@
             pkceStore.removeItem(this.storageKey);
             await closeExternal();await refreshRail();closeConnectRequest();return;
           }
-          await sleep(1000);state=await this.post("poll",{flow},epoch);
+          await sleep(1000);state=await this.poll(flow,epoch);
         }
         throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){

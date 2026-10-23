@@ -430,7 +430,7 @@ class Login:
                 "flow": self.handle,
                 "source_id": self.runtime.source["id"],
                 "display_name": self.runtime.source.display_name,
-                "status": self.status,
+                "status": "cancelled" if self.cancelled.is_set() else self.status,
                 "authorize_url": self.url,
                 "code": self.code,
                 "accepts_code": self.runtime.cli_login["login"].get("accepts_code", False),
@@ -482,9 +482,11 @@ class Login:
         from tinyassets.owner_activity import activity
 
         try:
-            with activity.enter():
+            with activity.pending_login(self.cancelled):
                 self.runtime.install()
                 with self.runtime.lock():
+                    if self.cancelled.is_set():
+                        raise SubscriptionError("native login cancelled")
                     if not self.runtime.authenticated():
                         self.status = "waiting"
                         login = self.runtime.cli_login["login"]
@@ -509,8 +511,12 @@ class Login:
                             succeeded = state_complete and not self.cancelled.is_set()
                         if not succeeded or not self.runtime.authenticated():
                             raise SubscriptionError("native login did not complete")
-                    self.runtime.accept()
-                    self.status = "connected"
+                    with activity.lock:
+                        if self.cancelled.is_set():
+                            raise SubscriptionError("native login cancelled")
+                        self.runtime.accept()
+                        self.status = "connected"
+                        activity.pending_logins.discard(self.cancelled)
         except Exception:
             # CLI output can contain credentials; only safe state crosses the page boundary.
             self.status = "cancelled" if self.cancelled.is_set() else "failed"
@@ -537,6 +543,7 @@ def login_operation(action, *, source_id=None, flow=None, code=None):
                     login.runtime.owner is owner
                     and login.runtime.source["id"] == source_id
                     and login.status in {"installing", "waiting"}
+                    and not login.cancelled.is_set()
                 ):
                     return login.view()
             if len(_logins) >= 16:
