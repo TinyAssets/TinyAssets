@@ -194,6 +194,19 @@ class OwnerDaemons:
             raise BoxAuthError("broker launch authorization is missing")
         record = launch
         uid = record["uid"]
+        with self.volumes.operation(uid, shared=True):
+            with self.condition:
+                box = self.boxes.get(uid)
+            if box is not None and box.awake and self.runtime.alive(uid):
+                box.launch = record
+                if box.owner != owner:
+                    raise BoxError("broker owner reservation changed")
+                if box.error:
+                    raise BoxError("owner sandbox has an unverified launch or stop")
+                if self._rpc(box)["draining"]:
+                    raise BoxError("owner daemon is still draining")
+                box.last = time.monotonic()
+                return uid
         with self.volumes.operation(uid):
             with self.condition:
                 box = self.boxes.setdefault(uid, Box(owner, uid))
@@ -259,7 +272,7 @@ class OwnerDaemons:
     def status(self, uid):
         # A copy can hold this lock for hours. Refuse promptly so the broker
         # retries instead of leaving timed-out status threads queued behind it.
-        with self.volumes.operation(uid, blocking=False):
+        with self.volumes.operation(uid, blocking=False, shared=True):
             box = self.boxes.get(uid)
             awake = bool(box and box.awake and self.runtime.alive(uid))
             activity = self._activity(box) if awake else None
@@ -275,13 +288,20 @@ class OwnerDaemons:
     def maintain(self):
         """Observe exited processes; only the broker selects the next transition."""
         with self.condition:
-            boxes = list(self.boxes.values())
+            boxes = [box for box in self.boxes.values() if box.awake]
         for box in boxes:
-            with self.volumes.operation(box.uid):
-                if box.awake and not self.runtime.alive(box.uid):
-                    self.runtime.stop(box.uid)
-                    box.awake = False
-                    self._failed(box, BoxError("owner daemon crashed"))
+            try:
+                with self.volumes.operation(box.uid, blocking=False, shared=True):
+                    crashed = box.awake and not self.runtime.alive(box.uid)
+                if not crashed:
+                    continue
+                with self.volumes.operation(box.uid, blocking=False):
+                    if box.awake and not self.runtime.alive(box.uid):
+                        self.runtime.stop(box.uid)
+                        box.awake = False
+                        self._failed(box, BoxError("owner daemon crashed"))
+            except BlockingIOError:
+                continue
 
     def close(self):
         with self.condition:

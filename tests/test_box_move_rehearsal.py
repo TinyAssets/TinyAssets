@@ -745,4 +745,73 @@ finally:
         subprocess.run(["docker", "image", "rm", image], capture_output=True, check=True)
 
 
+def test_rehearsal_manifests_treat_published_at_as_a_recent_clock(tmp_path, monkeypatch):
+    import gzip
+    import hashlib
+    import sqlite3
+    import time
+
+    from scripts.rehearse_box_move import rehearsal_manifests
+
+    data = tmp_path / "data"
+    state = data / ".broker" / "state"
+    state.mkdir(parents=True)
+    backup = tmp_path / "backup"
+    snapshot = "snap-1"
+    uid = 300001
+    blob = b"synthetic-volume"
+    digest = hashlib.sha256(blob).hexdigest()
+    archive = backup / "owner-snapshots" / str(uid)
+    archive.mkdir(parents=True)
+    with gzip.open(archive / f"{snapshot}.img.gz", "wb") as stream:
+        stream.write(blob)
+    published = time.time() - 30
+    database = state / "owner-identities.db"
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "CREATE TABLE owner_volumes (principal TEXT, uid INT, snapshot_id TEXT, "
+            "snapshot_sha256 TEXT, work TEXT, local INT, asleep_at REAL)"
+        )
+        db.execute(
+            "CREATE TABLE owner_snapshots (principal TEXT, snapshot_id TEXT, "
+            "snapshot_sha256 TEXT, volume_generation INT, published_at REAL)"
+        )
+        db.execute(
+            "INSERT INTO owner_volumes VALUES (?,?,?,?,?,?,?)",
+            ("alice", uid, snapshot, digest, None, 1, published),
+        )
+        db.execute(
+            "INSERT INTO owner_snapshots VALUES (?,?,?,?,?)",
+            ("alice", snapshot, digest, 4, published),
+        )
+    (data / ".owner-cutover.json").write_text(json.dumps({
+        "final_manifest": {},
+        "owner_manifests": {},
+        "snapshots": {str(uid): snapshot},
+    }), encoding="utf-8")
+
+    def mapped(value, *args, **kwargs):
+        if value == "/data":
+            return data
+        if isinstance(value, str) and value.startswith("/backup"):
+            relative = value[len("/backup"):].lstrip("/")
+            return backup / relative if relative else backup
+        return Path(value, *args, **kwargs)
+
+    monkeypatch.setattr("scripts.rehearse_box_move.Path", mapped)
+    manifest = rehearsal_manifests()[0]
+    tables = manifest[".broker/state/owner-identities.db"]["tables"]
+    volumes = tables["owner_volumes"][0]
+    snapshots = tables["owner_snapshots"][0]
+    assert volumes.count("recent snapshot publication") == 1
+    assert snapshots.count("recent snapshot publication") == 1
+    assert snapshots.count("verified snapshot") == 2
+    assert 4 in snapshots
+
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE owner_snapshots SET published_at=?", (time.time() - 8 * 86400,))
+    with pytest.raises(AssertionError):
+        rehearsal_manifests()
+
+
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

@@ -77,7 +77,7 @@ class OwnerVolumes:
         return self.store / f"{uid}.img"
 
     @contextmanager
-    def _lock(self, uid: int, *, blocking=True):
+    def _lock(self, uid: int, *, blocking=True, shared=False):
         import fcntl
 
         self._image(uid)
@@ -85,17 +85,18 @@ class OwnerVolumes:
         if uid in held:
             yield
             return
+        mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         with (self.locks / str(uid)).open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            fcntl.flock(lock, mode | (0 if blocking else fcntl.LOCK_NB))
             self._held.uids = held | {uid}
             try:
                 yield
             finally:
                 self._held.uids = held
 
-    def operation(self, uid: int, *, blocking=True):
+    def operation(self, uid: int, *, blocking=True, shared=False):
         """C1/C2: serialize local execution only; the broker owns lifecycle authority."""
-        return self._lock(uid, blocking=blocking)
+        return self._lock(uid, blocking=blocking, shared=shared)
 
     def size(self, uid: int) -> int:
         """Opaque image length, never a filesystem path inside a volume."""
@@ -217,7 +218,10 @@ class OwnerVolumes:
             while (remaining := self._loops(uid)) and time.monotonic() < deadline:
                 time.sleep(0.05)
                 for device in remaining:
-                    self._run("losetup", "--detach", device)
+                    try:
+                        self._run("losetup", "--detach", device)
+                    except subprocess.CalledProcessError:
+                        pass
         self._detached(uid)
 
     def detach(self, uid: int) -> None:

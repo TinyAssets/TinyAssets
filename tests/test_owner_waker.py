@@ -250,6 +250,40 @@ def test_waker_starts_without_request_and_shutdown_joins_control_calls(index):
     asyncio.run(exercise())
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C13')
+def test_missing_routing_snapshot_retries_within_one_second(index, monkeypatch):
+    seen = []
+    index.identities.work_ready = False
+
+    async def idle():
+        return None
+
+    async def exercise(routing):
+        stop = asyncio.Event()
+        waker = Waker(
+            index, plan_store(index), wake=async_call(lambda owner, **kw: None),
+            poll_seconds=30, lifecycle_tick=idle, routing=routing,
+        )
+
+        async def record(awaitable, timeout):
+            seen.append(timeout)
+            stop.set()
+            awaitable.close()
+            return None
+
+        monkeypatch.setattr(asyncio, "wait_for", record)
+        await waker.run(stop)
+
+    asyncio.run(exercise(SimpleNamespace(_instance=None)))
+    assert seen == [1.0]
+    seen.clear()
+    asyncio.run(exercise(SimpleNamespace(_instance="installed")))
+    assert seen == [30]
+    text = Path(__file__).resolve().parents[1].joinpath(
+        "tinyassets/broker/process.py").read_text(encoding="utf-8")
+    assert "routing=routing" in text
+
+
 @pytest.fixture
 def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # noqa: F811
     from tests.support.http_model import seed_http_assignment

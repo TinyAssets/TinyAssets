@@ -192,3 +192,73 @@ assert broker_bootstrap()["proof"] == "x" * 64
                 if process.poll() is None:
                     process.kill()
                 process.wait(timeout=5)
+
+
+@pytest.mark.verifies('owner-daemon-in-box:T4')
+def test_broker_bootstrap_retries_until_the_broker_answers(monkeypatch):
+    from tinyassets.boxes import daemon_control
+    from tinyassets.boxes.provider import BoxAuthError
+
+    monkeypatch.setattr(os, "geteuid", lambda: 1001)
+    clock = {"now": 0.0}
+    sleeps = []
+
+    def monotonic():
+        return clock["now"]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(daemon_control.time, "monotonic", monotonic)
+    monkeypatch.setattr(daemon_control.time, "sleep", sleep)
+
+    class Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    attempts = {"n": 0}
+
+    def connect(path, timeout=30):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise EOFError("credential broker is not ready")
+        return Sock(), (1001, 1001, 1001)
+
+    monkeypatch.setattr(daemon_control, "connect", connect)
+    monkeypatch.setattr(daemon_control, "send", lambda sock, document: None)
+    monkeypatch.setattr(
+        daemon_control, "receive",
+        lambda sock, identity: {
+            "proof": "ab" * 32,
+            "broker_socket": str(daemon_control_runtime()),
+        },
+    )
+
+    def daemon_control_runtime():
+        from tinyassets.boxes.bootstrap import RUNTIME
+        return RUNTIME / "broker/broker.sock"
+
+    response = daemon_control.broker_bootstrap(timeout=30.0)
+    assert response["proof"] == "ab" * 32
+    assert sleeps == [0.2, 0.2]
+    assert attempts["n"] == 3
+
+    attempts["n"] = 0
+
+    def refuse(path, timeout=30):
+        raise BoxAuthError("box broker bootstrap is unavailable")
+
+    monkeypatch.setattr(daemon_control, "connect", refuse)
+    clock["now"] = 0.0
+    sleeps.clear()
+    with pytest.raises(BoxAuthError, match="unavailable"):
+        daemon_control.broker_bootstrap(timeout=0.5)
+    assert sleeps == [0.2, 0.2, 0.2]
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    with pytest.raises(BoxAuthError, match="only the router"):
+        daemon_control.broker_bootstrap(timeout=30.0)

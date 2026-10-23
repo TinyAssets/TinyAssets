@@ -227,6 +227,38 @@ def test_status_does_not_queue_behind_real_volume_lock(fleet, tmp_path):
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_shared_volume_lock_lets_status_maintain_and_awake_wake_proceed(fleet, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets.boxes.volumes import OwnerVolumes
+
+    uid = fleet.wake("a")
+    record = fleet.manager.boxes[uid].launch
+    volumes = OwnerVolumes.__new__(OwnerVolumes)
+    volumes.store = tmp_path / "store"
+    volumes.store.mkdir()
+    (volumes.store / f"{uid}.img").write_bytes(b"img")
+    volumes.locks = tmp_path / "locks"
+    volumes.locks.mkdir()
+    volumes._held = threading.local()
+    fleet.manager.volumes = volumes
+    with volumes.operation(uid, shared=True):
+        with ThreadPoolExecutor(3) as pool:
+            status = pool.submit(fleet.manager.status, uid)
+            maintained = pool.submit(fleet.manager.maintain)
+            woken = pool.submit(
+                fleet.manager.ensure_awake, "a", scheduled=True, launch=record,
+            )
+            assert status.result(timeout=2)["awake"] is True
+            assert maintained.result(timeout=2) is None
+            assert woken.result(timeout=2) == uid
+    with ThreadPoolExecutor(1) as pool:
+        with volumes.operation(uid):
+            with pytest.raises(BlockingIOError):
+                pool.submit(fleet.manager.status, uid).result(timeout=2)
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 @pytest.mark.parametrize("recover_by", ["wake", "tick"])
 def test_preexisting_running_record_with_draining_box_recovers(fleet, recover_by):
     uid = fleet.wake("a")

@@ -156,6 +156,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "bounded wait for deferred Linux loop-device teardown after losetup --detach",
     ),
+    "tinyassets/boxes/daemon_control.py::broker_bootstrap": (
+        CALL_SCOPED,
+        "bounded wait for the credential broker to finish registering with boxhostd",
+    ),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
         "one verified fence barrier cancels older streams then waits for active "

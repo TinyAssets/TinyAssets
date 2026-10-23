@@ -211,5 +211,26 @@ def test_detach_retries_until_a_lingering_loop_device_clears(tmp_path, monkeypat
         ("losetup", "--detach", "/dev/loop7"),
     ]
 
+    calls.clear()
+    probes = iter([["/dev/loop7"], ["/dev/loop7"], [], []])
+
+    def loops_after_kernel_detach(uid):
+        assert uid == 300001
+        return next(probes)
+
+    def run_after_kernel_detach(*args):
+        calls.append(args)
+        if len(calls) > 1:
+            raise subprocess.CalledProcessError(1, args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    volumes._loops = loops_after_kernel_detach
+    volumes._run = run_after_kernel_detach
+    volumes._detach(300001)
+    assert calls == [
+        ("losetup", "--detach", "/dev/loop7"),
+        ("losetup", "--detach", "/dev/loop7"),
+    ]
+
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

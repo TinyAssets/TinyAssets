@@ -15,5 +15,8 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'unhealthy=$(docker ps -q --filter "health=unhealthy" --filter "label=org.tinyassets.component"); if [ -n "$unhealthy" ]; then for c in $unhealthy; do name=$(docker inspect -f "{{.Name}}" "$c"); echo "autoheal: restarting unhealthy $name"; docker restart "$c"; done; else exit 0; fi'
+# Hold the same host-mutation lock as deploy_fail_safe.sh for the whole
+# restart. A non-blocking miss means a deploy owns the lock; stand down
+# instead of deleting a container compose is recreating.
+ExecStart=/bin/bash -c 'exec 9>>/var/lock/tinyassets-host-mutation.lock; if ! /usr/bin/flock -n 9; then exit 0; fi; unhealthy=$(docker ps -q --filter "health=unhealthy" --filter "label=org.tinyassets.component"); if [ -n "$unhealthy" ]; then for c in $unhealthy; do name=$(docker inspect -f "{{.Name}}" "$c"); echo "autoheal: restarting unhealthy $name"; docker restart "$c"; done; else exit 0; fi'
 SyslogIdentifier=tinyassets-autoheal
