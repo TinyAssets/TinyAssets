@@ -506,6 +506,15 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     # bypassing boxhostd.py used to hide the invalid marker from this proof.
     for name in (".layout.lock", ".layout.json", ".tinyassets.db"):
         os.chown(source / name, 1001, 1001)
+    # Match the live broker directories before archiving. Publication preserves
+    # existing custody; root-created 0755 fixture parents are not valid inputs
+    # for the broker's private owner-identities store.
+    for relative, mode in ((".broker", 0o2700), (".broker/accounts", 0o2700),
+                           (".broker/state", 0o700)):
+        directory = source / relative
+        directory.mkdir(exist_ok=True)
+        os.chown(directory, 1002, 1101)
+        directory.chmod(mode)
     archive = tmp_path / "tinyassets-data-2026-10-17T00-00-00Z.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
         stream.add(source, arcname="_data")
@@ -635,6 +644,10 @@ assert not Path('/data/.erasure-ledger.sqlite3').exists()
                 venue.helper("""
 import fcntl, json, os, stat
 root = Path('/data')
+for relative, mode in (('.broker', 0o2700), ('.broker/accounts', 0o2700),
+                       ('.broker/state', 0o700)):
+    info = (root / relative).stat()
+    assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1002, 1101, mode)
 from tinyassets.box_layout_migration import _volumes, _attached, OwnerMove
 journal = json.loads((root / '.owner-cutover.json').read_text())
 plan = [OwnerMove(**owner) for owner in journal['plan']]
