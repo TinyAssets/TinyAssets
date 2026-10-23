@@ -24,6 +24,7 @@ _CONFIG = {
     "TINYASSETS_MCP_CANARY_URL": "public endpoint",
     "TINYASSETS_CANARY_USER_ID": "which account the canary door may sign in; an id, not a proof",
     "TINYASSETS_ONBOARDING_APP": "feature flag",
+    "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED": "outbound connection feature flag",
     "UNIVERSE_SERVER_AUTH": "auth mode, not credential material",
     "UNIVERSE_SERVER_DEV_USER": "local operator name",
     "BACKUP_DEST": "rclone remote name and path; credentials live in rclone config",

@@ -121,6 +121,7 @@ Usage:
   install-tinyassets-env.sh delete <KEY> [KEY...]
   install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
   install-tinyassets-env.sh render-daemon-env   # daemon.env = env minus platform secrets
+  install-tinyassets-env.sh sync-operational-credentials # reconcile router JSON
   install-tinyassets-env.sh daemon-forbidden-names
 EOF
     exit 1
@@ -427,7 +428,7 @@ cmd_set() {
     local key="$1"
     local immutable="${2-false}"
     validate_key "${key}"
-    ensure_env_file
+    read_previous_env
 
     # Read new value from stdin (verbatim, including any trailing
     # newline the caller piped in — but we strip a single trailing
@@ -470,7 +471,7 @@ cmd_set() {
                     existing=""
                 fi
             fi
-        done < "${ENV_FILE}"
+        done < <(printf '%s' "${PREVIOUS_ENV_CONTENT}")
         if [ -n "${existing}" ]; then
             if [ "${existing}" != "${value}" ]; then
                 echo "::error::set-once refused rotation for ${key}; versioned migration required" >&2
@@ -493,7 +494,7 @@ cmd_set() {
         else
             new_content+="${line}"$'\n'
         fi
-    done < "${ENV_FILE}"
+    done < <(printf '%s' "${PREVIOUS_ENV_CONTENT}")
     if [ "${found}" = "false" ]; then
         new_content+="${key}=${value}"$'\n'
     fi
@@ -504,6 +505,8 @@ cmd_set() {
     if is_daemon_env_source; then
         render_daemon_content "${new_content}"
     fi
+    sync_proposed_operational_credentials "${new_content}"
+    ensure_env_file
     atomic_install "${new_content}"
     assert_readable
     echo "set ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
@@ -528,19 +531,21 @@ cmd_set_pair() {
         echo "::error::set-pair requires portable unquoted values for ${first} ${second}" >&2
         exit 1
     fi
-    ensure_env_file
+    read_previous_env
     while IFS= read -r line || [ -n "${line}" ]; do
         if ! compose_line_assigns_key "${line}" "${first}" &&
             ! compose_line_assigns_key "${line}" "${second}"; then
             new_content+="${line}"$'\n'
         fi
-    done < "${ENV_FILE}"
+    done < <(printf '%s' "${PREVIOUS_ENV_CONTENT}")
     new_content+="${first}=${value1}"$'\n'"${second}=${value2}"$'\n'
     if is_daemon_env_source; then
         render_daemon_content "${new_content}"
     fi
     # Each rename contains BOTH keys. Even a failed daemon render commit leaves
     # each consumer with a whole old/new pair, never a half-written pair.
+    sync_proposed_operational_credentials "${new_content}"
+    ensure_env_file
     atomic_install "${new_content}"
     assert_readable
     if is_daemon_env_source; then
@@ -551,7 +556,7 @@ cmd_set_pair() {
 
 cmd_delete() {
     local key
-    ensure_env_file
+    read_previous_env
     for key in "$@"; do
         validate_key "${key}"
     done
@@ -570,11 +575,13 @@ cmd_delete() {
         if [ "${drop}" = "false" ]; then
             new_content+="${line}"$'\n'
         fi
-    done < "${ENV_FILE}"
+    done < <(printf '%s' "${PREVIOUS_ENV_CONTENT}")
 
     if is_daemon_env_source; then
         render_daemon_content "${new_content}"
     fi
+    sync_proposed_operational_credentials "${new_content}"
+    ensure_env_file
     atomic_install "${new_content}"
     assert_readable
     echo "deleted: $* (${ENV_FILE} $(owner_label) ${ENV_MODE})"
@@ -818,7 +825,8 @@ write_daemon_env() {
     read_file_exactly "${DAEMON_ENV_SOURCE}" \
         || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
     local rest="${READ_CONTENT}" line selected=0 out="# GENERATED OAuth broker environment"$'\n'
-    local box_out="# GENERATED boxhostd environment: the snapshot remote only"$'\n'
+    local public_origin=""
+    local box_out="# GENERATED boxhostd environment: snapshot remote and public URL"$'\n'
     QUOTE_OPEN=""
     while [ -n "${rest}" ]; do
         if [[ "${rest}" == *$'\n'* ]]; then
@@ -836,6 +844,34 @@ write_daemon_env() {
         selected=0
         if parse_env_assignment "${line}"; then
             classify_env_value || true # Already validated by render_daemon_content.
+            if [ "${ENV_KEY}" = WORKOS_MCP_RESOURCE ]; then
+                [ -z "${QUOTE_OPEN}" ] || refuse_render "WORKOS_MCP_RESOURCE must be on one line"
+                # Same source as the router's protected_resource_metadata. Only
+                # its origin crosses into boxes, under the name _server_url reads.
+                public_origin="$(python3 - "${ENV_VALUE}" <<'PY'
+import re
+import sys
+from urllib.parse import urlsplit
+
+raw = sys.argv[1].strip()
+if raw[:1] in ("'", '"'):
+    raw = raw[1:].split(raw[0], 1)[0]
+else:
+    raw = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+try:
+    url = urlsplit(raw)
+    valid = (url.scheme in ("http", "https") and url.hostname
+             and not url.username and not url.password
+             and re.fullmatch(r"[A-Za-z0-9.\-\[\]:]+", url.netloc))
+    url.port  # Reject malformed ports too.
+except ValueError:
+    valid = False
+if not valid:
+    sys.exit(1)
+print(f"{url.scheme}://{url.netloc.lower()}")
+PY
+                )" || refuse_render "WORKOS_MCP_RESOURCE must contain a valid HTTP(S) public origin"
+            fi
             # C6: the broker deletion job invokes billing and identity erasure.
             if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
                   "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == STRIPE_WEBHOOK_SECRET ||
@@ -848,6 +884,9 @@ write_daemon_env() {
             fi
         fi
     done
+    if [ -n "${public_origin}" ]; then
+        box_out+="UNIVERSE_SERVER_URL=${public_origin}"$'\n'
+    fi
     # C14: the broker writes job metadata directly to the existing backup remote.
     # This is configuration, not a second lifecycle authority or root RPC.
     local backup_config="${TINYASSETS_RCLONE_CONFIG-/root/.config/rclone/rclone.conf}"
@@ -863,7 +902,7 @@ write_daemon_env() {
     fi
     out+="RCLONE_CONFIG=/etc/tinyassets/broker-rclone.conf"$'\n'
     ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )
-    # boxhostd reads only its snapshot remote; root's HOME keeps root's rclone config.
+    # root's HOME keeps root's rclone config; boxes also receive the public URL.
     ( ENV_FILE="${BOXHOSTD_ENV_FILE}"; atomic_install "${box_out}"; assert_readable )
     echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
 }
@@ -881,6 +920,155 @@ cmd_render_daemon_env() {
     echo "removed: ${removed}"
 }
 
+# C3: the router reads this file only, never an environment fallback. Resolve
+# the named volume on the host, before either compose layout starts the daemon.
+# Keep credentials off argv/environment; the NUL-framed stream is a pipe.
+# Read the old source without bootstrapping/writing anything. Recovery conflicts
+# must also refuse on a host whose env has not yet been created.
+read_previous_env() {
+    local source="${ENV_FILE}"
+    if [ ! -e "${source}" ]; then
+        source="${LEGACY_ENV_FILE}"
+        if [ ! -e "${source}" ]; then source=/dev/null; fi
+    fi
+    read_file_exactly "${source}" || return 3
+    PREVIOUS_ENV_CONTENT="${READ_CONTENT}"
+}
+
+# Validate both sources and the router inode before any credential write. Sync
+# first so a refused/failed router operation cannot commit a new host env.
+sync_proposed_operational_credentials() {
+    NEXT_ENV_CONTENT="$1"
+    sync_changed_operational_credentials "${CHANGED_KEYS[@]}"
+}
+
+sync_operational_credentials() {
+    local mountpoint volumes
+    # A successful list distinguishes a fresh host from a broken Docker daemon.
+    volumes="$(docker volume ls --format '{{ .Name }}')" || return 3
+    if ! grep -Fxq tinyassets-data <<< "${volumes}"; then
+        echo "::notice::tinyassets-data volume is absent; skipping router credential sync" >&2
+        return 0
+    fi
+    mountpoint="$(docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')" || return 3
+    [ -n "${mountpoint}" ] && [ -d "${mountpoint}" ] || {
+        echo "::error::tinyassets-data mountpoint is unavailable" >&2
+        return 3
+    }
+    {
+        operational_credential_records "${PREVIOUS_ENV_CONTENT}" &&
+        operational_credential_records "${NEXT_ENV_CONTENT}"
+    } | python3 -c '
+import json
+import os
+from pathlib import Path
+import sys
+import stat
+import tempfile
+
+root = Path(sys.argv[1])
+records = sys.stdin.buffer.read().decode("utf-8").split("\0")
+# A failed producer must never look like an empty source and revoke everything.
+names = ("TINYASSETS_WIKI_CANARY_TOKEN", "TINYASSETS_CANARY_DOOR_KEY",
+         "TINYASSETS_CANARY_USER_ID")
+def source_at(offset):
+    values = {}
+    while offset < len(records):
+        name = records[offset]
+        if name == "COMPLETE":
+            return values, offset + 1
+        if name not in names or offset + 1 >= len(records):
+            break
+        values[name] = records[offset + 1]
+        offset += 2
+    raise SystemExit("incomplete operational credential source")
+
+previous, offset = source_at(0)
+current, offset = source_at(offset)
+if records[offset:] != [""]:
+    raise SystemExit("incomplete operational credential source")
+target = root / ".router-credentials.json"
+try:
+    fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        metadata = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid not in (0, 1001)
+                or metadata.st_nlink != 1):
+            raise SystemExit("unsafe router credential file: require regular file owned by 1001 or root with one link")
+        saved = json.load(stream)
+except FileNotFoundError:
+    saved = {}
+if not isinstance(saved, dict):
+    raise SystemExit("invalid router credential object")
+for name in names:
+    if name in saved and saved[name] != previous.get(name) and saved[name] != current.get(name):
+        raise SystemExit(name + " rotated by disaster recovery: update the GitHub secret to the recovered value, or rotate both")
+    if name not in saved or saved[name] == previous.get(name):
+        saved.pop(name, None)
+        if name in current:
+            saved[name] = current[name]
+fd, temporary = tempfile.mkstemp(prefix=".router-credentials.", dir=root)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        os.fchown(stream.fileno(), 1001, 1001)
+        json.dump(saved, stream)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+' "${mountpoint}"
+}
+
+operational_credential_records() {
+    local line rc
+    QUOTE_OPEN=""
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if [ -n "${QUOTE_OPEN}" ]; then
+            rc=0
+            closes_open_quote "${line}" || rc=$?
+            if [ "${rc}" = 0 ]; then QUOTE_OPEN=""; fi
+            [ "${rc}" != 2 ] || return 7
+            continue
+        fi
+        parse_env_assignment "${line}" || continue
+        classify_env_value || return 7
+        case "${ENV_KEY}" in
+            TINYASSETS_WIKI_CANARY_TOKEN|TINYASSETS_CANARY_DOOR_KEY|TINYASSETS_CANARY_USER_ID)
+                # These machine credentials use the same portable, unquoted
+                # alphabet as set-pair. Refuse ambiguous dotenv interpolation.
+                if [[ -n "${ENV_VALUE}" && ! "${ENV_VALUE}" =~ ^[A-Za-z0-9._~:/+=,@%-]+$ ]]; then
+                    echo "::error::${ENV_KEY} requires a portable unquoted value" >&2
+                    return 7
+                fi
+                printf '%s\0%s\0' "${ENV_KEY}" "${ENV_VALUE}"
+                ;;
+        esac
+    done < <(printf '%s' "$1")
+    [ -z "${QUOTE_OPEN}" ] || return 7
+    printf 'COMPLETE\0'
+}
+
+sync_changed_operational_credentials() {
+    local key
+    for key in "$@"; do
+        case "${key}" in
+            TINYASSETS_WIKI_CANARY_TOKEN|TINYASSETS_CANARY_DOOR_KEY|TINYASSETS_CANARY_USER_ID)
+                sync_operational_credentials
+                return
+                ;;
+        esac
+    done
+}
+
 # Writes to the main env file keep the daemon's copy current. Any other target
 # (request-idempotency.env, agent-interchange.env, a test's temp file) is not
 # the daemon's source and renders nothing.
@@ -891,6 +1079,7 @@ is_daemon_env_source() {
 [ $# -ge 1 ] || usage
 subcmd="$1"
 shift
+CHANGED_KEYS=("$@")
 
 case "${subcmd}" in
     set)
@@ -916,6 +1105,12 @@ case "${subcmd}" in
     render-daemon-env)
         [ $# -eq 0 ] || usage
         cmd_render_daemon_env
+        ;;
+    sync-operational-credentials)
+        [ $# -eq 0 ] || usage
+        read_previous_env
+        NEXT_ENV_CONTENT="${PREVIOUS_ENV_CONTENT}"
+        sync_operational_credentials
         ;;
     daemon-forbidden-names)
         [ $# -eq 0 ] || usage

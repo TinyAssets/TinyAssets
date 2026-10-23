@@ -12,6 +12,29 @@ _PAID_USAGE_NOTE = ("Use a free/trial account with paid usage disabled. "
                     "TinyAssets cannot enforce the provider's billing settings.")
 
 
+def _discovered_free_models(payload):
+    """Discovery is not an owner declaration of flat or free billing."""
+    from decimal import Decimal, InvalidOperation
+
+    from tinyassets.connection_oauth.model_discovery import catalogue_rows
+
+    entries = []
+    for row in catalogue_rows(payload):
+        prices = row.get("pricing")
+        if not isinstance(prices, dict) or not {"prompt", "completion"} <= prices.keys():
+            continue
+        try:
+            if not all(not isinstance(value, bool) and Decimal(str(value)) == 0
+                       for value in prices.values()):
+                continue
+        except InvalidOperation:
+            continue
+        entries.append({"id": row["id"], "tools": True, "context": 32768})
+    if not entries:
+        raise HostedAuthError("no_verified_free_models", 409)
+    return entries[:64]
+
+
 def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
     """Raise the owner's explicit confirmation adding this source to their agent.
 
@@ -43,8 +66,8 @@ def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
     proposed = (ModelAccess("explicit", tuple(models), None)
                 if models is not None else ModelAccess("discovered"))
     access.setdefault(definition_id, proposed.document())
-    root = (assignment.provider.removeprefix("api_key_http:") if assignment is not None
-            else definition_id)
+    root = (assignment.provider.removeprefix("api_key_http:")
+            if assignment is not None and assignment.state != "unassigned" else definition_id)
     result = request_from_user(universe_id=uid, origin="platform", payload={
         "kind": "LLM", "title": "Use your " + preset["name"] + " models",
         "body": " ".join((preset["offer"], preset.get("billing_note", _PAID_USAGE_NOTE),
@@ -94,7 +117,7 @@ def _ask_body(preset):
                      + "; there is no key to copy."))
 
 
-def model_source(endpoints):
+def model_source(endpoints, destination=""):
     """Recognize installed model data only when its full policy is granted."""
     from tinyassets.api.http_connection import _canonical_endpoint_set
     from tinyassets.onboarding.connection_definition import preset_definition
@@ -120,7 +143,9 @@ def model_source(endpoints):
                     for path, method in paths]
         if _canonical_endpoint_set(required) <= actual:
             return preset
-    return None
+    from tinyassets.connection_oauth.model_discovery import source
+
+    return source(endpoints, destination)
 
 
 def offer_connection_access(*, base, uid, owner, grant_id):
@@ -139,7 +164,8 @@ def offer_connection_access(*, base, uid, owner, grant_id):
                                        grant_id=grant_id)
         if resource.get("committed_via") != "door":
             raise PermissionError("model confirmation requires a door connection")
-        preset = model_source(json.loads(resource["allowed_endpoints_json"]))
+        preset = model_source(json.loads(resource["allowed_endpoints_json"]),
+                              resource["destination"])
         if preset is None:
             raise HostedAuthError("unknown_model_connection", 404)
         if isinstance(preset, AcquisitionPreset):
@@ -163,11 +189,16 @@ def offer_connection_access(*, base, uid, owner, grant_id):
             else:
                 payload = read_granted_discovery_document(
                     db_path=base / "outbound.db", grant_id=grant_id, owner_user_id=owner,
-                    universe_id=uid, url=preset["base_url"].rstrip("/") + "/models")
-                entries = discovered_agent_models(preset, payload)
+                    universe_id=uid, url=(preset["catalogue_url"] if preset.get("discovered")
+                        else preset["base_url"].rstrip("/") + "/models"))
+                if preset.get("discovered"):
+                    entries = _discovered_free_models(payload)
+                else:
+                    entries = discovered_agent_models(preset, payload)
             definition_id = _definition_for(uid, owner, grant_id, preset["wire"],
                                             entries[0]["id"]).id
-            descriptor = {"wire": preset["wire"], "models": entries, "billing": "free"}
+            descriptor = {"wire": preset["wire"], "models": entries,
+                          "billing": "free"}
             args = dict(principal=owner, command_center=uid, grant_id=grant_id,
                         connection_id=resource["connection_id"], capability_kind="model_use")
             existing = capability_operation(base, **args)

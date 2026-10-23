@@ -553,7 +553,9 @@ def open_broker_liveness_lock(root: Path | str, name: str) -> int:
         parent = fs.open_subdir_nofollow(root_fd, directory)
         stack.callback(os.close, parent)
         parent_info = os.fstat(parent)
-        if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o022:
+        if (parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o002
+                or (parent_info.st_mode & 0o020
+                    and parent_info.st_gid != platform.BROKER_READ_GID)):
             raise UniverseFileError("liveness directory is not private to daemon writes")
         fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
                      0o600, dir_fd=parent)

@@ -7,7 +7,7 @@ ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 
 [Service]
 Environment=PYTHONPATH=/opt/tinyassets/boxhostd
-# BACKUP_DEST only; never the container env file, whose HOME would hide root's rclone config.
+# BACKUP_DEST and UNIVERSE_SERVER_URL; never the container env file (including HOME).
 # Optional only for the idle install before the fail-safe deploy renders it.
 EnvironmentFile=-/etc/tinyassets/boxhostd.env
 Type=simple
@@ -20,6 +20,8 @@ Delegate=yes
 # Keep the cgroup tree writable; owner cgroups are siblings of supervisor.
 RuntimeDirectory=tinyassets-boxhostd
 RuntimeDirectoryMode=0755
+# Containers bind this directory inode, including across stop/start deploys.
+RuntimeDirectoryPreserve=yes
 MemoryMax=7G
 CPUQuota=300%
 TasksMax=5120

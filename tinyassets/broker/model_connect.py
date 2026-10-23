@@ -52,7 +52,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
     if action == "oauth_offer":
         from urllib.parse import urlsplit
 
-        from tinyassets.connection_oauth.discovery import discover_offer, register_public_client
+        from tinyassets.connection_oauth.discovery import register_public_client
 
         if document["registration_url"]:
             try:
@@ -64,11 +64,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         directory_hosts = [urlsplit(h).hostname if h.startswith("https://") else h
                            for h in hosts]
         offer = directory.resolve(document["requested"], directory_hosts)
-        reason = ""
-        if offer is None:
-            offer, reason = discover_offer(document["requested"], hosts,
-                                          callback=document["callback"], use_cache=False)
-        return {"offer": offer, "reason": reason}
+        return {"offer": offer, "reason": "registration_unknown" if offer is None else ""}
     if action == "preset_exchange":
         from tinyassets.onboarding.hosted_model_auth import endpoint_policy
 

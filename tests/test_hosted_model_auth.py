@@ -127,7 +127,7 @@ def test_expired_flow_cannot_exchange(monkeypatch):
 def test_changed_preset_cannot_exchange(monkeypatch):
     handle = begin()["flow"]
     preset = auth.load_preset("openrouter_user_models_v1")
-    monkeypatch.setattr(auth, "load_preset", lambda _: replace(preset, digest="changed"))
+    monkeypatch.setattr(auth, "load_preset", lambda _: replace(preset, display_name="Changed"))
     with pytest.raises(auth.HostedAuthError, match="preset_changed"):
         take(handle)
 
@@ -166,9 +166,11 @@ def test_global_pending_bound_and_expiry_release_capacity(monkeypatch):
 
 
 def test_acquisition_transport_is_not_a_provider_name_switch(monkeypatch):
-    preset = replace(auth.load_preset("openrouter_user_models_v1"), id="different_source_v1",
-                     display_name="Different source", authorize_url="https://source.example/auth",
-                     exchange_url="https://source.example/keys")
+    original = auth.load_preset("openrouter_user_models_v1")
+    preset = replace(original, id="different_source_v1", display_name="Different source",
+                     sign_in={"oauth": {**original.sign_in["oauth"],
+                         "authorization_endpoint": "https://source.example/auth",
+                         "token_endpoint": "https://source.example/keys"}})
     monkeypatch.setattr(auth, "load_preset", lambda _: preset)
     monkeypatch.setattr(acquisition, "load_preset", lambda _: preset)
     result = begin(preset_id=preset.id)
@@ -255,8 +257,9 @@ def test_preset_authorize_params_name_the_key_without_overriding_the_flow(monkey
     """A naive user saw "An app" on the provider's page: the preset names the key as data."""
     query = parse_qs(urlsplit(begin()["authorize_url"]).query)
     assert query["key_label"] == ["TinyAssets"]
-    hostile = replace(auth.load_preset("openrouter_user_models_v1"),
-                      authorize_params=(("code_challenge", "attacker"),))
+    original = auth.load_preset("openrouter_user_models_v1")
+    hostile = replace(original, sign_in={"oauth": {**original.sign_in["oauth"],
+                      "authorize_params": {"code_challenge": "attacker"}}})
     monkeypatch.setattr(auth, "load_preset", lambda _: hostile)
     query = parse_qs(urlsplit(begin()["authorize_url"]).query)
     assert query["code_challenge"] == [CHALLENGE]

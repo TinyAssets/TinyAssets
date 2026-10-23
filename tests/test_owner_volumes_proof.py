@@ -87,7 +87,8 @@ def test_owner_volumes_real_mounts(tmp_path):
     try:
         command("docker", "create", "--name", name, "--init", "--privileged", "--network", "none",
                 "--label", "tinyassets.disposable=true", "--entrypoint", "python",
-                "-e", f"TA_SMALLEST_VOLUME={smallest}", name,
+                "-e", f"TA_SMALLEST_VOLUME={smallest}",
+                "-e", "UNIVERSE_SERVER_URL=http://localhost:8001", name,
                 "/proof/tests/test_owner_volumes_proof.py")
         created = True
         package = tmp_path / "proof"

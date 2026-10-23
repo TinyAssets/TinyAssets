@@ -18,6 +18,9 @@ with NO cross-method fallback (Hard Rule #3 evolution):
   encoder executes it over the credential-blind outbound proxy — never a vendor SDK
   pointed at an arbitrary ``base_url``.
 
+- ``subscription_cli`` references editable source data executed only in the
+  admitted owner box; native login state stays in that owner volume.
+
 ``commons`` definition is a remixable SHAPE only: remixing never carries the original
 owner's ``ref`` or credential — the remixer supplies their own.
 """
@@ -37,7 +40,7 @@ from typing import Any
 from tinyassets.api.helpers import _universe_dir
 from tinyassets.providers.wire_dialects import known_names
 
-ACCESS_METHODS = ("api_key_http",)
+ACCESS_METHODS = ("api_key_http", "subscription_cli")
 VISIBILITIES = ("private", "commons")
 
 # HTTP protocols are the bundled wire dialects (``providers/dialects/*.json``):
@@ -45,7 +48,7 @@ VISIBILITIES = ("private", "commons")
 # stored rows already carry (``openai_chat``, ``anthropic_messages``). A stored
 # row keeps its exact string, because the definition id content-addresses it.
 _HTTP_PROTOCOLS = known_names()
-PROTOCOLS = _HTTP_PROTOCOLS
+PROTOCOLS = (*_HTTP_PROTOCOLS, "cli_json")
 
 _STORE_FILENAME = "provider_definitions.json"
 
@@ -129,6 +132,8 @@ def _validate(
             "api_key_http requires a bundled wire dialect ("
             + "/".join(_HTTP_PROTOCOLS) + ")"
         )
+    if access_method == "subscription_cli" and protocol != "cli_json":
+        raise ProviderDefinitionError("subscription_cli requires cli_json")
     if not isinstance(model, str) or not _MODEL_RE.match(model):
         raise ProviderDefinitionError(
             f"model must be 1..{_MAX_MODEL_CHARS} printable single-line chars"
@@ -267,8 +272,6 @@ def register_definition(
 
 
 def _publish_source(definition: ProviderDefinition) -> None:
-    if definition.access_method != "api_key_http":
-        return
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
 

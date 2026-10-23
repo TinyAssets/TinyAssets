@@ -89,6 +89,8 @@ beside `cloudflared` and a log shipper.
 
 ### Providers and connections
 
+`providers/source_record.py` and `source_record.schema.json` define the shared model source contract. Installed JSON in `providers/source_records/` and owner files in `.ta-cli/sources/` declare aliases and mechanisms; `connection_oauth/model_discovery.py` produces the same record for other addresses. The address-only dialog uses broker HTTP credential custody or owner-box CLI state according to that record.
+
 | Path | Owns |
 |---|---|
 | `tinyassets/providers/router.py` | Serves one command center's owner-authorized provider; no platform fallback. |

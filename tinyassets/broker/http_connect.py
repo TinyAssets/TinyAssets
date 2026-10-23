@@ -74,7 +74,8 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         raise ValueError("invalid commit transport")
     if committed_via == "box" and "request_ref" in document:
         raise PermissionError("request references require the door")
-    if document.get("action") in {"oauth_offer", "oauth_exchange", "preset_exchange"}:
+    if document.get("action") in {
+            "oauth_offer", "oauth_exchange", "preset_exchange"}:
         from tinyassets.broker.model_connect import local_operation as flow_operation
 
         return flow_operation(ledger, principal=principal, command_center=command_center,

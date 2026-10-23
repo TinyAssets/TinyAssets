@@ -102,7 +102,10 @@ class OwnerIngress:
             return await response(scope, receive, proven_send)
         # Admission and drain share a lock: a successful drain cannot race a
         # new request or background turn. No control request counts as activity.
-        gate = activity.enter()
+        # Waiting for an external sign-in is passive, including its page polls.
+        polling_login = (scope["method"] == "POST"
+                         and scope["path"] == "/app/subscription-connect/poll")
+        gate = activity.enter(keep_awake=not polling_login)
         try:
             gate.__enter__()
         except RuntimeError:

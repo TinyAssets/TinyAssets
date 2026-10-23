@@ -37,17 +37,17 @@ def keypair():
 
 
 def test_fresh_workos_bearer_and_claims_refuse_deleted_owner(deleted, keypair, monkeypatch):
-    from tinyassets import router_account_deletion
     from tinyassets.auth.workos_provider import rejection_category, rejection_description
 
-    monkeypatch.setattr(router_account_deletion, "workos_sessions", lambda owner: (
-        [{"id": "session_test"}] if owner == "bob" else []))
     provider = _provider(keypair)
-    token = _sign(keypair, sub="alice", sid="brand-new-session")
+    from tinyassets.router_account_deletion import revoke_local_tokens
+
+    revoke_local_tokens(deleted, "alice", now=0)  # Restore cannot clear deletion.
+    token = _sign(keypair, sub="alice", sid="brand-new-session", iat=int(time.time()) + 1)
     assert provider.verified_claims(token)["sub"] == "alice"
     assert provider.resolve_token(token) is None
-    assert rejection_category() == "expired"
-    assert "expired" in rejection_description(rejection_category())
+    assert rejection_category() == "account_deleted"
+    assert "deleted" in rejection_description(rejection_category())
     assert provider.resolve_token(_sign(keypair, sub="bob")) is not None
 
 
@@ -81,7 +81,7 @@ def test_fresh_workos_callback_stores_no_session(deleted, monkeypatch, keypair, 
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     response = asyncio.run(owner_sessions.callback(req))
     assert response.status_code == 403
-    assert b"Sign-in" in response.body
+    assert b"Account deleted" in response.body
     with owner_sessions.store() as db:
         assert db.execute("SELECT COUNT(*) FROM owner_sessions").fetchone()[0] == 0
     assert "new-refresh" not in str(response.headers)
@@ -96,7 +96,7 @@ def test_token_exchange_and_refresh_refused_without_persisting(
         cookie="ta_rt=old-refresh", data_dir=str(deleted), monkeypatch=monkeypatch,
         provider=_provider(keypair),
         upstream=lambda _: _ok(_sign(keypair, sub="alice", sid="fresh-session"), "rotated"))
-    assert status == 401 and body["error"] == "identity_unresolved"
+    assert status == 401 and body["error"] == "account_deleted"
     assert not cookies
     assert not list(deleted.glob(".runtime/app_refresh_sessions/*.json"))
 

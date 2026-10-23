@@ -1,0 +1,61 @@
+{
+  "id": "groq",
+  "display_name": "Groq",
+  "origin": "declared",
+  "addresses": [
+    "https://api.groq.com/openai/v1",
+    "https://api.groq.com"
+  ],
+  "suggested": false,
+  "free": true,
+  "sign_in": {
+    "api_key": {
+      "header_style": "bearer",
+      "help_url": "https://console.groq.com/keys"
+    }
+  },
+  "invoke": {
+    "http": {
+      "wire": "chat_completions",
+      "base_url": "https://api.groq.com/openai/v1",
+      "models_url": "https://api.groq.com/openai/v1/models",
+      "inference_url": "https://api.groq.com/openai/v1/chat/completions",
+      "card": {
+        "help_url": "https://console.groq.com/keys",
+        "billing_url": "https://console.groq.com/settings/billing",
+        "offer": "Free plan, no credit card required. Model-specific daily request and token limits apply.",
+        "daily_request_headers": true,
+        "wire": "openai_chat",
+        "terms": "The free plan allows about 8,000 tokens a minute per model, so long agent turns can pause at that limit.",
+        "daily_cap": {
+          "requests_per_day": 1000,
+          "tokens_per_minute": 8000,
+          "reset_timezone": null,
+          "source_url": "https://console.groq.com/docs/rate-limits"
+        }
+      }
+    }
+  },
+  "egress": {
+    "provider": [
+      "api.groq.com"
+    ]
+  },
+  "state": {
+    "location": "broker"
+  },
+  "models": [
+    {
+      "id": "openai/gpt-oss-120b",
+      "context": 32768
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "context": 32768
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "context": 32768
+    }
+  ]
+}

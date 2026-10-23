@@ -205,7 +205,7 @@ def _write_failed_assignment(
 
 
 def _is_open_provider(name: str) -> bool:
-    return name.startswith("api_key_http:")
+    return name.startswith(("api_key_http:", "subscription_cli:"))
 
 
 class UnknownServingProvider(ValueError):
@@ -267,6 +267,11 @@ def _open_serving_context(
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     definition = get_definition(universe_id, definition_id)
+    if definition is not None and definition.access_method == "subscription_cli":
+        from tinyassets.providers.subscription_catalog import context
+
+        _runtime, fingerprint = context(definition, owner_user_id, universe_id)
+        return ("subscription_cli:" + definition.id, definition.ref, definition.id, fingerprint)
     if definition is None or definition.access_method != "api_key_http":
         raise UnknownServingProvider(
             "provider must be a registered api_key_http definition_id"
@@ -300,7 +305,7 @@ def verify_open_grant_custody(
     connection_id is rejected (a stale-digest comparison alone would let it pass)."""
     from tinyassets.credential_vault import _connection_grant_record_digest
 
-    def_id = provider_name.split("api_key_http:", 1)[-1]
+    def_id = provider_name.split(":", 1)[-1]
     _pname, grant_id, connection_id, credential_ref = _open_serving_context(
         base, universe_id, owner_user_id, def_id
     )
@@ -325,7 +330,7 @@ def _open_connection_id(base: Path, universe_id: str, provider_name: str, *,
     caller supplies its independently admitted owner; a definition or grant's own
     owner must never stand in for that authority.
     Callers MUST follow with verify_open_grant_custody for the rotation gate."""
-    def_id = provider_name.split("api_key_http:", 1)[-1]
+    def_id = provider_name.split(":", 1)[-1]
     return _open_serving_context(base, universe_id, owner_user_id, def_id)[2]
 
 
@@ -345,7 +350,7 @@ def _resolve_serving_source(
 ) -> _ServingSource:
     selected = provider.strip()
     provider_name, grant_id, connection_id, credential_ref = _open_serving_context(
-        base, uid, owner, selected.removeprefix("api_key_http:")
+        base, uid, owner, selected.split(":", 1)[-1]
     )
     selected = provider_name
     open_grant = (grant_id, connection_id, credential_ref)
@@ -1088,13 +1093,13 @@ def resolve_current_serving_provider_authority(
         provider = (assignment.provider if assignment is not None
                     and assignment.provider in sources else sorted(sources)[0])
 
-    definition_id = provider.split("api_key_http:", 1)[-1]
+    definition_id = provider.split(":", 1)[-1]
     _provider_name, grant_id, connection_id, _credential_ref = _open_serving_context(
         base, uid, owner, definition_id
     )
     return CurrentServingProviderAuthority(
         provider=provider,
-        access_method="api_key_http",
+        access_method=provider.split(":", 1)[0],
         connection_id=connection_id,
         grant_id=grant_id,
     )

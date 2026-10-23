@@ -76,7 +76,7 @@ class OwnerVolumes:
         return self.store / f"{uid}.img"
 
     @contextmanager
-    def _lock(self, uid: int):
+    def _lock(self, uid: int, *, blocking=True):
         import fcntl
 
         self._image(uid)
@@ -85,16 +85,16 @@ class OwnerVolumes:
             yield
             return
         with (self.locks / str(uid)).open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             self._held.uids = held | {uid}
             try:
                 yield
             finally:
                 self._held.uids = held
 
-    def operation(self, uid: int):
+    def operation(self, uid: int, *, blocking=True):
         """C1/C2: serialize local execution only; the broker owns lifecycle authority."""
-        return self._lock(uid)
+        return self._lock(uid, blocking=blocking)
 
     def size(self, uid: int) -> int:
         """Opaque image length, never a filesystem path inside a volume."""

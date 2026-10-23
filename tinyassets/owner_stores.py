@@ -26,6 +26,7 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/storage/owner_fence.py",
     # Router identity state, never written by an owner's execution generation.
     "tinyassets/router_credentials.py",
+    "tinyassets/router_account_deletion.py",
     # Broker-held shared state (plans, credential-free source descriptors),
     # likewise outside every owner's box.
     "tinyassets/broker/vault.py",
@@ -126,6 +127,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/onboarding/canary_sign_in.py",
     "tinyassets/outcomes/schema.py",
     "tinyassets/provider_assignment.py",
+    "tinyassets/provider_assignment_departure.py",
     "tinyassets/provider_assignment_manifest.py",
     "tinyassets/providers/connection_lifecycle.py",
     "tinyassets/control_plane/continuations.py",

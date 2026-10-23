@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
@@ -63,6 +65,21 @@ def resolve_box(owner: str) -> BoxRoute:
     return BoxRoute(route.socket, route.secret)
 
 
+def admit_box(owner: str) -> None:
+    """Ask the broker to admit an authenticated owner with no route yet.
+
+    A refusal (erased, recovery) answers like an unknown owner; an unreachable
+    broker stays a retryable 503.
+    """
+    from tinyassets.broker.owner_identities import admit_owner
+    from tinyassets.storage import data_dir
+
+    try:
+        admit_owner(data_dir(), principal=owner)
+    except PermissionError:
+        raise LookupError("owner admission refused") from None
+
+
 def _headers(headers, *, private=False):
     blocked = set(_HOP)
     for name, value in headers:
@@ -74,8 +91,8 @@ def _headers(headers, *, private=False):
 
 
 class OwnerRouter:
-    def __init__(self, app, *, resolver=resolve_box):
-        self.app, self.resolver = app, resolver
+    def __init__(self, app, *, resolver=resolve_box, admitter=admit_box):
+        self.app, self.resolver, self.admitter = app, resolver, admitter
 
     def __getattr__(self, name):
         return getattr(self.app, name)
@@ -136,19 +153,49 @@ class OwnerRouter:
                 identity = replace(identity, metadata={**identity.metadata,
                                                        "router_owner_session": session})
         try:
-            route = await run_in_threadpool(self.resolver, identity.user_id)
+            try:
+                route = await run_in_threadpool(self.resolver, identity.user_id)
+            except LookupError:
+                # A first sign-in: the broker's admission authority decides,
+                # exactly as it decides a cold wake (C5, C6). Erased owners and
+                # recovery are refused there; the router only asks.
+                await run_in_threadpool(self.admitter, identity.user_id)
+                route = await run_in_threadpool(self.resolver, identity.user_id)
         except LookupError:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)
         except (OSError, RuntimeError):
-            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
-                scope, receive, send)
+            return await _unavailable()(scope, receive, send)
         await forward(scope, receive, send, identity, route)
+
+
+def _unavailable(*, retryable=True):
+    headers = {"Cache-Control": "no-store"}
+    if retryable:
+        headers["Retry-After"] = "5"
+    return JSONResponse({"error": "owner_box_unavailable"}, status_code=503, headers=headers)
+
+
+def _public_host() -> bytes:
+    resource = os.environ.get(
+        "UNIVERSE_SERVER_URL",
+        f"http://localhost:{os.environ.get('UNIVERSE_SERVER_PORT', '8001')}",
+    )
+    if os.environ.get("UNIVERSE_SERVER_AUTH", "").strip().lower() == "workos":
+        resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip() or resource
+    return urlsplit(resource).netloc.lower().encode("ascii")
 
 
 async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
     headers = _headers(scope["headers"], private=True)
+    # The tunnel rewrites Host before the router sees it. The box checks a JSON
+    # request's Origin against its Host, so it must see the public host the
+    # user addressed; a cross-site Origin still fails that check.
+    public = _public_host()
+    if public:
+        headers = [(name, value) for name, value in headers if name.lower() != b"host"]
+        headers.append((b"host", public))
     headers.extend([
         (b"x-owner", identity.user_id.encode("utf-8")),
         (b"x-box-secret", route.secret.encode("ascii")),
@@ -185,8 +232,7 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
         return
     except httpx.ConnectError:
         if not cold:
-            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
-                scope, receive, send)
+            return await _unavailable()(scope, receive, send)
         from tinyassets.broker.owner_identities import wake_owner
         from tinyassets.storage import data_dir
 
@@ -194,12 +240,11 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
             await run_in_threadpool(wake_owner, data_dir(), principal=identity.user_id)
             route = resolve_box(identity.user_id)
         except (LookupError, OSError, RuntimeError):
-            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
-                scope, receive, send)
+            return await _unavailable()(scope, receive, send)
         # ConnectError occurs before HTTP headers or the request body are sent.
         # Wake replies contain no route: always select the current projection.
         await forward(scope, receive, send, identity, route, cold=False)
     except httpx.HTTPError:
         if started:
             raise  # A truncated stream must never look like a successful response.
-        await JSONResponse({"error": "box_unavailable"}, status_code=503)(scope, receive, send)
+        await _unavailable(retryable=False)(scope, receive, send)

@@ -81,6 +81,8 @@ def test_route_operation_rejects_forged_authority_or_socket_overrides(
 
 @pytest.fixture
 def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    monkeypatch.setenv("TINYASSETS_RUN_FILE_CUSTODY_MAX_BYTES", str(1024**3))
     from tinyassets import router_credentials
     from tinyassets.boxes import relay as relay_module
     from tinyassets.boxes.relay import OwnerRelays
@@ -243,7 +245,7 @@ def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T1')
-def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
+def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes, admitted):
     async def exercise():
         from fastmcp import Client
         from fastmcp.client.transports import StreamableHttpTransport
@@ -261,10 +263,14 @@ def test_owner_doors_use_only_authenticated_box_and_stream_mcp(router, boxes):
             response = await client.post("/app/api/file", headers={
                 "authorization": "Bearer bob"}, json={"graph_id": "cc-alice", "path": "hello.txt"})
             assert response.status_code == 404, response.text
+            served = {admitted.owner_machine(owner) for owner in ("alice", "bob")}
             for owner in ("reserved", "unknown"):
                 response = await client.post("/app/api/file", headers={
                     "authorization": "Bearer " + owner}, json={"graph_id": "cc-alice"})
-                assert response.status_code == 404, response.text
+                # A first sign-in is admitted into its own box (C5/C6). This
+                # fixture provisions no box for it: unavailable, never alice's.
+                assert response.status_code == 503, response.text
+                assert admitted.owner_machine(owner) not in served | {None}
             response = await client.get("/api/command-centers/cc-alice/status", headers={
                 "authorization": "Bearer " + boxes.keys["alice"]})
             assert response.status_code == 200, response.text
@@ -317,6 +323,42 @@ def test_shared_owner_session_authenticates_and_carries_protected_view_proof(rou
                 "origin": "https://foreign.example"}, json={})
             assert refused.status_code == 401
 
+    asyncio.run(exercise())
+
+
+@pytest.mark.verifies('owner-daemon-in-box:T1')
+@pytest.mark.parametrize("rewrite_host", [True, False])
+def test_box_public_origin_preferences_and_upload(router, boxes, monkeypatch, rewrite_host):
+    if not rewrite_host:
+        # Prove boxes carry the origin independently of the retained rollout hotfix.
+        monkeypatch.setattr("tinyassets.owner_router._public_host", lambda: b"")
+    (boxes.roots["alice"] / "cc-alice" / "soul.md").write_text("Fixture home is complete.\n")
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://internal-router") as client:
+            headers = {"authorization": "Bearer alice", "origin": "https://tinyassets.io"}
+            policy = {"version": 1, "mode": "automatic", "saved_default": None,
+                      "fallbacks": []}
+            response = await client.post("/app/models/preferences", headers=headers,
+                                         json={"expected_generation": 0, "policy": policy})
+            assert response.status_code == 200, response.text
+            refused = await client.post("/app/models/preferences", headers=headers | {
+                "origin": "https://foreign.example"}, json={})
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["error"] == "same_origin_json_required"
+            body = b"public origin upload\n"
+            metadata = {"version": 1, "label": "public-origin-upload", "filename": "origin.txt",
+                        "expected_universe_id": "cc-alice", "media_type": "text/plain",
+                        "size_bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+            upload_headers = headers | {"content-type": "application/octet-stream",
+                "x-tinyassets-upload": base64.urlsafe_b64encode(
+                    json.dumps(metadata).encode()).decode()}
+            refused = await client.post("/app/files", headers=upload_headers | {
+                "origin": "https://foreign.example"}, content=body)
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["error"] == "same_origin_octet_stream_required"
+            response = await client.post("/app/files", headers=upload_headers, content=body)
+            assert response.status_code == 200, response.text
     asyncio.run(exercise())
 
 

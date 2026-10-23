@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/providers/subscription_lease.py::save_state": (
+        CALL_SCOPED, "at most three custody writeback attempts within one owner-box call",
+    ),
 
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons._launch": (
         CALL_SCOPED, "one broker-authorized launch waits for its bounded readiness deadline",
@@ -125,6 +128,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/boxes/bootstrap.py::BrokerRegistration.maintain": (
+        CONTROL_PLANE,
+        "the broker re-registers with the root box host after a host restart",
+    ),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
         "root box host observes exited processes; only the broker selects lifecycle work",

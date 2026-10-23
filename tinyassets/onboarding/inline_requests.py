@@ -51,8 +51,8 @@ async def handle_approval(request):
                 try:
                     return offer_connection_access(base=_base_path(), uid=uid,
                         owner=identity.user_id, grant_id=data["grant_id"])
-                except (PermissionError, ValueError, LookupError, ProviderError):
-                    raise HostedAuthError("model_confirmation_unavailable", 409) from None
+                except (PermissionError, ValueError, LookupError, ProviderError) as exc:
+                    raise HostedAuthError("model_confirmation_unavailable", 409) from exc
             if operation == "answer":
                 from tinyassets.api.pending_requests import _answer_request
 

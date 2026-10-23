@@ -484,6 +484,41 @@ def test_slow_status_for_one_owner_cannot_block_another_wake(authority):
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("failure", [ConnectionRefusedError, TimeoutError, BlockingIOError])
+def test_scheduled_host_failure_recovers_without_restarting_waker(authority, failure):
+    from tinyassets.broker.waker import Waker
+
+    a = authority
+    routing = a.server.routing
+    attempts = []
+
+    def host(operation, **fields):
+        if operation == "status":
+            attempts.append(operation)
+            if len(attempts) == 1:
+                raise failure("transient host failure")
+        return a.host(operation, **fields)
+
+    routing.volumes.execute = host
+    index = SimpleNamespace(identities=a.identities, due=lambda **kw: ["alice"])
+    waker = Waker(index, None, wake=routing.wake, lifecycle_tick=routing.tick)
+
+    async def exercise():
+        await waker.tick()
+        await asyncio.gather(*waker.pending.values(), return_exceptions=True)
+        assert routing._host_calls == 0
+        assert "wake:alice" not in a.events
+        await waker.tick()
+        await asyncio.gather(*waker.pending.values())
+        await routing.close()
+        assert routing._host_calls == 0
+        assert "wake:alice" in a.events
+        assert not admission.owner_lock(a.identities.path, "alice").locked()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_host_has_no_capacity_decision_and_capacity_wait_has_no_host_rpc():
     root = Path(__file__).resolve().parents[1]
     host = (root / "tinyassets/boxes/owner_daemons.py").read_text()

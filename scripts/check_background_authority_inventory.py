@@ -56,6 +56,8 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Required reviewed CLASSIFICATION of canonical execution callsites.
 # New boundaries must be reviewed.
 CLASSIFICATION: tuple[CallSite, ...] = (
+    # Owner-box unauthenticated discovery through the broker's public egress proxy.
+    CallSite("tinyassets/connection_oauth/model_discovery.py", "transport_fetch", "client.stream"),
     # K1 remote MCP transport uses the governed connection effector stream, not
     # a graph executor. Exact launch/connection authority is rechecked per reply.
     CallSite("tinyassets/mcp_remote.py", "RemoteMcp._exchange", "self.stream"),

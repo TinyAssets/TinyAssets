@@ -35,6 +35,12 @@ the scrub precedes the app build, the reconciler threads and uvicorn — the
 onboarding route being dark (``TINYASSETS_ONBOARDING_APP`` off) must not leave the
 key sitting in the environment.
 
+Inside an admitted owner box the key instead lives in that owner's durable
+volume, loaded before the app serves, without entering the environment. The
+box is the isolation boundary: a backup of the entire owner volume includes
+its key as well as ciphertext, so encryption does not protect against a reader
+of that whole volume. Shared authentication continues to use the router key.
+
 **Handles rotate.** A refresh mints a NEW handle and replaces the old record with
 a sealed tombstone naming the successor, expiring after a short grace. So a
 captured handle stops working roughly one rotation after capture instead of
@@ -153,10 +159,25 @@ def _load_key() -> bytes:
     # without the key. Popping BEFORE the parse means even a rejected value
     # does not survive in the environment.
     raw = os.environ.pop(SEAL_KEY_ENV, "")
+    from tinyassets.owner_runtime import current
+
+    runtime = current()
+    if runtime is not None:
+        from tinyassets.boxes.session_key import load
+
+        key = load(runtime.root)
+        _durable_key = True
+        return key
+
+    from tinyassets.boxes.layout import BROKER_UID
     from tinyassets.storage import data_dir
     from tinyassets.universe_files import read_data_path
 
-    restored_key = read_data_path(data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
+    # The broker holds no sessions and is barred from the router's .runtime;
+    # importing this module there must not read it (2026-10-22: that read
+    # refused every model sign-in exchange).
+    restored_key = None if os.geteuid() == BROKER_UID else read_data_path(
+        data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
     if restored_key is not None:
         raw = restored_key.decode("ascii").strip()
     if raw.strip():

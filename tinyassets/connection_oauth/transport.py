@@ -112,6 +112,8 @@ def request_json_with_headers(
     json_body: dict[str, Any] | None = None,
     secrets: tuple[str, ...] = (),
     basic_auth: tuple[str, str] | None = None,
+    max_body_bytes: int = MAX_BODY_BYTES,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> tuple[int, Any, dict[str, str]]:
     """One bounded request; returns status, parsed JSON (or None), and response headers.
 
@@ -133,8 +135,8 @@ def request_json_with_headers(
     # Looked up on the module at call time, so the transport a deployment (or a
     # test's loopback) installs is the one used, never an import-time copy.
     driver = oc._SsrfHardenedHttpDriver(
-        timeout=TIMEOUT_SECONDS, max_total_seconds=TIMEOUT_SECONDS,
-        max_body_bytes=MAX_BODY_BYTES,
+        timeout=timeout, max_total_seconds=timeout,
+        max_body_bytes=max_body_bytes,
     )
     try:
         result = driver(

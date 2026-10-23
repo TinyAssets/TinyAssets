@@ -776,7 +776,25 @@ if [ -n "$match" ] && [ ! -f "${FAKE_INSTALL_FAIL_STATE}" ]; then
       ;;
   esac
 fi
+# Production liveness is shared by UID 1001 and broker GID 1102. Record the
+# real contract above, but create the fixture directory as this test's user.
+case "$*" in
+  "-d -o 1001 -g 1102 -m 2770 -- "*/.consumer_liveness)
+    exec /usr/bin/install -d -m 2770 -- "${9}" ;;
+esac
 exec /usr/bin/install "$@"
+'''
+
+# Only emulate the production liveness ownership in an unprivileged fixture.
+FAKE_CHOWN = r'''#!/bin/sh
+printf 'chown %s\n' "$*" >> "$FAKE_INSTALL_CALLS"
+case "$*" in
+  "1001:1102 -- "*/.consumer_liveness)
+    if [ "$(id -u)" != 0 ]; then
+      exec /usr/bin/chown "$(id -u):$(id -g)" -- "$3"
+    fi ;;
+esac
+exec /usr/bin/chown "$@"
 '''
 
 # Writes KEY=value into ENV_FILE the way install-tinyassets-env.sh does. The
@@ -1053,6 +1071,7 @@ def box(tmp_path: Path) -> Box:
     # expect them.
     if Path("/usr/bin/install").exists():
         fake_bins.append(("install", FAKE_INSTALL))
+        fake_bins.append(("chown", FAKE_CHOWN))
     if Path("/bin/rm").exists():
         fake_bins.append(("rm", FAKE_RM))
     for name, body in fake_bins:
@@ -1808,13 +1827,8 @@ def test_a_backup_older_than_this_run_is_refused(box: Box):
 
 
 def test_unprovisioned_canary_refuses_an_owner_box_candidate(box: Box):
-    """An owner-box candidate would move data, so a missing canary stops first."""
-    _volume, env = _cutover(box)
-    box.set_docker_state(
-        migration_pending=False,
-        active_box_layout={NEW_IMAGE: "owner-box"},
-        known_layouts={NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-box"]}},
-    )
+    """A pending box move refuses without a canary before stopping or snapshotting."""
+    _volume, env, _, _ = _owner_box_cutover(box)
     env["CORE_CANARY_PROVISIONED"] = "0"
     env["BOX_STORE_CHECK"] = "/bin/true"
     before = box.live()
@@ -1822,11 +1836,13 @@ def test_unprovisioned_canary_refuses_an_owner_box_candidate(box: Box):
     completed = box.run(NEW_IMAGE, **env)
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert _result(completed) == "migration_refused"
-    assert "check=core_canary_not_provisioned move=owner-box_candidate" in (
+    assert "check=core_canary_not_provisioned move=box_layout_pending" in (
         _migration_refusal(completed)
     )
     calls = box.docker_calls_text()
     assert "stop --time" not in calls
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+    assert "box layout inspected: candidate=owner-box rc=10" in completed.stdout
     assert "box_layout_migration apply" not in calls
     assert "agent_file_migration apply" not in calls
     assert box.live() == before
@@ -1878,7 +1894,7 @@ def test_an_ambiguous_layout_census_refuses_instead_of_skipping(box: Box):
 
 
 @pytest.mark.parametrize("gate,reason", [
-    ("canary", "check=core_canary_not_provisioned move=owner-box_candidate"),
+    ("canary", "check=core_canary_not_provisioned move=box_layout_pending"),
     ("in_flight", "check=turns_idle rc=10"),
     ("backup", "check=backup_verify"),
     ("census", "check=box_layout_probe rc=4"),

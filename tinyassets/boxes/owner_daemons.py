@@ -255,7 +255,9 @@ class OwnerDaemons:
                 self.boxes.pop(uid, None)
 
     def status(self, uid):
-        with self.volumes.operation(uid):
+        # A copy can hold this lock for hours. Refuse promptly so the broker
+        # retries instead of leaving timed-out status threads queued behind it.
+        with self.volumes.operation(uid, blocking=False):
             box = self.boxes.get(uid)
             awake = bool(box and box.awake and self.runtime.alive(uid))
             activity = self._activity(box) if awake else None
@@ -264,6 +266,7 @@ class OwnerDaemons:
                     "error": box.error if box else "",
                     "idle_seconds": time.monotonic() - box.last if activity else None,
                     "active": activity["active"] if activity else None,
+                    "draining": activity["draining"] if activity else None,
                     "uptime": time.monotonic() - box.started if awake else 0,
                     "volume_size": self.volumes.size(uid) if awake else None}
 

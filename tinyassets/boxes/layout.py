@@ -17,7 +17,7 @@ BROKER_UID = 1002
 #: Shared publication and router runtime group; never owner definitions.
 BROKER_READ_GID = 1102
 VAULT_FILE_MODE = 0o640
-LIVENESS_DIRECTORY_MODE = 0o2750
+LIVENESS_DIRECTORY_MODE = 0o2770
 LIVENESS_FILE_MODE = 0o640
 OWNER_BOX_MIGRATION = "owner-daemon"
 

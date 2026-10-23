@@ -784,6 +784,15 @@ restart_stack() {
   local image
   image="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1)"
   bundle_matches_image "$image" || return 1
+  # The broker starts before the daemon and must create usage lease locks.
+  local data_mount liveness
+  data_mount="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)" || return 1
+  [ -d "$data_mount" ] && [ ! -L "$data_mount" ] || return 1
+  liveness="$data_mount/.consumer_liveness"
+  [ ! -L "$liveness" ] || return 1
+  install -d -o 1001 -g 1102 -m 2770 -- "$liveness" || return 1
+  chown 1001:1102 -- "$liveness" || return 1
+  chmod 2770 -- "$liveness" || return 1
   systemctl reset-failed "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
@@ -2177,16 +2186,13 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
   MIGRATION_RC=0  # a rollback never migrates and does not take this snapshot
   probe_out=""
 else
-  # A missing canary blocks only a deploy that would move data. An owner-box
-  # candidate is one. A pending migration and the box move are checked at the
-  # step that would apply them. Every other deploy warns and continues.
+  # A missing canary blocks only a deploy that would move data. Pending
+  # agent-files and box-layout moves refuse at their apply step, before any
+  # stop or snapshot. An already-committed owner-box layout warns and continues.
   # Only the literal 1 from verify_core_canary_provision.py counts; anything
   # else, including an unset value, is not provisioned.
-  if [ "$CORE_CANARY_PROVISIONED" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
-    migration_refused "check=core_canary_not_provisioned move=owner-box_candidate"
-  fi
   if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
-    log "WARNING: core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned); continuing because this deploy is not an owner-box candidate. A pending migration or other data move still refuses."
+    log "WARNING: core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned); continuing read-only probes. A pending agent-files or box-layout move still refuses before any stop or snapshot."
     printf '%s\n' "::warning::core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned). Data-moving deploys refuse; this deploy continues only if it does not move data." >&2
   fi
   # Read-only probes stay up. The stop and the verified snapshot happen inside

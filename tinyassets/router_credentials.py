@@ -148,7 +148,9 @@ def _revoke_account(root: Path, owner: str, keys):
         owner_sessions,
         session_store,
     )
+    from tinyassets.router_account_deletion import revoke_local_tokens
 
+    revoke_local_tokens(root, owner, deleted=True)
     # This process's data_dir is the router root, never the requesting box.
     owner_sessions.revoke_owner(owner)
     session_store.revoke_owner(owner)

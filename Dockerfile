@@ -184,6 +184,7 @@ RUN set -e; \
         git \
         gnupg \
         libgomp1 \
+        libpsl5 \
         ffmpeg \
         ripgrep \
         rclone \
@@ -280,6 +281,13 @@ COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # Install the actual package metadata and entry points against /app. Dependencies
 # above use the same pyproject extras and are not resolved a second time.
 RUN /opt/venv/bin/pip install --no-cache-dir --no-deps -e ".[mcp,browser]"
+
+# This image is also the exported read-only owner-box rootfs. Subscription
+# software is platform software; only login/configuration belongs in owner HOME.
+RUN /opt/venv/bin/python -m tinyassets.providers.subscription_image && \
+    chown -R root:root /opt/tinyassets/cli && \
+    chmod -R a-w,a+rX /opt/tinyassets/cli && \
+    rm -rf /root/.npm /root/.cache/pip
 
 # Static data files required at runtime.
 # world_rules.lp is the ASP constraint program; asp_engine.py resolves it

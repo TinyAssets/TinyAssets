@@ -477,6 +477,20 @@ class _Connection:
             if op == "USAGE_LEASE":
                 await self._usage_lease(doc)
                 return
+            if op == "SUBSCRIPTION_CUSTODY":
+                from tinyassets.broker.subscription_custody import operation
+
+                self._box_scope(doc)
+                try:
+                    if set(doc) != {"op", "document"}:
+                        raise ValueError("invalid native custody fields")
+                    result = await asyncio.to_thread(
+                        operation, self._server._data_root, self._box_owner, doc["document"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception:  # credentials must never enter an error payload
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
                           "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")
@@ -688,6 +702,12 @@ class _Connection:
 
     async def _admit_owner(self, doc):
         try:
+            from tinyassets.broker.admission import read
+
+            # A deleted account's late request must not queue behind its own
+            # deletion job's owner lock; the lock-free record answers it.
+            if read(self._server._owner_identities, doc["principal"]).state == "erased":
+                return {"op": "OWNER_ADMIT_REFUSED"}
             return await owner_call(self._server._owner_identities.path, doc["principal"],
                                     self._admit_owner_locked, doc)
         except Exception:
@@ -911,7 +931,10 @@ class _Connection:
             if self._role == BOX and ("request_ref" in doc["document"]
                     or doc["document"].get("secret")
                     or doc["document"]["action"] in {
-                        "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
+                        "rotate", "oauth_exchange",
+                        "preset_exchange"}
+                    or (doc["document"]["action"] == "oauth_offer"
+                        and doc["document"].get("registration_url"))
                     or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
                 raise PermissionError("credential deposits require the door")
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
@@ -937,6 +960,14 @@ class _Connection:
         except OwnerErased:
             return {"op": "HTTP_CONNECT_RESULT", "result": {"error": "deposit_failed"}}
         except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            import logging
+            import traceback
+
+            frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
+            logging.getLogger(__name__).warning(
+                "http connect refused: %s.%s at %s:%s", type(exc).__module__,
+                type(exc).__qualname__, frame.filename if frame else "?",
+                frame.lineno if frame else "?")
             return {"op": "HTTP_CONNECT_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}

@@ -51,7 +51,8 @@
   }
   async function openExternal(url){
     if(DESKTOP_SHELL){
-      if(!window.tinyassetsDesktop)throw new Error('Update the desktop app to open the system browser.');
+      // Shells before 0.1.1 have no bridge, but they hand every window.open to the system browser.
+      if(!window.tinyassetsDesktop){window.open(url,"_blank","noopener");return;}
       await window.tinyassetsDesktop.openExternal(url);return;
     }
     const B = NATIVE ? nativePlugin("Browser") : null;
@@ -1394,7 +1395,19 @@
     };
   }
 
+  // The platform relays a request answer to the agent as a turn of data. The
+  // person sees what they decided, never the relay's JSON.
+  function requestAnswerLine(text){
+    if(typeof text!=="string"||!text.startsWith("The owner answered your request."))return null;
+    try{
+      const outcome=JSON.parse(text.slice(text.indexOf("{"))).outcome||{};
+      const verb=outcome.decision==="allowed"?"You allowed":
+        outcome.decision==="denied"||outcome.decision==="declined"?"You declined":"You answered";
+      return verb+": "+(typeof outcome.title==="string"&&outcome.title?outcome.title:"a request");
+    }catch(_e){return "You answered a request.";}
+  }
   function appendMessage(role,text,extra,instant,queued){
+    if(role==="user"){const line=requestAnswerLine(text);if(line!==null)text=line;}
     if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
     const thread=$("thread"), el=document.createElement("div");
     el.className="msg msg--"+role;
@@ -2716,7 +2729,12 @@
     // levels, because the server replaces the whole policy document.
     automatic(){return {version:2,mode:"automatic",saved_default:null,fallbacks:[],efforts:[]};},
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
-    label(ref){return ref.provider_ref+" · "+(ref.model_id||"Provider default");},
+    sourceLabel(provider){
+      const source=(this.snapshot?.sources||[]).find(item=>item.provider_ref===provider);
+      if(typeof source?.display_name==="string"&&source.display_name)return source.display_name;
+      return "Connected source";
+    },
+    label(ref){return this.sourceLabel(ref.provider_ref)+" · "+(ref.model_id||"Provider default");},
     // ---- effort ---------------------------------------------------------
     //
     // "effort level controls should also be avalible" (founder, 2026-10-03).
@@ -2848,20 +2866,47 @@
       // Everything the command center can actually use, then - only if there are any -
       // the ones that cannot be used yet, greyed under one small divider with
       // their reason. A model is never silently absent.
-      const usable=[],blocked=[],refreshing=[];
-      for(const row of this.rows()) (this.usable(row)?usable:
-        (row.reasons||[]).some(r=>this.refreshLabel(r.reason))?refreshing:blocked).push(row);
+      const usable=this.rows().filter(row=>this.usable(row));
       const isCurrent=key=>!!current&&this.key(current)===key;
-      for(const row of usable){
-        const key=this.key(row.reference);
-        this.menuRow(this.label(row.reference),isCurrent(key),pickable?()=>this.choose(key):null);
+      // Models are grouped under their source and start collapsed: Automatic
+      // above already uses the strongest connected source, so most people never
+      // open a group. A group holding the current choice is ticked.
+      this.expanded=this.expanded||new Set();
+      const groups=new Map();
+      for(const row of this.rows()){
+        const provider=row.reference.provider_ref;
+        if(!groups.has(provider))groups.set(provider,[]);
+        groups.get(provider).push(row);
+      }
+      for(const [provider,rows] of groups){
+        const open=this.expanded.has(provider);
+        const holds=rows.some(row=>isCurrent(this.key(row.reference)));
+        const head=this.menuRow((open?"\u25be ":"\u25b8 ")+this.sourceLabel(provider)+
+          " ("+rows.length+")",holds&&!open,()=>{
+            if(open)this.expanded.delete(provider);else this.expanded.add(provider);
+            this.renderMenu();
+            const again=this.menuItems().find(node=>node.dataset.group===provider);
+            if(again)again.focus();
+          });
+        head.dataset.group=provider;head.classList.add("model-menu-group");
+        head.setAttribute("aria-expanded",open?"true":"false");
+        if(!open)continue;
+        for(const row of rows){
+          const key=this.key(row.reference);
+          const item=this.menuRow(row.reference.model_id||"Provider default",isCurrent(key),
+            pickable&&this.usable(row)?()=>this.choose(key):null,
+            this.usable(row)?null:(row.reasons||[]).map(r=>
+              this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", ")||
+              "availability unconfirmed");
+          item.classList.add("model-menu-item--nested");item.style.paddingLeft="2em";
+        }
       }
       // The current choice is ALWAYS shown as current, at the top of the list,
       // even when it can no longer be used - whether its model went away entirely
       // or merely stopped being available. The command center is configured that way and
       // a list that showed it unticked, or only down under "needs access", would
       // misreport what the command center is set to.
-      if(current&&!usable.some(row=>isCurrent(this.key(row.reference)))){
+      if(current&&!this.rows().some(row=>isCurrent(this.key(row.reference)))){
         const row=this.row(current);
         const why=row ? "— currently unavailable" : "— unavailable";
         this.menuRow(this.label(current),true,null,why);
@@ -2871,18 +2916,6 @@
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
         const labels=source.reasons.map(r=>this.refreshLabel(r.reason)).filter(Boolean);
         if(labels.length) this.menuNote(source.provider_ref+" — "+labels.join(", "));
-      }
-      if(refreshing.length){
-        this.menuNote("Checking availability","model-menu-divider");
-        for(const row of refreshing) this.menuRow(this.label(row.reference),false,null,
-          "— "+row.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", "));
-      }
-      if(blocked.length){
-        this.menuNote("Needs access","model-menu-divider");
-        for(const row of blocked){
-          const reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
-          this.menuRow(this.label(row.reference),false,null,"— "+(reasons||"availability unconfirmed"));
-        }
       }
       // Effort for the current model, offering exactly the levels its source
       // advertised. Absent entirely when the model has none, so the control
@@ -3057,7 +3090,7 @@
       const accessList=$("model-access-sources");accessList.replaceChildren();
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
         const proposal=this.accessProposal(source),li=document.createElement("li");
-        const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
+        const label=document.createElement("span");label.textContent=this.sourceLabel(source.provider_ref);li.appendChild(label);
         if(proposal){
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
           btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
@@ -4409,6 +4442,22 @@
   // platform's own blank one when the owner has chosen nothing (AppUI
   // mountDefault) -- so this only ever targets the frame. The #cc-blank
   // in-document stand-in it used to fall back to is gone with cc-package.
+  function copyButton(value,label){
+    const button=document.createElement("button");button.type="button";
+    button.className="btn btn--ghost";button.textContent=label||"Copy";
+    button.addEventListener("click",async()=>{
+      try{await navigator.clipboard.writeText(String(value));button.textContent="Copied";}
+      catch(_e){
+        const range=document.createRange();const holder=document.createElement("span");
+        holder.textContent=String(value);button.after(holder);range.selectNodeContents(holder);
+        const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+        button.textContent="Press Ctrl+C";
+      }
+      setTimeout(()=>{button.textContent=label||"Copy";},2000);
+    });
+    return button;
+  }
+
   function focusCommandCenter(){
     const frame=$("ui-frame");
     if(frame){
@@ -4686,11 +4735,16 @@
 
   function wireCommandCenter(){
     $("view-chat").addEventListener("pointerdown",event=>{
-      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
-        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
-        if(!event.target.closest("button")) event.preventDefault();
-        focusCommandCenter();
-      }
+      const target=event.target;
+      if(target.closest("#chat-cloud, #chat-cloud-bubble")) return;
+      // Text, fields and dialogs keep the browser's own selection and copy.
+      if(target.closest("a,input,textarea,select,label,dialog,[role=dialog],[role=status],"+
+        "p,span,li,pre,code,h1,h2,h3,h4,td,th,[contenteditable]")) return;
+      if(target.closest("button")){ focusCommandCenter(); return; }
+      if(Array.from(target.childNodes).some(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim())) return;
+      // Avoid the pointer's default focus step undoing the handoff.
+      event.preventDefault();
+      focusCommandCenter();
     });
     $("chat-cloud").addEventListener("pointerdown",event=>{
       if(event.target===$("chat-cloud")) event.preventDefault();
@@ -5473,6 +5527,13 @@
     if(panel&&!panel.hidden&&panel.scrollIntoView) panel.scrollIntoView({block:"nearest",behavior:"smooth"});
   }
 
+  function closeConnectRequest(){
+    railOpen=null;
+    const dialog=$("connect-panel").closest("dialog");
+    if(dialog&&dialog.open)dialog.close();
+    renderRail(railCache);
+  }
+
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
@@ -5555,7 +5616,6 @@
         if(NATIVE)await openExternal(url);else popup.location.href=url;
         this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
       }catch(error){
-        if(popup)popup.close();
         if(this.current(record)){
           this.failed('Sign-in could not start. Your message is kept.');
           if(error.signIn){
@@ -5816,12 +5876,20 @@
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
            !req.action||req.action.type!=="bind_model_access") throw new Error("invalid_connection_response");
         this.setup="recovery";this.request=req;
+        await refreshRail();closeConnectRequest();
       }catch(error){
         if(epoch!==this.epoch) return;
         req=null;this.busy=false;
         await enterSignedIn();
         if(epoch!==this.epoch) return;
         const code=error&&error.message;
+        // Nothing left to resume (the saved connection is gone, e.g. after a
+        // migration): the setup is disconnected, so start a fresh sign-in
+        // instead of offering a resume that can never finish.
+        if(!callback&&code==="model_authorization_required"&&this.preset){
+          this.setup="disconnected";this.status("Starting a fresh sign-in…");
+          await this.begin();return;
+        }
         if(code==="no_eligible_free_agent_model"){
           this.status("Your account there offers no free model that can run your command center right now. Check its model and privacy settings, then tap Finish connecting, or connect another way below. Nothing paid was approved.");
         }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
@@ -7493,6 +7561,19 @@
       MCP._assertLogin(epoch);
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
+      if(operation==="oauth_begin"||operation==="source_sign_in"){
+        const discovery=await fetch("/app/connection-discovery",{
+          method:"POST",credentials:"same-origin",cache:"no-store",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+          body:JSON.stringify(payload.preset_id?{preset_id:payload.preset_id}:
+            payload.definition?{definition:payload.definition}:{destination:payload.destination})});
+        const prepared=await discovery.json();
+        MCP._assertLogin(epoch);
+        if(!discovery.ok||prepared.error)throw new Error(prepared.error||"discovery_failed");
+        payload={code_challenge:payload.code_challenge,prepared:prepared.definition,
+          ...(payload.request_ref?{request_ref:payload.request_ref}:{})};
+        operation="oauth_begin";
+      }
       const {center:localCenter,...ownerPayload}=payload;
       void localCenter;
       const response=await fetch("/app/model-connect/"+operation,{
@@ -7565,7 +7646,7 @@
         const result=await this.post("oauth_exchange",payload);
         if(result.status==="confirmation_required"){
           HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
-          HostedModelConnect.paint();openConnectRequest("Connection saved. Review model access, then confirm.");
+          HostedModelConnect.paint();await refreshRail();closeConnectRequest();
           return;
         }
         if(result.status==="provisioned"){
@@ -7625,46 +7706,115 @@
   // Sources completed by SIGNING IN (installed data on the setup request). One tap
   // asks the server for the platform's own connect request, then hands it to the
   // generic sign-in client: the browser names only the source's id.
-  const SignInSourceCards={
-    signature:"",busy:false,
-    render(sources){
-      const host=$("connect-sign-in-sources");
-      const valid=(Array.isArray(sources)?sources:[]).filter(s=>s&&typeof s.id==="string"&&
-        /^[a-z0-9_]{1,64}$/.test(s.id)&&typeof s.name==="string"&&typeof s.label==="string"&&
-        s.label.length>0&&s.label.length<=80);
-      const signature=JSON.stringify(valid);
-      if(this.signature===signature) return;
-      this.signature=signature;host.replaceChildren();
-      for(const source of valid){
-        const card=document.createElement("div");card.className="connect-source";
-        const name=document.createElement("strong");name.className="connect-source-name";
-        name.textContent=source.name;card.appendChild(name);
-        const offer=document.createElement("p");offer.className="connect-terms";
-        offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
-        const terms=document.createElement("p");terms.className="connect-terms";
-        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
-        card.appendChild(terms);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
-        button.textContent=source.label;card.appendChild(button);
-        const status=document.createElement("p");status.className="rtab-note";
-        status.setAttribute("role","status");card.appendChild(status);
-        button.addEventListener("click",()=>this.start(source,button,status));
-        host.appendChild(card);
-      }
+  const SubscriptionSources={
+    busy:false,storageKey:"ta_cli_login",
+    saved(){
+      try{const saved=JSON.parse(pkceStore.getItem(this.storageKey)||"null");
+        return saved&&saved.owner===queueOwner&&saved.expires>Date.now()?saved:null;
+      }catch(_e){return null;}
     },
-    async start(source,button,status){
-      if(this.busy||NATIVE) return;
-      this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
+    async post(operation,body,epoch){
+      await ensureFreshToken();
+      if(epoch!==MCP._loginEpoch||!token())throw new Error("Sign in again to continue.");
+      const response=await fetch("/app/subscription-connect/"+operation,{
+        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
+      const result=await response.json();
+      if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
+      if(!response.ok||result.error)throw new Error("Connection did not finish. Sign in to the owner view and retry.");
+      return result;
+    },
+    async poll(flow,epoch){
+      try{return await this.post("poll",{flow},epoch);}
+      catch(_error){throw new Error("Sign-in was interrupted. Tap Connect to try again.");}
+    },
+    async start(source,ui,resume=null){
+      if(this.busy)return;
+      const external=NATIVE||DESKTOP_SHELL;
+      const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
+      this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
+      ui.shown=null;
+      ui.status.textContent="Setting up "+source.name+" for your agent. The first time takes about a minute…";
+      ui.cancel.onclick=()=>{cancelled=true;};
       try{
-        await ConnectOAuth.begin({title:source.name,origin:"platform"},status,button,
-          {source:true,preset_id:source.id});
+        let state=resume?await this.poll(flow,epoch):await this.post("begin",{source_id:source.id},epoch);flow=state.flow;
+        source.name=state.display_name||source.name||"this source";
+        if(state.status==="installing"){
+          pending=true;
+          appendMessage("system","Installing "+source.name+"? you'll be asked to sign in when it's ready");
+          closeConnectRequest();
+        }
+        pkceStore.setItem(this.storageKey,JSON.stringify({flow,source_id:source.id,
+          owner:queueOwner,opened,expires:Date.now()+900000}));
+        ui.submit.onclick=async()=>{
+          if(!ui.input.value.trim())return;
+          ui.submit.disabled=true;
+          try{await this.post("code",{flow,code:ui.input.value.trim()},epoch);ui.input.value="";}
+          catch(error){ui.status.textContent=error.message;}
+          finally{ui.submit.disabled=false;}
+        };
+        const deadline=Date.now()+900000;
+        while(Date.now()<deadline){
+          if(cancelled)throw new Error("Sign-in cancelled.");
+          if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
+          if(state.status==="cancelled")throw new Error("Sign-in was interrupted. Tap Connect to try again.");
+          if(state.status==="failed")throw new Error("Sign-in did not complete. Retry to connect.");
+          if(state.authorize_url&&!opened){
+            const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
+            if(pending){
+              const signIn=document.createElement("button");signIn.type="button";
+              signIn.textContent="Sign in to "+source.name;
+              signIn.onclick=()=>{signIn.disabled=true;
+                const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
+                  JSON.stringify({...saved,opened:true}));
+                openConnectRequest();
+                if(external)openExternal(url.href);else window.location.assign(url.href);};
+              appendMessage("system",source.name+" is ready to sign in.",signIn);
+            }else{
+              const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
+                JSON.stringify({...saved,opened:true}));
+              if(external)await openExternal(url.href);
+              else{window.location.assign(url.href);return;}
+            }
+            opened=true;
+          }
+          ui.input.hidden=ui.submit.hidden=!(state.accepts_code&&opened&&state.status==="waiting");
+          const shown=state.status==="installing"?"installing":state.code?"code:"+state.code:"browser";
+          if(ui.shown!==shown){
+            ui.shown=shown;
+            if(state.status==="installing")
+              ui.status.textContent="Setting up "+source.name+
+                " for your agent. The first time takes about a minute…";
+            else if(state.code){
+              const value=document.createElement("code");value.textContent=state.code;
+              value.style.userSelect="all";value.style.fontSize="1.1em";
+              ui.status.replaceChildren("Approve sign-in using code: ",value," ",copyButton(state.code));
+            }
+            else ui.status.textContent="Finish sign-in in your browser.";
+          }
+          if(state.status==="connected"){
+            const result=await this.post("finish",{flow},epoch);
+            if(result.status!=="connected")throw new Error("Signed in. Model setup still needs attention.");
+            ui.status.textContent="Connected. Your agent can use this subscription.";
+            appendMessage("system","Connected "+source.name+". Your agent is ready — say hello.");
+            pkceStore.removeItem(this.storageKey);
+            await closeExternal();await refreshRail();closeConnectRequest();return;
+          }
+          await sleep(1000);state=await this.poll(flow,epoch);
+        }
+        throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){
-        status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
-          "). Nothing was connected; try again in a moment.";
-        button.disabled=false;
-      }finally{this.busy=false;}
-    },
+        ui.status.textContent=error.message;
+        if(pending)appendMessage("system",source.name+": "+error.message);
+        pkceStore.removeItem(this.storageKey);
+        if(flow&&epoch===MCP._loginEpoch){try{await this.post("cancel",{flow},epoch);}catch(_e){}}
+      }finally{
+        ui.input.value="";ui.input.hidden=ui.submit.hidden=ui.cancel.hidden=true;
+        ui.button.disabled=false;this.busy=false;
+      }
+    }
   };
+
 
   // Under a turn that stopped because a source spent its free requests for the
   // day: what happened, and the three honest ways on. The limit, the credit and
@@ -8281,6 +8431,11 @@
         method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:'{}'
       });
       const value=await response.json();
+      if(response.status===409&&value.error==='handoff_expired_or_wrong_account'){
+        const clean=new URL(window.location.href);clean.searchParams.delete('approval');
+        history.replaceState(history.state,'',clean.pathname+clean.search+clean.hash);
+        this.ref=null;this.requestId=null;this.returnUrl=null;return false;
+      }
       if(!response.ok)throw new Error(value.error||'This request link expired.');
       this.requestId=value.request_id;this.returnUrl=value.return_url;railLink=value.request_id;
       return true;
@@ -8855,7 +9010,7 @@
   // The setup request's body: the panel node, configured from the request.
   function connectBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
-    if(req.body){
+    if(req.body && (req.action?.setup?.service || req.action?.type==="policy_proposal")){
       const why = document.createElement("p");
       why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
     }
@@ -8873,75 +9028,193 @@
     // The connect screen is every setup card that names no source; a reconnect
     // card names the one it repairs and shows only that.
     const screen = !setup.service;
-    $("connect-intro").hidden = !screen;
-    if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
-    const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
-    $("connect-paste").hidden = !keyCards.length;
-    $("connect-paste-summary").textContent = keyCards.length
-      ? "Paste a key: " + keyCards.map(s => s && s.name).filter(Boolean).join(", ") : "Paste a key";
-    if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
-    ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
+    for(const child of panel.children){
+      if(child.id!=="model-discovery")child.style.display=screen?"none":"";
+    }
+    ModelDiscovery.render(panel, screen);
     panel.hidden = false;
     box.appendChild(panel);
     return box;
   }
 
-  // "Other ways to connect": each shape is explicit fields completed through
-  // the same connect request an agent would raise. Nothing is inferred - an
-  // unpowered command center has no model to infer with - and no provider is named.
-  const FreeSourceCards={
-    signature:"",busy:false,
-    render(sources){
-      const host=$("free-source-cards");
-      const signature=JSON.stringify(sources);
-      if(this.signature===signature) return;
-      this.signature=signature;host.replaceChildren();
-      for(const source of sources){
-        const card=document.createElement("details");
-        const title=document.createElement("summary");title.textContent=source.name;card.appendChild(title);
-        const offer=document.createElement("p");offer.textContent=source.offer;card.appendChild(offer);
-        const help=document.createElement("a");help.textContent="Get your API key";
-        help.href=source.help_url;help.target="_blank";help.rel="noopener noreferrer";card.appendChild(help);
-        const label=document.createElement("label");label.textContent="API key";
-        const input=document.createElement("input");input.type="password";input.autocomplete="off";
-        label.appendChild(input);card.appendChild(label);
-        if(typeof source.terms==="string"&&source.terms){
-          // The provider's own terms that matter before connecting, inline.
-          const caveat=document.createElement("p");caveat.className="connect-terms";
-          caveat.textContent=source.terms;card.appendChild(caveat);
+  // ---- Connected AI: what is connected, and Disconnect beside each ----
+  const ConnectedAI={
+    seq:0,
+    async load(host){
+      if(!host)return;
+      const seq=++this.seq;
+      let http={connections:[]},subs={sources:[]};
+      try{
+        await ensureFreshToken();
+        const headers=Object.assign({"Content-Type":"application/json"},authHeaders());
+        [http,subs]=await Promise.all([
+          fetch("/app/connections",{headers:authHeaders(),credentials:"same-origin",cache:"no-store"})
+            .then(r=>r.ok?r.json():{connections:[]}).catch(()=>({connections:[]})),
+          fetch("/app/subscription-connect/list",{method:"POST",credentials:"same-origin",
+            cache:"no-store",headers,body:"{}"})
+            .then(r=>r.ok?r.json():{sources:[]}).catch(()=>({sources:[]}))]);
+      }catch(_e){}
+      if(seq!==this.seq)return;
+      const rows=[];
+      for(const c of (http&&Array.isArray(http.connections)?http.connections:[]))
+        rows.push({name:typeof c.label==="string"&&c.label?c.label:c.destination,
+          path:"/app/connections",body:{destination:c.destination,incarnation:c.incarnation}});
+      for(const s of (subs&&Array.isArray(subs.sources)?subs.sources:[]))
+        rows.push({name:s.name,path:"/app/subscription-connect/disconnect",body:{source_id:s.id}});
+      host.replaceChildren();host.hidden=!rows.length;
+      if(!rows.length)return;
+      const title=document.createElement("p");title.textContent="Connected";host.append(title);
+      for(const row of rows)host.append(this.row(row,host));
+    },
+    row(row,host){
+      const item=document.createElement("div");item.className="connection-row";
+      const name=document.createElement("span");name.textContent=row.name+" ";
+      const go=document.createElement("button");go.type="button";go.className="btn btn--ghost";
+      go.textContent="Disconnect";
+      const cancel=document.createElement("button");cancel.type="button";cancel.className="btn btn--ghost";
+      cancel.textContent="Cancel";cancel.hidden=true;
+      const note=document.createElement("span");note.setAttribute("role","status");
+      let armed=false;
+      cancel.onclick=()=>{armed=false;go.textContent="Disconnect";go.className="btn btn--ghost";
+        cancel.hidden=true;note.textContent="";};
+      go.onclick=async()=>{
+        if(!armed){armed=true;go.textContent="Confirm disconnect";go.className="btn btn--danger";
+          cancel.hidden=false;note.textContent=" Removes "+row.name+
+            "'s sign-in from TinyAssets. Your provider account and your conversations stay.";return;}
+        go.disabled=cancel.disabled=true;note.textContent=" Disconnecting…";
+        try{
+          await ensureFreshToken();
+          const response=await fetch(row.path,{method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify(row.body)});
+          const result=await response.json().catch(()=>({}));
+          if(!response.ok||result.error)throw new Error("unconfirmed");
+          appendMessage("system","Disconnected "+row.name+". Connect it again any time from Change model.");
+          this.load(host);refreshRail();
+        }catch(_e){
+          note.textContent=" Disconnect is not confirmed. Close and reopen this to check.";
+          go.disabled=cancel.disabled=false;
         }
-        const terms=document.createElement("p");
-        terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
-        card.appendChild(terms);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--primary";
-        button.textContent="Connect this source";card.appendChild(button);
-        const status=document.createElement("p");status.setAttribute("role","status");card.appendChild(status);
-        button.addEventListener("click",async()=>{
-          if(this.busy)return;
-          let key=input.value;input.value="";
-          if(!key||key.length>2048||!/^[!-~]+$/.test(key)){key="";status.textContent="Paste only your API key.";return;}
-          const epoch=MCP._loginEpoch;
-          this.busy=true;button.disabled=true;status.textContent="Checking your models…";
-          try{
-            const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
-            const result=await pending;
-            if(epoch!==MCP._loginEpoch)return;
-            if(result.status!=="confirmation_required"||!result.request)
-              throw new Error("invalid_connection_response");
-            HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
-            HostedModelConnect.paint();
-            status.textContent="Connection saved. Review model access, then confirm.";
-            refreshRail();
-          }catch(error){
-            if(epoch===MCP._loginEpoch)status.textContent="Not connected yet ("+(error.message||"unknown error")+"). Check your key and model access, then try again.";
-          }finally{key="";this.busy=false;button.disabled=false;}
-        });
-        host.appendChild(card);
-      }
+      };
+      item.append(name,go,cancel,note);return item;
     },
   };
 
+  // ---- Unified address connection ----
+  const ModelDiscovery={
+    incoming:new URLSearchParams(window.location.search).get("connect_ai"),
+    render(panel,visible){
+      let card=$("model-discovery");
+      if(card){card.hidden=!visible;if(visible)ConnectedAI.load($("connected-ai"));return;}
+      card=document.createElement("div");card.id="model-discovery";card.hidden=!visible;
+      const address=document.createElement("input");address.type="text";
+      address.setAttribute("aria-label","Provider address");address.autocomplete="url";
+      address.value=CFG.model_source_address||"";
+      const go=document.createElement("button");go.type="button";
+      go.className="btn btn--primary";go.textContent="Connect";
+      const note=document.createElement("p");note.setAttribute("role","status");
+      note.textContent="Enter your AI provider's address.";
+      const keyLabel=document.createElement("label");keyLabel.textContent="API key";keyLabel.hidden=true;
+      const keyInput=document.createElement("input");keyInput.type="password";keyInput.autocomplete="off";
+      keyLabel.appendChild(keyInput);
+      const help=document.createElement("a");help.textContent="Get an API key";
+      help.target="_blank";help.rel="noopener noreferrer";help.hidden=true;
+      const input=document.createElement("input");input.type="text";input.autocomplete="off";
+      input.setAttribute("aria-label","Code returned after sign-in");
+      const submit=document.createElement("button");submit.type="button";submit.textContent="Finish sign-in";
+      const cancel=document.createElement("button");cancel.type="button";cancel.textContent="Cancel";
+      input.hidden=submit.hidden=cancel.hidden=true;
+      const ui={button:go,status:note,input,submit,cancel};
+      let fallback=null;
+      address.addEventListener("input",()=>{fallback=null;keyInput.value="";keyLabel.hidden=help.hidden=true;});
+      go.addEventListener("click",async()=>{
+        if(go.disabled)return;
+        const selected=address.value.trim();if(!selected)return;
+        let key=keyInput.value;keyInput.value="";
+        go.disabled=true;address.disabled=true;note.textContent="Connecting?";
+        try{
+          if(fallback){
+            if(!key)throw new Error("key_required");
+            const pending=ConnectOAuth.post("deposit",{definition:fallback,secret:key});key="";
+            await this.finish(await pending);return;
+          }
+          const local=await SubscriptionSources.post("resolve",{address:selected},MCP._loginEpoch);
+          if(local.source_id){await SubscriptionSources.start({id:local.source_id},ui);return;}
+          const external=NATIVE||DESKTOP_SHELL;
+          let client=DESKTOP_SHELL?"desktop":"web";
+          if(NATIVE){
+            const info=await nativePlugin("App").getInfo();
+            client=window.Capacitor.getPlatform()==="ios"?"ios":
+              info.id==="io.tinyassets.app.debug"?"android-debug":"android";
+          }
+          const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+          const detected=await fetch("/app/model-discovery",{
+            method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify({address:selected,...(local.source?{source:local.source}:{})})});
+          if(!detected.ok)throw new Error("discovery_failed");
+          const {source}=await detected.json();
+          const result=await ConnectOAuth.post(external?"discover_inline":"discover",
+            {source,...(external?{client}:{code_challenge})});
+          if(result.status==="cli_login_required"){
+            await SubscriptionSources.start({id:result.source_id},ui);return;
+          }
+          if(result.status==="api_key_required"){
+            fallback=result.definition;keyLabel.hidden=help.hidden=false;
+            const url=new URL(result.help_url||selected);
+            if(url.protocol!=="https:"||url.username||url.password)throw new Error("invalid_help_url");
+            help.href=url.href;note.textContent="Enter your API key.";keyInput.focus();return;
+          }
+          if(external){
+            if(!/^\/app\/model-callback\/[A-Za-z0-9_-]{43}\?launch=1$/.test(result.launch_path))
+              throw new Error("invalid_sign_in_response");
+            await openExternal(new URL(result.launch_path,CFG.resource||location.origin).href);
+            const deadline=Date.now()+result.expires_in*1000;
+            while(Date.now()<deadline){
+              await sleep(1000);
+              const state=await ConnectOAuth.post("inline_poll",{flow:result.flow});
+              if(state.status==="waiting")continue;
+              await this.finish(state);await closeExternal();return;
+            }
+            throw new Error("sign_in_expired");
+          }
+          const url=new URL(result.authorize_url),hosted=result.exchange==="exchange";
+          if(url.protocol!=="https:"||url.username||url.password||
+             !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||(!hosted&&url.searchParams.get("state")!==result.flow)||
+             !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600)
+            throw new Error("invalid_sign_in_response");
+          sessionStorage.setItem(hosted?HostedModelConnect.storageKey:ConnectOAuth.storageKey,
+            JSON.stringify({verifier,preset:result.source_id,title:"Connect "+selected,
+              source:true,center:queueScope||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+          window.location.assign(url.href);
+        }catch(_error){note.textContent="That address has no AI we can connect to";}
+        finally{key="";go.disabled=false;address.disabled=false;}
+      });
+      address.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();go.click();}});
+      const connected=document.createElement("div");connected.id="connected-ai";connected.hidden=true;
+      card.append(connected,address,keyLabel,help,go,note,input,submit,cancel);panel.prepend(card);
+      if(visible)ConnectedAI.load(connected);
+      const incoming=this.incoming;
+      if(incoming){address.value=incoming;const clean=new URL(window.location.href);
+        clean.searchParams.delete("connect_ai");history.replaceState({},"",clean.pathname+clean.search);}
+      const saved=SubscriptionSources.saved();
+      if(visible&&saved)SubscriptionSources.start({id:saved.source_id},ui,saved);
+    },
+    async finish(result){
+      if(result.status==="confirmation_required"){
+        HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+        HostedModelConnect.paint();await refreshRail();closeConnectRequest();return;
+      }
+      if(!["connected","provisioned","serving"].includes(result.status))throw new Error("connection_incomplete");
+      await refreshRail();closeConnectRequest();
+    },
+  };
+  // ---- End unified address connection ----
+
+  // "Other ways to connect": each shape is explicit fields completed through
+  // the same connect request an agent would raise. Nothing is inferred - an
+  // unpowered command center has no model to infer with - and no provider is named.
   const ConnectShapes={
     shape:"",
     labels:{api_key:"API key", local:"Your own server"},
@@ -9858,8 +10131,6 @@
     if(typeof AppUI!=="undefined") AppUI.init();
     HostedModelConnect.wire();
     wireNativeReturn();
-    // A vendor sign-in card once kept a verifier here; nothing reads it now.
-    try{ localStorage.removeItem("ta_openai_flow"); }catch(_e){}
     const ownerCompletion = new URLSearchParams((window.location.hash||'').slice(1)).has('owner_completion');
     const signedInNow = modelCallback ? false : await completeSignInIfCallback();
     if(ownerCompletion) return; // Preserve refusal text or wait for the protected return navigation.
@@ -9879,6 +10150,7 @@
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){
       await enterSignedIn();
+      if(ModelDiscovery.incoming||SubscriptionSources.saved())openConnectRequest();
       if(modelCallback) await HostedModelConnect.complete(modelCallback);
     } else {
       enterSignedOut();

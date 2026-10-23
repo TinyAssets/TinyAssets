@@ -40,6 +40,24 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
 
+
+def _recover_stale_default(plan, catalogues, connected, owner, universe):
+    policy = plan.policy
+    saved = policy.saved_default
+    stale = saved is not None and (
+        saved.connection_id not in connected or any(
+            c.connection_id == saved.connection_id
+            and all(m.model_id != saved.model_id for m in c.models)
+            for c in catalogues))
+    if (plan.next_candidate(owner, universe) is None
+            and policy.current_selection is None and policy.saved_default is not None
+            and stale):
+        policy = replace(policy, mode="automatic", saved_default=None, fallbacks=(),
+                         stable_preference=None)
+        return replace(plan, policy=policy)
+    return plan
+
+
 def connected_sources(base: str | Path, universe: str | Path, owner: str,
                       *, conn=None) -> frozenset[str]:
     """Return this owner's live model sources for one command center.
@@ -58,7 +76,18 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
     for definition in list_definitions(universe.name):
-        if definition.owner_user_id != owner or definition.access_method != "api_key_http":
+        if definition.owner_user_id != owner:
+            continue
+        if definition.access_method == "subscription_cli":
+            from tinyassets.providers.subscription_catalog import context
+
+            try:
+                context(definition, owner, universe.name)
+                sources.add("subscription_cli:" + definition.id)
+            except (PermissionError, OSError, ValueError):
+                pass
+            continue
+        if definition.access_method != "api_key_http":
             continue
         try:
             facts = query_ledger(
@@ -187,17 +216,19 @@ def _http_models(owner, uid, member, *, snapshot=None, needs_tools=True):
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
-    if not member.provider.startswith("api_key_http:") or member.access.model_scope == "legacy":
+    if (not member.provider.startswith(("api_key_http:", "subscription_cli:"))
+            or member.access.model_scope == "legacy"):
         raise ModelSourceUnavailable("model_access_optin_required")
     if snapshot is None:
         snapshot = refresh_model_discovery(
             owner_user_id=owner, universe_id=uid,
-            definition_id=member.provider.removeprefix("api_key_http:"),
+            definition_id=member.provider.split(":", 1)[-1],
         )
     contract = snapshot.contract()
-    definition = get_definition(uid, member.provider.removeprefix("api_key_http:"))
+    definition = get_definition(uid, member.provider.split(":", 1)[-1])
     if (definition is None or definition.owner_user_id != owner
-            or not same_dialect(definition.protocol, contract.inference_protocol)):
+            or (definition.access_method != "subscription_cli"
+                and not same_dialect(definition.protocol, contract.inference_protocol))):
         raise ModelSourceUnavailable("protocol_mismatch")
     caps = member.access.cost_caps
     if caps is None:
@@ -307,7 +338,8 @@ def prepare_owned_model_plan(
             from types import SimpleNamespace
 
             chains, rejected = [], []
-            for provider in sorted(connected_sources(base, universe, owner, conn=conn)):
+            connected = connected_sources(base, universe, owner, conn=conn)
+            for provider in sorted(connected):
                 try:
                     custody = current_connected_source_custody(
                         conn, base=base, universe=universe, owner=owner, provider=provider,
@@ -342,7 +374,7 @@ def prepare_owned_model_plan(
 
             snapshot = refresh_model_discovery(
                 owner_user_id=owner, universe_id=universe.name,
-                definition_id=provider.removeprefix("api_key_http:"),
+                definition_id=provider.split(":", 1)[-1],
             )
             # Discovery facts remain useful to a repair screen even when
             # authority, pricing or the agent's contract excludes execution.
@@ -388,6 +420,9 @@ def prepare_owned_model_plan(
         _refused_models(base, owner, (provider for provider, _chain in chains)),
         cooling_sources(owner, admitted),
     )
+    if not allow_empty:
+        plan = _recover_stale_default(plan, all_models, connected, owner, universe.name)
+        policy = plan.policy
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         pinned = policy.current_selection or policy.saved_default
         # Name what is held and why: "no model connected" was wrong for an owner

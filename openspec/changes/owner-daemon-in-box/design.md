@@ -260,8 +260,14 @@ starting the recorded old image. It never takes an owner volume as input.
 The deploy workflow's post-acceptance step consumes this authority and publishes
 ordinary admission; the router only reads that decision. The timestamp database,
 router OPEN_TRAFFIC RPC, credential timestamp predicate and their writer inventory
-are deleted. C3's signed WorkOS tokens must resolve to an active provider session;
-revoked sessions cannot acquire authority from a refreshed token's `iat`.
+are deleted. C3 uses router-owned `.workos-revocations.sqlite3`: each owner has a
+monotonic not-before time and a permanent deleted bit. Deletion persists the fence
+before credential cleanup; offline platform restore advances every restored owner's
+fence before services restart, preserving deleted bits and assigning router custody.
+Bearer validation requires a finite numeric `iat` at or after that fence and never
+lists WorkOS sessions. Upstream refresh revocation remains part of recovery. New
+refresh cookies reference the sealed local session store; legacy raw refresh cookies
+are refused for fenced owners even if upstream returns a freshly issued bearer.
 Root tests prove pre-traffic restore, durable consumption ordering, restart and
 missing-state refusal; deploy-shell tests pin the integration. Migration publishes
 the root-owned 0644 admission decision after assigning service custody, under the
@@ -277,7 +283,13 @@ all owner-content manifests and other shared authority remain compared unchanged
 The router authenticates, looks the owner up in its **in-memory routing snapshot**
 (owner → admission state, box socket, per-box secret), and forwards. The broker
 pushes that snapshot to the router and updates it on admission changes. On a
-An absent or non-admitted owner record denies. For an admitted owner whose box
+A suspended or erased owner record denies. An absent record is a first sign-in:
+the router asks the broker's admission authority (`ADMIT_OWNER`), exactly as it
+asks for a cold wake, and the broker reserves the permanent identity, admits,
+provisions the box and publishes before it answers. The broker refuses erased
+owners, digest-only tombstones and recovery (C3) before spending a label; a
+refusal answers 404. The canary service principal and the core canary are such
+owners, each in its own box (D11). For an admitted owner whose box
 is asleep, the router requests a wake from the broker's lifecycle authority. The
 broker serializes the wake with admission changes and supplies boxhostd with the
 operation's bound owner, UID, volume state and secret. The router forwards after
@@ -1752,6 +1764,15 @@ history, rollout or automatic rollback. Root calls the broker; only the broker
 can select the host's image. No host callback, new clock or authority store is
 introduced.
 
+**Canary owners (2026-10-22).** Two canaries, both ordinary owners admitted
+through C5's first-sign-in path: the core canary (`TINYASSETS_CANARY_USER_ID`,
+signed in through `/app/canary-sign-in`, which the router serves itself, even
+under closed admission) and the probe service principal `canary` (the
+`TINYASSETS_WIKI_CANARY_TOKEN` bearer). `GET /mcp/pulse` stays a router read;
+the service bearer's `/mcp` routes to the `canary` box, whose middleware keeps
+the probe-only allowlist. Neither has a router special case beyond
+`router_traffic.admits`.
+
 Canary preflight reaches `/app/me` through the authenticated public router, so
 the canary participates in the ordinary drain. After successful control, canary
 acceptance signs in again, checks its configured owner/home, bound UID and baked
@@ -1864,3 +1885,45 @@ no table repair or blanket REINDEX is permitted.
 
 
 Stopped apply must preserve committed WAL/SHM bytes and directory protection while repairing named indexes; rehearsal reset must restore archived root metadata.
+
+## Source discovery placement correction (2026-10-22)
+
+Address detection and OAuth metadata probing run inside the owner daemon through
+its public egress bridge. The page first requests `/app/model-discovery` or
+`/app/connection-discovery`, then passes credential-free metadata to the shared
+credential flow. The broker retains registered-client lookup, registration,
+code exchange and deposit only. The broker discovery RPC, worker pool and total
+detect deadline are deleted. Per-probe time/body limits, same-site model issuers
+and box-side verified-free catalogue admission remain.
+
+## Cutover assignment repair (2026-10-22)
+
+Runtime source additions preserve every accepted member and the accepted root;
+model-access confirmation cannot omit an unresolved member. The one-shot stopped
+repair removes only missing definitions or missing HTTP grant rows, preserves
+subscription members, repoints a missing root to a survivor, and rebuilds the
+assignment/work-binding digests and agent pointer atomically. No survivors means
+an unassigned setup. Config projections are refreshed on rerun; reports contain
+IDs only. Delete this command with the cutover migration:
+
+`python -m tinyassets.cutover_assignment_repair --owner-root <mounted-owner-volume> --ledger <broker-outbound.db> --stopped`
+
+Run once per owner volume with both services stopped. A transient probe failure
+is never evidence for this repair. Saved-default fallback requires the source to
+be absent or its model absent from a successfully read catalogue; cooldown and
+unavailable catalogues preserve the saved choice. Bootstrap recovery keeps the
+newest matching pending request: a changed agent revision produces a distinct
+consent snapshot/dedupe key while an older pending request can remain.
+
+## Immutable subscription dependency closure (2026-10-22)
+
+Each npm image source has a committed package manifest and package-lock under
+`tinyassets/providers/source_locks/<source-id>/`. The image builder checks the
+lock SHA256 against `sign_in.cli_login.install.lock_sha256` before invoking npm,
+verifies the pinned package and registry closure, and uses only `npm ci` with a
+minimal environment and isolated npm configuration. Owner runtime installation
+and credential custody are unchanged by this lane.
+
+The four subscription records include the committed lock digests. A missing or
+mismatched digest refuses the image build. Legacy acceptance upgrades recognize
+the records before the digest addition and custody-location change.
