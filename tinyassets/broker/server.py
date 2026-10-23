@@ -848,18 +848,42 @@ class _Connection:
 
         owner = doc.get("principal")
         async with owner_lock(self._server._owner_identities.path, owner):
-            answer = await thread_work(self._owner_policy, doc)
-            if answer.get("op") == "OWNER_POLICY_RESULT":
-                public = self._server._public_egress
-                closing = [task for task, (principal, _) in public.channels.items()
-                           if principal == owner]
-                try:
-                    public.close_owner(owner)
-                    await asyncio.wait_for(asyncio.gather(*closing, return_exceptions=True), 15)
-                except (OSError, TimeoutError):
-                    return {"op": "OWNER_POLICY_REFUSED",
-                            "reason": "policy change pending connection closure"}
-            return answer
+            # Close public tunnels before the row changes. A failed close is
+            # never effective: generation and document stay as they were.
+            ready = await self._policy_write_ready(doc, owner)
+            if not ready:
+                return await thread_work(self._owner_policy, doc)
+            public = self._server._public_egress
+            closing = [task for task, (principal, _) in public.channels.items()
+                       if principal == owner]
+            try:
+                public.close_owner(owner)
+                await asyncio.wait_for(asyncio.gather(*closing, return_exceptions=True), 15)
+            except (OSError, TimeoutError):
+                return {"op": "OWNER_POLICY_REFUSED",
+                        "reason": "policy change pending connection closure"}
+            return await thread_work(self._owner_policy, doc)
+
+    async def _policy_write_ready(self, doc, owner):
+        """True when this write would commit, so tunnels may close first."""
+        from tinyassets.broker.admission import thread_work
+        from tinyassets.broker.policy import PolicyRefused
+
+        store = self._server._policy_store
+        if store is None or not isinstance(doc, dict) or doc.get("op") != "OWNER_POLICY":
+            return False
+        proof_key = "session_proof" if "session_proof" in doc else "cookie"
+        if set(doc) != {"op", "action", "principal", proof_key, "expected_generation",
+                        "policy"}:
+            return False
+        if proof_key == "session_proof" and not isinstance(doc.get(proof_key), dict):
+            return False
+        try:
+            await thread_work(store.prepare_write, owner, doc[proof_key],
+                              doc["expected_generation"], doc["policy"])
+        except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError):
+            return False
+        return True
 
     def _owner_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Recheck the protected-session proof against the router's live rows."""

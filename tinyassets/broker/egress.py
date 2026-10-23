@@ -24,9 +24,12 @@ def normalize_destination(host, port):
         host = str(ip_address(host))
     except ValueError:
         host = host.rstrip(".").encode("idna").decode("ascii").lower()
+        # Underscores are real DNS (SRV labels, and names resolvers already
+        # answered in open mode). Hyphens stay interior. Empty, over-long,
+        # wildcard, and punctuated labels still fail before any lookup.
+        label_re = r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?"
         if (len(host) > 253 or not host or any(
-                not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
-                for label in host.split("."))):
+                not re.fullmatch(label_re, label) for label in host.split("."))):
             raise ValueError("invalid destination host")
     return {"host": host, "port": port}
 

@@ -228,6 +228,25 @@ class PolicyStore:
         self._validate(owner, document)
         return OwnerPolicy(owner, row["generation"], row["digest"], document)
 
+    def prepare_write(self, owner: str, cookie: str | dict, expected_generation: int,
+                      document: dict) -> None:
+        """Validate a policy write without committing it.
+
+        Live public tunnels close before the row changes. A close that fails
+        or times out must leave the generation and document untouched, so the
+        broker checks the write first and commits only after those tunnels close.
+        """
+        self._session(owner, cookie)
+        self._validate(owner, document)
+        if type(expected_generation) is not int or expected_generation < 1:
+            raise PolicyRefused("expected policy generation required")
+        with closing(self._connect(owner)) as db:
+            row = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
+        if row is None:
+            raise PolicyRefused("owner policy has not been bootstrapped")
+        if row["generation"] != expected_generation:
+            raise PolicyRefused("policy generation changed")
+
     def write(self, owner: str, cookie: str | dict, expected_generation: int,
               document: dict) -> OwnerPolicy:
         session_id = self._session(owner, cookie)

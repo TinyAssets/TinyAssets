@@ -104,6 +104,109 @@ def test_box_committed_binding_does_not_satisfy_allowlist_or_ask(egress_policy, 
                            resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
 
 
+@pytest.mark.parametrize("mode", ["allowlist", "ask"])
+@pytest.mark.parametrize("later", ["host", "approved", "scope"])
+def test_box_widen_never_becomes_owner_egress_on_later_door_extend(egress_policy, mode, later):
+    """A box-added host stays refused after the owner door-approves something else.
+
+    1. Door commit api.example.com. Restrictive mode allows only that host.
+    2. Box extend evil.example.com. Egress refuses it.
+    3. Door extend other.example.com, or only that ask's endpoints, or a scope.
+    4. evil.example.com is not owner egress, and destination still refuses it.
+    """
+    from tinyassets.broker.egress import EgressPolicyRefused, destination
+    from tinyassets.broker.http_connect import local_operation
+
+    rig = egress_policy
+    api = {"host": "api.example.com", "path_template": "/", "methods": ["GET"]}
+    evil = {"host": "evil.example.com", "path_template": "/", "methods": ["GET"]}
+    other = {"host": "other.example.com", "path_template": "/", "methods": ["GET"],
+             "port": 8443}
+    document = {"action": "prepare", "destination": "fixture", "expected": "", "secret": "",
+                "policy": {"auth_scheme": "none", "scopes": ["GET"], "endpoints": [api],
+                           "access_mode": "exact", "git_host": ""}}
+
+    def call(doc, via):
+        return local_operation(rig.ledger, principal="alice", command_center="alice",
+                               document=doc, committed_via=via)
+
+    def open_host(host, port=443):
+        return destination(rig.binding, host, port, resolver=lambda *_: ["8.8.8.8"])
+
+    revision = call(document, "door")["revision"]
+    assert "projection" in call({**document, "action": "commit", "expected": revision}, "door")
+    _egress_mode(rig, mode)
+    assert open_host("api.example.com") == ["8.8.8.8"]
+    with pytest.raises(EgressPolicyRefused):
+        open_host("evil.example.com")
+
+    def snapshot():
+        with rig.ledger._connect() as db:
+            row = db.execute("SELECT * FROM outbound_connections").fetchone()
+        return {"endpoints_json": row["allowed_endpoints_json"],
+                "scopes_json": row["scopes_json"], "access_mode": row["access_mode"],
+                "incarnation": row["incarnation"]}
+
+    assert call({"action": "extend", "destination": "fixture", "expected": snapshot(),
+                 "endpoints": [api, evil], "scopes": ["GET"], "git_host": ""},
+                "box") == {"updated": True}
+    with pytest.raises(EgressPolicyRefused) as denied:
+        open_host("evil.example.com")
+    assert denied.value.detail["decision"] == ("ask" if mode == "ask" else "deny")
+
+    door = {"action": "extend", "destination": "fixture", "expected": snapshot(),
+            "git_host": "", "scopes": ["GET"], "endpoints": [api, evil, other]}
+    if later == "approved":
+        # The approval path sends the credential superset plus only the ask's
+        # own endpoints. evil is in the superset and must not be endorsed.
+        door["approved_endpoints"] = [other]
+    elif later == "scope":
+        door["endpoints"] = [api, evil]
+        door["scopes"] = ["GET", "POST"]
+    assert call(door, "door") == {"updated": True}
+
+    with rig.ledger._connect() as db:
+        granted = json.loads(db.execute(
+            "SELECT owner_egress_json FROM outbound_connections").fetchone()[0])
+    assert {"host": "api.example.com", "port": 443} in granted
+    assert all(item["host"] != "evil.example.com" for item in granted)
+    with pytest.raises(EgressPolicyRefused) as still:
+        open_host("evil.example.com")
+    assert still.value.detail["decision"] == ("ask" if mode == "ask" else "deny")
+    assert open_host("api.example.com") == ["8.8.8.8"]
+    if later == "scope":
+        assert all(item["host"] != "other.example.com" for item in granted)
+    else:
+        assert {"host": "other.example.com", "port": 8443} in granted
+        assert open_host("other.example.com", 8443) == ["8.8.8.8"]
+        with pytest.raises(EgressPolicyRefused):
+            open_host("other.example.com", 443)
+
+
+@pytest.mark.parametrize("host", [
+    "my_host.example.com", "_sip._tcp.example.com", "my_host.example.com.",
+])
+def test_underscore_dns_labels_resolve_in_open_mode(egress_policy, host):
+    from tinyassets.broker.egress import destination, normalize_destination
+
+    normalized = host.rstrip(".").lower()
+    assert normalize_destination(host, 443) == {"host": normalized, "port": 443}
+    assert destination(egress_policy.binding, host, 443,
+                       resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
+
+
+@pytest.mark.parametrize("host", [
+    "*.example.com", "foo..bar", "-bad.example.com", "bad-.example.com",
+    "exa mple.com", "foo/bar.example.com", "bad\x00.example.com",
+    "a" * 64 + ".example.com", "", ".",
+])
+def test_unsafe_destination_hosts_rejected_before_resolution(host):
+    from tinyassets.broker.egress import normalize_destination
+
+    with pytest.raises(ValueError):
+        normalize_destination(host, 443)
+
+
 @pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
 def test_egress_standing_entries_remain_subject_to_public_address_safety(egress_policy, mode):
     from tinyassets.broker.egress import destination

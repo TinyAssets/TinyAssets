@@ -1,6 +1,7 @@
 """Real async streams through the owner public proxy; no production network."""
 
 import asyncio
+import json
 import sqlite3
 import threading
 from types import SimpleNamespace
@@ -106,6 +107,37 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
     assert await exchange(proxy, b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
                           principal="bob") == b"REFUSED"
     assert not proxy._public_egress.active
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError, TimeoutError])
+async def test_failed_tunnel_close_leaves_policy_and_generation_unchanged(proxy, failure):
+    from tests.test_owner_policy import _session
+    from tinyassets.broker.server import OWNER, _Connection
+
+    cookie = "protected-owner-cookie-" + "p" * 32
+    _session(proxy._data_root, "alice", cookie)
+    before = proxy._policy_store.read("alice")
+    assert before.document["egress"]["mode"] == "open"
+    proposed = json.loads(json.dumps(before.document))
+    proposed["egress"]["mode"] = "allowlist"
+
+    def boom(_owner):
+        raise failure("public tunnel close failed")
+
+    proxy._public_egress.close_owner = boom
+    peer = _Connection(proxy, None, OWNER)
+    result = await peer._policy_operation({
+        "op": "OWNER_POLICY", "action": "write", "principal": "alice",
+        "cookie": cookie, "expected_generation": before.generation,
+        "policy": proposed})
+    assert result == {"op": "OWNER_POLICY_REFUSED",
+                      "reason": "policy change pending connection closure"}
+    after = proxy._policy_store.read("alice")
+    assert after.generation == before.generation
+    assert after.digest == before.digest
+    assert after.document["egress"]["mode"] == "open"
+    assert after.document == before.document
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T5')
