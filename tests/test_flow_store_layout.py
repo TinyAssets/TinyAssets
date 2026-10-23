@@ -35,7 +35,10 @@ def test_older_flow_layout_is_rebuilt_and_new_flows_survive_the_sweep(tmp_path):
         conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      ("d", "owner", "preset", "digest", "challenge", "https://tinyassets.io",
                       now, now + 60, ""))
-    assert _columns(path, "hosted_model_flows") == pkce._FLOW_COLUMNS["hosted_model_flows"]
+    assert _columns(path, "hosted_model_flows") == [
+        "handle_digest", "owner_user_id", "preset_id", "preset_digest", "challenge",
+        "callback_origin", "created_at", "expires_at", "request_ref",
+    ]
     with pkce.flows_db(tmp_path) as (conn, _now):
         row = conn.execute("SELECT owner_user_id, preset_id FROM hosted_model_flows").fetchone()
     assert tuple(row) == ("owner", "preset")

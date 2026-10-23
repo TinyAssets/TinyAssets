@@ -35,3 +35,6 @@ def test_site_identity_respects_private_and_country_suffixes():
     assert site("https://auth.provider.co.uk") == site("https://api.provider.co.uk")
     assert site("https://attacker.github.io") != site("https://provider.github.io")
     assert site("https://provider.co.uk") != site("https://attacker.co.uk")
+
+
+pytestmark = pytest.mark.verifies('model-connect-by-discovery:Frozen exact destinations')

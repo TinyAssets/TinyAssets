@@ -50,3 +50,10 @@ def test_cleanup_stale_native_work(connected, monkeypatch, case):
     native.disconnect_source("fake-cli")
     assert joins and login.cancelled.is_set()
     assert not connected.directory.exists()
+
+
+pytestmark = [
+    pytest.mark.verifies(
+        'box-subscription-sources:Broker custody and one-run native leases',
+    ),
+]

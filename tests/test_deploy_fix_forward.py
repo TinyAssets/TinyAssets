@@ -88,6 +88,8 @@ def test_fix_forward_on_pretraffic_skips_moves_and_resumes_acceptance(box):
     result = box.run(NEW_IMAGE, **env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _result(result) == "deployed"
+    assert "-d -o 1001 -g 1102 -m 2770 -- " in box.install_calls_text()
+    assert "chown 1001:1102 -- " in box.install_calls_text()
     assert "cutover_admission_pending=true" in result.stdout
     assert "tinyassets.box_layout_migration apply" not in box.docker_calls_text()
     assert "tinyassets.agent_file_migration apply" not in box.docker_calls_text()

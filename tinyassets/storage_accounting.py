@@ -570,6 +570,7 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".ta-cli": "platform: owner-box source declarations and connection state; volume quota applies",
     ".action-policy.db": "platform: box-local action policy, charged by owner volume quota",
     ".centers.db": "platform: box-local center membership, charged by owner volume quota",
     "credential-custody.db": "platform: broker credential ownership",
@@ -708,6 +709,7 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 #: is recognized by that shape in the completeness test, so no tool's home
 #: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
+    ".npm-globalrc", ".npm-cache",  # Build-only CLI image inputs under /opt, outside owner data.
     # Immutable extracted image identity under /opt/tinyassets/boxhostd, not owner storage.
     ".box-image-id",
     # Ephemeral boxhostd socket exports and per-start secrets under /run, never owner data.

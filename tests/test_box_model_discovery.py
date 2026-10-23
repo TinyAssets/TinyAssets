@@ -116,3 +116,6 @@ def test_owner_discovery_route_returns_source_without_broker_discovery(tmp_path,
         response = asyncio.run(run())
     assert response.status_code == 200, response.text
     assert response.json()["source"]["origin"] == "detected"
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8', 'owner-daemon-in-box:T6')

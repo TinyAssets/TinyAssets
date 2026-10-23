@@ -109,3 +109,6 @@ def test_session_declaration_explains_ephemeral_signout():
 
     declaration = inspect.getsource(owner_sessions.store)
     assert "Ephemeral: a layout change signs everyone out." in declaration
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')

@@ -86,3 +86,6 @@ def test_build_environment_excludes_host_credentials(tmp_path, monkeypatch):
     installer.run(["npm", "ci"], phase="registry")
     assert "env" in observed
     assert "NPM_TOKEN" not in observed["env"] and "NODE_OPTIONS" not in observed["env"]
+
+
+pytestmark = pytest.mark.verifies('box-subscription-sources:Owner-box subscription runtime')

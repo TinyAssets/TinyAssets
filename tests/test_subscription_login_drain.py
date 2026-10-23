@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from playwright.sync_api import sync_playwright
 
 
 @pytest.mark.real_browser
@@ -16,6 +15,7 @@ from playwright.sync_api import sync_playwright
 def test_pending_login_cancels_without_blocking_and_page_can_retry(
         monkeypatch, tmp_path, operation):
     import httpx
+    from playwright.sync_api import sync_playwright
     from starlette.responses import JSONResponse
 
     from tinyassets import owner_activity, owner_ingress, owner_runtime
@@ -112,3 +112,10 @@ def test_pending_login_cancels_without_blocking_and_page_can_retry(
                 assert result == {"text": "Sign-in was interrupted. Tap Connect to try again.",
                                   "disabled": False}
         browser.close()
+
+
+pytestmark = [
+    pytest.mark.verifies(
+        'box-subscription-sources:Broker custody and one-run native leases',
+    ),
+]

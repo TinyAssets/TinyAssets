@@ -211,3 +211,6 @@ def test_free_storage_default_is_five_gib():
     from tinyassets.usage_policy import _DEFAULT_FREE_STORAGE_GIB
 
     assert _DEFAULT_FREE_STORAGE_GIB == 5.0
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C6')

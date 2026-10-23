@@ -294,3 +294,11 @@ def test_declared_http_record_uses_same_broker_path(provider, app):
                                      "code_challenge": CHALLENGE}, cookie=session_cookie())
         assert rejected.status_code == 409
         assert rejected.json()["error"] == "invalid_source_record"
+
+
+pytestmark = [
+    pytest.mark.verifies(
+        'model-connect-by-discovery:Address-based model connection',
+        'model-connect-by-discovery:Frozen exact destinations',
+    ),
+]

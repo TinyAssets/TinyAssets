@@ -127,7 +127,7 @@ def _bases(address):
             ip_address(parts.hostname)
         except ValueError:
             origins.append(urlunsplit((parts.scheme, "api." + parts.netloc, "", "", "")))
-    candidates = [root + suffix for suffix in ("/v1", "/openai/v1", "/api/v1", "")
+    candidates = [root + suffix for suffix in ("/v1", "/api/v1", "")
                   for root in origins]
     return origin, list(dict.fromkeys([*bases, *candidates]))
 

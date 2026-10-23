@@ -3,13 +3,19 @@ import json
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import expect, sync_playwright
 
-pytestmark = pytest.mark.real_browser
+pytestmark = [
+    pytest.mark.real_browser,
+    pytest.mark.verifies(
+        'box-subscription-sources:Definition-generated connect controls',
+    ),
+]
 
 
 @pytest.mark.parametrize("native", [False, True])
 def test_native_subscription_connect_controls(native):
+    from playwright.sync_api import expect, sync_playwright
+
     source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     cli = source[source.index("  const SubscriptionSources={"):
                  source.index("\n  };", source.index("  const SubscriptionSources={")) + 6]

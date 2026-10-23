@@ -388,3 +388,11 @@ def test_changed_record_invalidates_acceptance_before_running_cli(connected, mon
         changed.invoke("hello")
     with pytest.raises(PermissionError, match="reconnect required"):
         finish("fake-cli")
+
+
+pytestmark = [
+    pytest.mark.verifies(
+        'box-subscription-sources:Generic invocation and selection',
+        'box-subscription-sources:Broker custody and one-run native leases',
+    ),
+]

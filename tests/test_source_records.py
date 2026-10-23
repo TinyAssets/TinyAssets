@@ -88,3 +88,6 @@ def test_malformed_record_does_not_hide_other_sources(tmp_path):
     (directory / (ident + ".json")).write_text("{")
     assert ident not in records(tmp_path)
     assert len(records(tmp_path)) == len(before) - 1
+
+
+pytestmark = pytest.mark.verifies('model-connect-by-discovery:One source record')

@@ -2,11 +2,12 @@
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import sync_playwright
 
 
 @pytest.mark.real_browser
 def test_source_page_selection_copy_and_answer_relay():
+    from playwright.sync_api import sync_playwright
+
     source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     copy = source[source.index("  function copyButton("):
                   source.index("  function focusCommandCenter(")]
@@ -82,3 +83,6 @@ def test_source_page_selection_copy_and_answer_relay():
             assert result == {"user": f"You {verb}: Use source", "unchanged": True,
                               "rawHasJSON": True}
         browser.close()
+
+
+pytestmark = pytest.mark.verifies('box-subscription-sources:Definition-generated connect controls')

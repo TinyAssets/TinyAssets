@@ -127,6 +127,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/onboarding/canary_sign_in.py",
     "tinyassets/outcomes/schema.py",
     "tinyassets/provider_assignment.py",
+    "tinyassets/provider_assignment_departure.py",
     "tinyassets/provider_assignment_manifest.py",
     "tinyassets/providers/connection_lifecycle.py",
     "tinyassets/control_plane/continuations.py",

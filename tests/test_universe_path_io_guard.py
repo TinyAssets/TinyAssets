@@ -123,9 +123,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/agent_sessions.py": [
         "load: .read_text()",
     ],
-    "tinyassets/api/pending_requests.py": [
-        "_first_power_preset: .read_text()",
-    ],
     "tinyassets/api/status.py": [
         # Fixed platform data-root marker, outside universe-writable mounts.
         "_load_deploy_pending: .read_text()",
@@ -170,6 +167,7 @@ PINNED: dict[str, list[str]] = {
         "_fsync_file: open()",
         # Broker-owned custody, outside every owner mount.
         "erase_owner: .unlink()",
+        "erase_owner: .unlink()",  # Subscription custody in the same broker namespace.
     ],
     "tinyassets/credential_vault.py": [
         "load_credential_vault: .read_text()",
@@ -211,9 +209,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/onboarding/__init__.py": [
         "render_app_html: .read_text()",
         "request_theme: .read_text()",
-    ],
-    "tinyassets/onboarding/hosted_model_auth.py": [
-        "load_preset: .read_text()",
     ],
     # Shared router session map; these paths never enter an owner mount.
     "tinyassets/onboarding/session_store.py": [

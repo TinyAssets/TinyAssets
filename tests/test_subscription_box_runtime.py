@@ -17,7 +17,13 @@ import pytest
 
 from tests.support.broker_ipc import broker  # noqa: F401
 
-pytestmark = [pytest.mark.real_jail, pytest.mark.role_split]
+pytestmark = [
+    pytest.mark.real_jail,
+    pytest.mark.role_split,
+    pytest.mark.verifies(
+        'box-subscription-sources:Owner-box subscription runtime',
+    ),
+]
 
 
 @pytest.fixture

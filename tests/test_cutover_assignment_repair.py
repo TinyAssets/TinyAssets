@@ -219,3 +219,6 @@ def test_cooling_saved_default_is_not_stale(monkeypatch):
     )
     assert _recover_stale_default(plan, [catalogue], {"source"}, "owner", "center") is plan
     assert _recover_stale_default(plan, [], {"source"}, "owner", "center") is plan
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')

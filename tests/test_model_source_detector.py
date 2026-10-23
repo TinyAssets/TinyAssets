@@ -30,11 +30,15 @@ def server(**extra):
                   "grant_types_supported": ["authorization_code"], **extra})
 
 
-@pytest.mark.parametrize("path", ["/openai/v1", "/api/v1"])
-def test_bare_domain_finds_api_subdomain_and_common_paths(path):
-    fetch = fetcher({"https://api.groq.com" + path + "/models": (200, CATALOGUE)})
-    result = detect("groq.com", fetch=fetch)
-    assert result["chosen"]["models_url"] == "https://api.groq.com" + path + "/models"
+@pytest.mark.parametrize("address, path", [
+    ("provider.example", "/v1"),
+    ("provider.example", "/api/v1"),
+    ("api.provider.example/custom/v1", "/custom/v1"),
+])
+def test_bare_domain_finds_api_subdomain_and_common_paths(address, path):
+    fetch = fetcher({API + path + "/models": (200, CATALOGUE)})
+    result = detect(address, fetch=fetch)
+    assert result["chosen"]["models_url"] == API + path + "/models"
     assert result["chosen"]["verdict"] == "api_key"
     page = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     html = Path("tinyassets/onboarding/app.html").read_text("utf-8")
@@ -169,3 +173,6 @@ def test_no_provider_names_in_the_connect_path():
         for token in (*PROVIDERS, *hosts):
             assert not re.search(r"(?<![a-z])" + re.escape(token.lower()) + r"(?![a-z])",
                                  text), f"{token} in {path}"
+
+
+pytestmark = pytest.mark.verifies('model-connect-by-discovery:Address-based model connection')

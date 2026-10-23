@@ -776,7 +776,25 @@ if [ -n "$match" ] && [ ! -f "${FAKE_INSTALL_FAIL_STATE}" ]; then
       ;;
   esac
 fi
+# Production liveness is shared by UID 1001 and broker GID 1102. Record the
+# real contract above, but create the fixture directory as this test's user.
+case "$*" in
+  "-d -o 1001 -g 1102 -m 2770 -- "*/.consumer_liveness)
+    exec /usr/bin/install -d -m 2770 -- "${9}" ;;
+esac
 exec /usr/bin/install "$@"
+'''
+
+# Only emulate the production liveness ownership in an unprivileged fixture.
+FAKE_CHOWN = r'''#!/bin/sh
+printf 'chown %s\n' "$*" >> "$FAKE_INSTALL_CALLS"
+case "$*" in
+  "1001:1102 -- "*/.consumer_liveness)
+    if [ "$(id -u)" != 0 ]; then
+      exec /usr/bin/chown "$(id -u):$(id -g)" -- "$3"
+    fi ;;
+esac
+exec /usr/bin/chown "$@"
 '''
 
 # Writes KEY=value into ENV_FILE the way install-tinyassets-env.sh does. The
@@ -1053,6 +1071,7 @@ def box(tmp_path: Path) -> Box:
     # expect them.
     if Path("/usr/bin/install").exists():
         fake_bins.append(("install", FAKE_INSTALL))
+        fake_bins.append(("chown", FAKE_CHOWN))
     if Path("/bin/rm").exists():
         fake_bins.append(("rm", FAKE_RM))
     for name, body in fake_bins:

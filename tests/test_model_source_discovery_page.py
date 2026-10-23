@@ -4,13 +4,20 @@ import re
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import sync_playwright
 
-pytestmark = pytest.mark.real_browser
+pytestmark = [
+    pytest.mark.real_browser,
+    pytest.mark.verifies(
+        'model-connect-by-discovery:Address-based model connection',
+        'model-connect-by-discovery:Expired approval recovery',
+    ),
+]
 
 
 @pytest.mark.parametrize("width", [390, 1280])
 def test_discovery_page_fallback_and_secret_clear(width):
+    from playwright.sync_api import sync_playwright
+
     source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     source = source[source.index("  const ModelDiscovery={"):
                     source.index("  // ---- End unified address connection ----")]
@@ -71,6 +78,8 @@ def test_discovery_page_fallback_and_secret_clear(width):
     ("interactive_approval_required", 403, False),
 ])
 def test_stale_approval_handoff_cleans_only_expired_reference(error, status, cleared):
+    from playwright.sync_api import sync_playwright
+
     source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     start = source.index("  const ApprovalHandoff = {")
     controller = source[start:source.index("\n  };", start) + 6]

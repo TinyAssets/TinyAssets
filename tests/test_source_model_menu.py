@@ -1,10 +1,12 @@
 """Source grouping in the actual page controller, with no external network."""
 from pathlib import Path
 
-from playwright.sync_api import expect, sync_playwright
+import pytest
 
 
 def test_models_start_collapsed_under_named_sources_with_automatic_selected():
+    from playwright.sync_api import expect, sync_playwright
+
     source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
     start = source.index("  const ModelPicker={")
     controller = source[start:source.index("\n  };", start) + 6]
@@ -31,8 +33,13 @@ def test_models_start_collapsed_under_named_sources_with_automatic_selected():
         assert page.locator('.model-menu-item--nested').count() == 0
         group.click()
         expect(group).to_have_attribute('aria-expanded', 'true')
-        assert page.locator('.model-menu-item--nested').all_inner_texts() == ['one', 'two', 'needs-accesssource not accepted']
+        assert page.locator('.model-menu-item--nested').all_inner_texts() == [
+            'one', 'two', 'needs-accesssource not accepted',
+        ]
         assert 'internal-' not in page.locator('#model-menu').inner_text()
         group.click()
         assert page.locator('.model-menu-item--nested').count() == 0
         browser.close()
+
+
+pytestmark = pytest.mark.verifies('agent-model-selection:Connection-scoped model choices')

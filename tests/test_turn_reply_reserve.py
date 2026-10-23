@@ -169,3 +169,6 @@ def test_last_attempt_uses_whole_turn(other, failures, deadline, expected, monke
     ))
     monkeypatch.setattr(coordinator, "candidate_is_metered_free", lambda *args, **kwargs: True)
     assert turn._last_reply_attempt() is expected
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T8')

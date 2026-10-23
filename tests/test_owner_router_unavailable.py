@@ -51,3 +51,6 @@ def test_unavailable(path, outcome, monkeypatch):
                 assert int(response.headers["Retry-After"]) > 0
 
     asyncio.run(exercise())
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T1')
