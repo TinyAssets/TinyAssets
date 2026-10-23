@@ -2079,6 +2079,11 @@ def read_page(
         command_center_id: Optional target command center page substrate.
     """
     universe_id = command_center_id  # internal name until C3
+    from tinyassets.app_access import private_tool_refusal
+
+    refused = private_tool_refusal()
+    if refused:
+        return refused
     if page:
         from tinyassets.api.authoring_pages import authoring_page_json
 
@@ -2178,6 +2183,11 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     universe_id = command_center_id  # internal name until C3
+    from tinyassets.app_access import private_tool_refusal
+
+    refused = private_tool_refusal()
+    if refused:
+        return refused
     # Exact match only: ``scope`` is validated verbatim below (" COMMONS " is refused).
     if scope == "command_center" or "universe" in scope:
         scope = str(internal_value(scope))

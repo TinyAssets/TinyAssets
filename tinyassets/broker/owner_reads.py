@@ -264,6 +264,17 @@ def publish(root, owner, document):
     refuse_router_store("published")
     if root is None or set(document) != {"op", "payload", "idempotency_key"}:
         raise ValueError("invalid shared publication")
+    from tinyassets.published_apps import apply
+
+    binding = apply(root, owner, document["payload"])
+    if binding is not None:
+        published = Path(root) / ".published"
+        os.chown(published, -1, BROKER_READ_GID)
+        os.chmod(published, 0o2750)
+        listing = published / "apps.json"
+        os.chown(listing, -1, BROKER_READ_GID)
+        os.chmod(listing, 0o640)
+        return binding
     published = Path(root) / ".published"
     published.mkdir(exist_ok=True)
     os.chown(published, -1, BROKER_READ_GID)

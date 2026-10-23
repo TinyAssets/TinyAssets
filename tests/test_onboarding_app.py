@@ -130,6 +130,8 @@ def test_route_is_apex_app_get(monkeypatch):
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
         "/app/api/ui-asset",
         "/app/api/file",
+        # One published app in its owner's box: document, room, and publication.
+        "/app/{slug}", "/app/{slug}/state", "/app/{slug}/publish",
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
     assert by_path["/app/wakes"].methods == {"GET", "HEAD", "POST"}
@@ -147,6 +149,9 @@ def test_route_is_apex_app_get(monkeypatch):
     assert "GET" in by_path["/app/me"].methods
     assert by_path["/app/profile"].methods == {"GET", "HEAD"}
     assert {"GET", "POST"} <= by_path["/app/session/realtime"].methods
+    assert {"GET", "HEAD", "POST"} <= by_path["/app/{slug}"].methods
+    assert {"GET", "POST"} <= by_path["/app/{slug}/state"].methods
+    assert by_path["/app/{slug}/publish"].methods == {"POST"}
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
     for path in ("/app/api/policy", "/app/memory"):
