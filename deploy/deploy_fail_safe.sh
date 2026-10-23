@@ -963,6 +963,15 @@ cleanup_bundle_work() {
 bundle_exit() {
   local rc=$? saved="$SNAPSHOT_PATH" recovery_failed=0
   trap - EXIT
+  # A candidate harness is a full unshared rootfs. Early exits and a rollback
+  # that dies inside restart_stack never reached the post-accept discard.
+  # The function exists only after the harness helpers are defined; nothing
+  # before that has installed one. A hold keeps the tree for fix-forward.
+  if [ "$rc" -ne 0 ] && [ "$HOLD_CANDIDATE" != 1 ]; then
+    if declare -F discard_candidate_harness >/dev/null 2>&1; then
+      discard_candidate_harness || true
+    fi
+  fi
   if [ "$rc" -ne 0 ] && [ "$HOLD_CANDIDATE" != 1 ] &&
      [ "$INSTALLED_THIS_RUN" = 1 ] &&
      [ "$RESTORE_VERIFIED" != 1 ] && [ "$RESTORE_ATTEMPTED" != 1 ] &&
@@ -2316,6 +2325,27 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
         || err "could not remove candidate harness ${name}" ;;
   esac
 }
+prune_old_harnesses() {  # successful deploys must not keep every historical rootfs
+  local root link name
+  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
+  [ -d "$root" ] || return 0
+  link="$(readlink "${root}/harness-current" 2>/dev/null || true)"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$name" = "harness-current" ] && continue
+    if [ -n "$link" ] && { [ "$name" = "$link" ] || [ "$name" = "${link##*/}" ]; }; then
+      continue
+    fi
+    # extract_box_harness made the tree read-only; writable again before rm.
+    chmod -R u+w -- "${root}/${name}" 2>/dev/null || true
+    if rm -rf -- "${root}/${name}"; then
+      log "removed old harness ${name}"
+    else
+      err "could not remove old harness ${name}"
+    fi
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name 'harness-[0-9a-f]*' -printf '%f\n')
+  return 0
+}
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
 # volume still holds rows to move, and prints what it counted. A migrated
@@ -2757,6 +2787,7 @@ if [ "$MIGRATION_OK" = "1" ]; then
       clear_dirty || true
       finish rolled_back "$NEW_IMAGE" 2
     fi
+    prune_old_harnesses
     finish deployed "$NEW_IMAGE" 0
   fi
 fi
@@ -2803,6 +2834,9 @@ fi
 # touch a pointer left by an earlier bundle deploy — that pointer names the
 # state before THAT deploy, so restoring it here would change a bundle this run
 # never modified (Codex round 2, §1).
+# Restore harness-current and delete this run's rootfs before restart_stack
+# can exit 3 and skip the post-accept discard.
+discard_candidate_harness
 VECTOR_CHANGED=0
 if [ "$INSTALLED_THIS_RUN" = "1" ]; then
   if ! restore_previous_bundle; then
