@@ -22,12 +22,12 @@ from pathlib import Path
 import pytest
 
 from tinyassets import automations, graph_compiler, universe_tools
-from tinyassets.engine_mcp_server import (
+from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+from tinyassets.universe_tools import (
     SERVED_TOOL_CHAPTERS,
     _handbook_read,
     served_tool_guidance,
 )
-from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
 CHAPTER = "systems"
 
@@ -127,7 +127,7 @@ def test_no_chapter_hands_the_agent_a_publish_it_cannot_make(monkeypatch) -> Non
     refuses. A mention of a publish is allowed only where the same sentence says
     whose act it is.
     """
-    from tinyassets import engine_mcp_server as engine
+    from tinyassets import universe_tools as engine
 
     # Past the binding gate, so the refusal asserted is the TARGET refusal and
     # not "unbound" -- which would pass whatever the served targets were.

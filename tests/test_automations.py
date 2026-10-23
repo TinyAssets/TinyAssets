@@ -43,7 +43,7 @@ def _pin_data_dir(tmp_path: Path, monkeypatch):
 
     `_engine_run_admit` resolves its rolling-cap ledger from
     `TINYASSETS_DATA_DIR` and falls back to `"."` -- the REPO ROOT -- when it is
-    unset (engine_mcp_server.py:104). Without this, running these tests wrote
+    unset (universe_tools.py:104). Without this, running these tests wrote
     `.engine_run_admissions.db` into the working tree AND shared one 20/hour cap
     across every test in the file, so later tests were rate-limited by earlier
     ones. Both were observed; this pins the root the way the daemon does.

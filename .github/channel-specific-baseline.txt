@@ -11,7 +11,7 @@ tinyassets/account_deletion.py:stripe:3
 tinyassets/action_result_delivery.py:github:1
 tinyassets/api/compute_connection.py:claude:1
 tinyassets/api/compute_connection.py:codex:2
-tinyassets/api/market.py:claude:1
+tinyassets/api/goals.py:claude:1
 tinyassets/api/prompts.py:github:1
 tinyassets/api/runs.py:claude:1
 tinyassets/api/runs.py:gemini:1

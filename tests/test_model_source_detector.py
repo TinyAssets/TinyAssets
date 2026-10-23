@@ -134,6 +134,58 @@ def test_insecure_and_private_addresses_refused_before_any_probe():
     assert not fetch.seen
 
 
+@pytest.mark.parametrize("published", [
+    {"openapi": "3.1.0", "servers": [{"url": API + "/custom/v1"}],
+     "paths": {"/models": {}, "/chat/completions": {}}},
+])
+def test_openapi_server_publishes_custom_base(published):
+    fetch = fetcher({API + "/openapi.json": (200, published),
+                     API + "/custom/v1/models": (200, CATALOGUE)})
+    assert detect(API, fetch=fetch)["chosen"]["models_url"] == API + "/custom/v1/models"
+
+
+def test_protected_resource_publishes_custom_base():
+    fetch = fetcher({API + "/.well-known/oauth-protected-resource": (200, {
+        "resource": API, "models_endpoint": API + "/custom/v1/models",
+        "chat_completions_endpoint": API + "/custom/v1/chat/completions"}),
+        API + "/custom/v1/models": (200, CATALOGUE)})
+    assert detect(API, fetch=fetch)["chosen"]["models_url"] == API + "/custom/v1/models"
+
+
+def test_rfc9727_catalog_links_to_openapi_server():
+    spec = API + "/specification.json"
+    fetch = fetcher({API + "/.well-known/api-catalog": (200, {"linkset": [{
+        "anchor": API + "/custom/v1", "service-desc": [{"href": spec}]}]}),
+        spec: (200, {"openapi": "3.1.0", "servers": [{"url": API + "/custom/v1"}],
+                     "paths": {"/models": {}, "/chat/completions": {}}}),
+        API + "/custom/v1/models": (200, CATALOGUE)})
+    assert detect(API, fetch=fetch)["chosen"]["models_url"] == API + "/custom/v1/models"
+
+
+@pytest.mark.parametrize("page, body, headers", [
+    ("/", '<link rel="service-desc" href="/specification.json">', {}),
+    ("/docs", "", {"link": '</specification.json>; rel="service-desc"'}),
+])
+def test_site_machine_link_publishes_openapi(page, body, headers):
+    spec = API + "/specification.json"
+    fetch = fetcher({API + page: (200, body, headers),
+        spec: (200, {"openapi": "3.1.0", "servers": [{"url": API + "/custom/v1"}],
+                     "paths": {"/models": {}, "/chat/completions": {}}}),
+        API + "/custom/v1/models": (200, CATALOGUE)})
+    assert detect(API, fetch=fetch)["chosen"]["models_url"] == API + "/custom/v1/models"
+
+
+def test_published_cross_site_and_unbounded_links_are_ignored():
+    foreign = "https://unrelated.example"
+    fetch = fetcher({API + "/.well-known/api-catalog": (200, {"linkset": [
+        {"anchor": foreign + "/custom/v1", "service-desc": [{"href": foreign + "/spec"}]},
+        *({"anchor": API + f"/extra/{n}"} for n in range(12))]} )})
+    detect(API, fetch=fetch)
+    assert all(not url.startswith(foreign) for url in fetch.seen)
+    assert len({url.split("/models")[0] for url in fetch.seen
+                if "/extra/" in url}) <= 4
+
+
 # ---- guard: no provider name or host in the connect, detector or exchange code ----
 CODE_PATH = [
     "tinyassets/providers/free_sources.py",
@@ -167,9 +219,6 @@ def test_no_provider_names_in_the_connect_path():
              for record in records().values() for address in record.addresses}
     for path in CODE_PATH:
         text = Path(path).read_text("utf-8").lower()
-        # A compatibility route used by unrelated hosts is not provider dispatch.
-        if path == "tinyassets/connection_oauth/model_discovery.py":
-            text = text.replace('"/openai/v1"', '"/compatibility/v1"')
         for token in (*PROVIDERS, *hosts):
             assert not re.search(r"(?<![a-z])" + re.escape(token.lower()) + r"(?![a-z])",
                                  text), f"{token} in {path}"

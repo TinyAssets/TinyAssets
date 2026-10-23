@@ -21,7 +21,8 @@ with the owner's key, and nothing becomes a model source if that read fails.
 from __future__ import annotations
 
 import hashlib
-from urllib.parse import urlsplit, urlunsplit
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from tinyassets.connection_oauth.transport import OAuthError, validate_https_url
 
@@ -31,6 +32,8 @@ LARGE_BODY_BYTES = 8 * 1024 * 1024
 _ROUTE_PRESENT = frozenset({400, 401, 403, 405, 415, 422})
 _CONTROL_PATH = "/.tinyassets-discovery-control"
 _MAX_ISSUERS = 2
+_MAX_PUBLISHED_BASES = 4
+_MAX_DESCRIPTIONS = 3
 
 
 def address_url(address):
@@ -79,7 +82,9 @@ def transport_fetch(url, *, large=False, timeout=15):
                 try:
                     doc = json.loads(body) if body else None
                 except (ValueError, RecursionError):
-                    doc = None
+                    doc = (body.decode("utf-8", errors="replace")
+                           if response.headers.get("content-type", "").startswith("text/html")
+                           else None)
                 return response.status_code, doc, dict(response.headers)
     except httpx.HTTPError:
         raise OAuthError("oauth_server_unreachable") from None
@@ -132,14 +137,18 @@ def _bases(address):
     return origin, list(dict.fromkeys([*bases, *candidates]))
 
 
-def _openapi(fetch, record, origin, bases):
-    for url in dict.fromkeys([origin + "/openapi.json", *(b + "/openapi.json" for b in bases)]):
+def _openapi(fetch, record, origin, bases, descriptions=()):
+    for url in dict.fromkeys([*descriptions, origin + "/openapi.json",
+                              *(b + "/openapi.json" for b in bases)]):
         status, doc, _headers = _get(fetch, record, url, large=True)
         if status != 200 or not isinstance(doc, dict) or not isinstance(doc.get("paths"), dict):
             continue
-        servers = [s["url"].rstrip("/") for s in doc.get("servers") or []
-                   if isinstance(s, dict) and isinstance(s.get("url"), str)
-                   and s["url"].startswith("https://")]
+        servers = []
+        for server in doc.get("servers") or []:
+            if isinstance(server, dict) and isinstance(server.get("url"), str):
+                candidate = _published_url(url, server["url"])
+                if candidate:
+                    servers.append(candidate.rstrip("/"))
         schemes = (doc.get("components") or {}).get("securitySchemes") or {}
         keys, oauth = [], []
         for scheme in schemes.values() if isinstance(schemes, dict) else ():
@@ -159,6 +168,75 @@ def _openapi(fetch, record, origin, bases):
                 "chat_completions": any(p.endswith("/chat/completions") for p in paths),
                 "responses": any(p.endswith("/responses") for p in paths)}
     return None
+
+
+def _published_url(source, target):
+    """Follow only public HTTPS links on the publisher's own site."""
+    from tinyassets.connection_oauth.site_identity import site
+
+    if not isinstance(target, str) or not target or "{" in target or "}" in target:
+        return None
+    candidate = urljoin(source, target)
+    try:
+        validate_https_url(candidate)
+    except OAuthError:
+        return None
+    return candidate if site(candidate) == site(source) else None
+
+
+class _MachineLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "link":
+            return
+        attributes = dict(attrs)
+        if set(attributes.get("rel", "").lower().split()) & {"service-desc", "api-catalog"}:
+            self.links.append((attributes.get("rel", "").lower(), attributes.get("href")))
+
+
+def _published(fetch, record, origin):
+    """Collect a few publisher-advertised bases and machine descriptions."""
+    bases, descriptions, catalogs = [], [], []
+    for page in (origin + "/", origin + "/docs"):
+        status, doc, headers = _get(fetch, record, page)
+        links = []
+        if status == 200 and isinstance(doc, str):
+            parser = _MachineLinks()
+            parser.feed(doc)
+            links.extend(parser.links)
+        # HTTP Link is machine-readable even when the page body is not.
+        for part in headers.get("link", "").split(","):
+            if ";" in part and part.lstrip().startswith("<"):
+                target, attributes = part.split(";", 1)
+                links.append((attributes.lower(), target.strip()[1:-1]))
+        for rel, target in links:
+            url = _published_url(page, target)
+            if url and "service-desc" in rel:
+                descriptions.append(url)
+            elif url and "api-catalog" in rel:
+                catalogs.append(url)
+    catalogs.insert(0, origin + "/.well-known/api-catalog")
+    for catalog in dict.fromkeys(catalogs[:2]):
+        status, doc, _ = _get(fetch, record, catalog)
+        if status != 200 or not isinstance(doc, dict):
+            continue
+        for entry in doc.get("linkset", []) if isinstance(doc.get("linkset"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            anchor = _published_url(catalog, entry.get("anchor"))
+            if anchor:
+                bases.append(anchor.rstrip("/"))
+            items = entry.get("service-desc", [])
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict):
+                    url = _published_url(catalog, item.get("href"))
+                    if url:
+                        descriptions.append(url)
+    return list(dict.fromkeys(bases))[:_MAX_PUBLISHED_BASES], list(
+        dict.fromkeys(descriptions))[:_MAX_DESCRIPTIONS]
 
 
 def _authorization_server(fetch, record, issuer):
@@ -247,8 +325,39 @@ def detect(address, *, fetch=transport_fetch):
                 break
             api.setdefault("blanket_auth", status)
             api.setdefault("challenge", _challenge(headers))
+    published_bases, descriptions = ([], [])
+    early_prm = None
+    if catalogue is None:
+        early_prm = _protected_resource(fetch, record, address, {})
+        if early_prm and not early_prm.get("error"):
+            endpoint = early_prm.get("models_endpoint")
+            published = _published_url(address, endpoint)
+            if published and published.endswith("/models"):
+                published_bases.append(published.removesuffix("/models"))
+        linked_bases, descriptions = _published(fetch, record, origin)
+        published_bases.extend(linked_bases)
+    openapi = _openapi(fetch, record, origin, bases, descriptions)
+    if openapi and openapi["models"]:
+        published_bases.extend(openapi["servers"])
+    if catalogue is None:
+        for base in dict.fromkeys(published_bases[:_MAX_PUBLISHED_BASES]):
+            status, doc, headers = _get(fetch, record, base + "/models", large=True)
+            if status == 200:
+                try:
+                    rows = catalogue_rows(doc)
+                except OAuthError:
+                    continue
+                catalogue = {"base": base, "public": True, "count": len(rows),
+                             "list_shape": doc.get("object") == "list"
+                             or all(row.get("object") == "model" for row in rows)}
+                break
+            if status in (401, 403):
+                control, _doc, _h = _get(fetch, record, base + _CONTROL_PATH)
+                if control != status:
+                    catalogue = {"base": base, "public": False,
+                                 "challenge": _challenge(headers)}
+                    break
     api["catalogue"] = catalogue
-    openapi = _openapi(fetch, record, origin, bases)
     api["openapi"] = openapi
     base = catalogue["base"] if catalogue else None
     if base is None and openapi and openapi["models"] and openapi["servers"]:
@@ -271,7 +380,7 @@ def detect(address, *, fetch=transport_fetch):
         styles.append("bearer")
     api["key_styles"] = styles
     resource = base or address
-    prm = _protected_resource(fetch, record, resource, challenge)
+    prm = _protected_resource(fetch, record, resource, challenge) or early_prm
     record["sign_in"]["protected_resource"] = prm
     servers = []
     for issuer in (prm or {}).get("authorization_servers", []):

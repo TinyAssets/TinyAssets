@@ -429,8 +429,8 @@ def _remix(pin_id: str, workflow: dict[str, str]) -> str:
     the fork can never fall back to the source branch's live skills; the model
     policy is cleared, so the copy runs on the installer's own model.
     """
-    from tinyassets.api.extensions import _extensions_impl
     from tinyassets.api.helpers import _base_path
+    from tinyassets.api.workflow_actions import _extensions_impl
     from tinyassets.branch_versions import get_branch_version
 
     version = get_branch_version(_base_path(), workflow["version_id"])

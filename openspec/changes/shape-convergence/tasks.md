@@ -156,6 +156,10 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       The external-agent packages, the Codex and Claude Code deletions and
       the discovery cell were brought forward as `cli-external-agents`.
 - **C10 Workflows and extensions as packages.**
+      C10 tail: S6/S7/S18 converged. Standalone node registration and bundled
+      domains are deleted; tool handlers share `universe_tools.py` and request
+      context through one registration. Outcome/provenance actions live with
+      their stores; app workflow goals remain in `api/goals.py`.
       **Deletes:** the v1 workspace-executable loader (`ta_cli.py:54-105`),
       the Activities branch, and the platform `invoke_branch*` and
       `await_branch_run` node kinds (converted once). Folds

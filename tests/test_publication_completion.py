@@ -137,7 +137,7 @@ def test_release_successor_is_an_update_with_immutable_version(home):  # noqa: F
 
 def test_publication_preview_selector_is_owner_scoped(home, monkeypatch):  # noqa: F811
     from tests.engine_authority_helpers import mock_engine_admission, seed_engine_authority
-    from tinyassets import engine_mcp_server as server
+    from tinyassets import universe_tools as server
     from tinyassets.api.app_ui import preview_app_ui
 
     ask = _ask(OWNER, UNIVERSE, _publish_action())

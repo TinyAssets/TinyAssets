@@ -120,7 +120,7 @@ scientific = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["fantasy_author", "tinyassets", "domains"]
+packages = ["fantasy_author", "tinyassets"]
 
 [tool.ruff]
 target-version = "py311"

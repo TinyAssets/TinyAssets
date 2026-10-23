@@ -20,6 +20,7 @@ from tests.support.box_world import dynamic_data_root as dynamic_data_root
 from tests.support.box_world import world as world
 from tests.test_c6_owner_box_callers import owner as owner  # noqa: F401
 from tinyassets.agent_loop.box_ta import engine_deliver, engine_ta
+from tinyassets.engine_endpoint import current_server
 from tinyassets.engine_tool_client import EngineToolError
 from tinyassets.extension_state import ExtensionStore
 
@@ -54,7 +55,7 @@ async def owner_session(server, world, tmp_path, *, turn="live"):
         universe_id="u-alpha", owner="actor-a", port=8790, secret="s" * 43)])
     route = routes.read_engine_mcp_route(actor_id="actor-a", graph_id="u-alpha",
                                         root=world.data_root)
-    client = Client(server.mcp)
+    client = Client(current_server().mcp)
     await client.__aenter__()
     engine = EngineToolSession(client, route, world.data_root, ("bash",))
     from tinyassets.agent_loop.owner_tools import tools_for
@@ -208,13 +209,13 @@ def test_cross_owner_extension_never_reaches_owner_box(world, tmp_path, monkeypa
             payload = base64.urlsafe_b64encode(json.dumps({
                 "ta": {"op": "call", "name": name, "arguments": {}},
                 "mounts": [["sample", installed["revision"], 1]]}).encode()).decode()
-            forged = json.loads(await engine_resource(server, payload))
+            forged = json.loads(await engine_resource(current_server(), payload))
             # A box message can never carry the host envelope's mounts field.
             nested = base64.urlsafe_b64encode(json.dumps({
                 "ta": {"ta": {"op": "catalog"}, "mounts": []}, "mounts": []
             }).encode()).decode()
             return search, called, absent, forged, json.loads(
-                await engine_resource(server, nested))
+                await engine_resource(current_server(), nested))
 
     search, called, absent, forged, nested = asyncio.run(run())
     assert search == []

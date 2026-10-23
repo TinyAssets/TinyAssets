@@ -168,7 +168,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # `stream` is also Starlette's request-body API. These reviewed sites only
     # enforce bounded request bodies and grant no Branch execution authority.
     CallSite(
-        "tinyassets/api/market.py",
+        "tinyassets/api/goals.py",
         "_action_goal_run_canonical",
         "_action_run_branch_version",
     ),
@@ -301,7 +301,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
             "tinyassets/api/quality_leaderboard.py",
             "def recommend_parent_for_fork(",
         ),
-        SourceReference("tinyassets/api/market.py", "def _action_goal_run_canonical("),
+        SourceReference("tinyassets/api/goals.py", "def _action_goal_run_canonical("),
     ),
     "retired_wiki_forwarding": (
         # Hard Rule 15 (2026-09-24) deleted the enqueue helper; only the

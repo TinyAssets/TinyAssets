@@ -14,7 +14,7 @@ Design principles:
     - MCP prompts deliver behavioral instructions so any connecting AI
       knows how to act as a control station
     - Auth-ready: OAuth 2.1 scaffold for production, authless for dev
-    - Extensible: users can register their own LangGraph nodes
+    - Extensible: users install activated packages and author workflow nodes
 
 Transport: Streamable HTTP (current MCP standard for remote servers)
 
@@ -52,8 +52,7 @@ from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.branches import _branch_design_guide_prompt
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.commons_catalog import commons_catalog as _commons_catalog_impl
-from tinyassets.api.extensions import _extensions_impl
-from tinyassets.api.market import goals as _goals_impl
+from tinyassets.api.goals import goals as _goals_impl
 from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT  # noqa: F401
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import (
@@ -62,6 +61,7 @@ from tinyassets.api.universe import (
 )
 from tinyassets.api.wiki import _write_reserved_wiki_canary
 from tinyassets.api.wiki import wiki as _wiki_impl
+from tinyassets.api.workflow_actions import _extensions_impl
 from tinyassets.auth.middleware import write_gate_rejection
 from tinyassets.auth.wiki_canary import (
     current_wiki_canary_authority,
@@ -694,7 +694,6 @@ Each registered node declares:
 - `phase`: where in the workflow it fits (orient, plan, draft, commit,
   learn, reflect, enrich, or "custom")
 - `source_code`: the Python source (executed in sandbox)
-- `dependencies`: pip packages it needs (validated against allowlist)
 
 ### How It Works
 
@@ -715,8 +714,8 @@ Each registered node declares:
 - Registered nodes run in isolation (subprocess sandbox).
 - They receive only the state fields they declared as inputs.
 - Their output is validated against declared output keys.
-- Nodes that crash or timeout are auto-disabled with a note.
-- Host can review, approve, disable, or remove any node.
+- The owner edits or removes nodes through the Branch definition.
+- Standalone registration, approval and enable/disable actions are retired.
 
 ### Example
 

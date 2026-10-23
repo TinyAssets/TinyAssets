@@ -2,7 +2,7 @@
 
 The public profile supplies its OAuth-wrapped FunctionTools. The owner-pinned
 profile supplies its confined implementations, never the public wrappers. This
-module imports neither server: constructing an owner endpoint cannot bootstrap
+module imports no server implementation: constructing an owner endpoint cannot bootstrap
 the public daemon or replace a pinned handler with a broader public signature.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ def install_profile_tool(server: FastMCP, tool: FunctionTool) -> FunctionTool:
 
 
 def engine_server(handlers) -> FastMCP:
-    """Register a fresh owner-pinned profile over one endpoint's handler globals."""
+    """Register the canonical tools over the shared owner-local implementation."""
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
     server = FastMCP("tinyassets")
@@ -44,8 +44,8 @@ def engine_server(handlers) -> FastMCP:
         CommandCenterNames(),
     ):
         server.add_middleware(middleware)
-    aliases = {"read": "read_file", "write": "write_file",
-               "edit": "edit_file", "bash": "run_bash"}
+    aliases = {"read": "served_read", "write": "served_write",
+               "edit": "served_edit", "bash": "run_bash"}
     for name in BACKEND_ENGINE_CAPABILITIES:
         implementation = aliases.get(name, name)
         options = {"output_schema": None} if name in {"read", "bash"} else {}
