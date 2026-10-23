@@ -1196,10 +1196,11 @@ def write_graph(
             the owner asks you to remove a credential, or when a key was pasted
             against a destination they did not intend (owner-only).
             Also with target=connection, configure_provider_capability declares or
-            revokes non-secret connection metadata. realtime_voice uses the
-            CURRENT serving provider; model_discovery uses an owned definition
-            and works unpowered. The server derives the live connection and
-            grant; metadata never widens endpoint scope or selects a model.
+            revokes non-secret connection metadata. model_discovery uses an owned
+            definition and works unpowered. The server derives the live connection
+            and grant; metadata never widens endpoint scope or selects a model.
+            Realtime audio and video are a streaming mode of the owner session,
+            not a connection capability.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -1276,16 +1277,7 @@ def write_graph(
             provider. Registration takes no secret; deposit the key through the
             secure browser connection form first.
             For target=connection operation=configure_provider_capability, pass
-            {"capability_kind": "realtime_voice", "enabled": true,
-            "descriptor": {"protocol": "tinyassets.voice.v1", "session_url":
-            "https://provider.example/realtime/session", "service_name":
-            "Provider Voice", "privacy_url": "https://provider.example/privacy"}}
-            to declare Voice on the current user-owned HTTP provider. The optional
-            privacy_url must also be HTTPS. The session URL must already be in the
-            connection's exact POST allowlist. Pass enabled=false without a
-            descriptor to revoke. Owner plus home command center admin authority is
-            required.
-            For model-discovery metadata, instead pass {"capability_kind":
+            {"capability_kind":
             "model_discovery", "definition_id": "<owned compute definition>",
             "enabled": true, "descriptor": {"protocol": "openrouter_user_models_v1",
             "catalogue_url": "https://<granted-host>/api/v1/models/user?output_modalities=all",

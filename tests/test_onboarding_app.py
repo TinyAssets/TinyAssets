@@ -110,7 +110,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/oauth/client-metadata.json",
 
         "/app/trace",
-        "/app/voice/status", "/app/voice/session",
+        "/app/session/realtime",
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
@@ -145,7 +145,7 @@ def test_route_is_apex_app_get(monkeypatch):
     assert "GET" in by_path["/app/billing/status"].methods
     assert "GET" in by_path["/app/me"].methods
     assert by_path["/app/profile"].methods == {"GET", "HEAD"}
-    assert "GET" in by_path["/app/voice/status"].methods
+    assert {"GET", "POST"} <= by_path["/app/session/realtime"].methods
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
     for path in ("/app/api/policy", "/app/memory"):
@@ -153,7 +153,6 @@ def test_route_is_apex_app_get(monkeypatch):
     for post_only in (
         "/app/token",
         "/app/trace",
-        "/app/voice/session",
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",

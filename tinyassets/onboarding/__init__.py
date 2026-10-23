@@ -139,7 +139,6 @@ def app_config(build: str | None = None) -> dict[str, Any]:
     drift from what ``/mcp`` itself accepts. Contains public values only.
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
-    from tinyassets.onboarding.realtime_voice import public_voice_config
     from tinyassets.providers.source_record import suggested_address
 
     prm = protected_resource_metadata()
@@ -163,7 +162,6 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # registered public client id are present; otherwise the page renders an
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
-        "voice": public_voice_config(),
         "model_source_address": suggested_address(),
     }
 
@@ -794,22 +792,41 @@ async def _handle_me(request: Any) -> Any:
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
-async def _handle_voice_session(request: Any) -> Any:
-    """Exchange bounded SDP through the signed-in founder's voice bridge.
+def _part_view(part: Any) -> dict[str, Any]:
+    kind = part.kind
+    if kind == "text":
+        return {"kind": "text", "text": part.text}
+    if kind == "tool_call":
+        return {"kind": "tool_call", "name": part.name, "arguments": part.arguments}
+    view = {
+        "kind": kind, "mime": part.mime, "byte_length": part.byte_length,
+        "digest": part.digest, "reference": part.reference,
+    }
+    if part.timing is not None:
+        view["timing"] = list(part.timing)
+    return view
 
-    There is deliberately no caller-supplied universe id. The long-lived
-    connection credential stays inside the generic broker and never crosses
-    this boundary.
+
+async def _handle_realtime_session(request: Any) -> Any:
+    """Admit a realtime session or one committed turn. No provider dial lives here.
+
+    The router authenticates and forwards. Media bytes are read only by the
+    owner box store, which refuses another owner before opening the file.
     """
     from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
+    from starlette.responses import JSONResponse, PlainTextResponse, Response
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import (
-        RealtimeVoiceError,
-        create_voice_session,
-        realtime_voice_enabled,
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+    from tinyassets.providers.realtime_session import (
+        CapabilityGap,
+        read_part,
+        resolve_realtime,
+        sources_for,
+        status_document,
     )
 
     if not onboarding_enabled():
@@ -817,74 +834,63 @@ async def _handle_voice_session(request: Any) -> Any:
     denied = _app_identity_required()
     if denied is not None:
         return denied
-    if not realtime_voice_enabled():
-        return JSONResponse(
-            {"error": "voice_disabled"}, status_code=404, headers=_NO_STORE
-        )
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    universe = _universe_dir(home) if home else None
+    sources = sources_for(identity.user_id, universe) if universe is not None else ()
+    if request.method == "GET":
+        return JSONResponse(status_document(sources), headers=_NO_STORE)
     if not _same_origin_json(request, str(app_config().get("resource") or "")):
-        return JSONResponse(
-            {"error": "same_origin_required"}, status_code=403, headers=_NO_STORE
-        )
+        return JSONResponse({"error": "same_origin_required"}, status_code=403, headers=_NO_STORE)
     data = await _read_small_json(request, 70 * 1024)
-    if data is None:
+    if data is None or not isinstance(data, dict):
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    if "media_ref" in data:
+        if set(data) != {"media_ref"} or not isinstance(data["media_ref"], str):
+            return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+        if universe is None:
+            return JSONResponse({"error": "not_sent", "outcome": "not_sent"}, status_code=409,
+                                headers=_NO_STORE)
+        try:
+            blob = read_part(universe, identity.user_id, data["media_ref"])
+        except PermissionError:
+            return JSONResponse({"error": "refused"}, status_code=403, headers=_NO_STORE)
+        return Response(blob, media_type="application/octet-stream", headers=_NO_STORE)
+    if set(data) - {"media", "turn"} or "media" not in data or not isinstance(data["media"], str):
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    try:
+        selected = resolve_realtime(sources, data["media"])
+    except CapabilityGap as exc:
         return JSONResponse(
-            {"error": "invalid_json"}, status_code=400, headers=_NO_STORE
+            {"admitted": False, "gap": exc.reason, "media": data["media"],
+             "source": exc.source_id, "error": exc.reason},
+            status_code=409, headers=_NO_STORE,
         )
-    if set(data) != {"offer_sdp"}:
-        # Reject a caller-selected universe id: identity alone selects the
-        # connection scope for this first slice.
+    if "turn" not in data:
         return JSONResponse(
-            {"error": "voice_session_fields_not_allowed"},
-            status_code=400,
+            {"admitted": True, "media": data["media"], "source": selected.id,
+             "contract": selected.contract},
             headers=_NO_STORE,
         )
-
-    # No per-user rate gate: the caller here is the authenticated owner asking
-    # their own universe to listen (founder, 2026-09-30 -- storage and seats only).
-    identity = current_identity()
-    home = await run_in_threadpool(_read_home, identity)
-    if not home:
-        return JSONResponse(
-            {"error": "no_home_universe"}, status_code=409, headers=_NO_STORE
-        )
+    if not isinstance(data["turn"], str) or universe is None:
+        return JSONResponse({"error": "not_sent", "outcome": "not_sent"}, status_code=409,
+                            headers=_NO_STORE)
     try:
-        result = await create_voice_session(
-            _universe_dir(home), identity.user_id, data.get("offer_sdp")
-        )
-    except RealtimeVoiceError as exc:
+        result = await call(ModelCall(None, (), ModelContext(
+            prompt=data["turn"], streaming=True,
+            universe_context=UniverseContext(universe_dir=universe),
+            operation="converse",
+        )), Parent(identity.user_id, universe.name))
+    except (ProviderAuthorityHeldError, PermissionError) as exc:
         return JSONResponse(
-            {"error": exc.code}, status_code=exc.status, headers=_NO_STORE
+            {"error": "not_sent", "outcome": getattr(exc, "outcome", "not_sent")},
+            status_code=409, headers=_NO_STORE,
         )
-    return JSONResponse(result, headers=_NO_STORE)
-
-
-async def _handle_voice_status(request: Any) -> Any:
-    """Report whether this founder's universe has voice-capable authority.
-
-    This is a read-only, secret-free preflight.  The client checks it before
-    showing disclosure or requesting microphone access, so an ordinary Codex
-    subscription is never mistaken for Realtime API authority.
-    """
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import voice_capability
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    identity = current_identity()
-    home = await run_in_threadpool(_read_home, identity)
-    result = await run_in_threadpool(
-        voice_capability,
-        _universe_dir(home) if home else None,
-        identity.user_id,
-    )
-    return JSONResponse(result, headers=_NO_STORE)
+    return JSONResponse({
+        "admitted": True, "reply": result.text,
+        "parts": [_part_view(part) for part in result.parts],
+        "outcome": result.receipt.outcome,
+    }, headers=_NO_STORE)
 
 
 _TRACE_STEPS = frozenset({
@@ -1978,8 +1984,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/oauth/client-metadata.json", handle_client_metadata,
               methods=["GET", "HEAD"]),
         Route("/app/token", _handle_token, methods=["POST"]),
-        Route("/app/voice/status", _handle_voice_status, methods=["GET"]),
-        Route("/app/voice/session", _handle_voice_session, methods=["POST"]),
+        Route("/app/session/realtime", _handle_realtime_session, methods=["GET", "POST"]),
         Route("/app/me", _handle_me, methods=["GET"]),
         Route("/app/trace", _handle_trace, methods=["POST"]),
         Route("/app/serving/bind", _handle_serving_bind, methods=["POST"]),

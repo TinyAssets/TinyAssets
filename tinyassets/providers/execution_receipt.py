@@ -1,6 +1,7 @@
 """Request-owned answer telemetry, never routing authority or shared state."""
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -120,6 +121,45 @@ class ExecutionReceipt:
     output_tokens: int | None = None
     cost_microunits: int | None = None
     usage: dict[str, Any] | None = field(default=None, compare=False, hash=False)
+    media: dict[str, Any] | None = field(default=None, compare=False, hash=False)
+
+
+_MEDIA_OUTCOMES = frozenset({
+    "succeeded", "incomplete", "cancelled", "budget_exhausted", "not_sent", "unknown", "failed",
+})
+_MEDIA_REF = re.compile(
+    r"^(?:media:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}:[0-9a-f]{64}"
+    r"|part:\d+:(?:text|tool_call|image|audio|video))$"
+)
+
+
+def normalize_media_link(value: object) -> dict[str, Any] | None:
+    """Part references and metered usage bound to one call. Bytes stay in the box."""
+    allowed = {"part_refs", "outcome", "input_bytes", "output_bytes", "usage"}
+    if (not isinstance(value, dict) or not {"part_refs", "outcome"} <= value.keys()
+            or value.keys() - allowed or value["outcome"] not in _MEDIA_OUTCOMES):
+        return None
+    refs = value["part_refs"]
+    if not isinstance(refs, list) or len(refs) > 64:
+        return None
+    if any(not isinstance(ref, str) or _MEDIA_REF.fullmatch(ref) is None for ref in refs):
+        return None
+    usage = value.get("usage", "measured")
+    if usage not in {"measured", "unknown"}:
+        return None
+    out: dict[str, Any] = {"part_refs": list(refs), "outcome": value["outcome"], "usage": usage}
+    if usage == "unknown":
+        if "input_bytes" in value or "output_bytes" in value:
+            return None
+        return out
+    for name in ("input_bytes", "output_bytes"):
+        if name not in value:
+            return None
+        count = value[name]
+        if type(count) is not int or count < 0:
+            return None
+        out[name] = count
+    return out
 
 
 def normalize_execution_receipt(value: object) -> dict[str, Any] | None:
@@ -134,18 +174,22 @@ def normalize_execution_receipt(value: object) -> dict[str, Any] | None:
                 "fallback_used", "attempt", "input_tokens", "output_tokens", "cost_microunits",
             ) if getattr(value, name) is not None},
             **({"usage": value.usage} if value.usage is not None else {}),
+            **({"media": value.media} if value.media is not None else {}),
         }
     if not isinstance(value, dict):
         return None
     usage = normalize_request_usage(value.get("usage")) if "usage" in value else None
     if "usage" in value and usage is None:
         return None
+    media = normalize_media_link(value.get("media")) if "media" in value else None
+    if "media" in value and media is None:
+        return None
     if set(value) == {"usage"}:
         return {"usage": usage}
     if (not _REQUIRED_FIELDS <= set(value)
             or set(value) - _REQUIRED_FIELDS - set(_OPTIONAL_FIELDS) - {
-                "usage", "fallback_used", "attempt", "input_tokens", "output_tokens",
-                "cost_microunits",
+                "usage", "media", "fallback_used", "attempt", "input_tokens",
+                "output_tokens", "cost_microunits",
             }):
         return None
     provider, model, status = value["provider"], value["model"], value["model_status"]
@@ -158,6 +202,8 @@ def normalize_execution_receipt(value: object) -> dict[str, Any] | None:
     out = {"provider": provider, "model": model, "model_status": status}
     if usage is not None:
         out["usage"] = usage
+    if media is not None:
+        out["media"] = media
     for name in _OPTIONAL_FIELDS:
         if name not in value:
             continue

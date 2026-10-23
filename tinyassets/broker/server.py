@@ -145,6 +145,7 @@ class _Stream:
     upload: Any = None
     authority: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
+    duplex: Any = None
 
 
 class BrokerServer:
@@ -346,6 +347,14 @@ class _Connection:
         if frame.kind == rf.DATA:
             with self._server._streams_lock:
                 stream = self._server._streams.get((self._key, frame.stream))
+            if stream is not None and stream.duplex is not None:
+                from tinyassets.providers.media_budget import BudgetExhausted
+
+                try:
+                    stream.duplex.frame("up", frame.payload)
+                except BudgetExhausted:
+                    stream.duplex.upstream = False
+                return
             if stream is None or stream.upload is None:
                 raise rf.FrameError("unexpected request data")
             stream.upload.put(frame.payload)
@@ -365,9 +374,13 @@ class _Connection:
             stream.upload.finish()
         elif op == "CREDIT" and stream is not None:
             amount = doc.get("n")
+            direction = doc.get("direction", "")
             if type(amount) is int and amount > 0:
                 with stream.wake:
-                    stream.credit = min(stream.credit + amount, MAX_WINDOW)
+                    if stream.duplex is not None and direction in {"up", "down"}:
+                        stream.duplex.grant(direction, amount)
+                    elif not direction:
+                        stream.credit = min(stream.credit + amount, MAX_WINDOW)
                     stream.wake.notify_all()
         elif op == "CANCEL" and stream is not None:
             await asyncio.to_thread(self._server.cancel, stream)
@@ -1309,32 +1322,48 @@ class _Connection:
             stream.marked = True
             self.send(rf.control(stream.id, {"op": "ADMITTED", "op_id": stream.op_id}),
                       stream)
-            if stream.upload is not None:
-                self.send(rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream)
-            store = self._server._policy_store
-            with store.lock(stream.namespace) if store else contextlib.nullcontext():
-                self._checkpoint(stream)
-                upstream = dispatch(
-                    grant_id, verb, request, stream=True,
-                    idle_s=(min(idle_s, DEFAULT_IDLE_S)
-                            if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
-                    guard=lambda: self._guard(stream),
-                    on_connect=lambda sock: self._connected(stream, sock),
-                    checkpoint=lambda: self._checkpoint(stream),
-                    deadline_at=stream.deadline,
-                    **({"body": stream.upload} if stream.upload is not None else {}),
-                    **({"inference_usage": inference_usage, "operation_id": stream.op_id}
-                       if inference_usage is not None else {}),
-                )
-            stream.upstream = upstream
-            if stream.cancelled:
-                raise _Cancelled
-            self.send(rf.control(stream.id, {
-                "op": "HEAD", "status": upstream.status, "reason": upstream.reason,
-                "headers": upstream.headers, "redirect_count": upstream.redirect_count,
-            }), stream)
-            self._pump_body(stream, upstream)
-            outcome, error_class = "completed", None
+            if verb == "model_duplex":
+                from tinyassets.broker.duplex import DuplexRefused, _duplex_end, accept_duplex
+
+                try:
+                    receipt = accept_duplex(stream, request, fence=self._server._fence)
+                except DuplexRefused as exc:
+                    outcome, error_class = "refused", exc.code
+                    if exc.code == "fenced":
+                        outcome = "cancelled"
+                else:
+                    outcome, error_class = _duplex_end(receipt)
+                    extra = {"duplex_receipt": receipt}
+                    if receipt.get("side_effect_state") == "none":
+                        stream.marked = False
+                        stream.wrote = False
+            else:
+                if stream.upload is not None:
+                    self.send(rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream)
+                store = self._server._policy_store
+                with store.lock(stream.namespace) if store else contextlib.nullcontext():
+                    self._checkpoint(stream)
+                    upstream = dispatch(
+                        grant_id, verb, request, stream=True,
+                        idle_s=(min(idle_s, DEFAULT_IDLE_S)
+                                if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
+                        guard=lambda: self._guard(stream),
+                        on_connect=lambda sock: self._connected(stream, sock),
+                        checkpoint=lambda: self._checkpoint(stream),
+                        deadline_at=stream.deadline,
+                        **({"body": stream.upload} if stream.upload is not None else {}),
+                        **({"inference_usage": inference_usage, "operation_id": stream.op_id}
+                           if inference_usage is not None else {}),
+                    )
+                stream.upstream = upstream
+                if stream.cancelled:
+                    raise _Cancelled
+                self.send(rf.control(stream.id, {
+                    "op": "HEAD", "status": upstream.status, "reason": upstream.reason,
+                    "headers": upstream.headers, "redirect_count": upstream.redirect_count,
+                }), stream)
+                self._pump_body(stream, upstream)
+                outcome, error_class = "completed", None
         except _Cancelled:
             outcome, error_class = "cancelled", None
         except (_Expired, TimeoutError):

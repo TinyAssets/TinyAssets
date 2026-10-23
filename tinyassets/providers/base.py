@@ -391,6 +391,12 @@ class ProviderResponse:
     """Detached local dispatch accounting, never a confirmed provider quota."""
     execution_receipt: object | None = field(default=None, repr=False, compare=False)
     """Detached requested/resolved/reported identity and usage for this call."""
+    source_parts: object | None = field(default=None, repr=False, compare=False)
+    """Ordered parts from the connected source, before owner-box normalization."""
+    media_contract: object | None = field(default=None, repr=False, compare=False)
+    """That source's declared or discovered media contract. Not a vendor parser."""
+    media_meter: object | None = field(default=None, repr=False, compare=False)
+    """Input and output bytes already counted for this one call."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.

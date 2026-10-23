@@ -147,10 +147,3 @@
       }
     }
   }
-
-  async function sendVoiceTurn(message){
-    // Speech must receive a reply or an explicit failure, never silently queue.
-    if(activeTurn || interruptPending || serverTurnLive() || InlineConnection.waiting())
-      throw new Error("voice_turn_busy");
-    return sendTurn(message,message,{inputMethod:"spoken",keepComposer:true,returnReply:true});
-  }

@@ -12,7 +12,7 @@ def validate(document):
                    document["connection_id"])
     if (document["action"] not in {"read", "configure"}
             or document["capability_kind"] not in {
-                "constant_headers", "model_use", "model_discovery", "realtime_voice"}
+                "constant_headers", "model_use", "model_discovery"}
             or type(document["enabled"]) is not bool
             or type(document["preview"]) is not bool):
         raise ValueError("invalid capability operation")
