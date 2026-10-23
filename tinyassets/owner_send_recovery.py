@@ -24,6 +24,10 @@ def continue_session(runtime, stop, home, session):
         raise ValueError('stored send thread is not in this owner box')
 
     def replay(thread, ident, message, options):
+        from tinyassets.webhook_inbound import ready_for_send
+
+        if not ready_for_send(runtime.root, ident):
+            return
         # Each queued row needs its own drain admission before dispatch state
         # changes. Nested owner work in this task belongs to this admission.
         with activity.enter(keep_awake=False):
@@ -43,6 +47,13 @@ def continue_session(runtime, stop, home, session):
                         message, graph_id=home.name, client_send_id=ident, agent_id=agent,
                         **options,
                     )
+                    if ident.startswith('inb_'):
+                        from tinyassets import conversation_store as store
+                        from tinyassets.storage.inbound_events import finish
+
+                        state, _ = store.owner_send_state(home, thread, ident)
+                        if state == 'completed':
+                            finish(runtime.root, ident)
                 finally:
                     revoke_provider_request(capability)
 

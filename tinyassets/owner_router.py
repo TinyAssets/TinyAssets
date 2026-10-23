@@ -6,11 +6,12 @@ owns the cold wake step; the router never manages a process.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import anyio
 import httpx
@@ -131,10 +132,7 @@ class OwnerRouter:
             return await self.app(scope, receive, send)
         token = hook_token(scope["path"])
         if token is not None:
-            from tinyassets.router_credentials import hook_identity
-            from tinyassets.storage import data_dir
-
-            identity = await run_in_threadpool(hook_identity, data_dir(), token)
+            return await inbound(scope, receive, send, token, self.resolver)
         if identity is None:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)
@@ -172,6 +170,119 @@ class OwnerRouter:
         await forward(scope, receive, send, identity, route)
 
 
+def _inbound_query(scope, token: str) -> bytes:
+    """POST events carry no query. A GET challenge keeps its query except capability tokens."""
+    if scope.get("method") != "GET":
+        return b""
+    blocked = {"token", "verify_token", "hub.verify_token", "access_token"}
+    raw = scope.get("query_string", b"")
+    kept = [(key, value) for key, value in parse_qsl(
+        raw.decode("ascii", "replace"), keep_blank_values=True)
+            if key.lower() not in blocked and value != token]
+    return urlencode(kept).encode()
+
+
+async def inbound(scope, receive, send, token, resolver):
+    """Proof -> positive box mapping -> transport; no owner-local decisions."""
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker.inbound_verification import MAX_BODY_BYTES, request_shared
+    from tinyassets.inbound_routing import DeliveryBreakers
+    from tinyassets.router_credentials import HookOwners
+    from tinyassets.router_traffic import admits
+    from tinyassets.routing_snapshot import snapshot
+    from tinyassets.storage import data_dir
+
+    root = data_dir()
+    async def answer(status, error):
+        await JSONResponse({"error": error}, status_code=status,
+                           headers={"Retry-After": "5"} if status in {429, 503} else {})(
+                               scope, receive, send)
+    if os.environ.get("TINYASSETS_INBOUND_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
+        return await answer(404, "not_found")
+    if scope.get("method") not in {"GET", "POST"}:
+        return await answer(405, "method_not_allowed")
+    owner = await run_in_threadpool(HookOwners(root).resolve, token)
+    shared = owner is None
+    # Shared subscription GETs are one-time platform setup outside this door.
+    if shared and scope.get("method") == "GET":
+        return await answer(404, "not_found")
+    body = bytearray()
+    async for chunk in Request(scope, receive).stream():
+        body.extend(chunk)
+        if len(body) > MAX_BODY_BYTES:
+            return await answer(413, "too_large")
+    body = bytes(body)
+    if shared:
+        # Only named platform endpoints reach broker verification. Unknown
+        # capability URLs cannot turn a broker outage into a false acceptance.
+        if not await run_in_threadpool(HookOwners(root).shared_endpoint, token):
+            return await answer(404, "not_found")
+        try:
+            proof = await run_in_threadpool(request_shared, root, token,
+                                            dict(Request(scope).headers), body)
+        except (OSError, RuntimeError, PermissionError, ValueError):
+            return await answer(503, "verification_unavailable")
+        if proof.get("proof") == "no_op":
+            return await answer(200, "no_op")
+        if proof.get("proof") == "setup":
+            challenge = proof.get("challenge")
+            if not isinstance(challenge, str) or not challenge:
+                return await answer(200, "no_op")
+            return await JSONResponse({"challenge": challenge})(scope, receive, send)
+        if proof.get("proof") != "mapped":
+            return await answer(404, "not_found")
+        owner = proof["owner"]
+    else:
+        proof = {"binding": hashlib.sha256(token.encode()).hexdigest(), "revision": 1}
+    try:
+        snapshot(root).route(owner)
+    except (LookupError, PermissionError):
+        return await answer(200 if shared else 404, "no_op" if shared else "not_found")
+    breakers = DeliveryBreakers(root)
+    if shared and await run_in_threadpool(breakers.tripped, proof["binding"], proof["revision"]):
+        return await answer(200, "no_op")
+
+    async def observed(message):
+        if shared and message["type"] == "http.response.start" and message["status"] in {429, 503}:
+            await run_in_threadpool(breakers.failure, owner, proof["binding"], proof["revision"])
+        await send(message)
+
+    if not await run_in_threadpool(admits, root, owner):
+        return await JSONResponse({"error": "maintenance"}, status_code=503,
+                                  headers={"Retry-After": "5"})(scope, receive, observed)
+    try:
+        route = await run_in_threadpool(resolver, owner)
+    except (LookupError, OSError, RuntimeError):
+        return await _unavailable()(scope, receive, observed)
+    identity = Identity(user_id=owner, username=owner, metadata={"inbound": {
+        "binding": proof["binding"], "revision": proof["revision"],
+        "digest": hashlib.sha256(body).hexdigest(), "shared": shared}})
+    path = "/hooks/inbound/" + proof["binding"]
+    forwarded = dict(scope, path=path, raw_path=path.encode(),
+                     query_string=_inbound_query(scope, token))
+    forwarded["inbound_proof_headers"] = [name.encode("ascii")
+                                          for name in proof.get("proof_headers", [])]
+    delivered = False
+    async def replay():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
+    async def revalidate():
+        snapshot(root).route(owner)
+        if shared:
+            current = await run_in_threadpool(request_shared, root, token,
+                                              dict(Request(scope).headers), body)
+            if any(current.get(key) != proof.get(key)
+                   for key in ("proof", "owner", "binding", "revision")):
+                raise LookupError("installation withdrawn")
+        elif await run_in_threadpool(HookOwners(root).resolve, token) != owner:
+            raise LookupError("binding withdrawn")
+    forwarded["inbound_revalidate"] = revalidate
+    await forward(forwarded, replay, observed, identity, route)
+
+
 def _unavailable(*, retryable=True):
     headers = {"Cache-Control": "no-store"}
     if retryable:
@@ -191,7 +302,8 @@ def _public_host() -> bytes:
 
 async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
-    proof_headers = _INBOUND_PROOF if hook_token(scope["path"]) is not None else ()
+    proof_headers = (_INBOUND_PROOF | set(scope.get("inbound_proof_headers", ()))
+                     if hook_token(scope["path"]) is not None else ())
     headers = _headers(scope["headers"], private=True, proof_headers=proof_headers)
     # The tunnel rewrites Host before the router sees it. The box checks a JSON
     # request's Origin against its Host, so it must see the public host the
@@ -242,6 +354,8 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
 
         try:
             await run_in_threadpool(wake_owner, data_dir(), principal=identity.user_id)
+            if scope.get("inbound_revalidate") is not None:
+                await scope["inbound_revalidate"]()
             route = resolve_box(identity.user_id)
         except (LookupError, OSError, RuntimeError):
             return await _unavailable()(scope, receive, send)

@@ -142,12 +142,8 @@ def _depth(value, limit: int = 32) -> bool:
     return True
 
 
-def extract_single_installation(body: bytes, headers: Mapping[str, str]) -> tuple[str, str] | None:
-    """Fixed shared-app envelope extraction after successful proof only.
-
-    The caller must invoke this solely after HMAC succeeds. Unsupported shapes
-    are authenticated no-ops, including shared channels and encoded commands.
-    """
+def _json_object(body: bytes, headers: Mapping[str, str]) -> dict | None:
+    """Uncompressed UTF-8 JSON object, or None when the envelope cannot be used."""
     if len(body) > MAX_BODY_BYTES:
         return None
     names = _headers(headers)
@@ -160,6 +156,30 @@ def extract_single_installation(body: bytes, headers: Mapping[str, str]) -> tupl
     except (UnicodeError, ValueError, TypeError, RecursionError):
         return None
     if not isinstance(envelope, dict) or not _depth(envelope):
+        return None
+    return envelope
+
+
+def setup_challenge(body: bytes, headers: Mapping[str, str]) -> str | None:
+    """One-time shared-app URL challenge. Not an installation and not an event."""
+    envelope = _json_object(body, headers)
+    if envelope is None or envelope.get("type") != "url_verification":
+        return None
+    challenge = envelope.get("challenge")
+    if (not isinstance(challenge, str) or not challenge
+            or len(challenge.encode("utf-8")) > 1024):
+        return None
+    return challenge
+
+
+def extract_single_installation(body: bytes, headers: Mapping[str, str]) -> tuple[str, str] | None:
+    """Fixed shared-app envelope extraction after successful proof only.
+
+    The caller must invoke this solely after HMAC succeeds. Unsupported shapes
+    are authenticated no-ops, including shared channels and encoded commands.
+    """
+    envelope = _json_object(body, headers)
+    if envelope is None:
         return None
     if (envelope.get("type") != "event_callback"
             or envelope.get("is_ext_shared_channel") is not False):
@@ -204,14 +224,21 @@ def verify_shared(data_root, binding: str, headers: Mapping[str, str], body: byt
         raise RuntimeError("platform signing secret unavailable")
     if not verify(row["profile"], headers, body, secret=matches[0]["token"].encode()):
         return {"proof": "invalid"}
+    proof_headers = [row["profile"][key]
+                     for key in ("signature_header", "timestamp_header")
+                     if key in row["profile"]]
+    challenge = setup_challenge(body, headers)
+    if challenge is not None:
+        return {"proof": "setup", "challenge": challenge, "proof_headers": proof_headers}
     identity = extract_single_installation(body, headers)
     if identity is None:
-        return {"proof": "no_op"}
+        return {"proof": "no_op", "proof_headers": proof_headers}
     installation = authority.lookup(*identity, app=binding)
     if installation is None:
         return {"proof": "no_op"}
     return {"proof": "mapped", "owner": installation["owner"],
-            "binding": installation["binding"], "revision": installation["revision"]}
+            "binding": installation["binding"], "revision": installation["revision"],
+            "proof_headers": proof_headers}
 
 
 def request_shared(root, binding: str, headers: Mapping[str, str], body: bytes) -> dict:

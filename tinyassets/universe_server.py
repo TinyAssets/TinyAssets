@@ -1781,71 +1781,16 @@ _mcp_write_graph = _register_structured_tool(
 )
 
 
-def _inbound_event_run_fn(
-    branch_def_id: str,
-    actor: str,
-    inputs: dict,
-    run_name: str,
-    *,
-    principal_id: str = "",
-) -> None:
-    """Scheduler run_fn for inbound (Source-node) events. Fires the
-    bound branch as the command center carried by the row's owner_actor. FAILS CLOSED on a
-    non-universe actor so a trigger can never run a branch under an ambient/host
-    identity. Links the in-flight reservation (reserved atomically in handle_hook) to
-    the run, so it is released on run completion; releases it if the run cannot be
-    created (Codex round-2 #5).
-
-    ``principal_id`` is the owner the run acts for: a Source EVENT passes the
-    hook owner stamped on the event. The event thread has no request identity,
-    and there is no synthetic one, so an empty principal refuses
-    (authenticated-owner boundary D2)."""
-    from tinyassets.storage import data_dir, webhook_hooks
-    from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
-
-    inputs = dict(inputs or {})
-    reservation_id = inputs.pop(RESERVATION_INPUT_KEY, "") or ""
-    base = data_dir()
-
-    def _release() -> None:
-        if reservation_id:
-            try:
-                webhook_hooks.release_dispatch(base, reservation_id=reservation_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("event bus: reservation release failed")
-
-    if not actor.startswith("universe:"):
-        logger.error("event bus: refusing to fire branch as non-universe actor %r", actor)
-        _release()
-        return
-    if not (principal_id or "").strip():
-        logger.error(
-            "event bus: refusing to fire branch %s for %s with no owner principal",
-            branch_def_id, actor,
-        )
-        _release()
-        return
-    uid = actor[len("universe:"):].strip()
-    if not uid:
-        logger.error("event bus: empty command center in actor %r", actor)
-        _release()
-        return
+def _scheduler_run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
+    """Non-inbound automation dispatch; inbound events use durable session admission."""
     from tinyassets.api.runs import enqueue_universe_branch_run
+    from tinyassets.storage import data_dir
 
-    try:
-        run_id = enqueue_universe_branch_run(
-            base,
-            universe_id=uid,
-            branch_def_id=branch_def_id,
-            inputs=inputs,
-            run_name=run_name,
-            principal_id=principal_id,
-        )
-        if reservation_id:
-            webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
-    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
-        logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
-        _release()
+    if not actor.startswith("universe:") or not principal_id:
+        raise PermissionError("automation requires an owner and command center")
+    return enqueue_universe_branch_run(
+        data_dir(), universe_id=actor[len("universe:"):], branch_def_id=branch_def_id,
+        inputs=inputs, run_name=run_name, principal_id=principal_id)
 
 
 def start_scheduler_for_serving() -> bool:
@@ -1865,7 +1810,7 @@ def start_scheduler_for_serving() -> bool:
         logger.info("scheduler not started: execution owner disabled")
         return False
     try:
-        get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
+        get_or_create_scheduler(data_dir(), _scheduler_run_fn)
     except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
         logger.exception("scheduler failed to start")
         return False
@@ -1941,6 +1886,7 @@ def run_graph(
     operation: str = "run",
     run_id: str = "",
     branch_version_id: str = "",
+    agent_ref: str = "",
 ) -> str:
     """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
     inbound triggers that let an external channel run a branch.
@@ -1991,12 +1937,12 @@ def run_graph(
         goal_id: Optional Goal whose current caller-scoped canonical should run.
             The caller's personal binding is preferred before the Goal default.
         webhook_op: Manage a per-branch inbound webhook URL for YOUR OWN command center:
-            ``mint`` (needs branch_def_id) returns a stable
-            ``https://<domain>/hooks/<token>`` URL any channel can POST to run the
-            branch; ``revoke`` (needs token) disables one; ``list`` shows active ones.
+            ``mint`` (needs branch_def_id and agent_ref) returns a stable
+            ``https://<domain>/hooks/inbound/<token>`` URL a channel can POST to start the named
+            agent; ``revoke`` (needs token) disables one; ``list`` shows active ones.
         source_op: Manage a Source (a live inbound source = a webhook + an
-            event-trigger) for YOUR OWN command center: ``create`` (needs branch_def_id),
-            ``revoke`` (needs source_id), ``list``.
+            agent binding) for YOUR OWN command center: ``create`` (needs
+            branch_def_id and agent_ref), ``revoke`` (needs source_id), ``list``.
         token: The webhook token to revoke (with ``webhook_op="revoke"``).
         source_id: The source to revoke (with ``source_op="revoke"``).
         operation: "run" (default), or "cancel" to request cancellation of an
@@ -2057,6 +2003,7 @@ def run_graph(
             action=action,
             branch_def_id=branch_def_id,
             token=token,
+            agent_ref=agent_ref,
             universe_id=graph_id,
         )
     if source_op:
@@ -2071,6 +2018,7 @@ def run_graph(
             action=action,
             branch_def_id=branch_def_id,
             source_id=source_id,
+            agent_ref=agent_ref,
             universe_id=graph_id,
         )
     if goal_id:
@@ -4162,9 +4110,9 @@ def create_streamable_http_app() -> Starlette:
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
-            # the entire inbound HTTP path (Codex #2): it keeps the `/hooks/*` route
-            # unmounted below, and `_emit_source_event` refuses when the bus is down.
-            # DARK by default there; tests drive the Scheduler + handle_hook directly.
+            # the entire inbound HTTP path: it keeps the `/hooks/inbound` route
+            # unmounted below. Accepted events enter only through receipt-keyed
+            # session start.
             start_scheduler_for_serving()
             run_visibility_startup_gate()
             async with AsyncExitStack() as stack:
@@ -4189,13 +4137,6 @@ def create_streamable_http_app() -> Starlette:
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
     # match before any MCP catch-all route. In WorkOS mode the Protected
     # Resource Metadata advertises AuthKit as the authorization server.
-    # Universal inbound webhook (channel-agnostic inbound, Floor 1): a per-branch
-    # `POST /hooks/<token>` lets ANY channel trigger a branch with zero per-channel
-    # platform code. The token alone authorizes + selects (universe, branch); the run
-    # is enqueued as that universe. The route is mounted ONLY when the master flag
-    # ``TINYASSETS_INBOUND_ENABLED`` is set (Codex #2 — dark means the path is absent,
-    # not merely un-tunneled); handle_hook re-checks the flag as defense in depth. Going
-    # live additionally requires the Cloudflare tunnel to route `/hooks/*` (today `/mcp`).
     from starlette.responses import JSONResponse as _HookJSON
     from starlette.routing import Route as _HookRoute
 
@@ -4205,36 +4146,36 @@ def create_streamable_http_app() -> Starlette:
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
 
     async def _hooks_endpoint(request):
-        from tinyassets.webhook_inbound import MAX_BODY_BYTES, handle_hook
+        from starlette.concurrency import run_in_threadpool
 
-        # Enforce the size cap BEFORE buffering the whole body (Codex #2): reject an
-        # oversized declared Content-Length up front, then stream-count and abort the
-        # moment the actual bytes exceed the cap (chunked requests omit Content-Length).
-        clen = request.headers.get("content-length")
-        if clen is not None:
-            try:
-                if int(clen) > MAX_BODY_BYTES:
-                    return _HookJSON({"error": "too_large"}, status_code=413)
-            except ValueError:
-                return _HookJSON({"error": "bad_request"}, status_code=400)
-        chunks: list[bytes] = []
-        total = 0
+        from tinyassets.auth.middleware import current_identity_or_none
+        from tinyassets.owner_runtime import admitted
+        from tinyassets.webhook_inbound import MAX_BODY_BYTES, handle_challenge, handle_verified
+
+        runtime = admitted()
+        identity = current_identity_or_none()
+        proof = identity.metadata.get("inbound") if identity is not None else None
+        if not isinstance(proof, dict) or proof.get("binding") != request.path_params["binding"]:
+            return _HookJSON({"error": "not_found"}, status_code=404)
+        if request.method == "GET":
+            status, payload = await run_in_threadpool(
+                handle_challenge, proof=proof, query=request.url.query,
+                base=runtime.root, owner=runtime.principal)
+            return _HookJSON(payload, status_code=status)
+        body = bytearray()
         async for chunk in request.stream():
-            total += len(chunk)
-            if total > MAX_BODY_BYTES:
+            body.extend(chunk)
+            if len(body) > MAX_BODY_BYTES:
                 return _HookJSON({"error": "too_large"}, status_code=413)
-            chunks.append(chunk)
-        status, payload = handle_hook(
-            token=str(request.path_params.get("token", "")),
-            body=b"".join(chunks),
-            headers=dict(request.headers),
-        )
-        return _HookJSON(payload, status_code=status)
+        status, payload = await run_in_threadpool(
+            handle_verified, proof=proof, body=bytes(body), headers=dict(request.headers),
+            base=runtime.root, owner=runtime.principal)
+        return _HookJSON(payload, status_code=status,
+                         headers={"Retry-After": "5"} if status in {429, 503} else {})
 
     _inbound_routes = (
-        [_HookRoute("/hooks/inbound/{token}", _hooks_endpoint, methods=["POST"])]
-        if owner_mode and _inbound_enabled()
-        else []
+        [_HookRoute("/hooks/inbound/{binding}", _hooks_endpoint, methods=["GET", "POST"])]
+        if owner_mode and _inbound_enabled() else []
     )
 
     # GET /mcp/pulse: release facts for the authenticated canary principal.

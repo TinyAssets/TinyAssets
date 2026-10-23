@@ -112,6 +112,11 @@ class InstallationAuthority:
                         isinstance(value, str) and 0 < len(value) <= 256
                         for value in (installation_id, credential_ref)):
                     raise ValueError("invalid provider-inspected installation")
+                overlap = db.execute(
+                    "SELECT kind FROM installations WHERE app=? AND installation_id=? "
+                    "AND kind!=?", (app, installation_id, kind)).fetchone()
+                if overlap is not None:
+                    raise PermissionError("installation coverage conflict")
                 old = db.execute("SELECT * FROM installations WHERE app=? AND kind=? "
                                  "AND installation_id=?", (app, kind, installation_id)).fetchone()
                 if old is not None:
@@ -167,3 +172,37 @@ class InstallationAuthority:
         with closing(self._connect()) as db, db:
             db.execute("DELETE FROM installations WHERE owner=?", (owner,))
             db.execute("DELETE FROM oauth_states WHERE owner=?", (owner,))
+
+
+def owner_operation(root: Path, owner: str, request: dict) -> dict:
+    """The admitted box can read its metadata; custody references never leave."""
+    from tinyassets.router_credentials import routing_request
+
+    authority = InstallationAuthority(root / ".broker" / "inbound-installations.db")
+    if request == {"operation": "snapshot"}:
+        answer = routing_request(root, {"operation": "inbound_state", "owner": owner})
+        if answer.get("op") != "ROUTING_SNAPSHOT_IS":
+            raise RuntimeError("inbound routing state unavailable")
+        breakers = {(row["binding"], row["revision"]): row["tripped"]
+                    for row in answer["result"]["breakers"]}
+        return {"installations": [
+            {**{key: row[key] for key in
+                ("app", "kind", "installation_id", "binding", "revision")},
+             "degraded": bool(breakers.get((row["binding"], row["revision"]), False))}
+            for row in authority.for_owner(owner)]}
+    if (set(request) == {"operation", "binding", "revision"}
+            and request.get("operation") == "ready"
+            and isinstance(request.get("binding"), str) and request["binding"]
+            and type(request.get("revision")) is int and request["revision"] >= 1):
+        owned = [row for row in authority.for_owner(owner)
+                 if row["binding"] == request["binding"]
+                 and row["revision"] == request["revision"]]
+        if not owned:
+            raise PermissionError("installation readiness is not owner-bound")
+        answer = routing_request(root, {
+            "operation": "inbound_ready", "owner": owner,
+            "binding": request["binding"], "revision": request["revision"]})
+        if answer.get("op") != "ROUTING_SNAPSHOT_IS" or not answer.get("result", {}).get("ready"):
+            raise RuntimeError("inbound routing state unavailable")
+        return {"ready": True}
+    raise ValueError("invalid installation operation")

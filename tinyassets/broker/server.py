@@ -491,6 +491,20 @@ class _Connection:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
+            if op == "INBOUND_INSTALLATIONS":
+                from tinyassets.broker.inbound_installations import owner_operation
+
+                self._box_scope(doc)
+                try:
+                    if set(doc) != {"op", "request"}:
+                        raise ValueError("invalid installation request")
+                    result = await asyncio.to_thread(
+                        owner_operation, self._server._data_root, self._box_owner, doc["request"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
                           "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")
