@@ -55,6 +55,7 @@
     "cli_login": {
       "install": {
         "manager": "npm",
+        "lock_sha256": "2ed486573ebd356c797be07799ee885b2ee0ce74e5676624f58123580913b99e",
         "package": "@moonshot-ai/kimi-code",
         "version": "2.3.0",
         "integrity": "sha512-/70t2bZV5ynYwYn13yjeA0EuQwY2v0UboH+Ks3LW/69+05eDNe29HZlwEg0F4iU0SvA2rWPcDRSfCRj5MqAJrA==",

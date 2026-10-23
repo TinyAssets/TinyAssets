@@ -63,6 +63,7 @@
     "cli_login": {
       "install": {
         "manager": "npm",
+        "lock_sha256": "b57467909d9a3af6f439e5981dab9148a15f6316974e2e9bf4bcec640a61ece6",
         "package": "@anthropic-ai/claude-code",
         "version": "2.1.308",
         "integrity": "sha512-b2HnszgyN73wRTFP+IYPDJNn9ADXnG6jr26ibL+w03HSKqfb6GqE8Jnfr4mz37Zv4AT/NP+B5/3c1F89WTdWSA==",

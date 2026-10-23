@@ -53,6 +53,7 @@
     "cli_login": {
       "install": {
         "manager": "npm",
+        "lock_sha256": "08df64d6da2e2550dd30e187f5b30f779b39fe1185a3a59e73969dbf9dd2028e",
         "package": "@google/gemini-cli",
         "version": "0.65.0",
         "integrity": "sha512-B+flaYBNqX2zO71I5/gu7ZsnI38NlpOl654HWz+bK8I/P5sGILQsbkTOQ5a9V+w1Q6QO3wf9PlqtuMsl7XxpNQ==",

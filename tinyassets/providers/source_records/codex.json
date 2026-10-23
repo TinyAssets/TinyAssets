@@ -74,6 +74,7 @@
     "cli_login": {
       "install": {
         "manager": "npm",
+        "lock_sha256": "b6cee215a26e8d72f6956d1b984343f73151ac7da0067a35a02d559b0adefa47",
         "package": "@openai/codex",
         "version": "0.163.0",
         "integrity": "sha512-HNd7vR9oTK6M2ikxFnvNDCdYUgAsyo9VVnd5KnEd2ON0GYI++7MiX9XNPUkhtdgGKFPsWS+CEppQ1UU63uVhUw==",
