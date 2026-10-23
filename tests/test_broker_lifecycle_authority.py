@@ -508,10 +508,12 @@ def test_scheduled_host_failure_recovers_without_restarting_waker(authority, fai
         await waker.tick()
         await asyncio.gather(*waker.pending.values(), return_exceptions=True)
         assert "wake:alice" not in a.events
+        assert routing._background_host_slots._value == routing.config.volume_concurrency
         await waker.tick()
         await asyncio.gather(*waker.pending.values())
         await routing.close()
         assert "wake:alice" in a.events
+        assert routing._background_host_slots._value == routing.config.volume_concurrency
         assert not admission.owner_lock(a.identities.path, "alice").locked()
 
     asyncio.run(exercise())
@@ -654,6 +656,48 @@ def test_deploy_completes_after_sleep_without_copy(authority, monkeypatch):
     assert asyncio.run(routing.deploy("image")) == {"slept": 1, "asleep": 1, "incomplete": 0}
     assert calls == ["select_image", "status", "sleep", "status"]
     assert lifecycle.volume("alice")["work"]["kind"] == "snapshot"
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("bound", [1, 4])
+def test_broker_never_exceeds_configured_host_connection_bound(authority, bound):
+    import queue
+
+    routing = authority.server.routing
+    routing.config.volume_concurrency = bound
+    routing._background_host_slots = asyncio.Semaphore(bound)
+    release = threading.Event()
+    entered = queue.Queue()
+    active = peak = 0
+    lock = threading.Lock()
+
+    def host():
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        entered.put(True)
+        try:
+            assert release.wait(10)
+        finally:
+            with lock:
+                active -= 1
+
+    async def exercise():
+        tasks = [asyncio.create_task(routing.host_call(host)) for _ in range(bound + 2)]
+        try:
+            for _ in range(bound):
+                await asyncio.to_thread(entered.get, timeout=2)
+            await asyncio.sleep(.05)
+            assert entered.empty()
+            assert active == peak == bound
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+        assert active == 0
+        assert peak == bound
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T1')

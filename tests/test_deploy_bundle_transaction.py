@@ -1987,8 +1987,15 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     assert "python3 -m tinyassets.cutover_control rollback --state " in completed.stderr
     assert "/cutover --data" in completed.stderr
     assert "backup-restore.sh" not in completed.stderr
-    _assert_candidate_held(box)
     assert box.live() != before
+    assert box.env_image() == NEW_IMAGE
+    assert _env_image_line(box.daemon_env_file) == NEW_IMAGE
+    assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
+    assert (box.runtime / "deploy" / "vector.yaml").read_text(encoding="utf-8") == NEW_VECTOR
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text(
+        encoding="utf-8",
+    ) == "new\n"
+    assert box.dirty.exists()
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
     assert daemon["status"] == "exited", "the service is left down for the restore"
     # A refused converge never replaced the container stopped for the move.

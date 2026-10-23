@@ -49,7 +49,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
         "reports and the 24-hour floor; the broker reserves wake capacity",
     ),
-    "tinyassets/broker/routing.py::BrokerLifecycle.wake": (
+    "tinyassets/broker/routing.py::BrokerLifecycle._wake": (
         CALL_SCOPED, "one broker wake waits for capacity notifications until its fixed deadline",
     ),
     "tinyassets/broker/routing.py::BrokerLifecycle.deploy": (
@@ -135,6 +135,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
         "root box host observes exited processes; only the broker selects lifecycle work",
+    ),
+    "tinyassets/boxes/host_service.py::BrokerLifecycleSlots.claim": (
+        CALL_SCOPED,
+        "one host lifecycle claim waits on the slot condition until its caller timeout, "
+        "then ends; request wakes are waited ahead of background work",
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.destroy": (
         CALL_SCOPED,

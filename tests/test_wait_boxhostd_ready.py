@@ -1,6 +1,10 @@
 """The deploy readiness gate waits through post-drain work, with a hard cap."""
 
+import pytest
+
 from scripts.wait_boxhostd_ready import wait_ready
+
+pytestmark = pytest.mark.verifies("owner-daemon-in-box:D11")
 
 
 def test_waits_for_two_idle_signals_after_busy_lifecycle():
