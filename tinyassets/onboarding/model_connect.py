@@ -50,7 +50,7 @@ async def handle_model_connect(request):
     optional = {"request_ref"}
     if operation in {"discover", "discover_inline"}:
         optional.add("source")
-    if operation == "discover_inline":
+    if operation in {"discover_inline", "inline_begin"}:
         optional.add("client")
     if operation == "oauth_begin":
         optional |= {"definition", "destination"}
@@ -180,7 +180,8 @@ async def handle_model_connect(request):
             if operation in {"inline_begin", "inline_poll", "inline_cancel"}:
                 if operation == "inline_begin":
                     return inline.begin(owner=owner, preset_id=data["preset_id"],
-                        resource=resource, owner_session=approval, request_ref=ref)
+                        resource=resource, owner_session=approval, request_ref=ref,
+                        client=data.get("client", "web"))
                 result = inline.take(owner=owner, handle=data["flow"],
                                      cancel=operation == "inline_cancel")
                 if result.get("status") == "ready":

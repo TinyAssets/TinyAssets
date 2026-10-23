@@ -4,7 +4,6 @@ The callback only deposits a sealed code. Only the authenticated originating
 app can consume it through the existing hosted exchange and bootstrap path.
 """
 
-import html
 import json
 import secrets
 import time
@@ -34,15 +33,18 @@ def return_path(request, owner):
 
 
 def discard_hosted(handle, owner):
+    discard_hosted_digest(hashed(handle), owner)
+
+
+def discard_hosted_digest(digest, owner):
     from tinyassets.api.helpers import _base_path
-    from tinyassets.connection_oauth.pkce import handle_digest
 
     with hosted._flows(_base_path()) as (conn, _):
         conn.execute("DELETE FROM connection_oauth_flows WHERE handle_digest=? "
-                     "AND owner_user_id=?", (handle_digest(handle), owner))
+                     "AND owner_user_id=?", (digest, owner))
         conn.execute("DELETE FROM hosted_model_flows WHERE handle_digest=? "
                      "AND owner_user_id=?",
-                     (handle_digest(handle), owner))
+                     (digest, owner))
 
 
 @contextmanager
@@ -53,6 +55,11 @@ def flows():
             "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, "
             "sealed BLOB NOT NULL, browser_hash TEXT NOT NULL DEFAULT '', "
             "status TEXT NOT NULL, expires REAL NOT NULL)", kind="ephemeral")
+        expired = conn.execute("SELECT handle_hash,owner FROM inline_model_flows "
+                               "WHERE expires<=? AND status IN ('waiting','ready')",
+                               (time.time(),)).fetchall()
+        for row in expired:
+            discard_hosted_digest(row["handle_hash"], row["owner"])
         conn.execute("DELETE FROM inline_model_flows WHERE expires<=?", (time.time(),))
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
@@ -69,7 +76,7 @@ def unseal(handle, value):
     return json.loads(AESGCM(seal_key()).decrypt(value[:12], value[12:], handle.encode()))
 
 
-def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
+def begin(*, owner, preset_id, resource, owner_session=None, request_ref="", client="web"):
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise hosted.HostedAuthError("interactive_approval_required", 403)
@@ -78,7 +85,7 @@ def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
                                challenge=hosted._challenge(verifier), public_resource=resource,
                                request_ref=request_ref)
     return stage(owner=owner, result=result, verifier=verifier,
-                 owner_session=owner_session, exchange="exchange")
+                 owner_session=owner_session, exchange="exchange", client=client)
 
 
 def stage(*, owner, result, verifier, owner_session, exchange, client="web"):
@@ -88,6 +95,13 @@ def stage(*, owner, result, verifier, owner_session, exchange, client="web"):
         raise ValueError("invalid return client")
     handle = result["flow"]
     with flows() as conn:
+        previous = conn.execute("SELECT handle_hash FROM inline_model_flows "
+                                "WHERE owner=? AND status IN ('waiting','ready')",
+                                (owner,)).fetchall()
+        for row in previous:
+            discard_hosted_digest(row["handle_hash"], owner)
+        conn.execute("UPDATE inline_model_flows SET status='cancelled',sealed=? "
+                     "WHERE owner=? AND status IN ('waiting','ready')", (b"", owner))
         conn.execute("INSERT INTO inline_model_flows "
                      "(handle_hash,owner,sealed,status,expires) VALUES (?,?,?,?,?)",
                      (hashed(handle), owner, seal(handle, {
@@ -177,14 +191,11 @@ def callback(request):
                       hashed(handle)))
         if not valid:
             discard_hosted(handle, row["owner"])
-        body = "You can return to chat. " + (
-            "Your connection will finish there." if valid else "Sign-in was cancelled.")
-        if data.get("client", "web") != "web":
-            from tinyassets.onboarding.approval_handoff import completion_url
+        from tinyassets.onboarding.approval_handoff import completion_url
+        from tinyassets.onboarding.native_sign_in import app_return_page
 
-            target = completion_url(handle, data["client"])
-            body += (' <a href="' + html.escape(target, quote=True) + '">Return to TinyAssets</a>'
-                     '<script>location.href=' + json.dumps(target) + ';</script>')
-        response = HTMLResponse(body, headers=HEADERS)
+        target = completion_url(handle, data.get("client", "web"))
+        response = (RedirectResponse(target, status_code=303, headers=HEADERS)
+                    if data.get("client", "web") == "web" else app_return_page(target))
         response.delete_cookie(cookie_name, secure=True, httponly=True, samesite="lax")
         return response
