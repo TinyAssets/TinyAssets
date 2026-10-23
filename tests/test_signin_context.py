@@ -118,3 +118,67 @@ frame.url=APP_URL;deliverReturn();assert.equal(sent.length,2);
 """, encoding="utf-8")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+def test_owner_proof_link_never_relogs_native_or_desktop(tmp_path):
+    source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
+    helpers = source[source.index("  function ownerProofUnavailable("):
+                     source.index("  async function closeExternal(")]
+    script = tmp_path / "owner-proof.cjs"
+    script.write_text("""
+const assert=require('node:assert/strict');
+let NATIVE=false,DESKTOP_SHELL=false,logins=0;
+const location={origin:'https://tinyassets.io'};
+const window={location:{assign(){}},tinyassetsDesktop:{openExternal(){} }};
+function beginSignIn(){logins++;}
+function openExternal(){throw Error('external navigation');}
+function nativePlugin(){return null;}
+function signInClient(){return 'web';}
+function handleAppReturn(){return true;}
+const document={createElement:()=>({href:'',textContent:''})};
+""" + helpers + """
+(async()=>{
+ for(const surface of ['native','desktop']){
+  NATIVE=surface==='native';DESKTOP_SHELL=surface==='desktop';
+  const target={items:[],append(...items){this.items.push(...items);}};
+  appendOwnerProof(target,'Sign in to approve');
+  assert.equal(target.items.some(item=>item.href),false);
+  assert.match(target.items[1].textContent,/regular browser.*same account/i);
+  await assert.rejects(openSignIn('/app/owner-sign-in'),/regular browser/i);
+  assert.equal(logins,0);
+ }
+})().catch(error=>{console.error(error);process.exit(1);});
+""", encoding="utf-8")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+def test_replacing_or_expiring_inline_flow_cancels_provider_custody(
+        setup, tmp_path):  # noqa: F811
+    import time
+
+    from tinyassets.connection_oauth.pkce import flows_db
+
+    handle = "a" * 43
+    old = "b" * 43
+    session = {"identity_json": json.dumps({"user_id": "alice"})}
+    for flow in (old, handle):
+        with flows_db(tmp_path) as (conn, _):
+            conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)",
+                         (owner_sessions.hashed(flow), "alice", "preset", "digest",
+                          "challenge", "origin", time.time(), time.time() + 300, ""))
+        inline.stage(owner="alice", result={"flow": flow, "expires_in": 300,
+                     "authorize_url": "https://provider.example/authorize"},
+                     verifier="v" * 43, owner_session=session, exchange="exchange")
+    assert inline.take(owner="alice", handle=old)["status"] == "cancelled"
+    with flows_db(tmp_path) as (conn, _):
+        assert [row[0] for row in conn.execute(
+            "SELECT handle_digest FROM hosted_model_flows")] == [owner_sessions.hashed(handle)]
+    with inline.flows() as conn:
+        conn.execute("UPDATE inline_model_flows SET expires=? WHERE handle_hash=?",
+                     (0, owner_sessions.hashed(handle)))
+    with inline.flows() as conn:
+        assert conn.execute("SELECT 1 FROM inline_model_flows WHERE handle_hash=?",
+                            (owner_sessions.hashed(handle),)).fetchone() is None
+    with flows_db(tmp_path) as (conn, _):
+        assert conn.execute("SELECT 1 FROM hosted_model_flows").fetchone() is None

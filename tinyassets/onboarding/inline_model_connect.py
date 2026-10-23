@@ -33,15 +33,18 @@ def return_path(request, owner):
 
 
 def discard_hosted(handle, owner):
+    discard_hosted_digest(hashed(handle), owner)
+
+
+def discard_hosted_digest(digest, owner):
     from tinyassets.api.helpers import _base_path
-    from tinyassets.connection_oauth.pkce import handle_digest
 
     with hosted._flows(_base_path()) as (conn, _):
         conn.execute("DELETE FROM connection_oauth_flows WHERE handle_digest=? "
-                     "AND owner_user_id=?", (handle_digest(handle), owner))
+                     "AND owner_user_id=?", (digest, owner))
         conn.execute("DELETE FROM hosted_model_flows WHERE handle_digest=? "
                      "AND owner_user_id=?",
-                     (handle_digest(handle), owner))
+                     (digest, owner))
 
 
 @contextmanager
@@ -52,6 +55,11 @@ def flows():
             "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, "
             "sealed BLOB NOT NULL, browser_hash TEXT NOT NULL DEFAULT '', "
             "status TEXT NOT NULL, expires REAL NOT NULL)", kind="ephemeral")
+        expired = conn.execute("SELECT handle_hash,owner FROM inline_model_flows "
+                               "WHERE expires<=? AND status IN ('waiting','ready')",
+                               (time.time(),)).fetchall()
+        for row in expired:
+            discard_hosted_digest(row["handle_hash"], row["owner"])
         conn.execute("DELETE FROM inline_model_flows WHERE expires<=?", (time.time(),))
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
@@ -87,6 +95,13 @@ def stage(*, owner, result, verifier, owner_session, exchange, client="web"):
         raise ValueError("invalid return client")
     handle = result["flow"]
     with flows() as conn:
+        previous = conn.execute("SELECT handle_hash FROM inline_model_flows "
+                                "WHERE owner=? AND status IN ('waiting','ready')",
+                                (owner,)).fetchall()
+        for row in previous:
+            discard_hosted_digest(row["handle_hash"], owner)
+        conn.execute("UPDATE inline_model_flows SET status='cancelled',sealed=? "
+                     "WHERE owner=? AND status IN ('waiting','ready')", (b"", owner))
         conn.execute("INSERT INTO inline_model_flows "
                      "(handle_hash,owner,sealed,status,expires) VALUES (?,?,?,?,?)",
                      (hashed(handle), owner, seal(handle, {

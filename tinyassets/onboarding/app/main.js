@@ -69,13 +69,24 @@
     return window.Capacitor.getPlatform()==='ios'?'ios':
       info.id==='io.tinyassets.app.debug'?'android-debug':'android';
   }
+  function ownerProofUnavailable(){
+    return 'Open tinyassets.io/app in a regular browser, sign in with the same account, and approve there.';
+  }
+  function ownerProofElement(label){
+    if(NATIVE||DESKTOP_SHELL){
+      const note=document.createElement('span');note.textContent=ownerProofUnavailable();return note;
+    }
+    const link=document.createElement('a');link.href='/app/owner-sign-in';
+    link.textContent=label;return link;
+  }
+  function appendOwnerProof(container,label){ container.append(' ',ownerProofElement(label)); }
   async function openSignIn(value,{appLogin=false}={}){
     const url=new URL(value,location.origin);
     if(url.protocol!=='https:'||url.username||url.password)
       throw new Error('A secure sign-in URL is required.');
     if(!NATIVE&&!DESKTOP_SHELL){window.location.assign(url.href);return;}
     if(url.origin===location.origin&&url.pathname==='/app/owner-sign-in'){
-      await beginSignIn();return;
+      throw new Error(ownerProofUnavailable());
     }
     if(appLogin&&NATIVE&&window.Capacitor.getPlatform()==='ios'){
       const auth=nativePlugin('SystemAuth');
@@ -5629,9 +5640,7 @@
         if(this.current(record)){
           this.failed('Sign-in could not start. Your message is kept.');
           if(error.signIn){
-            const link=document.createElement('a');link.href='/app/owner-sign-in';
-            link.onclick=event=>{event.preventDefault();void openSignIn(link.href);};link.textContent='Sign in to approve';
-            this.note.append(' ',link);
+            appendOwnerProof(this.note,'Sign in to approve');
           }
         }
       }
@@ -5944,9 +5953,7 @@
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
         if(error.signIn){
           this.status(error.message||"Sign in to approve.");
-          const link=document.createElement("a");link.href="/app/owner-sign-in";
-          link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";
-          $("hosted-model-status").append(" ",link);
+          appendOwnerProof($("hosted-model-status"),"Sign in to approve");
           return;
         }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
@@ -6856,7 +6863,9 @@
         let link=$('memory-owner-sign-in');
         if(!link){link=document.createElement('a');link.id='memory-owner-sign-in';
           link.href='/app/owner-sign-in';link.target='_blank';link.rel='noopener';
-          link.textContent='Sign in to save memory';$('memory-status').after(link);}
+          link.textContent='Sign in to save memory';
+          if(NATIVE||DESKTOP_SHELL){link.removeAttribute('href');link.textContent=ownerProofUnavailable();}
+          $('memory-status').after(link);}
       }
       return {ok:r.ok,status:r.status,doc};
     }
@@ -7631,9 +7640,7 @@
         sessionStorage.removeItem(this.storageKey);
         note.textContent="Could not start the sign-in: "+((err&&err.message)||"unknown error")+".";
         if(err&&err.signIn){
-          const link=document.createElement('a');link.href='/app/owner-sign-in';
-          link.onclick=event=>{event.preventDefault();void openSignIn(link.href);};link.textContent='Sign in to approve';
-          note.append(' ',link);
+          appendOwnerProof(note,'Sign in to approve');
         }
         button.disabled=false;
       }
@@ -8471,6 +8478,7 @@
       const controls=document.createElement('div');controls.className='browser-login-controls';
       const signIn=document.createElement('a');signIn.href='/app/owner-sign-in';
       signIn.target='_blank';signIn.rel='noopener';signIn.textContent='Sign in to the protected view';
+      if(NATIVE||DESKTOP_SHELL){signIn.removeAttribute('href');signIn.textContent=ownerProofUnavailable();}
       signIn.hidden=true;
       privateForm.append(credential,fill);
       box.append(note,image,privateForm,typing,controls,signIn);
@@ -8609,6 +8617,7 @@
       let preview=null, busy=false, originalDraft='', dirty=false;
       const signIn=document.createElement('a'); signIn.href='/app/owner-sign-in';
       signIn.target='_blank'; signIn.rel='noopener'; signIn.textContent='Sign in to approve'; signIn.hidden=true;
+      if(NATIVE||DESKTOP_SHELL){signIn.removeAttribute('href');signIn.textContent=ownerProofUnavailable();}
       box.append(title,destination,draft,details,scope,predicate,controls,signIn,note);
       function show(value){
         preview=value;
@@ -9674,9 +9683,7 @@
       if(err.authRequired) return enterSignedOut();
       note.textContent = "Couldn't do that: " + err.message;
       if(err.signIn){
-        const link=document.createElement("a"); link.href="/app/owner-sign-in";
-        link.target="_blank"; link.rel="noopener"; link.textContent=" Sign in to decide this request";
-        note.appendChild(link);
+        appendOwnerProof(note,"Sign in to decide this request");
       }
     }finally{ buttons.forEach(b=>{ b.disabled = itemAnswered; }); }
   }
@@ -10116,6 +10123,9 @@
   __TA_CREDENTIAL_REQUESTS__
 
   async function boot(){
+    if(NATIVE||DESKTOP_SHELL)document.querySelectorAll('a[href="/app/owner-sign-in"]').forEach(link=>{
+      link.removeAttribute('href');link.textContent=ownerProofUnavailable();
+    });
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
     // Native shells return from approvals in an external browser. In a web tab,
