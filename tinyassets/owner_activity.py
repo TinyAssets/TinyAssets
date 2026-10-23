@@ -1,10 +1,18 @@
 """Process-local admission gate shared by HTTP and every agent turn."""
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from contextlib import contextmanager
 from functools import wraps
+
+# Per admitted turn, not per OS thread. The owner server runs every request
+# as its own task on one event-loop thread; a thread-local depth would treat
+# the next request as a continuation of the one already inside `enter`.
+_ADMISSION_DEPTH: contextvars.ContextVar[dict[int, int] | None] = contextvars.ContextVar(
+    "owner_admission_depth", default=None,
+)
 
 
 class Activity:
@@ -41,12 +49,23 @@ class Activity:
             self.deletion_only = self.deleting = self.draining = True
             self._cancel_logins()
 
+    def _depth(self) -> int:
+        depths = _ADMISSION_DEPTH.get()
+        if not depths:
+            return 0
+        return depths.get(id(self), 0)
+
     @contextmanager
     def enter(self, *, keep_awake=True):
         with self.lock:
-            if self.draining:
+            # Nested work of a turn already admitted in this task may finish.
+            # A different task, including another request on the same thread, is the next turn.
+            if self.draining and not self._depth():
                 raise RuntimeError("owner box is draining")
             self.active += 1
+            depths = dict(_ADMISSION_DEPTH.get() or {})
+            depths[id(self)] = self._depth() + 1
+            token = _ADMISSION_DEPTH.set(depths)
             if keep_awake:
                 self.last = time.monotonic()
         try:
@@ -54,6 +73,7 @@ class Activity:
         finally:
             with self.lock:
                 self.active -= 1
+                _ADMISSION_DEPTH.reset(token)
                 if keep_awake:
                     self.last = time.monotonic()
                 self.lock.notify_all()

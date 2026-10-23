@@ -18,6 +18,20 @@ from tinyassets.boxes.provider import BoxError
 from tinyassets.owner_activity import Activity
 
 
+def _other_turn(activity, errors):
+    """Probe a turn that does not already hold this admission.
+
+    Nested ``enter`` on the admitted turn is that turn finishing. The next
+    turn is a different task, which an owner server may schedule on the same
+    OS thread.
+    """
+    try:
+        with activity.enter():
+            errors.append("admitted")
+    except RuntimeError as exc:
+        errors.append(exc)
+
+
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
     class Runtime:
@@ -134,9 +148,12 @@ def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(flee
         fleet.tick()
         assert activity.draining and activity.active == 1
         assert not fleet.runtime.stops
-        with pytest.raises(RuntimeError, match="draining"):
-            with activity.enter():
-                pytest.fail("new turn admitted after snapshot deadline")
+        refused = []
+        thread = threading.Thread(target=_other_turn, args=(activity, refused))
+        thread.start()
+        thread.join()
+        assert isinstance(refused[0], RuntimeError)
+        assert "draining" in str(refused[0])
     fleet.tick()
     assert fleet.runtime.stops == [uid]
     manager.maintain()

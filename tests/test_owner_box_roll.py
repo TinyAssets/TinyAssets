@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from tests.support.admission import drive
-from tests.test_owner_box_lifecycle import fleet  # noqa: F401
+from tests.test_owner_box_lifecycle import _other_turn, fleet  # noqa: F401
 from tinyassets.boxes.images import Images
 from tinyassets.boxes.provider import BoxError
 
@@ -65,8 +66,12 @@ def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(ro
         assert result == {"slept": 0, "asleep": 2, "incomplete": 1}
         assert activity.draining and activity.active == 1
         assert rolling.runtime.live == {uid} and rolling.runtime.stops == []
-        with pytest.raises(RuntimeError, match="draining"), activity.enter():
-            pytest.fail("deployment admitted new work")
+        refused = []
+        thread = threading.Thread(target=_other_turn, args=(activity, refused))
+        thread.start()
+        thread.join()
+        assert isinstance(refused[0], RuntimeError)
+        assert "draining" in str(refused[0])
     rolling.tick()
     assert rolling.runtime.live == set() and rolling.runtime.stops == [uid]
     assert len(rolling.runtime.starts) == 1

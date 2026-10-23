@@ -33,11 +33,10 @@ import json
 import logging
 import math
 import re
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
-from contextvars import ContextVar, copy_context
+from contextvars import copy_context
 from functools import wraps
 from typing import Annotated, Any, Literal
 
@@ -93,36 +92,6 @@ _CONVERSE_PROGRESS_INTERVAL_S = 20
 _CONVERSE_WORKERS = 8
 _CONVERSE_EXECUTOR = ThreadPoolExecutor(max_workers=_CONVERSE_WORKERS,
                                         thread_name_prefix="converse")
-_CONVERSE_SLOTS = threading.BoundedSemaphore(_CONVERSE_WORKERS)
-_CONVERSE_BUSY: ContextVar[bool] = ContextVar("converse_busy", default=False)
-
-
-class _ConverseBusy(RuntimeError):
-    pass
-
-
-def _run_converse_worker(tool, args, kwargs):
-    try:
-        return tool(*args, **kwargs)
-    finally:
-        _CONVERSE_SLOTS.release()
-
-
-def _run_busy_converse(tool, args, kwargs):
-    token = _CONVERSE_BUSY.set(True)
-    try:
-        return tool(*args, **kwargs)
-    finally:
-        _CONVERSE_BUSY.reset(token)
-
-
-def _busy_failure_record():
-    from tinyassets.conversation_failure import turn_failure
-
-    return turn_failure("platform_busy", stage="before_send", effects="none",
-                        ref=uuid.uuid4().hex[:16])
-
-
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
 #: Seconds uvicorn keeps waiting on connections and tracked request tasks after
@@ -469,18 +438,8 @@ def _register_structured_tool(fn, *, tags, name=None):
         async def _owned_tool(*args, **kwargs):
             # The admitted turn belongs to the server, not the HTTP/SSE task.
             # A disconnected client stops waiting but must not stop its worker.
-            if _CONVERSE_SLOTS.acquire(blocking=False):
-                try:
-                    future = asyncio.get_running_loop().run_in_executor(
-                        _CONVERSE_EXECUTOR, copy_context().run,
-                        _run_converse_worker, _tool, args, kwargs)
-                except BaseException:
-                    _CONVERSE_SLOTS.release()
-                    raise
-            else:
-                # This short path still authenticates and admits the message, then
-                # records a terminal before it can dispatch any model work.
-                future = asyncio.to_thread(_run_busy_converse, _tool, args, kwargs)
+            future = asyncio.get_running_loop().run_in_executor(
+                _CONVERSE_EXECUTOR, copy_context().run, lambda: _tool(*args, **kwargs))
             worker = asyncio.ensure_future(future)
             def finished(task):
                 if not task.cancelled() and task.exception() is not None:
@@ -3287,18 +3246,59 @@ def converse(
             "universe_id": uid,
         })
 
-    if addressed is None:
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.conversation_store import owner_send_options
+    from tinyassets.owner_door.send import deliver_owner_send
+
+    # Selection negotiation is read-only. Actual execution always crosses intake.
+    stored_options = owner_send_options(_universe_dir(uid), memory_session, client_send_id)
+    if stored_options is not None:
+        # A design installed after admission cannot retarget a saved message.
+        # Also repair a client that already negotiated a new selection on replay.
+        consumer_request = stored_options.get('consumer_request')
+    if stored_options is None and addressed is None and consumer_request is None:
         from tinyassets.consumer_runtime import converse_turn
 
-        custom = converse_turn(
+        selection = converse_turn(
             _base_path(), owner=current_actor_id(), universe=uid, message=message,
-            input_method=input_method, model_choice=model_choice, request=consumer_request,
+            input_method=input_method, model_choice=model_choice, request=None,
         )
-        if custom is not None:
-            return json.dumps(custom)
-    elif consumer_request is not None:
-        # A conversation design answers the main thread only.
+        if selection is not None:
+            return json.dumps(selection)
+    elif addressed is not None and consumer_request is not None:
         return json.dumps({"error": "invalid_consumer_request", "universe_id": uid})
+    client_send_id = client_send_id or uuid.uuid4().hex
+
+    def dispatch(founder_turn):
+        if consumer_request is not None:
+            from tinyassets.consumer_runtime import converse_turn
+
+            return converse_turn(
+                _base_path(), owner=current_actor_id(), universe=uid, message=message,
+                input_method=input_method, model_choice=model_choice, request=consumer_request,
+                founder_turn=founder_turn,
+            )
+        return json.loads(_dispatch_owner_send(
+            message, uid, input_method, model_choice, addressed, addressed_id,
+            memory_session, client_send_id, founder_turn, turn,
+        ))
+
+    try:
+        return json.dumps(deliver_owner_send(
+            _universe_dir(uid), memory_session, client_send_id, message,
+            {"input_method": input_method, "model_choice": model_choice,
+             "consumer_request": consumer_request}, dispatch,
+            publish=lambda: _announce_owner_message(_universe_dir(uid)),
+        ))
+    except Exception:
+        logger.exception("owner send receipt unavailable")
+        return json.dumps({"error": "Send receipt unavailable; retry this same send identity.",
+                           "history_saved": False, "client_send_id": client_send_id})
+
+
+def _dispatch_owner_send(message, uid, input_method, model_choice, addressed, addressed_id,
+                         memory_session, client_send_id, founder_turn, turn):
+    from tinyassets.api import interlocutor
 
     # Cross-turn memory (founder goal 2026-08-22: a conversation that persists).
     # One continuous session per founder per universe, keyed on the VERIFIED
@@ -3308,13 +3308,15 @@ def converse(
     # History only rides into GRANTED (founder) turns — enforced again inside
     # converse — and it is memory, never consent.
     from tinyassets.api.helpers import _universe_dir as _memory_universe_dir
+    from tinyassets.api.permissions import current_actor_id
     from tinyassets.control_plane import session
 
     memory_universe_dir = _memory_universe_dir(uid)
     try:
-        from tinyassets.conversation_store import load_recent
+        from tinyassets.conversation_store import load_send_history
 
-        conversation_history = load_recent(memory_universe_dir, memory_session)
+        conversation_history = load_send_history(memory_universe_dir, memory_session,
+                                                  current_send_id=client_send_id)
     except Exception:  # noqa: BLE001 - no memory this turn, never a failed turn
         conversation_history = []
     if addressed is None:
@@ -3357,7 +3359,6 @@ def converse(
     typed = message
     live_id = ""
     live_turn = None
-    founder_turn = None
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
@@ -3380,34 +3381,9 @@ def converse(
                               base_path=memory_universe_dir.parent) as live_turn:
             live_turn.check()
             live_id = live_turn.live_id
-            # This commit is admission, not optional memory. No model or tool may run
-            # until the original request survives process death. Carryover is context,
-            # never a replacement for the owner's verbatim message in the transcript.
-            from tinyassets.conversation_store import record_turn
+            from tinyassets.conversation_store import bind_send_execution
 
-            founder_turn = record_turn(
-                memory_universe_dir, memory_session, "founder", typed,
-                client_send_id=client_send_id, ext_id=f"turn:{live_turn.live_id}",
-            )
-            if not founder_turn:
-                from tinyassets.conversation_store import stored_owner_send
-
-                try:
-                    original = stored_owner_send(memory_universe_dir, memory_session,
-                                                 client_send_id)
-                except Exception:  # noqa: BLE001 - unreadable admission must refuse dispatch
-                    original = None
-                if original is not None:
-                    if original != typed:
-                        return json.dumps({"error": "client_send_id_conflict",
-                                           "universe_id": uid})
-                    return json.dumps({"already_received": True, "history_saved": True,
-                                       "universe_id": uid})
-                return json.dumps({"error": "Your message could not be saved, so nothing was sent.",
-                                   "history_saved": False, "universe_id": uid})
-            if _CONVERSE_BUSY.get():
-                raise _ConverseBusy("Interactive turns are busy; try again shortly.")
-            _announce_owner_message(memory_universe_dir)
+            bind_send_execution(memory_universe_dir, memory_session, founder_turn, live_id)
             # A reconnect must not consume context owed to the next new turn.
             message = _with_carryover(memory_universe_dir, memory_session, message)
             if addressed is None and turn.interlocutor.tier == interlocutor.FOUNDER:
@@ -3456,8 +3432,20 @@ def converse(
         from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 
-        record = (_busy_failure_record() if isinstance(exc, _ConverseBusy)
-                  else _served_failure_record(exc, held=held is not None))
+        record = _served_failure_record(exc, held=held is not None)
+        if held is not None and record.effects == "none":
+            from tinyassets.api.pending_requests import _model_connect_request
+
+            try:
+                held["needs_connection"] = _model_connect_request()
+            except Exception:
+                logger.warning("connection request unavailable; send remains retryable",
+                               exc_info=True)
+                held["error"] = "Connection setup is unavailable; retry this same message."
+            return json.dumps(_with_unsettled_steering(
+                {**held, "retryable_setup": True, "history_saved": True},
+                memory_universe_dir, memory_session, live_id,
+            ))
         try:
             saved = record_failure(
                 memory_universe_dir, memory_session, typed, record, client_send_id=client_send_id,
@@ -3479,16 +3467,6 @@ def converse(
             "failure_notice": failure_notice(record),
             "history_saved": saved,
         }
-        if held is not None:
-            from tinyassets.api.pending_requests import _model_connect_request
-
-            try:
-                held["needs_connection"] = _model_connect_request()
-            except Exception:
-                logger.warning("converse: connect request unavailable", exc_info=True)
-            return json.dumps(_with_unsettled_steering(
-                {**held, **history}, memory_universe_dir, memory_session, live_id,
-            ))
         try:
             _record_served_failure(uid, exc, ref=record.ref)
         except Exception:
@@ -4092,7 +4070,7 @@ class _MCPDiscoveryMiddleware:
 PLATFORM_NOT_CLOUD_EXIT_CODE = 78
 
 
-def create_streamable_http_app(*, ingress=None) -> Starlette:
+def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
     from tinyassets.owner_runtime import current as owner_runtime
 
@@ -4355,15 +4333,13 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
     # browser-style GETs on /mcp; pass MCP transport requests through unchanged.
     from tinyassets.auth.middleware import AuthContextMiddleware
-    from tinyassets.ingress import AppIngressMiddleware
     from tinyassets.observability import RequestLogMiddleware, StashExceptionMiddleware
 
     # Inside Starlette's server-error wrapper, outside the exception middleware,
     # so a route exception is stashed before it becomes an HTTP 500.
     app.add_middleware(StashExceptionMiddleware)
     if owner_mode:
-        app = AppIngressMiddleware(
-            MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools), ingress)
+        app = MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools)
     else:
         app = _MCPDiscoveryMiddleware(OwnerRouter(app))
     app = AuthContextMiddleware(app, router=not owner_mode)

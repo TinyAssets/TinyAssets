@@ -207,8 +207,14 @@ broker and waker get no new business logic.
 - [ ] 8.10 A turn always ends with a reply or a clear stop: the last attempt is a
       tools-off reply, and a model that fails before reaching its provider moves
       the turn to the next candidate (T8, in the box). Branch `conv/turn-reply-budget`.
-- [ ] 8.11 One durable send (shape-convergence C11, registry S24): the page's
-      self-reload never drops a send or repeats "Still waiting to be sent" notices.
+- [x] 8.11 C11/S24 durable send: one box-local admission before publication and
+      dispatch; independent browser send identities survive busy turns and reloads.
+      Removed steering intake, destructive claims, browser batch replay and the
+      experimental ingress adapter. `send-path` is a mandatory structural guard.
+      Targeted Linux proofs cover concurrency, replay, storage failure, process
+      death, setup resume, selected-run projection and the shipped browser code.
+      No production access or cutover in this lane. The page's self-reload never
+      drops a send or repeats "Still waiting to be sent" notices.
 - [ ] 8.12 Sign-in stays in the user's context: the same tab on the web, an in-app
       sheet on phones, the system browser in the matching profile on desktop with
       return to the app.

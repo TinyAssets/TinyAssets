@@ -1,5 +1,44 @@
 ## ADDED Requirements
 
+### Requirement: One durable owner send intake (S24)
+The box SHALL commit a send identity and its verbatim owner message before
+publication or dispatch. App, voice and connector sends SHALL use `converse`.
+The browser SHALL retain each unacknowledged identity independently and retry
+that identity after reload; it SHALL NOT claim/delete server messages to resend
+them, batch distinct identities, or infer delivery from matching text.
+Dispatch in a thread SHALL serialize inside the box. Selected conversation runs
+SHALL attach their transcript result to the same admitted owner row.
+
+#### Scenario: Send while working and reload
+- **WHEN** a second message arrives during a turn and the page reloads
+- **THEN** both identities remain independently recoverable
+- **AND** retrying either returns its receipt without a second execution or owner row
+- **AND** the page displays no legacy waiting notice for an acknowledged identity
+
+#### Scenario: Interrupted dispatch
+- **WHEN** a box stops after committing a message but before starting dispatch
+- **THEN** replay of that identity resumes the pending dispatch
+- **WHEN** it stops after dispatch starts without a saved result
+- **THEN** replay reports uncertain execution and never repeats its effects
+
+#### Scenario: Intake fails
+- **WHEN** the message cannot be committed
+- **THEN** nothing is published or dispatched and the browser retains the request
+
+#### Scenario: Connection setup is incomplete
+- **WHEN** dispatch proves no effects occurred and requires a model connection
+- **THEN** the send remains held under its original identity
+- **AND** completing setup resumes that identity without another owner row
+
+#### Scenario: Legacy browser draft has no receipt identity
+- **WHEN** a previous version's queued draft is imported
+- **THEN** one stable recovery entry offers send or discard
+- **AND** it is not automatically replayed based on matching message text
+
+#### Scenario: Structural regression
+- **WHEN** another browser send transport or steering/claim intake is introduced
+- **THEN** the `send-path` CI guard fails
+
 ### Requirement: Owner boxes know the platform public URL
 The env renderer SHALL derive the origin (scheme and authority) from the existing
 `WORKOS_MCP_RESOURCE` and write it as `UNIVERSE_SERVER_URL` in `boxhostd.env`.

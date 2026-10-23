@@ -277,9 +277,10 @@ def test_message_runs_converse_with_one_live_provider_authority(client, stores, 
     monkeypatch.setattr("tinyassets.universe_server.converse", fake_converse)
     auth = {"authorization": f"Bearer {mint(*stores, scope('converse'))}"}
     response = http.post("/api/command-centers/home/messages", headers=auth,
-                         json={"message": "status?"})
+                         json={"message": "status?", "client_send_id": "one-send"})
     assert response.status_code == 200 and response.json() == {"reply": "hello"}
     assert seen["owner"] == "alice" and seen["graph_id"] == "home"
+    assert seen['client_send_id'] == 'one-send'
     assert seen["capability"].tool_name == "converse"
     with pytest.raises(PermissionError):  # revoked once the turn returns
         middleware._active_provider_request(seen["capability"])

@@ -187,7 +187,6 @@ services:
       - /etc/tinyassets/daemon.env
       - /etc/tinyassets/agent-interchange.env
       - /etc/tinyassets/request-idempotency.env
-      - /etc/tinyassets/app-ingress.env
     volumes:
       - tinyassets-data:/data
       # boxhostd's bootstrap and admission sockets; the daemon only connects.

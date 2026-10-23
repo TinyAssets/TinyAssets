@@ -195,7 +195,8 @@ def _installation_present(base, owner, universe):
         return any("turn_consumer" in json.loads(row[0]) for row in rows)
 
 
-def converse_turn(base, *, owner, universe, message, input_method, model_choice, request):
+def converse_turn(base, *, owner, universe, message, input_method, model_choice, request,
+                  founder_turn=None):
     """Existing authenticated converse boundary; None means unchanged default path."""
     try:
         if request is None and not _installation_present(base, owner, universe):
@@ -250,6 +251,8 @@ def converse_turn(base, *, owner, universe, message, input_method, model_choice,
                     "saved": prefs.policy.document() if prefs.policy else None,
                     "observed_generation": prefs.generation, "current": model_choice}}
         if row is None:
+            if founder_turn is not None:
+                context["owner_send_turn"] = founder_turn
             row = reserve_prepared_turn(base, owner=owner, universe=universe,
                                         request_key=request["request_key"], intent=intent,
                                         context=context)

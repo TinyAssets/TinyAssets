@@ -118,7 +118,6 @@ def test_daemon_auth_inventory_has_only_the_audited_readers():
             "storage/request_admissions.py",
         },
         "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": set(),
-        "TINYASSETS_APP_INGRESS_HMAC_KEY": set(),
         "TINYASSETS_WIKI_CANARY_TOKEN": {"auth/wiki_canary.py"},
         "TINYASSETS_CANARY_DOOR_KEY": {"onboarding/canary_sign_in.py"},
         "TINYASSETS_SESSION_SEAL_KEY": {"onboarding/session_store.py", "universe_server.py"},
