@@ -1597,6 +1597,42 @@ def test_restart_stack_failure_leaves_bundle_dirty(box: Box, post_deploy):
     assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "old\n"
 
 
+def test_restore_bundle_clears_dirty_marker_and_stops_broker(box: Box):
+    """``--restore-bundle`` clears ``bundle-dirty`` after it converges.
+
+    That path never installs a bundle, so ``INSTALLED_THIS_RUN`` stays 0.
+    ``finish deployed`` still has to clear the marker the failed rollback left.
+    ``restart_stack`` stops a running broker before ``compose up`` so a
+    boxhostd restart cannot leave the broker mounted on a deleted runtime
+    directory inode.
+    """
+    state = box.docker_state_json()
+    state["containers"]["tinyassets-broker"] = {"status": "running"}
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    box.stage_bundle()
+    deployed = box.run(NEW_IMAGE)
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    assert not box.dirty.exists()
+    box.dirty.write_text(box.pointer.read_text().strip() + "\n", encoding="utf-8")
+    state = box.docker_state_json()
+    state["containers"]["tinyassets-broker"] = {"status": "running"}
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    marked = len(box.docker_calls_text().splitlines())
+
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert _result(restored) == "deployed"
+    assert not box.dirty.exists()
+    calls = box.docker_calls_text().splitlines()[marked:]
+    stop_at = next(i for i, line in enumerate(calls) if line.startswith("stop tinyassets-broker"))
+    up_at = next(
+        i for i, line in enumerate(calls)
+        if line.startswith("compose ") and " up " in f" {line} "
+    )
+    assert stop_at < up_at
+
+
 
 
 
