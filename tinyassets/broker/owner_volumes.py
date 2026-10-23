@@ -86,11 +86,18 @@ def binding(identities, owner):
 
 
 def pending(identities, *, include_running=True):
+    """Recoverable volume work, excess snapshots, or a cold local image.
+
+    ``{"kind": "create"}`` is not recoverable. VolumeLifecycle.recover leaves
+    it alone and the volume is formatted on first wake, so counting it made
+    deploy readiness wait for a wake that the readiness window never issues.
+    """
     with closing(identities._connect(write=False)) as db:
         candidates = [row[0] for row in db.execute(
             "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
             "ON i.principal=v.principal AND i.machine_id=v.uid "
             "WHERE ((v.work IS NOT NULL AND "
+            "json_extract(v.work,'$.kind') IS NOT 'create' AND "
             "(? OR json_extract(v.work,'$.kind')!='running')) OR "
             "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7 OR "
             "(v.local=1 AND v.asleep_at<? AND v.snapshot_id IS NOT NULL))",

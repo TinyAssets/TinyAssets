@@ -169,6 +169,37 @@ def sleep(storage, owner="alice"):
     return storage.lifecycle.volume(owner)
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_lazy_create_does_not_block_readiness_and_live_snapshot_waits(storage):
+    routing = storage.lifecycle.lifecycle
+    assert storage.lifecycle.volume("alice")["work"] == {"kind": "create"}
+    assert storage.lifecycle.volume("bob")["work"] == {"kind": "create"}
+    assert owner_volumes.pending(storage.identities, include_running=False) == []
+    assert drive(routing.readiness()) == {"ready": True}
+
+    record, _mount = start(storage)
+    uid = record["uid"]
+    intent = storage.lifecycle.volume("alice", "sleep")
+    work = intent["work"]
+    assert work["kind"] == "snapshot"
+    assert uid in storage.live
+    assert owner_volumes.pending(storage.identities, include_running=False) == ["alice"]
+    assert drive(routing.readiness()) == {"ready": False}
+
+    pending = drive(storage.lifecycle._publish_snapshot("alice", work))
+    assert pending["work"] == work
+    assert storage.volumes.remote == {}
+    assert not any(event == "snapshot" for event, _ in storage.volumes.events)
+
+    drive(storage.lifecycle.tick_owner("alice"))
+    published = storage.lifecycle.volume("alice")
+    assert published["work"] is None
+    assert published["snapshot_id"] == work["snapshot_id"]
+    assert storage.volumes.remote[uid, work["snapshot_id"]] == b"initial"
+    assert storage.lifecycle.volume("bob")["work"] == {"kind": "create"}
+    assert drive(routing.readiness()) == {"ready": True}
+
+
 @pytest.mark.verifies('owner-daemon-in-box:C1')
 def test_every_sleep_publishes_verified_reference_and_growth_never_shrinks(storage):
     record, mount = start(storage)
