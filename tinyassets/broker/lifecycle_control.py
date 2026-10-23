@@ -6,12 +6,23 @@ from pathlib import Path
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.bootstrap import peer
 
+# The broker started with --box-host listens here. Nothing creates the old
+# /run/tinyassets-broker-lifecycle/lifecycle.sock.
+SOCKET = Path("/run/tinyassets-boxhostd/broker/broker.sock")
+
+
+def socket_path():
+    """Production broker socket, or the rehearsal run directory's broker socket."""
+    override = os.environ.get("TINYASSETS_BOXES_RUN")
+    if override:
+        return Path(override) / "broker/broker.sock"
+    return SOCKET
+
 
 def request(operation, **arguments):
-    root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(5 if operation == "readiness" else 600)
-        sock.connect(str(root / "broker/broker.sock"))
+        sock.connect(str(socket_path()))
         if peer(sock)[1:] != (1002, 1002):
             raise PermissionError("lifecycle peer is not the broker")
         sock.sendall(rf.control(rf.CONNECTION, {

@@ -18,7 +18,11 @@ class Images:
         self.current = initial.name
         if state.exists():
             document = json.loads(state.read_text())
-            self.current = document["current"]
+            recorded = document.get("current")
+            # A pruned harness name must not stick. initial is the resolved
+            # target of harness-current.
+            if isinstance(recorded, str) and (self.directory / recorded).is_dir():
+                self.current = recorded
         self.path(self.current)
 
     def path(self, image: str) -> Path:

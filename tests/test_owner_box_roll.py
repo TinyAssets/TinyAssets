@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -153,6 +154,58 @@ def test_host_refuses_retired_roll_drain_and_wake_image_override(rolling):
             rolling.control(operation, owner, **fields)
     assert not rolling.runtime.starts
     assert rolling.manager.images.current == rolling.old
+
+
+def test_broker_lifecycle_socket_is_the_boxhostd_broker(monkeypatch):
+    from tinyassets.broker import lifecycle_control
+
+    assert lifecycle_control.SOCKET == Path("/run/tinyassets-boxhostd/broker/broker.sock")
+    monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
+    assert lifecycle_control.socket_path() == lifecycle_control.SOCKET
+    monkeypatch.setenv("TINYASSETS_BOXES_RUN", "/tmp/rehearsal-run")
+    assert lifecycle_control.socket_path() == Path("/tmp/rehearsal-run/broker/broker.sock")
+
+
+def test_missing_recorded_image_falls_back_to_the_resolved_harness(tmp_path):
+    root = tmp_path / "images"
+    current = image(root, "2")
+    state = tmp_path / "state/images.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"current": "harness-" + "9" * 64}))
+    loaded = Images(root, state, current)
+    assert loaded.current == current.name
+
+
+def test_non_string_recorded_image_falls_back_to_the_resolved_harness(tmp_path):
+    root = tmp_path / "images"
+    current = image(root, "4")
+    state = tmp_path / "state/images.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"current": None}))
+    loaded = Images(root, state, current)
+    assert loaded.current == current.name
+
+
+def test_launch_uses_harness_current_when_the_selected_image_is_gone(rolling):
+    rolling.manager.images.current = "harness-" + "9" * 64
+    (rolling.root / "harness-current").symlink_to(rolling.new)
+    uid = rolling.wake("a")
+    assert rolling.manager.boxes[uid].image == rolling.new
+    assert rolling.runtime.starts[-1][1]["rootfs"] == rolling.root / rolling.new
+
+
+def test_launch_keeps_a_present_image_when_harness_current_points_elsewhere(rolling):
+    (rolling.root / "harness-current").symlink_to(rolling.new)
+    uid = rolling.wake("a")
+    assert rolling.manager.boxes[uid].image == rolling.old
+    assert rolling.runtime.starts[-1][1]["rootfs"] == rolling.root / rolling.old
+
+
+def test_launch_refuses_a_missing_image_without_harness_current(rolling):
+    rolling.manager.images.current = "harness-" + "9" * 64
+    with pytest.raises(BoxError, match="startup failed"):
+        rolling.wake("a")
+    assert not rolling.runtime.starts
 
 
 def test_deploy_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):

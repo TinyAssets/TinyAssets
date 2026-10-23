@@ -6,8 +6,8 @@ Two modes, selected by ``TINYASSETS_DAEMON_IMAGE_RETENTION_MODE``:
     The keep set is a rule, not a pressure response. Every pass removes each
     registry-verified daemon image outside the keep set, whatever the disk
     percentage: the running image, every image any container (running or
-    stopped) references, the configured ``TINYASSETS_IMAGE``, the release
-    receipt's ``rollback_target``, and one rollback image. Explicit mutable tags
+    stopped) references,     the configured ``TINYASSETS_IMAGE``, and the release
+    receipt's ``rollback_target``. Explicit mutable tags
     pin images, including the cutover rollback.
     Pressure at or above the trigger still grades the pass, so disk the rule
     cannot relieve stays loud (``pressure_unmet``, exit 1).
@@ -45,15 +45,18 @@ MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
 FENCE_STATE = Path("/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json")
 MAX_OUTPUT = 4 * 1024 * 1024
 MODES = ("count", "threshold")
-# The newest older image bridges the swap-to-receipt canary window.
-KEEP_OLDER = 1
+# Current, every container image, the configured image, the receipt rollback
+# target, and explicit mutable tag pins are already in the keep set.
+KEEP_OLDER = 0
 MAX_REMOVALS = 32
 # Registry proof per pass is bounded so one unrecoverable image cannot starve
 # the rest, and so the locked phase always keeps its 60-second budget.
 MAX_VERIFY_ATTEMPTS = 64
 LOCKED_BUDGET = 60
 RECEIPT_MAX_BYTES = 16 * 1024 * 1024  # includes the full Git containment inventory
-PULL_FREE_BYTES = 10 * 1024**3  # ~4.3 GiB image plus extraction and runtime reserve
+# The extracted harness-current rootfs (~2.5 GiB) already sits on the ~46.8 GiB
+# post-C6 root, so a 10 GiB reserve refused pulls that still had room.
+PULL_FREE_BYTES = 5 * 1024**3
 
 
 class Refusal(Exception):
@@ -302,7 +305,7 @@ def check_pull_headroom(
     for path in sorted({"/", store}):
         usage = disk_fn(path)
         pct = pressure(path, disk_fn=lambda _: usage)
-        if pct >= 80 or usage.free < PULL_FREE_BYTES:
+        if pct >= 90 or usage.free < PULL_FREE_BYTES:
             raise Refusal("deploy_disk_headroom_insufficient")
 
 
@@ -614,6 +617,64 @@ def repair_host_symlink_modes(
     return repaired
 
 
+def _legacy_snapshot_dirs(host_root: Path) -> list[Path]:
+    """Directory copies of gVisor trees left in pre-#5258 deploy snapshots.
+
+    ``current`` is a symlink to ``release-*`` and ``cp -a`` snapshots the link.
+    Older snapshots stored the binaries as real directories at
+    ``bundle-snapshots/*/host/root/{current,release-*}`` and
+    ``cutover/bundle/host/root/{current,release-*}``.
+    """
+    base = Path(host_root) / "var/lib/tinyassets-deploy"
+    try:
+        base_real = base.resolve(strict=True)
+    except OSError:
+        return []
+    parents: list[Path] = []
+    snapshots = base / "bundle-snapshots"
+    if snapshots.is_dir() and not snapshots.is_symlink():
+        try:
+            snaps = sorted(snapshots.iterdir(), key=lambda item: item.name)
+        except OSError:
+            snaps = []
+        for snap in snaps:
+            if snap.is_symlink() or not snap.is_dir():
+                continue
+            parents.append(snap / "host" / "root")
+    parents.append(base / "cutover" / "bundle" / "host" / "root")
+    found = []
+    for parent in parents:
+        if parent.is_symlink() or not parent.is_dir():
+            continue
+        try:
+            parent.resolve(strict=True).relative_to(base_real)
+            entries = sorted(parent.iterdir(), key=lambda item: item.name)
+        except (OSError, ValueError):
+            continue
+        for entry in entries:
+            name = entry.name
+            if name != "current" and not name.startswith("release-"):
+                continue
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            try:
+                entry.resolve(strict=True).relative_to(base_real)
+            except (OSError, ValueError):
+                continue
+            found.append(entry)
+    return found
+
+
+def _remove_legacy_snapshot_dirs(host_root: Path) -> list[str]:
+    base = Path(host_root) / "var/lib/tinyassets-deploy"
+    removed = []
+    for entry in _legacy_snapshot_dirs(host_root):
+        _grant_harness_write(entry)
+        shutil.rmtree(entry)
+        removed.append(entry.relative_to(base).as_posix())
+    return removed
+
+
 def prune_box_harnesses(
     daemon, configured, refs, root=None, *, repair_host=False, host_root=None,
 ):
@@ -626,17 +687,19 @@ def prune_box_harnesses(
     On the real host (or when a test passes ``repair_host=True``), restore
     host modes that an earlier chmod followed out of these trees. That runs
     before the trees are deleted, so their absolute symlinks are still evidence.
+    The same pass removes legacy gVisor directory copies under deploy snapshots.
     """
     if root is None:
         root = Path(os.environ.get("TINYASSETS_BOX_HARNESS_ROOT", str(BOX_HARNESS_ROOT)))
     else:
         root = Path(root)
+    legacy: list[str] = []
     if repair_host or root == BOX_HARNESS_ROOT:
-        repair_host_symlink_modes(
-            root, host_root=Path("/") if host_root is None else Path(host_root),
-        )
+        host = Path("/") if host_root is None else Path(host_root)
+        repair_host_symlink_modes(root, host_root=host)
+        legacy = _remove_legacy_snapshot_dirs(host)
     if not root.is_dir():
-        return []
+        return legacy
     keep = {"harness-current"}
     current = root / "harness-current"
     # readlink does not follow. resolve() walks the target and raises ELOOP
@@ -663,7 +726,7 @@ def prune_box_harnesses(
         _grant_harness_write(entry)
         shutil.rmtree(entry)
         removed.append(name)
-    return removed
+    return removed + legacy
 
 
 def prune_dangling(docker):
@@ -829,8 +892,8 @@ def locks(paths=(FENCE_LOCK, MUTATION_LOCK), state=FENCE_STATE):
 def retain(
     *,
     dry_run=True,
-    high=85,
-    low=75,
+    high=90,
+    low=80,
     mode="count",
     environ=None,
     docker=None,
@@ -981,8 +1044,8 @@ def main(argv=None):
             dry_run=not options.apply
             or activation != "1"
             or os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
-            high=float(os.environ.get("DISK_AUTOPRUNE_PCT", "85")),
-            low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "75")),
+            high=float(os.environ.get("DISK_AUTOPRUNE_PCT", "90")),
+            low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "80")),
             mode=mode,
         )
         if options.prepare_pull:
