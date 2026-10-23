@@ -49,11 +49,11 @@ The system SHALL include connected subscription sources in ordinary automatic mo
 - **THEN** it remains unranked rather than receiving an invented vendor quality score
 
 ### Requirement: Disconnect connected sources
-The connect dialog SHALL list connected sources first and offer Disconnect. HTTP sources SHALL use the existing connections disconnect endpoint. Subscription disconnect SHALL remove only the record's declared owner-local state paths and connection marker, preserving installed CLI software.
+The connect dialog SHALL list connected sources first and offer Disconnect. HTTP sources SHALL use the existing connections disconnect endpoint. Subscription disconnect SHALL remove the record's declared owner-local state paths, connection marker and owner-local install directory (`home/.ta-cli/<id>`), when present. The shared read-only image installation SHALL never be touched.
 
-#### Scenario: Reconnect without reinstalling
+#### Scenario: Disconnect removes owner-local installation
 - **WHEN** an owner disconnects a subscription source
-- **THEN** its login and connection are removed while its installed CLI remains available for a later sign-in
+- **THEN** its login, connection and owner-local installation are removed while the shared image installation remains available
 
 ### Requirement: Record-bound acceptance
 A connected subscription marker SHALL bind the full source record fingerprint. A changed or legacy unbound record SHALL require reconnection before discovery, selection or invocation runs its CLI. A malformed record file SHALL not prevent other records loading; malformed overrides SHALL not reactivate a bundled record. Image builds SHALL fail on malformed shipped records.

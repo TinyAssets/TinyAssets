@@ -298,19 +298,27 @@ def test_authorized_router_calls_subscription(connected):
         auth.revoke_provider_request(capability)
 
 
-def test_disconnect_removes_only_declared_login_and_marker(connected):
+def test_disconnect_removes_declared_state_and_owner_install_only(connected, tmp_path, monkeypatch):
     from tinyassets.onboarding.subscription_connect import connected_sources, disconnect
+    from tinyassets.providers.subscription_runtime import SubscriptionRuntime
 
     assert connected_sources() == {"sources": [{"id": "fake-cli", "name": "Fixture"}]}
-    installed = connected.binary.read_bytes()
+    image = tmp_path / "shared-image" / "fake-cli"
+    image.mkdir(parents=True)
+    binary = image / "binary"
+    binary.write_bytes(connected.binary.read_bytes())
+    installed = binary.read_bytes()
+    monkeypatch.setattr(SubscriptionRuntime, "IMAGE_ROOT", image.parent)
     other = connected.home / ".other-login"
     other.write_text("keep")
     assert disconnect("fake-cli")["status"] == "disconnected"
     assert not (connected.home / ".fake-login").exists()
     assert not (connected.directory / "connection").exists()
-    assert connected.binary.read_bytes() == installed
+    assert not connected.directory.exists()
+    assert binary.read_bytes() == installed
     assert other.read_text() == "keep"
     assert connected_sources() == {"sources": []}
+    assert disconnect("fake-cli")["status"] == "disconnected"
 
 
 def test_changed_record_invalidates_acceptance_before_running_cli(connected, monkeypatch):
