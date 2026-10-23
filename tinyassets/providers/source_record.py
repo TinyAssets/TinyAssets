@@ -118,8 +118,8 @@ class SourceRecord(Mapping):
                 for hosts in record.egress.values()):
             raise ValueError("source egress requires exact hosts")
         if "cli_login" in record.sign_in:
-            if set(record.invoke) != {"cli"} or record.state.get("location") != "owner_box":
-                raise ValueError("CLI login and invocation require owner-box state")
+            if set(record.invoke) != {"cli"} or record.state.get("location") != "broker":
+                raise ValueError("CLI credentials require broker custody")
             from tinyassets.providers.subscription_source import validate_cli
 
             login = record.sign_in["cli_login"]
@@ -168,7 +168,12 @@ def records(home: Path | None = None, *, strict=False):
     for directory in [SOURCES, *([home / ".ta-cli" / "sources"] if home else [])]:
         for path in sorted(directory.glob("*.json")):
             try:
-                record = SourceRecord.parse(json.loads(path.read_text("utf-8")))
+                document = json.loads(path.read_text("utf-8"))
+                # One-shot legacy source layout bridge; execution only uses broker custody.
+                if ("cli_login" in document.get("sign_in", {})
+                        and document.get("state", {}).get("location") == "owner_box"):
+                    document["state"]["location"] = "broker"
+                record = SourceRecord.parse(document)
                 if record.origin != "declared" or path.stem != record.id:
                     raise ValueError("declared source filename must match its id")
             except (ValueError, TypeError, KeyError, AttributeError, OSError, OAuthError):

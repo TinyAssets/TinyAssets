@@ -480,6 +480,20 @@ class _Connection:
             if op == "USAGE_LEASE":
                 await self._usage_lease(doc)
                 return
+            if op == "SUBSCRIPTION_CUSTODY":
+                from tinyassets.broker.subscription_custody import operation
+
+                self._box_scope(doc)
+                try:
+                    if set(doc) != {"op", "document"}:
+                        raise ValueError("invalid native custody fields")
+                    result = await asyncio.to_thread(
+                        operation, self._server._data_root, self._box_owner, doc["document"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception:  # credentials must never enter an error payload
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
                           "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")

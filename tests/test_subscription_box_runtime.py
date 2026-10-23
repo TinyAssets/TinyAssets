@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import select
 import shutil
 import subprocess
@@ -14,7 +15,50 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.broker_ipc import broker  # noqa: F401
+
 pytestmark = [pytest.mark.real_jail, pytest.mark.role_split]
+
+
+@pytest.fixture
+def native_relays(broker, tmp_path, monkeypatch):  # noqa: F811
+    import sqlite3
+    from types import SimpleNamespace
+
+    from tests.support.admission import Plans, projection
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.boxes import relay as relays
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_volumes import provision
+    from tinyassets.broker.server import BOX_HOST
+
+    shared = tmp_path / "shared"
+    for principal in ("alice", "bob"):
+        seed_owner_admission(shared, principal=principal, center=principal)
+    identities = OwnerIdentities(shared / ".broker/state/owner-identities.db", plans=Plans(shared))
+    with sqlite3.connect(identities.path) as db:
+        db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INTEGER, "
+                   "project_id INTEGER, bhard_bytes INTEGER)")
+        for principal in ("alice", "bob"):
+            uid = identities.owner_machine(principal)
+            db.execute("INSERT INTO box_records VALUES (?, ?, ?, ?)",
+                       (principal, uid, uid, 1024**3))
+            provision(db, principal, uid)
+    broker.server._roles = {os.getuid(): BOX_HOST}
+    broker.server._owner_identities = identities
+    broker.server._data_root = shared
+    broker.server._routing = projection(identities.path)
+    monkeypatch.setattr(relays, "peer", lambda sock: (os.getpid(), 1002, 1002))
+    # Each jail uses the oracle UID; separate relay instances model the two
+    # production owner UIDs without weakening the production binding rule.
+    instances = {principal: relays.OwnerRelays(tmp_path / ("r-" + principal),
+                 SimpleNamespace(broker_socket=broker.path)) for principal in ("alice", "bob")}
+    try:
+        yield {principal: relay.bind(principal, os.getuid())
+               for principal, relay in instances.items()}
+    finally:
+        for relay in instances.values():
+            relay.close()
 
 CLI = r"""#!/usr/bin/env node
 const fs = require('fs'), path = require('path');
@@ -55,7 +99,8 @@ from tinyassets.boxes.boxd import OwnerBoxd
 from tinyassets.providers.subscription_runtime import SubscriptionRuntime, login_operation
 root = Path('/home/owner')
 core = OwnerBoxd(owner_id='owner', owner_root=root, state_dir=root / '.owner-boxd')
-owner_runtime._runtime = owner_runtime.OwnerRuntime('owner', os.getuid(), root, os.getpid(), core)
+owner_runtime._runtime = owner_runtime.OwnerRuntime(sys.argv[1], os.getuid(), root,
+    os.getpid(), core, Path('/run/relay.sock'))
 try:
     for line in sys.stdin:
         try:
@@ -125,7 +170,7 @@ def fixture_package(root):
         sign_in={"cli_login": {"install": definition.pop("install"),
                                "login": definition.pop("login")}},
         invoke={"cli": definition["invoke"]},
-        state={"location": "owner_box", "paths": definition.pop("state_paths")})
+        state={"location": "broker", "paths": definition.pop("state_paths")})
     directory = root / ".ta-cli" / "sources"
     directory.mkdir(parents=True)
     (directory / "fake-cli.json").write_text(json.dumps(definition))
@@ -133,13 +178,14 @@ def fixture_package(root):
 
 
 class Box:
-    def __init__(self, root):
+    def __init__(self, root, relay):
         assert shutil.which("bwrap"), "linux_oracle must supply bubblewrap"
         argv = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--clearenv"]
         for path in ("/usr", "/bin", "/lib", "/lib64"):
             if Path(path).exists():
                 argv += ["--ro-bind", path, path]
         argv += [
+            "--dir", "/run", "--bind", str(relay), "/run/relay.sock",
             "--proc",
             "/proc",
             "--dev",
@@ -170,6 +216,7 @@ class Box:
             "-u",
             "-c",
             SERVER,
+            root.name,
         ]
         self.process = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -194,7 +241,7 @@ class Box:
 
 @pytest.mark.verifies("box-subscription-sources:Native login and durable isolation")
 @pytest.mark.parametrize("terminal", [False, True])
-def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
+def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal, native_relays):
     alice, bob = tmp_path / "alice", tmp_path / "bob"
     for root in (alice, bob):
         doc = fixture_package(root)
@@ -202,7 +249,7 @@ def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
             doc["sign_in"]["cli_login"]["login"].update(terminal=True, complete_on_state=True)
             doc["sign_in"]["cli_login"]["env"] = {"FAKE_INTERACTIVE": "1"}
             (root / ".ta-cli/sources/fake-cli.json").write_text(json.dumps(doc))
-    first, second = Box(alice), Box(bob)
+    first, second = Box(alice, native_relays["alice"]), Box(bob, native_relays["bob"])
     try:
         result = first.call("begin", source_id="fake-cli")
         flow = result["flow"]
@@ -220,6 +267,7 @@ def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
             time.sleep(0.05)
             result = first.call("poll", flow=flow)
         assert result["status"] == "connected", result
+        assert not (alice / ".fake-login").exists()
         assert first.call("invoke", prompt="hello owner") == {"text": "hello owner"}
         lockfile = alice / ".ta-cli/fake-cli/package-lock.json"
         previous = lockfile.stat().st_mtime_ns
@@ -232,7 +280,7 @@ def test_install_native_login_call_restart_and_other_owner(tmp_path, terminal):
     finally:
         first.close()
         second.close()
-    awake = Box(alice)
+    awake = Box(alice, native_relays["alice"])
     try:
         assert awake.call("status") == {"authenticated": True}
         assert awake.call("invoke", prompt="after wake") == {"text": "after wake"}

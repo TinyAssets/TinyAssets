@@ -7,6 +7,7 @@ import pytest
 from tests.support.broker_ipc import broker  # noqa: F401
 from tests.test_owner_broker_egress import box  # noqa: F401
 from tests.test_subscription_box_runtime import fixture_package
+from tinyassets.providers.subscription_lease import custody
 
 
 @pytest.fixture
@@ -78,7 +79,7 @@ def test_finish_enables_owner_agent(connected):
     assert source['access_method'] == 'subscription_cli'
     assert source['display_name'] == 'Fixture'
     assert source['bind_key'] in options['accepted_model_access']
-    (connected.home / '.fake-login').unlink()
+    custody(connected, 'delete')
     disconnected = _collect(connected.home, 'owner', 'center')
     assert disconnected['sources'][0]['display_name'] == 'Fixture'
     assert disconnected['source_failures']
@@ -107,7 +108,8 @@ def test_protected_connect_door(connected):
         identity = Identity(user_id='owner', username='owner', capabilities=['write'],
                             metadata={'router_owner_session': proof})
         with identity_context(identity):
-            (connected.home / '.fake-login').unlink()
+            custody(connected, 'delete')
+            (connected.home / '.fake-login').unlink(missing_ok=True)
             state = post('begin', source_id='fake-cli').json()
             flow = state['flow']
             deadline = time.monotonic() + 20
@@ -208,6 +210,7 @@ def test_pip_hash_locked_owner_install_and_invoke(connected):
     doc['invoke']['cli'] = {'argv': ['{bin}'], 'format': 'text'}
     (connected.home / '.ta-cli/sources/fixture-pip.json').write_text(json.dumps(doc))
     runtime = SubscriptionRuntime('fixture-pip')
+    (connected.home / '.fake-login').write_text('fixture-pip-login')
     runtime.install()
     runtime.accept()
     assert runtime.invoke('hello') == 'fixture pip reply'
@@ -248,6 +251,7 @@ def test_connect_strongest_declared_source_and_keep_explicit_preference(connecte
     stronger['ranking']['scores']['default']['agentic'] = 100
     (connected.home / '.ta-cli/sources/stronger-cli.json').write_text(json.dumps(stronger))
     runtime = SubscriptionRuntime('stronger-cli')
+    (connected.home / '.fake-login').write_text('stronger-cli-login')
     runtime.install()
     runtime.accept()
     second = finish('stronger-cli')

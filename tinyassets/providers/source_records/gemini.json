@@ -90,7 +90,7 @@
     }
   },
   "state": {
-    "location": "owner_box",
+    "location": "broker",
     "paths": [
       ".ta-cli/gemini/config/.gemini/oauth_creds.json"
     ]

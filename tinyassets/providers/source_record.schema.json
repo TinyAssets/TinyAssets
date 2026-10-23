@@ -96,7 +96,7 @@
           ],
           "properties": {
             "location": {
-              "const": "owner_box"
+              "const": "broker"
             },
             "paths": {
               "type": "array",
@@ -257,7 +257,7 @@
           "state": {
             "properties": {
               "location": {
-                "const": "owner_box"
+                "const": "broker"
               }
             }
           }
