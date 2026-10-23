@@ -1,0 +1,1 @@
+Lead approval: docs-only tracker. Adds section 8 to openspec/changes/owner-daemon-in-box/tasks.md listing what remains after the C6 cutover, each item tied to the target-shape rule (T1-T10) it serves, and the N primitives that unblock next. No code, no behavior change.

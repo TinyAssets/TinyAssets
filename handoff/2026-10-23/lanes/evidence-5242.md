@@ -1,0 +1,1 @@
+Lead approval, docs only: retires 29 concerns, each with the PR or deleted path that resolved it (table in the body; spot-checked against #5182 and #5227 deletions), keeps 213 whose gap is still reachable (including the per-run CLI tmpfs exposure), corrects two stale references. 217 targeted Linux oracle tests passed.
