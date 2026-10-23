@@ -93,6 +93,7 @@ Windows too."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -630,6 +631,11 @@ def main(argv):
                     sys.stderr.write("fake docker: broker converged before host restore\n")
                     return 1
             ref = env_values.get("TINYASSETS_IMAGE", "")
+            gone = os.environ.get("FAKE_DOCKER_EXPECT_HARNESS_GONE")
+            expect_image = os.environ.get("FAKE_DOCKER_EXPECT_HARNESS_GONE_IMAGE", "")
+            if gone and ref == expect_image and os.path.isdir(gone):
+                sys.stderr.write("fake docker: candidate harness still present at converge\n")
+                return 1
             if ref in (state.get("up_start_delay_s") or {}):
                 time.sleep(state["up_start_delay_s"][ref])
             partial = ref in (state.get("up_partial_images") or [])
@@ -2333,3 +2339,91 @@ def test_flipping_active_box_layout_without_a_gate_refuses(box: Box, gate, reaso
         restarted = max(i for i, event in enumerate(events)
                         if event == "docker start tinyassets-daemon")
         assert restored < restarted
+
+
+def _readonly_harness(path: Path) -> None:
+    payload = path / "app" / "payload"
+    payload.parent.mkdir(parents=True)
+    payload.write_text("sealed\n", encoding="utf-8")
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    path.chmod(0o555)
+
+
+def _owner_box_already(box: Box) -> tuple[Path, Path]:
+    volume = box.root / "owner-box-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-box"}\n',
+        encoding="utf-8",
+    )
+    harness = box.root / "boxhostd"
+    harness.mkdir()
+    return volume, harness
+
+
+def _harness_name(ref: str) -> str:
+    return "harness-" + hashlib.sha256(ref.encode("utf-8")).hexdigest()
+
+
+def test_rollback_converge_failure_discards_the_candidate_harness(box: Box):
+    """restart_stack's exit 3 used to skip the only discard, leaking ~4 GiB."""
+    volume, harness = _owner_box_already(box)
+    previous = "harness-" + "1" * 64
+    (harness / previous / "app").mkdir(parents=True)
+    (harness / previous / "app" / "kept").write_text("old\n", encoding="utf-8")
+    (harness / "harness-current").symlink_to(previous)
+    candidate = harness / _harness_name(NEW_IMAGE)
+    box.set_docker_state(
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+            OLD_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+        },
+        unhealthy_images=[NEW_IMAGE],
+        up_fail_images=[OLD_IMAGE],
+    )
+    box.stage_bundle()
+    completed = box.run(
+        NEW_IMAGE,
+        FAKE_DOCKER_VOLUME_DIR=str(volume),
+        BOX_HARNESS_ROOT=str(harness),
+        BOX_STORE_CHECK="/bin/true",
+        FAKE_DOCKER_EXPECT_HARNESS_GONE=str(candidate),
+        FAKE_DOCKER_EXPECT_HARNESS_GONE_IMAGE=OLD_IMAGE,
+    )
+    assert completed.returncode == 3, completed.stdout + completed.stderr
+    assert _result(completed) == "rollback_failed"
+    assert "candidate harness still present" not in completed.stderr
+    assert "removed candidate harness" in completed.stdout
+    assert not candidate.exists()
+    assert (harness / "harness-current").readlink() == Path(previous)
+    assert (harness / previous / "app" / "kept").read_text(encoding="utf-8") == "old\n"
+
+
+def test_successful_deploy_prunes_readonly_historical_harnesses(box: Box):
+    volume, harness = _owner_box_already(box)
+    previous = "harness-" + "1" * 64
+    _readonly_harness(harness / previous)
+    (harness / "harness-current").symlink_to(previous)
+    box.set_docker_state(
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+            OLD_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+        },
+    )
+    box.stage_bundle()
+    completed = box.run(
+        NEW_IMAGE,
+        FAKE_DOCKER_VOLUME_DIR=str(volume),
+        BOX_HARNESS_ROOT=str(harness),
+        BOX_STORE_CHECK="/bin/true",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    current = _harness_name(NEW_IMAGE)
+    assert (harness / "harness-current").readlink() == Path(current)
+    assert (harness / current / "app" / "tinyassets" / "boxd.py").is_file()
+    assert not (harness / previous).exists()
+    assert f"removed old harness {previous}" in completed.stdout

@@ -37,6 +37,9 @@ from pathlib import Path
 
 REPOSITORY = "ghcr.io/tinyassets/tinyassets-daemon"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+BOX_HARNESS_ROOT = Path("/opt/tinyassets/boxhostd")
+HARNESS_TREE = re.compile(r"^harness-[0-9a-f]{64}$")
+HARNESS_STAGE = re.compile(r"^\.harness-stage\..+$")
 FENCE_LOCK = Path("/run/lock/tinyassets-deploy-fence.lock")
 MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
 FENCE_STATE = Path("/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json")
@@ -184,7 +187,8 @@ def storage_path(info, configured=""):
 
 def read_receipt(docker, containers):
     active = [row for row in containers if row.get("Name") == "/tinyassets-daemon"]
-    if len(active) != 1 or not active[0].get("State", {}).get("Running"):
+    state = active[0].get("State", {}) if len(active) == 1 else {}
+    if len(active) != 1 or not (state.get("Running") or state.get("Restarting")):
         raise Refusal("current_daemon_unavailable")
     daemon = active[0]
     if any(
@@ -289,6 +293,87 @@ def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage, im
         pct = pressure(path, disk_fn=lambda _: usage)
         if pct >= 80 or usage.free < PULL_FREE_BYTES:
             raise Refusal("deploy_disk_headroom_insufficient")
+
+
+def image_refs(images):
+    """Map every repo digest and tag onto its image id."""
+    refs = {}
+    seen = set()
+    for row in images:
+        if not isinstance(row, dict):
+            raise Refusal("ambiguous_image_inventory")
+        identity = row.get("Id")
+        if not isinstance(identity, str) or not DIGEST.fullmatch(identity) or identity in seen:
+            raise Refusal("ambiguous_image_inventory")
+        seen.add(identity)
+        for ref in (row.get("RepoDigests") or []) + (row.get("RepoTags") or []):
+            if ref in refs and refs[ref] != identity:
+                raise Refusal("ambiguous_image_reference")
+            refs[ref] = identity
+    return refs
+
+
+def _grant_harness_write(entry):
+    """extract_box_harness leaves the tree mode 0555; unlink needs write."""
+    try:
+        os.chmod(entry, 0o700)
+    except FileNotFoundError:
+        return
+    for dirpath, dirnames, filenames in os.walk(entry, topdown=True):
+        for dirname in dirnames:
+            try:
+                os.chmod(os.path.join(dirpath, dirname), 0o700)
+            except FileNotFoundError:
+                pass
+        for filename in filenames:
+            try:
+                os.chmod(os.path.join(dirpath, filename), 0o600)
+            except FileNotFoundError:
+                pass
+
+
+def prune_box_harnesses(daemon, configured, refs, root=None):
+    """Remove unreferenced box rootfs copies and abandoned extract stages.
+
+    ``harness-current``, the running daemon image, and the configured image
+    stay. Every other ``harness-<64 hex>`` directory and ``.harness-stage.*``
+    directory is a full unshared ``tar -x`` and is removed.
+    """
+    if root is None:
+        root = Path(os.environ.get("TINYASSETS_BOX_HARNESS_ROOT", str(BOX_HARNESS_ROOT)))
+    else:
+        root = Path(root)
+    if not root.is_dir():
+        return []
+    keep = {"harness-current"}
+    current = root / "harness-current"
+    if current.exists() or current.is_symlink():
+        try:
+            keep.add(Path(os.readlink(current)).name)
+        except OSError:
+            pass
+        try:
+            keep.add(current.resolve().name)
+        except OSError:
+            pass
+    image = daemon.get("Image", "") if isinstance(daemon, dict) else ""
+    if isinstance(image, str) and image:
+        keep.add("harness-" + image.removeprefix("sha256:"))
+    if isinstance(configured, str) and isinstance(refs, dict) and configured in refs:
+        identity = refs[configured]
+        if isinstance(identity, str):
+            keep.add("harness-" + identity.removeprefix("sha256:"))
+    removed = []
+    for entry in root.iterdir():
+        name = entry.name
+        if name in keep or not (HARNESS_TREE.fullmatch(name) or HARNESS_STAGE.fullmatch(name)):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        _grant_harness_write(entry)
+        shutil.rmtree(entry)
+        removed.append(name)
+    return removed
 
 
 def prune_dangling(docker):
@@ -550,6 +635,11 @@ def retain(
         with locker():
             docker.deadline = min(deadline, clock() + LOCKED_BUDGET)
             report["dangling_removed"] = prune_dangling(docker)
+            images, containers = docker.inventory()
+            daemon, _receipt = receipt_reader(docker, containers)
+            report["harnesses_removed"] = prune_box_harnesses(
+                daemon, config_reader(), image_refs(images),
+            )
         images, containers = docker.inventory()
         daemon, receipt = receipt_reader(docker, containers)
         remaining, _ = candidates(images, containers, daemon, config_reader(), receipt)
