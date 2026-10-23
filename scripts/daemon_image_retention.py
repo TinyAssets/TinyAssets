@@ -314,22 +314,30 @@ def image_refs(images):
 
 
 def _grant_harness_write(entry):
-    """extract_box_harness leaves the tree mode 0555; unlink needs write."""
+    """Make real directories writable so unlink can remove their children.
+
+    ``os.walk`` lists symlinks in ``dirnames`` and ``filenames``. ``os.chmod``
+    follows them, so a loop (``usr/bin/X11 -> .``) raises ``ELOOP`` and an
+    absolute link would change a host file. Unlink needs write on the
+    directory, not on the file or symlink.
+    """
+    def _chmod_dir(path):
+        if os.path.islink(path):
+            return
+        try:
+            os.chmod(path, 0o700)
+        except FileNotFoundError:
+            return
+
+    if os.path.islink(entry):
+        return
     try:
         os.chmod(entry, 0o700)
     except FileNotFoundError:
         return
-    for dirpath, dirnames, filenames in os.walk(entry, topdown=True):
+    for dirpath, dirnames, _filenames in os.walk(entry, topdown=True, followlinks=False):
         for dirname in dirnames:
-            try:
-                os.chmod(os.path.join(dirpath, dirname), 0o700)
-            except FileNotFoundError:
-                pass
-        for filename in filenames:
-            try:
-                os.chmod(os.path.join(dirpath, filename), 0o600)
-            except FileNotFoundError:
-                pass
+            _chmod_dir(os.path.join(dirpath, dirname))
 
 
 def prune_box_harnesses(daemon, configured, refs, root=None):
@@ -347,13 +355,11 @@ def prune_box_harnesses(daemon, configured, refs, root=None):
         return []
     keep = {"harness-current"}
     current = root / "harness-current"
-    if current.exists() or current.is_symlink():
+    # readlink does not follow. resolve() walks the target and raises ELOOP
+    # when harness-current or a path it names is a symlink loop.
+    if current.is_symlink():
         try:
             keep.add(Path(os.readlink(current)).name)
-        except OSError:
-            pass
-        try:
-            keep.add(current.resolve().name)
         except OSError:
             pass
     image = daemon.get("Image", "") if isinstance(daemon, dict) else ""
