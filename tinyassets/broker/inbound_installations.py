@@ -81,9 +81,12 @@ class InstallationAuthority:
 
     def complete(self, state: str, owner: str, browser_session: str,
                  exchange: Callable[[], tuple[str, str, str]],
-                 inspect_existing: Callable[[str], str], *, app: str = "slack",
+                 inspect_existing: Callable[[str], str], *, app: str = "shared",
                  now: float | None = None) -> dict:
         """Exchange server-side only after same-session state proof.
+
+        ``app`` is the installation manifest's provider id. Callers that omit
+        it record the shared app.
 
         The exchange returns (installation kind, ID, scoped credential ref).
         An existing live credential wins; indeterminate status defers. A
@@ -141,7 +144,7 @@ class InstallationAuthority:
                 db.rollback()
                 raise
 
-    def lookup(self, kind: str, installation_id: str, *, app: str = "slack") -> dict | None:
+    def lookup(self, kind: str, installation_id: str, *, app: str = "shared") -> dict | None:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM installations WHERE app=? AND kind=? "
                              "AND installation_id=?", (app, kind, installation_id)).fetchone()

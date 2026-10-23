@@ -492,3 +492,8 @@ def load_agent(universe_dir: Path, agent_ref: str, *, owner: str,
     if len(matches) > 1:
         raise LookupError(f"agent {ref!r} is claimed by more than one directory")
     return matches[0]
+
+
+def canonical_agent_id(universe_dir: Path, agent_ref: str, *, owner: str) -> str:
+    """The id ``agent_ref`` names for ``owner``, read through the one loader."""
+    return load_agent(universe_dir, agent_ref, owner=owner).agent_id

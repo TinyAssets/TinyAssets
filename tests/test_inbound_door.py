@@ -627,7 +627,8 @@ def test_shared_proof_setup_mapping_and_coverage_conflict(tmp_path):
     assert setup_challenge(ambiguous, {'content-type': 'application/json'}) is None
     state = authority.begin('alice', 'browser')
     record = authority.complete(state, 'alice', 'browser',
-                                lambda: ('workspace', 'T-one', 'credential'), lambda _: 'revoked')
+                                lambda: ('workspace', 'T-one', 'credential'), lambda _: 'revoked',
+                                app='slack')
     event, event_headers, _, _ = _slack(_envelope())
     mapped = verify_shared(tmp_path, 'slack', {**event_headers, 'content-type': 'application/json'},
                            event)
@@ -639,10 +640,10 @@ def test_shared_proof_setup_mapping_and_coverage_conflict(tmp_path):
     with pytest.raises(PermissionError, match='coverage'):
         authority.complete(overlap, 'alice', 'browser-2',
                            lambda: ('enterprise', 'T-one', 'other'),
-                           lambda ref: inspected.append(ref))
+                           lambda ref: inspected.append(ref), app='slack')
     assert inspected == []
-    assert authority.lookup('enterprise', 'T-one') is None
-    assert authority.lookup('workspace', 'T-one') == record
+    assert authority.lookup('enterprise', 'T-one', app='slack') is None
+    assert authority.lookup('workspace', 'T-one', app='slack') == record
 
 
 def test_erasure_keeps_other_owners_and_the_signing_profile(tmp_path):

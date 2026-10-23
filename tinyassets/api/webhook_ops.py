@@ -126,12 +126,12 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "agent_ref_required"})
     from pathlib import Path
 
-    from tinyassets.agent_definition import load_agent
+    from tinyassets.agent_definition import canonical_agent_id
 
-    agent = load_agent(Path(base) / uid, agent_ref, owner=owner)
     token = webhook_hooks.mint(
         base, universe_id=uid, branch_def_id=bid, owner_principal_id=owner,
-        agent_ref=agent.agent_id, source_id=kwargs.get("source_id") or None,
+        agent_ref=canonical_agent_id(Path(base) / uid, agent_ref, owner=owner),
+        source_id=kwargs.get("source_id") or None,
     )
     url = f"{_public_base_url()}/hooks/inbound/{token}"
     return json.dumps({
