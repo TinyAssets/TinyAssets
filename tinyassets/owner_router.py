@@ -169,9 +169,11 @@ class OwnerRouter:
         await forward(scope, receive, send, identity, route)
 
 
-def _unavailable():
-    return JSONResponse({"error": "owner_box_unavailable"}, status_code=503,
-                        headers={"Retry-After": "5", "Cache-Control": "no-store"})
+def _unavailable(*, retryable=True):
+    headers = {"Cache-Control": "no-store"}
+    if retryable:
+        headers["Retry-After"] = "5"
+    return JSONResponse({"error": "owner_box_unavailable"}, status_code=503, headers=headers)
 
 
 def _public_host() -> bytes:
@@ -245,4 +247,4 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
     except httpx.HTTPError:
         if started:
             raise  # A truncated stream must never look like a successful response.
-        await _unavailable()(scope, receive, send)
+        await _unavailable(retryable=False)(scope, receive, send)

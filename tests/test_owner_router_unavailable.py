@@ -19,7 +19,9 @@ def test_unavailable(path, outcome, monkeypatch):
             raise httpx.ConnectError("socket refused")
         if outcome == "timeout":
             raise httpx.ReadTimeout("box failed")
-        return httpx.Response(outcome, headers={"Retry-After": "37", "X-Box": "answer"}, stream=httpx.ByteStream(b'{"error":"owner_read_failed"}'))
+        return httpx.Response(
+            outcome, headers={"Retry-After": "37", "X-Box": "answer"},
+            stream=httpx.ByteStream(b'{"error":"owner_read_failed"}'))
 
     def wake(*args, **kwargs):
         raise RuntimeError("cannot wake")
@@ -43,6 +45,9 @@ def test_unavailable(path, outcome, monkeypatch):
                 return
             assert response.status_code == 503
             assert response.json() == {"error": "owner_box_unavailable"}
-            assert int(response.headers["Retry-After"]) > 0
+            if outcome == "timeout":
+                assert "Retry-After" not in response.headers
+            else:
+                assert int(response.headers["Retry-After"]) > 0
 
     asyncio.run(exercise())
