@@ -119,6 +119,7 @@ def disconnect_subscription(owner, source_id):
                          "generation": updated.binding_generation,
                          "binding_digest": updated.binding_digest,
                          "assignment_digest": updated.assignment_digest},
-                assignment_candidates=updated.candidates or None)
+                assignment_candidates=(updated.candidates or None)
+                if updated.state == "ready" else None)
 
         yield

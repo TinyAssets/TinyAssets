@@ -124,6 +124,30 @@ def test_lease_writeback_retries_and_preserves_parseable_state(connected, monkey
     assert all(not home.exists() for home in homes)
 
 
+def test_lease_writeback_retries_when_the_broker_drops_the_channel(connected, monkeypatch):
+    """A broker restart reaches the box as end-of-file (PermissionError), not OSError."""
+    from tinyassets.providers import subscription_lease as leases
+
+    (connected.home / ".fake-login").write_text('{"token":"old"}')
+    assert connected.authenticated()
+    original, attempts = leases.custody, []
+    monkeypatch.setattr(leases, "time", type("Clock", (), {"sleep": lambda *_: None}),
+                        raising=False)
+
+    def dropped(runtime, action, **fields):
+        if action == "save":
+            attempts.append(fields)
+            if len(attempts) == 1:
+                raise PermissionError("owner channel closed")
+        return original(runtime, action, **fields)
+
+    monkeypatch.setattr(leases, "custody", dropped)
+    with connected.lease():
+        (connected.state_home / ".fake-login").write_text('{"token":"rotated"}')
+    assert len(attempts) == 2
+    assert decoded(connected)[".fake-login"] == b'{"token":"rotated"}'
+
+
 def test_legacy_login_moves_to_custody_and_status_uses_tmpfs(connected, monkeypatch):
     runtime = connected
     old = runtime.source.document()

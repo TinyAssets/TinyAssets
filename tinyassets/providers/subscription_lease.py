@@ -196,12 +196,12 @@ def save_state(runtime, revision, state):
     for attempt in range(3):
         try:
             return custody(runtime, "save", revision=revision, state=state)
-        except OSError:
+        except (OSError, PermissionError):
             # A lost acknowledgement may follow a durable save. Never overwrite
             # another generation just to retry the transport.
             try:
                 observed = custody(runtime, "read")
-            except OSError:
+            except (OSError, PermissionError):
                 observed = None
             if observed is not None:
                 if observed["state"] == state and observed["revision"] is not None:

@@ -96,7 +96,7 @@ async def handle(request):
             result = ({"source_id": record.id} if "cli_login" in record.sign_in
                       else {"source": record.document()}) if record else {}
         elif action == "finish":
-            state = login_operation("poll", flow=doc["flow"])
+            state = await run_in_threadpool(login_operation, "poll", flow=doc["flow"])
             if state["status"] != "connected":
                 raise PermissionError("native login is not complete")
             result = await run_in_threadpool(finish, state["source_id"])
@@ -105,7 +105,7 @@ async def handle(request):
         elif action == "disconnect":
             result = await run_in_threadpool(disconnect, doc["source_id"])
         else:
-            result = login_operation(action, **doc)
+            result = await run_in_threadpool(login_operation, action, **doc)
         return JSONResponse(result, headers=HEADERS)
     except (ValueError, KeyError, TypeError, PermissionError, SubscriptionError) as exc:
         detail = _failure_detail(exc)
