@@ -54,6 +54,7 @@ def store():
         os.chown(path, -1, 1102)
         os.chmod(path, 0o640)
     conn.row_factory = sqlite3.Row
+    # Ephemeral: a layout change signs everyone out.
     ensure_table(
         conn,
         "CREATE TABLE IF NOT EXISTS owner_sessions "

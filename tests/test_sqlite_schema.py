@@ -100,3 +100,12 @@ def test_rollback_failure_preserves_original_error():
         with pytest.raises(sqlite3.OperationalError) as caught:
             ensure_table(conn, "CREATE TABLE records (value TEXT)", kind="ephemeral")
         assert caught.value is original
+
+
+def test_session_declaration_explains_ephemeral_signout():
+    import inspect
+
+    from tinyassets.onboarding import owner_sessions
+
+    declaration = inspect.getsource(owner_sessions.store)
+    assert "Ephemeral: a layout change signs everyone out." in declaration
