@@ -773,7 +773,7 @@ def inner_proof(root):
         volumes._transfer = original_transfer
         volumes._copy = original_copy
         assert ordering == ["verified", "delete"]
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(VolumeError, match="local image is absent"):
             volumes.snapshot(last)
         print("PROOF g PASS", flush=True)
 
