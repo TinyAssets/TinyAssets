@@ -130,7 +130,7 @@ class VolumeLifecycle:
     async def _publish_snapshot(self, owner, work, *, locked=False):
         try:
             result = await self.host(owner, "snapshot", snapshot_id=work["snapshot_id"])
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             if "local image is absent" not in str(exc):
                 raise
             result = None
