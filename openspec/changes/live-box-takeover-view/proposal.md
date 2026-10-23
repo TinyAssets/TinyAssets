@@ -4,7 +4,7 @@ Owners need a live view of their hosted box's browser and desktop to take over p
 
 ## What Changes
 
-- Expose one live browser and desktop view through the interface package and the owner door.
+- Extend the existing protected browser login view to the box's browser and desktop through the interface package and owner door.
 - Define owner-only input and stream access, private credential entry, and a truthful unavailable state.
 - Use the `BoxProvider.view` hook in ADR-022 P4; keep the shared router limited to authentication and forwarding.
 
@@ -16,7 +16,7 @@ Owners need a live view of their hosted box's browser and desktop to take over p
 
 ### Modified Capabilities
 
-None. The existing browser-login-custody contract continues to own site session custody and reuse.
+- `browser-login-custody`: its protected live owner view becomes the single `BoxProvider.view` takeover, with the browser in the owner's box and the view process inaccessible to agent bash.
 
 ## Impact
 

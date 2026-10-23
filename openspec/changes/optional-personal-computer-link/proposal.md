@@ -4,9 +4,10 @@ An owner may want their agent to use a personal computer, while Direction 8 requ
 
 ## What Changes
 
-- Define a personal computer as an optional external connector added by the owner to their box.
+- Define a personal computer as an optional external connector added by the owner to their box, with one broker-custodied pairing and outbound relay.
 - Keep local access, consent and availability inside that connector; a missing or offline computer reports unavailable without blocking hosted work.
-- Exclude the computer from platform routing, waking and owner-data host paths.
+- Reuse the existing `/api` door for the companion's outbound link; keep routing and waking free of device business logic and owner-data host paths.
+- Fold `companion-local-mcp` into N8 and delete the legacy tray host; `desktop-app/` remains the thin shell and carries the user-installed companion.
 
 ## Capabilities
 
@@ -16,7 +17,7 @@ An owner may want their agent to use a personal computer, while Direction 8 requ
 
 ### Modified Capabilities
 
-None. Existing companion-local-mcp work may supply a connector package; this change fixes N8's platform boundary.
+None. The open `companion-local-mcp` change is folded into this change and removed from the active queue.
 
 ## Impact
 

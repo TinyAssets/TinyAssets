@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Only the owner can view and control their box
-The interface package SHALL expose live browser and desktop takeover through `BoxProvider.view` on the owner door. The router SHALL authenticate the caller, select that caller's admitted box and forward the view stream without reading or storing frames or input. The box SHALL authenticate the forwarded channel and authorize the owner session before capture or control.
+The interface package SHALL extend the existing protected browser login view to live browser and desktop takeover through `BoxProvider.view` on the owner door. The router SHALL authenticate the caller, select that caller's admitted box and forward the view stream without reading or storing frames or input. The box SHALL authenticate the forwarded channel and authorize the owner session before capture or control.
 
 #### Scenario: Owner opens a live takeover
 - **WHEN** an authenticated owner opens the view while their box is asleep
@@ -13,7 +13,7 @@ The interface package SHALL expose live browser and desktop takeover through `Bo
 - **THEN** the box view and input are refused without a frame or action from the other box
 
 ### Requirement: Private takeover input stays in the box
-The box SHALL deliver password, 2FA and CAPTCHA input only to its focused browser or desktop target. Private input SHALL NOT appear in agent observations, transcripts, logs, saved view frames or shared stores. The box SHALL suspend agent control of that target during owner takeover and release it only after takeover ends.
+The box SHALL run the browser and view server under a separate OS user and process/mount namespace from the agent. Capture, input and browser debug channels SHALL be unreachable from agent bash, tools, filesystem, `/proc` and network. The view server SHALL deliver password, 2FA and CAPTCHA input only to its focused browser or desktop target. Private input SHALL NOT enter agent observations, transcripts, logs or shared stores; only sanitized post-takeover results MAY reach the agent. The box SHALL suspend agent control of that target during owner takeover and release it only after takeover ends.
 
 #### Scenario: Owner completes a challenge
 - **WHEN** the owner types a password or challenge response in the live view
@@ -23,6 +23,10 @@ The box SHALL deliver password, 2FA and CAPTCHA input only to its focused browse
 #### Scenario: Target or connection changes
 - **WHEN** focus, document or box admission changes during private input
 - **THEN** stale input is refused and the owner must reestablish a current view
+
+#### Scenario: Agent probes the protected view
+- **WHEN** the agent uses bash or a tool to open the view socket, capture frames, inspect private input or drive the browser debug channel
+- **THEN** OS isolation refuses access, and no private frame or input reaches an agent observation
 
 ### Requirement: View availability is truthful
 The interface package SHALL show an unavailable or retryable state when the box or view transport cannot serve takeover, without claiming that a password, 2FA step or CAPTCHA completed.
