@@ -271,7 +271,8 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/model_call.py", "tinyassets/agent_loop/**")
     ),
     "N4": Shape(("tinyassets/boxes/**",)),  # box-view
-    "N5": Shape(("tinyassets/boxes/**",)),  # egress-gate
+    "N5": Shape(("tinyassets/broker/**", "tinyassets/owner_public_egress.py",
+                 "tinyassets/egress_requests.py")),  # egress-gate
     "N6": Shape(("tinyassets/boxes/**",)),  # box-snapshot
     "N7": Shape(("tinyassets/broker/**",)),  # spend-path
     "N8": Shape(("tinyassets/boxes/**",)),  # host-paths

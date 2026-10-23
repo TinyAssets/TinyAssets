@@ -109,12 +109,20 @@ class OwnerPublicForwarder:
                 if head:
                     relay.sendall(head)
                 readers = [guest, relay]
+                response_head = bytearray()
+                inspected = False
                 while readers and not self._stop.is_set():
                     ready, _, _ = select.select(readers, [], [], 1)
                     for source in ready:
                         destination = relay if source is guest else guest
                         data = source.recv(65536)
                         if data:
+                            if source is relay and not inspected:
+                                response_head.extend(data)
+                                if b"\r\n\r\n" in response_head or len(response_head) > 16384:
+                                    inspected = True
+                                    self._request_access(bytes(response_head).split(b"\r\n\r\n")[0])
+                                    response_head.clear()
                             destination.sendall(data)
                         else:
                             readers.remove(source)
@@ -124,6 +132,18 @@ class OwnerPublicForwarder:
         finally:
             with self._lock:
                 self._workers.pop(threading.current_thread(), None)
+
+    @staticmethod
+    def _request_access(head):
+        import json
+
+        from tinyassets.egress_requests import request_access
+
+        if not head.startswith(b"HTTP/1.1 403 "):
+            return
+        for line in head.split(b"\r\n")[1:]:
+            if line.startswith(b"X-TinyAssets-Egress: "):
+                request_access(json.loads(line.split(b": ", 1)[1]))
 
     def close(self):
         self._stop.set()

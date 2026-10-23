@@ -1384,24 +1384,34 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     from tinyassets.broker.http_connect import update_operation
 
     full = preview.get("access") == ACCESS_FULL and not redirect_extension
-    if full and "policy_snapshot" in document:
+    # A pinned snapshot is the reach the owner was shown. Live endpoints a box
+    # added after that card was rendered must not ride into the door update.
+    if document.get("policy_snapshot") is not None:
         answered = _answered_policy_snapshot(document)
         if answered is None or not answered.get("incarnation"):
             return {"error": "connection_conflict", "resource": "connection"}
-    expected = ((_answered_policy_snapshot(document) if full else expected_redirect)
-                or {"access_mode": preview["expected_access_mode"],
-                    "endpoints_json": preview["stored_json"],
-                    "scopes_json": preview["stored_scopes_json"],
-                    "incarnation": preview["stored_incarnation"]})
+    else:
+        answered = None
+    expected = (answered or expected_redirect or {
+        "access_mode": preview["expected_access_mode"],
+        "endpoints_json": preview["stored_json"],
+        "scopes_json": preview["stored_scopes_json"],
+        "incarnation": preview["stored_incarnation"]})
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     try:
+        # Egress follows only the endpoints this ask named. The credential
+        # superset still has to repeat stored hosts, including any a box added,
+        # and those repeats are not a new owner approval.
+        approved_endpoints = None if full else (
+            [] if scope_only or not isinstance(added, list) else list(added))
         updated = update_operation(
             base, principal=actor, command_center=uid, destination=destination,
             expected=expected, action="full" if full else "extend",
             endpoints=() if full else preview["merged"],
             scopes=() if full else preview["scopes"],
-            git_host=preview.get("declared_git_host") or "")
+            git_host=preview.get("declared_git_host") or "",
+            approved_endpoints=approved_endpoints)
     except GrantResolutionError:
         return {"error": "connection_conflict", "resource": "connection"}
     if not updated:

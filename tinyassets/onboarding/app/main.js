@@ -6507,6 +6507,7 @@
     $("btn-wakes-reload").addEventListener("click",()=>loadWakes());
     // One account policy, edited as a complete document under the owner cookie.
     let ownerPolicy=null;
+    $("policy-scope").onchange=()=>{ownerPolicy=null;loadRules();};
     function rulesSay(message){ $("rules-status").textContent=message||""; }
     function renderPolicy(snapshot){
       ownerPolicy=snapshot;
@@ -6521,11 +6522,11 @@
       if(!activity.childNodes.length)activity.textContent="No policy activity yet.";
     }
     async function loadRules(){
-      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
-      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch,scope=$("policy-scope").value;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch&&scope===$("policy-scope").value;
       rulesSay("");
       try{
-        const response=await fetch("/app/api/policy",{credentials:"same-origin",
+        const response=await fetch("/app/api/policy?scope="+$("policy-scope").value,{credentials:"same-origin",
           headers:authHeaders()});
         const result=await response.json();
         if(!current())return;
@@ -6535,12 +6536,12 @@
     }
     $("btn-policy-save").onclick=async()=>{
       if(!ownerPolicy){rulesSay("Load the policy before saving.");return;}
-      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
-      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch,scope=$("policy-scope").value;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch&&scope===$("policy-scope").value;
       const button=$("btn-policy-save");button.disabled=true;rulesSay("Saving...");
       try{
         const policy=JSON.parse($("policy-json").value);
-        const response=await fetch("/app/api/policy",{method:"POST",credentials:"same-origin",
+        const response=await fetch("/app/api/policy?scope="+$("policy-scope").value,{method:"POST",credentials:"same-origin",
           headers:{...authHeaders(),"Content-Type":"application/json"},
           body:JSON.stringify({expected_generation:ownerPolicy.generation,policy})});
         const result=await response.json();

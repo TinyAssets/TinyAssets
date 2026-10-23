@@ -223,8 +223,18 @@ def test_ambiguous_transport_error_cannot_leak_credential_material(tmp_path):
 
 def _make_http_ledger_with_vault(tmp_path, *, credential_ref="vault://http/anthropic-conn"):
     """Real composition scaffolding: a REAL vault http record + an http connection."""
+    from tests.support.admission import Plans
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.policy import PolicyStore
     from tinyassets.credential_vault import custody_namespace
 
+    # The vault creates the account directory. Provision open egress first so
+    # that directory is not a missing-policy refusal when the broker starts.
+    identities = OwnerIdentities(
+        tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
+    store = PolicyStore(tmp_path, identities)
+    store.bootstrap_owner("user-1")
+    store.read("user-1")
     universe_dir = custody_namespace(tmp_path, "user-1")
     write_credential_vault(
         universe_dir,
