@@ -336,10 +336,15 @@ def smoke(confirm=False):
                 self.mounts = {}
 
             def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes,
-                      volume_mount, volume_generation):
+                      volume_mount, volume_generation, rewind: bool = False):
                 log = tempfile.TemporaryFile()
                 logs.append(log)
                 self.mounts[uid] = volume_mount["source"]
+                env = os.environ.copy()
+                if rewind:
+                    env["TINYASSETS_VOLUME_REWIND"] = "1"
+                else:
+                    env.pop("TINYASSETS_VOLUME_REWIND", None)
                 process = subprocess.Popen(
                     [
                         "unshare",
@@ -359,6 +364,7 @@ def smoke(confirm=False):
                     ],
                     stdout=log,
                     stderr=log,
+                    env=env,
                 )
                 self.processes[uid] = process
                 children.append(process)

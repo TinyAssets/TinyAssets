@@ -9571,4 +9571,5 @@
     event.preventDefault();event.stopImmediatePropagation();
     openSignIn(url.href).catch(error=>AppRecovery.fail(error));
   },true);
+  __TA_UNDO__
   boot().then(()=>AppRecovery.started(),error=>AppRecovery.fail(error));

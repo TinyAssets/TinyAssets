@@ -232,9 +232,12 @@ class BrokerLifecycle:
     async def sleep(self, owner):
         return await owner_call(self.identities.path, owner, self.volumes.sleep, owner)
 
-    async def restore(self, owner, snapshot_id):
+    async def checkpoint(self, owner):
+        return await owner_call(self.identities.path, owner, self.volumes.checkpoint, owner)
+
+    async def restore(self, owner, snapshot_id, expected_generation=None):
         return await owner_call(self.identities.path, owner, self.volumes.restore,
-                                owner, snapshot_id)
+                                owner, snapshot_id, expected_generation=expected_generation)
 
     def start(self, owner, operation, *, recovery=False, serialized=True):
         """The existing tick starts at most one lifecycle task per owner."""

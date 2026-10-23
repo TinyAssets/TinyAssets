@@ -29,4 +29,4 @@ Planned **`box-snapshot`** proof: `tests/test_owner_volume_structure.py` proves 
 
 ## Implementation gate
 
-C6 registry close-out, C1/C2/S27 recovery proof and N10 protected authority precede implementation. Use the settled sleep/manual trigger and seven-snapshot retention; capacity measurements verify the existing envelope, not defer the trigger decision. Rollback may hide Undo but preserves recovery references. This PR changes specs only; implementation tasks remain unchecked and as-built specs remain unsynced.
+C6 registry close-out, C1/C2/S27 recovery proof and N10 protected authority precede implementation. Use the settled sleep/manual trigger and seven-snapshot retention; capacity measurements verify the existing envelope, not defer the trigger decision. Rollback may hide Undo but preserves recovery references. The undo caller, publish-before-restore ordering, and in-box settlement are implemented here. Task 1.1 and acceptance 3.1 stay open: live 5 GiB measurement, floor review, naive-owner undo after deployment, and the delta sync are not claimed. As-built specs remain unsynced.

@@ -452,6 +452,11 @@ class _Connection:
                 await self.send_async(rf.control(rf.CONNECTION, {
                     "op": "BOX_RESULT", "result": {"principal": self._box_owner}}))
                 return
+            if op == "OWNER_VOLUME":
+                await self.send_async(rf.control(rf.CONNECTION, {
+                    "op": "OWNER_VOLUME_REFUSED",
+                    "reason": "restore is not available on the box channel"}))
+                return
             if op == "OWNER_POLICY":
                 if doc.get("action") not in {"read", "receipts", "decide", "proposal", "write"}:
                     raise rf.FrameError("unsupported box policy operation")
@@ -617,6 +622,9 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_POLICY":
             answer = await self._policy_operation(doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "OWNER_VOLUME":
+            answer = await self._volume_operation(doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "DISCONNECT":
             answer = await asyncio.to_thread(self._disconnect, doc)
@@ -888,6 +896,32 @@ class _Connection:
             return {"op": "DISCONNECT_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
+
+    async def _volume_operation(self, doc):
+        from tinyassets.broker.policy import PolicyRefused
+        from tinyassets.broker.volume_restore import operation
+
+        try:
+            if not isinstance(doc, dict) or not self._server._fence.admits(
+                    doc.get("generation"), doc.get("token")):
+                raise PermissionError("invalid fence")
+            result = await operation(self._server, doc)
+            answer = {"op": "OWNER_VOLUME_RESULT", "result": result}
+            rf.control(rf.CONNECTION, answer)
+            return answer
+        except (PermissionError, PolicyRefused, LookupError, ValueError, RuntimeError) as exc:
+            try:
+                if (isinstance(doc, dict) and doc.get("action") in {"restore", "checkpoint"}
+                        and self._server._policy_store is not None):
+                    self._server._policy_store.receipt_refusal(
+                        doc.get("principal"), doc.get("action"),
+                        {key: value for key, value in doc.items()
+                         if key not in {"session_proof", "generation", "token"}})
+            except Exception:  # noqa: BLE001 - refuse regardless of receipt failure
+                _LOG.exception("restore refusal receipt unavailable")
+            reason = str(exc) if isinstance(exc, (PermissionError, PolicyRefused, LookupError)) \
+                else "volume restore unavailable"
+            return {"op": "OWNER_VOLUME_REFUSED", "reason": reason}
 
     async def _policy_operation(self, doc):
         if doc.get("action") != "write":

@@ -270,6 +270,21 @@ class PolicyStore:
             db.commit()
         return OwnerPolicy(owner, generation, digest, document)
 
+    def receipt_volume(self, owner: str, session_id: str, *, snapshot_id: str,
+                       generation: int, outcome: str) -> None:
+        """Receipt a protected restore or checkpoint without storing the session proof."""
+        if (not isinstance(snapshot_id, str) or not isinstance(session_id, str)
+                or type(generation) is not int or outcome not in {"accepted", "committed"}):
+            raise PolicyRefused("invalid restore receipt")
+        with closing(self._connect(owner)) as db, db:
+            row = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
+            db.execute(
+                "INSERT INTO receipts(at,kind,owner,session_id,request_digest,generation,"
+                "rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?)",
+                (time.time(), "restore", owner, session_id,
+                 _digest({"snapshot_id": snapshot_id, "volume_generation": generation}),
+                 row["generation"] if row else generation, "owner_restore", "allow", outcome))
+
     def receipt_refusal(self, owner: str, action: str, request: object) -> None:
         """Record denied mutation attempts without ever storing a cookie."""
         with closing(self._connect(owner)) as db, db:

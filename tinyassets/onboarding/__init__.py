@@ -1907,6 +1907,74 @@ async def _handle_billing_webhook(request: Any) -> Any:
     return JSONResponse(await run_in_threadpool(apply_event, data_dir(), event))
 
 
+async def _handle_owner_checkpoint(request: Any) -> Any:
+    return await _owner_volume_route(request, "checkpoint")
+
+
+async def _handle_owner_restore_points(request: Any) -> Any:
+    return await _owner_volume_route(request, "catalog")
+
+
+async def _handle_owner_restore(request: Any) -> Any:
+    return await _owner_volume_route(request, "restore")
+
+
+async def _owner_volume_route(request: Any, action: str) -> Any:
+    """Router-owned undo. The box is not on this path and never sees the proof."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.broker.volume_restore import submit
+    from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.owner_runtime import current
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    if current() is not None:
+        return JSONResponse({"error": "restore_requires_owner_session"},
+                            status_code=403, headers=_NO_STORE)
+    if not _same_origin_json(request, str(app_config().get("resource") or "")):
+        return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
+                            headers=_NO_STORE)
+    identity = current_identity()
+    owner = identity.user_id
+    try:
+        session = require(request, owner=owner)
+    except PermissionError:
+        return JSONResponse({"error": "interactive_owner_session_required"},
+                            status_code=403, headers=_NO_STORE)
+    data = await _read_small_json(request)
+    if action == "restore":
+        if (not isinstance(data, dict) or set(data) != {"snapshot_id", "expected_generation"}
+                or not isinstance(data["snapshot_id"], str)
+                or type(data["expected_generation"]) is not int):
+            return JSONResponse({"error": "invalid_restore"}, status_code=400,
+                                headers=_NO_STORE)
+        fields = {"snapshot_id": data["snapshot_id"],
+                  "expected_generation": data["expected_generation"]}
+    elif not isinstance(data, dict) or set(data) != set():
+        return JSONResponse({"error": "invalid_restore"}, status_code=400, headers=_NO_STORE)
+    else:
+        fields = {}
+    try:
+        result = await run_in_threadpool(
+            submit, _base_path(), owner, action,
+            {"session_hash": session["session_hash"]}, **fields)
+    except PermissionError as exc:
+        status = 409 if "generation" in str(exc) else 403
+        return JSONResponse({"error": "restore_refused", "reason": str(exc)},
+                            status_code=status, headers=_NO_STORE)
+    except RuntimeError:
+        return JSONResponse({"error": "restore_unavailable"}, status_code=503,
+                            headers=_NO_STORE)
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the app, mounted alongside ``/mcp``.
 
@@ -1994,6 +2062,9 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/app/owner/restore", _handle_owner_restore, methods=["POST"]),
+        Route("/app/owner/checkpoint", _handle_owner_checkpoint, methods=["POST"]),
+        Route("/app/owner/restore-points", _handle_owner_restore_points, methods=["POST"]),
         Route("/app/account/deletion/{key}/{token}", _handle_deletion_status, methods=["GET"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),

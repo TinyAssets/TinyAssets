@@ -163,4 +163,24 @@ def test_lifecycle_guard_rejects_the_retired_shared_tree_roots(root):
                       roots=ROOT_NAMES | {"owner_store", "_owner_tree"})
 
 
+@pytest.mark.verifies(
+    'owner-box-snapshot-undo:Undo points use automatic sleep and explicit owner checkpoints')
+def test_one_lifecycle_and_no_shared_turn_pin():
+    """N6 adds callers to the one executor. Shared code has no turn pin."""
+    lifecycle = (ROOT / "tinyassets/broker/volume_lifecycle.py").read_text(encoding="utf-8")
+    volumes = (ROOT / "tinyassets/boxes/volumes.py").read_text(encoding="utf-8")
+    broker = (ROOT / "tinyassets/broker/owner_volumes.py").read_text(encoding="utf-8")
+    tree = ast.parse(lifecycle)
+    classes = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+    assert classes.count("VolumeLifecycle") == 1
+    executor = ast.parse(volumes)
+    snapshots = [node.name for node in ast.walk(executor)
+                 if isinstance(node, ast.FunctionDef) and node.name == "snapshot"]
+    assert snapshots == ["snapshot"]
+    forbidden = ("turn_pin", "per_turn", "per_session", "session_checkpoint",
+                 "turn_checkpoint")
+    for name in forbidden:
+        assert name not in lifecycle and name not in volumes and name not in broker
+
+
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

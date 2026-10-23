@@ -31,6 +31,8 @@ _SHARED_APP = {
     "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
     # Sign-in navigation: its rows live in the router's owner-sessions store.
     "/app/approval-handoff", "/app/connections",
+    # Undo stays on the router: the session proof never enters the box.
+    "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
 }
 _SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
                         "/app/approval-handoff/", "/app/model-connect/",

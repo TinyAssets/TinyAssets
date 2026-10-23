@@ -85,6 +85,9 @@ def restore(manifest, archive, directory, selected):
                 # same detach acknowledgement before the copy-only restore.
                 volumes.detach(fields["uid"])
                 return {"stopped": True}
+            if operation == "snapshot":
+                snapshot_id, digest = volumes.snapshot(fields["uid"], fields["snapshot_id"])
+                return {"snapshot_id": snapshot_id, "sha256": digest}
             assert operation == "restore"
             volumes.restore(fields["uid"], fields["snapshot_id"], fields["sha256"])
             return {"restored": True}

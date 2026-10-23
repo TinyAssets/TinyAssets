@@ -234,6 +234,9 @@ _ROLE_DISPATCH = {
     ('onboarding/owner_sessions.py', 'store'): (
         'Router owns sessions; box uses forwarded proof.'
     ),
+    ('onboarding/__init__.py', '_owner_volume_route'): (
+        'Router submits owner undo; a box cannot confirm a restore.'
+    ),
     ('onboarding/session_store.py', 'store_dir'): (
         'Router owns refresh sessions; direct box access must refuse.'
     ),

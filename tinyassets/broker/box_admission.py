@@ -16,7 +16,8 @@ def owner_record(identities, owner: str, *, for_wake=False) -> dict:
     from tinyassets.broker.owner_volumes import binding
 
     volume = binding(identities, owner)
-    if not for_wake and volume["work"] and volume["work"]["kind"] == "restore":
+    pending = volume["work"] or {}
+    if not for_wake and (pending.get("kind") == "restore" or pending.get("restore_snapshot_id")):
         raise PermissionError("owner restore has not committed")
     # C13/C14: the broker reconciles pending volume work under its owner lock
     # and supplies the resulting committed generation to the host.

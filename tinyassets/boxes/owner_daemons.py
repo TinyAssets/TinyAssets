@@ -122,6 +122,8 @@ class OwnerDaemons:
         # Mark execution started before touching runsc; uncertain cleanup stays visible.
         box.awake = True
         box.started = time.monotonic()
+        if record.get("rewind"):
+            launch_options["rewind"] = True
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
