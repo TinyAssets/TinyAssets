@@ -331,3 +331,33 @@ is worse than silence -- a reader cannot tell a stale requirement from a live on
 
 Recover any of it from git: the reset merged as `e4180697`, and this file's
 history holds the full text.
+
+### Requirement: Fixes reach production through a reversible hotfix first
+
+Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a corroborated Drain-Review APPROVE receipt for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
+
+#### Scenario: A live check fails
+
+- **WHEN** health, app 200, anonymous MCP 401, authenticated pulse 200, or the available sign-in probe fails
+- **THEN** the hotfix restores saved originals in every affected running TinyAssets container and the box harness, then restarts the affected services and box host and records the failure durably under the shared host-mutation lock
+
+#### Scenario: Normal deployment would erase a fix
+
+- **WHEN** any active hotfix has neither matching applied SHA256s in the candidate image nor a PR merged into main whose merge commit is contained in the image revision
+- **THEN** deployment refuses before replacing the daemon
+- **AND** a successful deployment satisfying every active hotfix archives those records, including after squash merges
+- **AND** the tool records the PR number at apply time and checks actual candidate-image content under the host mutation lock
+
+#### Scenario: Existing hand-written records remain authoritative
+
+- **WHEN** a record uses `id`, `commit`, `result`, `containers`, a `files` path-to-SHA256 map, `applied_at`, and `active`, with `<id>.orig/` backups
+- **THEN** list, guard, revert and rollback recovery read it through the shared record reader
+- **AND** deployment saves verified applied bytes before replacing containers so rollback can restore them
+- **AND** an unreadable record refuses with its filename and repair instructions; it never silently disappears from the active set
+
+#### Scenario: All affected processes load the fix
+
+- **WHEN** a hotfix applies or reverts
+- **THEN** it discovers running TinyAssets-image containers, patches each containing the file, and restarts those services
+- **AND** files present in the box harness are patched and boxhostd restarts, closing awake boxes so subsequent admission loads the updated harness
+- **AND** review uses the existing drain-review receipt requirement for every PR, with no private path exemptions

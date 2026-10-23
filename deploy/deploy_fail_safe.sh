@@ -1766,6 +1766,19 @@ if ! docker pull "$NEW_IMAGE" >/dev/null 2>&1; then
   err "failed to pull ${NEW_IMAGE}; prod untouched"; exit 1
 fi
 
+# The workflow stages the shared helper beside this script. Local transaction
+# tests and repository callers use the same source from scripts/.
+HOTFIX_HELPER="${HOTFIX_HELPER:-$(dirname "${BASH_SOURCE[0]}")/hotfix.py}"
+if [ ! -f "$HOTFIX_HELPER" ]; then
+  HOTFIX_HELPER="$(dirname "${BASH_SOURCE[0]}")/../scripts/hotfix.py"
+fi
+# Under the host lock, check actual candidate bytes or a runner-attested merged
+# PR included in this image revision. The same reader handles legacy records.
+if ! HOTFIX_STATE_DIR="$BUNDLE_STATE_DIR" python3 "$HOTFIX_HELPER" \
+    --host guard-image "$NEW_IMAGE" "${HOTFIX_PROOF:-}"; then
+  err "hotfix guard refused candidate; prod untouched"; exit 1
+fi
+
 # --- 3. prove the new image LOADS before touching prod --------------------
 if ! timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
       --entrypoint python "$NEW_IMAGE" -c 'import tinyassets.universe_server' >/dev/null 2>&1; then
@@ -2495,6 +2508,15 @@ if ! set_image "$PREV_IMAGE"; then
 fi
 if ! restart_stack; then
   err "the rollback converge failed — manual intervention required"
+  echo "deploy_result=rollback_failed"
+  exit 3
+fi
+# Recreating PREV_IMAGE discards its writable container layer. Restore active
+# hotfix bytes before accepting that rollback; the originals remain available
+# for hotfix.py revert. This runs under the existing host-mutation lock.
+if ! HOTFIX_STATE_DIR="$BUNDLE_STATE_DIR" python3 "$HOTFIX_HELPER" --host restore
+then
+  err "could not restore active hotfixes onto rollback container"
   echo "deploy_result=rollback_failed"
   exit 3
 fi
