@@ -9,6 +9,8 @@ from pathlib import PurePosixPath
 
 FILENAME = ".subscription-state.json"
 MAX_STATE = 2 * 1024 * 1024
+MAX_OWNER_ENTRIES = 16
+MAX_OWNER_BYTES = 8 * 1024 * 1024
 
 
 def validate_state(state):
@@ -59,9 +61,13 @@ def operation(data_root, owner, document):
             records.pop(source, None)
             result = {"revision": None, "state": {}}
         else:
+            if entry is None and len(records) >= MAX_OWNER_ENTRIES:
+                raise ValueError("native custody source limit exceeded")
             result = {"revision": secrets.token_hex(32),
                       "state": document["state"] if action == "save" else {}}
             records[source] = result
+            if len(json.dumps(records).encode("utf-8")) > MAX_OWNER_BYTES:
+                raise ValueError("native custody owner byte limit exceeded")
         if records:
             _persist_role_vault(path, json.dumps(records))
         else:

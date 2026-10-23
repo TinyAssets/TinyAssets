@@ -23,6 +23,30 @@ def decoded(runtime):
     return {name: base64.b64decode(value) for name, value in state.items()}
 
 
+def test_broker_bounds_owner_custody(connected, monkeypatch):
+    from tinyassets.broker import subscription_custody as store
+    from tinyassets.owner_channel import request
+
+    def call(action, source, **fields):
+        return request(connected.owner.principal, {"op": "SUBSCRIPTION_CUSTODY",
+            "document": {"action": action, "source": source, **fields}})
+
+    entries = [call("begin", f"source-{i}") for i in range(16)]
+    with pytest.raises(PermissionError):
+        call("begin", "source-overflow")
+    initial_size = len(json.dumps({f"source-{i}": entry for i, entry in enumerate(entries)}))
+    monkeypatch.setattr(store, "MAX_OWNER_BYTES", initial_size + 100)
+    state = {"token": base64.b64encode(b"x" * 40).decode()}
+    saved = call("save", "source-0", revision=entries[0]["revision"], state=state)
+    with pytest.raises(PermissionError):
+        call("save", "source-1", revision=entries[1]["revision"], state=state)
+    assert call("read", "source-0") == saved
+    assert call("read", "source-1") == entries[1]
+    with pytest.raises(PermissionError):
+        call("save", "source-1", revision=entries[1]["revision"],
+             state={"long-path-" + "x" * 100: "eA=="})
+
+
 def test_legacy_login_moves_to_custody_and_status_uses_tmpfs(connected, monkeypatch):
     runtime = connected
     old = runtime.source.document()
@@ -229,4 +253,3 @@ def test_cancelled_login_cannot_recreate_custody_after_disconnect(connected):
             pytest.fail("cancelled login acquired custody")
     assert custody(connected, "read") == {"revision": None, "state": {}}
     assert not connected.directory.exists()
-
