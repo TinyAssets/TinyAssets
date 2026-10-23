@@ -151,9 +151,18 @@ jobs:
           CANARY_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           echo "::add-mask::${CANARY_TOKEN}"
           echo "TINYASSETS_WIKI_CANARY_TOKEN=${CANARY_TOKEN}" >> "$GITHUB_ENV"
+          # Match deploy/compose.yml: the daemon is uid 1001 with the work,
+          # broker, and vault groups, and no capability. uid 0 with every cap
+          # dropped cannot create /data/.layout.lock on a 1001-owned volume.
+          docker volume create tinyassets-daemon-fresh-ci
+          docker run --rm --network none --user 0:0 \
+              -v tinyassets-daemon-fresh-ci:/data \
+              --entrypoint /bin/bash tinyassets-daemon:ci \
+              -c 'chown 1001:1001 /data && chmod 0755 /data'
           docker run -d \
-              --user 0:0 --cap-drop ALL \
-              --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP \
+              --user 1001:1001 \
+              --group-add 1100 --group-add 1101 --group-add 1102 \
+              --cap-drop ALL \
               --security-opt no-new-privileges=true \
               --security-opt seccomp=unconfined \
               --security-opt "apparmor=${TINYASSETS_SMOKE_APPARMOR}" \
