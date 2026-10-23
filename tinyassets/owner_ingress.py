@@ -32,7 +32,8 @@ class OwnerIngress:
         try:
             for name, value in scope["headers"]:
                 name = name.lower()
-                if name in {b"x-owner", b"x-box-secret", b"x-owner-identity"}:
+                if name in {b"x-owner", b"x-box-secret", b"x-owner-identity",
+                            b"x-tinyassets-caller-user-id"}:
                     if name in headers:
                         raise ValueError("duplicate router header")
                     headers[name] = value
@@ -60,6 +61,7 @@ class OwnerIngress:
                 return await JSONResponse(result)(scope, receive, send)
             identity = Identity(**json.loads(base64.b64decode(
                 headers[b"x-owner-identity"], altchars=b"-_", validate=True)))
+            authenticated = identity.user_id
             # The only source is the authenticated router, never a public bearer.
             identity.user_id = headers[b"x-owner"].decode("utf-8")
             if not identity.user_id:
@@ -71,10 +73,31 @@ class OwnerIngress:
             runtime = current()
             if identity.user_id != runtime.principal:
                 raise ValueError("request is not for this box's owner")
+            raw_caller = headers.get(b"x-tinyassets-caller-user-id")
+            if raw_caller is None:
+                if authenticated != identity.user_id:
+                    raise ValueError("caller header required")
+                caller = identity.user_id
+            else:
+                try:
+                    caller = raw_caller.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise ValueError("caller is not text") from None
+                if not caller or caller != authenticated:
+                    raise ValueError("caller does not match the authenticated account")
+            identity.metadata = {**dict(identity.metadata or {}), "caller_user_id": caller}
+            if caller != runtime.principal:
+                from tinyassets.app_access import visitor_surface
+
+                if not visitor_surface(scope["path"], scope["method"]):
+                    return await JSONResponse(
+                        {"error": "private_surface"}, status_code=403)(
+                            scope, receive, send)
         except (ValueError, KeyError, TypeError):
             return await JSONResponse({"error": "router_required"}, status_code=401)(
                 scope, receive, send)
-        scope = dict(scope, tinyassets_router_identity=identity)
+        scope = dict(scope, tinyassets_router_identity=identity,
+                     tinyassets_caller_user_id=caller)
         async def proven_send(message):
             if message["type"] == "http.response.start":
                 # Provenance comes from this running box and its immutable image,

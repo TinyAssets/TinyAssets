@@ -1051,6 +1051,14 @@ def _replay_receive(messages: list[dict], receive: Any) -> Any:
     return _receive
 
 
+def published_box_owner(root, path: str, caller: str) -> str:
+    from tinyassets.app_access import app_slug
+    from tinyassets.published_apps import owner_for
+
+    slug = app_slug(path)
+    return (owner_for(root, slug) if slug is not None else None) or caller
+
+
 def current_identity_or_none() -> Identity | None:
     """The bound identity, or None when the request bound nothing.
 

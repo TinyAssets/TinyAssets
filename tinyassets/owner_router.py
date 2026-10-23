@@ -21,7 +21,8 @@ from starlette.responses import JSONResponse
 
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
-_TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity"}
+_TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity",
+            b"x-tinyassets-caller-user-id"}
 _INBOUND_PROOF = {b"x-slack-signature", b"x-hub-signature-256",
                   b"x-slack-request-timestamp", b"proxy-authorization"}
 _SHARED_APP = {
@@ -106,7 +107,7 @@ class OwnerRouter:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        from tinyassets.auth.middleware import current_identity_or_none
+        from tinyassets.auth.middleware import current_identity_or_none, published_box_owner
         from tinyassets.router_traffic import admits
         from tinyassets.routing_snapshot import snapshot
         from tinyassets.storage import data_dir
@@ -156,12 +157,16 @@ class OwnerRouter:
                 identity = replace(identity, metadata={**identity.metadata,
                                                        "router_owner_session": session})
         try:
+            box_owner = await run_in_threadpool(
+                published_box_owner, data_dir(), scope["path"], identity.user_id)
             try:
-                route = await run_in_threadpool(self.resolver, identity.user_id)
+                route = await run_in_threadpool(self.resolver, box_owner)
             except LookupError:
-                # A first sign-in: the broker's admission authority decides,
-                # exactly as it decides a cold wake (C5, C6). Erased owners and
-                # recovery are refused there; the router only asks.
+                # A first sign-in admits the caller only. A published slug never
+                # creates a box for an owner the directory did not already name,
+                # and it never admits the visitor into the app owner's place.
+                if box_owner != identity.user_id:
+                    raise
                 await run_in_threadpool(self.admitter, identity.user_id)
                 route = await run_in_threadpool(self.resolver, identity.user_id)
         except LookupError:
@@ -169,7 +174,10 @@ class OwnerRouter:
                 scope, receive, send)
         except (OSError, RuntimeError):
             return await _unavailable()(scope, receive, send)
-        await forward(scope, receive, send, identity, route)
+        if box_owner != identity.user_id:
+            await forward(scope, receive, send, identity, route, box_owner=box_owner)
+        else:
+            await forward(scope, receive, send, identity, route)
 
 
 def _inbound_query(scope, token: str) -> bytes:
@@ -314,8 +322,8 @@ def _forward_timeout(scope) -> httpx.Timeout:
     return httpx.Timeout(connect=5, read=None, write=30, pool=5)
 
 
-async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
-    """One reverse proxy for every owner door, with bounded streaming and cancellation."""
+def door_headers(scope, identity, route: BoxRoute, box_owner=None):
+    """Router-authenticated owner and caller. Client copies of either are dropped."""
     proof_headers = (_INBOUND_PROOF | set(scope.get("inbound_proof_headers", ()))
                      if hook_token(scope["path"]) is not None else ())
     headers = _headers(scope["headers"], private=True, proof_headers=proof_headers)
@@ -326,12 +334,21 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
     if public:
         headers = [(name, value) for name, value in headers if name.lower() != b"host"]
         headers.append((b"host", public))
+    owner = box_owner or identity.user_id
     headers.extend([
-        (b"x-owner", identity.user_id.encode("utf-8")),
+        (b"x-owner", owner.encode("utf-8")),
         (b"x-box-secret", route.secret.encode("ascii")),
         (b"x-owner-identity", base64.urlsafe_b64encode(
             json.dumps(asdict(identity), separators=(",", ":")).encode("utf-8"))),
+        (b"x-tinyassets-caller-user-id", identity.user_id.encode("utf-8")),
     ])
+    return owner, headers
+
+
+async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True,
+                  box_owner=None):
+    """One reverse proxy for every owner door, with bounded streaming and cancellation."""
+    owner, headers = door_headers(scope, identity, route, box_owner)
     target = scope.get("raw_path", scope["path"].encode("utf-8"))
     if scope.get("query_string"):
         target += b"?" + scope["query_string"]
@@ -367,15 +384,19 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
         from tinyassets.storage import data_dir
 
         try:
-            await run_in_threadpool(wake_owner, data_dir(), principal=identity.user_id)
+            await run_in_threadpool(wake_owner, data_dir(), principal=owner)
             if scope.get("inbound_revalidate") is not None:
                 await scope["inbound_revalidate"]()
-            route = resolve_box(identity.user_id)
+            route = resolve_box(owner)
         except (LookupError, OSError, RuntimeError):
             return await _unavailable()(scope, receive, send)
         # ConnectError occurs before HTTP headers or the request body are sent.
         # Wake replies contain no route: always select the current projection.
-        await forward(scope, receive, send, identity, route, cold=False)
+        if box_owner is not None:
+            await forward(
+                scope, receive, send, identity, route, cold=False, box_owner=owner)
+        else:
+            await forward(scope, receive, send, identity, route, cold=False)
     except httpx.HTTPError:
         if started:
             raise  # A truncated stream must never look like a successful response.
