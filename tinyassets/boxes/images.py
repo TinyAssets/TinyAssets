@@ -15,15 +15,28 @@ class Images:
     def __init__(self, directory: Path, state: Path, initial: Path):
         self.directory, self.state = directory.resolve(strict=True), state
         self.lock = threading.RLock()
-        self.current = initial.name
+        # initial is the resolved harness-current target at process start.
+        # The recorded name can still be on disk then; prune deletes it later.
+        self._initial = initial.name
+        self._current = self._initial
         if state.exists():
             document = json.loads(state.read_text())
             recorded = document.get("current")
-            # A pruned harness name must not stick. initial is the resolved
-            # target of harness-current.
             if isinstance(recorded, str) and (self.directory / recorded).is_dir():
-                self.current = recorded
+                self._current = recorded
         self.path(self.current)
+
+    @property
+    def current(self) -> str:
+        if (not (self.directory / self._current).is_dir()
+                and (self.directory / self._initial).is_dir()):
+            self._current = self._initial
+            self._write(self._current)
+        return self._current
+
+    @current.setter
+    def current(self, image: str) -> None:
+        self._current = image
 
     def path(self, image: str) -> Path:
         if not isinstance(image, str) or not re.fullmatch(r"harness-[0-9a-f]{64}", image):
@@ -49,11 +62,11 @@ class Images:
                    and isinstance(node.value, ast.Constant)
                    and node.value.value == "owner-box" for node in tree.body)
 
-    def save(self):
+    def _write(self, image: str) -> None:
         self.state.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.state.with_suffix(".new")
         with temporary.open("w", encoding="utf-8") as stream:
-            json.dump({"current": self.current}, stream)
+            json.dump({"current": image}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, self.state)
@@ -62,6 +75,9 @@ class Images:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    def save(self):
+        self._write(self._current)
 
     def select(self, image):
         with self.lock:

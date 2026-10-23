@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -186,7 +187,23 @@ def test_non_string_recorded_image_falls_back_to_the_resolved_harness(tmp_path):
     assert loaded.current == current.name
 
 
-def test_launch_uses_harness_current_when_the_selected_image_is_gone(rolling):
+def test_pruned_recorded_image_falls_back_to_the_startup_harness(tmp_path):
+    root = tmp_path / "images"
+    startup = image(root, "2")
+    recorded = image(root, "1")
+    state = tmp_path / "state/images.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"current": recorded.name}))
+    loaded = Images(root, state, startup)
+    assert loaded.current == recorded.name
+    shutil.rmtree(recorded)
+    assert loaded.current == startup.name
+    assert json.loads(state.read_text()) == {"current": startup.name}
+    assert loaded.current == startup.name
+
+
+def test_launch_uses_harness_current_when_startup_and_recorded_images_are_gone(rolling):
+    shutil.rmtree(rolling.root / rolling.old)
     rolling.manager.images.current = "harness-" + "9" * 64
     (rolling.root / "harness-current").symlink_to(rolling.new)
     uid = rolling.wake("a")
@@ -202,6 +219,7 @@ def test_launch_keeps_a_present_image_when_harness_current_points_elsewhere(roll
 
 
 def test_launch_refuses_a_missing_image_without_harness_current(rolling):
+    shutil.rmtree(rolling.root / rolling.old)
     rolling.manager.images.current = "harness-" + "9" * 64
     with pytest.raises(BoxError, match="startup failed"):
         rolling.wake("a")

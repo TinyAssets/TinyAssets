@@ -2554,3 +2554,12 @@ def test_successful_deploy_prunes_readonly_historical_harnesses(box: Box):
     assert (harness / current / "app" / "tinyassets" / "boxd.py").is_file()
     assert not (harness / previous).exists()
     assert f"removed old harness {previous}" in completed.stdout
+    assert "box layout: already owner-box; no move" in completed.stdout
+    events = box.event_log.read_text().splitlines()
+    creates = [i for i, event in enumerate(events) if event.startswith("docker create ")]
+    restarts = [i for i, event in enumerate(events)
+                if event == "systemctl restart boxhostd.service"]
+    ups = [i for i, event in enumerate(events)
+           if event.startswith("docker compose ") and " up " in event]
+    assert creates and restarts and ups
+    assert creates[-1] < restarts[-1] < ups[0]

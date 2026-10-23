@@ -2714,7 +2714,15 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
         migration_refused "check=box_store_mount; required mounted XFS project-quota store unavailable"
       fi
       case "$box_probe_rc" in
-        0) log "box layout: already owner-box; no move" ;;
+        0)
+          # install_bundle restarted boxhostd before install_box_harness moved
+          # harness-current. Reload it before compose recreates the broker.
+          log "box layout: already owner-box; no move"
+          if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+            MIGRATION_OK=0
+            err "boxhostd could not start on the updated harness"
+          fi
+          ;;
         10)
           # The candidate constant selects this step. It does not authorize it.
           # Apply runs only after every gate has passed in this run: a
