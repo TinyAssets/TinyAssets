@@ -9153,7 +9153,7 @@
           const local=await SubscriptionSources.post("resolve",{address:selected},MCP._loginEpoch);
           if(local.source_id){await SubscriptionSources.start({id:local.source_id},ui);return;}
           const external=NATIVE||DESKTOP_SHELL;
-          const client=await signInClient();
+          const client=external?await signInClient():null;
           const verifier=randToken(32),code_challenge=await challengeFor(verifier);
           const detected=await fetch("/app/model-discovery",{
             method:"POST",credentials:"same-origin",cache:"no-store",
