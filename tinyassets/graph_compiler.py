@@ -2148,11 +2148,11 @@ def _build_node_mcp_invoker(
                 **kwargs,
             )
         if tool_name == "goals":
-            from tinyassets.api.market import goals
+            from tinyassets.api.goals import goals
 
             raw = goals(action=action, **kwargs)
         elif tool_name == "gates":
-            from tinyassets.api.market import gates
+            from tinyassets.api.goals import gates
 
             raw = gates(action=action, **kwargs)
         elif tool_name == "wiki":

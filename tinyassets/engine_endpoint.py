@@ -1,12 +1,8 @@
-"""Owner-pinned engine handlers in the daemon that owns the role clients."""
+"""Authenticated tool transport inside the owner daemon."""
 from __future__ import annotations
 
-import importlib.util
 import os
-import secrets
-import sys
 from contextvars import ContextVar
-from pathlib import Path
 
 _model_context: ContextVar[int | None] = ContextVar("engine_model_context", default=None)
 
@@ -34,51 +30,64 @@ def model_context() -> int | None:
     return _context_from_query(request.scope.get("query_string", b""))
 
 
-_endpoint: ContextVar[tuple | None] = ContextVar("engine_endpoint", default=None)
+_endpoint: ContextVar[EngineEndpoint | None] = ContextVar("engine_endpoint", default=None)
+
+
+def binding():
+    return _endpoint.get()
+
+
+_default_server = None
 
 
 def current_server():
-    endpoint = _endpoint.get()
+    endpoint = binding()
     if endpoint is not None:
-        return endpoint[0]
-    from tinyassets import engine_mcp_server
+        return endpoint
+    # Direct in-box calls and tests use the same registration as HTTP.
+    global _default_server
+    if _default_server is None:
+        _default_server = ToolSurface()
+    return _default_server
 
-    return engine_mcp_server
+
+class ToolSurface:
+    def __init__(self):
+        from tinyassets import universe_tools
+        from tinyassets.control_plane.registration import engine_server
+
+        self.module = universe_tools
+        self.mcp = engine_server(universe_tools)
+
+    def __getattr__(self, name):
+        if name == "_ACTOR_ID":
+            return self.module._actor_id()
+        if name == "_GRAPH_ID":
+            return self.module._graph_id()
+        return getattr(self.module, name)
 
 
 def grant_key() -> str:
     endpoint = _endpoint.get()
     if endpoint is not None:
-        return endpoint[1]
+        return endpoint.key
     from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV
 
     return (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip()
 
 
-class EngineEndpoint:
-    """Independent handler globals; request and lifespan tasks retain this pin."""
+class EngineEndpoint(ToolSurface):
+    """Authenticated in-box transport; pins follow request and lifespan context."""
 
     def __init__(self, actor: str, graph: str, secret: str, key: str):
         if not all((actor, graph, secret, key)):
             raise ValueError("engine endpoint requires complete authority pins")
-        name = "tinyassets._engine_endpoint_" + secrets.token_hex(16)
-        spec = importlib.util.spec_from_file_location(
-            name, Path(__file__).with_name("engine_mcp_server.py"),
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        try:
-            spec.loader.exec_module(module)
-            module._ACTOR_ID, module._GRAPH_ID = actor, graph
-            self.app = module.mcp.http_app()
-        except BaseException:
-            sys.modules.pop(name, None)
-            raise
-        self.module, self.secret, self.key = module, secret, key
+        super().__init__()
+        self.actor, self.graph, self.secret, self.key = actor, graph, secret, key
+        self.app = self.mcp.http_app()
 
     def close(self):
-        """Only after the serving thread and all its tasks have stopped."""
-        sys.modules.pop(self.module.__name__, None)
+        """The HTTP lifespan owns cleanup; no cloned modules are retained."""
 
     async def __call__(self, scope, receive, send):
         kind = scope.get("type")
@@ -92,7 +101,7 @@ class EngineEndpoint:
             return
         context_token = _model_context.set(
             _context_from_query(scope.get("query_string", b"")))
-        token = _endpoint.set((self.module, self.key))
+        token = _endpoint.set(self)
         try:
             await self.app(scope, receive, send)
         finally:

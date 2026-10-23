@@ -10,9 +10,9 @@ imports if static discovery is preferred.
 
 Usage:
     from tinyassets.registry import default_registry
-    from domains.fantasy_daemon.skill import FantasyAuthorDomain
+    from my_package.skill import MyDomain
 
-    default_registry.register(FantasyAuthorDomain())
+    default_registry.register(MyDomain())
     domain = default_registry.get("fantasy_author")
 """
 

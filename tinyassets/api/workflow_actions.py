@@ -1,52 +1,11 @@
-"""Graph Extensions tool surface — extracted from
-``tinyassets/universe_server.py`` (Task #13 — decomp Step 11).
-
-The FINAL extraction in the planned post-Step-8 chain. After Step 11,
-universe_server.py becomes a routing-shell module containing only:
-the FastMCP `mcp` instance, 7 Pattern A2 wrappers (universe / extensions /
-goals / gates / wiki / get_status / branch_design_guide), 2 @mcp.prompt
-registrations (control_station / extension_guide), `main()` daemon
-entrypoint, the `@mcp.custom_route("/")` health-check, and module imports.
-
-This module is the **most cross-tool-coupled** of the decomposition: the
-``extensions()`` tool body funnels caller kwargs into 12 dispatch tables
-already extracted in Steps 4-8. Top-of-module imports (not lazy) since
-extensions.py is hot-path routing.
-
-Public surface (back-compat re-exported via ``tinyassets.universe_server``):
-    Standalone-node infrastructure:
-      NodeRegistration               : @dataclass for individually registered nodes
-      STANDALONE_NODES_BRANCH_ID     : "__standalone_nodes__" reserved branch id
-      VALID_PHASES                   : whitelist for register-action phase value
-      ALLOWED_DEPENDENCIES           : whitelist for register-action dependencies
-      _nodes_path()                  : legacy JSON registry path (migration-only)
-      _ensure_standalone_branch(base): SQLite/JSON migration probe
-      _load_nodes() / _save_nodes(nodes) : SQLite-backed registry I/O
-
-    Standalone-node action handlers:
-      _ext_register / _ext_list / _ext_inspect / _ext_manage
-
-Engine-helpers symbols (`_current_actor`, `_append_global_ledger`) lazy-import
-from ``tinyassets.api.engine_helpers`` (post-Step-10 path) and
-``tinyassets.api.branches`` respectively. Kept lazy because they're pulled at
-function-body time inside the dispatch arms.
-"""
-
+"""Owner-local workflow action dispatch; extensions use activated v2 packages."""
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from tinyassets.api.auto_ship_actions import _AUTO_SHIP_ACTIONS
-
-# Top-of-module imports of all 12 dispatch tables from Steps 4-8.
-# These are the routing surface — extensions.py is a hot-path dispatcher,
-# so lazy-imports would burn one import resolution per call. Verified
-# circular-import safe (none of Steps 4-8 modules import from extensions.py).
 from tinyassets.api.branches import (
     _BRANCH_ACTIONS,
     _dispatch_branch_action,
@@ -58,12 +17,10 @@ from tinyassets.api.evaluation import (
 )
 from tinyassets.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
 from tinyassets.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
-from tinyassets.api.helpers import _base_path, _read_json
-from tinyassets.api.market import (
-    _ATTRIBUTION_ACTIONS,
+from tinyassets.api.goals import (
     _GATE_EVENT_ACTIONS,
-    _OUTCOME_ACTIONS,
 )
+from tinyassets.api.helpers import _base_path
 from tinyassets.api.runs import (
     _RUN_ACTIONS,
     _dispatch_run_action,
@@ -75,9 +32,10 @@ from tinyassets.api.runtime_ops import (
     _PROJECT_MEMORY_WRITE_ACTIONS,
     _SCHEDULER_ACTIONS,
 )
+from tinyassets.attribution.actions import _ATTRIBUTION_ACTIONS
 from tinyassets.authoring.service import _AUTHORING_ACTIONS
 from tinyassets.handoffs.service import _HANDOFF_ACTIONS
-from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
+from tinyassets.outcomes.actions import _OUTCOME_ACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -90,142 +48,6 @@ _RETIRED_PAID_ACTIONS = frozenset({
 # ═══════════════════════════════════════════════════════════════════════════
 # TOOL 2 — Extensions (node registration system)
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-@dataclass
-class NodeRegistration:
-    """A user-contributed LangGraph node."""
-
-    node_id: str
-    display_name: str
-    description: str
-    phase: str  # orient, plan, draft, commit, learn, reflect, enrich, custom
-    input_keys: list[str]
-    output_keys: list[str]
-    source_code: str
-    dependencies: list[str] = field(default_factory=list)
-    author: str = ""
-    registered_at: str = ""
-    enabled: bool = True
-    approved: bool = False
-    approved_by: str = ""
-    approved_at: str = ""
-    approved_source_hash: str = ""
-
-    def __post_init__(self) -> None:
-        if self.phase not in VALID_PHASES:
-            raise ValueError(
-                f"Invalid phase '{self.phase}'. "
-                f"Must be one of: {', '.join(sorted(VALID_PHASES))}"
-            )
-        self.phase = normalize_phase(self.phase)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> NodeRegistration:
-        return cls(**{
-            k: v for k, v in data.items()
-            if k in cls.__dataclass_fields__
-        })
-
-
-STANDALONE_NODES_BRANCH_ID = "__standalone_nodes__"
-"""Well-known branch definition ID for individually registered nodes
-that aren't part of a full graph topology yet."""
-
-
-def _nodes_path() -> Path:
-    """Path to the legacy JSON node registry (used for migration only)."""
-    return _base_path() / ".node_registry.json"
-
-
-def _ensure_standalone_branch(base_path: Path) -> None:
-    """Ensure the standalone-nodes branch definition exists in SQLite.
-
-    If the branch doesn't exist and a legacy .node_registry.json file
-    does, migrate its contents automatically.
-    """
-    from tinyassets.daemon_server import (
-        get_branch_definition,
-        initialize_author_server,
-        save_branch_definition,
-    )
-
-    initialize_author_server(base_path)
-
-    try:
-        get_branch_definition(base_path, branch_def_id=STANDALONE_NODES_BRANCH_ID)
-        return  # already exists
-    except KeyError:
-        pass
-
-    # Migrate from legacy JSON if it exists
-    legacy_nodes: list[dict[str, Any]] = []
-    json_path = _nodes_path()
-    if json_path.exists():
-        data = _read_json(json_path)
-        if isinstance(data, list):
-            legacy_nodes = data
-            logger.info(
-                "Migrating %d nodes from .node_registry.json to SQLite",
-                len(legacy_nodes),
-            )
-
-    save_branch_definition(
-        base_path,
-        branch_def={
-            "branch_def_id": STANDALONE_NODES_BRANCH_ID,
-            "name": "Standalone Nodes",
-            "description": "Individually registered nodes not yet part of a full graph topology.",
-            "author": "system",
-            "tags": ["system", "standalone"],
-            "nodes": legacy_nodes,
-            "edges": [],
-            "state_schema": [],
-            "published": False,
-        },
-    )
-
-
-def _load_nodes() -> list[dict[str, Any]]:
-    """Load all registered nodes from SQLite."""
-    from tinyassets.daemon_server import get_branch_definition
-
-    base = _base_path()
-    _ensure_standalone_branch(base)
-
-    try:
-        branch = get_branch_definition(
-            base, branch_def_id=STANDALONE_NODES_BRANCH_ID
-        )
-        return branch.get("graph", {}).get("nodes", [])
-    except KeyError:
-        return []
-
-
-def _save_nodes(nodes: list[dict[str, Any]]) -> None:
-    """Save the node registry to SQLite."""
-    from tinyassets.daemon_server import update_branch_definition
-
-    base = _base_path()
-    _ensure_standalone_branch(base)
-
-    update_branch_definition(
-        base,
-        branch_def_id=STANDALONE_NODES_BRANCH_ID,
-        updates={"nodes": nodes},
-    )
-
-
-# ``worldbuild`` remains a deprecated same-arc alias for ``enrich``.
-
-ALLOWED_DEPENDENCIES = {
-    "requests", "httpx", "json", "re", "datetime", "collections",
-    "dataclasses", "typing", "math", "statistics", "textwrap",
-    "difflib", "hashlib", "urllib", "pathlib",
-}
 
 
 def _dispatch_scope_error(tool: str, action: str) -> str | None:
@@ -334,8 +156,6 @@ def _extensions_impl(
     input_keys: str = "",
     output_keys: str = "",
     source_code: str = "",
-    dependencies: str = "",
-    enabled_only: bool = True,
     branch_def_id: str = "",
     name: str = "",
     domain_id: str = "",
@@ -466,18 +286,6 @@ def _extensions_impl(
     goal_rejection = _public_goal_read_rejection(action, goal_id)
     if goal_rejection is not None:
         return goal_rejection
-
-    if action == "register":
-        return _ext_register(
-            node_id, display_name, description, phase,
-            input_keys, output_keys, source_code, dependencies,
-        )
-    elif action == "list":
-        return _ext_list(phase, enabled_only)
-    elif action == "inspect":
-        return _ext_inspect(node_id)
-    elif action in ("approve", "disable", "enable", "remove"):
-        return _ext_manage(node_id, action)
 
     # ── Phase 2: Community Branches ────────────────────────────────────────
     branch_kwargs: dict[str, Any] = {
@@ -871,8 +679,6 @@ def _extensions_impl(
     return json.dumps({
         "error": f"Unknown action '{action}'.",
         "available_actions": [
-            "register", "list", "inspect",
-            "approve", "disable", "enable", "remove",
             "build_branch", "patch_branch", "update_node",
             "create_branch", "add_node", "connect_nodes",
             "set_entry_point", "add_state_field",
@@ -907,182 +713,4 @@ def _extensions_impl(
             "handoff_record_evidence", "handoff_attest_outcome",
             "handoff_outcome_evidence",
         ],
-    })
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# Standalone-node action handlers
-# ───────────────────────────────────────────────────────────────────────────
-
-
-def _ext_register(
-    node_id: str,
-    display_name: str,
-    description: str,
-    phase: str,
-    input_keys: str,
-    output_keys: str,
-    source_code: str,
-    dependencies: str,
-) -> str:
-    if not node_id or not display_name or not source_code:
-        return json.dumps({"error": "node_id, display_name, and source_code are required."})
-
-    if phase not in VALID_PHASES:
-        return json.dumps({
-            "error": f"Invalid phase '{phase}'. Must be one of: {', '.join(sorted(VALID_PHASES))}",
-        })
-    phase = normalize_phase(phase)
-
-    in_keys = [k.strip() for k in input_keys.split(",") if k.strip()] if input_keys else []
-    out_keys = [k.strip() for k in output_keys.split(",") if k.strip()] if output_keys else []
-    deps = [d.strip() for d in dependencies.split(",") if d.strip()] if dependencies else []
-
-    disallowed = [d for d in deps if d.split("==")[0].split(">=")[0] not in ALLOWED_DEPENDENCIES]
-    if disallowed:
-        return json.dumps({
-            "error": f"Disallowed dependencies: {disallowed}. "
-            f"Allowed: {sorted(ALLOWED_DEPENDENCIES)}",
-        })
-
-    dangerous_patterns = ["os.system", "subprocess", "eval(", "exec(", "__import__"]
-    for pattern in dangerous_patterns:
-        if pattern in source_code:
-            return json.dumps({
-                "error": f"Source code contains disallowed pattern: '{pattern}'",
-            })
-
-    from tinyassets.api.engine_helpers import _current_actor
-
-    nodes = _load_nodes()
-    existing = [n for n in nodes if n.get("node_id") == node_id]
-    if existing:
-        return json.dumps({
-            "error": f"Node '{node_id}' already registered. Use a different ID.",
-        })
-
-    registration = NodeRegistration(
-        node_id=node_id,
-        display_name=display_name,
-        description=description,
-        phase=phase,
-        input_keys=in_keys,
-        output_keys=out_keys,
-        source_code=source_code,
-        dependencies=deps,
-        # The bound principal, never an environment variable and never a
-        # stand-in: this row is attribution, and a node registered by nobody is
-        # a node nobody can be asked about (Codex review, 2026-09-02, P0).
-        author=_current_actor(),
-        registered_at=datetime.now(timezone.utc).isoformat(),
-        enabled=True,
-        approved=False,
-    )
-
-    nodes.append(registration.to_dict())
-    _save_nodes(nodes)
-
-    return json.dumps({
-        "node_id": node_id,
-        "status": "registered",
-        "approved": False,
-        "note": "Node registered. It will be available after host approval.",
-    })
-
-
-def _ext_list(phase: str = "", enabled_only: bool = True) -> str:
-    nodes = _load_nodes()
-
-    if phase:
-        phase = normalize_phase(phase)
-        nodes = [
-            n for n in nodes
-            if normalize_phase(str(n.get("phase", ""))) == phase
-        ]
-    if enabled_only:
-        nodes = [n for n in nodes if n.get("enabled", True)]
-
-    summaries = [
-        {
-            "node_id": n.get("node_id"),
-            "display_name": n.get("display_name"),
-            "description": n.get("description"),
-            "phase": n.get("phase"),
-            "input_keys": n.get("input_keys"),
-            "output_keys": n.get("output_keys"),
-            "author": n.get("author"),
-            "approved": n.get("approved", False),
-            "enabled": n.get("enabled", True),
-        }
-        for n in nodes
-    ]
-
-    return json.dumps({"nodes": summaries, "count": len(summaries)})
-
-
-def _ext_inspect(node_id: str) -> str:
-    if not node_id:
-        return json.dumps({"error": "node_id is required."})
-    nodes = _load_nodes()
-    match = [n for n in nodes if n.get("node_id") == node_id]
-    if not match:
-        return json.dumps({"error": f"Node '{node_id}' not found."})
-    return json.dumps(match[0])
-
-
-def _ext_manage(node_id: str, action: str) -> str:
-    from tinyassets.api.branches import _source_code_hash
-    from tinyassets.api.engine_helpers import _current_actor
-
-    if not node_id:
-        return json.dumps({"error": "node_id is required."})
-
-    nodes = _load_nodes()
-    idx = next((i for i, n in enumerate(nodes) if n.get("node_id") == node_id), None)
-    if idx is None:
-        return json.dumps({"error": f"Node '{node_id}' not found."})
-
-    if action == "remove":
-        removed = nodes.pop(idx)
-        _save_nodes(nodes)
-        return json.dumps({
-            "node_id": node_id,
-            "action": "removed",
-            "note": f"Node '{removed.get('display_name')}' permanently removed.",
-        })
-
-    if action == "approve":
-        actor = _current_actor()
-        from tinyassets.principals import named_principal
-
-        registrant = named_principal(nodes[idx].get("author"))
-        if actor == registrant:
-            return json.dumps({
-                "status": "rejected",
-                "error": "node_approval_requires_distinct_actor",
-                "node_id": node_id,
-                "registrant": registrant,
-                "approver": actor,
-            })
-        nodes[idx]["approved"] = True
-        nodes[idx]["approved_by"] = actor
-        nodes[idx]["approved_at"] = datetime.now(timezone.utc).isoformat()
-        nodes[idx]["approved_source_hash"] = _source_code_hash(
-            nodes[idx].get("source_code", ""),
-        )
-    elif action == "disable":
-        nodes[idx]["enabled"] = False
-    elif action == "enable":
-        nodes[idx]["enabled"] = True
-
-    _save_nodes(nodes)
-    return json.dumps({
-        "node_id": node_id,
-        "action": action,
-        "status": "approved" if action == "approve" else action,
-        "approved": nodes[idx].get("approved"),
-        "approved_by": nodes[idx].get("approved_by", ""),
-        "approved_at": nodes[idx].get("approved_at", ""),
-        "approved_source_hash": nodes[idx].get("approved_source_hash", ""),
-        "enabled": nodes[idx].get("enabled"),
     })

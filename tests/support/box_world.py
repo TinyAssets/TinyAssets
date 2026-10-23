@@ -1,7 +1,7 @@
 """Two command centers under one data root, admitted to the owner box double.
 
 Shared by the engine-tool, remote ``ta`` and starter-task proofs: the shipping
-engine handlers (``tinyassets.engine_mcp_server``) pinned to an owner and a
+engine handlers (``tinyassets.universe_tools``) pinned to an owner and a
 center, with that owner's session binding registered the way
 ``control_plane.session.start`` registers it, so ``read``/``write``/``edit``/
 ``bash`` run through the box tools. Every byte involved is synthetic.
@@ -79,7 +79,7 @@ def world(monkeypatch: pytest.MonkeyPatch, _owner_box_double):
 
 def bare_engine(monkeypatch, world: World, *, actor="actor-a", graph="u-alpha"):
     """The shipping engine handlers, pinned to (actor, graph) with REAL authority."""
-    from tinyassets import engine_mcp_server as s
+    from tinyassets import universe_tools as s
 
     seed_engine_authority(world.data_root, actor=actor, graph=graph)
     monkeypatch.setattr(s, "_ACTOR_ID", actor)

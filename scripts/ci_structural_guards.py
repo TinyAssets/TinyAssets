@@ -102,11 +102,11 @@ GUARDS = {
     ),
     "test_served_tool_guidance": (
         'Repair the affected handbook chapter and its index in '
-        'tinyassets/engine_mcp_server.py; preserve verbatim guidance and keep expanded '
+        'tinyassets/universe_tools.py; preserve verbatim guidance and keep expanded '
         'instructions in on-demand chapters. '
     ),
     "test_served_systems_guidance": (
-        'Repair the systems handbook chapter in tinyassets/engine_mcp_server.py to name the '
+        'Repair the systems handbook chapter in tinyassets/universe_tools.py to name the '
         'actual supported in-platform calls and fetch path. '
     ),
     "test_owner_door_import_boundary": (

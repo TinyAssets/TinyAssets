@@ -2123,7 +2123,7 @@ def _render_bug_markdown(
     effort_frontmatter = ""
     effort_dispatch_section = ""
     if effort_classification:
-        from tinyassets.api.market import filing_effort_dispatch_route
+        from tinyassets.api.goals import filing_effort_dispatch_route
 
         effort_class = str(effort_classification.get("effort_class") or "standard")
         attention = str(effort_classification.get("attention") or "normal-review-gates")
@@ -2443,7 +2443,7 @@ def _wiki_file_bug(
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = _slugify_title(title)
-    from tinyassets.api.market import classify_filing_effort, filing_effort_dispatch_route
+    from tinyassets.api.goals import classify_filing_effort, filing_effort_dispatch_route
 
     effort_classification = classify_filing_effort(
         title=title,

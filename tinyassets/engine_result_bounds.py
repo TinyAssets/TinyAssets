@@ -10,7 +10,7 @@ owner was told "we could not identify why". ``read_graph target="status"``
 
 The platform chooses how big a tool result is, so the platform owns the bound.
 This module is the bound: pure string arithmetic, no I/O and no provider
-knowledge, applied in ONE middleware (``engine_mcp_server``) so every served
+knowledge, applied in ONE middleware (``universe_tools``) so every served
 tool -- including one added tomorrow -- passes through it.
 
 **Never silent.** Over the ceiling the agent gets a JSON envelope carrying

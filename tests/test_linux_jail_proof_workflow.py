@@ -161,7 +161,7 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "tests/test_owner_box_process_boundary.py",
         "tests/test_owner_tools.py",
         "tinyassets/universe_tools.py",
-        "tinyassets/engine_mcp_server.py",
+        "tinyassets/universe_tools.py",
         "tinyassets/storage_accounting.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"

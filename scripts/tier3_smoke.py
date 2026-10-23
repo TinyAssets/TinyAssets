@@ -72,13 +72,6 @@ def main() -> int:
         lambda: importlib.import_module("tinyassets.catalog"),
     )
 
-    # 6. Domain skill discovery. fantasy_daemon is the benchmark
-    #    domain; if it can't import, domain registration is broken.
-    _check(
-        "domains.fantasy_daemon imports",
-        lambda: importlib.import_module("domains.fantasy_daemon"),
-    )
-
     print("[tier3_smoke] all structural imports passed")
     return 0
 

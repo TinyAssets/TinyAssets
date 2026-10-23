@@ -32,7 +32,7 @@ def seed_engine_authority(root, *, actor="actor-a", graph="u-a"):
 
 def seed_bound_engine(monkeypatch):
     """Create current authority for a fixture's explicit server pins."""
-    from tinyassets import engine_mcp_server as server
+    from tinyassets import universe_tools as server
     from tinyassets.storage import data_dir
 
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
@@ -47,7 +47,7 @@ def mock_engine_admission(monkeypatch, graphs):
     query, never operation-specific authorization.
     """
     from tinyassets import engine_mcp_http as http
-    from tinyassets import engine_mcp_server as server
+    from tinyassets import universe_tools as server
 
     actor = server._ACTOR_ID
     monkeypatch.setattr(http, "engine_tools_authorized",

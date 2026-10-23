@@ -76,7 +76,7 @@ _GROUNDING_IS_CURRENT = (
 
 #: The persona half of the untrusted envelope. Content another USER authored
 #: reaches the universe wrapped as ``{"untrusted": true, "source": ...,
-#: "notice": ..., "content": ...}`` (``engine_mcp_server._untrusted``); this is
+#: "notice": ..., "content": ...}`` (``universe_tools._untrusted``); this is
 #: the one line that tells it what that wrapper means. The universe keeps writing
 #: its own brain as it learns from its founder and the world -- the boundary is
 #: between users, not on learning.

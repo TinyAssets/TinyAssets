@@ -4,7 +4,7 @@ There are two doors onto a universe's data (ADR-011, *The Owner Door Is
 Complete*; ``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``):
 
 * the **model door** — the MCP connector (``tinyassets.universe_server``) and the
-  served-agent engine (``tinyassets.engine_mcp_server``). A model's context
+  served-agent engine (``tinyassets.universe_tools``). A model's context
   window is small, so that door projects what it returns: a single-result
   ceiling, compact views.
 * the **owner door** — this package, ``/app/api/*``. The app on web, phone
