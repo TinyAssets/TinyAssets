@@ -569,8 +569,9 @@ image succeed or fail together:
      `bundle-previous` names. The same snapshot records every mutable box-host
      path derived from the install manifest, the systemd units, the env source
      and its rendered daemon, broker and box-host files, the selected box image
-     in `images.json`, and `harness-current`. The workflow updates and renders
-     env before this snapshot, so it captures that already-updated state.
+     in `images.json`, and `harness-current`. That copy of `/etc/tinyassets/env`
+     and `daemon.env` is the pre-`set_image` pointer. A hold keeps the candidate
+     image in those files; a rollback restores this snapshot and converges it.
      Immutable harness rootfs and pinned runtime directories remain in place.
 3. **install** — `tinyassets:tinyassets` `0644` (`0755` for the entrypoint script),
    the unit `root:root 0644`, then the staged box-host installer and
@@ -624,13 +625,17 @@ Owner-box acceptance repeats this wait after fleet drain and before waking its
 canary. A timeout leaves the deploy red and holds the current image while work
 finishes. Request wakes take the reserved host slot ahead of scheduled wakes.
 
-**Nothing reports success over a mixed tree.** A restore that does not complete
-leaves `/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that
+**Nothing reports success over a mixed tree.** `bundle-dirty` stays set until
+the stack has converged. A hold keeps the candidate bundle and
+`TINYASSETS_IMAGE` and does not clear the marker. A rollback clears it only
+after `restart_stack` has converged, immediately before `rolled_back`. A
+restore or converge that does not finish leaves
+`/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that
 must go back*, written atomically like the pointer — and reports
 `deploy_result=rollback_failed` (exit 3). While that marker exists a normal
 deploy refuses with `bundle_dirty`, because snapshotting a half-installed tree
 would make the mixed state the next rollback target. `--restore-bundle` runs
-regardless and clears it.
+regardless and clears the marker only after the restored stack has converged.
 
 Two corners of that worth knowing before you meet them at 3am:
 

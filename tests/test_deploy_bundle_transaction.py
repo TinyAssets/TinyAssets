@@ -1351,6 +1351,73 @@ def _deployed_image(completed: subprocess.CompletedProcess) -> str:
     return ""
 
 
+def _env_image_line(path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("TINYASSETS_IMAGE="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def _stage_required_host_bundle(box: Box) -> dict[str, str]:
+    """Stage ``boxhostd-install.tar`` the way production does.
+
+    ``BOXHOSTD_BUNDLE_REQUIRED=1`` makes the snapshot include ``ENV_FILE`` and
+    ``daemon.env`` taken before ``set_image``. Every host path is redirected
+    onto this box so that snapshot never reads the real machine.
+    """
+    box.stage_bundle()
+    host = box.root / "boxhostd"
+    (host / "tinyassets").mkdir(parents=True, exist_ok=True)
+    (host / "tinyassets" / "release.txt").write_text("old\n", encoding="utf-8")
+    (host / ".host-service-files.json").write_text(
+        json.dumps(["tinyassets/release.txt"]), encoding="utf-8",
+    )
+    installer = box.root / "host-install" / "deploy" / "install-boxhostd-preflight.sh"
+    installer.parent.mkdir(parents=True, exist_ok=True)
+    installer.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "mkdir -p \"${BOX_HARNESS_ROOT}/tinyassets\"\n"
+        "printf 'new\\n' > \"${BOX_HARNESS_ROOT}/tinyassets/release.txt\"\n",
+        encoding="utf-8",
+    )
+    from scripts.boxhostd_install_files import ship_list
+
+    with tarfile.open(box.stage / "boxhostd-install.tar", "w") as archive:
+        for relative in ship_list(REPO):
+            source = (
+                installer if relative == "deploy/install-boxhostd-preflight.sh"
+                else REPO / relative
+            )
+            archive.add(source, arcname=relative)
+    (box.root / "boxhostd.service").write_text("old unit\n", encoding="utf-8")
+    env = {
+        "BOX_HARNESS_ROOT": str(host),
+        "BOXHOSTD_BUNDLE_REQUIRED": "1",
+        "BOXHOSTD_UNIT_FILE": str(box.root / "boxhostd.service"),
+        "BROKER_ENV_FILE": str(box.root / "broker.env"),
+        "BOX_IMAGE_STATE_FILE": str(box.root / "images.json"),
+    }
+    for key in (
+        "BOX_STORE_DEVICE_UNIT_FILE", "BOX_STORE_MOUNT_UNIT_FILE",
+        "BOX_STORE_GROW_UNIT_FILE", "BOX_STORE_GROW_TIMER_FILE",
+        "BOXHOSTD_ENV_FILE", "BROKER_RCLONE_FILE", "BOX_STORE_CONFIG_FILE",
+    ):
+        env[key] = str(box.root / key.lower())
+    return env
+
+
+def _assert_candidate_held(box: Box) -> None:
+    assert box.env_image() == NEW_IMAGE
+    assert _env_image_line(box.daemon_env_file) == NEW_IMAGE
+    assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
+    assert (box.runtime / "deploy" / "vector.yaml").read_text(encoding="utf-8") == NEW_VECTOR
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text(
+        encoding="utf-8",
+    ) == "new\n"
+    assert box.dirty.exists()
+
+
 # ---------------------------------------------------------------------------
 # (0) the harness itself must be able to go red
 # ---------------------------------------------------------------------------
@@ -1482,18 +1549,46 @@ def test_layout_two_still_refuses_rollback_to_an_older_image(box: Box, explicit)
     volume.mkdir()
     (volume / ".layout.json").write_text('{"layout": 2, "state": "stable"}', encoding="utf-8")
     box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]}, unhealthy_images=[NEW_IMAGE])
-    box.stage_bundle()
+    host_env = _stage_required_host_bundle(box)
 
     args = ("--restore-bundle", OLD_IMAGE) if explicit else (NEW_IMAGE,)
-    completed = box.run(*args, FAKE_DOCKER_VOLUME_DIR=str(volume))
+    completed = box.run(*args, FAKE_DOCKER_VOLUME_DIR=str(volume), **host_env)
 
     assert completed.returncode == (1 if explicit else 3), completed.stderr
     assert _result(completed) == ("layout_refused" if explicit else "rollback_needs_restore")
     if explicit:
         assert "compose up" not in box.docker_calls_text()
+        assert box.env_image() == OLD_IMAGE
+        assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "old\n"
     else:
-        assert box.env_image() == NEW_IMAGE, "automatic rollback must not start the old image"
+        _assert_candidate_held(box)
         assert "stop tinyassets-daemon" in box.docker_calls_text()
+        assert len(_daemon_starts(box)) == 1
+        assert f"NOT starting {OLD_IMAGE}" in completed.stderr
+
+
+@pytest.mark.parametrize("post_deploy", [False, True])
+def test_restart_stack_failure_leaves_bundle_dirty(box: Box, post_deploy):
+    """A restored tree whose containers never converged stays marked dirty."""
+    host_env = _stage_required_host_bundle(box)
+    if post_deploy:
+        deployed = box.run(NEW_IMAGE, **host_env)
+        assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+        assert not box.dirty.exists()
+        box.set_docker_state(up_fail_images=[OLD_IMAGE])
+        failed = box.run(
+            "--post-deploy-failure", NEW_IMAGE,
+            IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE, **host_env,
+        )
+    else:
+        box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+        failed = box.run(NEW_IMAGE, **host_env)
+
+    assert failed.returncode == 3, failed.stdout + failed.stderr
+    assert _result(failed) == "rollback_failed"
+    assert box.dirty.exists()
+    assert box.live()["compose"] == OLD_COMPOSE
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "old\n"
 
 
 
@@ -1862,9 +1957,9 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     elif candidate == "converge_fails":
         box.set_docker_state(up_fail_images=[NEW_IMAGE])
     before = box.live()
-    box.stage_bundle()
+    host_env = _stage_required_host_bundle(box)
 
-    completed = box.run(NEW_IMAGE, **env)
+    completed = box.run(NEW_IMAGE, **env, **host_env)
 
     calls = box.docker_calls_text()
     assert "agent_file_migration apply /data --backup /backup/tinyassets-snapshot-" in calls
@@ -1892,8 +1987,8 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     assert "python3 -m tinyassets.cutover_control rollback --state " in completed.stderr
     assert "/cutover --data" in completed.stderr
     assert "backup-restore.sh" not in completed.stderr
-    assert box.live() == before, "the bundle this run installed is restored"
-    assert box.env_image() == NEW_IMAGE, "the env must not be re-pointed at the previous image"
+    _assert_candidate_held(box)
+    assert box.live() != before
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
     assert daemon["status"] == "exited", "the service is left down for the restore"
     # A refused converge never replaced the container stopped for the move.
@@ -1911,19 +2006,22 @@ def test_a_failed_apply_is_judged_by_sql(box: Box, outcome, result, code):
     volume, env = _cutover(box)
     box.set_docker_state(migration_apply=outcome)
     before = box.live()
-    box.stage_bundle()
+    host_env = _stage_required_host_bundle(box)
 
-    completed = box.run(NEW_IMAGE, **env)
+    completed = box.run(NEW_IMAGE, **env, **host_env)
 
     assert completed.returncode == code, completed.stderr
     assert _result(completed) == result
-    assert box.live() == before and box.env_image() == OLD_IMAGE
     calls = box.docker_calls_text()
     assert calls.count("agent_file_migration check /data") == 2
     assert "compose" not in calls.split("agent_file_migration apply")[-1], (
         "no image is converged after a failed apply"
     )
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    if result == "migration_refused":
+        assert box.live() == before and box.env_image() == OLD_IMAGE
+    else:
+        _assert_candidate_held(box)
     assert f"fake migration: apply failed outcome={outcome.removeprefix('committed_')}" in (
         completed.stdout
     )

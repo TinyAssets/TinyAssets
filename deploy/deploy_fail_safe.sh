@@ -128,8 +128,9 @@
 #   3  manual intervention required — the rollback itself did not complete
 #      (`rollback_failed`, `rollback_env_write_failed`, `rollback_unhealthy`,
 #      `failed_no_rollback_target`, `rollback_needs_restore`). On `rollback_failed` the
-#      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
-#      clears it. On `rollback_needs_restore` the daemon is left stopped.
+#      bundle-dirty marker stays set until a later converge clears it. `--restore-bundle`
+#      clears it only after the restored stack has converged. On `rollback_needs_restore`
+#      the daemon is left stopped, the candidate bundle stays, and the marker stays set.
 set -uo pipefail
 
 # The disposable archive harness calls this exact container builder. Normal
@@ -379,6 +380,7 @@ HOST_INSTALL_MANIFEST=""
 RESTORE_VERIFIED=0
 RESTORE_ATTEMPTED=0
 MIGRATION_REFUSED_RESTART=0
+HOLD_CANDIDATE=0         # 1: keep the candidate tree; the EXIT trap must not restore
 
 log() { printf '%s %s\n' "[deploy-fail-safe]" "$*"; }
 err() { printf '::error::%s\n' "$*" >&2; }
@@ -556,8 +558,11 @@ CANDIDATE_LAYOUT_PY
 }
 # Refuse and leave the service DOWN: the remedy is restore-from-backup, and an
 # older image serving on newer data is the failure this guard exists to stop.
+# HOLD_CANDIDATE stops the EXIT trap from putting the pre-set_image snapshot
+# (previous image pointer, previous tree) back over this candidate.
 refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
   local why
+  HOLD_CANDIDATE=1
   if [ $# -ge 2 ]; then why="$2"; else
     why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. For pre-traffic rollback use deployment-owned cutover_control and its recorded backup/image; after traffic use independent platform recovery (deploy/RESTORE.md)"
   fi
@@ -565,6 +570,25 @@ refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the mar
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
   echo "deploy_result=rollback_needs_restore"
   exit 3
+}
+
+# Step 6 hold. The snapshot was taken before set_image, so restoring it would
+# point ENV_FILE and daemon.env at the previous image. Keep the candidate tree
+# and, when this run installed one, record the candidate image before refusing.
+hold_candidate_release() {  # $1 = image that must not start; $2 = why
+  local current=""
+  HOLD_CANDIDATE=1
+  if [ "$INSTALLED_THIS_RUN" = 1 ]; then
+    current="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+    if [ "$current" != "$NEW_IMAGE" ]; then
+      if ! set_image "$NEW_IMAGE"; then
+        err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}; holding the candidate bundle"
+        echo "deploy_result=failed_env_write"
+        exit 3
+      fi
+    fi
+  fi
+  refuse_on_layout "$@"
 }
 
 # The container must actually be RUNNING the requested image. A healthy daemon
@@ -722,7 +746,8 @@ guard_cutover_recovery() {
   case "$state_rc" in
     0) post_commit_failure ;;
     1) return 0 ;;
-    *) err "could not read this run's cutover state or layout; refusing image-only recovery"
+    *) HOLD_CANDIDATE=1
+       err "could not read this run's cutover state or layout; refusing image-only recovery"
        echo "deploy_result=rollback_needs_restore"
        exit 3 ;;
   esac
@@ -749,6 +774,7 @@ post_commit_failure() {
     exit 2
   fi
   [ "$policy" = hold ] || err "invalid post-commit policy: ${policy}; holding"
+  HOLD_CANDIDATE=1
   echo "deploy_result=post_commit_held"
   exit 3
 }
@@ -923,12 +949,14 @@ cleanup_bundle_work() {
 }
 
 # All nonzero exits after the first install byte converge on one recovery path.
-# This includes later preflight and harness failures. The marker stays set
-# until acceptance, and an interrupted restore remains marked dirty.
+# This includes later preflight and harness failures. A hold keeps the candidate
+# tree and leaves the marker set. Any other exit restores, then clears the
+# marker only after that restore verifies. An interrupted restore stays dirty.
 bundle_exit() {
   local rc=$? saved="$SNAPSHOT_PATH" recovery_failed=0
   trap - EXIT
-  if [ "$rc" -ne 0 ] && [ "$INSTALLED_THIS_RUN" = 1 ] &&
+  if [ "$rc" -ne 0 ] && [ "$HOLD_CANDIDATE" != 1 ] &&
+     [ "$INSTALLED_THIS_RUN" = 1 ] &&
      [ "$RESTORE_VERIFIED" != 1 ] && [ "$RESTORE_ATTEMPTED" != 1 ] &&
      [ -n "$saved" ]; then
     err "post-install failure: restoring ${saved} before exit"
@@ -2125,7 +2153,9 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
     echo "deploy_result=rollback_failed"
     exit 3
   fi
-  clear_dirty || true
+  # The marker stays until restart_stack has converged. Clearing it here would
+  # hide a restored tree whose containers are still the candidate, including
+  # when this process is killed before that converge.
 else
   if [ -f "$BUNDLE_DIRTY" ]; then
     err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
@@ -2716,33 +2746,46 @@ if [ "$MIGRATION_OK" = "1" ]; then
     fi
     log "deploy healthy on ${NEW_IMAGE}"
     if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+      clear_dirty || true
       finish rolled_back "$NEW_IMAGE" 2
     fi
     finish deployed "$NEW_IMAGE" 0
   fi
 fi
 
-# --- 6. unhealthy -> restore the bundle, then roll back the image ---------
+# --- 6. unhealthy -> hold the candidate, or restore then roll back --------
 if [ "$RESTORE_BUNDLE" = 1 ]; then
   err "requested rollback failed; refusing to pair its restored bundle with another image"
   echo "deploy_result=rollback_failed"
   exit 3
 fi
 guard_cutover_recovery
-# Never put the old compose under the candidate after a committed or uncertain
-# migration, even when the previous image would subsequently be refused.
+# Hold BEFORE restore_previous_bundle. With the host tar staged, the snapshot
+# includes ENV_FILE and daemon.env from before set_image. Restoring it, or
+# letting the EXIT trap restore it, would put the previous image over data this
+# candidate already committed and then clear the marker on that split.
 if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
-  refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
+  hold_candidate_release "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
+fi
+if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
+  hold_candidate_release "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command)"
+fi
+if [ -z "$PREV_IMAGE" ]; then
+  HOLD_CANDIDATE=1
+  err "no previous image recorded; cannot roll back automatically"
+  echo "deploy_result=failed_no_rollback_target"
+  exit 3
+fi
+# The failed candidate may have migrated (or begun migrating) the data while it
+# booted: decide before any restore, so a layout refusal keeps the candidate.
+LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"; then
+  hold_candidate_release "${PREV_IMAGE}"
 fi
 if [ "${MIGRATION_OK:-1}" = "1" ]; then
   err "new image did not become acceptable; rolling back"
 else
   err "the storage migration did not complete; restoring the bundle and checking whether the previous image may start"
-fi
-if [ -z "$PREV_IMAGE" ]; then
-  err "no previous image recorded; cannot roll back automatically"
-  echo "deploy_result=failed_no_rollback_target"
-  exit 3
 fi
 # Config first, then the image: converging the previous image against the NEW
 # compose file is what left 2026-08's rollbacks running a config prod had never
@@ -2760,20 +2803,8 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     echo "deploy_result=rollback_failed"
     exit 3
   fi
-  clear_dirty || true
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
-fi
-# A committed or unverifiable move cannot safely start the previous image.
-# The snapshot step 3c took is the rollback point.
-if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
-  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command)"
-fi
-# The failed candidate may have migrated (or begun migrating) the data while it
-# booted: re-check before the previous image starts on it.
-LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"; then
-  refuse_on_layout "${PREV_IMAGE}"
 fi
 if ! set_image "$PREV_IMAGE"; then
   err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"
@@ -2802,6 +2833,7 @@ fi
 if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
   discard_candidate_harness
+  clear_dirty || true
   finish rolled_back "$PREV_IMAGE" 2
 fi
 
