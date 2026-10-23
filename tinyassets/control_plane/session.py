@@ -23,7 +23,8 @@ selects how the turn executes:
   turn is never blocked and the child's lineage is its activity record.
 
 The executors underneath (the served writer turn, the workflow agent turn)
-are C9's one loop in waiting; nothing starts them except this function.
+remain separate admission/execution paths, tracked as drift in S2 and S3.
+Their merge belongs to shape-convergence task C9 (not owner-daemon-in-box C9).
 """
 
 from __future__ import annotations

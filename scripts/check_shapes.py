@@ -79,6 +79,7 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/claude_provider.py", ""),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
+            ("tinyassets/**/*.py", r"\bclass\s+WorkflowAgentTurn\("),
         ),
         ceiling=1,
     ),
@@ -277,7 +278,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
         r"|class\s+TurnRequestBudget\b)"
     ),
     "S2": (
-        r"\b(?:def\s+(?:session_start|start_agent|make_interactive_agent_turn)\s*\("
+        r"\b(?:def\s+(?:session_start|start_agent|call_background_work_agent|_call_work_agent)\s*\("
         r"|class\s+\w*Admission\b)"
     ),
     "S5": (
