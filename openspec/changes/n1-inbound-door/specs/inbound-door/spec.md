@@ -1,12 +1,22 @@
 ## ADDED Requirements
 
 ### Requirement: One verified ingress maps positively to one box
-The platform SHALL expose one external-event route template, `/hooks/inbound/{binding}`, and SHALL map its opaque binding route ID to one owner, verify only the declared signature/token profile without parsing business content, then wake and forward the raw request to that admitted owner box. Each channel SHALL use an owner-controlled app/subscription with a distinct binding URL; shared app callbacks requiring body recipient selectors are unsupported. Shared code SHALL contain no provider-specific branches, owner-content access or agent routing.
+The platform SHALL expose one external-event route template, `/hooks/inbound/{binding}`. Shared channel apps SHALL be installed by owner OAuth, without owner-created developer apps. The door SHALL read exactly one workspace/tenant/account identity field using a single-scalar JSONPath-like selector in profile data, authenticate that identity and resolve its installation record to one admitted owner box (T5). Missing or ambiguous identity SHALL refuse routing. Generic webhooks and channels without shared apps SHALL retain per-binding callbacks. Shared code SHALL verify declared proofs, wake and forward raw bytes, with no other body-field reads, provider-specific branches, owner-content access, agent routing or channel replies.
 
 #### Scenario: Each supported channel uses the same door
 - **WHEN** Slack, Teams, WhatsApp, connected-account mail or generic webhook delivers a valid event
-- **THEN** the same router verifies its registered profile, derives the owner from the binding and forwards to that owner's box
+- **THEN** the same router verifies its registered profile, derives the owner from the installation identity mapping or per-binding callback and forwards to that owner's box
 - **AND** no channel-specific public ingress or shared event dispatcher is used
+
+#### Scenario: Install, competing owner and uninstall
+- **WHEN** an owner completes OAuth installation of the shared channel app
+- **THEN** installation authority atomically writes and publishes the app-scoped identity-to-owner mapping; another owner's attempt for the same workspace/tenant/account is refused and the first owner keeps it until disconnect
+- **AND** uninstall removes the mapping, invalidates cached revisions, revokes installation credentials and notifies the box with retry on failure; the shared app secret and other installations remain intact
+
+#### Scenario: Identity is the only body field read by the door
+- **WHEN** a shared-app event contains its declared identity and message or caller-supplied owner/box fields
+- **THEN** only the one profile-selected identity is extracted, authenticated by the signed body or verified identity claim and mapped to the installed owner; other fields cannot affect routing
+- **AND** selectors with wildcards, filters, expressions or multiple matches are refused; raw bytes reach the box unchanged
 
 #### Scenario: Invalid proof or substituted owner
 - **WHEN** proof is forged, stale, ambiguous, or the caller substitutes another owner/box
@@ -27,7 +37,7 @@ The platform SHALL expose one external-event route template, `/hooks/inbound/{bi
 
 #### Scenario: Awake box during control-plane outage
 - **WHEN** the routing snapshot is installed and the box is awake but control-plane lookups and lifecycle RPCs are unavailable
-- **THEN** URL-capability and pinned-public-key profiles still verify and forward
+- **THEN** URL-capability and pinned-public-key profiles still verify and forward using the same pure verifier module as the broker; only secret lookup is broker-side
 - **AND** secret-dependent HMAC/token profiles require broker `INBOUND_VERIFY` and return retryable 503 without forwarding if it is unavailable; this is the explicit T1 exception needed to retain broker-only secret custody
 
 ### Requirement: Accepted events enter session start inside the box
@@ -75,8 +85,17 @@ Connector packages SHALL perform channel parsing, subscriptions, local routing a
 
 #### Scenario: Owner-scoped verification custody and pinned keys
 - **WHEN** a binding profile references credentials or public verification keys
-- **THEN** its credential reference resolves only in that binding owner's broker custody, rejecting foreign references at registration and verification
-- **AND** public keys are pinned through the bound box relay; shared services perform no key fetch or refresh and reject unsupported profiles, expired keys and request-supplied key URLs
+- **THEN** per-binding credential references resolve only in that owner's broker custody, rejecting foreign references; shared-app signing secrets are platform-held in broker custody and bound only by platform installation authority
+- **AND** public keys are pinned through the bound box relay; shared services perform no key fetch or refresh and reject unsupported profiles and request-supplied key URLs; unknown or expired keys return retryable 503 `verification_keys_unavailable` without forwarding
+
+#### Scenario: Key rotation while the box sleeps
+- **WHEN** a provider rotates its public verification keys while the box sleeps
+- **THEN** the connector's pre-scheduled C2 timed wake refreshes and republishes pinned keys within the provider's rotation lead time and before expiry, without requiring a verified inbound event or an online host
+- **AND** an unknown-key delivery receives retryable 503; redelivery succeeds after refresh, with no shared key fetcher and only `(owner, next_wake_at)` in T7
+
+#### Scenario: HMAC header representation is data
+- **WHEN** channel profiles use different HMAC signature encodings or prefixes
+- **THEN** the same pure verifier uses profile-declared hex/base64 encoding and literal prefix (such as `v0=` or `sha256=`), with no provider-specific code
 
 #### Scenario: Mail notification and reply
 - **WHEN** the owner's connected mail subscription delivers a verified notification
