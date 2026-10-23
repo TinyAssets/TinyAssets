@@ -455,11 +455,37 @@ _provider: AuthProvider | None = None
 
 
 def _get_provider() -> AuthProvider:
-    """Get or create the global auth provider."""
+    """Get or create the global auth provider.
+
+    An owner box has no provider. The router already authenticated the caller;
+    action-scope checks use :func:`_action_scope_mode` and must not land here.
+    """
     global _provider
     if _provider is None:
+        from tinyassets.owner_runtime import in_owner_box
+
+        if in_owner_box():
+            raise RuntimeError(
+                "an owner box has no auth provider; the router authenticated this request"
+            )
         _provider = create_provider()
     return _provider
+
+
+def _action_scope_mode() -> tuple[bool, bool]:
+    """Return ``(auth_required, resolve_always)`` for one action-scope check.
+
+    Inside an owner box this is the production resolve-always posture on the
+    router-authenticated or engine-bound Identity, and it does not construct a
+    provider or read ``UNIVERSE_SERVER_AUTH`` / ``UNIVERSE_SERVER_DEV_USER``.
+    Outside the box, the configured provider still decides.
+    """
+    from tinyassets.owner_runtime import in_owner_box
+
+    if in_owner_box():
+        return False, True
+    provider = _get_provider()
+    return provider.is_auth_required(), provider.resolve_always_writes()
 
 
 def set_provider(provider: AuthProvider) -> None:
@@ -1442,9 +1468,7 @@ def require_action_scope(
     """Authorize one internal dispatch action against its named OAuth scope."""
 
     identity = current_identity()
-    provider = _get_provider()
-    auth_required = provider.is_auth_required()
-    resolve_always = provider.resolve_always_writes()
+    auth_required, resolve_always = _action_scope_mode()
 
     # Dev / optional modes: no scope enforcement (unchanged).
     if not auth_required and not resolve_always:
