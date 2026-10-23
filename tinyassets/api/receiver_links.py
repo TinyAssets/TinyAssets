@@ -23,12 +23,14 @@ def _principal(*, write):
         raise store.ReceiverAccessDenied()
     if not identity.can(scope).allowed:
         # Match the canonical dispatcher's WorkOS coarse-grant compatibility;
-        # strict OAuth identities still require the exact named scope.
-        from tinyassets.auth.middleware import _get_provider
+        # strict OAuth identities still require the exact named scope. An owner
+        # box applies that resolve-always check on the bound Identity and does
+        # not construct a local AuthProvider.
+        from tinyassets.auth.middleware import _action_scope_mode
 
-        provider = _get_provider()
-        if not (provider.resolve_always_writes() and not provider.is_auth_required()
-                and ("write" if write else "read") in identity.capabilities):
+        auth_required, resolve_always = _action_scope_mode()
+        effect = "write" if write else "read"
+        if not (resolve_always and not auth_required and effect in identity.capabilities):
             raise store.ReceiverAccessDenied()
     return identity.user_id
 
