@@ -332,7 +332,7 @@ def test_unreadable_cutover_state_cannot_fall_through_to_rollback(box, receipt, 
     assert (box.runtime / "compose.yml").read_bytes() == expected
 
 
-def test_restart_stack_drops_stopped_names_and_starts_the_broker_first():
+def test_restart_stack_removes_services_before_one_compose_up():
     script = (REPO / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8")
     start = script.index("restart_stack() {")
     body = script[start:script.index("\n# Compose recreates a container", start)]
@@ -340,11 +340,14 @@ def test_restart_stack_drops_stopped_names_and_starts_the_broker_first():
         body.index('systemctl stop "$UNIT"'),
         body.index('docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"'),
         body.index("docker stop tinyassets-broker"),
-        body.index('docker rm -f "$DAEMON_CONTAINER" tinyassets-broker'),
-        body.index('--timeout "$MAX_DAEMON_STOP_GRACE_S" broker;'),
-        body.index('--timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs;'),
+        body.index("rm -f -s broker daemon cloudflared logs"),
+        body.index('up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs'),
     ]
     assert positions == sorted(positions)
+    assert body.count(
+        'up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs'
+    ) == 1
+    assert 'up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" broker' not in body
     temps = script[script.index("remove_compose_temp_daemons() {"):
                    script.index("\n# `up -d` does NOT recreate")]
     assert "tinyassets-broker" in temps

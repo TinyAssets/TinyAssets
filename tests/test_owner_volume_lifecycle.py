@@ -26,7 +26,8 @@ class Images:
         self.fail_upload = False
 
     @contextmanager
-    def operation(self, uid, *, blocking=True):
+    def operation(self, uid, *, blocking=True, shared=False):
+        del shared
         if not self.locks[uid].acquire(blocking=blocking):
             raise BlockingIOError("volume operation in progress")
         try:

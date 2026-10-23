@@ -893,19 +893,14 @@ restart_stack() {
     docker stop tinyassets-broker >/dev/null 2>&1 || true
   fi
   # A stopped container id can disappear while compose recreates it (autoheal
-  # or the unit). Remove the names first so `up -d` creates them again.
-  docker rm -f "$DAEMON_CONTAINER" tinyassets-broker >/dev/null 2>&1 || true
+  # or the unit). Remove the service containers first so the following
+  # converge creates them again. Compose starts broker from the daemon's
+  # depends_on; broker_bootstrap waits until that broker finishes registering.
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+    rm -f -s broker daemon cloudflared logs >/dev/null 2>&1 || true
   started="$SECONDS"
-  # The broker must finish BrokerRegistration.ready() before the daemon's
-  # bootstrap. Start it alone, then the daemon and sidecars.
-  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
-        --timeout "$MAX_DAEMON_STOP_GRACE_S" broker; then
-    elapsed=$((SECONDS - started))
-    err "docker compose up -d broker failed after ${elapsed}s"
-    return 1
-  fi
-  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
-        --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
+  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+        up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
     elapsed=$((SECONDS - started))
     err "docker compose up -d failed after ${elapsed}s"
     return 1
