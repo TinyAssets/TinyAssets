@@ -1921,7 +1921,7 @@ def _database_target(database: str, table: str, placement: str) -> str:
 def _current_table_ddl(database, table, source, legacy_ddl):
     """Carry legacy rows into the storage-owned layout during stopped cutover.
 
-    Column order from historical ADD COLUMN runs is not a runtime layout.
+    Historical ADD COLUMN order is accepted at runtime and normalized here.
     Copy by name into the current declaration; never silently discard an
     unknown column. Missing current columns receive their declared defaults.
     """
@@ -1936,12 +1936,11 @@ def _current_table_ddl(database, table, source, legacy_ddl):
         model.execute(declaration)
         columns = list(model.execute(f'PRAGMA table_info({_quoted(table)})'))
         expected = {row[1] for row in columns}
-        required = {row[1] for row in columns if row[3] and row[4] is None}
+        required = {row[1] for row in columns if (row[3] or row[5]) and row[4] is None}
     existing = {row[1] for row in source.execute(f'PRAGMA table_xinfo({_quoted(table)})')}
     if required - existing:
-        # Older partial stores have no values for these facts. Preserve their
-        # schema verbatim; runtime validation must not manufacture those facts.
-        return legacy_ddl
+        raise RuntimeError(
+            f"cutover missing required columns in {table}: {sorted(required - existing)}")
     if existing - expected:
         raise RuntimeError(f"cutover would lose columns in {table}: {sorted(existing - expected)}")
     return declaration
@@ -1996,7 +1995,9 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
                     legacy_tombstones = (database, table) == (
                         ".tinyassets.db", "deleted_principals")
                     if legacy_tombstones:
-                        ddl = "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)"
+                        from tinyassets.storage.deletion_schema import TABLES as erasures
+
+                        ddl = erasures["deleted_principals"]
                     else:
                         ddl = _current_table_ddl(database, table, source, ddl)
                     destination.execute(ddl)

@@ -10,11 +10,11 @@ from tinyassets.sqlite_schema import SchemaDrift
 from tinyassets.storage import schema
 
 
-def test_daemon_owns_no_tables_and_each_declaration_has_one_home():
+def test_application_declarations_are_unique_and_in_census():
     source = Path(__file__).resolve().parents[1] / "tinyassets/daemon_server.py"
     assert "CREATE TABLE" not in source.read_text(encoding="utf-8")
     names = [name for store in schema.STORES for name in store.TABLES]
-    assert len(names) == len(set(names)) == 27
+    assert len(names) == len(set(names)) == 26
     assert set(names) <= migration.CENSUS_RULES[".tinyassets.db"].keys()
 
 
@@ -48,12 +48,15 @@ def test_durable_drift_refuses_without_deleting_rows(tmp_path):
             ("keep", "new")]
 
 
-@pytest.mark.parametrize("table", schema.TABLES)
+@pytest.mark.parametrize("table", [*schema.TABLES, "deleted_principals"])
 def test_cutover_carries_every_live_table_to_its_existing_home(tmp_path, table):
     data, owners, shared = (tmp_path / name for name in ("source", "owners", "shared"))
     data.mkdir()
     with sqlite3.connect(data / ".tinyassets.db") as db:
-        db.execute(schema.TABLES[table])
+        if table == "deleted_principals":
+            db.executescript((Path(__file__).parent / "fixtures/pre_s10_schema.sql").read_text())
+        else:
+            db.execute(schema.TABLES[table])
         columns = list(db.execute(f'PRAGMA table_info("{table}")'))
         values = {col[1]: (3 if col[1] in {"expires_at", "revoked_at"} else
                           1 if col[2] in {"INTEGER", "REAL"} else "preserved:" + col[1])
@@ -117,6 +120,102 @@ def test_cutover_normalizes_historical_column_order_and_preserves_values(tmp_pat
         ensure_table(db, schema.TABLES["gate_claims"], kind="durable")
         assert db.execute("SELECT claim_id, conformance_pack_id FROM gate_claims").fetchall() == [
             ("claim", "pack")]
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_previous_release_opens_and_preserves_every_row(tmp_path, historical):
+    # Frozen pre-PR CREATE statements, not the implementation under test.
+    ddl = (Path(__file__).parent / "fixtures/pre_s10_schema.sql").read_text()
+    if historical:
+        ddl = ddl.replace("        skills_json TEXT NOT NULL DEFAULT '[]',\n", "")
+        ddl = ddl.replace("        conformance_pack_id TEXT NOT NULL DEFAULT '',\n", "")
+    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
+        db.executescript(ddl)
+        if historical:
+            db.execute("ALTER TABLE branch_definitions ADD COLUMN skills_json "
+                       "TEXT NOT NULL DEFAULT '[]'")
+            db.execute("ALTER TABLE gate_claims ADD COLUMN conformance_pack_id "
+                       "TEXT NOT NULL DEFAULT ''")
+        # Pre-PR ADD COLUMN statements, frozen independently of schema.TABLES.
+        # The fresh-release path and the accumulated release history differ.
+        branch_columns = [
+            "goal_id TEXT", "visibility TEXT NOT NULL DEFAULT 'public'",
+            "default_llm_policy_json TEXT", "concurrency_budget INTEGER",
+            "fork_from TEXT DEFAULT NULL",
+        ]
+        goal_columns = [
+            "gate_ladder_json TEXT NOT NULL DEFAULT '[]'",
+            "branch_protocol_json TEXT NOT NULL DEFAULT '[]'",
+            "canonical_branch_version_id TEXT DEFAULT NULL",
+            "canonical_branch_history_json TEXT NOT NULL DEFAULT '[]'",
+            "auto_canonical_via_leaderboard INTEGER NOT NULL DEFAULT 0",
+            "min_completed_runs_for_canonical INTEGER NOT NULL DEFAULT 5",
+            "selector_branch_version_id TEXT DEFAULT NULL",
+        ]
+        if historical:
+            branch_columns.insert(2, branch_columns.pop())
+            goal_columns.append(goal_columns.pop(1))
+        for table, columns in (("branch_definitions", branch_columns), ("goals", goal_columns)):
+            for column in columns:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+        snapshots = {}
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        for table in tables:
+            columns = list(db.execute(f'PRAGMA table_info("{table}")'))
+            values = {c[1]: (3 if c[1] in {"expires_at", "revoked_at"} else
+                             1 if c[2] in {"INTEGER", "REAL"} else "retained:" + c[1])
+                      for c in columns}
+            # No canonical backfill before a real branch has been selected.
+            if "canonical_branch_version_id" in values:
+                values["canonical_branch_version_id"] = None
+            names = ",".join('"' + name + '"' for name in values)
+            db.execute(f'INSERT INTO "{table}" ({names}) VALUES (' +
+                       ",".join("?" for _ in values) + ")", tuple(values.values()))
+            snapshots[table] = (names, tuple(values.values()))
+    for _ in range(2):
+        schema._AUTHOR_SERVER_INITIALIZED.discard(str(tmp_path / ".tinyassets.db"))
+        schema.initialize_author_server(tmp_path)
+        with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
+            for table, (names, row) in snapshots.items():
+                assert db.execute(f'SELECT {names} FROM "{table}"').fetchall() == [row]
+
+
+def test_cutover_missing_required_column_refuses_before_publication(tmp_path):
+    with sqlite3.connect(":memory:") as db:
+        db.execute("CREATE TABLE universe_notes (note_id TEXT PRIMARY KEY)")
+        with pytest.raises(RuntimeError, match="missing required columns"):
+            migration._current_table_ddl(".tinyassets.db", "universe_notes", db,
+                                         "CREATE TABLE universe_notes (note_id TEXT PRIMARY KEY)")
+
+
+def test_s10_probe_follows_relocated_declarations():
+    from scripts.check_shapes import ROOT, SHAPES, old_count
+
+    assert old_count(SHAPES["S10"], ROOT) == 27
+
+
+def test_owner_initialization_does_not_create_platform_tombstones(tmp_path):
+    path = schema.initialize_author_server(tmp_path)
+    with sqlite3.connect(path) as db:
+        assert not db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE name='deleted_principals'").fetchall()
+    source = Path(__file__).resolve().parents[1] / "tinyassets/account_deletion.py"
+    assert "def write_tombstone" not in source.read_text()
+    ingress = source.with_name("owner_ingress.py").read_text()
+    assert "/_box/account/delete" not in ingress
+
+
+def test_canonical_backfill_refuses_invalid_rows(tmp_path):
+    # A corrupt legacy source must be reported, not silently skipped.
+    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
+        db.execute(schema.TABLES["goals"].replace("author      TEXT NOT NULL", "author      TEXT"))
+        db.execute("INSERT INTO goals (goal_id, name, author, created_at, updated_at, "
+                   "canonical_branch_version_id) VALUES ('goal', 'goal', NULL, 1, 1, 'branch')")
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+        schema.initialize_author_server(tmp_path)
+    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
+        assert db.execute("SELECT goal_id, author FROM goals").fetchall() == [("goal", None)]
 
 
 pytestmark = pytest.mark.verifies("owner-daemon-in-box:T2")

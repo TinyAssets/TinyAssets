@@ -105,7 +105,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/commons_catalog.py",
     "tinyassets/daemon_brain.py",
     "tinyassets/daemon_server.py",
-    "tinyassets/storage/schema.py",
     "tinyassets/effectors/wiki_write_back.py",
     "tinyassets/engine_admissions.py",
     "tinyassets/gate_events/store.py",

@@ -479,14 +479,18 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         INSERT INTO owner_lease VALUES (93);
     """)
     _sql(data / '.tinyassets.db', """
-        CREATE TABLE universes (id TEXT);
-        INSERT INTO universes VALUES ('a1'), ('never-admitted');
+        CREATE TABLE universes (universe_id TEXT, display_name TEXT DEFAULT 'name',
+            host_path TEXT DEFAULT 'path', created_at REAL DEFAULT 1);
+        INSERT INTO universes (universe_id) VALUES ('a1'), ('never-admitted');
         CREATE TABLE external_agent_job_receipts (owner_user_id TEXT);
         INSERT INTO external_agent_job_receipts VALUES ('alice');
-        CREATE TABLE author_definitions (id TEXT);
-        INSERT INTO author_definitions VALUES ('public-definition');
-        CREATE TABLE user_accounts (id TEXT);
-        INSERT INTO user_accounts VALUES ('router-identity');
+        CREATE TABLE author_definitions (author_id TEXT, display_name TEXT DEFAULT 'name',
+            soul_text TEXT DEFAULT 'soul', soul_hash TEXT DEFAULT 'hash',
+            created_at REAL DEFAULT 1);
+        INSERT INTO author_definitions (author_id) VALUES ('public-definition');
+        CREATE TABLE user_accounts (user_id TEXT, username TEXT DEFAULT 'username',
+            display_name TEXT DEFAULT 'name', created_at REAL DEFAULT 1, updated_at REAL DEFAULT 1);
+        INSERT INTO user_accounts (user_id) VALUES ('router-identity');
     """)
     (data / 'never-admitted').mkdir()
     (data / 'never-admitted/old').write_text('synthetic discarded file')
@@ -597,7 +601,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     with closing(sqlite3.connect(data / '.tinyassets.db')) as db:
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == [
             ('user_accounts',)]
-        assert db.execute('SELECT id FROM user_accounts').fetchall() == [('router-identity',)]
+        assert db.execute('SELECT user_id FROM user_accounts').fetchall() == [('router-identity',)]
     assert (contents(store) / '300001/runs/run-a.jsonl').read_text() == 'owned transcript'
     assert not (data / 'runs').exists()
     assert not home.exists()
@@ -621,7 +625,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         assert db.execute('SELECT * FROM hook_owners ORDER BY owner').fetchall() == [
             ('hash-a', 'alice'), ('hash-b', 'bob')]
     with closing(sqlite3.connect(data / '.published/.tinyassets.db')) as db:
-        assert db.execute('SELECT id FROM author_definitions').fetchall() == [
+        assert db.execute('SELECT author_id FROM author_definitions').fetchall() == [
             ('public-definition',)]
     assert not (data / '.platform/credential-vaults').exists()
     with closing(sqlite3.connect(data / '.broker/outbound.db')) as db:

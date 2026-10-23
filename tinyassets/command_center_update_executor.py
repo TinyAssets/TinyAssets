@@ -9,7 +9,6 @@ afterwards with a durable outbox. No multi-file atomic-write claim is made.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
@@ -187,11 +186,6 @@ def _authority(conn, base, owner, uid):
     row = conn.execute("SELECT owner_id FROM universe_owner WHERE universe_id=?", (uid,)).fetchone()
     if row is None or row[0] != owner:
         raise PermissionError("recipient ownership changed")
-    if conn.execute(
-        "SELECT 1 FROM deleted_principals WHERE founder_sub=?",
-        (hashlib.sha256(owner.strip().encode()).hexdigest(),),
-    ).fetchone():
-        raise PermissionError("recipient owner unavailable")
 
 
 def _quota_inputs(conn, owner):

@@ -37,11 +37,16 @@ def _declared(sql):
 
 
 def ensure_table(conn: sqlite3.Connection, sql: str, *,
-                 kind: Literal["ephemeral", "durable"]) -> None:
+                 kind: Literal["ephemeral", "durable"],
+                 append_history: tuple[str, ...] = ()) -> None:
     """Create/check one table without committing the caller's transaction.
 
     Column order, names, types, nullability, defaults, keys and generated-column
     flags must match. Index/constraint migrations remain the store's concern.
+    append_history declares columns introduced by historical ADD COLUMNs.
+    Their physical ordinal can vary across release histories; all their other
+    attributes must match, as must the order of the original columns. This
+    accepts those existing layouts without rebuilding a durable table.
     """
     if kind not in {"ephemeral", "durable"}:
         raise ValueError("table kind must be ephemeral or durable")
@@ -49,7 +54,13 @@ def ensure_table(conn: sqlite3.Connection, sql: str, *,
     conn.execute("SAVEPOINT declared_table")
     try:
         found = _columns(conn, name)
-        if found and found != declared:
+        def layout(columns):
+            original = tuple(row[1:] for row in columns if row[1] not in append_history)
+            appended = tuple(sorted(row[1:] for row in columns if row[1] in append_history))
+            return original, appended
+
+        matches = layout(found) == layout(declared) if append_history else found == declared
+        if found and not matches:
             if kind == "durable":
                 raise SchemaDrift(f"durable table {name!r} has schema drift; migration required")
             quoted = '"' + name.replace('"', '""') + '"'

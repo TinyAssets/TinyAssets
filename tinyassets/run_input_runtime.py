@@ -30,7 +30,6 @@ from tinyassets.scoped_reset import (
 )
 from tinyassets.storage import _connect as author_connection
 from tinyassets.storage import run_input_admissions as admissions
-from tinyassets.storage.current_home import check_principal_not_deleted
 from tinyassets.storage.run_execution_lock import try_run_execution_lock
 
 logger = logging.getLogger(__name__)
@@ -138,7 +137,6 @@ def _work_under_maintenance_barrier(base, run_id, prepare):
         try:
             with author_connection(base) as authority:
                 authority.execute("BEGIN IMMEDIATE")
-                check_principal_not_deleted(authority, seed["owner_id"])
                 with runs._connect(base) as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     guard.require_held(conn)

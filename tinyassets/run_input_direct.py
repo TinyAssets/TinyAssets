@@ -13,9 +13,6 @@ from tinyassets.run_input_runtime import PreparedRunExecution
 
 
 def _source_authority(author_conn, *, owner, universe, branch_id):
-    from tinyassets.storage.current_home import check_principal_not_deleted
-
-    check_principal_not_deleted(author_conn, owner)
     if not author_conn.execute(
         "SELECT 1 FROM founder_home h JOIN universe_acl a ON a.universe_id=h.universe_id "
         "AND a.actor_id=h.founder_sub WHERE h.founder_sub=? AND h.universe_id=? "

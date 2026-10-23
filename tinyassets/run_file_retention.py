@@ -10,7 +10,6 @@ from pathlib import Path
 
 from tinyassets import runs
 from tinyassets.run_file_cleanup import cleanup_file_operation
-from tinyassets.run_file_erasure import reconcile_deleted_file_operation
 from tinyassets.scoped_reset import _assert_recovery_state_is_clean, acquire_maintenance_barrier
 from tinyassets.storage import run_files as store
 from tinyassets.storage.run_file_lock import try_file_operation_lock
@@ -90,8 +89,6 @@ def reconcile_run_files(base, *, after_operation_id="", limit=32):
             ]
         for operation_id in operations:
             try:
-                if reconcile_deleted_file_operation(base, operation_id):
-                    continue
                 if _expire_operation(base, operation_id):
                     cleanup_file_operation(base, operation_id=operation_id)
             except Exception:  # One corrupt/deferred operation must not starve siblings.

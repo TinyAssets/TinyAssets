@@ -112,3 +112,16 @@ def test_session_declaration_explains_ephemeral_signout():
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')
+
+
+@pytest.mark.parametrize("actual", ["later TEXT", "later INTEGER DEFAULT 2",
+                                    "later INTEGER NOT NULL"])
+def test_append_history_still_refuses_changed_attributes(actual):
+    from tinyassets.sqlite_schema import SchemaDrift, ensure_table
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"CREATE TABLE records (id TEXT PRIMARY KEY, {actual})")
+        with pytest.raises(SchemaDrift):
+            ensure_table(conn, "CREATE TABLE IF NOT EXISTS records "
+                         "(id TEXT PRIMARY KEY, later INTEGER)", kind="durable",
+                         append_history=("later",))
