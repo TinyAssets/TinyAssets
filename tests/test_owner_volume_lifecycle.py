@@ -1088,11 +1088,11 @@ if (copy !== expected) {
 }
 if (!src.includes("expected_generation: catalog.volume_generation")) process.exit(3);
 """
-    result = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True,
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(["node", "-e", script], cwd=root, capture_output=True,
                             text=True, check=False)
     assert result.returncode == 0, result.stderr + result.stdout
-    page = (Path(__file__).resolve().parents[1] / "tinyassets/onboarding/app.html").read_text(
-        encoding="utf-8")
+    page = (root / "tinyassets/onboarding/app.html").read_text(encoding="utf-8")
     assert 'id="btn-save-restore-point"' in page
     assert 'id="restore-points"' in page
 
