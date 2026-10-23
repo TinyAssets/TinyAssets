@@ -264,6 +264,8 @@ class OwnerVolumes:
             snapshot_id = snapshot_id or uuid.uuid4().hex
             if not re.fullmatch(r"[a-f0-9]{32}", snapshot_id):
                 raise VolumeError("snapshot reference is required")
+            if not self._image(uid).is_file():
+                raise VolumeError("local image is absent")
             clone = self.store / f".{uid}.clone"
             packed = self.store / f".{uid}.gz"
             readback = self.store / f".{uid}.readback"

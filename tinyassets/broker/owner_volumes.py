@@ -16,12 +16,19 @@ from contextlib import closing, contextmanager
 COLD_AFTER = 7 * 86400
 
 
+def _add_column(db, table, column, ddl):
+    present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+    if column not in present:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def schema(db):
     db.execute("CREATE TABLE IF NOT EXISTS owner_volumes ("
                "principal TEXT PRIMARY KEY NOT NULL, uid INTEGER NOT NULL UNIQUE, "
                "volume_generation INTEGER NOT NULL CHECK(volume_generation > 0), "
                "snapshot_id TEXT, snapshot_sha256 TEXT, work TEXT, "
                "local INTEGER NOT NULL DEFAULT 1 CHECK(local IN (0,1)), asleep_at REAL, "
+               "rewind_generation INTEGER, "
                "CHECK((snapshot_id IS NULL) = (snapshot_sha256 IS NULL)))")
     db.execute("CREATE TRIGGER IF NOT EXISTS permanent_volume_binding "
                "BEFORE UPDATE OF principal, uid ON owner_volumes BEGIN "
@@ -32,7 +39,9 @@ def schema(db):
     db.execute("CREATE TABLE IF NOT EXISTS owner_snapshots ("
                "sequence INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL, "
                "snapshot_id TEXT NOT NULL UNIQUE, snapshot_sha256 TEXT NOT NULL, "
-               "volume_generation INTEGER NOT NULL)")
+               "volume_generation INTEGER NOT NULL, published_at REAL)")
+    _add_column(db, "owner_volumes", "rewind_generation", "INTEGER")
+    _add_column(db, "owner_snapshots", "published_at", "REAL")
 
 
 def provision(db, owner, uid):
@@ -52,7 +61,7 @@ def transaction(identities, owner, *, active=True):
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
             "SELECT v.uid,v.volume_generation,v.snapshot_id,v.snapshot_sha256,v.work,"
-            "v.local,v.asleep_at "
+            "v.local,v.asleep_at,v.rewind_generation "
             "FROM owner_volumes v JOIN owner_identities i "
             "ON i.principal=v.principal AND i.machine_id=v.uid WHERE v.principal=?",
             (owner,)).fetchone()
@@ -65,7 +74,7 @@ def transaction(identities, owner, *, active=True):
             if admission(db, owner).state not in {"admitted", "suspended"}:
                 raise PermissionError("owner admission is erased")
         record = dict(zip(("uid", "volume_generation", "snapshot_id", "snapshot_sha256",
-                           "work", "local", "asleep_at"), row))
+                           "work", "local", "asleep_at", "rewind_generation"), row))
         record["local"] = bool(record["local"])
         record["work"] = json.loads(record["work"]) if record["work"] else None
         yield db, record
@@ -114,10 +123,16 @@ def dispatch(identities, document):
                                 document["arguments"])
     fields = {"binding": set(), "created": set(), "sleep": set(),
               "publish": {"snapshot_id", "sha256"},
-              "restore": {"snapshot_id"}, "restored": {"snapshot_id"}, "pending": set(),
+              "restore": {"snapshot_id"}, "continue_restore": set(),
+              "restored": {"snapshot_id"}, "pending": set(),
               "snapshots": set(), "forget": {"snapshot_id"},
               "wake": set(), "evict": set(), "evicted": set(), "erase": set()}
-    if action not in fields or not isinstance(arguments, dict) or set(arguments) != fields[action]:
+    if action == "restore":
+        if (not isinstance(arguments, dict) or "snapshot_id" not in arguments
+                or set(arguments) - {"expected_generation"} != {"snapshot_id"}):
+            raise ValueError("invalid volume lifecycle arguments")
+    elif (action not in fields or not isinstance(arguments, dict)
+            or set(arguments) != fields[action]):
         raise ValueError("invalid volume lifecycle arguments")
     if action == "binding":
         return binding(identities, owner)
@@ -133,8 +148,10 @@ def dispatch(identities, document):
                     "SELECT snapshot_id FROM owner_snapshots WHERE principal=?", (owner,))}
                 if record["snapshot_id"]:
                     released.add(record["snapshot_id"])
-                if work and work.get("snapshot_id"):
-                    released.add(work["snapshot_id"])
+                if work:
+                    for key in ("snapshot_id", "restore_snapshot_id", "pre_snapshot_id"):
+                        if work.get(key):
+                            released.add(work[key])
                 work = {"kind": "erase", "released": sorted(released)}
                 db.execute("DELETE FROM owner_snapshots WHERE principal=?", (owner,))
                 db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL,"
@@ -154,6 +171,8 @@ def dispatch(identities, document):
             record["local"] = False
             work = None
         elif action == "wake":
+            if work and work.get("restore_snapshot_id"):
+                raise PermissionError("restore must complete before wake")
             if (work and work["kind"] not in {"running", "snapshot"}) or not record["local"]:
                 raise PermissionError("volume must be local and committed before wake")
             work = {"kind": "running"}
@@ -173,19 +192,63 @@ def dispatch(identities, document):
             if (not work or work["kind"] != "snapshot"
                     or work["snapshot_id"] != arguments["snapshot_id"]):
                 raise PermissionError("no completed sleep awaiting snapshot")
+            published_at = time.time()
             db.execute("INSERT INTO owner_snapshots "
-                       "(principal,snapshot_id,snapshot_sha256,volume_generation) VALUES (?,?,?,?)",
+                       "(principal,snapshot_id,snapshot_sha256,volume_generation,published_at) "
+                       "VALUES (?,?,?,?,?)",
                        (owner, arguments["snapshot_id"], arguments["sha256"],
-                        record["volume_generation"]))
+                        record["volume_generation"], published_at))
             db.execute("UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=?,asleep_at=? "
                        "WHERE principal=?", (arguments["snapshot_id"], arguments["sha256"],
-                                             time.time(), owner))
-            work = None
+                                             published_at, owner))
+            record.update(snapshot_id=arguments["snapshot_id"],
+                          snapshot_sha256=arguments["sha256"], asleep_at=published_at)
+            if work.get("restore_snapshot_id"):
+                # The pre-restore image is published. Only now may install replace it.
+                work = {"kind": "restore", "phase": "install",
+                        "snapshot_id": work["restore_snapshot_id"],
+                        "sha256": work["restore_sha256"],
+                        "volume_generation": record["volume_generation"] + 1,
+                        "pre_snapshot_id": arguments["snapshot_id"],
+                        "rewind": True}
+            else:
+                work = None
+        elif action == "continue_restore":
+            # The local image is already gone, so there is no current state to publish.
+            if (not work or work.get("kind") != "snapshot"
+                    or "restore_snapshot_id" not in work):
+                raise PermissionError("no pre-restore snapshot to skip")
+            work = {"kind": "restore", "phase": "install",
+                    "snapshot_id": work["restore_snapshot_id"],
+                    "sha256": work["restore_sha256"],
+                    "volume_generation": record["volume_generation"] + 1,
+                    "rewind": False}
         elif action == "restore":
             snapshot_id = arguments["snapshot_id"]
-            if work is not None and work["kind"] == "restore":
+            if "expected_generation" in arguments:
+                expected = arguments["expected_generation"]
+                if type(expected) is not int or expected != record["volume_generation"]:
+                    raise PermissionError("volume generation changed")
+            if work is not None and work.get("kind") == "restore":
                 if work.get("snapshot_id") != snapshot_id:
                     raise PermissionError("another volume operation is pending")
+            elif work is not None and work.get("kind") == "snapshot":
+                # Keep the pending sleep id. Publishing must not be replaced by install.
+                if work.get("restore_snapshot_id") not in (None, snapshot_id):
+                    raise PermissionError("another volume operation is pending")
+                if snapshot_id == record["snapshot_id"]:
+                    sha256 = record["snapshot_sha256"]
+                else:
+                    found = db.execute("SELECT snapshot_sha256 FROM owner_snapshots "
+                                       "WHERE principal=? AND snapshot_id=?",
+                                       (owner, snapshot_id)).fetchone()
+                    if found is None:
+                        raise LookupError("owner snapshot is not retained")
+                    sha256 = found[0]
+                reference(snapshot_id, sha256)
+                work = {**work, "restore_snapshot_id": snapshot_id, "restore_sha256": sha256}
+            elif work not in (None, {"kind": "running"}):
+                raise PermissionError("another volume operation is pending")
             else:
                 if snapshot_id == record["snapshot_id"]:
                     sha256 = record["snapshot_sha256"]
@@ -197,26 +260,40 @@ def dispatch(identities, document):
                         raise LookupError("owner snapshot is not retained")
                     sha256 = found[0]
                 reference(snapshot_id, sha256)
-                work = {"kind": "restore", "snapshot_id": snapshot_id, "sha256": sha256,
-                        "volume_generation": record["volume_generation"] + 1}
+                if record["local"]:
+                    work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex,
+                            "restore_snapshot_id": snapshot_id, "restore_sha256": sha256}
+                else:
+                    work = {"kind": "restore", "phase": "install", "snapshot_id": snapshot_id,
+                            "sha256": sha256, "volume_generation": record["volume_generation"] + 1,
+                            "rewind": False}
         elif action == "restored":
             if (work is None or work["kind"] != "restore"
                     or work["snapshot_id"] != arguments["snapshot_id"]):
                 raise PermissionError("no matching restore awaiting commit")
+            rewind_generation = (work["volume_generation"] if work.get("rewind")
+                                 else record.get("rewind_generation"))
             db.execute("UPDATE owner_volumes SET local=1,asleep_at=NULL,"
-                       "volume_generation=?,snapshot_id=?,snapshot_sha256=? WHERE principal=?",
-                       (work["volume_generation"], work["snapshot_id"], work["sha256"], owner))
+                       "volume_generation=?,snapshot_id=?,snapshot_sha256=?,rewind_generation=? "
+                       "WHERE principal=?",
+                       (work["volume_generation"], work["snapshot_id"], work["sha256"],
+                        rewind_generation, owner))
             record["volume_generation"] = work["volume_generation"]
             record["snapshot_id"] = work["snapshot_id"]
             record["snapshot_sha256"] = work["sha256"]
+            record["rewind_generation"] = rewind_generation
             record["local"], record["asleep_at"] = True, None
             work = None
         elif action == "snapshots":
-            return [dict(zip(("snapshot_id", "sha256"), row)) for row in db.execute(
-                "SELECT snapshot_id,snapshot_sha256 FROM owner_snapshots "
+            return [dict(zip(("snapshot_id", "sha256", "published_at"), row)) for row in db.execute(
+                "SELECT snapshot_id,snapshot_sha256,published_at FROM owner_snapshots "
                 "WHERE principal=? ORDER BY sequence DESC", (owner,))]
         elif action == "forget":
-            if arguments["snapshot_id"] == record["snapshot_id"]:
+            protected = {record["snapshot_id"]}
+            if work:
+                protected.update(work.get(key) for key in (
+                    "snapshot_id", "restore_snapshot_id", "pre_snapshot_id"))
+            if arguments["snapshot_id"] in protected:
                 raise PermissionError("map references this snapshot")
             db.execute("DELETE FROM owner_snapshots WHERE principal=? AND snapshot_id=?",
                        (owner, arguments["snapshot_id"]))

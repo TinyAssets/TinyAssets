@@ -137,6 +137,10 @@ def dispatch_universe(base_path: str | Path, universe_id: str, *,
     claims fence any other process). ``budget`` is a shared one-item counter of
     starts left this tick.
     """
+    from tinyassets.boxes.restore_settle import rewind_paused
+
+    if rewind_paused(base_path):
+        return
     lock = _universe_lock(universe_id)
     if not lock.acquire(blocking=False):
         return

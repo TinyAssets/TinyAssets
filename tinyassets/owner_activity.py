@@ -25,6 +25,8 @@ class Activity:
         self.deleting = False
         self.deletion_only = False
         self.pending_logins = set()
+        self.snapshot_stop = False
+        self.waiters = []
 
     @contextmanager
     def pending_login(self, cancelled):
@@ -93,6 +95,8 @@ class Activity:
                 self.deleting = self.draining = True
             elif snapshot:
                 self.draining = True  # Finish admitted turns; refuse the next turn.
+                self.snapshot_stop = True
+                self._interrupt_waiters()
             elif drain and self.active == 0 and age >= idle:
                 self.draining = True
             if self.draining or (drain and age >= idle):
@@ -101,9 +105,28 @@ class Activity:
                     "draining": self.draining, "revoked": self.revoked,
                     "deleting": self.deleting}
 
+    def waiting(self, operation_id, generation):
+        """A call parked on a turn. Snapshot drain settles it before shutdown."""
+        slot = {"operation_id": operation_id, "volume_generation": generation, "result": None}
+        with self.lock:
+            self.waiters.append(slot)
+            if self.snapshot_stop:
+                slot["result"] = _interrupted(slot)
+        return slot
+
+    def _interrupt_waiters(self):
+        for slot in self.waiters:
+            if slot["result"] is None:
+                slot["result"] = _interrupted(slot)
+
     def deletion_refused(self):
         """Shared deletion is already ledger-fenced before local cleanup runs."""
         self.admit_deletion_only()
+
+
+def _interrupted(slot):
+    return {"error": "interrupted_by_restore", "operation_id": slot["operation_id"],
+            "volume_generation": slot["volume_generation"]}
 
 
 activity = Activity()

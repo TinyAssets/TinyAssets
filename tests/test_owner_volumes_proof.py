@@ -117,6 +117,7 @@ def test_owner_volumes_real_mounts(tmp_path):
         assert "PROOF C10 sparse eviction cold-wake PASS" in result.stdout
         assert "PROOF C10 online block growth cap API-failure token-secrecy PASS" in result.stdout
         assert "PROOF C2 drill map-reference restore PASS" in result.stdout
+        assert "PROOF N6 publish-before-restore PASS" in result.stdout
     finally:
         if created:
             command("docker", "rm", "-f", name)
@@ -475,6 +476,26 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         assert generations == [1, 2, 3]
         result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
         assert result.stdout == "integrated"
+        runtime.exec(uid, ["/bin/sh", "-c", "printf later > /home/owner/content; sync"],
+                     timeout=30)
+        order = []
+        snap, restore_bytes = volumes.snapshot, volumes.restore
+        def ordered_snapshot(*args, **kwargs):
+            order.append("snapshot")
+            return snap(*args, **kwargs)
+        def ordered_restore(*args, **kwargs):
+            assert order == ["snapshot"]
+            order.append("restore")
+            return restore_bytes(*args, **kwargs)
+        volumes.snapshot, volumes.restore = ordered_snapshot, ordered_restore
+        chosen = manager.admission.volume("proof-owner")["snapshot_id"]
+        drive(routing.volumes.restore("proof-owner", chosen))
+        volumes.snapshot, volumes.restore = snap, restore_bytes
+        assert order == ["snapshot", "restore"]
+        drive(routing.wake("proof-owner"))
+        rewound = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
+        assert rewound.stdout == "integrated"
+        print("PROOF N6 publish-before-restore PASS", flush=True)
         from tinyassets.broker.admission import local_mutate
         drive(local_mutate(identities.path, "proof-owner", "erase",
             routing=projection(identities.path)))

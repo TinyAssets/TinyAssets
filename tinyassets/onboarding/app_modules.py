@@ -74,7 +74,8 @@ def shell_source(html_path: Path) -> str:
     for marker, name in (("__TA_MODEL_STREAM__", "model_stream.js"),
                          ("__TA_REALTIME_SESSION__", "realtime_session.js"),
                          ("__TA_SEND_JOURNAL__", "send_journal.js"),
-                         ("__TA_DURABLE_SEND__", "durable_send.js")):
+                         ("__TA_DURABLE_SEND__", "durable_send.js"),
+                         ("__TA_UNDO__", "undo.js")):
         main = main.replace(marker, (MODULE_DIR / name).read_text(encoding="utf-8"))
     return source.replace("__TA_APP_MAIN__", main)
 

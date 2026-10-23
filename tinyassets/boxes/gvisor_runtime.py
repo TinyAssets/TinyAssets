@@ -74,7 +74,8 @@ class GvisorRuntime:
 
     def _config(self, config: dict, *, uid: int, gid: int, volume_mount: dict,
                 volume_generation: int, relay: Path, memory_bytes: int, app_dir: Path | None = None,
-                secret_file: Path | None = None, rootfs: Path | None = None) -> dict:
+                secret_file: Path | None = None, rootfs: Path | None = None,
+                rewind: bool = False) -> dict:
         if memory_bytes not in (1024**3, 2 * 1024**3):
             raise BoxError("box memory must be one of the platform floor sizes")
         if not relay.is_socket():
@@ -94,6 +95,7 @@ class GvisorRuntime:
                 "PATH=/usr/local/bin:/usr/bin:/bin",
                 "HOME=/home/owner",
                 f"TINYASSETS_VOLUME_GENERATION={volume_generation}",
+                *(["TINYASSETS_VOLUME_REWIND=1"] if rewind else []),
                 "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
                 f"UNIVERSE_SERVER_URL={public_url()}",
             ],
@@ -150,7 +152,7 @@ class GvisorRuntime:
     def start(self, uid: int, gid: int, *, relay: Path, memory_bytes: int,
               volume_mount: dict, volume_generation: int,
               app_dir: Path | None = None, secret_file: Path | None = None,
-              rootfs: Path | None = None) -> None:
+              rootfs: Path | None = None, rewind: bool = False) -> None:
         box = self.box_id(uid)
         bundle = self.bundle_root / box
         public_url()  # Refuse before creating a bundle or invoking runsc.
@@ -161,7 +163,7 @@ class GvisorRuntime:
             json.loads(config_path.read_text(encoding="utf-8")),
             uid=uid, gid=gid, volume_mount=volume_mount, volume_generation=volume_generation,
             relay=relay, memory_bytes=memory_bytes,
-            app_dir=app_dir, secret_file=secret_file, rootfs=rootfs,
+            app_dir=app_dir, secret_file=secret_file, rootfs=rootfs, rewind=rewind,
         )
         config_path.write_text(json.dumps(config), encoding="utf-8")
         self._command("run", "--detach", "--bundle", str(bundle), box, timeout=30)

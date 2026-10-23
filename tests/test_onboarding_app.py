@@ -115,6 +115,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/deletion/{key}/{token}",
+        "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
         "/app/account/timezone", "/app/ui-prefs",
         "/app/api/policy", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
         "/app/turn/interrupt", "/app/turn/pending",

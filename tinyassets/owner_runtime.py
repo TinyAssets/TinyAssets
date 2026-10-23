@@ -140,8 +140,12 @@ def start(relay: Path) -> OwnerRuntime:
                      volume_generation=int(os.environ["TINYASSETS_VOLUME_GENERATION"]),
                      relay=relay)
     try:
-        tools._state.verify_volume(int(os.environ["TINYASSETS_VOLUME_GENERATION"]),
-                                   lambda: validate_databases(root))
+        generation = int(os.environ["TINYASSETS_VOLUME_GENERATION"])
+        tools._state.verify_volume(generation, lambda: validate_databases(root))
+        if os.environ.get("TINYASSETS_VOLUME_REWIND") == "1":
+            from tinyassets.boxes.restore_settle import settle_rewind
+
+            settle_rewind(root, generation)
     except BaseException:
         tools.close()
         raise

@@ -112,6 +112,19 @@ def runs_db_path(base_path: str | Path) -> Path:
     return Path(base_path) / ".runs.db"
 
 
+def pause_queued(base_path: str | Path) -> int:
+    """Stop restored queued runs until the owner submits fresh work."""
+    path = runs_db_path(base_path)
+    if not path.is_file():
+        return 0
+    with sqlite3.connect(path, timeout=30.0) as conn:
+        cursor = conn.execute(
+            "UPDATE runs SET status='paused_by_restore', error='paused_by_restore' "
+            "WHERE status='queued'")
+        conn.commit()
+        return cursor.rowcount
+
+
 @contextlib.contextmanager
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db = runs_db_path(base_path)

@@ -97,8 +97,10 @@ class OwnerIngress:
         try:
             gate.__enter__()
         except RuntimeError:
-            return await JSONResponse({"error": "box_draining"}, status_code=503)(
-                scope, receive, proven_send)
+            body = {"error": "box_draining"}
+            if activity.snapshot_stop:
+                body["retry"] = True
+            return await JSONResponse(body, status_code=503)(scope, receive, proven_send)
         # A passive MCP event subscription is not a running turn. Actual MCP
         # calls and detached turns hold their own gate; an idle subscription
         # may reconnect after its box sleeps.
