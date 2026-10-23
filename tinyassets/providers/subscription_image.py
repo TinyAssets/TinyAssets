@@ -12,6 +12,9 @@ LOCKS = Path(__file__).with_name("source_locks")
 
 class ImageInstaller(SubscriptionRuntime):
     def __init__(self, source, root):
+        import threading
+
+        self._local = threading.local()  # SubscriptionRuntime's per-run lease state; never set here.
         self.source = source
         self.cli_login = source.sign_in["cli_login"]
         self.home = root
