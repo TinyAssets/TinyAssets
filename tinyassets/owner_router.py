@@ -165,9 +165,13 @@ class OwnerRouter:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)
         except (OSError, RuntimeError):
-            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
-                scope, receive, send)
+            return await _unavailable()(scope, receive, send)
         await forward(scope, receive, send, identity, route)
+
+
+def _unavailable():
+    return JSONResponse({"error": "owner_box_unavailable"}, status_code=503,
+                        headers={"Retry-After": "5", "Cache-Control": "no-store"})
 
 
 def _public_host() -> bytes:
@@ -207,6 +211,8 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
         async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
             async with client.stream(scope["method"], url, headers=headers,
                                      content=Request(scope, receive).stream()) as response:
+                if response.status_code >= 500:
+                    return await _unavailable()(scope, receive, send)
                 await send({"type": "http.response.start", "status": response.status_code,
                             "headers": _headers(response.headers.raw)})
                 started = True
@@ -226,8 +232,7 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
         return
     except httpx.ConnectError:
         if not cold:
-            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
-                scope, receive, send)
+            return await _unavailable()(scope, receive, send)
         from tinyassets.broker.owner_identities import wake_owner
         from tinyassets.storage import data_dir
 
@@ -235,12 +240,11 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True)
             await run_in_threadpool(wake_owner, data_dir(), principal=identity.user_id)
             route = resolve_box(identity.user_id)
         except (LookupError, OSError, RuntimeError):
-            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
-                scope, receive, send)
+            return await _unavailable()(scope, receive, send)
         # ConnectError occurs before HTTP headers or the request body are sent.
         # Wake replies contain no route: always select the current projection.
         await forward(scope, receive, send, identity, route, cold=False)
     except httpx.HTTPError:
         if started:
             raise  # A truncated stream must never look like a successful response.
-        await JSONResponse({"error": "box_unavailable"}, status_code=503)(scope, receive, send)
+        await _unavailable()(scope, receive, send)
