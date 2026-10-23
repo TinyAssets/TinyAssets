@@ -2,6 +2,7 @@
   // Server-injected config (client_id, AuthKit endpoints, resource). Public values only.
   const CFG = window.__TA_ONBOARDING__ || __TA_ONBOARDING_CONFIG__;
   __TA_MODEL_STREAM__
+  __TA_REALTIME_SESSION__
   const TOKEN_KEY = "ta_access_token";
   const PKCE_KEY = "ta_pkce";
   // Opaque server-side refresh-session handle. Lives in localStorage because the
@@ -1774,7 +1775,7 @@
     // the original one at the bottom" (2026-09-26).
     //
     // A turn THIS page started has already written that line in sendTurn /
-    // sendVoiceTurn / queueTurn, and those know things this does not - the number
+    // queueTurn, and those know things this does not - the number
     // of messages waiting behind the turn, whether the queue failed to save. So
     // this speaks ONLY for a turn the page would otherwise say nothing at all
     // about: another window, a request answered somewhere else, or one still
@@ -1818,8 +1819,7 @@
     setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
-  // Voice owns only speech transport and turn timing. The command center's actual
-  // words still come from MCP.converse through sendVoiceTurn below.
+  // Capture and playback only. A committed transcript is one session turn.
   const VOICE_LABELS={
     unavailable:"Voice transport is temporarily unavailable. Typed chat still works.",
     checking:"Checking this command center's voice capability...",
@@ -2008,12 +2008,12 @@
         if(expired)throw new Error("voice_status_timeout");
         const options={credentials:"same-origin",headers:authHeaders()};
         if(controller)options.signal=controller.signal;
-        let response=await fetch("/app/voice/status",options);
+        let response=await fetch("/app/session/realtime",options);
         if(response.status===401){
           const refreshed=await refreshAccessToken();
           if(expired)throw new Error("voice_status_timeout");
           if(refreshed){
-            options.headers=authHeaders();response=await fetch("/app/voice/status",options);
+            options.headers=authHeaders();response=await fetch("/app/session/realtime",options);
           }
         }
         let doc={};try{doc=await response.json();}catch(_e){}
@@ -2034,19 +2034,14 @@
     async refreshCapability(){
       try{
         const doc=await this._readCapability();
+        this.capability=doc;
         if(doc.available){
-          this.capability=Object.assign({},doc,{mode:"bridge"});this.state="idle";
+          this.capability=Object.assign({},doc,{mode:"session"});this.state="idle";
           this._render();return true;
         }
-        if(doc.state!=="unpowered"&&browserSpeechAvailable()){
-          this.capability=browserSpeechCapability(doc);this.state="idle";
-          this._render("Voice ready using your browser or device speech service.");return true;
-        }
-        this.capability=doc;
         this.state=doc.state==="unpowered"?"unpowered":"incompatible";
-        const detail=doc.state==="unpowered"?voiceFriendlyError(doc.reason):
-          voiceFriendlyError("browser_speech_unsupported");
-        this._render(detail);return false;
+        this._render(voiceFriendlyError(doc.reason||doc.gap||"unsupported"));
+        return false;
       }catch(_error){
         // Browser speech replaces only a missing media bridge. A failed status
         // read cannot prove that a command center has a writer, so keep this closed
@@ -2134,20 +2129,20 @@
       else if(typeof focusCommandCenter === "function") focusCommandCenter();
       this.returnFocus=null;
     },
-    async _session(offerSdp){
+    async _session(media){
       await ensureFreshToken();
       const options={method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({offer_sdp:offerSdp})};
-      let response=await fetch("/app/voice/session",options);
+        body:JSON.stringify({media:media||"audio"})};
+      let response=await fetch("/app/session/realtime",options);
       if(response.status===401 && await refreshAccessToken()){
         options.headers=Object.assign({"Content-Type":"application/json"},authHeaders());
-        response=await fetch("/app/voice/session",options);
+        response=await fetch("/app/session/realtime",options);
       }
       let doc={}; try{doc=await response.json();}catch(_e){}
-      if(!response.ok) throw new Error(doc.error||"voice_session_failed");
-      if(!doc.answer_sdp||doc.protocol!==(CFG.voice&&CFG.voice.protocol))
-        throw new Error("voice_session_invalid");
+      if(!response.ok || doc.admitted===false) throw new Error(doc.gap||doc.error||"unsupported");
+      const decision=RealtimeCapture.admitBeforeCapture(doc, media||"audio");
+      if(!decision.ok) throw new Error(decision.gap||"unsupported");
       return doc;
     },
     async start(){
@@ -2156,15 +2151,14 @@
       this.stoppedWithPending=false;
       this.handledCalls.clear(); this.expectedReply=""; this.reconnectAttempts=0;
       this.state="idle"; this._event("start");
-      if(this.capability&&this.capability.mode==="browser"){
-        try{await this._startBrowser(generation);}
-        catch(error){if(generation===this.epoch)this.fail(error);}
-        return;
-      }
-      try{ await this._connect(generation,false); }
-      catch(error){ if(generation===this.epoch) this.fail(error); }
+      try{
+        if(browserSpeechAvailable()) await this._startBrowser(generation);
+        else await this._connect(generation,false);
+      }catch(error){ if(generation===this.epoch) this.fail(error); }
     },
     async _startBrowser(generation){
+      const media=(this.capability&&this.capability.media)||"audio";
+      await this._session(media);
       const Constructor=browserSpeechConstructor();
       if(typeof Constructor!=="function"||!browserSpeechAvailable())
         throw new Error("browser_speech_unsupported");
@@ -2225,20 +2219,7 @@
     _queueBrowserUtterance(transcript,generation){
       if(generation!==this.epoch||this.browserSubmitting||this.state!=="listening")return;
       const segment=voiceNormalize(transcript).trim();if(!segment)return;
-      const segmentKey=voiceRecognitionKey(segment);
-      if(segmentKey===this.browserDraftLastSegment)return;
-      this.browserDraftLastSegment=segmentKey;
-      this.browserDraftUtterance=[this.browserDraftUtterance,segment]
-        .filter(Boolean).join(" ");
-      clearTimeout(this.browserCommitTimer);
-      this.browserCommitTimer=setTimeout(()=>{
-        this.browserCommitTimer=null;
-        if(generation!==this.epoch||this.browserSubmitting||this.state!=="listening")return;
-        const message=this.browserDraftUtterance;
-        this.browserDraftUtterance="";this.browserDraftLastSegment="";
-        if(message)this._submitBrowserUtterance(message,generation);
-      },900);
-      this._render("Listening... finish your thought.");
+      this._submitBrowserUtterance(segment,generation);
     },
     _submitBrowserUtterance(transcript,generation){
         if(generation!==this.epoch||this.browserSubmitting)return false;
@@ -2255,7 +2236,7 @@
     async _handleBrowserUtterance(message,generation,turnSerial){
       this.state="thinking";this._render();
       try{
-        const reply=await sendVoiceTurn(message);
+        const reply=await commitRealtimeTurn(message);
         if(generation!==this.epoch)return;
         await this._speakBrowser(reply,generation);
       }catch(error){if(generation===this.epoch)this.fail(error);}
@@ -2280,6 +2261,7 @@
       try{window.speechSynthesis.cancel();}catch(_e){}
       if(finish)finish();
       this.browserSubmitting=false;this.state="listening";
+      RealtimeCapture.bargeIn(this.browserTurn);
       this._render("Listening — reply interrupted.");return true;
     },
     _speakBrowser(reply,generation){
@@ -2348,55 +2330,28 @@
       },250);
     },
     async _connect(generation,isReconnect){
-      let stream=null,pc=null,audio=null,dc=null,channelTimer=null;
+      let stream=null;
+      const media=(this.capability&&this.capability.media)||"audio";
       try{
+        const session=await this._session(media);
+        if(generation!==this.epoch) return;
         if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=="function")
           throw new Error("voice_unsupported");
         if(!isReconnect) this._render();
-        try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});}
-        catch(_error){ throw new Error("voice_permission_denied"); }
+        try{
+          stream=await navigator.mediaDevices.getUserMedia({
+            audio:{echoCancellation:true,noiseSuppression:true},
+            video:media==="video"});
+        }catch(_error){ throw new Error("voice_permission_denied"); }
         if(generation!==this.epoch){ this._disposeTransport(null,null,null,stream); return; }
         this.stream=stream;
-        this._armAuthorityChecks(generation);
-        if(!isReconnect) this._event("permission_granted"); else this._render();
-        if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
-        pc=new RTCPeerConnection(); this.pc=pc;
-        audio=document.createElement("audio"); audio.autoplay=true; audio.muted=true; this.audio=audio;
-        pc.addEventListener("track",event=>{ if(event.streams&&event.streams[0]) audio.srcObject=event.streams[0]; });
-        stream.getTracks().forEach(track=>pc.addTrack(track,stream));
-        dc=pc.createDataChannel("tinyassets-voice"); this.dc=dc;
-        dc.addEventListener("message",event=>this.handleServerEvent(event.data));
-        pc.addEventListener("connectionstatechange",()=>{
-          if(generation!==this.epoch) return;
-          if(["failed","disconnected"].includes(pc.connectionState)) this.reconnect(generation);
-        });
-        const opened=new Promise((resolve,reject)=>{
-          channelTimer=setTimeout(()=>reject(new Error("voice_channel_timeout")),10000);
-          dc.addEventListener("open",()=>{clearTimeout(channelTimer);channelTimer=null;resolve();},{once:true});
-          dc.addEventListener("error",()=>{clearTimeout(channelTimer);channelTimer=null;reject(new Error("voice_channel_failed"));},{once:true});
-        });
-        const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
-        if(pc.iceGatheringState!=="complete"){
-          await new Promise((resolve,reject)=>{
-            const changed=()=>{if(pc.iceGatheringState==="complete"){clearTimeout(timer);pc.removeEventListener("icegatheringstatechange",changed);resolve();}};
-            const timer=setTimeout(()=>{pc.removeEventListener("icegatheringstatechange",changed);reject(new Error("voice_ice_timeout"));},5000);
-            pc.addEventListener("icegatheringstatechange",changed);
-          });
-        }
-        const localSdp=pc.localDescription&&pc.localDescription.sdp;
-        if(!localSdp) throw new Error("voice_session_offer_invalid");
-        const session=await this._session(localSdp);
-        if(generation!==this.epoch){ clearTimeout(channelTimer);this._disposeTransport(pc,dc,audio,stream); return; }
-        await pc.setRemoteDescription({type:"answer",sdp:session.answer_sdp});
-        await opened;
-        if(generation!==this.epoch){ clearTimeout(channelTimer);this._disposeTransport(pc,dc,audio,stream); return; }
         this.reconnecting=false; this.reconnectAttempts=0;
         this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
-        this._render(); this._armSessionLimit(session.max_session_seconds);
+        this._render();
+        this._armSessionLimit(session.max_session_seconds);
         this._armAuthorityChecks(generation);
       }catch(error){
-        clearTimeout(channelTimer);
-        this._disposeTransport(pc,dc,audio,stream);
+        this._disposeTransport(null,null,null,stream);
         throw error;
       }
     },
@@ -2430,25 +2385,8 @@
       }
     },
     _send(event){ if(this.dc&&this.dc.readyState==="open") this.dc.send(JSON.stringify(event)); },
-    async handleToolCall(event){
-      const callId=String(event.call_id||"");
-      if(!callId||this.handledCalls.has(callId)||event.name!=="converse") return;
-      let args; try{args=JSON.parse(event.arguments||"{}");}catch(_e){return this.fail(new Error("voice_tool_invalid"));}
-      if(!args||typeof args.message!=="string"||!args.message.trim()) return this.fail(new Error("voice_tool_invalid"));
-      const generation=this.epoch, channel=this.dc;
-      this.handledCalls.add(callId); this.state="thinking"; this._render();
-      try{
-        const reply=await sendVoiceTurn(args.message.trim());
-        // The canonical turn may finish after Stop or after reconnect replaced
-        // the transport. Keep its text result, but never speak it into a newer
-        // media session or let it pre-authorize that session's audio.
-        if(generation!==this.epoch||channel!==this.dc) return;
-        this.expectedReply=reply; this.canonicalResponsePending=true;
-        this.canonicalResponseInterrupted=false;
-        if(this.audio) this.audio.muted=false;
-        this._send({type:"tool_result",call_id:callId,output:reply});
-        this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});
-      }catch(error){ if(generation===this.epoch&&channel===this.dc) this.fail(error); }
+    async handleToolCall(_event){
+      return;
     },
     handleServerEvent(raw){
       let event; try{event=typeof raw==="string"?JSON.parse(raw):raw;}catch(_e){return;}
@@ -2517,7 +2455,7 @@
       if(dc){try{dc.close();}catch(_e){}}
       if(pc){try{pc.close();}catch(_e){}}
       if(audio){try{audio.pause();audio.srcObject=null;}catch(_e){}}
-      if(stream){try{stream.getTracks().forEach(track=>track.stop());}catch(_e){}}
+      if(stream){try{RealtimeCapture.stopTracks(stream.getTracks());}catch(_e){}}
     },
     _teardownTransport(){
       clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearTimeout(this.browserRestartTimer);
@@ -2693,6 +2631,15 @@
     if(payload&&payload.turn_failure&&(payload.error||payload.status==="held")){
       if(turn)renderedConsumerTurns.add(turn.turn_id);
       throw servedFailureError(payload);
+    }
+    if(payload&&Array.isArray(payload.parts)&&payload.parts.length){
+      if(turn)renderedConsumerTurns.add(turn.turn_id);
+      const el=appendMessage("universe",typeof payload.reply==="string"?payload.reply:"",
+        answerExecutionDetail(payload));
+      const body=el.querySelector(".msg-body");
+      if(body&&typeof ChatRender!=="undefined"&&ChatRender.renderParts)
+        ChatRender.renderParts(body,payload.parts);
+      return;
     }
     if(payload&&typeof payload.reply==="string"){
       if(turn)renderedConsumerTurns.add(turn.turn_id);

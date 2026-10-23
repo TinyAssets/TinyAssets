@@ -138,6 +138,31 @@ const ChatRender = (() => {
     });
     return button;
   }
+  function renderParts(parent, parts){
+    parent.textContent="";
+    if(!Array.isArray(parts)) return;
+    for(const part of parts){
+      if(!part || typeof part.kind!=="string") continue;
+      if(part.kind==="text"){
+        inline(parent, String(part.text||""));
+        continue;
+      }
+      if(part.kind==="tool_call"){
+        const pre=document.createElement("pre");
+        pre.textContent=String(part.name||"tool")+" "+JSON.stringify(part.arguments||{});
+        parent.appendChild(pre);
+        continue;
+      }
+      if(part.kind!=="image" && part.kind!=="audio" && part.kind!=="video") continue;
+      const node=document.createElement(part.kind==="image"?"img":part.kind);
+      if(part.kind==="image") node.alt=String(part.mime||"image");
+      else node.controls=true;
+      node.dataset.mediaRef=String(part.reference||"");
+      node.dataset.mime=String(part.mime||"");
+      if(part.timing) node.dataset.timing=JSON.stringify(part.timing);
+      parent.appendChild(node);
+    }
+  }
   function render(parent, source, download){
     source=String(source||"");parent.textContent="";
     const fences=/^```([^\n`]*)\r?\n([\s\S]*?)^```[ \t]*(?:\r?\n|$)/gm;
@@ -154,5 +179,5 @@ const ChatRender = (() => {
     }
     inline(parent,source.slice(at));
   }
-  return {render,httpURL,chart};
+  return {render,renderParts,httpURL,chart};
 })();

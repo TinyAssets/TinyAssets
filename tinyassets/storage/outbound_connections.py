@@ -258,28 +258,6 @@ class ConnectionGrant:
 
 
 @dataclass(frozen=True, slots=True)
-class ConnectionCapability:
-    """Bounded, credential-free metadata attached to one connection."""
-
-    connection_id: str
-    capability_kind: str
-    protocol: str
-    session_url: str
-    service_name: str
-    privacy_url: str
-
-    def descriptor(self) -> dict[str, str]:
-        result = {
-            "protocol": self.protocol,
-            "session_url": self.session_url,
-            "service_name": self.service_name,
-        }
-        if self.privacy_url:
-            result["privacy_url"] = self.privacy_url
-        return result
-
-
-@dataclass(frozen=True, slots=True)
 class ModelDiscoveryCapability:
     """Connection-scoped discovery metadata, not model or endpoint authority."""
 
@@ -2703,8 +2681,6 @@ def _credential_endpoint(
     return None
 
 
-_REALTIME_VOICE_PROTOCOL = "tinyassets.voice.v1"
-_CAPABILITY_SERVICE_NAME_MAX = 80
 _CAPABILITY_URL_MAX = 2048
 
 
@@ -2726,42 +2702,6 @@ def _capability_https_url(name: str, value: Any, *, optional: bool = False) -> s
     except SsrfValidationError as exc:
         raise ValueError(f"{name} must be a canonical HTTPS URL") from exc
     return _canonical_request_url(canonical)
-
-
-def _validate_realtime_voice_capability(
-    connection_id: str, descriptor: Any
-) -> ConnectionCapability:
-    """Validate the complete, closed metadata document for one capability."""
-
-    if not isinstance(descriptor, dict):
-        raise ValueError("capability descriptor must be an object")
-    kind = "realtime_voice"
-    required = {"protocol", "session_url", "service_name"}
-    allowed = required | {"privacy_url"}
-    if set(descriptor) - allowed or not required.issubset(descriptor):
-        raise ValueError("capability descriptor fields are invalid")
-    if descriptor.get("protocol") != _REALTIME_VOICE_PROTOCOL:
-        raise ValueError("capability protocol is not supported")
-    service_name = (
-        descriptor["service_name"].strip()
-        if isinstance(descriptor.get("service_name"), str)
-        else ""
-    )
-    if (
-        not 1 <= len(service_name) <= _CAPABILITY_SERVICE_NAME_MAX
-        or any(ord(char) < 32 or ord(char) == 127 for char in service_name)
-    ):
-        raise ValueError("capability service_name is invalid")
-    return ConnectionCapability(
-        connection_id=_required("connection_id", connection_id),
-        capability_kind=kind,
-        protocol=_REALTIME_VOICE_PROTOCOL,
-        session_url=_capability_https_url("session_url", descriptor.get("session_url")),
-        service_name=service_name,
-        privacy_url=_capability_https_url(
-            "privacy_url", descriptor.get("privacy_url"), optional=True
-        ),
-    )
 
 
 def _validate_model_discovery_capability(
@@ -2943,9 +2883,6 @@ class _CapabilitySpec:
 
 
 _CAPABILITY_SPECS = {
-    "realtime_voice": _CapabilitySpec(
-        ConnectionCapability, _validate_realtime_voice_capability, "POST", ("session_url",)
-    ),
     "model_discovery": _CapabilitySpec(
         ModelDiscoveryCapability, _validate_model_discovery_capability, "GET",
         ("catalogue_url", "benchmark_url"),
@@ -2963,7 +2900,7 @@ _CAPABILITY_SPECS = {
 
 def _validate_connection_capability(
     connection_id: str, capability_kind: str, descriptor: Any
-) -> ConnectionCapability | ModelDiscoveryCapability:
+) -> ModelDiscoveryCapability | ModelUseCapability | ConstantHeadersCapability:
     spec = _CAPABILITY_SPECS[_validate_capability_kind(capability_kind)]
     capability = spec.validate(connection_id, descriptor)
     if not isinstance(capability, spec.value_type):
@@ -5429,14 +5366,14 @@ class ConnectionLedger:
         enabled: bool,
         expected_grant: ConnectionGrant | None = None,
         preview: bool = False,
-    ) -> ConnectionCapability | ModelDiscoveryCapability | None:
+    ) -> ModelDiscoveryCapability | ModelUseCapability | ConstantHeadersCapability | None:
         """Idempotently configure one bounded capability on existing authority.
 
         The descriptor is metadata, never authority: enabling succeeds only when
         the current connection is active HTTP authority whose existing scope and
         endpoint allowlist already admit the capability's exact destinations.
         Discovery additionally fences the handler's live grant context in this
-        transaction. Voice retains its existing current-serving API contract.
+        transaction.
         """
 
         if not isinstance(enabled, bool):
@@ -5488,11 +5425,8 @@ class ConnectionLedger:
                 return None
             assert capability is not None
             spec = _CAPABILITY_SPECS[kind]
-            # Preserve voice's legacy explicit-POST rule. Discovery follows the
-            # existing GET/full-channel scope semantics used by its transport.
             verb_allowed = (
-                spec.verb in resource.scopes if kind == "realtime_voice"
-                else not spec.verb
+                not spec.verb
                 or _verb_within_scopes(spec.verb, resource.scopes, resource.access_mode)
             )
             if resource.connection_type != "http" or not verb_allowed:
@@ -5550,7 +5484,7 @@ class ConnectionLedger:
     def get_connection_capability(
         self, connection_id: str, capability_kind: str, *,
         expected_grant: ConnectionGrant | None = None,
-    ) -> ConnectionCapability | ModelDiscoveryCapability | None:
+    ) -> ModelDiscoveryCapability | ModelUseCapability | ConstantHeadersCapability | None:
         """Return validated non-secret metadata without altering connection views."""
 
         connection_key = _required("connection_id", connection_id)

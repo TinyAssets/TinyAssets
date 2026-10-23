@@ -53,6 +53,22 @@ class ModelSourceUnavailable(PermissionError):
     """A named source cannot serve this allocation's next model attempt."""
 
 
+def public_model_part(part):
+    """Typed part view for `ta`. Media bytes stay behind the owner-box reference."""
+    kind = part.kind
+    if kind == "text":
+        return {"kind": "text", "text": part.text}
+    if kind == "tool_call":
+        return {"kind": "tool_call", "name": part.name, "arguments": part.arguments}
+    view = {
+        "kind": kind, "mime": part.mime, "byte_length": part.byte_length,
+        "digest": part.digest, "reference": part.reference,
+    }
+    if part.timing is not None:
+        view["timing"] = list(part.timing)
+    return view
+
+
 def _propose_policy(universe_dir: Path, expected_generation: int, policy: dict) -> dict:
     """Give the owner a literal policy proposal; the agent never applies it."""
     from tinyassets.api.pending_requests import request_from_user
@@ -377,6 +393,8 @@ class Capabilities:
 
         def model_result(completed):
             result = {"text": completed.text, "receipt": asdict(completed.receipt)}
+            if completed.parts:
+                result["parts"] = [public_model_part(part) for part in completed.parts]
             reply = completed.response.agent_reply
             if reply is not None and reply.tool_requests:
                 result["tool_requests"] = [
