@@ -15,6 +15,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
+from pathlib import Path
 
 MAX_BODY_BYTES = 1024 * 1024
 _HEADER = re.compile(r"[a-z0-9][a-z0-9-]{0,127}\Z")
@@ -200,6 +201,36 @@ def extract_single_installation(body: bytes, headers: Mapping[str, str]) -> tupl
     return ("enterprise" if enterprise else "workspace", identity)
 
 
+def _platform_signing_records(root: Path) -> list:
+    """Sealed broker signing vault. The key ledger stays on the data root.
+
+    ``.broker/platform`` is not an owner account namespace, so it cannot use
+    ``load_credential_vault`` (that resolves the key root two parents above an
+    account directory).
+    """
+    from tinyassets.broker.admission import digest
+    from tinyassets.broker.key_service import service_for
+    from tinyassets.universe_files import read_data_path
+
+    path = root / ".broker" / "platform" / "credentials" / ".credential-vault.json"
+    if not path.is_file():
+        return []
+    raw = read_data_path(path)
+    if not raw:
+        return []
+    opened = service_for(root).open(digest("platform"), path.name, raw)
+    payload = json.loads(opened)
+    if isinstance(payload, dict):
+        records = payload.get("credentials", [])
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        raise RuntimeError("platform signing secret unavailable")
+    if not isinstance(records, list):
+        raise RuntimeError("platform signing secret unavailable")
+    return records
+
+
 def verify_shared(data_root, binding: str, headers: Mapping[str, str], body: bytes) -> dict:
     """Broker-only shared-app proof, with secret resolved by custody name.
 
@@ -209,14 +240,13 @@ def verify_shared(data_root, binding: str, headers: Mapping[str, str], body: byt
     from pathlib import Path
 
     from tinyassets.broker.inbound_installations import InstallationAuthority
-    from tinyassets.credential_vault import load_credential_vault
 
     root = Path(data_root)
     authority = InstallationAuthority(root / ".broker" / "inbound-installations.db")
     row = authority.profile(binding)
     if row is None:
         return {"proof": "unknown"}
-    records = load_credential_vault(root / ".broker" / "platform")
+    records = _platform_signing_records(root)
     matches = [record for record in records
                if record.get("credential_type") == "http"
                and record.get("destination") == row["secret_ref"]]

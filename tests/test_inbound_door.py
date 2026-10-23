@@ -603,14 +603,19 @@ def test_hook_mint_records_the_box_local_agent(tmp_path, monkeypatch):
 
 
 def test_shared_proof_setup_mapping_and_coverage_conflict(tmp_path):
+    from tinyassets.broker.admission import digest
     from tinyassets.broker.inbound_installations import InstallationAuthority
     from tinyassets.broker.inbound_verification import setup_challenge, verify_shared
+    from tinyassets.broker.key_service import service_for
     from tinyassets.credential_vault import http_credential_record
 
     vault = tmp_path / '.broker' / 'platform' / 'credentials'
     vault.mkdir(parents=True)
-    (vault / '.credential-vault.json').write_text(json.dumps([
-        http_credential_record(destination='platform-signing', token='signing-secret')]))
+    secret = vault / '.credential-vault.json'
+    secret.write_bytes(service_for(tmp_path).seal(
+        digest('platform'), secret.name,
+        json.dumps([http_credential_record(
+            destination='platform-signing', token='signing-secret')]).encode()))
     authority = InstallationAuthority(tmp_path / '.broker' / 'inbound-installations.db')
     _, _, profile, _ = _slack(_envelope())
     authority.publish_profile('slack', profile, 'platform-signing')
