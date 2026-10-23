@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_schema import ensure_table
 from tinyassets.storage import DB_FILENAME
 
 _SCHEMA = """
@@ -103,7 +104,11 @@ def _connect(base_path: str | Path, *, create: bool) -> sqlite3.Connection | Non
     conn = sqlite3.connect(path, timeout=30.0)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
-    conn.executescript(_SCHEMA)
+    try:
+        ensure_table(conn, _SCHEMA, kind="durable")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
