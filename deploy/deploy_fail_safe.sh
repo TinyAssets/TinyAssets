@@ -2319,8 +2319,9 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
   fi
   case "$name" in
     harness-[0-9a-f]*)
-      # extract_box_harness made the tree read-only; writable again before rm.
-      chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
+      # Directories need write to unlink children. chmod -R follows symlinks
+      # and would hit ELOOP or change a host path named by an absolute link.
+      find -P "${root:?}/${name}" -type d -exec chmod u+rwx {} + 2>/dev/null || true
       rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
         || err "could not remove candidate harness ${name}" ;;
   esac
@@ -2336,8 +2337,8 @@ prune_old_harnesses() {  # successful deploys must not keep every historical roo
     if [ -n "$link" ] && { [ "$name" = "$link" ] || [ "$name" = "${link##*/}" ]; }; then
       continue
     fi
-    # extract_box_harness made the tree read-only; writable again before rm.
-    chmod -R u+w -- "${root}/${name}" 2>/dev/null || true
+    # Directories need write to unlink children. Do not follow symlinks.
+    find -P "${root}/${name}" -type d -exec chmod u+rwx {} + 2>/dev/null || true
     if rm -rf -- "${root}/${name}"; then
       log "removed old harness ${name}"
     else

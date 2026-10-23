@@ -83,6 +83,36 @@ def test_prune_removes_readonly_copies_and_keeps_live_ones(tmp_path: Path):
     assert (outside / "safe").read_text(encoding="utf-8") == "safe\n"
 
 
+def test_prune_deletes_a_readonly_rootfs_without_following_symlinks(tmp_path: Path):
+    """Symlinks in a container rootfs are not chmod targets and are not followed."""
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    leaked = root / ("harness-" + "78" * 32)
+    nested = leaked / "usr" / "bin"
+    nested.mkdir(parents=True)
+    payload = nested / "tool"
+    payload.write_text("bin\n", encoding="utf-8")
+    outside = tmp_path / "host-file"
+    outside.write_text("host\n", encoding="utf-8")
+    outside.chmod(0o444)
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
+    (nested / "broken").symlink_to("/nonexistent/path")
+    (nested / "loop").symlink_to("loop")
+    (nested / "etc-host").symlink_to(outside)
+    payload.chmod(0o444)
+    nested.chmod(0o555)
+    (leaked / "usr").chmod(0o555)
+    leaked.chmod(0o555)
+
+    removed = prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root)
+
+    assert removed == [leaked.name]
+    assert not leaked.exists()
+    assert outside.is_file()
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
+    assert outside.read_text(encoding="utf-8") == "host\n"
+
+
 def test_restarting_daemon_still_names_the_current_image(tmp_path: Path):
     mount = tmp_path / "data"
     mount.mkdir()
