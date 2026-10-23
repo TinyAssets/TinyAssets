@@ -14,6 +14,8 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+BOXHOSTD_HOST_PROBES = ("scripts/wait_boxhostd_ready.py",)
+
 
 def command_files(root: Path, text: str, *, strict: bool = False,
                   exists: Callable[[Path], bool] = Path.is_file) -> set[Path]:
@@ -38,6 +40,7 @@ def command_files(root: Path, text: str, *, strict: bool = False,
 
 
 def service_bundle(root: Path, units: list[Path], *,
+                   entrypoints: tuple[str, ...] = (),
                    source_files: set[str] | None = None,
                    read: Callable[[str], str] | None = None,
                    stop: Callable[[str], bool] = lambda _: False) -> list[str]:
@@ -59,6 +62,11 @@ def service_bundle(root: Path, units: list[Path], *,
         return path.read_text(encoding="utf-8") if read is None else read(relative(path))
 
     pending = set()
+    for entrypoint in entrypoints:
+        path = root / entrypoint
+        if not exists(path):
+            raise ValueError(f"missing host entrypoint: {entrypoint}")
+        pending.add(path)
     for unit in units:
         commands = "\n".join(line for line in contents(unit.resolve()).splitlines()
                              if re.match(r"Exec(?:Start|Stop)(?:Pre|Post)?=", line))
@@ -142,14 +150,23 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--install-to", type=Path)
     parser.add_argument("--flat-scripts", action="store_true")
+    parser.add_argument("--list-install-paths", action="store_true")
+    parser.add_argument("--boxhostd-probes", action="store_true")
     parser.add_argument("units", nargs="+")
     args = parser.parse_args()
-    manifest = service_bundle(args.root, [args.root / "deploy" / u for u in args.units])
+    manifest = service_bundle(
+        args.root, [args.root / "deploy" / u for u in args.units],
+        entrypoints=BOXHOSTD_HOST_PROBES if args.boxhostd_probes else (),
+    )
     installed = set(manifest)
     if args.flat_scripts:
         installed.update(Path(p).name for p in manifest if len(Path(p).parts) == 2
                          and Path(p).parts[0] in {"deploy", "scripts"}
                          and Path(p).name != "__init__.py")
+    if args.list_install_paths:
+        for relative in sorted(installed | {".host-service-files.json"}):
+            print(relative)
+        return
     if args.install_to:
         args.install_to = args.install_to.resolve()
         record = args.install_to / ".host-service-files.json"

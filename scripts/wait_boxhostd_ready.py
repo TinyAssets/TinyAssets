@@ -8,16 +8,20 @@ from __future__ import annotations
 import time
 
 from tinyassets.boxes.daemon_control import request
+from tinyassets.broker.lifecycle_control import request as broker_request
 
 
-def wait_ready(probe=request, *, timeout=540, interval=5, clock=time.monotonic,
+def wait_ready(probe=request, *, broker_probe=broker_request,
+               timeout=540, interval=5, clock=time.monotonic,
                sleep=time.sleep):
     deadline = clock() + timeout
     stable = 0
     while clock() < deadline:
         try:
             result = probe("readiness")
-        except (OSError, TimeoutError, RuntimeError):
+            if result == {"ready": True}:
+                result = broker_probe("readiness")
+        except (EOFError, OSError, TimeoutError, RuntimeError):
             result = {"ready": False}
         if result == {"ready": True}:
             stable += 1

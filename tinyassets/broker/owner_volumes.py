@@ -76,15 +76,16 @@ def binding(identities, owner):
         return record
 
 
-def pending(identities):
+def pending(identities, *, include_running=True):
     with closing(identities._connect(write=False)) as db:
         candidates = [row[0] for row in db.execute(
             "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
             "ON i.principal=v.principal AND i.machine_id=v.uid "
-            "WHERE (v.work IS NOT NULL OR "
+            "WHERE ((v.work IS NOT NULL AND "
+            "(? OR json_extract(v.work,'$.kind')!='running')) OR "
             "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7 OR "
             "(v.local=1 AND v.asleep_at<? AND v.snapshot_id IS NOT NULL))",
-            (time.time() - COLD_AFTER,))]
+            (include_running, time.time() - COLD_AFTER,))]
         from tinyassets.broker.admission import admission
 
         return [owner for owner in candidates

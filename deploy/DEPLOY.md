@@ -566,10 +566,12 @@ image succeed or fail together:
    not the forward install's contract — otherwise rolling back would rewrite
    `root:root` `compose.yml` as `tinyassets:tinyassets`, which is a rollback that
    changes something. The last 5 snapshots are kept, and **never** the one
-   `bundle-previous` names. The same snapshot records the mutable box-host
-   `tinyassets/`, `deploy/`, `scripts/`, flat entrypoints, systemd units,
-   broker and box-host env files, and `harness-current`. Immutable harness
-   rootfs and pinned runtime directories remain in place.
+     `bundle-previous` names. The same snapshot records every mutable box-host
+     path derived from the install manifest, the systemd units, the env source
+     and its rendered daemon, broker and box-host files, the selected box image
+     in `images.json`, and `harness-current`. The workflow updates and renders
+     env before this snapshot, so it captures that already-updated state.
+     Immutable harness rootfs and pinned runtime directories remain in place.
 3. **install** — `tinyassets:tinyassets` `0644` (`0755` for the entrypoint script),
    the unit `root:root 0644`, then the staged box-host installer and
    `systemctl daemon-reload`. The installer runs under this transaction's
@@ -616,11 +618,11 @@ image succeed or fail together:
    commit in the same step. Do not 'fix' it by loosening the rollback
    ordering, and do not add a shell fallback to the probe.
 
-Before the deploy canaries, a bounded host-side wait requires two consecutive
-box-host readiness signals with no active or queued broker lifecycle calls.
+Before the deploy canaries, a bounded wait requires two consecutive signals
+with no active or queued host calls and no pending broker lifecycle work.
 Owner-box acceptance repeats this wait after fleet drain and before waking its
-canary. A timeout fails acceptance; request wakes wait for host slots and take
-priority over scheduled wakes.
+canary. A timeout leaves the deploy red and holds the current image while work
+finishes. Request wakes take the reserved host slot ahead of scheduled wakes.
 
 **Nothing reports success over a mixed tree.** A restore that does not complete
 leaves `/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that

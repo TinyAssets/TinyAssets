@@ -10,7 +10,8 @@ def test_waits_for_two_idle_signals_after_busy_lifecycle():
     def sleep(seconds):
         clock[0] += seconds
 
-    assert wait_ready(lambda operation: {"ready": next(state)}, timeout=10,
+    assert wait_ready(lambda operation: {"ready": next(state)},
+                      broker_probe=lambda operation: {"ready": True}, timeout=10,
                       interval=1, clock=lambda: clock[0], sleep=sleep)
     assert clock[0] == 3
 
@@ -21,6 +22,23 @@ def test_readiness_wait_times_out_while_lifecycle_stays_busy():
     def sleep(seconds):
         clock[0] += seconds
 
-    assert not wait_ready(lambda operation: {"ready": False}, timeout=3,
+    assert not wait_ready(lambda operation: {"ready": False},
+                          broker_probe=lambda operation: {"ready": True}, timeout=3,
                           interval=1, clock=lambda: clock[0], sleep=sleep)
+    assert clock[0] == 3
+
+
+def test_pending_broker_work_prevents_ready_and_eof_is_retried():
+    clock = [0.0]
+    broker = iter([{"ready": False}, EOFError(), {"ready": True}, {"ready": True}])
+
+    def broker_probe(operation):
+        result = next(broker)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    assert wait_ready(lambda operation: {"ready": True}, broker_probe=broker_probe,
+                      timeout=10, interval=1, clock=lambda: clock[0],
+                      sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     assert clock[0] == 3

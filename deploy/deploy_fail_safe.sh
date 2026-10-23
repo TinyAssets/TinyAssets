@@ -69,8 +69,8 @@
 # make the mixed state the next rollback target. `--restore-bundle` is the way
 # out, and clears it.
 #
-# An absent stage directory is not an error: it means "image-only deploy" (a
-# manual run, or `--restore-bundle` on a box that never staged one). A PARTIAL
+# An absent stage directory means "image-only deploy" only when the caller did
+# not require the box-host bundle. A PARTIAL
 # stage directory is an error — half a bundle is the 2026-08 502. An image-only
 # deploy that FAILS never touches the bundle: a surviving pointer belongs to an
 # earlier deploy and names a state this run did not create.
@@ -297,7 +297,7 @@ BUNDLE_STATE_DIR="${BUNDLE_STATE_DIR:-/var/lib/tinyassets-deploy}"
 SNAPSHOT_ROOT="${BUNDLE_STATE_DIR}/bundle-snapshots"
 BUNDLE_POINTER="${BUNDLE_STATE_DIR}/bundle-previous"
 # Durable "a bundle install did not finish cleanly" flag. Written before the
-# first install byte and cleared only by a completed install or a completed
+# first install byte and cleared only by accepted deployment or a verified
 # restore. While it exists a normal deploy REFUSES: the alternative is that the
 # next deploy snapshots the mixed state and legitimizes it as the rollback
 # target (Codex round 2, §1). `--restore-bundle` runs regardless — it is the way
@@ -374,6 +374,11 @@ INSTALLED_THIS_RUN=0     # 1 only after install_bundle has written a byte
 BUNDLE_WORK=""           # private copy of the stage, made under the lock
 MARKER_STALE=0           # 1 if the dirty marker could not be cleared
 RESTORE_SNAPSHOT=""      # the snapshot restore_previous_bundle resolved
+HOST_INSTALL_STAGE=""
+HOST_INSTALL_MANIFEST=""
+RESTORE_VERIFIED=0
+RESTORE_ATTEMPTED=0
+MIGRATION_REFUSED_RESTART=0
 
 log() { printf '%s %s\n' "[deploy-fail-safe]" "$*"; }
 err() { printf '::error::%s\n' "$*" >&2; }
@@ -916,7 +921,36 @@ cleanup_bundle_work() {
   fi
   return 0
 }
-trap cleanup_bundle_work EXIT
+
+# All nonzero exits after the first install byte converge on one recovery path.
+# This includes later preflight and harness failures. The marker stays set
+# until acceptance, and an interrupted restore remains marked dirty.
+bundle_exit() {
+  local rc=$? saved="$SNAPSHOT_PATH" recovery_failed=0
+  trap - EXIT
+  if [ "$rc" -ne 0 ] && [ "$INSTALLED_THIS_RUN" = 1 ] &&
+     [ "$RESTORE_VERIFIED" != 1 ] && [ "$RESTORE_ATTEMPTED" != 1 ] &&
+     [ -n "$saved" ]; then
+    err "post-install failure: restoring ${saved} before exit"
+    if ! mark_dirty "$saved" || ! restore_bundle_from "$saved" || ! clear_dirty; then
+      rc=3
+      recovery_failed=1
+    fi
+    if [ "$recovery_failed" = 1 ]; then
+      err "bundle recovery failed; dirty marker names ${saved}"
+      echo "deploy_result=rollback_failed"
+    fi
+  fi
+  if [ "$MIGRATION_REFUSED_RESTART" = 1 ] && [ "$rc" -ne 3 ]; then
+    if ! docker start "$DAEMON_CONTAINER" >/dev/null 2>&1; then
+      err "migration refused: ${DAEMON_CONTAINER} did not restart"
+      rc=3
+    fi
+  fi
+  cleanup_bundle_work
+  exit "$rc"
+}
+trap bundle_exit EXIT
 
 # Atomic: a truncating redirect that dies half-written leaves a pointer naming
 # nothing, and the rollback that reads it restores nothing while reporting
@@ -1001,6 +1035,9 @@ clear_dirty() {
 # printed because the image DID change and the operator has to know which.
 finish() {
   local result="$1" image="$2" code="$3"
+  if [ "$result" = deployed ] && [ "$INSTALLED_THIS_RUN" = 1 ]; then
+    clear_dirty || true
+  fi
   if [ "$MARKER_STALE" = "1" ]; then
     err "the run reached '${result}' but ${BUNDLE_DIRTY} is still present"
     [ -n "$image" ] && echo "deployed_image=${image}"
@@ -1012,12 +1049,16 @@ finish() {
   exit "$code"
 }
 
-# "absent"  no stage directory at all -> image-only deploy, not an error
+# "absent"  no stage directory at all -> image-only only when not required
 # "ready"   all five staged files present
 # "partial" the directory exists but is incomplete -> refuse
 bundle_state() {
   local f
-  if [ ! -d "$BUNDLE_DIR" ]; then printf 'absent'; return 0; fi
+  if [ ! -d "$BUNDLE_DIR" ]; then
+    if [ "${BOXHOSTD_BUNDLE_REQUIRED:-0}" = 1 ]; then printf 'partial';
+    else printf 'absent'; fi
+    return 0
+  fi
   for f in "${BUNDLE_FILES[@]}"; do
     if [ ! -f "${BUNDLE_DIR}/${f}" ]; then printf 'partial'; return 0; fi
   done
@@ -1523,110 +1564,21 @@ PY
 # only the mutable code, entrypoint links, env and units are snapshotted.
 host_managed_name() {
   case "$1" in
-    ''|.|..|*/*) return 1 ;;
-    tinyassets|deploy|scripts|current|harness-current|.host-service-files.json|*.py|*.sh) return 0 ;;
-    *) return 1 ;;
+    harness-current) return 0 ;;
+    ''|.|..|*/*|harness-*|release-*|.restore-*) return 1 ;;
+    *) return 0 ;;
   esac
 }
 
-host_file_paths() {
-  printf '%s\n' \
-    "${BOXHOSTD_UNIT_FILE:-/etc/systemd/system/boxhostd.service}" \
-    "${BOX_STORE_DEVICE_UNIT_FILE:-/etc/systemd/system/box-store-device.service}" \
-    "${BOX_STORE_MOUNT_UNIT_FILE:-/etc/systemd/system/var-lib-boxhostd-owners.mount}" \
-    "${BOX_STORE_GROW_UNIT_FILE:-/etc/systemd/system/box-store-grow.service}" \
-    "${BOX_STORE_GROW_TIMER_FILE:-/etc/systemd/system/box-store-grow.timer}" \
-    "${BOXHOSTD_ENV_FILE:-/etc/tinyassets/boxhostd.env}" \
-    "${BROKER_ENV_FILE:-/etc/tinyassets/broker.env}" \
-    "${BROKER_RCLONE_FILE:-/etc/tinyassets/broker-rclone.conf}"
-}
-
-snapshot_host_bundle() {
-  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0
+# Compute the exact install set from the same shipped closure builder used by
+# install-boxhostd-preflight.sh. Include the previous manifest as well: the new
+# installer can remove an old path. Every top-level name is snapshotted, even
+# when it is absent before this release creates it.
+prepare_host_bundle() {
   [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
-  mkdir -p "${snap}/host/root" "${snap}/host/files" || return 1
-  : >"${snap}/host/root-manifest" || return 1
-  for path in "$root"/* "$root"/.host-service-files.json; do
-    [ -e "$path" ] || [ -L "$path" ] || continue
-    name="$(basename "$path")"
-    host_managed_name "$name" || continue
-    cp -a -- "$path" "${snap}/host/root/${name}" || return 1
-    printf '%s\n' "$name" >>"${snap}/host/root-manifest" || return 1
-  done
-  while IFS= read -r path; do
-    if [ -e "$path" ] || [ -L "$path" ]; then
-      cp -a -- "$path" "${snap}/host/files/${index}" || return 1
-      printf 'present\n' >"${snap}/host/files/${index}.state" || return 1
-    else
-      printf 'absent\n' >"${snap}/host/files/${index}.state" || return 1
-    fi
-    index=$((index + 1))
-  done < <(host_file_paths)
-  printf 'complete\n' >"${snap}/host/complete"
-}
-
-restore_host_bundle() {
-  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0 state
-  [ -d "${snap}/host" ] || return 0  # Pre-host snapshots remain restorable.
-  [ "$(cat "${snap}/host/complete" 2>/dev/null)" = complete ] || {
-    err "restore: host bundle snapshot is incomplete"; return 1;
-  }
-  [ -f "${snap}/host/root-manifest" ] || return 1
-  while IFS= read -r name; do
-    host_managed_name "$name" || return 1
-    [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ] || return 1
-  done <"${snap}/host/root-manifest"
-  while IFS= read -r path; do
-    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
-    case "$state" in
-      present) [ -e "${snap}/host/files/${index}" ] ||
-               [ -L "${snap}/host/files/${index}" ] || return 1 ;;
-      absent) ;;
-      *) return 1 ;;
-    esac
-    index=$((index + 1))
-  done < <(host_file_paths)
-  index=0
-  systemctl stop boxhostd.service || return 1
-  mkdir -p "$root" || return 1
-  for path in "$root"/* "$root"/.host-service-files.json; do
-    [ -e "$path" ] || [ -L "$path" ] || continue
-    name="$(basename "$path")"
-    host_managed_name "$name" || continue
-    rm -rf -- "$path" || return 1
-  done
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    host_managed_name "$name" || return 1
-    [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ] || return 1
-    cp -a -- "${snap}/host/root/${name}" "${root}/${name}" || return 1
-  done <"${snap}/host/root-manifest"
-  while IFS= read -r path; do
-    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
-    if [ "$state" = present ]; then
-      [ -e "${snap}/host/files/${index}" ] || [ -L "${snap}/host/files/${index}" ] || return 1
-      mkdir -p "$(dirname "$path")" || return 1
-      rm -f -- "$path" || return 1
-      cp -a -- "${snap}/host/files/${index}" "$path" || return 1
-    elif [ "$state" = absent ]; then
-      rm -f -- "$path" || return 1
-    else
-      return 1
-    fi
-    index=$((index + 1))
-  done < <(host_file_paths)
-  systemctl daemon-reload || return 1
-  if [ "$(cat "${snap}/host/files/0.state")" = present ]; then
-    systemctl restart boxhostd.service && systemctl is-active --quiet boxhostd.service || return 1
-  fi
-  log "restored box host before broker and daemon convergence"
-}
-
-install_host_bundle() {
-  local stage
-  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
-  stage="$(mktemp -d "${BUNDLE_STATE_DIR}/.boxhostd-install.XXXXXX")" || return 1
-  if ! python3 - "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" <<'HOST_TAR_PY'
+  HOST_INSTALL_STAGE="${BUNDLE_WORK}/host-install"
+  mkdir -p "$HOST_INSTALL_STAGE" || return 1
+  python3 - "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" <<'HOST_TAR_PY' || return 1
 import pathlib
 import sys
 import tarfile
@@ -1638,20 +1590,196 @@ with tarfile.open(sys.argv[1]) as archive:
                 not (member.isfile() or member.isdir())):
             sys.exit("invalid box host install archive")
 HOST_TAR_PY
-  then
-    rm -rf -- "$stage"
-    return 1
+  tar -xf "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" -C "$HOST_INSTALL_STAGE" || return 1
+  [ -f "${HOST_INSTALL_STAGE}/deploy/install-boxhostd-preflight.sh" ] || return 1
+  [ -f "${HOST_INSTALL_STAGE}/scripts/host_service_bundle.py" ] || return 1
+  HOST_INSTALL_MANIFEST="${BUNDLE_WORK}/host-install-paths"
+  python3 "${HOST_INSTALL_STAGE}/scripts/host_service_bundle.py" \
+    --root "$HOST_INSTALL_STAGE" --flat-scripts --list-install-paths --boxhostd-probes \
+    boxhostd.service box-store-device.service box-store-grow.service \
+    >"$HOST_INSTALL_MANIFEST" || return 1
+}
+
+host_snapshot_names() {
+  { printf '%s\n' current harness-current
+    python3 - "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/.host-service-files.json" \
+      "$HOST_INSTALL_MANIFEST" <<'HOST_NAMES_PY'
+import json
+import pathlib
+import sys
+
+old = pathlib.Path(sys.argv[1])
+if old.exists():
+    for path in json.loads(old.read_text()):
+        print(path)
+for path in pathlib.Path(sys.argv[2]).read_text().splitlines():
+    print(path)
+HOST_NAMES_PY
+  } | while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    name="${path%%/*}"
+    host_managed_name "$name" || return 1
+    printf '%s\n' "$name"
+  done | sort -u
+}
+
+host_file_paths() {
+  printf '%s\n' \
+    "${BOXHOSTD_UNIT_FILE:-/etc/systemd/system/boxhostd.service}" \
+    "${BOX_STORE_DEVICE_UNIT_FILE:-/etc/systemd/system/box-store-device.service}" \
+    "${BOX_STORE_MOUNT_UNIT_FILE:-/etc/systemd/system/var-lib-boxhostd-owners.mount}" \
+    "${BOX_STORE_GROW_UNIT_FILE:-/etc/systemd/system/box-store-grow.service}" \
+    "${BOX_STORE_GROW_TIMER_FILE:-/etc/systemd/system/box-store-grow.timer}" \
+    "${BOXHOSTD_ENV_FILE:-/etc/tinyassets/boxhostd.env}" \
+    "${BROKER_ENV_FILE:-/etc/tinyassets/broker.env}" \
+    "${BROKER_RCLONE_FILE:-/etc/tinyassets/broker-rclone.conf}" \
+    "${ENV_FILE}" \
+    "${DAEMON_ENV_FILE}" \
+    "${BOX_STORE_CONFIG_FILE:-/etc/tinyassets/box-store.conf}" \
+    "${BOX_IMAGE_STATE_FILE:-/var/lib/boxhostd/state/images.json}"
+}
+
+legacy_host_file_paths() {
+  printf '%s\n' \
+    "${BOXHOSTD_UNIT_FILE:-/etc/systemd/system/boxhostd.service}" \
+    "${BOX_STORE_DEVICE_UNIT_FILE:-/etc/systemd/system/box-store-device.service}" \
+    "${BOX_STORE_MOUNT_UNIT_FILE:-/etc/systemd/system/var-lib-boxhostd-owners.mount}" \
+    "${BOX_STORE_GROW_UNIT_FILE:-/etc/systemd/system/box-store-grow.service}" \
+    "${BOX_STORE_GROW_TIMER_FILE:-/etc/systemd/system/box-store-grow.timer}" \
+    "${BOXHOSTD_ENV_FILE:-/etc/tinyassets/boxhostd.env}" \
+    "${BROKER_ENV_FILE:-/etc/tinyassets/broker.env}" \
+    "${BROKER_RCLONE_FILE:-/etc/tinyassets/broker-rclone.conf}"
+}
+
+snapshot_host_file_paths() {
+  if [ -f "$1/host/file-paths" ]; then cat "$1/host/file-paths";
+  else legacy_host_file_paths; fi
+}
+
+snapshot_host_bundle() {
+  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  prepare_host_bundle || return 1
+  mkdir -p "${snap}/host/root" "${snap}/host/files" || return 1
+  host_snapshot_names >"${snap}/host/root-manifest" || return 1
+  host_file_paths >"${snap}/host/file-paths" || return 1
+  while IFS= read -r name; do
+    path="${root}/${name}"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a -- "$path" "${snap}/host/root/${name}" || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a -- "$path" "${snap}/host/files/${index}" || return 1
+      printf 'present\n' >"${snap}/host/files/${index}.state" || return 1
+    else
+      printf 'absent\n' >"${snap}/host/files/${index}.state" || return 1
+    fi
+    index=$((index + 1))
+  done <"${snap}/host/file-paths"
+  printf 'complete\n' >"${snap}/host/complete"
+}
+
+restore_host_bundle() {
+  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0 state file_paths
+  [ -d "${snap}/host" ] || return 0  # Pre-host snapshots remain restorable.
+  [ "$(cat "${snap}/host/complete" 2>/dev/null)" = complete ] || {
+    err "restore: host bundle snapshot is incomplete"; return 1;
+  }
+  [ -f "${snap}/host/root-manifest" ] || return 1
+  file_paths="$(snapshot_host_file_paths "$snap")" || return 1
+  [ -n "$file_paths" ] || return 1
+  while IFS= read -r name; do
+    host_managed_name "$name" || return 1
+    # Absence is a recorded state: this install may have created the path.
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
+    case "$state" in
+      present) [ -e "${snap}/host/files/${index}" ] ||
+               [ -L "${snap}/host/files/${index}" ] || return 1 ;;
+      absent) ;;
+      *) return 1 ;;
+    esac
+    index=$((index + 1))
+  done <<<"$file_paths"
+  local stage old
+  mkdir -p "$root" || return 1
+  stage="$(mktemp -d "${root}/.restore-stage.XXXXXXXX")" || return 1
+  old="$(mktemp -d "${root}/.restore-old.XXXXXXXX")" || return 1
+  # Finish all large copies before touching a live tree.
+  while IFS= read -r name; do
+    if [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ]; then
+      cp -a -- "${snap}/host/root/${name}" "${stage}/${name}" || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  index=0
+  systemctl stop boxhostd.service || return 1
+  mkdir -p "$root" || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    host_managed_name "$name" || return 1
+    if [ -e "${root}/${name}" ] || [ -L "${root}/${name}" ]; then
+      mv -T -- "${root}/${name}" "${old}/${name}" || return 1
+    fi
+    if [ -e "${stage}/${name}" ] || [ -L "${stage}/${name}" ]; then
+      mv -T -- "${stage}/${name}" "${root}/${name}" || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
+    if [ "$state" = present ]; then
+      [ -e "${snap}/host/files/${index}" ] || [ -L "${snap}/host/files/${index}" ] || return 1
+      mkdir -p "$(dirname "$path")" || return 1
+      local staged
+      staged="$(mktemp "$(dirname "$path")/.restore-file.XXXXXXXX")" || return 1
+      cp -a -- "${snap}/host/files/${index}" "$staged" || return 1
+      mv -fT -- "$staged" "$path" || return 1
+    elif [ "$state" = absent ]; then
+      rm -f -- "$path" || return 1
+    else
+      return 1
+    fi
+    index=$((index + 1))
+  done <<<"$file_paths"
+  while IFS= read -r name; do
+    if [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ]; then
+      if [ -L "${snap}/host/root/${name}" ]; then
+        [ "$(readlink "${snap}/host/root/${name}")" = "$(readlink "${root}/${name}")" ] || return 1
+      elif [ -d "${snap}/host/root/${name}" ]; then
+        diff -qr -- "${snap}/host/root/${name}" "${root}/${name}" >/dev/null || return 1
+      else
+        cmp -s -- "${snap}/host/root/${name}" "${root}/${name}" || return 1
+      fi
+    else
+      [ ! -e "${root}/${name}" ] && [ ! -L "${root}/${name}" ] || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  index=0
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state")" || return 1
+    if [ "$state" = present ]; then
+      cmp -s -- "${snap}/host/files/${index}" "$path" || return 1
+      [ "$(stat -c '%u:%g:%a' "${snap}/host/files/${index}")" = \
+        "$(stat -c '%u:%g:%a' "$path")" ] || return 1
+    else
+      [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+    fi
+    index=$((index + 1))
+  done <<<"$file_paths"
+  systemctl daemon-reload || return 1
+  if [ "$(cat "${snap}/host/files/0.state")" = present ]; then
+    systemctl restart boxhostd.service && systemctl is-active --quiet boxhostd.service || return 1
   fi
-  if ! tar -xf "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" -C "$stage" ||
-     [ ! -f "${stage}/deploy/install-boxhostd-preflight.sh" ]; then
-    rm -rf -- "$stage"
-    return 1
-  fi
-  if ! bash "${stage}/deploy/install-boxhostd-preflight.sh"; then
-    rm -rf -- "$stage"
-    return 1
-  fi
-  rm -rf -- "$stage"
+  rm -rf -- "$old" "$stage" || return 1
+  log "restored box host before broker and daemon convergence"
+}
+
+install_host_bundle() {
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  [ -n "$HOST_INSTALL_STAGE" ] || return 1
+  bash "${HOST_INSTALL_STAGE}/deploy/install-boxhostd-preflight.sh"
 }
 
 # Copy what is LIVE into a stamped snapshot directory. Runs before install, so
@@ -1782,6 +1910,8 @@ restore_bundle_from() {
     err "restore: snapshot ${snap} has no manifest; refusing to guess ownership"
     return 1
   fi
+  mark_dirty "$snap" || return 1
+  RESTORE_ATTEMPTED=1
   restore_host_bundle "$snap" || return 1
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
@@ -1821,10 +1951,25 @@ restore_bundle_from() {
     fi
     log "restored ${dest} (mode ${perms}, owner ${uid}:${gid})"
   done
+  for entry in "${BUNDLE_MAP[@]}"; do
+    IFS='|' read -r rel dest mode owner <<<"$entry"
+    line="$(awk -F'|' -v k="$rel" '$1 == k { print; exit }' "${snap}/manifest")"
+    state="$(printf '%s' "$line" | cut -d'|' -f2)"
+    if [ "$state" = absent ]; then
+      [ ! -e "$dest" ] && [ ! -L "$dest" ] || rc=1
+    elif [ "$state" = present ]; then
+      meta="$(printf '%s' "$line" | cut -d'|' -f3)"
+      cmp -s -- "${snap}/${rel}" "$dest" || rc=1
+      [ "$(stat -c '%u %g %a' "$dest" 2>/dev/null)" = "$meta" ] || rc=1
+    else
+      rc=1
+    fi
+  done
   if ! systemctl daemon-reload; then
     err "systemctl daemon-reload failed during bundle restore"
     rc=1
   fi
+  if [ "$rc" = 0 ]; then RESTORE_VERIFIED=1; fi
   return $rc
 }
 
@@ -1887,7 +2032,14 @@ restore_previous_bundle() {
 if [ "$POST_DEPLOY_FAILURE" = 1 ] || [ "$RESTORE_BUNDLE" = 1 ]; then
   guard_cutover_recovery
   if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
-    [ "${IMAGE_ROLLBACK_ALLOWED:-0}" = 1 ] || exit 0
+    if [ "${IMAGE_ROLLBACK_ALLOWED:-0}" != 1 ]; then
+      if [ -f "$BUNDLE_DIRTY" ]; then
+        err "post-deploy hold found an interrupted bundle install"
+        echo "deploy_result=bundle_dirty"
+        exit 3
+      fi
+      exit 0
+    fi
     NEW_IMAGE="${ROLLBACK_IMAGE:-}"
     case "$NEW_IMAGE" in *@sha256:*) ;; *) err "no immutable rollback image"; exit 3 ;; esac
     RESTORE_BUNDLE=1
@@ -1963,21 +2115,6 @@ if ! ensure_state_dir; then
   exit 1
 fi
 
-# Restore the snapshot recorded before the failed install, and clear the dirty
-# marker only if that restore completes. Used by every post-install failure
-# path so none of them can report success over a mixed tree.
-recover_from_failed_install() {
-  local result="$1"
-  err "restoring ${SNAPSHOT_PATH} and leaving the pointer where it was"
-  if restore_bundle_from "$SNAPSHOT_PATH"; then
-    clear_dirty || true
-    finish "$result" "" 1
-  fi
-  err "restore from ${SNAPSHOT_PATH} ALSO failed — ${BUNDLE_DIRTY} stays, and the next normal deploy will refuse until --restore-bundle clears it"
-  echo "deploy_result=rollback_failed"
-  exit 3
-}
-
 if [ "$RESTORE_BUNDLE" = "1" ]; then
   # Undoing an install, never performing one: the staged bundle (if it is even
   # still on the box) is exactly what this run is rolling back. This path runs
@@ -2003,7 +2140,7 @@ else
       log "bundle: absent, image-only deploy"
       ;;
     partial)
-      err "bundle: ${BUNDLE_DIR} exists but is incomplete; refusing to install a partial bundle (prod untouched)"
+      err "bundle: ${BUNDLE_DIR} is missing or incomplete; refusing to install a partial bundle"
       echo "deploy_result=bundle_invalid"
       exit 1
       ;;
@@ -2031,7 +2168,8 @@ else
       BUNDLE_VECTOR_BEFORE="$(vector_fingerprint)"
       if ! install_bundle; then
         err "bundle install failed part-way"
-        recover_from_failed_install bundle_install_failed
+        echo "deploy_result=bundle_install_failed"
+        exit 1
       fi
       if [ "$BUNDLE_VECTOR_BEFORE" != "$(vector_fingerprint)" ]; then
         VECTOR_CHANGED=1
@@ -2043,9 +2181,9 @@ else
       # previous deploy's snapshot and restore a bundle that was never live.
       if ! write_pointer "$SNAPSHOT_PATH"; then
         err "could not advance ${BUNDLE_POINTER} to ${SNAPSHOT_PATH}; a rollback would restore a stale bundle"
-        recover_from_failed_install bundle_pointer_failed
+        echo "deploy_result=bundle_pointer_failed"
+        exit 1
       fi
-      clear_dirty || true
       prune_snapshots
       ;;
     *)
@@ -2062,11 +2200,11 @@ fi
 BOX_CANDIDATE_LAYOUT="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m \
   --network=none --entrypoint python "$NEW_IMAGE" -c \
   'from tinyassets import storage_layout as l; print(getattr(l, "ACTIVE_BOX_LAYOUT", "owner-split"))')" || {
-  err "cannot read candidate box layout; prod untouched"; exit 1;
+  err "cannot read candidate box layout"; exit 1;
 }
 case "$BOX_CANDIDATE_LAYOUT" in
   owner-split|owner-box) ;;
-  *) err "candidate has invalid box layout; prod untouched"; exit 1 ;;
+  *) err "candidate has invalid box layout"; exit 1 ;;
 esac
 log "candidate box layout: ${BOX_CANDIDATE_LAYOUT}"
 # #4920 installs the static box harness before an owner-box move. The call is
@@ -2234,19 +2372,9 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   POST_COMMIT_REASON="$1" guard_cutover_recovery
   log "migration refused: $1"
-  err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  if [ "${2:-}" != "pre_stop" ]; then
-    start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
-    start_line="$(printf '%s\n' "$start_out" | one_line)"
-    [ -n "$start_line" ] || start_line="<none>"
-    log "migration refused: check=daemon_restart container=${DAEMON_CONTAINER} output=${start_line}"
-    err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
-    }
-  fi
+  err "migration: $1; the volume is unchanged, refusing and restoring the bundle"
   discard_candidate_harness
-  if [ "$INSTALLED_THIS_RUN" = "1" ]; then
-    recover_from_failed_install migration_refused
-  fi
+  [ "${2:-}" = pre_stop ] || MIGRATION_REFUSED_RESTART=1
   rm -f "$MIGRATION_DETAIL_FILE"
   echo "deploy_result=migration_refused"
   exit 1
@@ -2547,15 +2675,6 @@ if [ "$MIGRATION_OK" = "1" ]; then
     guard_cutover_recovery
     if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
       refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
-    fi
-    if [ "$INSTALLED_THIS_RUN" = "1" ]; then
-      err "restoring the runtime bundle so the box is not left on a new config under the old image"
-      if ! restore_bundle_from "$SNAPSHOT_PATH"; then
-        err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
-        mark_dirty "$SNAPSHOT_PATH" || true
-        echo "deploy_result=rollback_failed"
-        exit 3
-      fi
     fi
     if [ "$MIGRATION_COMMITTED" = "1" ]; then
       err "a layout migration committed and ${DAEMON_CONTAINER} is stopped: deploy ${NEW_IMAGE} again, or $(migration_restore_command); never start ${PREV_IMAGE} on this data"

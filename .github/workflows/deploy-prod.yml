@@ -1090,7 +1090,9 @@ jobs:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           ON_POST_COMMIT_FAILURE: ${{ inputs.on_post_commit_failure || 'hold' }}
-          IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.host_ready.outcome == 'failure' || steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
+          # Pending lifecycle work can legitimately outlast the bounded readiness
+          # wait. Keep the deploy red, but never swap images during a live copy.
+          IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
           POST_COMMIT_REASON: deploy=${{ steps.deploy.outcome }},host_ready=${{ steps.host_ready.outcome }},mcp=${{ steps.canary.outcome }},app=${{ steps.app_probe.outcome }},core=${{ steps.core_canary.outcome }},owner_boxes=${{ steps.owner_boxes.outcome }}
         run: |
           set +e

@@ -34,7 +34,7 @@ source_dir="$(cd "$(dirname "$0")" && pwd)"
 # scripts/boxhostd_install_files.py derives it; workflows copy that
 # list and do not keep a second one.
 # Render before installing code or restarting the service. A normal deploy
-# reaches this installer BEFORE deploy_fail_safe.sh. Env-only changes also
+# reaches this installer inside deploy_fail_safe.sh. Env-only changes also
 # need a restart so the running process receives the new public origin.
 previous_box_env="$(sha256sum /etc/tinyassets/boxhostd.env 2>/dev/null || true)"
 bash "${source_dir}/install-tinyassets-env.sh" render-daemon-env
@@ -130,7 +130,8 @@ changed=0
 [[ "$previous_box_env" == "$rendered_box_env" ]] || changed=1
 source_root="$(dirname "$source_dir")"
 bundle_changes="$(python3 "$source_root/scripts/host_service_bundle.py" --root "$source_root" \
-    --install-to "$root" --flat-scripts boxhostd.service box-store-device.service box-store-grow.service)"
+    --install-to "$root" --flat-scripts --boxhostd-probes \
+    boxhostd.service box-store-device.service box-store-grow.service)"
 [[ -z "$bundle_changes" ]] || changed=1
 for name in boxhostd.service var-lib-boxhostd-owners.mount box-store-grow.service box-store-grow.timer; do
     if ! cmp -s "${source_dir}/${name}" "/etc/systemd/system/${name}"; then

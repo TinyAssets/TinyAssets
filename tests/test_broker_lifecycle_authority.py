@@ -656,43 +656,6 @@ def test_deploy_completes_after_sleep_without_copy(authority, monkeypatch):
     assert lifecycle.volume("alice")["work"]["kind"] == "snapshot"
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C15')
-@pytest.mark.parametrize("count", [2, 5])
-def test_broker_forwards_lifecycle_without_a_second_capacity_queue(authority, count):
-    import queue
-
-    routing = authority.server.routing
-    release = threading.Event()
-    entered = queue.Queue()
-    active = peak = 0
-    lock = threading.Lock()
-
-    def host():
-        nonlocal active, peak
-        with lock:
-            active += 1
-            peak = max(peak, active)
-        entered.put(True)
-        try:
-            assert release.wait(10)
-        finally:
-            with lock:
-                active -= 1
-
-    async def exercise():
-        tasks = [asyncio.create_task(routing.host_call(host)) for _ in range(count)]
-        try:
-            for _ in range(count):
-                await asyncio.to_thread(entered.get, timeout=2)
-            assert active == peak == count
-        finally:
-            release.set()
-            await asyncio.gather(*tasks)
-        assert active == 0
-        assert peak == count
-    asyncio.run(exercise())
-
-
 @pytest.mark.verifies('owner-daemon-in-box:T1')
 def test_request_priority_covers_preflight_calls_before_the_wake(authority):
     routing = authority.server.routing
@@ -712,3 +675,17 @@ def test_request_priority_covers_preflight_calls_before_the_wake(authority):
 
     asyncio.run(exercise())
     assert seen == [True, False]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:T1')
+def test_readiness_distinguishes_awake_boxes_from_pending_snapshots(authority):
+    routing = authority.server.routing
+
+    async def exercise():
+        await routing.wake("alice")
+        await routing.wake("bob")
+        assert await routing.readiness() == {"ready": True}
+        await routing.sleep("alice")
+        assert await routing.readiness() == {"ready": False}
+
+    asyncio.run(exercise())

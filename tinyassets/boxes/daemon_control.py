@@ -17,7 +17,9 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     # Keep the broker call alive through execution, then commit its result.
     volume_ops = {"create", "snapshot", "restore", "evict", "destroy",
                   "delete_snapshots"}
-    timeout = 4 * 3600 if operation in volume_ops else 65
+    # A requested wake may queue for 45 seconds before its 60 second startup.
+    timeout = 5 if operation == "readiness" else (
+        4 * 3600 if operation in volume_ops else 120)
     sock, identity = connect(root / "daemon.sock",
                              timeout=timeout)
     with sock:

@@ -163,6 +163,8 @@ def save_state(state):
 def record(argv):
     with open(CALL_LOG, "a", encoding="utf-8") as handle:
         handle.write(" ".join(argv) + "\n")
+    with open(os.environ["FAKE_EVENT_LOG"], "a", encoding="utf-8") as handle:
+        handle.write("docker " + " ".join(argv) + "\n")
 
 
 def image_id(ref):
@@ -337,6 +339,8 @@ def main(argv):
     state = load_state()
 
     if argv[:1] == ["create"]:
+        if state.get("create_fail"):
+            return 1
         print("fake-harness-container")
         return 0
     if argv[:1] == ["export"]:
@@ -370,6 +374,13 @@ def main(argv):
             return rc
         if "ACTIVE_BOX_LAYOUT" in argv[-1]:
             target = argv[argv.index("--entrypoint") + 2]
+            if state.get("require_dirty_during_layout"):
+                marker = os.path.join(os.environ["BUNDLE_STATE_DIR"], "bundle-dirty")
+                if not os.path.isfile(marker):
+                    sys.stderr.write("bundle dirty marker cleared before acceptance\n")
+                    return 9
+            if state.get("box_layout_read_rc"):
+                return int(state["box_layout_read_rc"])
             print(state.get("active_box_layout", {}).get(target, "owner-split"))
             return 0
         if "tinyassets.box_layout_migration" in argv:
@@ -756,6 +767,7 @@ echo "SNAPSHOT id=${name} sha256=0 bytes=3 names=1"
 
 FAKE_SYSTEMCTL = r'''#!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$FAKE_SYSTEMCTL_CALLS"
+printf 'systemctl %s\n' "$*" >> "$FAKE_EVENT_LOG"
 for failing in ${FAKE_SYSTEMCTL_FAIL:-}; do
   if [ "$1" = "$failing" ]; then
     echo "fake systemctl: $1 refused" >&2
@@ -868,6 +880,7 @@ class Box:
         self.docker_state = root / "docker-state.json"
         self.docker_calls = root / "docker-calls.log"
         self.systemctl_calls = root / "systemctl-calls.log"
+        self.event_log = root / "events.log"
         self.install_calls = root / "install-calls.log"
         self.env_helper = root / "tmp" / "install-tinyassets-env.sh"
         self.lock = root / "host-mutation.lock"
@@ -1017,6 +1030,7 @@ class Box:
             "FAKE_DOCKER_STATE": str(self.docker_state),
             "FAKE_DOCKER_CALLS": str(self.docker_calls),
             "FAKE_SYSTEMCTL_CALLS": str(self.systemctl_calls),
+            "FAKE_EVENT_LOG": str(self.event_log),
             "FAKE_SYSTEMCTL_FAIL": "",
             "FAKE_INSTALL_CALLS": str(self.install_calls),
             "FAKE_INSTALL_FAIL_MATCH": "",
@@ -1138,36 +1152,189 @@ def box(tmp_path: Path) -> Box:
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C4')
-def test_restore_reverts_box_host_bundle_and_harness_before_converge(box: Box):
+@pytest.mark.parametrize("domains_old", [True, False])
+@pytest.mark.parametrize("interrupt_restore", [False, True])
+def test_restore_reverts_box_host_bundle_and_harness_before_converge(
+    box: Box, domains_old, interrupt_restore,
+):
     box.stage_bundle()
     host = box.root / "boxhostd"
     for directory in ("tinyassets", "deploy", "scripts", "harness-old", "harness-new"):
         (host / directory).mkdir(parents=True, exist_ok=True)
-    for directory in ("tinyassets", "deploy", "scripts"):
+    if domains_old:
+        (host / "domains").mkdir()
+    for directory in ("tinyassets", "deploy", "scripts") + (("domains",) if domains_old else ()):
         (host / directory / "release.txt").write_text("old\n")
+    (host / ".host-service-files.json").write_text(
+        json.dumps([f"{name}/release.txt" for name in
+                    ("tinyassets", "deploy", "scripts", "domains")])
+    )
     (host / "harness-current").symlink_to("harness-old")
+    (host / "current").symlink_to("release-old")
     installer = box.root / "host-install" / "deploy" / "install-boxhostd-preflight.sh"
     installer.parent.mkdir(parents=True)
     installer.write_text('''#!/bin/bash
 set -euo pipefail
-for directory in tinyassets deploy scripts; do
+for directory in tinyassets deploy scripts domains; do
+  mkdir -p "${BOX_HARNESS_ROOT}/${directory}"
   printf 'new\\n' > "${BOX_HARNESS_ROOT}/${directory}/release.txt"
 done
+printf 'new unit\n' > "${BOXHOSTD_UNIT_FILE}"
+printf 'NEW=1\n' > "${BROKER_ENV_FILE}"
+printf 'NEW=1\n' > "${BOXHOSTD_ENV_FILE}"
+printf '{"current":"harness-new"}\n' > "${BOX_IMAGE_STATE_FILE}"
+printf 'BOX_STORE_DEVICE=/dev/new\n' > "${BOX_STORE_CONFIG_FILE}"
+printf 'FAKE_FLAG=new\n' >> "${ENV_FILE}"
+printf 'FAKE_FLAG=new\n' >> "${DAEMON_ENV_FILE}"
 ln -s harness-new "${BOX_HARNESS_ROOT}/.harness-current.new"
 mv -Tf "${BOX_HARNESS_ROOT}/.harness-current.new" "${BOX_HARNESS_ROOT}/harness-current"
+ln -s release-new "${BOX_HARNESS_ROOT}/.current.new"
+mv -Tf "${BOX_HARNESS_ROOT}/.current.new" "${BOX_HARNESS_ROOT}/current"
 ''')
+    from scripts.boxhostd_install_files import ship_list
+
     with tarfile.open(box.stage / "boxhostd-install.tar", "w") as archive:
-        archive.add(installer, arcname="deploy/install-boxhostd-preflight.sh")
-    env = {"BOX_HARNESS_ROOT": str(host)}
+        for relative in ship_list(REPO):
+            source = (installer if relative == "deploy/install-boxhostd-preflight.sh"
+                      else REPO / relative)
+            archive.add(source, arcname=relative)
+    unit = box.root / "boxhostd.service"
+    unit.write_text("old unit\n")
+    broker_env = box.root / "broker.env"
+    broker_env.write_text("OLD=1\n")
+    selected = box.root / "images.json"
+    selected.write_text('{"current":"harness-old"}\n')
+    with box.env_file.open("a") as stream:
+        stream.write("FAKE_FLAG=old\n")
+    env = {"BOX_HARNESS_ROOT": str(host), "BOXHOSTD_UNIT_FILE": str(unit),
+           "BROKER_ENV_FILE": str(broker_env), "BOX_IMAGE_STATE_FILE": str(selected)}
+    for key in ("BOX_STORE_DEVICE_UNIT_FILE", "BOX_STORE_MOUNT_UNIT_FILE",
+                "BOX_STORE_GROW_UNIT_FILE", "BOX_STORE_GROW_TIMER_FILE",
+                "BOXHOSTD_ENV_FILE", "BROKER_RCLONE_FILE", "BOX_STORE_CONFIG_FILE"):
+        env[key] = str(box.root / key.lower())
     forward = box.run(NEW_IMAGE, **env)
     assert forward.returncode == 0, forward.stdout + forward.stderr
     assert (host / "tinyassets/release.txt").read_text() == "new\n"
+    from scripts.host_service_bundle import BOXHOSTD_HOST_PROBES, service_bundle
+
+    manifest_source = box.root / "manifest-source"
+    with tarfile.open(box.stage / "boxhostd-install.tar") as archive:
+        archive.extractall(manifest_source)
+    installed = set(service_bundle(manifest_source, [manifest_source / "deploy" / unit for unit in
+                                                 ("boxhostd.service", "box-store-device.service",
+                                                  "box-store-grow.service")],
+                                   entrypoints=BOXHOSTD_HOST_PROBES))
+    installed.update(Path(path).name for path in tuple(installed) if len(Path(path).parts) == 2
+                     and Path(path).parts[0] in {"deploy", "scripts"}
+                     and Path(path).name != "__init__.py")
+    expected = {path.split("/", 1)[0] for path in installed}
+    expected.update({".host-service-files.json", "current", "harness-current"})
+    snap = Path(box.pointer.read_text().strip())
+    assert set((snap / "host/root-manifest").read_text().splitlines()) == expected
+    if interrupt_restore:
+        wrapper = box.bin / "mv"
+        wrapper.write_text(
+            '#!/bin/sh\ncase "$*" in *".restore-stage."*"/tinyassets"*) exit 1;; esac\n'
+            'exec /usr/bin/mv "$@"\n', encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        interrupted = box.run("--restore-bundle", OLD_IMAGE, **env)
+        assert _result(interrupted) == "rollback_failed"
+        assert box.dirty.read_text().strip() == str(snap)
+        wrapper.unlink()
     restored = box.run("--restore-bundle", OLD_IMAGE,
                        FAKE_DOCKER_EXPECT_RESTORED_HOST=str(host), **env)
     assert _result(restored) == "deployed", restored.stdout + restored.stderr
     for directory in ("tinyassets", "deploy", "scripts"):
         assert (host / directory / "release.txt").read_text() == "old\n"
+    if domains_old:
+        assert (host / "domains/release.txt").read_text() == "old\n"
+    else:
+        assert not (host / "domains").exists()
     assert (host / "harness-current").readlink() == Path("harness-old")
+    assert (host / "current").readlink() == Path("release-old")
+    assert unit.read_text() == "old unit\n"
+    assert broker_env.read_text() == "OLD=1\n"
+    assert not Path(env["BOXHOSTD_ENV_FILE"]).exists()
+    assert selected.read_text() == '{"current":"harness-old"}\n'
+    assert not Path(env["BOX_STORE_CONFIG_FILE"]).exists()
+    assert "FAKE_FLAG=new" not in box.env_file.read_text()
+    assert "FAKE_FLAG=old" in box.env_file.read_text()
+    assert "FAKE_FLAG=new" not in box.daemon_env_file.read_text()
+    events = box.event_log.read_text().splitlines()
+    restart = max(i for i, event in enumerate(events)
+                  if event == "systemctl restart boxhostd.service")
+    converge = max(i for i, event in enumerate(events)
+                   if event.startswith("docker compose ") and " up " in event)
+    assert restart < converge
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+@pytest.mark.parametrize("box_state", ["invalid", "unreadable"])
+def test_every_post_install_layout_failure_restores_bundle(box: Box, box_state):
+    box.stage_bundle()
+    if box_state == "invalid":
+        box.set_docker_state(active_box_layout={NEW_IMAGE: "invalid"})
+    else:
+        box.set_docker_state(box_layout_read_rc=1)
+    failed = box.run(NEW_IMAGE)
+    assert failed.returncode != 0
+    assert box.live()["compose"] == OLD_COMPOSE
+    assert not box.dirty.exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_harness_install_failure_restores_bundle(box: Box):
+    _, env, _, _ = _owner_box_cutover(box)
+    box.stage_bundle()
+    box.set_docker_state(create_fail=True)
+    before = box.live()
+    failed = box.run(NEW_IMAGE, **env)
+    assert failed.returncode == 1
+    assert _result(failed) == "harness_invalid"
+    assert box.live() == before
+    assert not box.dirty.exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_dirty_marker_stays_through_post_install_preflight(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(require_dirty_during_layout=True)
+    deployed = box.run(NEW_IMAGE)
+    assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+    assert not box.dirty.exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_required_host_bundle_refuses_absent_stage(box: Box):
+    failed = box.run(NEW_IMAGE, BOXHOSTD_BUNDLE_REQUIRED="1")
+    assert _result(failed) == "bundle_invalid"
+    assert box.live()["compose"] == OLD_COMPOSE
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_post_deploy_hold_does_not_succeed_with_a_dirty_bundle(box: Box):
+    box.dirty.write_text(str(box.snapshots / "interrupted") + "\n")
+    held = box.run("--post-deploy-failure", NEW_IMAGE,
+                   IMAGE_ROLLBACK_ALLOWED="0")
+    assert held.returncode == 3
+    assert _result(held) == "bundle_dirty"
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_host_snapshot_manifest_is_exact_real_install_set(tmp_path):
+    script = REPO / "scripts/host_service_bundle.py"
+    units = ("boxhostd.service", "box-store-device.service", "box-store-grow.service")
+    root = tmp_path / "installed"
+    command = ["python3", str(script), "--root", str(REPO), "--flat-scripts",
+               "--boxhostd-probes"]
+    listed = subprocess.run([*command, "--list-install-paths", *units],
+                            capture_output=True, text=True, check=True)
+    subprocess.run([*command, "--install-to", str(root), *units],
+                   capture_output=True, text=True, check=True)
+    actual = {str(path.relative_to(root)).replace("\\", "/")
+              for path in root.rglob("*") if path.is_file() or path.is_symlink()}
+    assert actual == set(listed.stdout.splitlines())
 
 
 def _result(completed: subprocess.CompletedProcess) -> str:
@@ -2013,3 +2180,9 @@ def test_flipping_active_box_layout_without_a_gate_refuses(box: Box, gate, reaso
     else:
         assert "stop --time" not in calls
         assert "start tinyassets-daemon" in calls
+        events = box.event_log.read_text().splitlines()
+        restored = max(i for i, event in enumerate(events)
+                       if event == "systemctl daemon-reload")
+        restarted = max(i for i, event in enumerate(events)
+                        if event == "docker start tinyassets-daemon")
+        assert restored < restarted

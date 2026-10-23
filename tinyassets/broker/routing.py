@@ -34,6 +34,7 @@ class BrokerLifecycle:
         # Shared awake-slot reservation: scheduled waiters release this condition;
         # an interactive eviction and its replacement launch reserve one slot.
         self._capacity = asyncio.Condition()
+        self._background_host_slots = asyncio.Semaphore(self.config.volume_concurrency)
         self._reservations = {}
         self._instance = None
 
@@ -182,8 +183,30 @@ class BrokerLifecycle:
             self._capacity.notify_all()
 
     async def host_call(self, function, *args, **kwargs):
-        """Forward lifecycle work; boxhostd owns execution capacity and priority."""
-        return await thread_work(function, *args, **kwargs)
+        """Queue background work on the event loop, preserving workers for wakes."""
+        from tinyassets.boxes.daemon_control import REQUEST_DRIVEN
+
+        if REQUEST_DRIVEN.get():
+            return await thread_work(function, *args, **kwargs)
+        # The host has one additional reserved slot for a requested wake. Do
+        # not occupy the shared executor while waiting for background capacity.
+        slots = getattr(self, "_background_host_slots", None)
+        if slots is None:
+            slots = self._background_host_slots = asyncio.Semaphore(
+                self.config.volume_concurrency)
+        async with slots:
+            return await thread_work(function, *args, **kwargs)
+
+    async def readiness(self):
+        """Include durable work that the next waker tick has not dispatched."""
+        from tinyassets.broker.owner_volumes import pending
+
+        if not self.identities.work_ready:
+            return {"ready": False}
+        if any(not task.done() for task in self.tasks.values()):
+            return {"ready": False}
+        return {"ready": not bool(await asyncio.to_thread(
+            pending, self.identities, include_running=False))}
 
     async def deploy(self, image):
         """C12: publish once, then use ordinary sleep; wake remains demand-driven."""

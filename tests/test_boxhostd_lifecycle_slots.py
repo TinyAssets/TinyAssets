@@ -1,5 +1,8 @@
 """A busy host queues broker lifecycle work and gives requested wakes priority."""
 
+import asyncio
+import os
+import socket
 import threading
 import time
 from types import SimpleNamespace
@@ -7,6 +10,108 @@ from types import SimpleNamespace
 import pytest
 
 from tinyassets.boxes.host_service import HostService
+
+
+@pytest.mark.verifies("owner-daemon-in-box:T1")
+def test_broker_queue_waits_without_consuming_the_shared_worker_pool():
+    from tinyassets.boxes.daemon_control import REQUEST_DRIVEN
+    from tinyassets.broker.routing import BrokerLifecycle
+
+    async def scenario():
+        broker = BrokerLifecycle.__new__(BrokerLifecycle)
+        broker.config = SimpleNamespace(volume_concurrency=3)
+        entered = threading.Event()
+        release = threading.Event()
+        started = [0]
+        guard = threading.Lock()
+
+        def background():
+            with guard:
+                started[0] += 1
+                if started[0] == 3:
+                    entered.set()
+            release.wait(3)
+
+        tasks = [asyncio.create_task(broker.host_call(background)) for _ in range(40)]
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert started[0] == 3
+            token = REQUEST_DRIVEN.set(True)
+            try:
+                assert await asyncio.wait_for(broker.host_call(lambda: "awake"), 1) == "awake"
+            finally:
+                REQUEST_DRIVEN.reset(token)
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.verifies("owner-daemon-in-box:T1")
+def test_broker_readiness_counts_durable_pending_and_running_work(monkeypatch):
+    from tinyassets.broker import owner_volumes
+    from tinyassets.broker.routing import BrokerLifecycle
+
+    async def scenario():
+        broker = BrokerLifecycle.__new__(BrokerLifecycle)
+        broker.identities = SimpleNamespace(work_ready=True)
+        broker.tasks = {}
+        monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: ["owner"])
+        assert await broker.readiness() == {"ready": False}
+        monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: [])
+        broker.identities.work_ready = False
+        assert await broker.readiness() == {"ready": False}
+        broker.identities.work_ready = True
+        assert await broker.readiness() == {"ready": True}
+        release = asyncio.Event()
+        broker.tasks["owner"] = asyncio.create_task(release.wait())
+        try:
+            assert await broker.readiness() == {"ready": False}
+        finally:
+            release.set()
+            await broker.tasks["owner"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.verifies("owner-daemon-in-box:T1")
+def test_broker_connection_reaches_serve_when_shared_nonbroker_slots_are_full(
+    tmp_path, monkeypatch,
+):
+    from tinyassets.boxes import host_service
+
+    service = HostService(None, None, None, SimpleNamespace())
+    service._slots = threading.BoundedSemaphore(1)
+    service._slots.acquire()
+    monkeypatch.setattr(host_service, "peer", lambda _: (os.getpid(), 1002, 1002))
+    monkeypatch.setattr(host_service.os, "chown", lambda *_: None)
+    accepted = threading.Event()
+    stop = threading.Event()
+    path = tmp_path / "daemon.sock"
+
+    def handle(connection):
+        accepted.set()
+        connection.close()
+
+    server = threading.Thread(target=service.serve, args=(path, os.getgid(), handle, stop))
+    server.start()
+    try:
+        for _ in range(100):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                try:
+                    client.connect(str(path))
+                    break
+                except (FileNotFoundError, ConnectionRefusedError):
+                    time.sleep(0.01)
+        else:
+            pytest.fail("boxhostd socket never began listening")
+        assert accepted.wait(2)
+    finally:
+        stop.set()
+        service._slots.release()
+        server.join(3)
+        assert not server.is_alive()
 
 
 @pytest.mark.verifies("owner-daemon-in-box:T1")
@@ -105,6 +210,7 @@ def test_request_preflight_priority_reaches_host_control_message(monkeypatch):
     from tinyassets.boxes import daemon_control
 
     sent = []
+    deadlines = []
 
     class Socket:
         def __enter__(self):
@@ -116,7 +222,11 @@ def test_request_preflight_priority_reaches_host_control_message(monkeypatch):
         def settimeout(self, _):
             pass
 
-    monkeypatch.setattr(daemon_control, "connect", lambda *_, **__: (Socket(), None))
+    def connect(*_, **kwargs):
+        deadlines.append(kwargs["timeout"])
+        return Socket(), None
+
+    monkeypatch.setattr(daemon_control, "connect", connect)
     monkeypatch.setattr(daemon_control, "send", lambda _, document: sent.append(document))
     monkeypatch.setattr(daemon_control, "receive", lambda *_: {"awake": False})
     token = daemon_control.REQUEST_DRIVEN.set(True)
@@ -125,3 +235,4 @@ def test_request_preflight_priority_reaches_host_control_message(monkeypatch):
     finally:
         daemon_control.REQUEST_DRIVEN.reset(token)
     assert sent == [{"lifecycle": "status", "uid": 300001, "_request_driven": True}]
+    assert deadlines == [120]

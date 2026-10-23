@@ -376,6 +376,7 @@ class _Connection:
                 if set(doc) != {"op", "operation", "arguments"}:
                     raise ValueError("invalid lifecycle command")
                 operations = {"deploy": self._server.routing.deploy,
+                              "readiness": self._server.routing.readiness,
                               "wake": self._server.routing.wake,
                               "sleep": self._server.routing.sleep,
                               "restore": self._server.routing.restore}
