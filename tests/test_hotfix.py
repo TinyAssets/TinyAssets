@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.verifies(
+    "development-coordination-runtime:Fixes reach production through a reversible hotfix first"
+)
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/hotfix.py"
 spec = importlib.util.spec_from_file_location("hotfix", SCRIPT)
 hotfix = importlib.util.module_from_spec(spec)
