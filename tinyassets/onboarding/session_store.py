@@ -16,9 +16,8 @@ cross-user disclosure wearing a different hat.
 dir* that is not this process: a stray backup, a detached volume, a container
 sidecar, a mounted-in tool, a restored snapshot. It is **not** a boundary against
 code executing inside this process — that reader can call ``read()`` itself. That
-is a separate, already-filed finding
-(``docs/concerns/2026-08-28-user-code-runs-in-process.md``) whose fix is a process
-split, and encryption must not be sold as a substitute for it. Likewise the
+is the owner-box process split (ADR-019; S8 in docs/architecture.md), and
+encryption must not be sold as a substitute for it. Likewise the
 compose ``worker*`` fleet services mount ``/data`` and copy the environment; they
 are being retired under ``openspec/changes/user-owned-automations`` and are
 deliberately out of scope here.

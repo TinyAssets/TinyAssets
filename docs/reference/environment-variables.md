@@ -307,10 +307,9 @@ A request reaches its owner's registered devices as a notification. Each channel
 
 Installation is disabled by default even when the credential pair is present.
 Before setting `TINYASSETS_OAUTH_CREDENTIALS_INSTALL=true`, verify deployment of
-#4441 and resolve `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md` with
-its Linux isolation proof. Environment filtering alone does not prevent a
-same-UID engine from recovering daemon/PID1 secrets. Until those prerequisites
-are proven, unrelated deploys continue with OAuth disabled. Disabled mode does
+#4441. Engine endpoints run in the owner box without platform credentials
+(ADR-019, #5182); environment filtering is not that isolation boundary. Until
+that deployment is verified, unrelated deploys continue with OAuth disabled. Disabled mode does
 not consume or validate the credential pair and selects removal of retained
 keys; setting the variable false is the deactivation path on the next deploy.
 No activation or production proof is claimed by this change.

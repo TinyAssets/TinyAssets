@@ -26,10 +26,8 @@ Credential groups classified by their readers:
     Admission/interchange signing, ingress, canary and session credentials.
     Engine tools do not serve these daemon authentication surfaces.
 
-This limits environment inheritance, not credential recovery after an engine
-compromise: engines still share the daemon's UID and PID namespace, including
-access to its exec-time environment through procfs. See
-docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md.
+This limits environment inheritance. Engine endpoints run in the owner box
+without the daemon's platform credentials (ADR-019; S8 in docs/architecture.md).
 """
 from __future__ import annotations
 

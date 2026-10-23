@@ -120,10 +120,11 @@ round 1 (BLOCK) found two ways it bites. The fix is structural, in two layers:
   `tests/test_universe_file_reads_are_bounded.py` scans those modules' AST and
   fails on any raw `read_text`/`read_bytes`/`open`/`yaml.*load`/`json.load`
   outside four reasoned exemptions (cgroup files, slot locks, `.soul.lock`);
-  on the pre-fix tree it reported 15 reads in 3 modules. The ~20 modules that
+  on the pre-fix tree it reported 15 reads in 3 modules.   The ~20 modules that
   read universe files outside the turn path, all of them read-only to the
-  agent, are triaged in
-  `docs/concerns/2026-09-24-universe-file-readers-outside-the-turn-path.md`.
+  agent, were later removed from the shared daemon when #5182 deleted
+  `tinyassets/providers/provider_jail.py` and the shared owner-content path
+  (ADR-019; S8 in docs/architecture.md).
 - **The jail refuses to create the link.** A seccomp filter
   (`universe_tools.seccomp_program`, x86_64 and aarch64; x32 and unknown
   architectures get EPERM for everything) refuses `symlink`, `symlinkat`,

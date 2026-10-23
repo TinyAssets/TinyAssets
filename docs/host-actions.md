@@ -726,8 +726,9 @@ the customer would get nothing for their money.
 
 ### Decide who may sign up — the platform is single-tenant by construction
 
-*2026-08-28, from a cross-family multi-user review. Full finding:
-`docs/concerns/2026-08-28-user-code-runs-in-process.md`.*
+*2026-08-28, from a cross-family multi-user review. The in-process finding
+closed when owner execution moved into the owner box (ADR-019; S8 in
+docs/architecture.md). The notes below record that day's decision.*
 
 Stripe is live and provisioned. Four second-user blockers were found and fixed
 (#2627 session fixation and world-readable tokens, #2629 source-approval gate, #2630
