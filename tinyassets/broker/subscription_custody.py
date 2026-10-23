@@ -28,7 +28,6 @@ def validate_state(state):
 
 
 def operation(data_root, owner, document):
-    from tinyassets.broker.key_service import open_document, seal_document
     from tinyassets.broker.vault import (
         _credential_root,
         _fsync_directory,
@@ -49,8 +48,7 @@ def operation(data_root, owner, document):
     with vault_lock(namespace):
         check_not_deleted(data_root, owner)
         path = _credential_root(namespace) / FILENAME
-        records = (json.loads(open_document(namespace, FILENAME, path.read_bytes()))
-                   if path.exists() else {})
+        records = json.loads(path.read_text()) if path.exists() else {}
         entry = records.get(source)
         if action == "read":
             return entry or {"revision": None, "state": {}}
@@ -71,8 +69,7 @@ def operation(data_root, owner, document):
             if len(json.dumps(records).encode("utf-8")) > MAX_OWNER_BYTES:
                 raise ValueError("native custody owner byte limit exceeded")
         if records:
-            sealed = seal_document(namespace, FILENAME, json.dumps(records).encode())
-            _persist_role_vault(path, sealed.decode())
+            _persist_role_vault(path, json.dumps(records))
         else:
             path.unlink(missing_ok=True)
         _fsync_directory(path.parent)

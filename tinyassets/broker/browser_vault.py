@@ -1,16 +1,68 @@
 """Versioned encrypted browser custody, reachable only on the fenced owner channel."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
 import socket
+from pathlib import Path
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets import rpc_frames as rf
-from tinyassets.broker.admission import digest
 
 MAX_STATE = 2 * 1024 * 1024
+SECRET_ROOT = Path('/var/lib/ta-broker/browser-vault')
+
+
+def key_path(ledger, principal):
+    if SECRET_ROOT.resolve().is_relative_to(ledger._db_path.parent.parent.resolve()):
+        raise ValueError('browser key root must be outside backed-up data')
+    return SECRET_ROOT / (hashlib.sha256(principal.encode()).hexdigest() + '.key')
+
+
+def _sync_directory(path):
+    if os.name == 'posix':
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _owner_key(ledger, principal):
+    """Migrate under the ledger write lock; publish durably before removing legacy."""
+    path = key_path(ledger, principal)
+    legacy = ledger._db_path.parent / 'browser-vault' / path.name
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    old = legacy.read_bytes() if legacy.exists() else None
+    if old is not None and len(old) != 32:
+        raise ValueError('invalid legacy browser key')
+    if not path.exists():
+        temporary = path.with_name('.key-' + secrets.token_hex(16))
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(old if old is not None else AESGCM.generate_key(bit_length=256))
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            temporary.unlink()
+    current = path.read_bytes()
+    if old is not None and current != old:
+        raise ValueError('conflicting browser keys; migration refused')
+    _sync_directory(path.parent)
+    _sync_directory(path.parent.parent)  # Persist a newly created key directory too.
+    if old is not None:
+        legacy.unlink()
+        _sync_directory(legacy.parent)
+    return current
 
 
 def origin(url):
@@ -28,8 +80,6 @@ def origin(url):
 
 
 def local_operation(ledger, *, principal, command_center, document):
-    from tinyassets.broker.key_service import service_for
-
     action = document.get('action')
     ident = document.get('id', '')
     if (action not in {'create', 'list', 'read', 'save', 'revoke', 'capture', 'cancel'}
@@ -86,23 +136,23 @@ def local_operation(ledger, *, principal, command_center, document):
                     and document.get('revision') != revision):
                 raise PermissionError('browser connection changed')
             revision += 1
-        keys = service_for(ledger._data_root)
-        owner = digest(principal)
-        slot = f"browser/{ident}/{revision}"
+        cipher = AESGCM(_owner_key(ledger, principal))
+        aad = json.dumps([1, principal, ident, revision]).encode()
         status = row['status']
         if action in {'save', 'capture', 'cancel'}:
-            old_slot = f"browser/{ident}/{row['revision']}"
+            old_aad = json.dumps([1, principal, ident, row['revision']]).encode()
             sealed = row['sealed']
-            state = (json.loads(keys.open(owner, old_slot, sealed))
+            state = (json.loads(cipher.decrypt(sealed[:12], sealed[12:], old_aad))
                      if sealed else {})
             if action == 'save':
                 state = document['state']
             raw = json.dumps(state).encode()
             if len(raw) > MAX_STATE or not isinstance(state, dict):
                 raise ValueError('browser state exceeds bounds')
+            nonce = secrets.token_bytes(12)
             status = {'capture': 'login', 'cancel': 'needs_login', 'save': 'connected'}[action]
             conn.execute('UPDATE browser_vault SET revision=?,status=?,sealed=? WHERE id=?',
-                         (revision, status, keys.seal(owner, slot, raw), ident))
+                         (revision, status, nonce + cipher.encrypt(nonce, raw, aad), ident))
         elif action == 'revoke':
             conn.execute("UPDATE browser_vault SET revision=?,status='revoked',sealed=? WHERE id=?",
                          (revision, b'', ident))
@@ -110,7 +160,7 @@ def local_operation(ledger, *, principal, command_center, document):
                       status='revoked' if action == 'revoke' else status, account=row['account'])
         if action == 'read':
             sealed = row['sealed']
-            result['state'] = (json.loads(keys.open(owner, slot, sealed))
+            result['state'] = (json.loads(cipher.decrypt(sealed[:12], sealed[12:], aad))
                                if sealed else {})
             result['verify'] = json.loads(row['verify'])
         return result

@@ -240,12 +240,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
-        source: /etc/tinyassets/vault-kms.json
-        target: /etc/tinyassets/vault-kms.json
-        read_only: true
-        bind:
-          create_host_path: false
+      - tinyassets-browser-keys:/var/lib/ta-broker
       - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd
     logging: *tinyassets_log_forwarding
     labels:
@@ -317,6 +312,8 @@ services:
       org.tinyassets.role: log-forwarder
 
 volumes:
+  tinyassets-browser-keys:
+    name: tinyassets-browser-keys
   tinyassets-data:
     name: tinyassets-data
     # Local named volume backed by Docker's default driver. Backups

@@ -574,28 +574,3 @@ os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")
 # keeps those imports available to the Linux suite without a display.
 if not sys.platform.startswith(("win", "darwin")) and not os.environ.get("DISPLAY"):
     os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
-
-
-@pytest.fixture(autouse=True)
-def synthetic_custody_root(monkeypatch):
-    """Custody tests explicitly inject a local root; production has no default.
-
-    The env value crosses a spawned broker. ``service_for`` ignores it when
-    ``TINYASSETS_ENV`` is production.
-    """
-    from tinyassets.broker import key_service
-
-    original = key_service.service_for
-
-    def test_service(root):
-        from tinyassets.owner_runtime import current
-
-        if current() is not None:
-            raise PermissionError("keys are unavailable in owner mode")
-        return original(root)
-
-    if os.environ.get("TINYASSETS_ENV") != "production":
-        monkeypatch.setenv(key_service.TEST_ROOT_ENV, "memory")
-    monkeypatch.setattr(key_service, "service_for", test_service)
-    yield
-    key_service._services.clear()

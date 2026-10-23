@@ -155,9 +155,6 @@ def publish(root, destination):
             work = Path(directory)
             stage = work / "_data"
             _copy_shared(root, stage)
-            from tinyassets.broker.vault_backup import validate_backup
-
-            validate_backup(stage)
             references = _bindings(stage)
             archive = work / f"tinyassets-data-{stamp}.tar.gz"
             # GNU tar preserves shared ownership, ACLs and xattrs for C3 restore.
