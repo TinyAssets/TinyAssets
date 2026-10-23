@@ -1,21 +1,21 @@
 ## 1. K1 — File authority
 
-- [ ] 1.1 Inventory every live knowledge writer and reader in `memory/`, `retrieval/`, `knowledge/`, `daemon_brain.py` and wiki; classify operational records separately. Verify no proposed owner-data work lands in router, broker or waker.
-- [ ] 1.2 Seed the default OKF files and convert one owner at a time inside its box after a verified owner snapshot; prove content preservation, file-edit precedence and safe failure before switching readers and writers.
-- [ ] 1.3 Delete database-canonical knowledge writes and the seed-only path as consumers switch; prove no live knowledge mutation bypasses files.
+- [ ] 1.1 Inventory every row and consumer in the retired `knowledge/`, `memory/`, `daemon_brain.py`, wiki and notes stores; name each file, box-local operational store or file rebuild source. Verify no owner-data work lands in router, broker or waker.
+- [ ] 1.2 After one verified owner snapshot and one write stop, convert knowledge and memory together in-box. Compare IDs, hashes and counts per source; report unconvertible data and refuse cutover on any unclassified or lost row. Prove file-edit precedence.
+- [ ] 1.3 Delete the K1 SQL canonical writers and `universe_bundle.py` seed-only path named in design.md; prove no knowledge mutation bypasses files.
 
 ## 2. K2 — Derived retrieval
 
 - [ ] 2.1 Build in-box graph, text and vector indexes from files, with revision checks and LanceDB connection reuse; prove deletion and rebuild yield equivalent results.
-- [ ] 2.2 Delete independent corpus writes and second-authority retrieval paths; prove the shared layer has no owner-content path or knowledge decision.
+- [ ] 2.2 Delete K2 corpus mutations and `storage_accounting.py` owner-tree reads named in design.md; prove the shared layer has no owner-content path or knowledge decision with the existing T4 structural test.
 
 ## 3. K3 — Memory consolidation
 
-- [ ] 3.1 Convert durable selected memory and mini-brain entries into owner files, then move their readers and writers; prove restart and owner restore preserve them.
-- [ ] 3.2 Delete replaced canonical `memory/` and `daemon_brain.py` stores and promotion writers; prove transactional history remains in its owner store.
+- [ ] 3.1 Move bounded packet and selected-memory readers to files produced by K1; prove restart and owner restore preserve every classified record.
+- [ ] 3.2 Delete K3 host-local packet, wiki and promotion paths named in design.md; keep one box-local `notes.py` writer and prove transactional history remains in its named owner store.
 
 ## 4. K4 — One export and S17 guard
 
-- [ ] 4.1 Expose one authenticated export action and in-box bundle assembler; fold wiki conversion into it and delete the unwired `wiki/okf_export.py` entry point.
-- [ ] 4.2 Prove the exact downloaded bundle runs offline with a supplied model, imports through the sharing format, and contains no credential values.
-- [ ] 4.3 Add the S17 convergence guard to `docs/architecture.md` and the executable shape checks: file edits win, indexes rebuild, one export works, old canonical writers and shared owner-data paths are absent. Mark S17 converged only after live owner proof and targeted Linux checks pass.
+- [ ] 4.1 Expose one authenticated in-box export action, delete `wiki/okf_export.py`, and copy selected public knowledge via `BOX_PUBLISH`; prove public listing with boxes down.
+- [ ] 4.2 Prove the exact downloaded export-manifest bundle runs offline, imports through `boxd.py::import_bundle`, and contains no credential values.
+- [ ] 4.3 Install the exact S17 globs/regexes and zero ceiling in `check_shapes.py` and update `docs/architecture.md`; run the named file-edit, rebuild, export/import, publish and existing T4 tests. Mark S17 converged only after live owner proof.

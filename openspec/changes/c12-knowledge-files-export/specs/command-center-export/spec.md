@@ -2,12 +2,12 @@
 
 ### Requirement: One owner export action produces a portable command center
 
-The system SHALL expose one authenticated owner export action, usable from the UI and by the owner's agent, that creates a consistent downloadable folder or archive. It SHALL contain a versioned bundle manifest, harness and roster files, rules, workspace, wiki and brain files, workflows and schedules, selected memory and UI layouts. It SHALL include a README, license placeholder, secret-excluding `.gitignore`, `.env.example` and a small provider-agnostic local runner using the four tools plus `ta`. Credentials and broker custody SHALL NOT be exported.
+The system SHALL expose one authenticated owner export action, usable from the UI and by the owner's agent, that creates a consistent downloadable folder or archive. Its versioned **export manifest** SHALL define the bundle paths and hashes and be consumed by `tinyassets/boxes/boxd.py::import_bundle` for sharing/import. The bundle SHALL contain harness and roster files, rules, workspace, wiki and brain files, workflows and schedules, selected memory and UI layouts. It SHALL include a README, license placeholder, secret-excluding `.gitignore`, `.env.example` and a small provider-agnostic local runner using the four tools plus `ta`. Credentials and broker custody SHALL NOT be exported.
 
 #### Scenario: Export runs without the platform
 
 - **WHEN** an owner invokes export and supplies a local model connection to the produced folder
-- **THEN** the folder runs without a TinyAssets account and can be imported through the bundle format used for sharing
+- **THEN** the folder runs without a TinyAssets account and its export manifest/archive round-trips through `boxd.py::import_bundle`
 
 #### Scenario: Export omits secrets
 

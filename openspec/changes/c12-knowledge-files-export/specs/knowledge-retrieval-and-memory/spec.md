@@ -12,7 +12,7 @@ The system SHALL keep each owner's durable knowledge in editable files inside th
 #### Scenario: Existing owner converts
 
 - **WHEN** an existing owner is moved to file authority
-- **THEN** conversion and verification run inside that owner's box, preserve existing knowledge, and either commit for that owner or leave its prior serving version intact
+- **THEN** one conversion and verification run inside that owner's box for knowledge and memory together; every row in a retired store is counted by source and classified as file-converted, moved to a named box-local operational store, or derived from a named file source; candidate, rejected and superseded entries, review/promotion history, replay results, cost events and graph facts without file origins are included; IDs, content and per-source counts match or conversion reports unconvertible rows and refuses cutover without silently dropping data
 
 ### Requirement: Knowledge indexes are disposable inside the box
 
@@ -36,6 +36,15 @@ The system SHALL store durable selected memory and mini-brain knowledge in the o
 
 - **WHEN** a box restarts with its memory indexes removed
 - **THEN** selected memory is recovered from owner files and no old memory store must be read as authority
+
+### Requirement: Published knowledge is a publish-time copy
+
+The system SHALL copy explicitly selected public knowledge from the owner's box to the shared published store through `BOX_PUBLISH` at publish time. Shared listings SHALL read that copy only; neither private knowledge indexes nor command-center export SHALL serve public listings. Unpublished knowledge SHALL remain inside the box.
+
+#### Scenario: Public knowledge remains available while boxes sleep
+
+- **WHEN** an owner publishes knowledge and the owner's box is unavailable
+- **THEN** the public listing serves the published copy without opening private owner files or indexes and omits unpublished knowledge
 
 ## REMOVED Requirements
 
@@ -68,6 +77,31 @@ The system SHALL store durable selected memory and mini-brain knowledge in the o
 
 **Reason**: Retrieval must draw from owner files and their derived indexes.
 **Migration**: Preserve bounded injection using in-box file-derived retrieval.
+
+### Requirement: Bounded Combined Daemon Memory Packet
+
+**Reason**: The host-local packet and mini-brain reader cannot exist in the owner-box target shape.
+**Migration**: Assemble bounded context inside the box from owner files and derived indexes.
+
+### Requirement: Tiered Memory Scope Model
+
+**Reason**: Shared cross-owner row filters are not the isolation boundary.
+**Migration**: Keep any sub-user scope policy inside the owner's box; remove shared owner-scope predicates.
+
+### Requirement: Project-Scoped Versioned Key-Value Memory
+
+**Reason**: Its SQLite knowledge values cannot remain a second authority.
+**Migration**: Convert values and history with counted provenance to owner files; retain only explicitly classified transactional records in a named box-local store.
+
+### Requirement: Standalone Temporal Fact Library
+
+**Reason**: The standalone SQLite fact store is a second knowledge authority.
+**Migration**: Convert facts, validity and lineage to owner files; derive temporal reads there.
+
+### Requirement: Episodic Promotion Candidate Scan
+
+**Reason**: A separate candidate promotion path bypasses file authority.
+**Migration**: Preserve candidate state in files and write accepted knowledge to files directly.
 
 ### Requirement: Caller-Owned Mini-Brain Quality Replay
 
