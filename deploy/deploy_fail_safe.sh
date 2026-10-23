@@ -160,6 +160,36 @@ thaw_writers() {
   FROZEN_WRITERS=()
 }
 
+# systemd EnvironmentFile / compose env-file lines are not shell. `source` of
+# an unquoted `-----BEGIN PRIVATE KEY-----` splits on spaces and runs PRIVATE.
+source_env_file() {
+  local file="$1" line key val
+  [ -n "$file" ] && [ -f "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    case "$line" in
+      \#*) continue ;;
+    esac
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    if [[ "$val" == \"*\" ]]; then
+      val="${val#\"}"
+      val="${val%\"}"
+    elif [[ "$val" == \'*\' ]]; then
+      val="${val#\'}"
+      val="${val%\'}"
+    fi
+    export "$key=$val"
+  done < "$file"
+}
+
 box_migration_container() {  # $1 = check|preflight|apply, then module arguments
   local posture=(--user 0)
   local data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data:ro"
@@ -199,7 +229,7 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
           >/dev/null || return 1
         extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots")
       else
-        snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
+        snapshot_dest="$(source_env_file "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
       fi
       # The image bakes HOME=/home/tinyassets, so rclone must be pointed at
       # root's mounted config explicitly (cutover attempt 6, 2026-10-21).
@@ -2117,7 +2147,7 @@ fi
 # Recheck under the host lock: a timer may have reclaimed the prefetch while
 # waiting for turns. Cached immutable images do not need another pull reserve.
 if [ -n "${DISK_HEADROOM_HELPER:-}" ]; then
-  if ! (set -a; source "$ENV_FILE"; set +a
+  if ! (source_env_file "$ENV_FILE"
         python3 "$DISK_HEADROOM_HELPER" --check-headroom --image-ref "$NEW_IMAGE"); then
     err "insufficient disk headroom for candidate pull; prod untouched"; exit 1
   fi
@@ -2430,7 +2460,7 @@ migration_snapshot() {  # prints the archive name backup.sh took
     migration_detail "check=backup_script path=${BACKUP_SCRIPT} present=no"
     return 1
   fi
-  out="$( (set -a; . "$ENV_FILE"; set +a; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"
+  out="$( (source_env_file "$ENV_FILE"; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"
   backup_rc=$?
   if [ "$backup_rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2

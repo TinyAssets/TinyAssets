@@ -15,6 +15,7 @@ from scripts.daemon_image_retention import (
     Refusal,
     check_pull_headroom,
     image_refs,
+    main,
     prune_box_harnesses,
     read_receipt,
     repair_host_symlink_modes,
@@ -225,6 +226,9 @@ def _damaged_host(tmp_path: Path) -> tuple[Path, Path, dict[str, Path]]:
     mawk.parent.mkdir(parents=True)
     mawk.write_bytes(b"\x7fELF" + b"\x00" * 12)
     mawk.chmod(0o600)
+    nawk = host / "usr/bin/nawk"
+    nawk.write_bytes(b"\x7fELF" + b"\x00" * 12)
+    nawk.chmod(0o700)
     script = host / "usr/bin/pager"
     script.write_bytes(b"#!/bin/sh\ntrue\n")
     script.chmod(0o600)
@@ -239,6 +243,10 @@ def _damaged_host(tmp_path: Path) -> tuple[Path, Path, dict[str, Path]]:
     secret.parent.mkdir(parents=True)
     secret.write_bytes(b"secret")
     secret.chmod(0o600)
+    note = host / "usr/share/doc-note"
+    note.parent.mkdir(parents=True)
+    note.write_bytes(b"not a program\n")
+    note.chmod(0o700)
     harness_root = host / "opt/tinyassets/boxhostd"
     leaked = harness_root / ("harness-" + "12" * 32) / "usr/bin"
     leaked.mkdir(parents=True)
@@ -248,7 +256,8 @@ def _damaged_host(tmp_path: Path) -> tuple[Path, Path, dict[str, Path]]:
     (leaked / "ssl").symlink_to("/usr/lib/ssl")
     (leaked / "sshkey").symlink_to("/etc/ssh/ssh_host_key")
     return host, harness_root, {
-        "mawk": mawk, "script": script, "cert": cert, "lib": lib, "secret": secret,
+        "mawk": mawk, "nawk": nawk, "script": script, "cert": cert, "lib": lib,
+        "secret": secret, "note": note,
     }
 
 
@@ -259,7 +268,9 @@ def test_repair_host_symlink_modes_restores_damaged_targets(tmp_path: Path, monk
     repaired = repair_host_symlink_modes(harness_root, host_root=host)
 
     assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
     assert stat.S_IMODE(paths["script"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["note"].stat().st_mode) == 0o700
     assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
     assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
     assert stat.S_IMODE(paths["secret"].stat().st_mode) == 0o600
@@ -281,6 +292,7 @@ def test_prune_repairs_host_modes_before_deleting_the_harness(tmp_path: Path, mo
     assert removed == ["harness-" + "12" * 32]
     assert not (harness_root / ("harness-" + "12" * 32)).exists()
     assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
     assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
     assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
     assert stat.S_IMODE(paths["secret"].stat().st_mode) == 0o600
@@ -303,5 +315,24 @@ def test_check_pull_headroom_repairs_when_asked(tmp_path: Path, monkeypatch):
     check_pull_headroom(docker=Docker(), disk_fn=lambda _path: usage, repair_host_root=host)
 
     assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
     assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
     assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+
+
+def test_apply_repairs_host_modes_before_retain_can_refuse(monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "scripts.daemon_image_retention.repair_host_symlink_modes",
+        lambda *args, **kwargs: calls.append("repair") or [],
+    )
+
+    def retain(**kwargs):
+        assert calls == ["repair"]
+        raise Refusal("current_daemon_unavailable")
+
+    monkeypatch.setattr("scripts.daemon_image_retention.retain", retain)
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    assert main(["--apply", "--prepare-pull"]) == 2
+    assert calls == ["repair"]

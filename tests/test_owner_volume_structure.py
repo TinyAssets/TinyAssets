@@ -7,9 +7,12 @@ to reads through the new volume primitive.
 """
 
 import ast
+import subprocess
 from pathlib import Path
 
 import pytest
+
+from tinyassets.boxes.volumes import OwnerVolumes
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = ("tinyassets/boxes", "tinyassets/broker", "deploy")
@@ -181,6 +184,32 @@ def test_one_lifecycle_and_no_shared_turn_pin():
                  "turn_checkpoint")
     for name in forbidden:
         assert name not in lifecycle and name not in volumes and name not in broker
+
+
+def test_detach_retries_until_a_lingering_loop_device_clears(tmp_path, monkeypatch):
+    monkeypatch.setattr("tinyassets.boxes.volumes.time.sleep", lambda _seconds: None)
+    volumes = OwnerVolumes.__new__(OwnerVolumes)
+    volumes.mount_root = tmp_path / "mounts"
+    volumes.mount_root.mkdir()
+    calls = []
+    probes = iter([["/dev/loop7"], ["/dev/loop7"], [], []])
+
+    def loops(uid):
+        assert uid == 300001
+        return next(probes)
+
+    def run(*args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    volumes._loops = loops
+    volumes._run = run
+    volumes._mounts = lambda: []
+    volumes._detach(300001)
+    assert calls == [
+        ("losetup", "--detach", "/dev/loop7"),
+        ("losetup", "--detach", "/dev/loop7"),
+    ]
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:T4')

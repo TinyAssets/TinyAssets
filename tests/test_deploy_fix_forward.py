@@ -330,3 +330,36 @@ def test_unreadable_cutover_state_cannot_fall_through_to_rollback(box, receipt, 
     assert result.returncode == 3, result.stdout + result.stderr
     assert _result(result) == "rollback_needs_restore"
     assert (box.runtime / "compose.yml").read_bytes() == expected
+
+
+def test_source_env_file_exports_an_unquoted_private_key(tmp_path):
+    env = tmp_path / "env"
+    env.write_text(
+        "\n# comment\n"
+        "BACKUP_DEST=spaces:/snapshots/owner-snapshots\n"
+        "BOX_KEY=-----BEGIN PRIVATE KEY-----\n"
+        'export QUOTED="-----BEGIN PRIVATE KEY-----"\n'
+        "not a assignment\n",
+        encoding="utf-8",
+    )
+    script = REPO / "deploy/deploy_fail_safe.sh"
+    text = script.read_text(encoding="utf-8")
+    assert 'source "$ENV_FILE"' not in text
+    assert '. "$ENV_FILE"' not in text
+    assert text.count('source_env_file "$ENV_FILE"') == 3
+    completed = subprocess.run(
+        ["bash", "-c", """
+set -euo pipefail
+eval "$(sed -n '/^source_env_file() {$/,/^}$/p' "$1")"
+source_env_file "$2"
+printf 'BACKUP_DEST=%s\\n' "$BACKUP_DEST"
+printf 'BOX_KEY=%s\\n' "$BOX_KEY"
+printf 'QUOTED=%s\\n' "$QUOTED"
+""", "bash", str(script), str(env)],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "PRIVATE: command not found" not in completed.stderr
+    assert "BACKUP_DEST=spaces:/snapshots/owner-snapshots" in completed.stdout
+    assert "BOX_KEY=-----BEGIN PRIVATE KEY-----" in completed.stdout
+    assert "QUOTED=-----BEGIN PRIVATE KEY-----" in completed.stdout

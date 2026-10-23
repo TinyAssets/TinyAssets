@@ -532,9 +532,15 @@ def repair_host_symlink_modes(
             st = os.lstat(fs_path)
         except OSError:
             return
-        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600:
+        imode = stat.S_IMODE(st.st_mode)
+        if not stat.S_ISREG(st.st_mode) or imode not in (0o600, 0o700):
             return
-        _chmod(logical, fs_path, _repair_file_mode(logical, fs_path, direct=True))
+        mode = _repair_file_mode(logical, fs_path, direct=True)
+        # A symlink listed as a directory was chmod'd to 0o700. Only an
+        # executable is restored from that mode; a data file stays put.
+        if imode == 0o700 and mode != 0o755:
+            return
+        _chmod(logical, fs_path, mode)
 
     def _restore_link(fs_path: str) -> None:
         try:
@@ -559,11 +565,11 @@ def repair_host_symlink_modes(
                 logical, resolved,
                 0o1777 if logical in _REPAIR_STICKY else 0o755,
             )
-        elif stat.S_ISREG(st.st_mode) and imode == 0o600:
-            _chmod(
-                logical, resolved,
-                _repair_file_mode(logical, resolved, direct=False),
-            )
+        elif stat.S_ISREG(st.st_mode) and imode in (0o600, 0o700):
+            mode = _repair_file_mode(logical, resolved, direct=False)
+            if imode == 0o700 and mode != 0o755:
+                return
+            _chmod(logical, resolved, mode)
 
     def _restore_walk_dir(logical: str, fs_path: str) -> None:
         if _repair_protected(logical) or os.path.islink(fs_path):
@@ -955,6 +961,12 @@ def main(argv=None):
     parser.add_argument("--image-ref", default="")
     options = parser.parse_args(argv)
     try:
+        # Repair before retain(). A stopped daemon raises
+        # current_daemon_unavailable inside retain and would otherwise skip
+        # the host-mode repair on --apply --prepare-pull.
+        if ((options.apply or options.prepare_pull or options.check_headroom)
+                and hasattr(os, "geteuid") and os.geteuid() == 0):
+            repair_host_symlink_modes()
         if options.check_headroom:
             check_pull_headroom(image_ref=options.image_ref)
             print(json.dumps(dict(status="pull_headroom_ok")))
