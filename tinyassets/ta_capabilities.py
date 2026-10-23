@@ -350,22 +350,9 @@ class Capabilities:
         return {"result": result}
 
     async def call_model(self, arguments):
-        from tinyassets.exceptions import AllProvidersExhaustedError
         from tinyassets.providers.model_call import call
 
-        fallbacks = (arguments.get("fallbacks", []) if isinstance(arguments, dict)
-                     else None)
-        if not isinstance(fallbacks, list):
-            return await self._model_request(arguments, call)
-        for index in range(len(fallbacks) + 1):
-            trial = (arguments if index == 0 else
-                     {**arguments, "model": fallbacks[index - 1], "fallbacks": []})
-            try:
-                return await self._model_request(trial, call)
-            except (ModelSourceUnavailable, AllProvidersExhaustedError):
-                if index == len(fallbacks):
-                    raise
-        raise AssertionError("unreachable model fallback sequence")
+        return await self._model_request(arguments, call)
 
     def _model_request(self, arguments, invoke, *, purpose="reply"):
         """The request carries content only; its authority comes from this launch."""
@@ -419,8 +406,7 @@ class Capabilities:
         fallbacks = arguments.get("fallbacks", [])
         if not isinstance(fallbacks, list):
             raise ValueError("model fallbacks must be a list")
-        for value in fallbacks:
-            parse_ref(value)
+        fallbacks = tuple(parse_ref(value) for value in fallbacks)
         row = UsageStore(self.root.parent).resolve_launch_reference(
             self.context.owner, self.context.universe, self.model_reference)
         from tinyassets.providers.served_model_plan import connected_sources
@@ -469,6 +455,8 @@ class Capabilities:
         binding_revision = int(binding["revision"])
         if model is not None and model.connection_id not in admitted:
             raise ModelSourceUnavailable("requested model is not an admitted live source")
+        if any(ref.connection_id not in admitted for ref in fallbacks):
+            raise ModelSourceUnavailable("fallback model is not an admitted live source")
         if model is None:
             from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 
@@ -480,7 +468,8 @@ class Capabilities:
                 if candidate.ref.connection_id in admitted), None)
             if model is None:
                 raise PermissionError("allocation has no admitted live model")
-        if tools and not model.connection_id.startswith("api_key_http:"):
+        if tools and any(not ref.connection_id.startswith("api_key_http:")
+                         for ref in (model, *fallbacks)):
             raise ValueError("model tools require an HTTP model connection")
         budget = TurnRequestBudget.join(self.root.parent, self.context.owner,
                                         self.context.universe, row["usage_id"])
@@ -498,7 +487,7 @@ class Capabilities:
             prompt = "\n".join(f"{item['role']}: {item['content']}" for item in messages
                                if item["role"] != "system")
             request = ModelCall(
-                model=model, fallbacks=(), purpose=purpose, origin="ta",
+                model=model, fallbacks=fallbacks, purpose=purpose, origin="ta",
                 context=ModelContext(
                     prompt=prompt, system=system,
                     config=ModelConfig(
