@@ -196,7 +196,7 @@ def _extract_and_index_kg(
     entities = [_build_entity(e) for e in parsed.get("entities", [])]
     for entity in entities:
         try:
-            kg.add_entity(entity, scope=scope)
+            _write_entity_file(kg, entity, scope)
         except Exception as e:
             logger.warning("Failed to add entity %s: %s", entity.get("entity_id", "?"), e)
 
@@ -204,7 +204,7 @@ def _extract_and_index_kg(
     edges = [_build_edge(r) for r in parsed.get("relationships", [])]
     for edge in edges:
         try:
-            kg.add_edge(edge, scope=scope)
+            _write_edge_file(kg, edge, scope)
         except Exception as e:
             logger.warning(
                 "Failed to add edge %s->%s: %s",
@@ -218,7 +218,7 @@ def _extract_and_index_kg(
     ]
     if facts:
         try:
-            kg.add_facts(facts, scope=scope)
+            _write_fact_files(kg, facts, scope)
         except Exception as e:
             logger.warning("Failed to add %d facts: %s", len(facts), e)
 
@@ -280,7 +280,7 @@ def _regex_fallback_kg(
             "access_tier": 0,
         })
         try:
-            kg.add_entity(entity, scope=scope)
+            _write_entity_file(kg, entity, scope)
             entities_added += 1
         except Exception as e:
             logger.warning("Regex fallback: failed to add entity %s: %s", entity_id, e)
@@ -289,6 +289,33 @@ def _regex_fallback_kg(
         logger.info("Regex fallback indexed %d character entities for %s", entities_added, chunk_id)
 
     return {"entities": entities_added, "edges": 0, "facts": 0}
+
+
+def _graph_owner(kg: Any):
+    from pathlib import Path
+
+    database = str(getattr(kg, "_db_path", "") or "")
+    if not database or database == ":memory:":
+        raise ValueError("knowledge files require an owner database path")
+    return Path(database).parent
+
+
+def _write_entity_file(kg: Any, entity: Any, scope: Any) -> None:
+    from tinyassets.knowledge_authority import write_graph_entity
+
+    write_graph_entity(_graph_owner(kg), entity, scope=scope)
+
+
+def _write_edge_file(kg: Any, edge: Any, scope: Any) -> None:
+    from tinyassets.knowledge_authority import write_graph_edge
+
+    write_graph_edge(_graph_owner(kg), edge, scope=scope)
+
+
+def _write_fact_files(kg: Any, facts: Any, scope: Any) -> None:
+    from tinyassets.knowledge_authority import write_graph_facts
+
+    write_graph_facts(_graph_owner(kg), facts, scope=scope)
 
 
 def _index_vector_chunk(

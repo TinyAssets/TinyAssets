@@ -1,8 +1,8 @@
 ## 1. K1 — File authority
 
-- [ ] 1.1 Inventory every row and consumer in the retired `knowledge/`, `memory/`, `daemon_brain.py`, wiki and notes stores; name each file, box-local operational store or file rebuild source. Verify no owner-data work lands in router, broker or waker.
-- [ ] 1.2 After one verified owner snapshot and one write stop, convert knowledge and memory together in-box. Compare IDs, hashes and counts per source; report unconvertible data and refuse cutover on any unclassified or lost row. Prove file-edit precedence.
-- [ ] 1.3 Delete the K1 SQL canonical writers and `universe_bundle.py` seed-only path named in design.md; prove no knowledge mutation bypasses files.
+- [x] 1.1 Inventory every row and consumer in the retired `knowledge/`, `memory/`, `daemon_brain.py`, wiki and notes stores; name each file, box-local operational store or file rebuild source. Verify no owner-data work lands in router, broker or waker.
+- [x] 1.2 After one verified owner snapshot and one write stop, convert knowledge and memory together in-box. Compare IDs, hashes and counts per source; report unconvertible data and refuse cutover on any unclassified or lost row. Prove file-edit precedence.
+- [x] 1.3 Delete the K1 SQL canonical writers and `universe_bundle.py` seed-only path named in design.md; prove no knowledge mutation bypasses files.
 
 ## 2. K2 — Derived retrieval
 

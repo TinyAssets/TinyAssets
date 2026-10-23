@@ -689,6 +689,14 @@ ROOT_ENTRIES: dict[str, str] = {
     "checkpoints.db": "platform: legacy single-tenant domain store",
     "knowledge.db": "platform: legacy single-tenant domain store",
     "story.db": "platform: legacy single-tenant domain store",
+    # File-authority conversion reads these beside knowledge.db on the owner
+    # root. Selected rows become files; the databases are the legacy domain
+    # stores, not a second quota account.
+    "episodic.db": "platform: legacy single-tenant domain store",
+    "temporal.db": "platform: legacy single-tenant domain store",
+    "versions.db": "platform: legacy single-tenant domain store",
+    "draft_versions.db": "platform: legacy single-tenant domain store",
+    "promises.db": "platform: legacy single-tenant domain store",
     "wiki_trigger_attempts.db": "platform: trigger bookkeeping",
     "ledger.json": "platform: legacy ledger",
     "outbound.db": "platform: outbound connection ledger -- credential-adjacent, "

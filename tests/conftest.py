@@ -460,6 +460,35 @@ def _stop_workspace_sweepers_between_tests():
         assert runs._stop_all_workspace_sweepers(timeout_s=2)
 
 
+@pytest.fixture(autouse=True)
+def _finish_publication_preview_threads():
+    """No test may leave the process-wide publication preview slot held.
+
+    A publish starts one daemon thread named ``publication-preview``. Until
+    that render ends it holds the single preview slot, and the next publish in
+    this process records ``preview_status=unavailable`` without rendering.
+    The render's own wall clock is 60s; wait slightly past that, then refuse
+    to hand a live preview thread to the next test.
+    """
+    yield
+    import threading
+    import time
+
+    deadline = time.monotonic() + 70
+    for thread in threading.enumerate():
+        if thread.name != "publication-preview" or not thread.is_alive():
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(remaining)
+    leaked = [
+        thread for thread in threading.enumerate()
+        if thread.name == "publication-preview" and thread.is_alive()
+    ]
+    assert leaked == []
+
+
 
 
 @pytest.fixture(autouse=True)
