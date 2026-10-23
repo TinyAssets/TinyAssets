@@ -30,6 +30,10 @@
       "config.js",
       "package.json"
     ],
+    "publish": [{
+      "provider": "generic",
+      "url": "https://github.com/TinyAssets/TinyAssets/releases/download/desktop-chat-latest/"
+    }],
     "win": {
       "icon": "../assets/brand/tinyassets-app.ico",
       "artifactName": "TinyAssetsChat-${version}-${arch}-win.${ext}",
@@ -51,5 +55,8 @@
       "target": "AppImage",
       "category": "Utility"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }
