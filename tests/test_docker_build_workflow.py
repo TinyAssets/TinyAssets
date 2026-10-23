@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
+import pytest
+
 _WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/docker-build.yml"
+
+pytestmark = pytest.mark.verifies("owner-daemon-in-box:C4")
 
 
 def test_admitted_smoke_runs_unprivileged_as_the_daemon_user():
