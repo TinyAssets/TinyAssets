@@ -534,7 +534,10 @@ def evaluate(
     # comparison did not explain (collection error, usage error, no tests run).
     # Exit codes: 0 ok, 1 tests failed (already explained above), 2 interrupted,
     # 4 usage error, 5 no tests collected.
-    unexplained = [code for code in pytest_exits if code not in (0, 1)]
+    unexplained = [
+        code for code in pytest_exits
+        if code not in (0, 1) or (code == 1 and not failing)
+    ]
     if unexplained:
         summarise(
             [
@@ -1400,10 +1403,29 @@ def main() -> int:
     exits = [proc.returncode]
     if args.affected:
         heading = f"### Affected tests{_shard_label(args)}"
-        # Exit 5 (nothing collected) is honest here: a selected file can hold
-        # only `slow` tests, which `-m "not slow"` deselects.
-        if not args.oracle_venues:
-            exits = [0 if code == 5 else code for code in exits]
+        # Passing testcase elements usually have no children, so their XML
+        # truth value is false. Check existence, not element truthiness.
+        reported_case = next(ET.parse(junit).getroot().iter("testcase"), None) is not None
+        # Exit 5 is honest only when every selected file positively collects
+        # tests without the marker filter and none survives `not slow`.
+        # The oracle may also return 5 when a proof vanished, so never waive
+        # the exit merely because its junit has no cases.
+        if proc.returncode == 5 and not reported_case and selection is not None:
+            _, slow_only = collectible_under_gate(selection)
+            if set(selection) <= set(slow_only):
+                exits = [0]
+                if args.shard:
+                    _write_shard_manifest(manifest, args, selection, pytest_exit=0)
+                summarise([
+                    heading, "",
+                    "All selected tests were deselected by the not-slow marker; nothing to run.",
+                ])
+        if proc.returncode == 0 and selection and not reported_case:
+            summarise([
+                heading, "",
+                "**FAILED - a non-empty selection reported no test cases.**",
+            ])
+            return 1
     elif args.shard:
         heading = f"### Required tests - shard {args.shard[0]}/{args.shard[1]}"
     else:
