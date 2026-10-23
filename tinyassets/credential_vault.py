@@ -225,7 +225,13 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     payload = None
     malformed = ""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        from tinyassets.broker.key_service import open_document
+        from tinyassets.universe_files import read_data_path
+
+        raw = read_data_path(path)
+        if raw is None:
+            return []
+        payload = json.loads(open_document(Path(universe_dir), path.name, raw))
     except UnicodeDecodeError:
         # `UnicodeDecodeError.object` is the whole file too — a second channel
         # with the same consequence as JSONDecodeError.doc, found only because

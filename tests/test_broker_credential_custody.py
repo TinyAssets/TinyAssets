@@ -37,6 +37,9 @@ def test_no_vault_writer_outside_broker():
 
 
 def _broker_process(root, path, channel):
+    from tests.support.vault_keys import install
+
+    install(root)
     from tinyassets.broker import vault
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore

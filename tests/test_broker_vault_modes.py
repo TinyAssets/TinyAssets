@@ -21,7 +21,9 @@ pytestmark = [
 @pytest.fixture
 def universe(tmp_path, monkeypatch):
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
-    return tmp_path
+    from tinyassets.credential_vault import custody_namespace
+
+    return custody_namespace(tmp_path, "owner")
 
 
 def persist(universe, token):

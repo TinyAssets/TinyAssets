@@ -661,6 +661,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
     "ops.db": "platform: bounded broker idempotency records under .broker/state",
+    "vault-keys.db": "platform: broker-only wrapped owner credential keys",
     "owner-identities.db": "platform: broker owner-identity bindings under .broker/state",
     ".run-execution-locks": "platform: locks",
     ".run-file-operation-locks": "platform: locks",

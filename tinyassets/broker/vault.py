@@ -82,7 +82,9 @@ def _persist_credential_vault_file(
         json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
         + "\n"
     )
-    _persist_role_vault(path, data)
+    from tinyassets.broker.key_service import seal_document
+
+    _persist_role_vault(path, seal_document(universe, path.name, data.encode()).decode())
 
 
 def _persist_role_vault(path: Path, data: str) -> None:
@@ -265,3 +267,6 @@ def erase_owner(data_root, principal):
 
         (_credential_root(namespace) / FILENAME).unlink(missing_ok=True)
         _fsync_directory(_credential_root(namespace))
+        from tinyassets.broker.key_service import erase_owner_keys
+
+        erase_owner_keys(data_root, namespace.name)
