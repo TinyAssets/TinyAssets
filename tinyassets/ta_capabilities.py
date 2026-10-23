@@ -558,7 +558,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
         from fastmcp.exceptions import ValidationError as MCPValidationError
         from pydantic import ValidationError
 
-        from tinyassets.engine_mcp_server import bounded_tool_error
+        from tinyassets.universe_tools import bounded_tool_error
 
         try:
             result = await server.mcp.call_tool(name, arguments)

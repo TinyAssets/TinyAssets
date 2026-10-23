@@ -363,13 +363,6 @@ _EFFECT_TO_COST_TIER: dict[str, str] = {
     "admin": "admin",
 }
 
-_EXTENSION_STANDALONE_ACTIONS = frozenset({
-    "register", "list", "inspect", "approve", "disable", "enable", "remove",
-    "get_action_scope_status",
-})
-_EXTENSION_STANDALONE_WRITE_ACTIONS = frozenset({
-    "register", "approve", "disable", "enable", "remove",
-})
 _UNIVERSE_COSTLY_ACTIONS = frozenset({
     "create_universe",
     "daemon_create",
@@ -477,13 +470,11 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     )
     from tinyassets.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
     from tinyassets.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
-    from tinyassets.api.market import (
-        _ATTRIBUTION_ACTIONS,
+    from tinyassets.api.goals import (
         _GATE_EVENT_ACTIONS,
         _GATES_ACTIONS,
         _GOAL_ACTIONS,
         _GOAL_WRITE_ACTIONS,
-        _OUTCOME_ACTIONS,
     )
     from tinyassets.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
     from tinyassets.api.runtime_ops import (
@@ -495,6 +486,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     )
     from tinyassets.api.universe import UNIVERSE_ACTIONS, WRITE_ACTIONS
     from tinyassets.api.wiki import WIKI_ACTIONS, WIKI_WRITE_ACTIONS
+    from tinyassets.attribution.actions import _ATTRIBUTION_ACTIONS
     from tinyassets.authoring.service import (
         _AUTHORING_ACTIONS,
         _AUTHORING_COSTLY_ACTIONS,
@@ -505,6 +497,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _HANDOFF_COSTLY_ACTIONS,
         _HANDOFF_WRITE_ACTIONS,
     )
+    from tinyassets.outcomes.actions import _OUTCOME_ACTIONS
 
     _extend_scope_rows(
         rows,
@@ -523,9 +516,11 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         write_actions=set(WIKI_WRITE_ACTIONS),
     )
 
-    extension_actions: set[str] = set(_EXTENSION_STANDALONE_ACTIONS)
-    extension_writes: set[str] = set(_EXTENSION_STANDALONE_WRITE_ACTIONS)
+    extension_actions: set[str] = {"get_action_scope_status"}
+    extension_writes: set[str] = set()
     for action_map in (
+        _OUTCOME_ACTIONS,
+        _ATTRIBUTION_ACTIONS,
         _BRANCH_ACTIONS,
         _RUN_ACTIONS,
         _JUDGMENT_ACTIONS,
@@ -536,9 +531,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _INSPECT_DRY_ACTIONS,
         _AUTO_SHIP_ACTIONS,
         _SCHEDULER_ACTIONS,
-        _OUTCOME_ACTIONS,
         _EFFECTOR_CONSENT_ACTIONS,
-        _ATTRIBUTION_ACTIONS,
         _LEADERBOARD_ACTIONS,
         _AUTHORING_ACTIONS,
         _HANDOFF_ACTIONS,
@@ -571,7 +564,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         rows,
         tool="extensions",
         actions=extension_actions,
-        source="tinyassets.api.extensions internal dispatch tables",
+        source="tinyassets.api.workflow_actions internal dispatch tables",
         write_actions=extension_writes,
         costly_actions=(
             _EXTENSIONS_COSTLY_ACTIONS
@@ -592,7 +585,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         rows,
         tool="gates",
         actions=set(_GATES_ACTIONS),
-        source="tinyassets.api.market._GATES_ACTIONS",
+        source="tinyassets.api.goals._GATES_ACTIONS",
         write_actions=gates_writes,
         costly_actions=_GATES_COSTLY_ACTIONS,
         admin_actions=_GATES_ADMIN_ACTIONS,
@@ -602,7 +595,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         rows,
         tool="goals",
         actions=set(_GOAL_ACTIONS),
-        source="tinyassets.api.market._GOAL_ACTIONS",
+        source="tinyassets.api.goals._GOAL_ACTIONS",
         write_actions=set(_GOAL_WRITE_ACTIONS),
         # run_canonical triggers a branch run; scope it as costly like run_branch.
         costly_actions=frozenset({"run_canonical"}),

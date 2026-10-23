@@ -179,10 +179,12 @@ def run_phase_retrieval(
 
         kg = runtime.knowledge_graph
         if kg is None:
-            from domains.fantasy_daemon.phases._paths import resolve_kg_path
+            from pathlib import Path
+
             from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
-            kg_path = resolve_kg_path(state)
+            root = state.get("_universe_path")
+            kg_path = state.get("_kg_path") or (str(Path(root) / "knowledge.db") if root else "")
             if kg_path:
                 kg = KnowledgeGraph(kg_path)
                 owns_kg = True

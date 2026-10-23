@@ -2,7 +2,7 @@
 # Per 2026-04-20-selfhost-uptime-migration.md (archived in git) Row A
 # + `docs/ops/docker-notes.md` build discipline.
 #
-# What goes IN the image: tinyassets/ + domains/ + pyproject.toml.
+# What goes IN the image: tinyassets/ + pyproject.toml.
 # Everything else is build context pollution — slower builds, larger
 # context upload, and in some cases a security footprint risk (secrets,
 # host identity, credentials).

@@ -10,7 +10,7 @@ are ``extensions`` *actions*, never new advertised MCP handles, and the
 kwargs, the same technique the effector-consent actions use.
 
 Router field reuse (also documented at the call site in
-``tinyassets/api/extensions.py``):
+``tinyassets/api/workflow_actions.py``):
 
 ===========================  ==================================================
 ``extensions`` kwarg         authoring meaning

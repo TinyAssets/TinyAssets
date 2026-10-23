@@ -158,8 +158,8 @@ def test_public_route_and_opt_in_flag_on_existing_file():
         {"tinyassets/onboarding/__init__.py": 'Route("/other", handler)'}
     ) == ["public-routes: tinyassets/onboarding/__init__.py mounts /other"]
     assert check_shapes.added_line_problems(
-        {"tinyassets/api/extensions.py": 'Route("/.well-knownness/evil", handler)'}
-    ) == ["public-routes: tinyassets/api/extensions.py mounts /.well-knownness/evil"]
+        {"tinyassets/api/workflow_actions.py": 'Route("/.well-knownness/evil", handler)'}
+    ) == ["public-routes: tinyassets/api/workflow_actions.py mounts /.well-knownness/evil"]
 
 
 def test_new_model_call_entry_symbol_is_detected_outside_registered_path():

@@ -19,6 +19,7 @@ import sqlite3
 import pytest
 
 from tinyassets.app_ui_store import get_app_ui, save_app_ui
+from tinyassets.engine_endpoint import current_server
 from tinyassets.storage import DB_FILENAME
 
 ALICE = "acct_alice"
@@ -52,8 +53,8 @@ def _row(base) -> dict:
 @pytest.fixture
 def served(tmp_path, monkeypatch):
     from tests.engine_authority_helpers import seed_bound_engine
-    from tinyassets import engine_mcp_server as engine
     from tinyassets import engine_result_bounds as bounds
+    from tinyassets import universe_tools as engine
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv(bounds.CEILING_ENV, raising=False)
@@ -74,7 +75,7 @@ def _call(engine, tool: str, **arguments) -> dict:
     from fastmcp.exceptions import ToolError
 
     try:
-        text = asyncio.run(engine.mcp.call_tool(tool, arguments)).content[0].text
+        text = asyncio.run(current_server().mcp.call_tool(tool, arguments)).content[0].text
     except ToolError as refused:
         text = str(refused)
     document = json.loads(text)

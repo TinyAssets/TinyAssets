@@ -278,7 +278,7 @@ def _consent_ask(uid, deposited, **over):
 # --------------------------------------------------------------------------
 
 
-#: Copied from the served docstring in tinyassets/engine_mcp_server.py. If the
+#: Copied from the served docstring in tinyassets/universe_tools.py. If the
 #: two ever drift, the agent is being taught an action that cannot execute -
 #: which is precisely the defect this test exists for.
 DOCUMENTED_SCOPE_ONLY_ACTION = {

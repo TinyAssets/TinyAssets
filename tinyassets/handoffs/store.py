@@ -8,7 +8,7 @@ Where this lives, and why
 -------------------------
 
 Every table here is created in ``<data_dir>/.runs.db`` — the same database that
-already holds ``outcome_event`` (``tinyassets/api/market.py`` resolves the
+already holds ``outcome_event`` (``tinyassets/api/goals.py`` resolves the
 registry there), ``gate_events``, ``run_lineage``, and the attribution chain. It
 is one database on purpose: an outcome claim, its evidence transitions, and the
 handoff that produced it are written in a single transaction, and the base

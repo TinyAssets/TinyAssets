@@ -1362,7 +1362,7 @@ def enqueue_universe_branch_run(
     # Settlement identity only; a triggered run is never refused for usage. It
     # waits for its account's seats at its agent calls (`universe_seats`).
     from tinyassets.engine_admissions import attach_run
-    from tinyassets.engine_mcp_server import _engine_run_admit
+    from tinyassets.universe_tools import _engine_run_admit
 
     ticket = _engine_run_admit(universe_id=uid)
 

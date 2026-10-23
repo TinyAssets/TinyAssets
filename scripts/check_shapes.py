@@ -103,15 +103,18 @@ SHAPES: dict[str, Shape] = {
     ),
     "S6": Shape(
         ("tinyassets/extension_manifest.py", "tinyassets/extension_state.py"),
-        (("tinyassets/api/extensions.py", ""), ("tinyassets/ta_cli.py", r"workspace.?executable")),
-        ceiling=1,
+        (("tinyassets/api/extensions.py", ""), ("tinyassets/ta_cli.py", r"workspace.?executable"),
+         ("tinyassets/**/*.py", r"\bclass NodeRegistration\b")),
+        ceiling=0,
     ),
     "S7": Shape(
         ("tinyassets/universe_tools.py", "tinyassets/ta_cli.py",
          "tinyassets/control_plane/registration.py"),
         (("tinyassets/engine_mcp_server.py", ""),
-         ("tinyassets/engine_mcp_server.py", r"\bFastMCP\(")),
-        ceiling=1,
+         ("tinyassets/engine_mcp_server.py", r"\bFastMCP\("),
+         ("tinyassets/universe_tools.py", r"\bFastMCP\("),
+         ("tinyassets/engine_endpoint.py", r"\bspec_from_file_location\(")),
+        ceiling=0,
     ),
     "S8": Shape(("tinyassets/boxes/**",), (
         ("tinyassets/**/role_*.py", ""),
@@ -198,7 +201,7 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/api/extensions.py", r"_ESCROW_ACTIONS"),
             ("tinyassets/desktop/dashboard.py", r"TINYASSETS_PAID_MARKET"),
         ),
-        ceiling=56,
+        ceiling=0,
     ),
     "S19": Shape(
         ("packaging/claude-plugin/.claude-plugin/marketplace.json",),

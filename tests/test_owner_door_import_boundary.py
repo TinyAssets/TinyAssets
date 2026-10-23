@@ -39,7 +39,7 @@ _BOUNDING = frozenset({
     "tinyassets.engine_result_bounds",
     "tinyassets.engine_read_views",
     "tinyassets.universe_server",
-    "tinyassets.engine_mcp_server",
+    "tinyassets.universe_tools",
 })
 
 #: The ONLY modules allowed to import the ceiling or the projections: the model
@@ -47,7 +47,7 @@ _BOUNDING = frozenset({
 #: first.
 _MODEL_DOOR = frozenset({
     "tinyassets/universe_server.py",
-    "tinyassets/engine_mcp_server.py",
+    "tinyassets/universe_tools.py",
     "tinyassets/engine_read_views.py",
 })
 
