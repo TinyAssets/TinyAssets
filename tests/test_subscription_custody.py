@@ -83,6 +83,47 @@ def test_disconnect_without_resolvable_record(connected, record):
     assert not connected.directory.exists()
 
 
+@pytest.mark.parametrize("failure", ["before_save", "after_save", "partial", "exhausted"])
+def test_lease_writeback_retries_and_preserves_parseable_state(connected, monkeypatch, failure):
+    from tinyassets.providers import subscription_lease as leases
+
+    (connected.home / ".fake-login").write_text('{"token":"old"}')
+    assert connected.authenticated()
+    original = leases.custody
+    attempts, delays, homes = [], [], []
+    monkeypatch.setattr(leases, "time", type("Clock", (), {"sleep": delays.append}), raising=False)
+
+    def interrupted(runtime, action, **fields):
+        if action == "save":
+            attempts.append(fields)
+            if failure == "exhausted" or len(attempts) == 1:
+                if failure == "after_save":
+                    original(runtime, action, **fields)
+                raise OSError("broker restarted")
+        return original(runtime, action, **fields)
+
+    monkeypatch.setattr(leases, "custody", interrupted)
+    def run():
+        with connected.lease():
+            homes.append(connected.state_home)
+            (connected.state_home / ".fake-login").write_text(
+                '{"token":' if failure == "partial" else '{"token":"new"}')
+
+    if failure == "exhausted":
+        with pytest.raises(OSError, match="broker restarted"):
+            run()
+        assert len(attempts) == 3 and len(delays) == 2
+    else:
+        run()
+        if failure == "before_save":
+            assert len(attempts) == 2 and delays
+        elif failure == "partial":
+            assert not attempts
+    expected = b'{"token":"old"}' if failure in {"partial", "exhausted"} else b'{"token":"new"}'
+    assert decoded(connected)[".fake-login"] == expected
+    assert all(not home.exists() for home in homes)
+
+
 def test_legacy_login_moves_to_custody_and_status_uses_tmpfs(connected, monkeypatch):
     runtime = connected
     old = runtime.source.document()
@@ -260,7 +301,7 @@ def test_refused_refresh_writeback_still_wipes_tmpfs(connected, monkeypatch):
     with pytest.raises(PermissionError, match="unavailable broker"):
         with connected.lease():
             homes.append(connected.state_home)
-            (connected.state_home / ".fake-login").write_text("refreshed")
+            (connected.state_home / ".fake-login").write_text('"refreshed"')
     assert all(not home.exists() for home in homes)
     assert not (connected.home / ".fake-login").exists()
 

@@ -10,6 +10,8 @@ import re
 import shutil
 import tempfile
 import threading
+import time
+import tomllib
 from pathlib import Path
 
 MAX_STATE = 2 * 1024 * 1024
@@ -68,8 +70,8 @@ def state_path(root, name):
     return path
 
 
-def capture(runtime, root):
-    state, total = {}, 0
+def capture(runtime, root, *, previous=None):
+    state, total = dict(previous or {}), 0
     for name in runtime.source.state["paths"]:
         path = state_path(root, name)
         if not path.exists():
@@ -81,7 +83,16 @@ def capture(runtime, root):
         total += len(data)
         if total > MAX_STATE:
             raise ValueError("native credential state exceeds bound")
-        state[name] = base64.b64encode(data).decode()
+        value = base64.b64encode(data).decode()
+        if previous is not None and value != previous.get(name):
+            try:
+                if name.endswith(".toml"):
+                    tomllib.loads(data.decode("utf-8"))
+                else:
+                    json.loads(data)
+            except (ValueError, UnicodeError):
+                continue  # A cancelled writer must not replace the last complete file.
+        state[name] = value
     return state
 
 
@@ -153,9 +164,9 @@ def lease(runtime, *, login=False, cancelled=None):
                 try:
                     if ready and (not login or entry["state"]
                                   and not runtime._local.login_committed):
-                        state = capture(runtime, root)
+                        state = capture(runtime, root, previous=entry["state"])
                         if state != entry["state"]:
-                            custody(runtime, "save", revision=runtime._local.revision, state=state)
+                            save_state(runtime, runtime._local.revision, state)
                     elif not runtime._local.login_committed and not entry["state"]:
                         custody(runtime, "delete", revision=entry["revision"])
                 finally:
@@ -164,10 +175,31 @@ def lease(runtime, *, login=False, cancelled=None):
 
 
 def commit_login(runtime):
-    entry = custody(runtime, "save", revision=runtime._local.revision,
-                    state=capture(runtime, runtime._local.home))
+    entry = save_state(runtime, runtime._local.revision,
+                       capture(runtime, runtime._local.home))
     runtime._local.revision = entry["revision"]
     runtime._local.login_committed = True
+
+
+def save_state(runtime, revision, state):
+    for attempt in range(3):
+        try:
+            return custody(runtime, "save", revision=revision, state=state)
+        except OSError:
+            # A lost acknowledgement may follow a durable save. Never overwrite
+            # another generation just to retry the transport.
+            try:
+                observed = custody(runtime, "read")
+            except OSError:
+                observed = None
+            if observed is not None:
+                if observed["state"] == state and observed["revision"] is not None:
+                    return observed
+                if observed["revision"] != revision:
+                    raise PermissionError("native credential generation changed") from None
+            if attempt == 2:
+                raise
+            time.sleep(0.25 * 2**attempt)
 
 
 def disconnect(owner, source_id):
