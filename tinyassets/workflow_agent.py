@@ -9,8 +9,8 @@ from dataclasses import replace
 
 from tinyassets.activity_runner import ActivityYielded
 from tinyassets.agent_loop.execution import execution_owner, off_loop, off_loop_context
-from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
-from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+from tinyassets.agent_turn_coordinator import start_coordinator
+from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.base import UniverseContext
 from tinyassets.providers.model_policy import ModelRef
@@ -229,61 +229,35 @@ class WorkAgentAdapter:
             "sha256:" + hashlib.sha256(json.dumps(body).encode("utf-8")).hexdigest(), **lineage,
         )
 
-
-class WorkflowAgentTurn(AgentTurnCoordinator):
-    async def run(self):
-        try:
-            return await super().run()
-        except ActivityYielded:
-            # A model can batch an ask and a later action in the same reply.
-            # Preserve the ask's committed result and explicitly mark the next
-            # planned call unsent; never dispatch it or request another round.
-            if self.turn is not None and self.turn.state == "tools_pending":
-                for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
-                    if tool.state == "planned":
-                        uid = self.context.universe_dir.name
-                        await self._journal_write("start_tool",
-                            self.owner, uid, self.turn.turn_id,
-                            expected_generation=self.turn.generation,
-                            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
-                        )
-                        await self._journal_write("finish_tool",
-                            self.owner, uid, self.turn.turn_id,
-                            expected_generation=self.turn.generation,
-                            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
-                            request=tool.request, failure="not_sent",
-                        )
-                        break
-            raise
-        except AllProvidersExhaustedError as exc:
-            rounds = () if self.turn is None else self.turn.rounds
-            effects = any(tool.state not in {"planned", "not_sent"}
-                          for step in rounds for tool in step.tools)
-            boundary = capacity_boundary(
-                self.context.model_selection, exc.attempts, execution_kind=self.execution_kind,
+    def map_exhaustion(self, turn, exc):
+        """One mapping, called by the coordinator when every provider is spent."""
+        rounds = () if turn.turn is None else turn.turn.rounds
+        effects = any(tool.state not in {"planned", "not_sent"}
+                      for step in rounds for tool in step.tools)
+        boundary = capacity_boundary(
+            turn.context.model_selection, exc.attempts, execution_kind=turn.execution_kind,
+        )
+        # Before a durable inference round exists, the observer prevented
+        # transport launch. Keep the existing known-unsent retry contract;
+        # authentication/unknown transport failures have a recorded round.
+        if effects or (rounds and boundary is None):
+            return WorkAgentEffectHeld(
+                "Workflow agent progress is held; "
+                "completed or uncertain actions were not replayed.",
             )
-            # Before a durable inference round exists, the observer prevented
-            # transport launch. Keep the existing known-unsent retry contract;
-            # authentication/unknown transport failures have a recorded round.
-            if effects or (rounds and boundary is None):
-                raise WorkAgentEffectHeld(
-                    "Workflow agent progress is held; "
-                    "completed or uncertain actions were not replayed.",
-                ) from exc
-            if boundary is not None and self._order_exhausted():
-                # Validated capacity evidence, nothing to replay, and the owner's
-                # own order has no candidate left. Typed HERE, with the boundary
-                # in frame: re-raising the retryable class sent the compiler
-                # through a backoff that could only end at the same wall, and
-                # the re-entry raise had lost this evidence.
-                raise self.adapter.candidates.exhausted_error((boundary,)) from exc
-            raise
+        if boundary is not None and self._order_exhausted():
+            # Validated capacity evidence, nothing to replay, and the owner's
+            # own order has no candidate left. Typed HERE, with the boundary
+            # in frame: re-raising the retryable class sent the compiler
+            # through a backoff that could only end at the same wall, and
+            # the re-entry raise had lost this evidence.
+            return self.candidates.exhausted_error((boundary,))
+        return None
 
     def _order_exhausted(self):
-        adapter = self.adapter
-        if not getattr(adapter, "has_candidate_order", False):
+        if not self.has_candidate_order:
             return False
-        return adapter.candidates.next_candidate(adapter.source_policy) is None
+        return self.candidates.next_candidate(self.source_policy) is None
 
 
 def call_foreground_work_agent(session, *, prompt, system, config, policy, response_observer=None,
@@ -336,7 +310,7 @@ def call_foreground_work_agent(session, *, prompt, system, config, policy, respo
                 model_selection=adapter.selection,
             )
             register_universe_open_providers(router, receipt.universe_id)
-            turn = WorkflowAgentTurn(adapter=adapter, router=router, prompt=prompt, system=system,
+            turn = start_coordinator(adapter=adapter, router=router, prompt=prompt, system=system,
                                      universe_context=context, config=config)
             try:
                 from tinyassets.engine_steering import session_of

@@ -345,4 +345,139 @@ def test_the_guard_fails_an_adapter_that_asks_for_its_grant(
     assert capabilities != AGENT_CAPABILITIES
 
 
+def _bare_coordinator(adapter):
+    """A real coordinator whose body the test replaces."""
+    from types import SimpleNamespace
+
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+
+    return AgentTurnCoordinator(
+        adapter=adapter, router=object(), prompt="p", system="s",
+        universe_context=SimpleNamespace(
+            agent_model_plan=None, universe_dir=SimpleNamespace(name="u-one"),
+        ),
+        config=ModelConfig(),
+    )
+
+
+def test_the_one_loop_journals_a_yield_and_maps_one_exhaustion():
+    """Yield journaling and exhaustion mapping run on AgentTurnCoordinator.run."""
+    from types import SimpleNamespace
+
+    from tinyassets.activity_runner import ActivityYielded
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.workflow_agent import WorkAgentEffectHeld
+
+    done = SimpleNamespace(state="completed", request={"name": "asked"})
+    planned = SimpleNamespace(state="planned", request={"name": "later"})
+    after = SimpleNamespace(state="planned", request={"name": "after"})
+    coordinator = _bare_coordinator(SimpleNamespace())
+    coordinator.owner = "owner"
+    coordinator.turn = SimpleNamespace(
+        state="tools_pending", turn_id="turn-1", generation=3,
+        rounds=[SimpleNamespace(tools=[done, planned, after])],
+    )
+    writes = []
+
+    async def journal(*args, **kwargs):
+        writes.append((args, kwargs))
+
+    async def yielded():
+        raise ActivityYielded("asked")
+
+    coordinator._journal_write = journal
+    coordinator._run_body = yielded
+    with pytest.raises(ActivityYielded, match="asked"):
+        asyncio.run(coordinator.run())
+    assert writes == [
+        (("start_tool", "owner", "u-one", "turn-1"), {
+            "expected_generation": 3, "ordinal": 1, "call_ordinal": 2,
+        }),
+        (("finish_tool", "owner", "u-one", "turn-1"), {
+            "expected_generation": 3, "ordinal": 1, "call_ordinal": 2,
+            "request": {"name": "later"}, "failure": "not_sent",
+        }),
+    ]
+
+    quiet = _bare_coordinator(SimpleNamespace())
+    quiet.turn = SimpleNamespace(state="ready", rounds=[])
+    quiet._journal_write = journal
+    quiet._run_body = yielded
+    writes.clear()
+    with pytest.raises(ActivityYielded):
+        asyncio.run(quiet.run())
+    assert writes == []
+
+    mapped = WorkAgentEffectHeld("held")
+    seen = []
+
+    class Adapter:
+        def map_exhaustion(self, turn, exc):
+            seen.append((turn, exc))
+            return mapped
+
+    exhausted = AllProvidersExhaustedError("spent")
+
+    async def fail():
+        raise exhausted
+
+    work = _bare_coordinator(Adapter())
+    work._run_body = fail
+    with pytest.raises(WorkAgentEffectHeld, match="held") as held:
+        asyncio.run(work.run())
+    assert held.value is mapped
+    assert held.value.__cause__ is exhausted
+    assert seen == [(work, exhausted)]
+
+    chat = _bare_coordinator(SimpleNamespace())
+    chat._run_body = fail
+    with pytest.raises(AllProvidersExhaustedError) as raw:
+        asyncio.run(chat.run())
+    assert raw.value is exhausted
+    assert raw.value.__cause__ is None
+
+
+def test_work_exhaustion_mapping_stays_on_the_work_adapter(monkeypatch):
+    """Effect-held and order-exhausted decisions remain the work adapter's."""
+    from types import SimpleNamespace
+
+    from tinyassets import workflow_agent
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.workflow_agent import WorkAgentAdapter, WorkAgentEffectHeld
+
+    boundary = object()
+    monkeypatch.setattr(workflow_agent, "capacity_boundary", lambda *a, **k: boundary)
+    adapter = WorkAgentAdapter.__new__(WorkAgentAdapter)
+    adapter.has_candidate_order = True
+    adapter.source_policy = {}
+    order_error = AllProvidersExhaustedError("order spent")
+
+    class Candidates:
+        def next_candidate(self, policy):
+            return None
+
+        def exhausted_error(self, boundaries=()):
+            assert boundaries == (boundary,)
+            return order_error
+
+    adapter.candidates = Candidates()
+    quiet = SimpleNamespace(
+        turn=None, context=SimpleNamespace(model_selection="sel"),
+        execution_kind="engine_inference",
+    )
+    assert adapter.map_exhaustion(quiet, AllProvidersExhaustedError("spent")) is order_error
+
+    effected = SimpleNamespace(
+        turn=SimpleNamespace(rounds=[SimpleNamespace(tools=[
+            SimpleNamespace(state="completed"),
+        ])]),
+        context=quiet.context, execution_kind="engine_inference",
+    )
+    held = adapter.map_exhaustion(effected, AllProvidersExhaustedError("spent"))
+    assert isinstance(held, WorkAgentEffectHeld)
+
+    adapter.has_candidate_order = False
+    assert adapter.map_exhaustion(quiet, AllProvidersExhaustedError("spent")) is None
+
+
 pytestmark = pytest.mark.verifies('shape-convergence:C8')

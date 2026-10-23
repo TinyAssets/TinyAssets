@@ -36,30 +36,3 @@ def register_open_providers_for(universe_context: object) -> None:
     from tinyassets.providers.provider_resolver import register_universe_open_providers
 
     register_universe_open_providers(_router, Path(universe_dir).name)
-
-
-def make_interactive_agent_turn(*, prompt, system, universe_context, config):
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn
-
-    if _router is None:
-        raise ProviderAuthorityHeldError("interactive agent requires a provider router")
-    register_open_providers_for(universe_context)
-
-    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter
-
-    adapter = ThinLoopChatAdapter()
-
-    return InteractiveHttpAgentTurn(
-        router=_router, prompt=prompt, system=system,
-        universe_context=universe_context, config=config, adapter=adapter,
-    )
-
-
-def call_interactive_agent_turn(turn, *, response_observer=None) -> str:
-    from tinyassets.agent_loop.execution import execution_owner
-
-    result = execution_owner().run(turn.run())
-    if response_observer is not None:
-        response_observer(result)
-    return result.text

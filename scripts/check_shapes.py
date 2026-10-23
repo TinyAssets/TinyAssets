@@ -71,7 +71,7 @@ SHAPES: dict[str, Shape] = {
     "S2": Shape(
         ("tinyassets/control_plane/**",),
         (("tinyassets/**/*.py", r"\b(?:_call_writer|make_interactive_agent_turn)\("),),
-        ceiling=5,
+        ceiling=0,
     ),
     "S3": Shape(
         ("tinyassets/agent_loop/**",),
@@ -81,7 +81,7 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/codex_app_server.py", ""),
             ("tinyassets/**/*.py", r"\bclass\s+WorkflowAgentTurn\("),
         ),
-        ceiling=1,
+        ceiling=0,
     ),
     "S4": Shape(
         ("tinyassets/providers/**", "tinyassets/connections/**"),

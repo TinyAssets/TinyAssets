@@ -24,12 +24,11 @@ STARTER_CALLS = (
      {SESSION}),
     (r"\bcall_foreground_work_agent\(", {SESSION, "tinyassets/workflow_agent.py"}),
     (r"\bcall_background_work_agent\(|\b_call_work_agent\(", set()),
-    (r"\b_call_writer\(", {"tinyassets/universe_intelligence.py"}),
-    (r"\bWorkflowAgentTurn\(", {"tinyassets/workflow_agent.py"}),
-    (r"\bmake_interactive_agent_turn\(", {"tinyassets/providers/call.py",
-                                             "tinyassets/universe_intelligence.py"}),
-    (r"\bcall_interactive_agent_turn\(", {"tinyassets/providers/call.py",
-                                             "tinyassets/universe_intelligence.py"}),
+    (r"\b_call_writer\(", set()),
+    (r"\bWorkflowAgentTurn\(", set()),
+    (r"\bmake_interactive_agent_turn\(", set()),
+    (r"\bcall_interactive_agent_turn\(", set()),
+    (r"\bclass\s+InteractiveHttpAgentTurn\b", set()),
     (r"\bprepare_shared_self_turn\(", {SESSION, "tinyassets/shared_self.py"}),
     # The one agent-file loader: what an agent IS is read in one place, and
     # addressed_agents resolves ids with it.
@@ -98,10 +97,10 @@ def _executor_bypasses(rel, source):
         return ''
 
     allowed = {
-        'AgentTurnCoordinator': {'tinyassets/interactive_http_agent.py',
-                                 'tinyassets/workflow_agent.py'},
-        'InteractiveHttpAgentTurn': {'tinyassets/providers/call.py'},
-        'WorkflowAgentTurn': {'tinyassets/workflow_agent.py'},
+        # One constructor. Subclasses and the retired wrappers are a second loop.
+        'AgentTurnCoordinator': {'tinyassets/agent_turn_coordinator.py'},
+        'InteractiveHttpAgentTurn': set(),
+        'WorkflowAgentTurn': set(),
         'tinyassets.universe_intelligence.converse': {SESSION},
     }
     problems = []
@@ -130,6 +129,14 @@ def test_all_live_ingress_sites_call_session_start():
     source = (ROOT / SESSION).read_text(encoding="utf-8")
     assert "from tinyassets.universe_intelligence import converse" in source
     assert "from tinyassets.workflow_agent import call_foreground_work_agent" in source
+    assert "class WorkflowAgentTurn" not in (ROOT / "tinyassets/workflow_agent.py").read_text(
+        encoding="utf-8")
+    assert "class InteractiveHttpAgentTurn" not in (
+        ROOT / "tinyassets/interactive_http_agent.py").read_text(encoding="utf-8")
+    assert "def _call_writer" not in (ROOT / "tinyassets/universe_intelligence.py").read_text(
+        encoding="utf-8")
+    assert "def make_interactive_agent_turn" not in (
+        ROOT / "tinyassets/providers/call.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("source", [
@@ -145,6 +152,29 @@ def test_fresh_executor_bypasses_are_rejected(monkeypatch, source):
                         '_python_files', lambda: iter([('tinyassets/new_path.py', source)]))
     with pytest.raises(AssertionError, match="outside"):
         test_no_executor_is_started_outside_the_starter()
+
+
+def test_one_coordinator_is_the_only_executor():
+    """Chat and workflow construct ``AgentTurnCoordinator`` in one module."""
+    subclasses = []
+    constructors = []
+    for rel, text in _python_files():
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and any(
+                (isinstance(base, ast.Name) and base.id == "AgentTurnCoordinator")
+                or (isinstance(base, ast.Attribute) and base.attr == "AgentTurnCoordinator")
+                for base in node.bases
+            ):
+                subclasses.append(f"{rel}:{node.name}")
+            if isinstance(node, ast.Call):
+                func = node.func
+                called = func.id if isinstance(func, ast.Name) else (
+                    func.attr if isinstance(func, ast.Attribute) else "")
+                if called == "AgentTurnCoordinator":
+                    constructors.append(rel)
+    assert subclasses == []
+    assert constructors == ["tinyassets/agent_turn_coordinator.py"]
 
 
 def test_new_session_start_caller_is_allowed(monkeypatch):

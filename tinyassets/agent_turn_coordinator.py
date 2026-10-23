@@ -420,6 +420,52 @@ class AgentTurnCoordinator:
                               "the owner stopped this turn before a tool call")
 
     async def run(self):
+        """One admission, one yield journal, one exhaustion mapping.
+
+        Chat and workflow both enter here. A yield records the unsent planned
+        tool before it leaves; a work adapter may replace exhaustion with its
+        held-effect or order-exhausted error. Evidence is attached first.
+        """
+        from tinyassets.activity_runner import ActivityYielded
+
+        try:
+            return await self._run_body()
+        except ActivityYielded:
+            await self._journal_yielded_plan()
+            raise
+        except AllProvidersExhaustedError as exc:
+            mapper = getattr(self.adapter, "map_exhaustion", None)
+            mapped = mapper(self, exc) if mapper is not None else None
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
+    async def _journal_yielded_plan(self):
+        """A model can batch an ask and a later action in the same reply.
+
+        Preserve the ask's committed result and explicitly mark the next
+        planned call unsent; never dispatch it or request another round.
+        """
+        if self.turn is None or self.turn.state != "tools_pending":
+            return
+        for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
+            if tool.state != "planned":
+                continue
+            uid = self.context.universe_dir.name
+            await self._journal_write(
+                "start_tool", self.owner, uid, self.turn.turn_id,
+                expected_generation=self.turn.generation,
+                ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+            )
+            await self._journal_write(
+                "finish_tool", self.owner, uid, self.turn.turn_id,
+                expected_generation=self.turn.generation,
+                ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+                request=tool.request, failure="not_sent",
+            )
+            break
+
+    async def _run_body(self):
         owner = await off_loop(self._check_scope)
         if self.request_budget is None:
             self.request_budget = open_allocation(
@@ -1293,3 +1339,12 @@ class AgentTurnCoordinator:
                     expected_generation=self.turn.generation,
                 )
             )
+
+
+def start_coordinator(*, adapter, router, prompt, system, universe_context, config,
+                      interrupt=None):
+    """The only production constructor of :class:`AgentTurnCoordinator`."""
+    return AgentTurnCoordinator(
+        adapter=adapter, router=router, prompt=prompt, system=system,
+        universe_context=universe_context, config=config, interrupt=interrupt,
+    )
