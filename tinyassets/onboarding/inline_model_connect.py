@@ -16,6 +16,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from tinyassets.onboarding import hosted_model_auth as hosted
 from tinyassets.onboarding.owner_sessions import HEADERS, hashed, store
 from tinyassets.onboarding.session_store import seal_key
+from tinyassets.sqlite_schema import ensure_table
 
 RETURN_COOKIE = "__Host-ta-model-return"
 
@@ -47,12 +48,11 @@ def discard_hosted(handle, owner):
 @contextmanager
 def flows():
     with store() as conn:
-        conn.execute(
+        ensure_table(conn,
             "CREATE TABLE IF NOT EXISTS inline_model_flows ("
             "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, "
             "sealed BLOB NOT NULL, browser_hash TEXT NOT NULL DEFAULT '', "
-            "status TEXT NOT NULL, expires REAL NOT NULL)"
-        )
+            "status TEXT NOT NULL, expires REAL NOT NULL)", kind="ephemeral")
         conn.execute("DELETE FROM inline_model_flows WHERE expires<=?", (time.time(),))
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")

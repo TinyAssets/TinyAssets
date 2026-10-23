@@ -22,6 +22,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets.capability_health import observed
+from tinyassets.sqlite_schema import ensure_table
 
 COOKIE = "__Host-ta-owner"
 FLOW_COOKIE = "__Host-ta-owner-login"
@@ -53,19 +54,25 @@ def store():
         os.chown(path, -1, 1102)
         os.chmod(path, 0o640)
     conn.row_factory = sqlite3.Row
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_sessions "
-        "(session_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, expires_at REAL NOT NULL)"
+        "(session_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_login_flows "
         "(state_hash TEXT PRIMARY KEY, cookie_hash TEXT NOT NULL, verifier BLOB NOT NULL, "
-        "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)"
+        "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_login_completions "
         "(handle_hash TEXT PRIMARY KEY, state_hash TEXT UNIQUE NOT NULL, "
-        "payload BLOB NOT NULL, expires_at REAL NOT NULL)"
+        "payload BLOB NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
     conn.execute("DELETE FROM owner_login_completions WHERE expires_at<=?", (time.time() - 600,))
     # Keep expired rows briefly so a late callback can explain expiry and age.
