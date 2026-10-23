@@ -660,6 +660,12 @@ ROOT_ENTRIES: dict[str, str] = {
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
+    ".inbound-routing.sqlite3": (
+        "platform: inbound delivery failure budget; never an envelope or owner path"
+    ),
+    "inbound-installations.db": (
+        "platform: broker shared-app installation metadata under .broker"
+    ),
     "ops.db": "platform: bounded broker idempotency records under .broker/state",
     "vault-keys.db": "platform: broker-only wrapped owner credential keys",
     "owner-identities.db": "platform: broker owner-identity bindings under .broker/state",

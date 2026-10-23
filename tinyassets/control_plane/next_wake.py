@@ -16,6 +16,10 @@ def next_wake_at(base, *, now=None):
 
     moment = now or datetime.now(timezone.utc)
     instants = [AutomationStore(base).next_wake_at(moment)]
+    from tinyassets.storage.inbound_events import needs_wake
+
+    if needs_wake(base):
+        instants.append(moment.timestamp())
     for trigger in TriggerStore(base).list(kind=KIND_PROACTIVE, enabled_only=True):
         if (wake_handler(trigger.kind) is None
                 or (base / trigger.command_center_id / ".pause").exists()):

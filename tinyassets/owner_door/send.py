@@ -41,6 +41,11 @@ def _dispatch_lock(home, session):
         lock.release()
 
 
+def admit_owner_input(home, session, send_id, message, options):
+    """Shared durable admission for interactive sends and inbound receipt parents."""
+    return store.admit_owner_send(Path(home), session, send_id, message, options)
+
+
 def deliver_owner_send(home, session, send_id, message, options, dispatch, *, publish=lambda: None):
     """Commit once, serialize dispatch, and return the same receipt on replay.
 
@@ -49,7 +54,7 @@ def deliver_owner_send(home, session, send_id, message, options, dispatch, *, pu
     """
     home = Path(home)
     try:
-        number = store.admit_owner_send(home, session, send_id, message, options)
+        number = admit_owner_input(home, session, send_id, message, options)
     except ValueError as exc:
         return {'error': str(exc), 'history_saved': False}
     held = False
@@ -193,6 +198,10 @@ def start_recovery(runtime, stop):
     def run():
         try:
             try:
+                from tinyassets.webhook_inbound import reconcile_on_wake, recover_pending
+
+                reconcile_on_wake(runtime.root)
+                recover_pending(runtime.root)
                 for center in Centers(runtime.root).active():
                     if stop.is_set():
                         break

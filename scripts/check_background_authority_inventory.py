@@ -108,6 +108,9 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     CallSite("tinyassets/broker/acquisition.py", "exchange_key", "client.stream"),
     # The router relays opaque HTTP bytes to an admitted Unix socket; neither
     # stream invokes a model or executes an owner's work in the shared process.
+    # Inbound proof reads the raw body once, capped at 1 MiB, before broker
+    # verification or the admitted forward. It grants no execution authority.
+    CallSite("tinyassets/owner_router.py", "inbound", "Request().stream"),
     CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),
     CallSite("tinyassets/owner_router.py", "forward", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),

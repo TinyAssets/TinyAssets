@@ -270,10 +270,14 @@ class DeletionJobs:
         return result
 
     def _credentials(self, job):
+        from tinyassets.broker.inbound_installations import InstallationAuthority
         from tinyassets.router_credentials import revoke_request
 
         if not self.server.routing.withdrawal_installed(job["results"].get("withdrawal")):
             raise RuntimeError("router withdrawal installation remains pending")
+        InstallationAuthority(
+            self.server._data_root / ".broker" / "inbound-installations.db"
+        ).erase_owner(job["owner"])
         if revoke_request(self.server._data_root, job["owner"]) != {
                               "op": "ROUTER_CREDENTIAL_IS", "result": {"revoked": True}}:
             raise RuntimeError("router credential revocation remains pending")

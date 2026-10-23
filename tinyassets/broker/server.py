@@ -496,13 +496,47 @@ class _Connection:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
+            if op == "INBOUND_INSTALLATIONS":
+                from tinyassets.broker.inbound_installations import owner_operation
+
+                self._box_scope(doc)
+                try:
+                    if set(doc) != {"op", "request"}:
+                        raise ValueError("invalid installation request")
+                    result = await asyncio.to_thread(
+                        owner_operation, self._server._data_root, self._box_owner, doc["request"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
                           "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")
             doc = self._box_scope(doc)
         elif self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "DELETION_JOB":
+        if op == "INBOUND_VERIFY":
+            import base64
+
+            from tinyassets.broker.inbound_verification import MAX_BODY_BYTES, verify_shared
+
+            try:
+                if (set(doc) != {"op", "binding", "headers", "body"}
+                        or not isinstance(doc["binding"], str)
+                        or not isinstance(doc["headers"], dict)
+                        or not isinstance(doc["body"], str)):
+                    raise ValueError("invalid inbound verification request")
+                body = base64.b64decode(doc["body"], validate=True)
+                if len(body) > MAX_BODY_BYTES:
+                    raise ValueError("inbound body too large")
+                result = await asyncio.to_thread(
+                    verify_shared, self._server._data_root, doc["binding"], doc["headers"], body)
+                answer = {"op": "INBOUND_VERIFY_IS", "result": result}
+            except Exception:
+                answer = {"op": "INBOUND_VERIFY_UNAVAILABLE"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "DELETION_JOB":
             from tinyassets.broker.deletion_jobs import WithdrawalPending
 
             try:

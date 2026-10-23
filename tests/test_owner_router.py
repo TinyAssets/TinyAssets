@@ -681,7 +681,7 @@ def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tm
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             assert (await client.post("/hooks/inbound/hook-secret", headers={
-                "authorization": "Bearer foreign"}, content=b"untouched")).status_code == 404
+                "authorization": "Bearer foreign"}, content=b"untouched")).status_code == 503
             assert selected == ["alice"]
             assert (await client.post("/hooks/inbound/unknown")).status_code == 404
             assert selected == ["alice"]

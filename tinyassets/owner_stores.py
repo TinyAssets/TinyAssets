@@ -38,6 +38,10 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/admission.py",
     # C5: broker-only persistent ingress secrets and routing publication sequence.
     "tinyassets/broker/routing.py",
+    # Broker-held shared-app installation metadata. Boxes read a filtered view.
+    "tinyassets/broker/inbound_installations.py",
+    # Router delivery failure budget. Never an envelope or an owner path.
+    "tinyassets/inbound_routing.py",
     # C6: job-owned snapshot catalog cleanup; no owner data.
     "tinyassets/broker/deletion_jobs.py",
     # T4 one-shot migration consumes old deletion obligations before publication.
@@ -154,6 +158,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/deliveries.py",
     "tinyassets/storage/effector_consents.py",
     "tinyassets/storage/external_write_receipts.py",
+    "tinyassets/storage/inbound_events.py",
     "tinyassets/storage/model_preferences.py",
     "tinyassets/storage/outbound_connections.py",
     "tinyassets/storage/owner_devices.py",
@@ -187,6 +192,8 @@ MIGRATES_ON_OPEN_BEFORE_C2: dict[str, str] = {
     "tinyassets/storage/agent_turn_journal.py":
         "ensure_schema adds owner_generation: additive, re-checked under BEGIN "
         "IMMEDIATE, so race-free; listed until the startup boundary exists",
+    "tinyassets/storage/inbound_events.py":
+        "_connect adds universe and completed_at on every open",
 }
 
 #: Set by slice C2 when a second owner process can exist. Never before
