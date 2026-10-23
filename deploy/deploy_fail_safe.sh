@@ -254,6 +254,11 @@ DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
 
 RESTORE_BUNDLE=0
 POST_DEPLOY_FAILURE=0
+# A failed rollback leaves bundle-dirty after the snapshot files are already
+# restored. The next forward deploy restores those files in-process and
+# continues, instead of restarting the previous image (which cannot pass
+# health without hotfixes that are no longer on the box).
+RECOVER_DIRTY_BUNDLE="${RECOVER_DIRTY_BUNDLE:-0}"
 case "${1:-}" in
   --post-deploy-failure)
     POST_DEPLOY_FAILURE=1
@@ -2175,11 +2180,30 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
   # when this process is killed before that converge.
 else
   if [ -f "$BUNDLE_DIRTY" ]; then
-    err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
-    err "refusing: snapshotting this tree would legitimize a mixed bundle as the rollback target."
-    err "run: sudo bash $0 --restore-bundle <image ref>"
-    echo "deploy_result=bundle_dirty"
-    exit 1
+    # Consumed cutover is not pending (cutover_pending exits 1). pre_traffic
+    # on a stable owner-box marker exits 0 and stays a refusal: recovering
+    # over an unfinished cutover would snapshot the wrong baseline.
+    if [ "$RECOVER_DIRTY_BUNDLE" = "1" ] && ! cutover_pending; then
+      log "recovering dirty runtime bundle before forward deploy"
+      if ! restore_previous_bundle || ! clear_dirty || ! render_daemon_env; then
+        echo "deploy_result=bundle_dirty"
+        exit 1
+      fi
+      PREV_IMAGE="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1 || true)"
+      # restore_previous_bundle set these for the dirty snapshot. The forward
+      # deploy must snapshot the restored baseline as its own rollback target,
+      # and bundle_exit must still restore THAT snapshot if a later step fails.
+      RESTORE_SNAPSHOT=""
+      RESTORE_VERIFIED=0
+      RESTORE_ATTEMPTED=0
+      VECTOR_CHANGED=0
+    else
+      err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
+      err "refusing: snapshotting this tree would legitimize a mixed bundle as the rollback target."
+      err "run: sudo bash $0 --restore-bundle <image ref>"
+      echo "deploy_result=bundle_dirty"
+      exit 1
+    fi
   fi
   BUNDLE_STATE="$(bundle_state)"
   case "$BUNDLE_STATE" in

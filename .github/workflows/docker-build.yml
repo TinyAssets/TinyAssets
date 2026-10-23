@@ -97,8 +97,8 @@ jobs:
       - name: Unmodified image refuses unadmitted startup
         run: |
           # Production's posture (compose user 0, the bootstrap's four caps, NNP)
-          # on an existing layout-2 volume: PID1 must refuse
-          # (Fact 8) before forking anything. No port, credentials or fixture.
+          # on a layout-2 volume: ta-box-entry.py raises RuntimeError before
+          # serving. Python exits 1. No port, credentials or fixture.
           # Keep the exited container until logs and exit status are checked.
           docker volume create tinyassets-daemon-layout2-ci
           docker run --rm --network none -v tinyassets-daemon-layout2-ci:/data \
@@ -115,8 +115,8 @@ jobs:
           EXIT_CODE="$(timeout 60 docker wait tinyassets-daemon-unadmitted-ci)"
           docker logs tinyassets-daemon-unadmitted-ci > "$RUNNER_TEMP/unadmitted.log" 2>&1
           cat "$RUNNER_TEMP/unadmitted.log"
-          test "$EXIT_CODE" = 78
-          grep -q 'startup refused: the data volume is not migrated' "$RUNNER_TEMP/unadmitted.log"
+          test "$EXIT_CODE" = 1
+          grep -q 'unrecognized box layout' "$RUNNER_TEMP/unadmitted.log"
           if grep -q 'Uvicorn running on' "$RUNNER_TEMP/unadmitted.log"; then
             echo "::error::Unadmitted image started a listener"
             exit 1

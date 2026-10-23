@@ -2199,7 +2199,7 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
                        (generation + 1, digest, _canonical(document)))
             db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,"
                        "generation,outcome) VALUES (?,?,?,?,?,?,?)",
-                       (time.time(), "migration", owner.principal, old_digest, digest,
+                       (0.0, "migration", owner.principal, old_digest, digest,
                         generation + 1, "committed"))
 
 

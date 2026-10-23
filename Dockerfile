@@ -348,5 +348,5 @@ EXPOSE 8001
 ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]
 
 # The marker admits one serving path: the unprivileged owner-box frontend on a
-# committed owner-box layout. Anything else refuses loudly (exit 78).
+# committed owner-box layout. Anything else raises RuntimeError (process exit 1).
 CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]
