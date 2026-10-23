@@ -181,16 +181,22 @@ def agent(served, monkeypatch):
     # Coordinator contract tests inject the engine adapter explicitly. Production
     # construction always chooses ThinLoopChatAdapter; thin integration fixtures
     # replace state.adapter with it and bind a scripted box before calling run().
-    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn, ServedChatAgentAdapter
+    from tinyassets.agent_loop import served_chat
+    from tinyassets.agent_turn_coordinator import start_coordinator
+    from tinyassets.interactive_http_agent import ServedChatAgentAdapter
+    from tinyassets.turn_interrupt import current
 
     state.adapter = ServedChatAgentAdapter()
 
     def make_turn(**kwargs):
         provider_calls.register_open_providers_for(kwargs["universe_context"])
-        return InteractiveHttpAgentTurn(router=served.router, adapter=state.adapter, **kwargs)
+        adapter = kwargs.pop("adapter", state.adapter)
+        return start_coordinator(
+            adapter=adapter, router=served.router, interrupt=current(), **kwargs,
+        )
 
-    state.factory = provider_calls.make_interactive_agent_turn
-    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
+    state.factory = served_chat.open_served_turn
+    monkeypatch.setattr(served_chat, "open_served_turn", make_turn)
     return state
 
 
@@ -200,7 +206,9 @@ def run(agent, observer=None, *, greeting=False):
             founder_message="hi", universe_id=agent.served.context.universe_dir.name,
             response_observer=observer,
         )
-    return universe_intelligence._call_writer(
+    from tinyassets.agent_loop.served_chat import run_served_writer
+
+    return run_served_writer(
         "exact user prompt",
         system="exact system",
         universe_context=agent.served.context,

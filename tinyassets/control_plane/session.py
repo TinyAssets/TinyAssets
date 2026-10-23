@@ -22,9 +22,10 @@ selects how the turn executes:
   owner's normal budget as a durable activity session, so the parent
   turn is never blocked and the child's lineage is its activity record.
 
-The executors underneath (the served writer turn, the workflow agent turn)
-remain separate admission/execution paths, tracked as drift in S2 and S3.
-Their merge belongs to shape-convergence task C9 (not owner-daemon-in-box C9).
+Both parents run :class:`tinyassets.agent_turn_coordinator.AgentTurnCoordinator`.
+Admission is that loop's scope check, a yield journals the unsent planned
+tool, and a work adapter maps provider exhaustion. There is no second
+executor class.
 """
 
 from __future__ import annotations

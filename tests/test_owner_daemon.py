@@ -283,7 +283,6 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
     from tinyassets.auth import middleware as auth
     from tinyassets.auth.provider import Identity
     from tinyassets.control_plane.binding import current_binding
-    from tinyassets.providers import call
 
     def forbidden(*args, **kwargs):
         raise AssertionError("shared box binding/provider must not be called")
@@ -291,7 +290,7 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
     assert not hasattr(served_chat, "configured_box_provider")
     assert not hasattr(owner_mode.runtime.tools, "start_exec")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    monkeypatch.setattr(call, "make_interactive_agent_turn", agent.factory)
+    monkeypatch.setattr(served_chat, "open_served_turn", agent.factory)
     monkeypatch.setattr(model.engine_tool_client, "_make_client", _real_engine_client)
     agent.tool_call = (
         "write",

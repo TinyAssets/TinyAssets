@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 
-from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment import check_served_agent_tool_authority
 from tinyassets.storage.agent_turn_records import RoundInput, dump
@@ -95,19 +94,4 @@ class ServedChatAgentAdapter:
             authority.binding_id, reservation.reservation_id, authority.binding_generation,
             authority.binding_digest,
             "sha256:" + hashlib.sha256(json.dumps(body).encode("utf-8")).hexdigest(),
-        )
-
-
-class InteractiveHttpAgentTurn(AgentTurnCoordinator):
-    """Compatibility entry point for the ordinary served-chat provider bridge."""
-
-    def __init__(self, *, router, prompt, system, universe_context, config, adapter=None):
-        from tinyassets.turn_interrupt import current
-
-        # The served handler registered this turn under its verified caller;
-        # only that caller's stop request can reach it (tinyassets/turn_interrupt).
-        super().__init__(
-            adapter=adapter or ServedChatAgentAdapter(), router=router, prompt=prompt,
-            system=system, universe_context=universe_context, config=config,
-            interrupt=current(),
         )
