@@ -78,7 +78,7 @@ def test_owner_box_scope_uses_resolve_always_on_the_bound_identity(tmp_path, mon
 
 
 def test_dispatch_gates_fail_closed_without_a_provider(tmp_path, monkeypatch):
-    from tinyassets.api.extensions import _dispatch_scope_error as extension_scope
+    from tinyassets.api.workflow_actions import _dispatch_scope_error as extension_scope
     from tinyassets.api.universe import _dispatch_scope_error as universe_scope
     from tinyassets.api.wiki import _dispatch_scope_error as wiki_scope
 
