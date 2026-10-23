@@ -962,6 +962,39 @@ def test_the_gate_asks_for_the_conservative_selection() -> None:
     assert 'f"--{tier}"' in _SCRIPT.read_text(encoding="utf-8")
 
 
+def test_selector_runs_only_files_with_test_cases(tmp_path) -> None:
+    from scripts.affected_tests import gate_selection, select
+
+    tests = tmp_path / "tests"
+    source = tmp_path / "tinyassets"
+    tests.mkdir()
+    source.mkdir()
+    (source / "thing.py").write_text("VALUE = 1\n")
+    (tests / "test_helper.py").write_text(
+        "from tinyassets.thing import VALUE\n"
+        "def fixture_value(): return VALUE\n"
+    )
+    (tests / "test_consumer.py").write_text(
+        "from tests.test_helper import fixture_value\n"
+        "def test_value(): assert fixture_value() == 1\n"
+    )
+    (tests / "test_stale.py").write_text(
+        "from pathlib import Path\n"
+        "def files(): return list(Path('.').rglob('*.md'))\n"
+    )
+    (tests / "test_walker.py").write_text(
+        "from pathlib import Path\n"
+        "def test_walk(): assert list(Path('.').rglob('*.md')) is not None\n"
+    )
+
+    selected, _ = select(["tinyassets/thing.py"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_consumer.py"]
+    selected, _ = select(["tests/test_helper.py"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_consumer.py"]
+    selected, _ = gate_selection(["docs/example.md"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_walker.py"]
+
+
 def test_the_selection_is_pruned_before_it_is_digested() -> None:
     """Finding 3: a slow-only file would fail coverage and exit its shard 5.
 
