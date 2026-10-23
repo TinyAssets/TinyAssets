@@ -224,7 +224,6 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
 
     from tinyassets.principals import has_named_principal
     from tinyassets.storage import db_path
-    from tinyassets.storage.current_home import CurrentHomeChanged, check_principal_not_deleted
 
     try:
         conn = sqlite3.connect(db_path(base).as_uri() + "?mode=ro", uri=True)
@@ -254,10 +253,6 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
                     "SELECT 1 FROM universe_acl WHERE universe_id = ? "
                     "AND actor_id = ? AND permission = 'admin'", (uid, owner),
                 ).fetchone() is None:
-                    continue
-                try:
-                    check_principal_not_deleted(conn, owner)
-                except CurrentHomeChanged:
                     continue
                 owners.append((uid, owner))
             return owners

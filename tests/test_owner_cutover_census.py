@@ -44,10 +44,12 @@ def source(tmp_path):
         CREATE TABLE agent_turns (owner_user_id TEXT, universe_id TEXT, turn_id TEXT);
         INSERT INTO agent_turns VALUES ('alice','a1','1'),('alice','a2','2'),
                                       ('bob','b1','3'),('bob','b2','4');
-        CREATE TABLE branch_heads (branch_id TEXT, snapshot_id TEXT);
-        CREATE TABLE branches (branch_id TEXT, universe_id TEXT);
-        INSERT INTO branches VALUES ('branch-a','a2'), ('branch-b','b2');
-        INSERT INTO branch_heads VALUES ('branch-a','snapshot-a'), ('branch-b','snapshot-b');
+        CREATE TABLE branch_heads (branch_id TEXT, snapshot_id TEXT, updated_at REAL DEFAULT 1);
+        CREATE TABLE branches (branch_id TEXT, universe_id TEXT, name TEXT DEFAULT 'main',
+            created_by TEXT DEFAULT 'owner', created_at REAL DEFAULT 1, updated_at REAL DEFAULT 1);
+        INSERT INTO branches (branch_id, universe_id) VALUES ('branch-a','a2'), ('branch-b','b2');
+        INSERT INTO branch_heads (branch_id, snapshot_id) VALUES
+            ('branch-a','snapshot-a'), ('branch-b','snapshot-b');
         CREATE TABLE webhook_hooks (token_hash TEXT, universe_id TEXT, owner_principal_id TEXT);
         INSERT INTO webhook_hooks VALUES ('hash-a','a1','alice'), ('hash-b','b1','bob');
         CREATE TABLE llm_credential_deposit_owners (universe_id TEXT, owner_user_id TEXT);
@@ -111,7 +113,6 @@ def test_two_owner_census_preserves_totals_and_source_bytes(source):
 
 
 @pytest.mark.parametrize("database,table", [
-    (".tinyassets.db", "branches"),
     (".tinyassets.db", "background_branch_bindings"),
     (".tinyassets.db", "branch_tasks_v2"),
     (".automations.db", "automations"),
@@ -125,17 +126,17 @@ def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, t
 
     _sql(source / ".tinyassets.db", """
         CREATE TABLE branch_definitions
-            (branch_def_id TEXT, author TEXT, published INTEGER, visibility TEXT);
+            (branch_def_id TEXT, author TEXT, published INTEGER, visibility TEXT,
+             name TEXT DEFAULT 'workflow', created_at REAL DEFAULT 1, updated_at REAL DEFAULT 1);
     """)
     if case in {"other_owner", "public_other_owner", "private", "published_copy",
                 "active_resolved"}:
         author = "bob" if case in {"other_owner", "public_other_owner"} else "alice"
         published = int(case in {"published_copy", "public_other_owner"})
         visibility = "public" if published else "private"
-        _sql(source / ".tinyassets.db", "INSERT INTO branch_definitions VALUES "
+        _sql(source / ".tinyassets.db", "INSERT INTO branch_definitions "
+             "(branch_def_id, author, published, visibility) VALUES "
              f"('definition','{author}',{published},'{visibility}')")
-    if table == "branches":
-        _sql(source / database, "DROP TABLE branch_heads; DROP TABLE branches;")
     definition_column = "" if case == "no_column" else ", branch_def_id TEXT"
     _sql(source / database, f"CREATE TABLE {table} (universe_id TEXT, retired_at TEXT"
          f"{definition_column})")
@@ -191,7 +192,8 @@ def test_census_refuses_without_guessing_or_mutating(source, mutation, reason):
         _sql(source / ".tinyassets.db",
              f"INSERT INTO agent_turns VALUES ('{owner}','a1','bad')")
     elif mutation == "ambiguous_parent":
-        _sql(source / ".tinyassets.db", "INSERT INTO branches VALUES ('branch-a','b2')")
+        _sql(source / ".tinyassets.db", "INSERT INTO branches (branch_id, universe_id) "
+             "VALUES ('branch-a','b2')")
     elif mutation == "unknown_file":
         (source / ".unrecognized").write_text("private orphan")
     elif mutation == "paid_orphan":
@@ -315,10 +317,11 @@ def test_branch_versions_require_an_explicit_publication_mark(source):
 
 def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
     _sql(source / ".tinyassets.db", """
-        CREATE TABLE universes (id TEXT PRIMARY KEY);
-        INSERT INTO universes VALUES ('a1'), ('never-admitted');
-        INSERT INTO branches VALUES ('legacy-branch','never-admitted');
-        INSERT INTO branch_heads VALUES ('legacy-branch','old');
+        CREATE TABLE universes (universe_id TEXT PRIMARY KEY, display_name TEXT DEFAULT 'name',
+            host_path TEXT DEFAULT 'path', created_at REAL DEFAULT 1);
+        INSERT INTO universes (universe_id) VALUES ('a1'), ('never-admitted');
+        INSERT INTO branches (branch_id, universe_id) VALUES ('legacy-branch','never-admitted');
+        INSERT INTO branch_heads (branch_id, snapshot_id) VALUES ('legacy-branch','old');
         CREATE TABLE external_agent_cli_invocations (owner_user_id TEXT);
         INSERT INTO external_agent_cli_invocations VALUES ('alice'), (NULL);
         CREATE TABLE owner_fence (fence INT);
@@ -475,8 +478,10 @@ def test_transcript_key_preserves_dots_and_census_never_materializes_payloads(so
 def test_reviewed_legacy_keys_resolve_before_drop_without_default_owner(source):
     # Use the retired principal spelling only as synthetic historical input.
     _sql(source / '.tinyassets.db', """
-        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
-        INSERT INTO branch_definitions VALUES ('owned','universe:a2'), ('old','anonymous');
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT,
+            name TEXT DEFAULT 'workflow', created_at REAL DEFAULT 1, updated_at REAL DEFAULT 1);
+        INSERT INTO branch_definitions (branch_def_id, author) VALUES
+            ('owned','universe:a2'), ('old','anonymous');
         CREATE TABLE goals (author TEXT, visibility TEXT);
         INSERT INTO goals VALUES ('universe:b1','private'), ('anonymous','private');
         CREATE TABLE provider_work_bindings (binding_id TEXT, owner_user_id TEXT, universe_id TEXT);
@@ -555,8 +560,9 @@ def test_reviewed_legacy_keys_resolve_before_drop_without_default_owner(source):
 def test_real_parent_never_repairs_conflicting_or_unknown_actor(source, actor):
     """Publisher identity stays unchanged; the admitted author owns its history."""
     _sql(source / '.tinyassets.db', """
-        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
-        INSERT INTO branch_definitions VALUES ('owned','alice');
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT,
+            name TEXT DEFAULT 'workflow', created_at REAL DEFAULT 1, updated_at REAL DEFAULT 1);
+        INSERT INTO branch_definitions (branch_def_id, author) VALUES ('owned','alice');
     """)
     _sql(source / '.runs.db', f"""
         CREATE TABLE branch_versions (branch_def_id TEXT, publisher TEXT, public INT);
@@ -737,8 +743,9 @@ def test_budget_parent_reason_propagates_without_losing_conflicts(source, parent
 ])
 def test_file_kind_and_disposition_are_counted_without_names(source, relative, kind, placement):
     _sql(source / '.tinyassets.db', '''
-        CREATE TABLE universes (id TEXT);
-        INSERT INTO universes VALUES ('a1'), ('never-admitted');
+        CREATE TABLE universes (universe_id TEXT, display_name TEXT DEFAULT 'name',
+            host_path TEXT DEFAULT 'path', created_at REAL DEFAULT 1);
+        INSERT INTO universes (universe_id) VALUES ('a1'), ('never-admitted');
     ''')
     baseline = census(source)
     path = source / relative
@@ -959,8 +966,9 @@ def test_workflow_history_author_then_publisher_and_version_schedules(source, tm
     from tinyassets.box_layout_migration import _build_databases
 
     _sql(source / '.tinyassets.db', '''
-        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
-        INSERT INTO branch_definitions VALUES ('alice-definition','alice'),
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT,
+            name TEXT DEFAULT 'workflow', created_at REAL DEFAULT 1, updated_at REAL DEFAULT 1);
+        INSERT INTO branch_definitions (branch_def_id, author) VALUES ('alice-definition','alice'),
             ('bob-definition','bob'), ('unadmitted-definition','platform-actor');
     ''')
     _sql(source / '.runs.db', '''
@@ -1014,8 +1022,9 @@ def test_workflow_history_author_then_publisher_and_version_schedules(source, tm
 def _round6_files(source, *, drop_blob=False):
     """Exactly the 16 identified files; all content and identifiers are synthetic."""
     _sql(source / '.tinyassets.db', '''
-        CREATE TABLE universes (id TEXT);
-        INSERT INTO universes VALUES ('never');
+        CREATE TABLE universes (universe_id TEXT, display_name TEXT DEFAULT 'name',
+            host_path TEXT DEFAULT 'path', created_at REAL DEFAULT 1);
+        INSERT INTO universes (universe_id) VALUES ('never');
     ''')
     placements = {
         '.broker/.outbound-proxy/account-a/audit.jsonl': 'broker',

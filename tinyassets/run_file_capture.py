@@ -1,7 +1,7 @@
 """Internal standalone capture into owner-scoped immutable run-file custody.
 
 No public action is enabled here. A trusted authenticated adapter supplies owner
-and universe; this service freshly checks their existing admin grant/tombstone.
+and universe; this service freshly checks their existing admin grant.
 No run/job is fabricated. Produced workspace capture and cross-owner copy use
 different source authority adapters and are not implied by this implementation.
 """
@@ -25,7 +25,7 @@ from tinyassets.run_file_sources import open_authoring_source
 from tinyassets.scoped_reset import _assert_recovery_state_is_clean, acquire_maintenance_barrier
 from tinyassets.storage import _connect as author_connection
 from tinyassets.storage import run_files as store
-from tinyassets.storage.current_home import check_current_home, check_principal_not_deleted
+from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.run_file_lock import try_file_operation_lock
 
 logger = logging.getLogger(__name__)
@@ -55,14 +55,13 @@ def _headroom_bytes():
 
 
 def check_admin_grant(conn, owner, universe, *, require_current_home=False):
-    """The canonical tombstone + universe admin check, on a CALLER-HELD connection.
+    """The box-local universe admin check, on a caller-held connection.
 
     The only definition of "this principal may act in this universe" for custody.
     Exposed separately so a path already holding the platform writer -- notably the
     cross-owner publication fence, which must revalidate a SECOND principal -- runs
     exactly these checks instead of opening a nested writer with its own copy.
     """
-    check_principal_not_deleted(conn, owner)
     if require_current_home:
         check_current_home(conn, owner, universe)
     # Exact existing universe admin grant, not home ownership or attribution.

@@ -88,18 +88,6 @@ class OwnerIngress:
                      (b"x-tinyassets-box-sha", sha.encode())]}
             await send(message)
 
-        if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
-            # Close admission before waiting. The deletion itself is a control
-            # call, so it can retry while draining and never waits on itself.
-            from starlette.concurrency import run_in_threadpool
-
-            if not await run_in_threadpool(activity.quiesce, 20):
-                return await JSONResponse({"error": "deletion_incomplete", "receipt": {
-                    "unfinished_phases": ["drain"]}}, status_code=503)(scope, receive, proven_send)
-            response = await delete_local_account(identity)
-            if response.status_code == 409:
-                activity.deletion_refused()
-            return await response(scope, receive, proven_send)
         # Admission and drain share a lock: a successful drain cannot race a
         # new request or background turn. No control request counts as activity.
         # Waiting for an external sign-in is passive, including its page polls.
@@ -121,28 +109,3 @@ class OwnerIngress:
             await self.app(scope, receive, proven_send)
         finally:
             gate.__exit__(None, None, None)
-
-
-async def delete_local_account(identity):
-    from starlette.concurrency import run_in_threadpool
-
-    from tinyassets.account_deletion import (
-        AccountDeletionBlocked,
-        AccountDeletionError,
-        delete_account,
-    )
-    from tinyassets.auth.middleware import identity_context
-    from tinyassets.owner_runtime import current
-
-    def erase():
-        with identity_context(identity):
-            return delete_account(current().root, founder_sub=identity.user_id)
-
-    try:
-        receipt = await run_in_threadpool(erase)
-        return JSONResponse(receipt)
-    except AccountDeletionBlocked as exc:
-        return JSONResponse({"error": "deletion_blocked", "reasons": str(exc).split("; ")},
-                            status_code=409)
-    except AccountDeletionError as exc:
-        return JSONResponse({"error": "deletion_refused", "detail": str(exc)}, status_code=409)
