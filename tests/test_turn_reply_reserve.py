@@ -127,3 +127,45 @@ def test_final_reply_keeps_text_and_discards_ignored_tool_choice(agent, monkeypa
     assert len(agent.tools) == FREE_TURN_ATTEMPTS - 1
     assert agent.latest().state == "completed"
     assert not agent.latest().rounds[-1].reply.tool_requests
+
+
+@pytest.mark.parametrize("other, failures, deadline, expected", [
+    (True, 0, None, False),
+    (False, 0, None, True),
+    (False, 1, None, True),
+    (True, 1, None, False),
+    (True, 0, 11, True),
+])
+def test_last_attempt_uses_whole_turn(other, failures, deadline, expected, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from tinyassets import agent_turn_coordinator as coordinator
+    from tinyassets.providers.base import ModelConfig, UniverseContext
+    from tinyassets.providers.model_policy import ModelRef
+
+    current = ModelRef("source-a", "model")
+    alternate = ModelRef("source-b", "model")
+    attempts = [{"source_ref": "source-a", "free": True,
+                 "state": "failed" if failures else "succeeded"}]
+    budget = SimpleNamespace(
+        receipt=lambda: {"attempts": attempts}, max_requests=None, free_pool_limit=None,
+        free_limit=10 if failures or deadline else 2, source_limits={}, failure_limit=2,
+        deadline=deadline, clock=lambda: 10,
+    )
+    turn = object.__new__(coordinator.AgentTurnCoordinator)
+    turn.request_budget = budget
+    turn.context = UniverseContext(model_selection=current, universe_dir=Path("home"))
+    turn.owner = "owner"
+    turn._free_request = True
+    turn._text_only = False
+    turn.visited = set()
+    turn._budget_skipped = set()
+    turn.exhaustion = ()
+    turn.config = ModelConfig()
+    refs = [current, alternate] if other else [current]
+    turn.plan = SimpleNamespace(catalog=None, order=lambda *args: SimpleNamespace(
+        candidates=[SimpleNamespace(ref=ref) for ref in refs],
+    ))
+    monkeypatch.setattr(coordinator, "candidate_is_metered_free", lambda *args, **kwargs: True)
+    assert turn._last_reply_attempt() is expected

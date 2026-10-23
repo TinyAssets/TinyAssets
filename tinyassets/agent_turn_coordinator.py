@@ -519,7 +519,7 @@ class AgentTurnCoordinator:
                     # the budget line included (tests/test_one_agent_definition.py).
                     instructions = self.system + (
                         "\n\n" + budget.prompt_line() if budget is not None else "")
-                    final_reply = await off_loop(self._last_reply_attempt)
+                    final_reply = await off_loop(self._last_reply_attempt, turn_deadline)
                     if final_reply:
                         instructions += (
                             "\n\nThis is the turn's final request. Tools are disabled. "
@@ -687,11 +687,19 @@ class AgentTurnCoordinator:
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
 
-    def _last_reply_attempt(self):
-        """Keep one existing slot for words; this grants no additional dispatch."""
+    def _last_reply_attempt(self, turn_deadline=None):
+        """Reserve an answer across the eligible turn, without granting dispatch."""
         budget = self.request_budget
+        # Leave the configured first-progress window for an answer. Deadline
+        # admission still belongs to the budget; this is a conservative reserve,
+        # not a prediction of how long the provider or a tool will take.
+        answer_window = self.config.stream_timeout_profile().first_progress_s
+        if (budget.deadline is not None
+                and budget.deadline - budget.clock() <= answer_window):
+            return True
+        if turn_deadline is not None and turn_deadline - time.monotonic() <= answer_window:
+            return True
         active = [a for a in budget.receipt()["attempts"] if a["state"] != "not_sent"]
-        source = self.context.model_selection.connection_id
         remaining = []
         if budget.max_requests is not None:
             remaining.append(budget.max_requests - len(active))
@@ -700,10 +708,37 @@ class AgentTurnCoordinator:
         if free:
             if budget.free_pool_limit is not None:
                 remaining.append(budget.free_pool_limit - sum(a["free"] for a in active))
-            limit = budget.source_limits.get(source, budget.free_limit)
-            if limit is not None:
-                remaining.append(limit - sum(
-                    a["free"] and a["source_ref"] == source for a in active))
+            current = self.context.model_selection
+            sources = {current.connection_id}
+            if self.plan is not None:
+                order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+                for item in order.candidates:
+                    candidate = item.ref
+                    if candidate in self.visited or candidate in self._budget_skipped:
+                        continue
+                    if (self._text_only and self.router.selected_agent_execution_kind(candidate)
+                            != "engine_inference"):
+                        continue
+                    if candidate_is_metered_free(
+                        replace(self.context, model_selection=candidate), self.plan.catalog,
+                        owner=self.owner,
+                    ):
+                        sources.add(candidate.connection_id)
+            slots = 0
+            for source in sources:
+                attempts = [a for a in active if a["free"] and a["source_ref"] == source]
+                limit = budget.source_limits.get(source, budget.free_limit)
+                available = float("inf") if limit is None else limit - len(attempts)
+                if budget.failure_limit is not None:
+                    failures = 0
+                    for attempt in reversed(attempts):
+                        if attempt["state"] == "succeeded":
+                            break
+                        if attempt["state"] in {"failed", "unknown"}:
+                            failures += 1
+                    available = min(available, budget.failure_limit - failures)
+                slots += max(0, available)
+            remaining.append(slots)
         return bool(remaining) and min(remaining) <= 1
 
     def _next_after_local_model_failure(self, exc, before_attempts):
