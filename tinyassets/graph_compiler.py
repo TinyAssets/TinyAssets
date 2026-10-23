@@ -346,26 +346,6 @@ def _get_timeout_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _TIMEOUT_EXECUTOR
 
 
-_SHARED_ROUTER: Any = None
-
-
-def _get_shared_router() -> Any:
-    """Return the shared ProviderRouter singleton, or None if not available.
-
-    Lazily imports so test environments without providers don't fail at
-    import time.  The router is cached module-level after first import.
-    """
-    global _SHARED_ROUTER
-    if _SHARED_ROUTER is not None:
-        return _SHARED_ROUTER
-    try:
-        from tinyassets.providers.router import ProviderRouter
-        _SHARED_ROUTER = ProviderRouter()
-    except Exception:
-        pass
-    return _SHARED_ROUTER
-
-
 def _seat_scope(universe_context, seat_scope) -> tuple[Path, str] | None:
     """(data root, universe id) whose account this agent call is charged to.
 
@@ -2168,11 +2148,11 @@ def _build_node_mcp_invoker(
                 **kwargs,
             )
         if tool_name == "goals":
-            from tinyassets.api.market import goals
+            from tinyassets.api.goals import goals
 
             raw = goals(action=action, **kwargs)
         elif tool_name == "gates":
-            from tinyassets.api.market import gates
+            from tinyassets.api.goals import gates
 
             raw = gates(action=action, **kwargs)
         elif tool_name == "wiki":

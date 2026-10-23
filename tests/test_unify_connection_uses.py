@@ -370,7 +370,7 @@ def test_a_differently_cased_header_cannot_shadow_or_duplicate_the_key(monkeypat
 
 @pytest.fixture
 def served(monkeypatch):
-    from tinyassets import engine_mcp_server as engine
+    from tinyassets import universe_tools as engine
 
     monkeypatch.setattr(engine, "_ACTOR_ID", "owner-setup")
     monkeypatch.setattr(engine, "_GRAPH_ID", "u-setup")

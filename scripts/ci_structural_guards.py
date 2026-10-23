@@ -102,11 +102,11 @@ GUARDS = {
     ),
     "test_served_tool_guidance": (
         'Repair the affected handbook chapter and its index in '
-        'tinyassets/engine_mcp_server.py; preserve verbatim guidance and keep expanded '
+        'tinyassets/universe_tools.py; preserve verbatim guidance and keep expanded '
         'instructions in on-demand chapters. '
     ),
     "test_served_systems_guidance": (
-        'Repair the systems handbook chapter in tinyassets/engine_mcp_server.py to name the '
+        'Repair the systems handbook chapter in tinyassets/universe_tools.py to name the '
         'actual supported in-platform calls and fetch path. '
     ),
     "test_owner_door_import_boundary": (
@@ -177,12 +177,6 @@ def targets() -> list[str]:
 
 def repair(nodeid: str) -> str:
     name = nodeid.split("::", 1)[0].replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".py")
-    if name == "test_converse_turn_cost":
-        return (
-            "Fix: Move detailed agent instructions verbatim into an on-demand handbook "
-            "chapter, leaving a short pointer; do not raise the static prompt budgets. "
-            f"Reproduce: python -m pytest -q {nodeid}"
-        )
     hint = GUARDS.get(
         name, "Install dev,browser extras and fix the reported collection/import error."
     )

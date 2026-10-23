@@ -22,7 +22,8 @@ import types
 
 import pytest
 
-from tinyassets import engine_mcp_server as engine
+from tinyassets import universe_tools as engine
+from tinyassets.engine_endpoint import current_server
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 #: How to put the chapters back where they were: the resident index sits exactly
@@ -58,7 +59,7 @@ CHAPTER_ORDER = (*SPLIT_CHAPTER_ORDER, "connect", "share-after-publish", "capabi
 def _parameter_descriptions(handle: str) -> list[str]:
     """Every parameter description in the advertised schema, possibly empty."""
     async def _read() -> list[str]:
-        for tool in await engine.mcp.list_tools():
+        for tool in await current_server().mcp.list_tools():
             if tool.name == handle:
                 schema = tool.parameters if isinstance(tool.parameters, dict) else {}
                 return [
@@ -73,7 +74,7 @@ def _parameter_descriptions(handle: str) -> list[str]:
 
 def _description(handle: str) -> str:
     async def _read() -> str:
-        for tool in await engine.mcp.list_tools():
+        for tool in await current_server().mcp.list_tools():
             if tool.name == handle:
                 return tool.description or ""
         raise AssertionError(f"no served handle named {handle!r}")
@@ -142,13 +143,14 @@ def test_the_reader_finds_guidance_under_either_fastmcp_placement(monkeypatch, p
             }},
         )
     others = [
-        other for other in asyncio.run(engine.mcp.list_tools()) if other.name != "write_graph"
+        other for other in asyncio.run(current_server().mcp.list_tools())
+        if other.name != "write_graph"
     ]
 
     async def _list_tools():
         return [tool, *others]
 
-    monkeypatch.setattr(engine.mcp, "list_tools", _list_tools)
+    monkeypatch.setattr(current_server().mcp, "list_tools", _list_tools)
     reachable = engine.served_tool_guidance("write_graph")
     # Wherever the Args block landed, the reader has it.
     assert "Args:" in reachable

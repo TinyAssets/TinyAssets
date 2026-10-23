@@ -167,7 +167,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/broker/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/effectors/__init__.py::EffectChain.settle": (CALL_SCOPED, "effect settle wait"),
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
-    "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
+    "tinyassets/universe_tools.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
     "tinyassets/universe_tools.py::_bash": (
         CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
     ),

@@ -41,6 +41,16 @@ def current() -> OwnerRuntime | None:
     return _runtime
 
 
+def in_owner_box() -> bool:
+    """Whether this process is the startup-admitted owner daemon.
+
+    The shared door authenticates bearers and forwards the verified Identity.
+    This process does not host an AuthProvider and does not read
+    ``UNIVERSE_SERVER_AUTH``.
+    """
+    return current() is not None
+
+
 def admitted() -> OwnerRuntime:
     runtime = current()
     if runtime is None:

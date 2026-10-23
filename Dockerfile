@@ -146,7 +146,6 @@ RUN python -m venv --copies /opt/venv && \
     /opt/venv/bin/python -c 'import subprocess,sys,tomllib; p=tomllib.load(open("pyproject.toml","rb"))["project"]; subprocess.check_call([sys.executable,"-m","pip","install","--no-cache-dir",*p["dependencies"],*p["optional-dependencies"]["mcp"],*p["optional-dependencies"]["browser"]])'
 
 COPY tinyassets/ ./tinyassets/
-COPY domains/ ./domains/
 
 # ---------- Stage 2: final ----------
 
@@ -276,7 +275,6 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
     ls -d /opt/ms-playwright/chromium_headless_shell-*
 
 COPY --from=builder /build/tinyassets /app/tinyassets
-COPY --from=builder /build/domains /app/domains
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # Install the actual package metadata and entry points against /app. Dependencies
 # above use the same pyproject extras and are not resolved a second time.

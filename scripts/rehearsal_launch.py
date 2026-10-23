@@ -47,7 +47,8 @@ def production_host(output, *, runsc=Path("/support/gvisor/runsc")):
                         ("cpu.max", "300000 100000")):
         (cgroup / name).write_text(value)
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-           "HOME": "/root", "BACKUP_DEST": ":local:/snapshots/owner-snapshots"}
+           "HOME": "/root", "BACKUP_DEST": ":local:/snapshots/owner-snapshots",
+           "UNIVERSE_SERVER_URL": "https://rehearsal.invalid/mcp"}
     code = """
 import os, sys
 from pathlib import Path

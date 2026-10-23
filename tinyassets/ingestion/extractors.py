@@ -259,7 +259,6 @@ def synthesize_source(
     list[str]
         Filenames of synthesized documents.
     """
-    from domains.fantasy_daemon.phases.worldbuild import _write_canon_file
     from tinyassets.providers.model_call import get_last_provider, text_sync
 
     if not source_text.strip():
@@ -740,3 +739,35 @@ def _parse_gap_response(raw: str) -> list[str]:
         return [g for g in gaps if isinstance(g, str) and g.strip()]
 
     return []
+
+
+def _write_canon_file(
+    canon_dir: Path, filename: str, content: str, model: str = "",
+) -> None:
+    """Write a canon document to the canon directory.
+
+    Creates the canon directory if it does not exist.  Writes a sidecar
+    marker recording which model generated the file so that the reflect
+    node can enforce quality-tier guards (weaker models never overwrite
+    stronger models' work).
+    """
+    import json as _json
+    import time as _time
+
+    safe_filename = safe_canon_filename(filename)
+    filepath = resolve_within_canon(canon_dir, safe_filename, kind="filename")
+
+    # Write provenance marker
+    marker = resolve_within_canon(
+        canon_dir, f".{safe_filename}.reviewed", kind="marker"
+    )
+
+    from tinyassets.universe_files import write_data_path
+
+    write_data_path(filepath, content)
+    try:
+        write_data_path(marker, _json.dumps({"reviewed_at": _time.time(), "model": model}))
+    except OSError:
+        pass
+
+    logger.debug("Wrote canon file: %s (%d chars, model=%s)", filepath, len(content), model)

@@ -64,7 +64,7 @@ Cross-module note: ``_current_actor``, ``_truncate``, ``_append_ledger``,
 (universe-engine territory) and are lazy-imported inside the functions that use
 them. This avoids the load-time cycle (universe_server back-compat-imports
 symbols from this module). ``_gates_enabled`` is also lazy-imported, but from
-``tinyassets.api.market`` (its real home post-Step-7).
+``tinyassets.api.goals`` (its real home post-Step-7).
 """
 
 from __future__ import annotations
@@ -771,7 +771,7 @@ def _attach_copy_use(branch: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
-    from tinyassets.api.market import _gates_enabled
+    from tinyassets.api.goals import _gates_enabled
     from tinyassets.daemon_server import list_gate_claims
 
     selector = kwargs.get("branch_def_id", "").strip()
@@ -2154,22 +2154,9 @@ def _resolve_node_spec(
     ``NodeDefinition`` from. On failure ``resolved_spec`` is ``None``
     and ``error`` explains what the caller must do.
 
-    The shape changes we accept are:
-
-    - ``node_ref={"source": "standalone", "node_id": "X"}`` — copy the
-      canonical standalone registration X into this branch.
-    - ``node_ref={"source": "<branch_def_id>", "node_id": "X"}`` —
-      copy node X from another branch.
-    - Plain inline spec (``node_id``/``display_name``/...): used as-is,
-      EXCEPT we refuse to silently shadow an existing standalone
-      registration (#66). The caller must either pick a different
-      ``node_id`` or pass ``intent="copy"`` to opt into the copy.
-
-    ``intent="reference"`` is reserved for a future live-reference
-    mode. v1 only supports ``intent="copy"``; other values error.
+    A node_ref copies a node from another readable branch. Inline definitions
+    do not consult a global node registry. Extensions are activated v2 packages.
     """
-    from tinyassets.api.extensions import _load_nodes
-
     nid = (raw.get("node_id") or "").strip()
     intent = (raw.get("intent") or "").strip().lower()
     if intent and intent not in ("copy", "reference"):
@@ -2181,7 +2168,7 @@ def _resolve_node_spec(
     if intent == "reference":
         return None, (
             "intent='reference' (live shared node) is not supported "
-            "yet. Use intent='copy' to snapshot a standalone node "
+            "yet. Use intent='copy' to snapshot a branch node "
             "into this branch."
         )
 
@@ -2193,14 +2180,10 @@ def _resolve_node_spec(
         ref_nid = (node_ref.get("node_id") or nid).strip()
         if not ref_source or not ref_nid:
             return None, "node_ref requires 'source' and 'node_id'."
-        if ref_source != "standalone":
-            resolved_source = _resolve_readable_branch(
-                ref_source,
-                str(_base_path()),
-            )
-            if resolved_source is None:
-                return None, _branch_not_found_message(ref_source)
-            ref_source = resolved_source[0]
+        resolved_source = _resolve_readable_branch(ref_source, str(_base_path()))
+        if resolved_source is None:
+            return None, _branch_not_found_message(ref_source)
+        ref_source = resolved_source[0]
         resolved, err = _lookup_node_body(ref_source, ref_nid)
         if err:
             return None, err
@@ -2225,26 +2208,6 @@ def _resolve_node_spec(
         _reconcile_copied_approval(merged)
         return merged, ""
 
-    # No explicit ref — fall back to raw. If the node_id shadows a
-    # standalone registration, demand explicit intent so the caller
-    # cannot silently create a hollow clone.
-    if nid and intent != "copy":
-        try:
-            standalone = _load_nodes()
-        except Exception:
-            standalone = []
-        hit = next(
-            (n for n in standalone if n.get("node_id") == nid), None,
-        )
-        if hit:
-            return None, (
-                f"node_id '{nid}' matches an existing standalone "
-                "registered node. Pass node_ref="
-                f"{{'source': 'standalone', 'node_id': '{nid}'}} to "
-                "copy its body into this branch, or pass intent='copy' "
-                "on this spec if you intentionally want the existing "
-                "body, or rename this node to avoid collision."
-            )
     raw = dict(raw)
     raw.pop("approved", None)
     raw.pop("author", None)
@@ -2256,46 +2219,8 @@ def _lookup_node_body(
 ) -> tuple[dict[str, Any], str]:
     """Return the canonical node body for a ``node_ref`` lookup.
 
-    ``source`` is either the literal string ``'standalone'`` (look in
-    the standalone node registry) or a branch_def_id (look in that
-    branch's ``node_defs``).
+    ``source`` is a readable branch_def_id.
     """
-    from tinyassets.api.extensions import _load_nodes
-
-    if source == "standalone":
-        try:
-            nodes = _load_nodes()
-        except Exception as exc:
-            return {}, f"could not load standalone node registry: {exc}"
-        hit = next(
-            (n for n in nodes if n.get("node_id") == node_id), None,
-        )
-        if not hit:
-            return {}, (
-                f"standalone node '{node_id}' not found. "
-                "Global registered-node discovery is not exposed by the "
-                "advertised handles."
-            )
-        return {
-            "node_id": hit.get("node_id", node_id),
-            "display_name": hit.get("display_name", node_id),
-            "description": hit.get("description", ""),
-            "phase": hit.get("phase", "custom"),
-            "input_keys": list(hit.get("input_keys") or []),
-            "output_keys": list(hit.get("output_keys") or []),
-            "tools_allowed": list(hit.get("tools_allowed") or []),
-            "strict_input_isolation": bool(
-                hit.get("strict_input_isolation", True),
-            ),
-            "source_code": hit.get("source_code", ""),
-            "prompt_template": hit.get("prompt_template", ""),
-            "author": hit.get("author", ""),
-            "approved": bool(hit.get("approved", False)),
-            "approved_by": hit.get("approved_by", ""),
-            "approved_at": hit.get("approved_at", ""),
-            "approved_source_hash": hit.get("approved_source_hash", ""),
-            "approval_reason": hit.get("approval_reason", ""),
-        }, ""
 
     # Otherwise treat `source` as a branch_def_id.
     from tinyassets.daemon_server import get_branch_definition
@@ -2939,8 +2864,7 @@ def _apply_node_updates(
     ignored_fields: frozenset[str] = frozenset(),
 ) -> str:
     """Apply validated node update fields shared by both update surfaces."""
-    from tinyassets.api.extensions import VALID_PHASES
-    from tinyassets.phase_vocab import normalize_phase
+    from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
     editable_updates = {
         key: value
@@ -4485,10 +4409,9 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
     ``node_ids`` (default: all nodes on the branch). Atomic — if any
     node rejects, nothing is written.
     """
-    from tinyassets.api.extensions import VALID_PHASES
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import save_branch_definition
-    from tinyassets.phase_vocab import normalize_phase
+    from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
     selector = (kwargs.get("branch_def_id") or "").strip()
     if not selector:
@@ -4826,11 +4749,6 @@ Copy semantics are the default and usually what the user wants — the
 canonical body is snapshotted into the new Branch and diverges from
 there. If the user later edits it on either side, the other stays
 unchanged. (v1; live shared nodes may come later.)
-
-Bare `node_id` that collides with an existing standalone registered node is
-rejected by the server; in an existing branch patch, pass `node_ref` /
-`intent="copy"` or rename. This is intentional — silent shadowing was a bug
-(#66).
 
 ## New-workflow authoring
 

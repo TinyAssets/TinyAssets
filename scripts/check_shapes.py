@@ -63,9 +63,10 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/router.py", r"\bTurnRequestBudget\("),
             ("tinyassets/universe_intelligence.py", r"\bTurnRequestBudget\("),
             ("tinyassets/ta_capabilities.py", r"\bdef _turn_reviewer\b"),
+            ("tinyassets/**/*.py", r"\bcreate_message\("),
             ("tinyassets/providers/router.py", r"chain = \[served_authority\.provider\]"),
         ),
-        ceiling=1,
+        ceiling=0,
     ),
     "S2": Shape(
         ("tinyassets/control_plane/**",),
@@ -103,15 +104,18 @@ SHAPES: dict[str, Shape] = {
     ),
     "S6": Shape(
         ("tinyassets/extension_manifest.py", "tinyassets/extension_state.py"),
-        (("tinyassets/api/extensions.py", ""), ("tinyassets/ta_cli.py", r"workspace.?executable")),
-        ceiling=1,
+        (("tinyassets/api/extensions.py", ""), ("tinyassets/ta_cli.py", r"workspace.?executable"),
+         ("tinyassets/**/*.py", r"\bclass NodeRegistration\b")),
+        ceiling=0,
     ),
     "S7": Shape(
         ("tinyassets/universe_tools.py", "tinyassets/ta_cli.py",
          "tinyassets/control_plane/registration.py"),
         (("tinyassets/engine_mcp_server.py", ""),
-         ("tinyassets/engine_mcp_server.py", r"\bFastMCP\(")),
-        ceiling=1,
+         ("tinyassets/engine_mcp_server.py", r"\bFastMCP\("),
+         ("tinyassets/universe_tools.py", r"\bFastMCP\("),
+         ("tinyassets/engine_endpoint.py", r"\bspec_from_file_location\(")),
+        ceiling=0,
     ),
     "S8": Shape(("tinyassets/boxes/**",), (
         ("tinyassets/**/role_*.py", ""),
@@ -158,9 +162,23 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/universe_server.py",), (("tinyassets/mcp_server.py", ""),), ceiling=0
     ),
     "S13": Shape(
-        ("tinyassets/providers/owner_binding.py",),
-        (("tinyassets/**/*.py", r"\b(?:reflexion|raptor|agentic_search|extract_learning)\b"),),
-        ceiling=14,
+        # These helpers and their readers run inside the owner box. New readers
+        # elsewhere remain old paths; the helpers may import only model_call.
+        ("tinyassets/providers/owner_binding.py", "tinyassets/memory/__init__.py",
+         "tinyassets/memory/manager.py", "tinyassets/memory/reflexion.py",
+         "tinyassets/knowledge/raptor.py", "tinyassets/retrieval/agentic_search.py",
+         "tinyassets/retrieval/router.py",
+         "tinyassets/universe_intelligence.py"),
+        (("tinyassets/**/*.py", r"\b(?:reflexion|raptor|agentic_search|extract_learning)\b"),
+         ("tinyassets/**/*.py", r"\bget_provider_router\s*\(\s*\)\s*\.call\s*\(")),
+        forbid=(r"from tinyassets\.providers\.(?:router|.*_provider) import",
+                r"from tinyassets\.providers\.call import "
+                r"(?!(?:make_interactive_agent_turn|call_interactive_agent_turn)\b)",
+                r"\.(?:complete|call_sync)\(",
+                r"\bget_provider_router\s*\(",
+                r"\b(?:router|provider_router)\.call\s*\(",
+                r"\b(?:call_provider|call_with_policy|_force_mock)\b"),
+        ceiling=0,
     ),
     "S14": Shape(
         ("tinyassets/api/visibility.py", "tinyassets/api/universe.py"),
@@ -198,7 +216,7 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/api/extensions.py", r"_ESCROW_ACTIONS"),
             ("tinyassets/desktop/dashboard.py", r"TINYASSETS_PAID_MARKET"),
         ),
-        ceiling=56,
+        ceiling=0,
     ),
     "S19": Shape(
         ("packaging/claude-plugin/.claude-plugin/marketplace.json",),
@@ -223,7 +241,10 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/**/universe_*.py", ""),),
         ceiling=10,
     ),
-    "S23": Shape(("tinyassets/graph_compiler.py",)),
+    "S23": Shape(
+        ("tinyassets/graph_compiler.py", "tinyassets/providers/call.py"),
+        forbid=(r"\b_force_mock\b", r"\[MOCK\]"),
+    ),
     "S24": Shape(("tinyassets/owner_door/**",)),
     "S25": Shape(
         ("tinyassets/universe_server.py", "tinyassets/onboarding/**", "tinyassets/api/**")
@@ -382,7 +403,7 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
     total = 0
     for glob, pattern in shape.old:
         for path in files(glob, root):
-            if shape is SHAPES["S22"] and any(
+            if (shape is SHAPES["S22"] or shape is SHAPES["S13"]) and any(
                 registered_path(path.relative_to(root).as_posix(), home) for home in shape.paths
             ):
                 continue

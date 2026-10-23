@@ -23,7 +23,8 @@ _OWNER, _CENTER = "owner", "u-guard"
 def _route_tools(names=FOUR_MODEL_TOOLS) -> list[Tool]:
     """The engine route's own registrations of ``names`` (default: the
     model-visible tools)."""
-    from tinyassets.engine_mcp_server import mcp
+    from tinyassets.engine_endpoint import current_server
+    mcp = current_server().mcp
 
     registered = asyncio.run(mcp.list_tools(run_middleware=False))
     return [Tool(name=t.name, description=t.description, inputSchema=t.parameters)
@@ -234,7 +235,8 @@ def _listed_for(url, monkeypatch):
 
     from fastmcp.server import dependencies
 
-    from tinyassets.engine_mcp_server import mcp
+    from tinyassets.engine_endpoint import current_server
+    mcp = current_server().mcp
 
     params = {key: values[0] for key, values in parse_qs(urlsplit(url).query).items()}
     with monkeypatch.context() as patch:

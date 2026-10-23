@@ -106,7 +106,7 @@ _ENGINE_CHAPTERS = frozenset({
     "_WRITE_GRAPH_WORKSPACES_CHAPTER",
 })
 DOCUMENTATION_CONSTANTS: dict[str, frozenset[str]] = {
-    "tinyassets/engine_mcp_server.py": _ENGINE_CHAPTERS,
+    "tinyassets/universe_tools.py": _ENGINE_CHAPTERS,
 }
 
 
