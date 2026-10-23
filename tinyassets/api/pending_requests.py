@@ -799,7 +799,7 @@ def _validated_fields(
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
-    if action["type"] in {"bind_model_access", "credential_request"}:
+    if action["type"] in {"bind_model_access", "credential_request", "policy_proposal"}:
         if raw not in (None, []):
             raise ValueError("this action is a fieldless owner confirmation")
         return []
@@ -1157,8 +1157,13 @@ def request_from_user(
         from tinyassets.owner_centers import admitted_owner
 
         owner = admitted_owner(udir.parent, center=_uid)
-        owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
-                               change=action)
+        if "egress" in action["policy"]:
+            from tinyassets.broker.client import owner_policy_operation as broker_policy
+
+            broker_policy(udir.parent, owner, "proposal", change=action)
+        else:
+            owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
+                                   change=action)
     if action.get("type") == "rotate_http":
         # BEFORE the fields are validated, because the connection's stored auth
         # scheme is what decides how many boxes the card has and what they are

@@ -15,7 +15,11 @@ def admitted_egress(tmp_path):
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     identities.resolve("transport-owner", allocate=True)
     drive(identities.admit("transport-owner", routing=projection(identities.path)))
-    binding = (identities, "transport-owner")
+    from tinyassets.broker.policy import PolicyStore
+
+    store = PolicyStore(tmp_path, identities)
+    store.bootstrap()
+    binding = (identities, "transport-owner", store, None)
     token = identity.set(binding)
     try:
         yield binding

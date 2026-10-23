@@ -1152,7 +1152,7 @@ async def _handle_policy(request: Any) -> Any:
     if not center:
         return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
     scope = request.query_params.get("scope", "actions")
-    if scope not in {"actions", "spend"}:
+    if scope not in {"actions", "spend", "egress"}:
         return JSONResponse({"error": "invalid_policy_scope"}, status_code=400)
     owner_policy_operation = (partial(action_policy, center=center)
                               if scope == "actions" else spending_policy)
@@ -1197,6 +1197,10 @@ async def _handle_policy(request: Any) -> Any:
             return JSONResponse({"error": "proposal_not_found"}, status_code=404,
                                 headers=_NO_STORE)
         proposal = row["action"]
+        if "egress" in proposal["policy"]:
+            owner_policy_operation = spending_policy
+        if "egress" in proposal["policy"]:
+            owner_policy_operation = spending_policy
         try:
             result = await run_in_threadpool(
                 owner_policy_operation, _base_path(), owner, "write",

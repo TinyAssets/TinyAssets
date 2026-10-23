@@ -85,7 +85,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
                               document=document, committed_via=committed_via)
     if document.get("action") in {"extend", "full"}:
         return _update_local(ledger, principal=principal, command_center=command_center,
-                             document=document)
+                             document=document, committed_via=committed_via)
     from tinyassets.api.http_connection import _connect_plan, _ids, _project
     from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, validate_query
     from tinyassets.storage.outbound_connections import (
@@ -195,6 +195,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         conn.execute("UPDATE outbound_connections SET request_ref=?, committed_via=? "
                      "WHERE connection_id=?",
                      (document.get("request_ref", ""), committed_via, connection_id))
+        _record_egress_scope(conn, connection_id, committed_via)
         return {"projection": {**_project(resource, grant),
                                "request_ref": document.get("request_ref", "")}}
 
@@ -230,7 +231,33 @@ def connect_operation(data_root, *, principal, command_center, destination, poli
     return result
 
 
-def _update_local(ledger, *, principal, command_center, document):
+def _record_egress_scope(conn, connection_id, committed_via):
+    """Only authenticated owner commits endorse the current exact destinations.
+
+    Box widening retains prior owner scope, but can never enlarge it.
+    """
+    from tinyassets.broker.egress import normalize_destination
+    from tinyassets.storage.outbound_connections import _parse_allowed_endpoints
+
+    conn.execute("UPDATE outbound_connections SET committed_via=? WHERE connection_id=?",
+                 (committed_via, connection_id))
+    if committed_via == "door":
+        row = conn.execute("SELECT allowed_endpoints_json,git_host FROM outbound_connections "
+                           "WHERE connection_id=?", (connection_id,)).fetchone()
+        targets = []
+        for endpoint in _parse_allowed_endpoints(json.loads(row[0])):
+            target = normalize_destination(endpoint.host, 443)
+            if target not in targets:
+                targets.append(target)
+        if row[1]:
+            target = normalize_destination(row[1], 443)
+            if target not in targets:
+                targets.append(target)
+        conn.execute("UPDATE outbound_connections SET owner_egress_json=? "
+                     "WHERE connection_id=?", (json.dumps(targets), connection_id))
+
+
+def _update_local(ledger, *, principal, command_center, document, committed_via):
     """Apply an owner-approved extension against its exact broker snapshot."""
     from tinyassets.api.http_connection import _canonical_endpoint_set, _ids
     from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, validate_query
@@ -278,6 +305,8 @@ def _update_local(ledger, *, principal, command_center, document):
                 expected_access_mode=expected["access_mode"],
                 expected_incarnation=expected["incarnation"], expected_grant_id=grant_id,
                 _transaction=conn)
+        if updated:
+            _record_egress_scope(conn, connection_id, committed_via)
         return {"updated": updated}
 
 

@@ -42,6 +42,14 @@ def _raise_for(end: dict[str, Any]) -> None:
     )
 
     error_class = end.get("error_class")
+    if error_class == "EgressPolicyRefused":
+        from tinyassets.broker.egress import EgressPolicyRefused
+        from tinyassets.egress_requests import request_access
+
+        detail = end["egress"]
+        request_access(detail)
+        raise EgressPolicyRefused({"host": detail["host"], "port": detail["port"]},
+                                  detail["generation"], detail["decision"])
     outcome = end.get("outcome")
     if error_class == "GrantPathRefused":
         raise GrantPathRefused("requested method and path are not covered by the connection grant")
@@ -304,6 +312,11 @@ class BrokerClient:
         wire = {"op": "HTTP_CONNECT", "principal": self._principal,
                 "generation": generation,
                 "token": token, "document": document}
+        from tinyassets.onboarding.owner_sessions import router_owner_session
+
+        session = router_owner_session()
+        if session is not None:
+            wire["session_proof"] = {"session_hash": session["session_hash"]}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:

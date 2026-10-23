@@ -122,6 +122,32 @@ def _redirect(url, status=302, **overrides):
     return {"status": status, "headers": [("Location", url)], **overrides}
 
 
+@pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
+def test_redirect_rechecks_owner_policy_without_inherited_permission(
+        chain, admitted_egress, mode):  # noqa: F811 -- shared fixture
+    from tests.test_owner_policy import _session
+    from tinyassets.broker.egress import EgressPolicyRefused
+
+    _, owner, store, _ = admitted_egress
+    cookie = "redirect-policy-owner-" + "x" * 32
+    _session(store._root, owner, cookie)
+    policy = store.read(owner)
+    policy.document["egress"] = {"mode": mode, "destinations": [
+        {"host": "api.example.com", "port": 443}]}
+    store.write(owner, cookie, policy.generation, policy.document)
+    chain.state["responses"] = [_redirect("https://cdn.example.com/blob"), {"body": b"ok"}]
+    if mode == "open":
+        assert _request(_driver(chain))["body"] == "ok"
+        assert "Authorization" not in chain.state["requests"][1]["headers"]
+    else:
+        with pytest.raises(EgressPolicyRefused):
+            _request(_driver(chain))
+        assert len(chain.state["requests"]) == 1
+        assert len(chain.state["sockets"]) == 1
+        receipts = store.receipts(owner)
+        assert receipts[0]["decision"] == ("ask" if mode == "ask" else "deny")
+
+
 @pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
 def test_approved_redirect_download_returns_final_text_and_strips_foreign_auth(chain, status):

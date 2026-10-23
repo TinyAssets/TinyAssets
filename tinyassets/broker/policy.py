@@ -1,4 +1,4 @@
-"""Broker-owned spending policy and read-only interactive session verification.
+"""Broker-owned egress/spending policy and interactive session verification.
 
 The policy database is never opened by the daemon or by a box. All mutation
 methods here are called only by the broker's policy RPC after it has received
@@ -15,6 +15,7 @@ import logging
 import os
 import sqlite3
 import stat
+import threading
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -58,16 +59,25 @@ class PolicyStore:
         self._root = Path(data_root)
         self._admissions = admissions
         self._unavailable: dict[str, str] = {}
+        self._locks = {}
+
+    def lock(self, owner):
+        return self._locks.setdefault(owner, threading.RLock())
 
     def _path(self, owner: str) -> Path:
         validate_principal(owner)
         account = hashlib.sha256(owner.encode()).hexdigest()
         return self._root / ".broker" / "accounts" / account / "policy.db"
 
-    def _connect(self, owner: str) -> sqlite3.Connection:
+    def _connect(self, owner: str, *, provision=False) -> sqlite3.Connection:
         if owner in self._unavailable:
             raise PolicyRefused(self._unavailable[owner])
         path = self._path(owner)
+        fresh = not path.parent.exists()
+        if provision and not fresh and not path.is_file():
+            raise PolicyRefused("owner policy is missing")
+        if not provision and not path.is_file():
+            raise PolicyRefused("owner policy has not been bootstrapped")
         broker = path.parent.parent.parent
         broker.mkdir(mode=0o700, exist_ok=True)
         path.parent.parent.mkdir(mode=0o700, exist_ok=True)
@@ -109,11 +119,34 @@ class PolicyStore:
                 request_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
                 day TEXT NOT NULL, month TEXT NOT NULL, amount INTEGER NOT NULL);
         """)
-        document = {"entries": [],
+        document = {"entries": [], "egress": {"mode": "open", "destinations": []},
                     "spend": {"daily": None, "monthly": None, "transaction": None,
                               "ask_above": None, "source_ceilings": {}}}
-        db.execute("INSERT OR IGNORE INTO policy VALUES (1,1,?,?)",
-                   (_digest(document), _canonical(document)))
+        if provision and fresh:
+            db.execute("INSERT OR IGNORE INTO policy VALUES (1,1,?,?)",
+                       (_digest(document), _canonical(document)))
+            db.execute("PRAGMA user_version=1")
+        elif provision and db.execute("PRAGMA user_version").fetchone()[0] == 0:
+            # One explicit provisioning upgrade, never a read-time default.
+            # No retired egress source is opened or imported.
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
+                             ).fetchone()
+            if row is None:
+                raise PolicyRefused("owner policy is missing")
+            prior = json.loads(row["document"])
+            if set(prior) != {"entries", "spend"} or _digest(prior) != row["digest"]:
+                raise PolicyRefused("invalid legacy policy")
+            prior["egress"] = document["egress"]
+            self._validate(owner, prior)
+            generation, digest = row["generation"] + 1, _digest(prior)
+            db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
+                       (generation, digest, _canonical(prior)))
+            db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,generation,"
+                       "outcome) VALUES (?,?,?,?,?,?,?)",
+                       (time.time(), "provision", owner, row["digest"], digest, generation, "open"))
+            db.execute("PRAGMA user_version=1")
+            db.commit()
         return db
 
     def erase(self, owner: str) -> int:
@@ -168,7 +201,7 @@ class PolicyStore:
 
     def bootstrap_owner(self, owner: str) -> None:
         try:
-            with closing(self._connect(owner)):
+            with closing(self._connect(owner, provision=True)):
                 pass
         except (PolicyRefused, OSError, sqlite3.Error, RuntimeError) as exc:
             reason = (str(exc) if isinstance(exc, PolicyRefused)
@@ -192,6 +225,7 @@ class PolicyStore:
         document = json.loads(row["document"])
         if _digest(document) != row["digest"]:
             raise RuntimeError("policy digest mismatch")
+        self._validate(owner, document)
         return OwnerPolicy(owner, row["generation"], row["digest"], document)
 
     def write(self, owner: str, cookie: str | dict, expected_generation: int,
@@ -240,9 +274,41 @@ class PolicyStore:
                         "owner_policy", "ask", "requested"))
         return {"request_digest": digest, "generation": policy.generation}
 
+    def receipt_egress(self, owner, generation, destination, decision):
+        with closing(self._connect(owner)) as db, db:
+            db.execute("INSERT INTO receipts(at,kind,owner,generation,rule,decision,outcome) "
+                       "VALUES (?,?,?,?,?,?,?)", (time.time(), "egress", owner, generation,
+                       _canonical(destination), decision, decision))
+
     def _validate(self, owner: str, document: dict) -> None:
-        if not isinstance(document, dict) or set(document) != {"entries", "spend"}:
+        if not isinstance(document, dict) or set(document) != {"entries", "spend", "egress"}:
             raise PolicyRefused("invalid policy document")
+        from tinyassets.broker.egress import normalize_destination
+
+        egress = document["egress"]
+        if (not isinstance(egress, dict) or set(egress) != {"mode", "destinations"}
+                or egress["mode"] not in {"open", "allowlist", "ask"}
+                or not isinstance(egress["destinations"], list)):
+            raise PolicyRefused("invalid egress policy")
+        for entry in egress["destinations"]:
+            if (not isinstance(entry, dict) or set(entry) != {"host", "port"}
+                    or normalize_destination(entry["host"], entry["port"]) != entry):
+                raise PolicyRefused("invalid egress destination")
+            from ipaddress import ip_address
+
+            from tinyassets.storage.outbound_connections import (
+                SsrfValidationError,
+                _classify_global_address,
+            )
+
+            try:
+                literal = ip_address(entry["host"])
+            except ValueError:
+                continue
+            try:
+                _classify_global_address(str(literal))
+            except SsrfValidationError as exc:
+                raise PolicyRefused("egress entries require public IP addresses") from exc
         if not isinstance(document["entries"], list):
             raise PolicyRefused("invalid policy entries")
         for entry in document["entries"]:

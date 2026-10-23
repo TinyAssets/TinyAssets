@@ -121,7 +121,7 @@ def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
     blocked.parent.mkdir(mode=0o700)
     blocked.write_text("not a directory")
     store.bootstrap()
-    with pytest.raises(PolicyRefused, match="policy storage unavailable"):
+    with pytest.raises(PolicyRefused, match="owner policy is missing"):
         store.read("alice")
     assert store.read("bob").document["entries"] == []
     assert "ALARM: owner policy refused for alice" in caplog.text
@@ -226,7 +226,8 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     store.bootstrap()
     current = store.read("alice")
     peer = object.__new__(_Connection)
-    peer._server = SimpleNamespace(_policy_store=store)
+    peer._server = SimpleNamespace(_policy_store=store, _streams={},
+                                   _streams_lock=__import__("threading").Lock())
     document = json.loads(json.dumps(current.document))
     document["spend"]["transaction"] = 50
     request = {"op": "OWNER_POLICY", "action": "write", "principal": "alice",
@@ -291,7 +292,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, lo
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T2')
-def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
+def test_spend_caps_stay_under_approvals_with_egress_policy(tmp_path):
     _legacy(tmp_path, "alpha", "do")
     cookie = "interactive-cookie-" + "f" * 32
     _session(tmp_path, "alice", cookie)
@@ -304,7 +305,7 @@ def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
     document["entries"].append({"scope": "account", "table": "rules", "values": {
         "agent": "main", "action_class": "spend", "behaviour": "do"}})
     store.write("alice", cookie, current.generation, document)
-    assert set(store.read("alice").document) == {"entries", "spend"}
+    assert set(store.read("alice").document) == {"entries", "spend", "egress"}
     base = {"center": "alpha", "action_class": "spend", "destination": "example.com",
             "source": "model-a", "approved": True}
     assert store.decide("alice", **base, amount=0)["decision"] == "deny"

@@ -249,10 +249,14 @@ class Capabilities:
             if arguments:
                 return {"error": "policy show takes no arguments"}
             from tinyassets.action_policy import owner_policy_operation
+            from tinyassets.broker.client import owner_policy_operation as broker_policy
 
-            return {"result": await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 owner_policy_operation, self.root.parent, self.context.owner, "read",
-                center=self.root.name)}
+                center=self.root.name)
+            result["account"] = await asyncio.to_thread(
+                broker_policy, self.root.parent, self.context.owner, "read")
+            return {"result": result}
         if name == "policy:propose":
             if not self._bound_policy_owner():
                 return {"error": "owner policy unavailable"}

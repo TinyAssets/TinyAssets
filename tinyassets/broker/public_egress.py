@@ -8,12 +8,13 @@ from tinyassets import rpc_frames as rf
 from tinyassets.boxes.network import EgressRefused, _destination
 from tinyassets.broker.admission import owner_lock
 from tinyassets.broker.box_admission import resolve_owner
-from tinyassets.broker.egress import destination
+from tinyassets.broker.egress import EgressPolicyRefused, destination
 from tinyassets.storage.outbound_connections import SsrfValidationError
 
 
 class PublicEgress:
-    def __init__(self, identities, data_root=None):
+    def __init__(self, identities, data_root=None, *, binding=None):
+        self.binding = binding
         self.identities = identities
         self.data_root = data_root
         self.active = {}
@@ -43,17 +44,18 @@ class PublicEgress:
             if len(head) > 16384:
                 raise EgressRefused("proxy header exceeds bound")
             host, port, first = _destination(head)
-            addresses = await asyncio.wait_for(
-                asyncio.to_thread(destination, (self.identities, owner), host, port), 10)
-            async with asyncio.timeout(15):
-                for address in addresses:
-                    try:
-                        incoming, upstream = await asyncio.open_connection(address, port)
-                        break
-                    except OSError:
-                        continue
-                else:
-                    raise EgressRefused("destination unavailable")
+            async with owner_lock(self.identities.path, owner):
+                addresses = await asyncio.wait_for(
+                    asyncio.to_thread(destination, self.binding(owner), host, port), 10)
+                async with asyncio.timeout(15):
+                    for address in addresses:
+                        try:
+                            incoming, upstream = await asyncio.open_connection(address, port)
+                            break
+                        except OSError:
+                            continue
+                    else:
+                        raise EgressRefused("destination unavailable")
             if first is None:
                 writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 await asyncio.wait_for(writer.drain(), 30)
@@ -63,6 +65,13 @@ class PublicEgress:
             pumps = [asyncio.create_task(self._pump(reader, upstream)),
                      asyncio.create_task(self._pump(incoming, writer))]
             await asyncio.gather(*pumps)
+        except EgressPolicyRefused as exc:
+            import json
+
+            detail = json.dumps(exc.detail, separators=(",", ":")).encode("ascii")
+            writer.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n"
+                         b"X-TinyAssets-Egress: " + detail + b"\r\nContent-Length: 0\r\n\r\n")
+            await asyncio.wait_for(writer.drain(), 1)
         except (EgressRefused, SsrfValidationError, ValueError, PermissionError,
                 LookupError, OSError, sqlite3.Error,
                 asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):

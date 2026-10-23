@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,11 @@ from tinyassets.broker.server import BOX_HOST, BrokerServer
 
 
 def broker_proxy(identities, root):
-    return BrokerServer(ledger_for=None, dispatch_for=None,
+    from tinyassets.broker.policy import PolicyStore
+
+    store = PolicyStore(root, identities)
+    store.bootstrap()
+    return BrokerServer(ledger_for=None, dispatch_for=None, policy_store=store,
                         ops=SimpleNamespace(recover=lambda: None),
                         fence=None, roles={0: BOX_HOST}, uid_of=lambda _: 0,
                         owner_identities=identities, data_root=root)
@@ -105,7 +110,7 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
 
 @pytest.mark.verifies('owner-daemon-in-box:T5')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["erased", "close"])
+@pytest.mark.parametrize("damage", ["erased", "close", "policy", "policy_during_open"])
 async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypatch, damage):
     from tinyassets.broker.admission import read
 
@@ -121,8 +126,31 @@ async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypat
 
     destination = await asyncio.start_server(upstream, "127.0.0.1", 0)
     port = destination.sockets[0].getsockname()[1]
-    monkeypatch.setattr("tinyassets.broker.public_egress.destination",
-                        lambda *a: ["127.0.0.1"])
+    resolving, proceed = threading.Event(), threading.Event()
+
+    def pin(*args):
+        if damage == "policy_during_open":
+            resolving.set()
+            assert proceed.wait(5)
+        return ["127.0.0.1"]
+
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", pin)
+
+    async def change_policy():
+        from tests.test_owner_policy import _session
+        from tinyassets.broker.server import OWNER, _Connection
+
+        cookie = "protected-owner-cookie-" + "p" * 32
+        _session(proxy._data_root, "alice", cookie)
+        current = proxy._policy_store.read("alice")
+        current.document["egress"]["mode"] = "allowlist"
+        peer = _Connection(proxy, None, OWNER)
+        result = await peer._policy_operation({
+            "op": "OWNER_POLICY", "action": "write", "principal": "alice",
+            "cookie": cookie, "expected_generation": current.generation,
+            "policy": current.document})
+        assert result["op"] == "OWNER_POLICY_RESULT"
+        assert not proxy._public_egress.channels
 
     async def handle(reader, writer):
         task = asyncio.current_task()
@@ -142,6 +170,13 @@ async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypat
         assert (await rf.read_frame(reader)).control()["op"] == "BOX_ADMITTED"
         writer.write(f"CONNECT example.test:{port} HTTP/1.1\r\n\r\n".encode())
         await writer.drain()
+        pending_change = None
+        if damage == "policy_during_open":
+            assert await asyncio.to_thread(resolving.wait, 5)
+            pending_change = asyncio.create_task(change_policy())
+            done, _ = await asyncio.wait({pending_change}, timeout=.05)
+            assert not done
+            proceed.set()
         assert b"200" in await reader.readuntil(b"\r\n\r\n")
         if damage == "erased":
             from tinyassets.broker.admission import local_mutate, owner_call
@@ -150,6 +185,10 @@ async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypat
                              routing=projection(path))
             proxy.close_owner("alice")
             assert read(proxy._owner_identities, "alice").state == "erased"
+        elif damage == "policy":
+            await change_policy()
+        elif pending_change is not None:
+            await pending_change
         else:
             proxy.close_owner("alice")
         async with asyncio.timeout(1.25):
