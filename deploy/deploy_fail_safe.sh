@@ -345,6 +345,7 @@ BUNDLE_FILES=(
   vector-entrypoint.sh
   tinyassets-daemon.service
 )
+HOST_BUNDLE_NAME=boxhostd-install.tar
 
 # snapshot-relative path | live destination | mode | owner class
 # The claimed source for each row is $BUNDLE_WORK/<basename of the rel path>,
@@ -1020,6 +1021,9 @@ bundle_state() {
   for f in "${BUNDLE_FILES[@]}"; do
     if [ ! -f "${BUNDLE_DIR}/${f}" ]; then printf 'partial'; return 0; fi
   done
+  if [ "${BOXHOSTD_BUNDLE_REQUIRED:-0}" = 1 ] && [ ! -f "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" ]; then
+    printf 'partial'; return 0
+  fi
   printf 'ready'
 }
 
@@ -1042,6 +1046,9 @@ claim_bundle() {
       return 1
     fi
   done
+  if [ -f "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" ]; then
+    cp -p "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" || return 1
+  fi
   log "claimed the staged bundle into ${BUNDLE_WORK} (validating and installing from there)"
   return 0
 }
@@ -1511,6 +1518,142 @@ PY
   return $rc
 }
 
+# Host-service code and its rootfs selector are one release with the broker.
+# The large immutable harness-* and pinned release-* trees remain in place;
+# only the mutable code, entrypoint links, env and units are snapshotted.
+host_managed_name() {
+  case "$1" in
+    ''|.|..|*/*) return 1 ;;
+    tinyassets|deploy|scripts|current|harness-current|.host-service-files.json|*.py|*.sh) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+host_file_paths() {
+  printf '%s\n' \
+    "${BOXHOSTD_UNIT_FILE:-/etc/systemd/system/boxhostd.service}" \
+    "${BOX_STORE_DEVICE_UNIT_FILE:-/etc/systemd/system/box-store-device.service}" \
+    "${BOX_STORE_MOUNT_UNIT_FILE:-/etc/systemd/system/var-lib-boxhostd-owners.mount}" \
+    "${BOX_STORE_GROW_UNIT_FILE:-/etc/systemd/system/box-store-grow.service}" \
+    "${BOX_STORE_GROW_TIMER_FILE:-/etc/systemd/system/box-store-grow.timer}" \
+    "${BOXHOSTD_ENV_FILE:-/etc/tinyassets/boxhostd.env}" \
+    "${BROKER_ENV_FILE:-/etc/tinyassets/broker.env}" \
+    "${BROKER_RCLONE_FILE:-/etc/tinyassets/broker-rclone.conf}"
+}
+
+snapshot_host_bundle() {
+  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  mkdir -p "${snap}/host/root" "${snap}/host/files" || return 1
+  : >"${snap}/host/root-manifest" || return 1
+  for path in "$root"/* "$root"/.host-service-files.json; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    name="$(basename "$path")"
+    host_managed_name "$name" || continue
+    cp -a -- "$path" "${snap}/host/root/${name}" || return 1
+    printf '%s\n' "$name" >>"${snap}/host/root-manifest" || return 1
+  done
+  while IFS= read -r path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a -- "$path" "${snap}/host/files/${index}" || return 1
+      printf 'present\n' >"${snap}/host/files/${index}.state" || return 1
+    else
+      printf 'absent\n' >"${snap}/host/files/${index}.state" || return 1
+    fi
+    index=$((index + 1))
+  done < <(host_file_paths)
+  printf 'complete\n' >"${snap}/host/complete"
+}
+
+restore_host_bundle() {
+  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0 state
+  [ -d "${snap}/host" ] || return 0  # Pre-host snapshots remain restorable.
+  [ "$(cat "${snap}/host/complete" 2>/dev/null)" = complete ] || {
+    err "restore: host bundle snapshot is incomplete"; return 1;
+  }
+  [ -f "${snap}/host/root-manifest" ] || return 1
+  while IFS= read -r name; do
+    host_managed_name "$name" || return 1
+    [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ] || return 1
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
+    case "$state" in
+      present) [ -e "${snap}/host/files/${index}" ] ||
+               [ -L "${snap}/host/files/${index}" ] || return 1 ;;
+      absent) ;;
+      *) return 1 ;;
+    esac
+    index=$((index + 1))
+  done < <(host_file_paths)
+  index=0
+  systemctl stop boxhostd.service || return 1
+  mkdir -p "$root" || return 1
+  for path in "$root"/* "$root"/.host-service-files.json; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    name="$(basename "$path")"
+    host_managed_name "$name" || continue
+    rm -rf -- "$path" || return 1
+  done
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    host_managed_name "$name" || return 1
+    [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ] || return 1
+    cp -a -- "${snap}/host/root/${name}" "${root}/${name}" || return 1
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
+    if [ "$state" = present ]; then
+      [ -e "${snap}/host/files/${index}" ] || [ -L "${snap}/host/files/${index}" ] || return 1
+      mkdir -p "$(dirname "$path")" || return 1
+      rm -f -- "$path" || return 1
+      cp -a -- "${snap}/host/files/${index}" "$path" || return 1
+    elif [ "$state" = absent ]; then
+      rm -f -- "$path" || return 1
+    else
+      return 1
+    fi
+    index=$((index + 1))
+  done < <(host_file_paths)
+  systemctl daemon-reload || return 1
+  if [ "$(cat "${snap}/host/files/0.state")" = present ]; then
+    systemctl restart boxhostd.service && systemctl is-active --quiet boxhostd.service || return 1
+  fi
+  log "restored box host before broker and daemon convergence"
+}
+
+install_host_bundle() {
+  local stage
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  stage="$(mktemp -d "${BUNDLE_STATE_DIR}/.boxhostd-install.XXXXXX")" || return 1
+  if ! python3 - "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" <<'HOST_TAR_PY'
+import pathlib
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1]) as archive:
+    for member in archive:
+        path = pathlib.PurePosixPath(member.name)
+        if (path.is_absolute() or ".." in path.parts or
+                not (member.isfile() or member.isdir())):
+            sys.exit("invalid box host install archive")
+HOST_TAR_PY
+  then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  if ! tar -xf "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" -C "$stage" ||
+     [ ! -f "${stage}/deploy/install-boxhostd-preflight.sh" ]; then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  if ! bash "${stage}/deploy/install-boxhostd-preflight.sh"; then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  rm -rf -- "$stage"
+}
+
 # Copy what is LIVE into a stamped snapshot directory. Runs before install, so
 # the snapshot is exactly the state a rollback has to get back to. A destination
 # that does not exist yet is recorded as a `.absent` marker so a restore removes
@@ -1565,6 +1708,7 @@ snapshot_bundle() {
       }
     fi
   done
+  snapshot_host_bundle "$snap" || return 1
   SNAPSHOT_PATH="$snap"
   log "bundle snapshot written to ${snap}"
   return 0
@@ -1617,6 +1761,10 @@ install_bundle() {
     fi
     log "installed ${dest} (mode ${mode}, owner ${file_owner}:${file_group})"
   done
+  if ! install_host_bundle; then
+    err "box host bundle installation failed"
+    return 1
+  fi
   if ! systemctl daemon-reload; then
     err "systemctl daemon-reload failed after installing ${UNIT_FILE}"
     return 1
@@ -1634,6 +1782,7 @@ restore_bundle_from() {
     err "restore: snapshot ${snap} has no manifest; refusing to guess ownership"
     return 1
   fi
+  restore_host_bundle "$snap" || return 1
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
     # Exact key match on field 1. `grep -F "${rel}|"` was a SUBSTRING match, so a

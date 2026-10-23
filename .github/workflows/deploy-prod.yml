@@ -87,8 +87,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     # 15 min of deploy work, 15 for backup verification/repair, 10 for advisory
-    # capabilities, up to 55 for in-flight turns, and 50 for owner-box acceptance.
-    timeout-minutes: 145
+    # capabilities, up to 55 for in-flight turns, 12 for host readiness,
+    # and 50 for owner-box acceptance, with room for rollback.
+    timeout-minutes: 165
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -470,6 +471,14 @@ jobs:
               deploy/vector-entrypoint.sh \
               deploy/tinyassets-daemon.service \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${stage}/"
+          list="${RUNNER_TEMP}/boxhostd-install-files.txt"
+          python scripts/boxhostd_install_files.py > "$list"
+          [[ -s "$list" ]]
+          mapfile -t boxhostd_files < "$list"
+          bundle="${RUNNER_TEMP}/boxhostd-install.tar"
+          tar -cf "$bundle" "${boxhostd_files[@]}"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes "$bundle" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${stage}/boxhostd-install.tar"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" "ls -l '${stage}/'"
 
@@ -664,29 +673,6 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${RETENTION_HELPER} --check-headroom --image-ref ${IMAGE_REF}"
 
-      # Drain-review re-check: the cutover restarts boxhostd inside the fail-safe
-      # deploy, so its new unit and code must be installed before that step.
-      - name: Install pinned gVisor and idle boxhostd
-        if: ${{ success() }}
-        timeout-minutes: 8
-        run: |
-          set -euo pipefail
-          list="${RUNNER_TEMP}/boxhostd-install-files.txt"
-          python scripts/boxhostd_install_files.py > "$list"
-          [[ -s "$list" ]]
-          mapfile -t boxhostd_files < "$list"
-          bundle="${RUNNER_TEMP}/boxhostd-install.tar"
-          tar -cf "$bundle" "${boxhostd_files[@]}"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes "$bundle" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/boxhostd-install.tar"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE_BOX'
-          set -euo pipefail
-          stage=$(mktemp -d /tmp/boxhostd-install.XXXXXXXX)
-          trap 'rm -rf -- "$stage"' EXIT
-          tar -xf /tmp/boxhostd-install.tar -C "$stage"
-          sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash "$stage/deploy/install-boxhostd-preflight.sh"
-          REMOTE_BOX
-
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -710,7 +696,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
@@ -729,6 +715,16 @@ jobs:
           else
             echo "::error::deploy failed (rc=${rc}); see log above"; exit 1
           fi
+
+      - name: Wait for box host lifecycle readiness
+        id: host_ready
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          timeout 650s ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            'sudo env PYTHONPATH=/opt/tinyassets/boxhostd python3 -' \
+            < scripts/wait_boxhostd_ready.py
 
       - name: Core user capabilities and systemic failure rates
         id: core_canary
@@ -1094,8 +1090,8 @@ jobs:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           ON_POST_COMMIT_FAILURE: ${{ inputs.on_post_commit_failure || 'hold' }}
-          IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
-          POST_COMMIT_REASON: deploy=${{ steps.deploy.outcome }},mcp=${{ steps.canary.outcome }},app=${{ steps.app_probe.outcome }},core=${{ steps.core_canary.outcome }},owner_boxes=${{ steps.owner_boxes.outcome }}
+          IMAGE_ROLLBACK_ALLOWED: ${{ steps.deploy.outputs.rc == '0' && (steps.host_ready.outcome == 'failure' || steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) && '1' || '0' }}
+          POST_COMMIT_REASON: deploy=${{ steps.deploy.outcome }},host_ready=${{ steps.host_ready.outcome }},mcp=${{ steps.canary.outcome }},app=${{ steps.app_probe.outcome }},core=${{ steps.core_canary.outcome }},owner_boxes=${{ steps.owner_boxes.outcome }}
         run: |
           set +e
           set -uo pipefail

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from pathlib import Path
 
 from tinyassets.boxes.bootstrap import connect
 from tinyassets.boxes.control_channel import receive, send
+
+REQUEST_DRIVEN = ContextVar("boxhostd_request_driven", default=False)
 
 
 def request(operation: str, owner: str | None = None, **fields) -> dict:
@@ -20,6 +23,8 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     with sock:
         sock.settimeout(timeout)
         document = {"lifecycle": operation, **fields}
+        if REQUEST_DRIVEN.get():
+            document["_request_driven"] = True
         if owner is not None:
             document["owner"] = owner
         send(sock, document)

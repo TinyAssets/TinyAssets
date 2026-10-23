@@ -348,6 +348,18 @@ def test_boxhostd_receives_only_its_snapshot_remote(tmp_path):
 
 
 @_POSIX_SHELL
+@pytest.mark.verifies("owner-daemon-in-box:T6")
+def test_broker_env_keeps_outbound_http_flag_from_source(tmp_path):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED=1\n", encoding="utf-8")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 0, result.stderr
+    assert "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED=1\n" in (
+        tmp_path / "broker.env").read_text(encoding="utf-8")
+
+
+@_POSIX_SHELL
 def test_render_refuses_a_forbidden_value_that_continues_past_its_line(tmp_path):
     source = tmp_path / "env"
     daemon = tmp_path / "daemon.env"

@@ -98,6 +98,7 @@ import os
 import shutil
 import stat
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -608,6 +609,15 @@ def main(argv):
                     handle.write(content)
             return 0
         if "up" in argv:
+            host_root = os.environ.get("FAKE_DOCKER_EXPECT_RESTORED_HOST")
+            if host_root:
+                if (any(open(os.path.join(host_root, name, "release.txt"),
+                             encoding="utf-8").read() != "old\n"
+                        for name in ("tinyassets", "deploy", "scripts")) or
+                        os.readlink(os.path.join(host_root, "harness-current")) !=
+                        "harness-old"):
+                    sys.stderr.write("fake docker: broker converged before host restore\n")
+                    return 1
             ref = env_values.get("TINYASSETS_IMAGE", "")
             if ref in (state.get("up_start_delay_s") or {}):
                 time.sleep(state["up_start_delay_s"][ref])
@@ -1127,6 +1137,39 @@ def box(tmp_path: Path) -> Box:
     return fake
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_restore_reverts_box_host_bundle_and_harness_before_converge(box: Box):
+    box.stage_bundle()
+    host = box.root / "boxhostd"
+    for directory in ("tinyassets", "deploy", "scripts", "harness-old", "harness-new"):
+        (host / directory).mkdir(parents=True, exist_ok=True)
+    for directory in ("tinyassets", "deploy", "scripts"):
+        (host / directory / "release.txt").write_text("old\n")
+    (host / "harness-current").symlink_to("harness-old")
+    installer = box.root / "host-install" / "deploy" / "install-boxhostd-preflight.sh"
+    installer.parent.mkdir(parents=True)
+    installer.write_text('''#!/bin/bash
+set -euo pipefail
+for directory in tinyassets deploy scripts; do
+  printf 'new\\n' > "${BOX_HARNESS_ROOT}/${directory}/release.txt"
+done
+ln -s harness-new "${BOX_HARNESS_ROOT}/.harness-current.new"
+mv -Tf "${BOX_HARNESS_ROOT}/.harness-current.new" "${BOX_HARNESS_ROOT}/harness-current"
+''')
+    with tarfile.open(box.stage / "boxhostd-install.tar", "w") as archive:
+        archive.add(installer, arcname="deploy/install-boxhostd-preflight.sh")
+    env = {"BOX_HARNESS_ROOT": str(host)}
+    forward = box.run(NEW_IMAGE, **env)
+    assert forward.returncode == 0, forward.stdout + forward.stderr
+    assert (host / "tinyassets/release.txt").read_text() == "new\n"
+    restored = box.run("--restore-bundle", OLD_IMAGE,
+                       FAKE_DOCKER_EXPECT_RESTORED_HOST=str(host), **env)
+    assert _result(restored) == "deployed", restored.stdout + restored.stderr
+    for directory in ("tinyassets", "deploy", "scripts"):
+        assert (host / directory / "release.txt").read_text() == "old\n"
+    assert (host / "harness-current").readlink() == Path("harness-old")
+
+
 def _result(completed: subprocess.CompletedProcess) -> str:
     for line in reversed(completed.stdout.splitlines()):
         if line.startswith("deploy_result="):
@@ -1566,8 +1609,9 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     # The live writer is frozen only around the read-only preflight.
     assert (calls.index("pause tinyassets-daemon") < calls.index(preflight_call)
             < calls.index("unpause tinyassets-daemon") < calls.index("stop --time"))
-    apply_call = next(line for line in calls.splitlines()
-                      if "tinyassets.box_layout_migration apply" in line)
+    apply_call = next((line for line in calls.splitlines()
+                       if "tinyassets.box_layout_migration apply" in line), None)
+    assert apply_call is not None, completed.stdout + completed.stderr
     assert "apply /data --store /box-store" in apply_call
     assert "--cap-drop ALL --user 0 --privileged" in apply_call
     assert f"--device {device}:{device}:r" in apply_call
