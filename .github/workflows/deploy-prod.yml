@@ -677,6 +677,7 @@ jobs:
         id: deploy
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
           BUNDLE_DIR: ${{ steps.stage_bundle.outputs.stage }}
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
           HOTFIX_PROOF: ${{ steps.hotfix_guard.outputs.proof }}
@@ -694,6 +695,10 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               scripts/verify_deploy_backup.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
+          # A failed rollback leaves bundle-dirty and the next forward deploy
+          # refuses. Restore that snapshot first when no cutover is in progress.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo bash -c 'if [ -f /var/lib/tinyassets-deploy/bundle-dirty ] && [ ! -e /var/lib/tinyassets-deploy/cutover ]; then echo \"[deploy-prod] recovering dirty host bundle via --restore-bundle ${PREV_IMAGE}\"; bash /tmp/deploy_fail_safe.sh --restore-bundle \"${PREV_IMAGE}\"; fi'"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"

@@ -107,6 +107,7 @@ def test_cutover_finishes_all_pending_legacy_phases_without_volume_binding(tmp_p
     plans = Plans(shared)
     plans.initialize()
     plans.set_plan("later", "free", event_created=0)
+    monkeypatch.setattr("tinyassets.broker.browser_vault.SECRET_ROOT", tmp_path / "private-keys")
     identity_calls = []
     monkeypatch.setattr("tinyassets.router_account_deletion.delete_workos_user",
                         lambda owner: identity_calls.append(owner) or "deleted")

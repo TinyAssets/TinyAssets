@@ -14,7 +14,6 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Lead-only deploy action |
 |---|---|
-| S28 KMS root and custody cutover | Founder provisions the KMS root and broker-only access (AWS checklist below), then installs `/etc/tinyassets/vault-kms.json` outside backed-up data, mode 0400, broker uid only. Fields: `key_arn`, `access_key_id`, `secret_access_key`, `region`. Compose mounts that file only into the broker. No root or access credential enters a box. Native subscription CLIs already stay in broker custody at rest and lease into a per-run tmpfs HOME (ADR-022 P2b, tracker 8.1); S28 seals that store. Stop broker writes, verify a full backup, convert current shared custody, verify a sealed restore, then rewrite retained plaintext backups before deleting originals. No cloud setup, spending or production access performed in this lane. |
 | N1 shared Slack app | Register one TinyAssets Slack app with Events API request URL `https://tinyassets.io/hooks/inbound/slack`, OAuth redirect and required scopes. Deposit its signing secret in broker platform custody as the named `http` credential destination `inbound-slack-signing`; keep its client secret and installation-scoped outbound tokens in broker custody. Publish the platform-owned HMAC profile for binding `slack` only after the app registration is verified. No app registration, token, or production change is performed in the N1 implementation PR. |
 | a2b: 25 GiB box store | In the lead's root shell on the droplet, with authenticated `doctl`: `set -eu; region=$(curl -fsS http://169.254.169.254/metadata/v1/region); droplet=$(curl -fsS http://169.254.169.254/metadata/v1/id); volume=$(doctl compute volume create tinyassets-box-store --region "$region" --size 25GiB --format ID --no-header); doctl compute volume-action attach "$volume" "$droplet" --wait; udevadm settle; device=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store; mkfs.xfs -m reflink=1 "$device"; install -d -m 0700 /etc/tinyassets; install -o root -g root -m 0600 /root/box-store-resize.token /etc/tinyassets/box-store.token; (umask 077; printf 'BOX_STORE_DEVICE=%s\nBOX_STORE_VOLUME_ID=%s\nBOX_STORE_REGION=%s\nBOX_STORE_DROPLET_ID=%s\nBOX_STORE_TOKEN_FILE=/etc/tinyassets/box-store.token\nBOX_STORE_MAX_GIB=100\n' "$device" "$volume" "$region" "$droplet" > /etc/tinyassets/box-store.conf)`. Supply `/root/box-store-resize.token` with only [block_storage_action:create and its required read scopes](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/). The normal deploy installs/enables the growth timer. Do not run the create/format commands against an existing store. |
 
@@ -409,9 +408,8 @@ does not guarantee cancellation cleanup.
 Founder decision 2026-10-11: the credential vault's root key is one AWS KMS key
 in the AWS account created in step 1 above. That gives one AWS account and one
 checklist. There is no offline copy. Design:
-`openspec/changes/credential-vault-reshape/design.md`. The broker reads
-`/etc/tinyassets/vault-kms.json` and nothing else. Do this whenever the account
-exists; this lane does not create the account, the key, or any spending.
+`openspec/changes/credential-vault-reshape/design.md` D3. Nothing reads these
+values until the cutover PR ships, so do this whenever the account exists.
 
 1. Open [KMS in Oregon](https://us-west-2.console.aws.amazon.com/kms/home?region=us-west-2).
    Choose **Customer managed keys > Create key**:
@@ -439,11 +437,8 @@ exists; this lane does not create the account, the key, or any spending.
    - `TINYASSETS_VAULT_AWS_SECRET_ACCESS_KEY`
    - `TINYASSETS_VAULT_KMS_KEY_ARN` (the key ARN)
 
-   Then install `/etc/tinyassets/vault-kms.json` outside the data volume, mode
-   0400, owned by the broker uid. Fields are `key_arn`, `access_key_id`,
-   `secret_access_key`, and `region`. Compose mounts that file only into the
-   broker. Never put these values in `/etc/tinyassets/env`, a box, chat, or a
-   command line.
+   Deploy installs them only for the broker process. Never put them in
+   `/etc/tinyassets/env`, chat or a command line.
 4. In **IAM > Identity providers > Add provider**, add the GitHub OIDC
    provider if it is not there already:
    - type **OpenID Connect**;
@@ -522,7 +517,7 @@ exists; this lane does not create the account, the key, or any spending.
 
 **Rotate the access key** yearly, or at once on any suspicion:
 1. Create a second access key on `tinyassets-vault-broker`.
-2. Replace the two GitHub secrets and `vault-kms.json`.
+2. Replace the two GitHub secrets.
 3. Redeploy.
 4. Confirm the broker's KMS health probe is green.
 5. Deactivate the old key.
@@ -536,25 +531,14 @@ exists; this lane does not create the account, the key, or any spending.
    is unreadable and every user must reconnect.
 
 If AWS is unreachable, live connections keep working from the broker's memory
-cache of already unwrapped owner keys. Others refuse with a retryable error
-and the uptime alarm fires. No credential is ever exposed and nothing falls
-back to plaintext.
+cache. Others refuse with a retryable error and the uptime alarm fires. No
+credential is ever exposed and nothing falls back to plaintext.
 
 **Cost, checked 2026-10-11:** [AWS KMS pricing](https://aws.amazon.com/kms/pricing/)
 is $1/key-month, plus $1/month for each of the first two yearly rotations.
 Requests cost $0.03 per 10k beyond 20k free a month, and this usage stays
 inside the free tier. Expect about **$1-3/month**.
 
-**Cutover**, after the file is installed: stop broker writes, verify a full
-backup, then run `scripts/vault_cutover.py` as the broker with the shared data
-root, `--legacy-browser-keys` pointing at the old private key volume, and
-`--offline-backup-verified`. Keep that old volume available for conversion
-before switching compose. Verify sealed backup recovery, then rewrite retained
-plaintext backups before deleting originals. The converter is restartable; it
-does not rewrite remote archives. Native subscription CLIs stay in this sealed
-custody at rest and lease into a per-run tmpfs HOME (ADR-022 P2b, tracker 8.1).
-Full C3 disaster recovery still clears provider credentials and requires
-reconnect to avoid reviving revoked grants.
 
 ---
 

@@ -202,14 +202,13 @@ def extract_single_installation(body: bytes, headers: Mapping[str, str]) -> tupl
 
 
 def _platform_signing_records(root: Path) -> list:
-    """Sealed broker signing vault. The key ledger stays on the data root.
+    """Broker signing vault on the data root.
 
     ``.broker/platform`` is not an owner account namespace, so it cannot use
     ``load_credential_vault`` (that resolves the key root two parents above an
-    account directory).
+    account directory). The document stays in broker custody as plaintext
+    until the founder KMS cutover seals it.
     """
-    from tinyassets.broker.admission import digest
-    from tinyassets.broker.key_service import service_for
     from tinyassets.universe_files import read_data_path
 
     path = root / ".broker" / "platform" / "credentials" / ".credential-vault.json"
@@ -218,8 +217,7 @@ def _platform_signing_records(root: Path) -> list:
     raw = read_data_path(path)
     if not raw:
         return []
-    opened = service_for(root).open(digest("platform"), path.name, raw)
-    payload = json.loads(opened)
+    payload = json.loads(raw)
     if isinstance(payload, dict):
         records = payload.get("credentials", [])
     elif isinstance(payload, list):

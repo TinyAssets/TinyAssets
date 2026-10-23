@@ -845,6 +845,14 @@ restart_stack() {
       return 1
     fi
   fi
+  # A boxhostd restart during rollback replaces /run/tinyassets-boxhostd with a
+  # new directory inode. A broker left running keeps the old inode bind-mounted,
+  # so compose sees an unchanged running broker and does not recreate it, and
+  # the daemon then starts with no broker socket. Stop it first so `up -d`
+  # attaches the mount to the current inode and the broker re-registers.
+  if [ -n "$(docker ps -q --filter "name=^tinyassets-broker\$")" ]; then
+    docker stop tinyassets-broker >/dev/null 2>&1 || true
+  fi
   started="$SECONDS"
   if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
         --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
@@ -1063,7 +1071,7 @@ clear_dirty() {
 # printed because the image DID change and the operator has to know which.
 finish() {
   local result="$1" image="$2" code="$3"
-  if [ "$result" = deployed ] && [ "$INSTALLED_THIS_RUN" = 1 ]; then
+  if [ "$result" = deployed ] && { [ "$INSTALLED_THIS_RUN" = 1 ] || [ "$RESTORE_BUNDLE" = 1 ]; }; then
     clear_dirty || true
   fi
   if [ "$MARKER_STALE" = "1" ]; then
