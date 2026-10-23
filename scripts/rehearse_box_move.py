@@ -108,9 +108,19 @@ def rehearsal_manifests():
                 assert all(re.fullmatch(r'[A-Za-z0-9_-]{43}', row[1]) for row in rows)
                 rows = [(owner, 'verified unique ingress credential') for owner, _ in rows]
             if name in {'owner_volumes', 'owner_snapshots'}:
-                rows = [tuple('verified snapshot' if column in {'snapshot_id', 'snapshot_sha256'}
-                              else 'recent snapshot publication' if column == 'asleep_at'
-                              else value for column, value in zip(columns, row)) for row in rows]
+                normalized = []
+                for row in rows:
+                    cells = []
+                    for column, value in zip(columns, row):
+                        if column in {'snapshot_id', 'snapshot_sha256'}:
+                            cells.append('verified snapshot')
+                        elif column in {'asleep_at', 'published_at'}:
+                            assert isinstance(value, float) and 0 <= time.time() - value < 7 * 86400
+                            cells.append('recent snapshot publication')
+                        else:
+                            cells.append(value)
+                    normalized.append(tuple(cells))
+                rows = normalized
             tables[name] = sorted(rows, key=repr)
     shared[relative] = {'schema': schema, 'tables': tables}
     # C11's policy rewrite stamps its migration receipt with the wall clock.

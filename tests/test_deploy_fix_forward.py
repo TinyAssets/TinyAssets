@@ -332,6 +332,64 @@ def test_unreadable_cutover_state_cannot_fall_through_to_rollback(box, receipt, 
     assert (box.runtime / "compose.yml").read_bytes() == expected
 
 
+def test_restart_stack_drops_stopped_names_and_starts_the_broker_first():
+    script = (REPO / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8")
+    start = script.index("restart_stack() {")
+    body = script[start:script.index("\n# Compose recreates a container", start)]
+    positions = [
+        body.index('systemctl stop "$UNIT"'),
+        body.index('docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"'),
+        body.index("docker stop tinyassets-broker"),
+        body.index('docker rm -f "$DAEMON_CONTAINER" tinyassets-broker'),
+        body.index('--timeout "$MAX_DAEMON_STOP_GRACE_S" broker;'),
+        body.index('--timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs;'),
+    ]
+    assert positions == sorted(positions)
+    temps = script[script.index("remove_compose_temp_daemons() {"):
+                   script.index("\n# `up -d` does NOT recreate")]
+    assert "tinyassets-broker" in temps
+    unit = (REPO / "deploy/tinyassets-autoheal.service").read_text(encoding="utf-8")
+    assert "exec 9>>/var/lock/tinyassets-host-mutation.lock" in unit
+    assert "/usr/bin/flock -n 9" in unit
+    assert unit.index("/usr/bin/flock -n 9") < unit.index("docker restart")
+
+
+def test_autoheal_stands_down_while_the_deploy_lock_is_held(tmp_path):
+    import fcntl
+
+    unit = (REPO / "deploy/tinyassets-autoheal.service").read_text(encoding="utf-8")
+    command = unit.split("ExecStart=/bin/bash -c '", 1)[1].rsplit("'", 1)[0]
+    lock_path = tmp_path / "host-mutation.lock"
+    command = command.replace("/var/lock/tinyassets-host-mutation.lock", str(lock_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "docker.log"
+    (bin_dir / "docker").write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "if [ \"$1\" = ps ]; then printf 'abc\\n'; fi\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "docker").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+           "DOCKER_LOG": str(log)}
+    held = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        blocked = subprocess.run(
+            ["bash", "-c", command], env=env, capture_output=True, text=True, check=False,
+        )
+        assert blocked.returncode == 0, blocked.stderr
+        assert not log.exists()
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        os.close(held)
+    free = subprocess.run(
+        ["bash", "-c", command], env=env, capture_output=True, text=True, check=False,
+    )
+    assert free.returncode == 0, free.stderr
+    assert "restart abc" in log.read_text(encoding="utf-8")
+
+
 def test_source_env_file_exports_an_unquoted_private_key(tmp_path):
     env = tmp_path / "env"
     env.write_text(

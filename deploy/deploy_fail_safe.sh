@@ -861,6 +861,10 @@ restart_stack() {
   chown 1001:1102 -- "$liveness" || return 1
   chmod 2770 -- "$liveness" || return 1
   systemctl reset-failed "$UNIT" 2>/dev/null || true
+  # Stop the unit before removing containers. Restart=always would otherwise
+  # recreate a container id that compose is deleting, and autoheal stands down
+  # only while this script holds the host-mutation lock.
+  systemctl stop "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
   # image's startup. Docker SIGKILLs after --time; reaching that bound means
@@ -888,7 +892,18 @@ restart_stack() {
   if [ -n "$(docker ps -q --filter "name=^tinyassets-broker\$")" ]; then
     docker stop tinyassets-broker >/dev/null 2>&1 || true
   fi
+  # A stopped container id can disappear while compose recreates it (autoheal
+  # or the unit). Remove the names first so `up -d` creates them again.
+  docker rm -f "$DAEMON_CONTAINER" tinyassets-broker >/dev/null 2>&1 || true
   started="$SECONDS"
+  # The broker must finish BrokerRegistration.ready() before the daemon's
+  # bootstrap. Start it alone, then the daemon and sidecars.
+  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
+        --timeout "$MAX_DAEMON_STOP_GRACE_S" broker; then
+    elapsed=$((SECONDS - started))
+    err "docker compose up -d broker failed after ${elapsed}s"
+    return 1
+  fi
   if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
         --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
     elapsed=$((SECONDS - started))
@@ -915,7 +930,7 @@ remove_compose_temp_daemons() {
   local name state
   while read -r name state; do
     [ -n "$name" ] || continue
-    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_${DAEMON_CONTAINER}\$" || continue
+    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_(${DAEMON_CONTAINER}|tinyassets-broker)\$" || continue
     case "$state" in
       created|exited|dead)
         log "removing stray compose temp container ${name} (${state})"

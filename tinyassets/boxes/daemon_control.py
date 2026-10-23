@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -38,19 +39,32 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     return result
 
 
-def broker_bootstrap():
-    """Adopt the registered broker before starting the persistent router."""
+def broker_bootstrap(timeout: float = 30.0):
+    """Adopt the registered broker before starting the persistent router.
+
+    The broker process and the daemon start together. boxhostd closes the
+    bootstrap socket until ``BrokerRegistration.ready()`` finishes, which the
+    client sees as ``EOFError``. Wait inside this call until that registration
+    lands or ``timeout`` seconds have passed.
+    """
     from tinyassets.boxes.bootstrap import RUNTIME
     from tinyassets.boxes.provider import BoxAuthError
 
     if os.geteuid() != 1001:
         raise BoxAuthError("only the router may bootstrap")
-    sock, identity = connect(RUNTIME / "daemon.sock")
-    with sock:
-        send(sock, {"bootstrap": True})
-        response = receive(sock, identity)
-    if (set(response) != {"proof", "broker_socket"}
-            or response["broker_socket"] != str(RUNTIME / "broker/broker.sock")
-            or not isinstance(response["proof"], str) or len(response["proof"]) != 64):
-        raise BoxAuthError("box broker bootstrap is unavailable")
-    return response
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            sock, identity = connect(RUNTIME / "daemon.sock")
+            with sock:
+                send(sock, {"bootstrap": True})
+                response = receive(sock, identity)
+            if (set(response) != {"proof", "broker_socket"}
+                    or response["broker_socket"] != str(RUNTIME / "broker/broker.sock")
+                    or not isinstance(response["proof"], str) or len(response["proof"]) != 64):
+                raise BoxAuthError("box broker bootstrap is unavailable")
+            return response
+        except (EOFError, OSError, BoxAuthError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
