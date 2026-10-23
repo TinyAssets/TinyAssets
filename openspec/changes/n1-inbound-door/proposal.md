@@ -1,22 +1,22 @@
 ## Why
 
-N1 and frontier baseline #4624 require reaching the agent through connected channels with devices off. The existing webhook receiver bypasses the one `session.start` path and does not define signature verification for connector packages.
+N1 and frontier baseline #4624 require reaching the agent through connected channels with devices off. The existing webhook receiver bypasses the one `session.start` path and lacks a connector verification contract.
 
 ## What Changes
 
-- Converge the existing `/hooks/inbound/{binding}` door: map one profile-selected identity through a shared-app OAuth installation record (or a per-binding callback) to one owner, verify declared proof, wake and forward; parse and start the session inside that box.
-- Package Slack, Teams, WhatsApp, connected-account email and generic webhook behavior; use one shared TinyAssets app per channel with tap-through OAuth, keep credentials in broker custody and replies on the egress proxy.
-- **BREAKING:** replace direct branch/source-event dispatch with durable box-local acceptance followed by `session.start`; no legacy dispatcher or alternate ingress survives cutover. Existing generic senders must add event ID/timestamp headers. Secret-dependent verification explicitly requires the broker even for awake boxes.
-- Extend C2's folded wake-trigger contract, whose actual active directory is `automation-event-triggers`; do not create another scheduler or event bus.
+- Converge `/hooks/inbound/{binding}`: authenticate, positively map to one owner, wake and forward; durable acceptance and session start stay in that box.
+- Preserve the 2026-10-23 founder decision: tap-to-install shared TinyAssets apps, no owner-created developer apps. N1 admits fixed Slack HMAC/installation extraction and WhatsApp only with proven per-account callback overrides; generic hooks and connected email use per-binding URLs. Teams is a follow-up pending identity and outbound-credential fixtures.
+- Delete general selectors and shared key-refresh machinery. Platform installation authority alone owns shared profiles and install lifecycle; broker retains credentials. Authenticated unroutable shared deliveries are no-ops.
+- **BREAKING:** replace direct branch/source dispatch, require generic event ID/timestamp headers, and make secret-dependent verification explicitly broker-dependent even for awake boxes. Reuse C2's pump.
 
 ## Capabilities
 
 ### New Capabilities
-- `inbound-door`: verified external deliveries enter the existing session and wake machinery with box-local processing and idempotency.
+- `inbound-door`: verified delivery through existing session/wake machinery, with box-local processing and idempotency.
 
 ### Modified Capabilities
-- None in the as-built main specs. This change refines the pending `automation-event-triggers/specs/inbound-webhook-triggers` delivery contract; its management operations remain, while N1 replaces its direct branch enqueue semantics at implementation/sync.
+- None in main specs. Refine pending `automation-event-triggers/specs/inbound-webhook-triggers` delivery semantics at implementation/sync; preserve its management contract.
 
 ## Impact
 
-Spec-only PR, owner: N1 lane, branch `spec/n1-inbound-door`. Implementation depends on C7/C8 and the binding T1-T10 table in `owner-daemon-in-box/design.md`. Shared changes are limited to router authentication, binding metadata and broker verification; the design names the exact additions and deletions. No production access, deployment or main-spec sync in this lane.
+Spec-only PR, N1 lane, branch `spec/n1-inbound-door`. Implementation depends on C7/C8 and `owner-daemon-in-box` T1-T10. Shared changes are authentication, identity metadata and credential verification only. No production access, deployment or main-spec sync here.

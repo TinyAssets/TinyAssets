@@ -1,112 +1,98 @@
 ## ADDED Requirements
 
 ### Requirement: One verified ingress maps positively to one box
-The platform SHALL expose one external-event route template, `/hooks/inbound/{binding}`. Shared channel apps SHALL be installed by owner OAuth, without owner-created developer apps. The door SHALL read exactly one workspace/tenant/account identity field using a single-scalar JSONPath-like selector in profile data, authenticate that identity and resolve its installation record to one admitted owner box (T5). Missing or ambiguous identity SHALL refuse routing. Generic webhooks and channels without shared apps SHALL retain per-binding callbacks. Shared code SHALL verify declared proofs, wake and forward raw bytes, with no other body-field reads, provider-specific branches, owner-content access, agent routing or channel replies.
+The platform SHALL expose one external-event route template, `/hooks/inbound/{binding}`, and preserve tap-to-install shared TinyAssets apps without owner-created developer apps. Shared services SHALL authenticate, map to one admitted box, wake and forward; owner logic, data, agent selection and durable event state SHALL remain inside that box. No general selector language, provider-specific shared code, owner-content path or shared event/retry queue SHALL be introduced.
 
-#### Scenario: Each supported channel uses the same door
-- **WHEN** Slack, Teams, WhatsApp, connected-account mail or generic webhook delivers a valid event
-- **THEN** the same router verifies its registered profile, derives the owner from the installation identity mapping or per-binding callback and forwards to that owner's box
-- **AND** no channel-specific public ingress or shared event dispatcher is used
+#### Scenario: Supported routes and deferred transports
+- **WHEN** a supported Slack, WhatsApp, connected-account email or generic webhook event arrives
+- **THEN** it uses the same route and verification primitives; only Slack uses fixed authenticated installation extraction, while the others use per-binding URLs with no body-field routing
+- **AND** WhatsApp is eligible only with fixture-proven per-account callback override and account-isolated batches; unavailable/unproved override excludes it from N1
+- **AND** Teams remains a follow-up until fixtures prove authenticated per-installation identity and installation-scoped outbound credentials
 
-#### Scenario: Install, competing owner and uninstall
-- **WHEN** an owner completes OAuth installation of the shared channel app
-- **THEN** installation authority atomically writes and publishes the app-scoped identity-to-owner mapping; another owner's attempt for the same workspace/tenant/account is refused and the first owner keeps it until disconnect
-- **AND** uninstall removes the mapping, invalidates cached revisions, revokes installation credentials and notifies the box with retry on failure; the shared app secret and other installations remain intact
+#### Scenario: Strict Slack extraction after HMAC
+- **WHEN** Slack delivers within the 1 MiB byte cap
+- **THEN** the broker verifies raw-body HMAC-SHA256 and the five-minute timestamp tolerance before any JSON parse; hex encoding, `v0=` and the `v0:<timestamp>:<body>` recipe are profile data
+- **AND** only uncompressed UTF-8 JSON objects within depth 32 and without duplicate keys anywhere are eligible; the fixed singleton authorization envelope exposes object keys only, with no configurable index/path operations
+- **AND** boolean `is_enterprise_install` selects nonempty string `enterprise_id` for org-wide installs or `team_id` otherwise; decoded UTF-8 identity bytes compare exactly without normalization/coercion
 
-#### Scenario: Identity is the only body field read by the door
-- **WHEN** a shared-app event contains its declared identity and message or caller-supplied owner/box fields
-- **THEN** only the one profile-selected identity is extracted, authenticated by the signed body or verified identity claim and mapped to the installed owner; other fields cannot affect routing
-- **AND** selectors with wildcards, filters, expressions or multiple matches are refused; raw bytes reach the box unchanged
+#### Scenario: Unsupported or ambiguous shared delivery
+- **WHEN** an authenticated Slack delivery has multiple authorizations, Slack Connect scope, an unsupported encoding, malformed/bounded-out JSON or missing/ambiguous identity
+- **THEN** it receives 200 no-op, with no wake, forward, receipt or shared persistence
+- **AND** only fixture-proven single-installation shapes with `is_ext_shared_channel=false` may route; a truncated singleton authorization list alone is insufficient and no shared authorization lookup/fanout is added
 
-#### Scenario: Invalid proof or substituted owner
-- **WHEN** proof is forged, stale, ambiguous, or the caller substitutes another owner/box
-- **THEN** no substituted destination, wake or session is authorized
+#### Scenario: Shared mapping absent or withdrawn
+- **WHEN** an authenticated shared delivery has no mapped admitted installation, including a disconnected, erased or suspended owner
+- **THEN** it receives 200 no-op even during maintenance, so dead installations do not consume the shared app's failure budget
+- **AND** no stale revision may complete wake/forward after T5 admission withdrawal, including concurrent cold starts
 
-#### Scenario: Exactly one route and one session entry
-- **WHEN** `tests/test_inbound_door.py` enumerates the deployed route table and sends an accepted fixture for each supported channel through the real router and box receiver
-- **THEN** there is exactly one distinct inbound template, `/hooks/inbound/{binding}`, serving GET/POST with no aliases
-- **AND** each fixture preserves raw payload bytes and reaches the real `session.start(agent_ref, input, parent)` exactly once with the expected owner, agent and receipt, with zero direct branch/source enqueue calls
+#### Scenario: Per-binding refusal, outage and maintenance
+- **WHEN** a per-binding callback is unknown/revoked/unadmitted, or an admitted event cannot be delivered
+- **THEN** the former returns stable 404 `not_found`; maintenance, verification outage or cold-start timeout returns retryable 503 without acceptance or shared payload storage
+- **AND** maintenance must fit the provider retry/failure budget; a 2xx no-op SHALL NOT be used to hide loss of an admitted event
 
-#### Scenario: Disconnection or admission withdrawal
-- **WHEN** the binding is unknown, disconnected, revoked or unadmitted outside a maintenance/cutover window, including withdrawal concurrent with a cold start
-- **THEN** delivery returns stable 404 `not_found` and cannot complete a wake or forward under withdrawn admission
+### Requirement: Installation authority owns shared profiles and mappings
+Only platform installation authority SHALL write shared-app profiles and installation records, including extraction/encoding data, keys, issuer/audience, secret references and revisions. Identity SHALL come from server-side provider token exchange/inspection. OAuth state SHALL be single-use, bound to the starting owner and authenticated browser session, and checked in that same session before publication. Client signup IDs and callback query IDs SHALL NOT authorize a mapping.
 
-#### Scenario: Maintenance or cutover closure
-- **WHEN** ingress admission is temporarily closed for maintenance/cutover
-- **THEN** the door returns retryable 503 `maintenance`, taking precedence over stable admission refusal, without accepting or starting work
+#### Scenario: Conflicting installation
+- **WHEN** another owner attempts to claim an existing installation identity
+- **THEN** authority checks the existing credential with the provider and atomically preserves a live installation, defers on indeterminate status, or retires a confirmed revoked record/revision before replacement
+- **AND** refusal never revokes provider tokens, including a token reissued for the existing installation
+
+#### Scenario: Disconnect, erasure and wake reconciliation
+- **WHEN** an owner disconnects, is erased, or the provider revokes an installation
+- **THEN** disconnect withdraws its mapping/revision and scoped credentials and uninstalls at the provider; erasure removes its records; provider revocation is reconciled through installation authority when the box wakes or another install conflicts
+- **AND** the box reconciles its snapshot view and credential status on wake; no notification retry queue exists, and neither another installation nor the shared signing secret is removed
+
+#### Scenario: Setup has no owner destination
+- **WHEN** Slack sends `url_verification` or Meta sends a verification GET during app/callback setup
+- **THEN** one-time platform setup outside the steady-state door handles the challenge with broker-held proof; no box, agent event or permanent shared payload handler is created
+- **AND** ordinary owner-specific subscription challenges remain box-local
+
+### Requirement: Verification custody and forwarding have one authority
+The pure verifier SHALL accept only schema-checked capability/token, HMAC-SHA256 or per-binding pinned RS256 profiles. Unsupported algorithms/expressions/hooks and request-supplied key URLs SHALL be rejected. Only the authenticated router SHALL call `INBOUND_VERIFY`; the broker SHALL resolve the profile and credentials from the binding and reject caller-supplied profiles. Boxes SHALL NOT modify shared profiles or use app-wide outbound credentials.
 
 #### Scenario: Awake box during control-plane outage
-- **WHEN** the routing snapshot is installed and the box is awake but control-plane lookups and lifecycle RPCs are unavailable
-- **THEN** URL-capability and pinned-public-key profiles still verify and forward using the same pure verifier module as the broker; only secret lookup is broker-side
-- **AND** secret-dependent HMAC/token profiles require broker `INBOUND_VERIFY` and return retryable 503 without forwarding if it is unavailable; this is the explicit T1 exception needed to retain broker-only secret custody
+- **WHEN** the installed snapshot and awake box are available but control-plane RPCs are not
+- **THEN** URL-capability/pinned-key verification still forwards using the same pure module as the broker
+- **AND** secret-dependent profiles return retryable 503 if broker verification is unavailable, the explicit T1 exception preserving broker-only custody
 
-### Requirement: Accepted events enter session start inside the box
-The box SHALL parse, select the agent, enforce current owner grants and dispatch each accepted event through `session.start(agent_ref, input, parent)` with the inbound receipt as parent. The platform SHALL remove direct webhook branch/source dispatch and reuse C2's existing wake machinery.
+#### Scenario: Per-binding custody and email key rotation
+- **WHEN** an owner-specific profile references a credential or pinned email keys
+- **THEN** foreign credential references are refused; only that owner's relay publishes its keys, and its pre-scheduled C2 wake refreshes them through egress at a declared interval within provider rotation overlap
+- **AND** unknown/stale keys return retryable 503 until republished, without inbound-triggered refresh or a shared fetcher; shared HMAC profiles have no box-owned key refresh
 
-#### Scenario: Channel event starts the selected agent
-- **WHEN** a valid event is accepted by an installed connector with current grants
-- **THEN** its durable receipt reaches the existing session entry with preserved payload and owner authority
-- **AND** shared services never select an agent or inspect owner files
+#### Scenario: Forwarded proof and revision
+- **WHEN** a verified installation is forwarded to its admitted box
+- **THEN** raw payload bytes remain verbatim; trusted binding/digest metadata carries the installation record revision, never the shared profile revision, and the box checks its per-box router credential
+- **AND** case-insensitive stripping removes caller trust headers, `X-Slack-Signature`, `X-Hub-Signature-256`, `Authorization`, `Proxy-Authorization`, `Cookie` and all configured proof/token headers; routing metadata contains no capability/query token
+- **AND** caller owner/box substitutions and invalid/stale proofs authorize no destination
 
-#### Scenario: Protocol handshake or local refusal
-- **WHEN** the box receives a subscription handshake, malformed event, revoked grant, missing package or paused owner workflow
-- **THEN** the box returns the protocol response or records an explicit refusal/defer result
-- **AND** no fallback agent starts; deferred accepted events resume through existing box-local wakes and the same session entry
+### Requirement: Durable accepted events enter session start inside the box
+The box SHALL enforce current grants/pause, select the agent and dispatch through `session.start(agent_ref, input, parent)` with its receipt as parent. Raw envelope and pending dispatch SHALL commit before event acknowledgement. C2's existing pump and T7 wake index SHALL be reused; direct webhook branch/source dispatch SHALL be deleted.
 
-### Requirement: Sleeping boxes and duplicate delivery preserve durable acceptance
-The router SHALL reuse its existing wake/forward transport without changing the waker or its `(owner, next_wake_at)` index. Event acknowledgement SHALL follow durable in-box acceptance and pending dispatch. The inbox and session start SHALL share a stable receipt/idempotency contract so at-least-once delivery starts at most one session per event.
+#### Scenario: Exactly one route and session entry
+- **WHEN** implementation tests enumerate routes and deliver each supported fixture through the real router and receiver
+- **THEN** exactly one distinct GET/POST template exists, and each accepted event reaches the real session entry once with expected owner, agent, preserved bytes and receipt
+- **AND** there are no direct branch/source enqueue calls, shared owner-content reads or credentials in box inputs/logs
 
-#### Scenario: Cold start exceeds the request deadline
-- **WHEN** an admitted owner's sleeping box cannot durably accept before timeout
-- **THEN** the door returns retryable 503 and stores no shared payload
-- **AND** retrying the same event can wake, commit and acknowledge it normally
+#### Scenario: Handshake or local refusal
+- **WHEN** the box sees an owner subscription handshake, malformed event, missing package, revoked grant or paused workflow
+- **THEN** it responds or records explicit refusal/defer, with no fallback agent; deferred accepted work resumes through the same pump/session entry
+- **AND** handshakes and authenticated shared no-ops are not accepted agent events
 
-#### Scenario: Concurrent retries and crash recovery
-- **WHEN** the same binding revision and event ID arrive concurrently or after a crash before/after acceptance, start or acknowledgement
-- **THEN** the durable inbox resumes pending work and returns the same receipt with at most one session start
-- **AND** a reused ID with different payload is rejected, while different IDs with equal payload remain distinct events
+#### Scenario: Cold start, concurrent retries and crashes
+- **WHEN** delivery times out before durable acceptance, or the same binding/installation revision and event ID recur across acceptance/start/ack crashes
+- **THEN** timeout returns 503 and retry uses ordinary wake; atomic inbox/outbox and receipt-keyed durable session creation yield the same receipt and at most one session
+- **AND** reused IDs with different digests are refused, equal payloads with different IDs stay distinct, and reconnect never resurrects old revisions
 
-#### Scenario: Legacy generic sender without event identity
-- **WHEN** any generic sender, including an existing token-URL hook, omits or malforms `Idempotency-Key` or `X-Event-Timestamp` (Unix seconds fixed across retries)
-- **THEN** the box returns 400 `event_identity_required` without acceptance or dispatch; cutover preserves valid URLs but requires sender changes, with no payload-digest fallback
+#### Scenario: Generic identity and finite replay retention
+- **WHEN** a generic sender omits/malforms nonempty `Idempotency-Key` or immutable Unix-seconds `X-Event-Timestamp`
+- **THEN** it receives 400 `event_identity_required`, including legacy token-URL senders at cutover; no digest fallback exists
+- **AND** event freshness is checked before dedupe even under fresh signatures; stale events receive 400 `stale_event`, receipts/digests expire after the profile window plus skew, and retries never extend retention
+- **AND** generic freshness is 24 hours plus at most five minutes skew; pending work/session-start keys remain until completion
 
-#### Scenario: Receipt expiry
-- **WHEN** the channel's finite event freshness window plus clock skew expires
-- **THEN** replay receipts and payload digests are pruned and that stale event is refused before dedupe or acceptance, even with a fresh request signature
-- **AND** generic hooks use 24 hours plus at most 5 minutes skew; retries never extend retention, and pending work retains only its dispatch/session-start key until completion
-
-#### Scenario: Rate or capacity limit
-- **WHEN** transport or box admission is exhausted
-- **THEN** a new event receives 413 for excessive size or 429 with retry guidance for rate/capacity limits, without acceptance
-- **AND** an already accepted duplicate consumes no additional session allowance; transport throttling can still apply
-
-### Requirement: Channels and connected email keep credentials in broker custody
-Connector packages SHALL perform channel parsing, subscriptions, local routing and replies inside the box. Channel credentials SHALL remain broker-held, and all outbound calls SHALL pass through the egress proxy with scoped credential injection. Email SHALL use the owner's connected account, never a platform mail domain.
-
-#### Scenario: Owner-scoped verification custody and pinned keys
-- **WHEN** a binding profile references credentials or public verification keys
-- **THEN** per-binding credential references resolve only in that owner's broker custody, rejecting foreign references; shared-app signing secrets are platform-held in broker custody and bound only by platform installation authority
-- **AND** public keys are pinned through the bound box relay; shared services perform no key fetch or refresh and reject unsupported profiles and request-supplied key URLs; unknown or expired keys return retryable 503 `verification_keys_unavailable` without forwarding
-
-#### Scenario: Key rotation while the box sleeps
-- **WHEN** a provider rotates its public verification keys while the box sleeps
-- **THEN** the connector's pre-scheduled C2 timed wake refreshes and republishes pinned keys within the provider's rotation lead time and before expiry, without requiring a verified inbound event or an online host
-- **AND** an unknown-key delivery receives retryable 503; redelivery succeeds after refresh, with no shared key fetcher and only `(owner, next_wake_at)` in T7
-
-#### Scenario: HMAC header representation is data
-- **WHEN** channel profiles use different HMAC signature encodings or prefixes
-- **THEN** the same pure verifier uses profile-declared hex/base64 encoding and literal prefix (such as `v0=` or `sha256=`), with no provider-specific code
-
-#### Scenario: Mail notification and reply
-- **WHEN** the owner's connected mail subscription delivers a verified notification
-- **THEN** the box fetches mail through the proxy, records its local cursor and starts the chosen session
-- **AND** any reply uses that account's permitted sender/alias through the proxy without exposing OAuth credentials to the box
-
-#### Scenario: Disconnect before outbound send
-- **WHEN** a channel is disconnected after receipt but before a reply is sent
-- **THEN** the proxy refuses the revoked credential and the box records the failed reply without bypassing egress
-
-#### Scenario: Provider lacks push or send idempotency
-- **WHEN** the connected account needs polling or a reply has an ambiguous non-idempotent send result
-- **THEN** polling uses existing box-local scheduled sessions, and the reply is recorded for reconciliation instead of blindly resent
-- **AND** no shared mail worker, event queue or second scheduler is introduced
+#### Scenario: Capacity and outbound work
+- **WHEN** transport/storage capacity is exhausted or a reply is ready
+- **THEN** excessive size gets 413, rate/capacity limits get 429 with retry guidance or storage 503, and accepted duplicates spend no new execution allowance
+- **AND** sends/fetches use only installation/account-scoped proxy-injected credentials; disconnect blocks later sends, and ambiguous non-idempotent results await reconciliation
+- **AND** email stays in the connected mailbox with local cursors and C2 renewal/polling, never a platform mail domain, shared mail worker or second scheduler

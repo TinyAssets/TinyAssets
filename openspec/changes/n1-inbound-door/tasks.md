@@ -2,16 +2,16 @@
 
 Implementation checklist; intentionally unchecked in this spec-only lane.
 
-- [ ] 1.1 Confirm C7/C8's durable session-start idempotency handoff and map C2's folded webhook management to box-local connector configuration; no second pump.
-- [ ] 1.2 Extend the existing owner binding relay and broker with declarative verification, shared-app OAuth installation identity mapping, conflicting-install refusal, uninstall notification and revision revocation; prove signature/token failure and T5 admission races without owner-store access.
-- [ ] 1.3 Wire the single ingress route to verification and existing wake/forward transport; prove sleeping-box timeout/retry and per-box router authentication without changing T7.
-- [ ] 1.4 Replace receiver dispatch with an atomic in-box inbox/outbox and receipt-keyed `session.start`; prove concurrent replay and crashes at acceptance/start/ack boundaries.
-- [ ] 1.5 Supply Slack, Teams, WhatsApp, connected-account email and generic webhook packages/profiles with protocol fixtures; prove single-field identity selectors, HMAC encodings/prefixes, timed key refresh within rotation lead time, parsing, challenges, grants, limits and proxy-only replies without raw credentials.
-- [ ] 1.6 Require generic sender ID/timestamp headers, prune receipts by freshness, convert existing bindings/receipts and drain legacy pending deliveries; delete the direct branch/source bridge, payload-hash dedupe and duplicate authentication named in the design in the same cutover.
+- [ ] 1.1 Confirm C7/C8 durable session-start idempotency and map C2 webhook management to box-local connector/agent configuration.
+- [ ] 1.2 Extend binding metadata and broker verification with platform-only shared profile/install authority, server-verified identity, same-session OAuth state, conflict credential checks, erasure/revision retirement and wake reconciliation; router-only `INBOUND_VERIFY` resolves profiles broker-side.
+- [ ] 1.3 Wire the single route to proof/admission and existing wake/forward; strip named proof headers, forward installation revisions, distinguish authenticated shared no-ops from durable acceptance, and keep app setup challenges outside delivery.
+- [ ] 1.4 Replace dispatch with atomic box-local inbox/outbox and receipt-keyed `session.start`; prove replay and crashes at acceptance/start/ack boundaries.
+- [ ] 1.5 Supply fixed Slack workspace/org extraction and unsupported/ambiguous no-op fixtures; admit WhatsApp only after per-account callback/batch isolation proof, otherwise exclude it. Keep Teams deferred until authenticated installation and scoped outbound-credential proof. Supply per-binding email/generic profiles and box-local parsing/replies/key renewal.
+- [ ] 1.6 Require generic event ID/timestamp headers, prune by freshness, migrate bindings/receipts, drain pending deliveries and delete the old direct dispatcher, hash dedupe and duplicate authentication.
 
 ## 2. Prove and finish the implementation
 
-- [ ] 2.1 Create `tests/test_inbound_door.py` with the exact route, real session-start, rotation-while-asleep, shared-app installation lifecycle and verification-outage assertions in the design; add the `inbound-door` route/dispatch guard and targeted router, webhook management and automation-event regressions; run `python scripts/linux_oracle.py -- tests/test_inbound_door.py tests/test_owner_router.py tests/test_automations.py tests/test_owner_waker.py tests/test_owner_next_wake.py` and ruff on changed Python.
-- [ ] 2.2 In the implementation lane, complete the required floor-class review of shared mapping/verification against T1-T10 and resolve correctness findings by placement.
-- [ ] 2.3 In the authorized deployment lane, verify deployed SHA and one naive-user channel message/reply with devices off; exercise disconnect and retry, run the public handles canary, and preserve fail-closed rollback.
-- [ ] 2.4 Sync N1 and the refined C2 inbound delivery requirement together, preserving C2's unrelated wake/timezone obligations; mark registry N1 converged only after its guard and live proof pass.
+- [ ] 2.1 Create `tests/test_inbound_door.py` with the design's route, authority, protocol, outage and replay assertions; run `python scripts/linux_oracle.py -- tests/test_inbound_door.py tests/test_owner_router.py tests/test_automations.py tests/test_owner_waker.py tests/test_owner_next_wake.py` and ruff on changed Python.
+- [ ] 2.2 Complete implementation floor-class review against T1-T10; resolve findings by placement.
+- [ ] 2.3 In the authorized deployment lane, prove deployed SHA, naive-user message/reply with devices off, disconnect/retry and public handles; preserve fail-closed rollback.
+- [ ] 2.4 Sync N1 and C2 inbound delivery together, retaining unrelated C2 obligations; mark N1 converged only after guard/live proof.
