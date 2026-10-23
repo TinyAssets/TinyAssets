@@ -1885,3 +1885,13 @@ no table repair or blanket REINDEX is permitted.
 
 
 Stopped apply must preserve committed WAL/SHM bytes and directory protection while repairing named indexes; rehearsal reset must restore archived root metadata.
+
+## Source discovery placement correction (2026-10-22)
+
+Address detection and OAuth metadata probing run inside the owner daemon through
+its public egress bridge. The page first requests `/app/model-discovery` or
+`/app/connection-discovery`, then passes credential-free metadata to the shared
+credential flow. The broker retains registered-client lookup, registration,
+code exchange and deposit only. The broker discovery RPC, worker pool and total
+detect deadline are deleted. Per-probe time/body limits, same-site model issuers
+and box-side verified-free catalogue admission remain.

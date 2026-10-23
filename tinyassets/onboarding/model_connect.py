@@ -35,14 +35,14 @@ async def handle_model_connect(request):
     if not allowed:
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
-    fields = {"discover_inline": {"address"}, "discover": {"address", "code_challenge"},
+    fields = {"discover_inline": {"source"}, "discover": {"source", "code_challenge"},
               "inline_begin": {"preset_id"}, "inline_poll": {"flow"},
               "inline_cancel": {"flow"}, "begin": {"preset_id", "code_challenge"},
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
               "deposit_key": {"preset_id", "key"},
               "deposit": {"definition", "secret"},
               "rotate": {"destination", "incarnation", "secret"},
-              "oauth_begin": {"code_challenge"},
+              "oauth_begin": {"code_challenge", "prepared"},
               "source_sign_in": {"preset_id", "code_challenge"},
               "oauth_exchange": {"flow", "code", "code_verifier"}}
     if operation not in fields:
@@ -62,7 +62,7 @@ async def handle_model_connect(request):
         if (not isinstance(data, dict)
                 or not fields[operation] <= set(data) <= fields[operation] | optional
                 or any(not isinstance(v, str) or not v or len(v) > 2048
-                       for k, v in data.items() if k not in {"definition", "source"})
+                       for k, v in data.items() if k not in {"definition", "source", "prepared"})
                 or len(data.get("request_ref", "")) > 512):
             raise ValueError
         if "definition" in data and (not isinstance(data["definition"], dict)
@@ -86,9 +86,7 @@ async def handle_model_connect(request):
         from tinyassets.connection_oauth import flow as sign_in
         from tinyassets.onboarding import inline_model_connect as inline
         from tinyassets.onboarding.connection_definition import (
-            oauth_definition,
             preset_definition,
-            sign_in_definition,
         )
         from tinyassets.onboarding.owner_sessions import COOKIE, lookup, require
 
@@ -109,21 +107,17 @@ async def handle_model_connect(request):
                     raise FlowError("interactive_approval_required", 403) from None
 
             if operation in {"discover", "discover_inline"}:
-                from tinyassets.onboarding.connection_definition import policy
-
-                answer = broker_request(base, owner=owner, center=center, document={
-                    "action": "model_discover", "address": data["address"],
-                    "callback": sign_in.redirect_uri(resource),
-                    **({"source": data["source"]} if "source" in data else {})})
-                if answer.get("error"):
-                    raise FlowError(answer["error"], 409)
                 from tinyassets.connection_oauth.model_discovery import (
                     connection_definition,
                     oauth_offer,
                 )
+                from tinyassets.onboarding.connection_definition import policy
                 from tinyassets.providers.source_record import SourceRecord
 
-                record = SourceRecord.parse(answer["source"])
+                try:
+                    record = SourceRecord.parse(data["source"])
+                except (ValueError, KeyError, TypeError):
+                    raise FlowError("invalid_source_record", 409) from None
                 if "cli_login" in record.sign_in:
                     return {"status": "cli_login_required", "source_id": record.id}
                 verifier = ""
@@ -197,18 +191,13 @@ async def handle_model_connect(request):
                     return exchange(result["code"], result["verifier"])
                 return result
             if operation in {"oauth_begin", "source_sign_in"}:
-                definition = (sign_in_definition(data["preset_id"], resource)
-                              if operation == "source_sign_in" else data.get("definition"))
-                if definition is None:
-                    rows = connections(base, principal=owner, command_center=center, limit=100)
-                    match = next((r for _, r, _ in rows
-                                  if r.destination == data.get("destination")), None)
-                    if match is None:
-                        raise FlowError("unknown_model_connection", 404)
-                    definition = {"destination": match.destination,
-                                  "endpoints": [e.as_dict() for e in match.allowed_endpoints]}
-                definition = oauth_definition(base, owner=owner, center=center,
-                                               definition=definition, public_resource=resource)
+                if operation == "source_sign_in":
+                    raise FlowError("owner_discovery_required", 409)
+                definition = data["prepared"]
+                if (not isinstance(definition, dict)
+                        or set(definition) != {"destination", "policy", "oauth"}
+                        or definition["policy"].get("auth_scheme") != "oauth2"):
+                    raise FlowError("invalid_connection_definition")
                 return sign_in.begin(owner=owner, request_id=ref,
                     challenge=data["code_challenge"], public_resource=resource,
                     owner_session=approval, definition=definition)

@@ -7561,6 +7561,19 @@
       MCP._assertLogin(epoch);
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
+      if(operation==="oauth_begin"||operation==="source_sign_in"){
+        const discovery=await fetch("/app/connection-discovery",{
+          method:"POST",credentials:"same-origin",cache:"no-store",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+          body:JSON.stringify(payload.preset_id?{preset_id:payload.preset_id}:
+            payload.definition?{definition:payload.definition}:{destination:payload.destination})});
+        const prepared=await discovery.json();
+        MCP._assertLogin(epoch);
+        if(!discovery.ok||prepared.error)throw new Error(prepared.error||"discovery_failed");
+        payload={code_challenge:payload.code_challenge,prepared:prepared.definition,
+          ...(payload.request_ref?{request_ref:payload.request_ref}:{})};
+        operation="oauth_begin";
+      }
       const {center:localCenter,...ownerPayload}=payload;
       void localCenter;
       const response=await fetch("/app/model-connect/"+operation,{
@@ -9136,9 +9149,14 @@
               info.id==="io.tinyassets.app.debug"?"android-debug":"android";
           }
           const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+          const detected=await fetch("/app/model-discovery",{
+            method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify({address:selected,...(local.source?{source:local.source}:{})})});
+          if(!detected.ok)throw new Error("discovery_failed");
+          const {source}=await detected.json();
           const result=await ConnectOAuth.post(external?"discover_inline":"discover",
-            {address:selected,...(external?{client}:{code_challenge}),
-             ...(local.source?{source:local.source}:{})});
+            {source,...(external?{client}:{code_challenge})});
           if(result.status==="cli_login_required"){
             await SubscriptionSources.start({id:result.source_id},ui);return;
           }

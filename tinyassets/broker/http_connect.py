@@ -11,7 +11,7 @@ def validate(document):
     from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS, _MAX_SECRET_CHARS
 
     if isinstance(document, dict) and document.get("action") in {
-            "model_discover", "oauth_offer", "oauth_exchange", "preset_exchange"}:
+            "oauth_offer", "oauth_exchange", "preset_exchange"}:
         from tinyassets.broker.model_connect import validate as validate_flow
 
         return validate_flow(document)
@@ -75,7 +75,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
     if committed_via == "box" and "request_ref" in document:
         raise PermissionError("request references require the door")
     if document.get("action") in {
-            "model_discover", "oauth_offer", "oauth_exchange", "preset_exchange"}:
+            "oauth_offer", "oauth_exchange", "preset_exchange"}:
         from tinyassets.broker.model_connect import local_operation as flow_operation
 
         return flow_operation(ledger, principal=principal, command_center=command_center,

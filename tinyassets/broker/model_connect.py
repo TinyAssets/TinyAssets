@@ -10,13 +10,6 @@ def validate(document):
     from tinyassets.connection_oauth.pkce import VERIFIER_RE
 
     action = document.get("action")
-    if action == "model_discover":
-        if (not {"action", "address", "callback"} <= set(document)
-                <= {"action", "address", "callback", "source"}
-                or any(not isinstance(document[k], str) or len(document[k]) > 2048
-                       for k in ("address", "callback"))):
-            raise ValueError("invalid discovery fields")
-        return
     if action == "oauth_offer":
         if set(document) != {"action", "requested", "hosts", "callback", "registration_url"}:
             raise ValueError("invalid offer fields")
@@ -56,30 +49,10 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
 
     validate(document)
     action = document["action"]
-    if action == "model_discover":
-        from tinyassets.connection_oauth.model_discovery import discover
-
-        try:
-            if "source" in document:
-                from tinyassets.connection_oauth.model_discovery import address_url
-                from tinyassets.providers.source_record import SourceRecord
-
-                record = SourceRecord.parse(document["source"])
-                if (record.origin != "declared" or "http" not in record.invoke
-                        or address_url(document["address"]) not in {
-                            address_url(a) for a in record.addresses}):
-                    raise ValueError("declared source does not answer this address")
-            else:
-                record = discover(document["address"])
-            return {"source": record.document()}
-        except OAuthError as exc:
-            return {"error": exc.code}
-        except (ValueError, KeyError, TypeError):
-            return {"error": "invalid_source_record"}
     if action == "oauth_offer":
         from urllib.parse import urlsplit
 
-        from tinyassets.connection_oauth.discovery import discover_offer, register_public_client
+        from tinyassets.connection_oauth.discovery import register_public_client
 
         if document["registration_url"]:
             try:
@@ -91,11 +64,7 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         directory_hosts = [urlsplit(h).hostname if h.startswith("https://") else h
                            for h in hosts]
         offer = directory.resolve(document["requested"], directory_hosts)
-        reason = ""
-        if offer is None:
-            offer, reason = discover_offer(document["requested"], hosts,
-                                          callback=document["callback"], use_cache=False)
-        return {"offer": offer, "reason": reason}
+        return {"offer": offer, "reason": "registration_unknown" if offer is None else ""}
     if action == "preset_exchange":
         from tinyassets.onboarding.hosted_model_auth import endpoint_policy
 

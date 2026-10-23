@@ -27,6 +27,11 @@ def test_discovery_page_fallback_and_secret_clear(width):
           const ConnectedAI={load(){}};
       const CFG={model_source_address:"https://known.example"};
           const MCP={_loginEpoch:1};
+          const authHeaders=()=>({});
+          window.fetch=async(url,options)=>{
+            if(url!=="/app/model-discovery")throw new Error("unexpected route");
+            return {ok:true,json:async()=>({source:{id:"detected"}})};
+          };
           const SubscriptionSources={post:async()=>({}),saved:()=>null};
           const queueScope='center';const randToken=()=> 'v'.repeat(43);
           const challengeFor=async()=> 'c'.repeat(43);

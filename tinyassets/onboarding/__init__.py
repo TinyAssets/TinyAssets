@@ -2043,6 +2043,10 @@ def onboarding_routes() -> list[Any]:
         handle_model_callback,
         handle_model_connect,
     )
+    from tinyassets.onboarding.model_discovery import (
+        handle_connection_discovery,
+        handle_model_discovery,
+    )
     from tinyassets.onboarding.model_preferences import handle_model_preferences
     from tinyassets.onboarding.notifications import (
         handle_devices,
@@ -2078,6 +2082,8 @@ def onboarding_routes() -> list[Any]:
         Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),
         Route("/app/api-keys", handle_api_keys, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
+        Route("/app/connection-discovery", handle_connection_discovery, methods=["POST"]),
+        Route("/app/model-discovery", handle_model_discovery, methods=["POST"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/subscription-connect/{operation}", subscription_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),

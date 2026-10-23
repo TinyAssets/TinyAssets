@@ -55,20 +55,40 @@ def catalogue_rows(payload):
 
 
 def transport_fetch(url, *, large=False, timeout=15):
-    """The product fetch: the SSRF-hardened transport, GET only, no redirects."""
-    from tinyassets.connection_oauth.transport import request_json_with_headers
+    """Unauthenticated probes through the owner's public egress bridge only."""
+    import json
 
-    return request_json_with_headers(
-        "GET", url, timeout=timeout,
-        **({"max_body_bytes": LARGE_BODY_BYTES} if large else {}))
+    import httpx
+
+    from tinyassets.connection_oauth.transport import MAX_BODY_BYTES
+    from tinyassets.owner_public_egress import proxy_env
+    from tinyassets.owner_runtime import admitted
+
+    runtime = admitted()
+    proxy = proxy_env(runtime.tools._public_forwarder)["HTTPS_PROXY"]
+    limit = LARGE_BODY_BYTES if large else MAX_BODY_BYTES
+    try:
+        with httpx.Client(proxy=proxy, trust_env=False, follow_redirects=False,
+                          timeout=timeout) as client:
+            with client.stream("GET", validate_https_url(url)) as response:
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > limit:
+                        raise OAuthError("oauth_response_too_large")
+                try:
+                    doc = json.loads(body) if body else None
+                except (ValueError, RecursionError):
+                    doc = None
+                return response.status_code, doc, dict(response.headers)
+    except httpx.HTTPError:
+        raise OAuthError("oauth_server_unreachable") from None
 
 
 def _get(fetch, record, url, *, large=False):
     try:
         status, doc, headers = fetch(validate_https_url(url), large=large)
     except OAuthError as exc:
-        if exc.code == "discovery_timeout":
-            raise
         record["probes"].append({"url": url, "error": exc.code})
         return None, None, {}
     record["probes"].append({"url": url, "status": status})
@@ -196,28 +216,15 @@ def _protected_resource(fetch, record, resource, challenge):
     return None
 
 
-#: Whole-discovery budget; each probe also has its own timeout (below 60s total).
-DETECT_BUDGET_S = 35
-
-
 def detect(address, *, fetch=transport_fetch):
     """Probe ``address`` for published standards; return the capability record."""
     address = address_url(address)
     origin, bases = _bases(address)
     seen, network = {}, fetch
-    import time
-
-    deadline = time.monotonic() + DETECT_BUDGET_S
 
     def fetch(url, *, large=False):
         if url not in seen:
-            if time.monotonic() >= deadline:
-                raise OAuthError("discovery_timeout")
-            options = {"timeout": min(15, deadline - time.monotonic())} if (
-                network is transport_fetch) else {}
-            seen[url] = network(url, large=large, **options)
-            if time.monotonic() >= deadline:
-                raise OAuthError("discovery_timeout")
+            seen[url] = network(url, large=large)
         return seen[url]
     record = {"address": address, "probes": [], "model_api": {}, "sign_in": {}}
     api = record["model_api"]
@@ -270,9 +277,7 @@ def detect(address, *, fetch=transport_fetch):
     for issuer in (prm or {}).get("authorization_servers", []):
         try:
             found = _authorization_server(fetch, record, validate_https_url(issuer))
-        except OAuthError as exc:
-            if exc.code == "discovery_timeout":
-                raise
+        except OAuthError:
             found = {"issuer": issuer, "error": "invalid_oauth_url"}
         if found:
             servers.append(found)

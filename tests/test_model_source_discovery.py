@@ -52,15 +52,34 @@ def provider(monkeypatch):
 
     fake = ModelProvider()
     _install_loopback_driver(monkeypatch, fake.port)
+    from tinyassets.connection_oauth import model_discovery
+
+    def probe(url, **kwargs):
+        import httpx
+
+        parts = urlsplit(url)
+        response = httpx.get(f"http://127.0.0.1:{fake.port}" + parts.path,
+                             headers={"Host": parts.hostname}, trust_env=False)
+        return response.status_code, response.json(), dict(response.headers)
+
+    monkeypatch.setattr(model_discovery.discover, "__kwdefaults__", {"fetch": probe})
     monkeypatch.setattr(discovery, "DISCOVERY_ENABLED", True)
     yield fake
     fake.stop()
 
 
 def begin(address=API):
-    from tests.owner_answer import session_cookie
+    import httpx
 
-    return _post("discover", {"address": address, "code_challenge": CHALLENGE},
+    from tests.owner_answer import session_cookie
+    from tinyassets.connection_oauth.model_discovery import discover
+    from tinyassets.connection_oauth.transport import OAuthError
+
+    try:
+        source = discover(address).document()
+    except OAuthError as exc:
+        return httpx.Response(409, json={"error": exc.code})
+    return _post("discover", {"source": source, "code_challenge": CHALLENGE},
                  cookie=session_cookie())
 
 
@@ -151,7 +170,7 @@ def test_advertised_private_catalogue(provider, app):
 
 def test_requires_owner_session(provider, app):
     with _as(OWNER):
-        result = _post("discover", {"address": API, "code_challenge": CHALLENGE}, cookie="")
+        result = _post("discover", {"source": {}, "code_challenge": CHALLENGE}, cookie="")
     assert result.status_code == 403
 
 
@@ -223,7 +242,9 @@ def test_native_discovery_return_is_browser_bound_and_exchanged_once(provider, a
 
     with _as(OWNER):
         cookie = session_cookie()
-        begun = _post("discover_inline", {"address": API, "client": "desktop"}, cookie=cookie)
+        from tinyassets.connection_oauth.model_discovery import discover
+        begun = _post("discover_inline", {"source": discover(API).document(),
+                                          "client": "desktop"}, cookie=cookie)
         assert begun.status_code == 200, begun.text
         flow = begun.json()["flow"]
 
@@ -264,12 +285,12 @@ def test_declared_http_record_uses_same_broker_path(provider, app):
                 "models_url": f"https://{API}/v1/models",
                 "inference_url": f"https://{API}/v1/chat/completions"}},
             "egress": {"provider": [API, AUTH]}, "state": {"location": "broker"}}).document()
-        result = _post("discover", {"address": API, "source": record,
+        result = _post("discover", {"source": record,
                                    "code_challenge": CHALLENGE}, cookie=session_cookie())
         assert result.status_code == 200, result.text
         assert result.json()["authorize_host"] == AUTH
         record["sign_in"]["oauth"]["token_endpoint"] = "https://changed.example/token"
-        rejected = _post("discover", {"address": API, "source": record,
+        rejected = _post("discover", {"source": record,
                                      "code_challenge": CHALLENGE}, cookie=session_cookie())
         assert rejected.status_code == 409
         assert rejected.json()["error"] == "invalid_source_record"

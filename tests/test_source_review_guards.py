@@ -1,64 +1,8 @@
 """Bounded discovery, site-scoped sign-in, and conservative discovered billing."""
-import threading
-from contextlib import contextmanager
-from types import SimpleNamespace
-
 import pytest
 
-from tests.test_model_source_detector import API, AS, CATALOGUE, fetcher, server
+from tests.test_model_source_detector import AS, CATALOGUE, fetcher, server
 from tinyassets.connection_oauth import model_discovery as discovery
-from tinyassets.connection_oauth.transport import OAuthError
-
-
-def test_discovery_deadline_stops_probing(monkeypatch):
-    import time
-
-    clock = [0]
-    calls = []
-    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
-
-    def slow(url, **kwargs):
-        calls.append(url)
-        clock[0] += 15
-        return 404, None, {}
-
-    with pytest.raises(OAuthError, match="discovery_timeout"):
-        discovery.detect(API, fetch=slow)
-    assert len(calls) == 3
-    assert clock[0] < 60
-
-
-def test_discovery_runs_outside_fence_and_rechecks_after(monkeypatch):
-    from tinyassets.broker import admission, model_connect
-    from tinyassets.broker.server import OWNER, _Connection
-
-    held, checks = [], []
-
-    @contextmanager
-    def send(*args):
-        checks.append(args)
-        held.append(True)
-        try:
-            yield
-        finally:
-            held.pop()
-
-    connection = object.__new__(_Connection)
-    connection._role = OWNER
-    connection._closed = threading.Event()
-    connection._server = SimpleNamespace(_fence=SimpleNamespace(send=send), _owner_identities=None)
-    monkeypatch.setattr(admission, "require_admitted", lambda *a: None)
-
-    def discover(ledger, **kwargs):
-        assert ledger is None and not held
-        return {"source": "fixture"}
-
-    monkeypatch.setattr(model_connect, "local_operation", discover)
-    result = connection._http_connect({"op": "HTTP_CONNECT", "principal": "owner",
-        "generation": 1, "token": "fence", "document": {"action": "model_discover",
-        "address": API, "callback": "https://app.example/callback"}})
-    assert result["result"] == {"source": "fixture"}
-    assert checks == [(1, "fence"), (1, "fence")]
 
 
 def test_discovery_cannot_borrow_another_sites_sign_in():
