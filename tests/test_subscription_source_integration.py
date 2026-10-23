@@ -84,6 +84,56 @@ def test_finish_enables_owner_agent(connected):
     assert disconnected['sources'][0]['display_name'] == 'Fixture'
     assert disconnected['source_failures']
 
+
+def test_disconnect_reanchors_assignment_and_allows_later_access_change(connected):
+    from tinyassets.api.model_access_requests import capture_action
+    from tinyassets.commons_catalog import list_bindings
+    from tinyassets.onboarding.subscription_connect import disconnect, finish
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import bind_serving_provider
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.subscription_runtime import SubscriptionRuntime
+
+    root = connected.home
+    first = finish("fake-cli")["provider"]
+    doc = connected.source.document()
+    doc["id"] = "second-cli"
+    (root / ".ta-cli/sources/second-cli.json").write_text(json.dumps(doc))
+    second = SubscriptionRuntime("second-cli")
+    second.install()
+    (root / ".fake-login").write_text("fixture-login")
+    second.accept()
+    assert second.authenticated()
+    definition = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="second-cli")
+    survivor = "subscription_cli:" + definition.id
+    def agent():
+        return next(b for b in list_bindings(root, universe_id="center", limit=100)
+                    if b["configuration"].get("provider_ref"))
+    binding = agent()
+    access = ModelAccess("explicit", ("default",), None)
+    bind_serving_provider(base_path=root, universe_dir=root / "center", owner_user_id="owner",
+        universe_id="center", agent_binding_id=binding["agent_binding_id"],
+        expected_revision=binding["revision"], provider=first,
+        model_access={first: access, survivor: access})
+    disconnect("fake-cli")
+    assignment = load_provider_assignment(root, universe_id="center")
+    assert assignment.provider == survivor
+    assert [m.provider for m in assignment.candidates] == [survivor]
+    binding = agent()
+    assert binding["configuration"]["provider_ref"] == assignment.binding_id
+    action = {"type": "bind_model_access", "agent_binding_id": binding["agent_binding_id"],
+        "expected_revision": binding["revision"], "provider": survivor,
+        "model_access": {survivor: access.document()}}
+    assert capture_action("center", action)["previous_membership"] == action["model_access"]
+    bind_serving_provider(base_path=root, universe_dir=root / "center", owner_user_id="owner",
+        universe_id="center", agent_binding_id=binding["agent_binding_id"],
+        expected_revision=binding["revision"], provider=survivor, model_access={survivor: access})
+    disconnect("second-cli")
+    assignment = load_provider_assignment(root, universe_id="center")
+    assert assignment.state == "unassigned" and not assignment.candidates
+
 @pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
 def test_protected_connect_door(connected):
     import time

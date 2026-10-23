@@ -8,21 +8,14 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-from dataclasses import replace
 from pathlib import Path
 
 
 def repair(owner_root: Path, ledger: Path):
-    from tinyassets.provider_assignment import (
-        load_provider_assignment_in_transaction,
-        provider_assignment_digest,
-        store_provider_assignment_in_transaction,
-    )
-    from tinyassets.provider_assignment_manifest import manifest_digest
-    from tinyassets.provider_work_authority import ProviderWorkBindingState
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.provider_assignment_departure import remove_members
     from tinyassets.providers.definition import _verified_definition
     from tinyassets.storage import db_path
-    from tinyassets.storage.provider_work_authority import _payload, _record
 
     changes = []
     # mode=rw/ro refuses a misspelled path rather than inventing an empty ledger.
@@ -60,63 +53,7 @@ def repair(owner_root: Path, ledger: Path):
             if kept == assignment.candidates:
                 continue
             removed = [m.provider for m in assignment.candidates if m not in kept]
-            anchor = next((m for m in kept if m.provider == assignment.provider),
-                          kept[0] if kept else None)
-            updated = replace(assignment, generation=assignment.generation + 1,
-                              candidates=kept, state=assignment.state if kept else "unassigned")
-            if anchor:
-                updated = replace(updated, **{name: getattr(anchor, name) for name in (
-                    "provider", "binding_id", "binding_generation", "binding_digest",
-                    "credential_reference_id", "credential_reference_generation",
-                    "credential_reference_digest")})
-            updated = replace(updated, manifest_digest=(
-                manifest_digest(updated.provider, kept) if kept else ""))
-            updated = replace(updated, assignment_digest=provider_assignment_digest(**{
-                name: getattr(updated, name) for name in (
-                    "owner_user_id", "universe_id", "provider", "generation", "binding_id",
-                    "credential_reference_id", "credential_reference_generation",
-                    "credential_reference_digest", "manifest_digest")}))
-            members = []
-            for member in assignment.candidates:
-                row = conn.execute("SELECT * FROM provider_work_bindings WHERE binding_id=?",
-                                   (member.binding_id,)).fetchone()
-                if row is None:
-                    if member in kept:
-                        raise ValueError("surviving member has no work binding")
-                    continue
-                binding = _record(row)
-                if member in kept:
-                    binding = replace(binding, generation=binding.generation + 1,
-                                      assignment_generation=updated.generation,
-                                      assignment_digest=updated.assignment_digest)
-                else:
-                    binding = replace(binding, generation=binding.generation + 1,
-                                      state=ProviderWorkBindingState.REVOKED,
-                                      revocation_generation=binding.revocation_generation + 1)
-                binding = replace(binding, binding_digest=binding.expected_digest())
-                conn.execute("INSERT OR REPLACE INTO provider_work_bindings VALUES "
-                             "(?,?,?,?,?,?,?,?)", _payload(binding))
-                if member in kept:
-                    members.append(replace(member, binding_generation=binding.generation,
-                                           binding_digest=binding.binding_digest))
-            updated = replace(updated, candidates=tuple(members))
-            if anchor:
-                anchor = next(m for m in members if m.provider == updated.provider)
-                updated = replace(updated, binding_generation=anchor.binding_generation,
-                                  binding_digest=anchor.binding_digest)
-            store_provider_assignment_in_transaction(conn, updated)
-            conn.execute("DELETE FROM provider_assignment_candidates WHERE universe_id=? "
-                         "AND assignment_generation<>?", (uid, updated.generation))
-            if not kept:
-                conn.execute("DELETE FROM provider_assignment_candidates WHERE universe_id=?",
-                             (uid,))
-            # Keep the user's agent content and serving intent; only its authority pointer changes.
-            conn.execute("UPDATE agent_bindings SET configuration_json=json_set("
-                         "configuration_json,'$.provider_ref',?),revision=revision+1 "
-                         "WHERE universe_id=? AND created_by=? "
-                         "AND json_extract(configuration_json,'$.provider_ref')=?",
-                         (updated.binding_id, uid, assignment.owner_user_id,
-                          assignment.binding_id))
+            updated = remove_members(conn, assignment, kept)
             changes.append({"universe_id": uid, "removed": removed,
                             "old_root": assignment.provider,
                             "root": updated.provider if kept else None})

@@ -204,11 +204,13 @@ def save_state(runtime, revision, state):
 
 def disconnect(owner, source_id):
     from tinyassets.owner_channel import request
+    from tinyassets.provider_assignment_departure import disconnect_subscription
     from tinyassets.providers.subscription_source import sources
 
     if not isinstance(source_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", source_id):
         raise ValueError("invalid subscription source id")
-    with named_source_lock(owner.root, source_id, threading.local()):
+    with disconnect_subscription(owner, source_id), named_source_lock(
+            owner.root, source_id, threading.local()):
         request(owner.principal, {"op": "SUBSCRIPTION_CUSTODY", "document": {
             "action": "delete", "source": source_id}})
         source = sources(owner.root).get(source_id)
