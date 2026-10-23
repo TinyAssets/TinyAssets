@@ -288,32 +288,15 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
 
 def call_foreground_work_agent(session, *, prompt, system, config, policy, response_observer=None,
                                metadata_observer=None, activity_binding=None):
-    """Enter once from immutable work opt-in, never through a fake served request."""
-    return _call_work_agent(
-        session, prompt=prompt, system=system, config=config, policy=policy,
-        principal_id=session._principal_id, universe_id=session._universe_id,
-        response_observer=response_observer,
-        metadata_observer=metadata_observer,
-        activity_binding=activity_binding,
-    )
-
-
-def call_background_work_agent(session, *, prompt, system, config, policy):
-    """Use the queue session's own per-round admission and between-step fence."""
-    return _call_work_agent(
-        session, prompt=prompt, system=system, config=config, policy=policy,
-        principal_id=session._task.actor_id, universe_id=session._task.universe_id,
-    )
-
-
-def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id,
-                     response_observer=None, metadata_observer=None, activity_binding=None):
+    """Run an admitted agent node, entered only through ``session.start``."""
     from tinyassets.config import load_universe_config
     from tinyassets.engine_mcp_http import engine_tools_authorized
     from tinyassets.provider_work_authority import ProviderInvocationReservationState
     from tinyassets.providers import call as bridge
     from tinyassets.providers.provider_resolver import register_universe_open_providers
 
+    principal_id = session._principal_id
+    universe_id = session._universe_id
     router = bridge.get_provider_router()
     if router is None:
         raise ProviderAuthorityHeldError("workflow agent requires its real provider router")

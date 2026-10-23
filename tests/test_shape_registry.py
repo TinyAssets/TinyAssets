@@ -26,6 +26,16 @@ def test_shape_registry():
     assert not (problems := check_shapes.check()), "\n".join(problems)
 
 
+def test_s2_retains_executor_measure_and_s3_tracks_duplicate(tmp_path):
+    root = tmp_path / 'tinyassets'
+    root.mkdir()
+    (root / 'second.py').write_text(
+        '_call_writer()\nmake_interactive_agent_turn()\n'
+        'class WorkflowAgentTurn(AgentTurnCoordinator): pass\n')
+    assert check_shapes.old_count(check_shapes.SHAPES['S2'], tmp_path) >= 2
+    assert check_shapes.old_count(check_shapes.SHAPES['S3'], tmp_path) >= 1
+
+
 def test_registry_parity_catches_added_row():
     rows = check_shapes.registry_rows(
         "| S1 | one | path | old | drifted | guard | C3 |\n"

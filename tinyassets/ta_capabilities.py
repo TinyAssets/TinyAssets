@@ -486,6 +486,11 @@ class Capabilities:
                                if item["role"] == "system")
             prompt = "\n".join(f"{item['role']}: {item['content']}" for item in messages
                                if item["role"] != "system")
+            # S1 inference, not an S2 agent start: caller-supplied tool schemas
+            # go to one model request; model_result returns tool calls to the
+            # caller. This path neither dispatches tools nor repeats inference.
+            # agent_request keeps the router on structured inference rather
+            # than constructing an engine-tool executor.
             request = ModelCall(
                 model=model, fallbacks=fallbacks, purpose=purpose, origin="ta",
                 context=ModelContext(
