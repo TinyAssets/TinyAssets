@@ -218,7 +218,10 @@ class OwnerVolumes:
             while (remaining := self._loops(uid)) and time.monotonic() < deadline:
                 time.sleep(0.05)
                 for device in remaining:
-                    self._run("losetup", "--detach", device)
+                    try:
+                        self._run("losetup", "--detach", device)
+                    except subprocess.CalledProcessError:
+                        pass
         self._detached(uid)
 
     def detach(self, uid: int) -> None:
