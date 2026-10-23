@@ -21,6 +21,8 @@ from starlette.responses import JSONResponse
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity"}
+_INBOUND_PROOF = {b"x-slack-signature", b"x-hub-signature-256",
+                  b"x-slack-request-timestamp", b"proxy-authorization"}
 _SHARED_APP = {
     "/app/account/delete",
     "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
@@ -80,13 +82,14 @@ def admit_box(owner: str) -> None:
         raise LookupError("owner admission refused") from None
 
 
-def _headers(headers, *, private=False):
+def _headers(headers, *, private=False, proof_headers=()):
     blocked = set(_HOP)
     for name, value in headers:
         if name.lower() == b"connection":
             blocked.update(piece.strip().lower() for piece in value.split(b","))
     if private:
         blocked.update(_TRUSTED | {b"authorization", b"cookie"})
+        blocked.update(name.lower() for name in proof_headers)
     return [(name, value) for name, value in headers if name.lower() not in blocked]
 
 
@@ -188,7 +191,8 @@ def _public_host() -> bytes:
 
 async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
-    headers = _headers(scope["headers"], private=True)
+    proof_headers = _INBOUND_PROOF if hook_token(scope["path"]) is not None else ()
+    headers = _headers(scope["headers"], private=True, proof_headers=proof_headers)
     # The tunnel rewrites Host before the router sees it. The box checks a JSON
     # request's Origin against its Host, so it must see the public host the
     # user addressed; a cross-site Origin still fails that check.
