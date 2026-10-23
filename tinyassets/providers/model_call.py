@@ -7,6 +7,7 @@ caller the same request, parent, result and receipt contract.
 from __future__ import annotations
 
 import contextvars
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable
@@ -22,6 +23,7 @@ from tinyassets.providers.model_policy import ModelRef
 _last_provider: contextvars.ContextVar[str] = contextvars.ContextVar(
     "last_model_source", default="",
 )
+_LOG = logging.getLogger(__name__)
 _helper_runner: contextvars.ContextVar[BoundModelCall | None] = contextvars.ContextVar(
     "owner_model_helper_runner", default=None,
 )
@@ -208,7 +210,7 @@ def _allocation(context: ModelContext, parent: Parent):
 async def call(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
     with _allocation(context, parent) as context:
-        for attempt, final in _attempts(request, context):
+        for attempt, selected, next_model in _attempts(request, context):
             try:
                 response = await router.call(
                     attempt.role, attempt.prompt, attempt.system, attempt.config,
@@ -217,8 +219,12 @@ async def call(request: ModelCall, parent: Parent) -> ModelResult:
                     _agent_execution_kind=attempt.agent_execution_kind,
                 )
                 break
-            except AllProvidersExhaustedError:
-                if final:
+            except AllProvidersExhaustedError as exc:
+                if (not _has_open_request(context.universe_context)
+                        or not _can_fallback(
+                            router, context.config.request_budget.owner,
+                            selected, next_model, exc,
+                        )):
                     raise
         return _result(response, request, replace(
             parent, usage_id=context.config.request_budget.usage_id,
@@ -228,31 +234,78 @@ async def call(request: ModelCall, parent: Parent) -> ModelResult:
 def call_sync(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
     with _allocation(context, parent) as context:
-        for attempt, final in _attempts(request, context):
+        for attempt, selected, next_model in _attempts(request, context):
             try:
                 response = router.call_sync(
                     attempt.role, attempt.prompt, attempt.system, attempt.config,
                     operation=attempt.operation, universe_context=attempt.universe_context,
                 )
                 break
-            except AllProvidersExhaustedError:
-                if final:
+            except AllProvidersExhaustedError as exc:
+                if (not _has_open_request(context.universe_context)
+                        or not _can_fallback(
+                            router, context.config.request_budget.owner,
+                            selected, next_model, exc,
+                        )):
                     raise
         return _result(response, request, replace(
             parent, usage_id=context.config.request_budget.usage_id,
         ))
 
 
+def _has_open_request(universe: UniverseContext) -> bool:
+    return (universe.provider_request is not None
+            and universe.provider_invocation is None
+            and universe.served_provider is None)
+
+
 def _attempts(request: ModelCall, context: ModelContext):
-    """Declared choices share one allocation; each gets fresh router authority."""
-    choices = (request.model, *request.fallbacks)
+    """Only a request carrier can authorize a fresh choice on each attempt."""
+    universe = context.universe_context
+    choices = ((request.model, *request.fallbacks)
+               if _has_open_request(universe) else (request.model,))
     for index, model in enumerate(choices):
         attempt = replace(context, universe_context=replace(
-            context.universe_context,
-            model_selection=model or context.universe_context.model_selection,
+            universe, model_selection=model or universe.model_selection,
         ))
-        # The final attempt is marked explicitly for the exhaustion handler.
-        yield attempt, index == len(choices) - 1
+        yield attempt, attempt.universe_context.model_selection, (
+            choices[index + 1] if index + 1 < len(choices) else None
+        )
+
+
+def _can_fallback(router: Any, owner: str, selected: ModelRef | None,
+                  next_model: ModelRef | None,
+                  exc: AllProvidersExhaustedError) -> bool:
+    """Use the chat/work evidence boundary before moving to another source."""
+    from tinyassets.providers.agent_capacity_boundary import (
+        capacity_boundary,
+        refusal_boundary,
+        uniform_pre_generation_failure,
+    )
+    from tinyassets.providers.model_capacity import free_sibling_retry
+
+    attempts = exc.attempts
+    if (selected is None or not attempts
+            or any(getattr(item, "side_effect_state", None) != "none" for item in attempts)):
+        return False
+    if refusal_boundary(selected, attempts) is not None:
+        return next_model is not None
+    if uniform_pre_generation_failure(attempts, "auth_invalid"):
+        return next_model is not None
+    kind = router.selected_agent_execution_kind(selected)
+    boundary = capacity_boundary(selected, attempts, execution_kind=kind)
+    if boundary is None:
+        return False
+    if ((next_model is None or selected.connection_id != next_model.connection_id)
+            and free_sibling_retry(scope=boundary.observed_scope,
+                                   failure_class=boundary.failure_class)):
+        try:
+            router.cool_source(selected.connection_id, owner=owner,
+                               retry_after_s=boundary.retry_after_s,
+                               reason=boundary.failure_class or "")
+        except Exception:  # noqa: BLE001 - cooling must not replace the call result
+            _LOG.warning("could not cool an abandoned model source")
+    return next_model is not None
 
 
 def _policy_models(policy: dict[str, Any] | None) -> tuple[ModelRef | None, tuple[ModelRef, ...]]:

@@ -55,8 +55,17 @@ def test_c3_owner_helpers_are_not_platform_calls(tmp_path):
     assert check_shapes.old_count(shape, tmp_path) == 1
     for bypass in ("from tinyassets.providers.router import ProviderRouter",
                    "router.call_sync(prompt)", "provider.complete(prompt)",
-                   "call_provider(prompt)"):
+                   "call_provider(prompt)",
+                   "from tinyassets.providers import call as bridge; "
+                   "bridge.get_provider_router().call(prompt)"):
         assert any(re.search(pattern, bypass) for pattern in shape.forbid)
+
+
+def test_s13_ceiling_counts_async_router_bridge(tmp_path):
+    path = tmp_path / "tinyassets" / "shared.py"
+    path.parent.mkdir()
+    path.write_text("await bridge.get_provider_router().call('writer')\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S13"], tmp_path) == 1
 
 
 def test_c3_sampling_and_mock_fallbacks_cannot_return(tmp_path):
