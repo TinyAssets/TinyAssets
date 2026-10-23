@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
 from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.execution_receipt import (
     ExecutionReceipt,
@@ -132,7 +132,7 @@ def _result(response: ProviderResponse, request: ModelCall, parent: Parent) -> M
         receipt = replace(receipt, requested_model=request.model.model_id)
     if parent.usage_id is not None:
         receipt = replace(receipt, parent_usage_id=parent.usage_id)
-    return ModelResult(response=response, receipt=receipt)
+    return ModelResult(response=replace(response, execution_receipt=receipt), receipt=receipt)
 
 
 @contextmanager
@@ -208,23 +208,51 @@ def _allocation(context: ModelContext, parent: Parent):
 async def call(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
     with _allocation(context, parent) as context:
-        response = await router.call(
-            context.role, context.prompt, context.system, context.config,
-            operation=context.operation, universe_context=context.universe_context,
-            _agent_observer=context.agent_observer,
-            _agent_execution_kind=context.agent_execution_kind,
-        )
-    return _result(response, request, parent)
+        for attempt, final in _attempts(request, context):
+            try:
+                response = await router.call(
+                    attempt.role, attempt.prompt, attempt.system, attempt.config,
+                    operation=attempt.operation, universe_context=attempt.universe_context,
+                    _agent_observer=attempt.agent_observer,
+                    _agent_execution_kind=attempt.agent_execution_kind,
+                )
+                break
+            except AllProvidersExhaustedError:
+                if final:
+                    raise
+        return _result(response, request, replace(
+            parent, usage_id=context.config.request_budget.usage_id,
+        ))
 
 
 def call_sync(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
     with _allocation(context, parent) as context:
-        response = router.call_sync(
-            context.role, context.prompt, context.system, context.config,
-            operation=context.operation, universe_context=context.universe_context,
-        )
-    return _result(response, request, parent)
+        for attempt, final in _attempts(request, context):
+            try:
+                response = router.call_sync(
+                    attempt.role, attempt.prompt, attempt.system, attempt.config,
+                    operation=attempt.operation, universe_context=attempt.universe_context,
+                )
+                break
+            except AllProvidersExhaustedError:
+                if final:
+                    raise
+        return _result(response, request, replace(
+            parent, usage_id=context.config.request_budget.usage_id,
+        ))
+
+
+def _attempts(request: ModelCall, context: ModelContext):
+    """Declared choices share one allocation; each gets fresh router authority."""
+    choices = (request.model, *request.fallbacks)
+    for index, model in enumerate(choices):
+        attempt = replace(context, universe_context=replace(
+            context.universe_context,
+            model_selection=model or context.universe_context.model_selection,
+        ))
+        # The final attempt is marked explicitly for the exhaustion handler.
+        yield attempt, index == len(choices) - 1
 
 
 def _policy_models(policy: dict[str, Any] | None) -> tuple[ModelRef | None, tuple[ModelRef, ...]]:
