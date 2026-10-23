@@ -598,10 +598,9 @@ class AgentTurnCoordinator:
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
                     if final_reply and response.agent_reply.tool_requests:
-                        raise ProviderProtocolError(
-                            "The final reply requested tools while tools were disabled; "
-                            "no further tools were run."
-                        )
+                        response = replace(response, agent_reply=replace(
+                            response.agent_reply, stop="completed", tool_requests=(),
+                        ))
                     await self._journal_write("finish_inference",
                             self.owner,
                             uid,

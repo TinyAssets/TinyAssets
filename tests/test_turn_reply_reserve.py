@@ -103,3 +103,27 @@ def test_unsent_failure_never_widens_to_paid_candidate(agent, monkeypatch):
         integration.run(agent)
     assert len(calls) == 1
     assert agent.wires == []
+
+
+def test_final_reply_keeps_text_and_discards_ignored_tool_choice(agent, monkeypatch):
+    from dataclasses import replace
+
+    from tinyassets.providers.agent_chat_codec import ToolRequest
+
+    original = ApiKeyHttpProvider.complete
+
+    async def complete(self, *args, **kwargs):
+        response = await original(self, *args, **kwargs)
+        if response.agent_reply and response.agent_reply.text == "finished exact answer":
+            reply = replace(response.agent_reply, stop="tool_requests", tool_requests=(
+                ToolRequest(call_id="ignored", name="bash", arguments_json='{"command":"exit 1"}'),
+            ))
+            return replace(response, agent_reply=reply)
+        return response
+
+    monkeypatch.setattr(ApiKeyHttpProvider, "complete", complete)
+    agent.requested_rounds = 20
+    assert integration.run(agent) == "finished exact answer"
+    assert len(agent.tools) == FREE_TURN_ATTEMPTS - 1
+    assert agent.latest().state == "completed"
+    assert not agent.latest().rounds[-1].reply.tool_requests
