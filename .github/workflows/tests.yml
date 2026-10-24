@@ -735,7 +735,10 @@ jobs:
     # Queue-only, like the shards above: skipped on the PR, run on the
     # merge-group commit before anything lands.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # ubuntu-latest is 26.04. Playwright 1.58 has no chromium build for it,
+    # so this queue-only install fails before pytest. 24.04 is the image
+    # this pin matched until that rollout.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
