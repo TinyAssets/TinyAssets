@@ -730,6 +730,7 @@ def test_readiness_distinguishes_awake_boxes_from_pending_snapshots(authority):
         await routing.wake("bob")
         assert await routing.readiness() == {"ready": True}
         await routing.sleep("alice")
-        assert await routing.readiness() == {"ready": False}
+        blocked = await routing.readiness()
+        assert blocked["ready"] is False and blocked["pending"].get("snapshot") == 1
 
     asyncio.run(exercise())
