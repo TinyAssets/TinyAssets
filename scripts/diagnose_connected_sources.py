@@ -20,6 +20,7 @@ import sqlite3
 import subprocess
 import sys
 from contextlib import closing, contextmanager
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 READONLY_MOUNT_OPTIONS = "ro,norecovery,nosuid,nodev,loop"
@@ -359,14 +360,24 @@ def classify_subscription(view, principal: str, center: str, row: dict, *,
         return "connection_marker_unreadable"
     raw = view.read_bytes(marker_rel)
     if raw is None:
+        if view.is_file(marker_rel):
+            return "marker_too_large"
         return "require_accepted_missing_marker"
     try:
         marker = json.loads(raw)
-        presented = marker["source"]
-        incarnation = marker["incarnation"]
-    except (json.JSONDecodeError, UnicodeError, KeyError, TypeError):
-        return "require_accepted_unreadable"
-    if not isinstance(presented, str) or not isinstance(incarnation, str) or not incarnation:
+    except (json.JSONDecodeError, UnicodeError):
+        return "marker_not_json"
+    if not isinstance(marker, dict):
+        return "marker_not_object"
+    if "source" not in marker:
+        return "marker_missing_source"
+    presented = marker.get("source")
+    if not isinstance(presented, str):
+        return "marker_source_not_string"
+    if "incarnation" not in marker:
+        return "marker_missing_incarnation"
+    incarnation = marker.get("incarnation")
+    if not isinstance(incarnation, str) or not incarnation:
         return "require_accepted_missing_incarnation"
     current = _digest(source)
     if presented != current and presented not in legacy_digests(source):
@@ -396,23 +407,31 @@ def classify_http(principal: str, grant_id: str, db) -> str | None:
         return "ledger:GrantResolutionError"
     try:
         grant = db.execute(
-            "SELECT connection_id FROM outbound_connection_grants "
-            "WHERE grant_id=? AND owner_user_id=? AND revoked_at IS NULL",
-            (grant_id, principal),
+            "SELECT owner_user_id, revoked_at, connection_id "
+            "FROM outbound_connection_grants WHERE grant_id=?",
+            (grant_id,),
         ).fetchone()
         if grant is None:
-            return "ledger:GrantResolutionError"
+            return "grant_absent"
+        grant_owner, grant_revoked, connection_id = grant
+        if grant_owner != principal:
+            return "grant_owner_mismatch"
+        if grant_revoked is not None:
+            return "grant_revoked"
         row = db.execute(
-            "SELECT 1 FROM outbound_connections WHERE connection_id=? "
-            "AND owner_user_id=? AND revoked_at IS NULL",
-            (grant[0], principal),
+            "SELECT owner_user_id, revoked_at FROM outbound_connections WHERE connection_id=?",
+            (connection_id,),
         ).fetchone()
         if row is None:
-            return "ledger:GrantResolutionError"
+            return "connection_absent"
+        if row[1] is not None:
+            return "connection_revoked"
+        if row[0] != principal:
+            return "connection_owner_mismatch"
         capability = db.execute(
             "SELECT 1 FROM connection_capabilities WHERE connection_id=? "
             "AND capability_kind IN ('model_use', 'model_discovery')",
-            (grant[0],),
+            (connection_id,),
         ).fetchone()
     except sqlite3.OperationalError:
         return "ledger:OperationalError"
@@ -421,6 +440,40 @@ def classify_http(principal: str, grant_id: str, db) -> str | None:
     if capability is None:
         return "ledger_not_model_source"
     return None
+
+
+_LEDGER_TABLES = (
+    "outbound_connections",
+    "outbound_connection_grants",
+    "connection_capabilities",
+    "box_model_sources",
+)
+
+
+def ledger_totals(db) -> dict:
+    """Row counts only. No ids, owners, or credential text."""
+    found = {}
+    for name in _LEDGER_TABLES:
+        slot = {"exists": False, "rows": 0, "revoked": 0}
+        if db is not None:
+            try:
+                present = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (name,),
+                ).fetchone()
+                if present is not None:
+                    quoted = '"' + name + '"'
+                    slot["exists"] = True
+                    slot["rows"] = db.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+                    columns = {info[1] for info in db.execute(f"PRAGMA table_info({quoted})")}
+                    if "revoked_at" in columns:
+                        slot["revoked"] = db.execute(
+                            f"SELECT COUNT(*) FROM {quoted} WHERE revoked_at IS NOT NULL"
+                        ).fetchone()[0]
+            except sqlite3.Error:
+                slot = {"exists": False, "rows": 0, "revoked": 0}
+        found[name] = slot
+    return found
 
 
 def inspect_owner(view, principal: str, *, cli_root: Path | None, vault_path: Path | None,
@@ -451,7 +504,8 @@ def inspect_owner(view, principal: str, *, cli_root: Path | None, vault_path: Pa
             elif method == "api_key_http":
                 http.append(classify_http(principal, str(row.get("ref", "")), ledger))
     return {"subscription": subscription, "http": http, "owner_errors": owner_errors,
-            "vault_secrets": _vault_secrets(vault)}
+            "vault_secrets": _vault_secrets(vault),
+            "ta_cli": view.is_dir(".ta-cli")}
 
 
 _FIXED_LEAVES = frozenset({"readonly_loop", "unavailable", "runsc", "not_run"})
@@ -513,7 +567,10 @@ def _data_leaves(report: dict) -> list[str]:
 
 def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_image: int,
                  image_without_binding: int, unreadable: int, asleep_inspection: str,
-                 awake_census: str, canary_journal: str) -> dict:
+                 awake_census: str, canary_journal: str, canary_sources: dict | None = None,
+                 ledger_tables: dict | None = None, ta_cli: dict | None = None,
+                 subscription_state: dict | None = None,
+                 broker_dates: dict | None = None) -> dict:
     failures: dict[str, dict[str, int]] = {}
     sub_owners: set[int] = set()
     http_owners: set[int] = set()
@@ -577,7 +634,14 @@ def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_
         },
         "passed_api_key_http": {"owners": len(passed_http_owners), "definitions": passed_http},
         "cli_status": "not_run",
-        "canary_sign_in": {"codes": canary_refusal_codes(canary_journal)},
+        "canary_sign_in": {
+            "codes": canary_refusal_codes(canary_journal),
+            "sources": canary_sources or {},
+        },
+        "ledger_tables": ledger_tables if ledger_tables is not None else ledger_totals(None),
+        "ta_cli": ta_cli or {"present": 0, "absent": 0},
+        "subscription_state": subscription_state or {"present": 0, "absent": 0},
+        "broker_dates": broker_dates or {"outbound.db": None, "credential-custody.db": None},
     }
 
 
@@ -699,15 +763,92 @@ def _readonly_image(image: Path, dest: Path):
         dest.rmdir()
 
 
-def _journal() -> str:
-    completed = subprocess.run(
-        ["journalctl", "-u", "tinyassets-daemon", "--since", "6 hours ago",
-         "--no-pager", "--output=cat", "-g", "canary_sign_in refused code="],
-        capture_output=True, timeout=20,
-    )
-    if completed.returncode != 0:
+_CANARY_NEEDLE = "canary_sign_in refused code="
+_CANARY_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+_CAPTURE_LIMIT = 262144
+
+
+def _capture(argv: list[str], run, *, stderr: bool = False, timeout: int = 20) -> str:
+    try:
+        completed = run(argv, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
         return ""
-    return completed.stdout.decode("utf-8", "replace")[:262144]
+    raw = getattr(completed, "stdout", b"") or b""
+    if stderr:
+        err = getattr(completed, "stderr", b"") or b""
+        if raw and err and not raw.endswith(b"\n"):
+            raw += b"\n"
+        raw += err
+    return raw.decode("utf-8", "replace")[:_CAPTURE_LIMIT]
+
+
+def _canary_container(name: str) -> bool:
+    if not _CANARY_NAME.fullmatch(name):
+        return False
+    lowered = name.lower()
+    return lowered == "tinyassets-daemon" or "broker" in lowered or "router" in lowered
+
+
+def _canary_census(run=None) -> tuple[str, dict[str, int]]:
+    """Validated refusal lines only. Source values are lines scanned, never text."""
+    run = run or subprocess.run
+    seen: set[str] = set()
+    kept: list[str] = []
+    sources: dict[str, int] = {}
+
+    def absorb(name: str, text: str) -> None:
+        lines = text.splitlines()
+        sources[name] = len(lines)
+        for line in lines:
+            if _CANARY_NEEDLE not in line or line in seen or _403.search(line) is None:
+                continue
+            seen.add(line)
+            kept.append(line)
+
+    absorb("journalctl_unit", _capture([
+        "journalctl", "-u", "tinyassets-daemon", "--since", "6 hours ago",
+        "--no-pager", "--output=cat", "-g", _CANARY_NEEDLE,
+    ], run))
+    absorb("journalctl", _capture([
+        "journalctl", "--since", "12 hours ago",
+        "--no-pager", "--output=cat", "-g", _CANARY_NEEDLE,
+    ], run))
+    names = _capture(["docker", "ps", "--format", "{{.Names}}"], run).splitlines()
+    containers = ["tinyassets-daemon"]
+    for raw_name in names:
+        name = raw_name.strip()
+        if name not in containers and _canary_container(name):
+            containers.append(name)
+    for name in containers:
+        absorb("docker:" + name, _capture(
+            ["docker", "logs", "--since", "12h", name], run, stderr=True))
+    return "\n".join(kept), sources
+
+
+def _mtime_date(path: Path) -> str | None:
+    if path.is_symlink():
+        return None
+    if path.is_file():
+        stamp = path.stat().st_mtime
+    elif path.is_dir():
+        stamps = [
+            child.stat().st_mtime for child in path.iterdir()
+            if not child.is_symlink() and child.is_file()
+        ]
+        if not stamps:
+            return None
+        stamp = max(stamps)
+    else:
+        return None
+    return datetime.fromtimestamp(stamp, timezone.utc).date().isoformat()
+
+
+def _broker_dates(data: Path) -> dict[str, str | None]:
+    broker = data / ".broker"
+    return {
+        "outbound.db": _mtime_date(broker / "outbound.db"),
+        "credential-custody.db": _mtime_date(broker / "credential-custody.db"),
+    }
 
 
 def _image(uid: int) -> Path:
@@ -739,6 +880,8 @@ def collect() -> tuple[dict, set[str]]:
     private: set[str] = set()
     results = []
     missing = unreadable = 0
+    ta_present = ta_absent = 0
+    state_present = state_absent = 0
     pid = _boxhostd_pid()
     images = {
         int(path.name.removesuffix(".img"))
@@ -757,6 +900,10 @@ def collect() -> tuple[dict, set[str]]:
             private.add(account)
             vault_path = (data / ".broker" / "accounts" / account
                           / "credentials" / ".subscription-state.json")
+            if vault_path.is_file() and not vault_path.is_symlink():
+                state_present += 1
+            else:
+                state_absent += 1
             image = _image(uid)
             try:
                 if uid in awake:
@@ -792,16 +939,26 @@ def collect() -> tuple[dict, set[str]]:
                 results.append(_unreadable())
                 continue
             private |= inspected.pop("vault_secrets")
+            if inspected.pop("ta_cli", False):
+                ta_present += 1
+            else:
+                ta_absent += 1
             results.append(inspected)
+        tables = ledger_totals(ledger)
     finally:
         if ledger is not None:
             ledger.close()
     asleep = len(bound - awake) - missing
+    canary_journal, canary_sources = _canary_census()
     report = build_report(
         results, awake=len(awake & bound), asleep=asleep,
         missing_image=missing, image_without_binding=len(images - bound),
         unreadable=unreadable, asleep_inspection=asleep_inspection,
-        awake_census=census, canary_journal=_journal(),
+        awake_census=census, canary_journal=canary_journal,
+        canary_sources=canary_sources, ledger_tables=tables,
+        ta_cli={"present": ta_present, "absent": ta_absent},
+        subscription_state={"present": state_present, "absent": state_absent},
+        broker_dates=_broker_dates(data),
     )
     return report, private
 
