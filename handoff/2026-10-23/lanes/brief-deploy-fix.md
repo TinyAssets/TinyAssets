@@ -1,0 +1,22 @@
+LANE: make the production deploy safe for the owner-box bundle (floor). Worktree: create
+C:\Users\Jonathan\Projects\wf-deploy-fix on a new branch fix/deploy-box-bundle from origin/main (you may create this one
+worktree). Incident 2026-10-23 03:30-04:15 UTC (deploy run 39895153391 of eb582d82d08):
+1. The public MCP canary got 503: the box host refused wakes with "boxhostd connection limit exceeded". The broker's
+   lifecycle slots (boxes/host_service.py _broker_slots = volume_concurrency + 1) were all held by post-drain work:
+   after image-at-wake drain every owner sleeps with a snapshot, and the next wake first reconciles that (rclone
+   copyto/cat to Spaces), holding a slot for minutes. Excess lifecycle calls were refused instead of queued.
+   Fix in the shape (T1/T7: the waker and router are thin; lifecycle stays in the box host): lifecycle calls from the
+   broker wait (bounded) for a slot instead of being refused, scheduled wakes yield to request-driven wakes, and the
+   deploy's canary waits for post-drain lifecycle work to finish (a bounded wait on a box host readiness signal) before
+   judging, rather than failing on the first 503.
+2. The rollback ("Roll back if the public canary is red" -> deploy_fail_safe.sh --restore-bundle) restored the
+   containers and compose but NOT the box host: /opt/tinyassets/boxhostd/{tinyassets,deploy,scripts} and the
+   harness-current symlink stayed on the new release, leaving a mixed bundle where the old broker could not reach the
+   new box host's credential socket and no box could wake. The host-service bundle and harness-current must be part
+   of the same snapshot/restore transaction as compose (deploy/DEPLOY.md "Nothing reports success over a mixed tree"),
+   restored in the order box host -> broker -> daemon.
+3. The deploy rewrote /etc/tinyassets/broker.env without TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED, so the broker
+   could not fetch model catalogues. Make the env installer carry every flag the broker needs from the source env, with
+   a test that the rendered broker.env contains it.
+Tests that reproduce each failure first (a fake box host with a held slot; a restore that must revert the host bundle;
+the env render). Update deploy/DEPLOY.md only where behavior changed. Open a draft PR to main. Do not deploy.

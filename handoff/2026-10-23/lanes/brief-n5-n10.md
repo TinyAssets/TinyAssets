@@ -1,0 +1,11 @@
+LANE: build N10 (owner-only policy layer) and N5 (owner network gate) on it. Worktree
+C:\Users\Jonathan\Projects\wf-n5-n10, branch feat/n5-n10-owner-egress-policy (main eb582d82d08 plus the approved N5/N6
+spec branch spec/n5-n6-egress-undo, PR #5229). Registry rows N10 ("one broker-private account policy; protected
+owner-session writes; read-only agent projection; every broker decision receipted"; remaining: "P5 box-boundary gate
+and P6 legacy source retirement") and N5 in docs/architecture.md. Implement the N5 spec in
+openspec/changes/owner-network-egress-policy/ exactly (founder decisions 2026-10-23: open by default; allowlist and
+ask; owner-connected destinations satisfy them only when committed or widened through the protected N10 owner session;
+approving an ask writes a standing entry through the one policy writer). Finish N10's P5/P6 where N5 needs them; one
+writer of policy (the owner session), the agent reads a projection only. The one egress check stays the one check
+(broker/egress.py). The guard test named in the spec (box-committed binding does not satisfy allowlist/ask) must exist.
+Open a draft PR. Merging waits for the C6 close-out; that is fine.

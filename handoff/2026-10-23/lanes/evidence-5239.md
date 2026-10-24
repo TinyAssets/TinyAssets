@@ -1,0 +1,4 @@
+Approval of the N4 (live takeover view) and N8 (optional PC link) specs, spec only.
+- Cross-family review: DISAGREE_EVIDENCE (HIGH: nothing kept the in-box agent out of the view; HIGH: a second live view beside browser-login-custody's; N8 pairing custody, companion-local-mcp overlap, tray host fate, missing guard tasks).
+- Fix bdfb14ed6b0, checked by the lead: one view (extends browser-login-custody's protected live owner view as BoxProvider.view); browser and view server run under a separate OS user and process/mount namespace, with capture, input and debug channels unreachable from agent bash, tools, filesystem, /proc and network, and a scenario/test proving refusal; N8 pairing credential in broker custody, owner-bound relay, revocation; companion-local-mcp folded into N8; legacy tray host deleted at implementation; guard and registry tasks added.
+- Validation: strict OpenSpec, 21 targeted Linux oracle tests, ruff, shape registry check.

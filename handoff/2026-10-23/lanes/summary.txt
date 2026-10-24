@@ -1,0 +1,431 @@
+===== 5222 Delete process rules and the supervisor hooks | base main | head chore/delete-process-rules 
+Lane: AGENTS.md .claude/settings.json .claude/hooks/supervisor_check.py .claude/hooks/supervisor_record.py
+
+Founder direction: delete the over-instruction that makes agents work slowly. AGENTS.md keeps Direction (founder-owned) and Facts; Live state and The loop are deleted. The two supervisor hooks are deleted. They inject redirect messages, and supervisor_record fails on every Bash call outside the primary checkout.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+https://claude.ai/code/session_01Et5W6kuxbf1bBCvYpiYR3z
+
+FILES(4): .claude/hooks/supervisor_check.py(+0/-108) .claude/hooks/supervisor_record.py(+0/-128) .claude/settings.json(+0/-20) AGENTS.md(+0/-34)
+===== 5221 [floor] Model connect: any provider address discovers its model API and OAuth | base conv/c6-forward-deploy | head feat/model-connect-by-discovery | draft
+Lane: X — tinyassets/connection_oauth/model_discovery.py, tinyassets/providers/model_discovery_addresses.json, tinyassets/broker/{model_connect,http_connect,server}.py, tinyassets/onboarding/{model_connect,source_connect,__init__}.py, tinyassets/onboarding/app/main.js (delimited `Lane X` block + one hook), tests/test_model_source_discovery{,_page}.py, openspec/changes/model-connect-by-discovery/
+
+Generic discovery is the main way to connect a model source: give an address, and the server finds its model API and its OAuth.
+
+**Roles (hotfix planning)**
+- router: `onboarding/model_connect.py` (`discover` ingress), `onboarding/__init__.py` (pre-filled addresses in app config), `connection_oauth/model_discovery.py` (`source()` recognition)
+- broker: `broker/model_connect.py` (`model_discover`), `broker/http_connect.py`, `broker/server.py` (box role refused), `connection_oauth/model_discovery.py`
+- box: `onboarding/source_connect.py` (composes a discovered grant into the existing HTTP model source)
+- page: `onboarding/app/main.js` (delimited block, prepended as the top entry in `#connect-panel`; lane U2 / #5219 rows are untouched)
+
+**Floor files:** broker/model_connect.py, broker/http_connect.py, broker/server.py, onboarding/model_connect.py, onboarding/source_connect.py (authority + money: billing is `flat`, never claimed free), connection_oauth/model_discovery.py.
+
+**Already existe
+FILES(19): openspec/changes/model-connect-by-discovery/.openspec.yaml(+2/-0) openspec/changes/model-connect-by-discovery/design.md(+26/-0) openspec/changes/model-connect-by-discovery/proposal.md(+22/-0) openspec/changes/model-connect-by-discovery/specs/model-source-discovery/spec.md(+26/-0) openspec/changes/model-connect-by-discovery/tasks.md(+9/-0) scripts/blind_provider_test.py(+162/-0) tests/test_model_source_detector.py(+148/-0) tests/test_model_source_discovery.py(+198/-0) tests/test_model_source_discovery_page.py(+56/-0) tinyassets/broker/http_connect.py(+3/-2) tinyassets/broker/model_connect.py(+22/-0) tinyassets/broker/server.py(+2/-1) tinyassets/connection_oauth/model_discovery.py(+366/-0) tinyassets/connection_oauth/transport.py(+2/-1) tinyassets/onboarding/__init__.py(+2/-0) tinyassets/onboarding/app/main.js(+84/-0) tinyassets/onboarding/model_connect.py(+24/-5) tinyassets/onboarding/source_connect.py(+17/-6) tinyassets/providers/model_discovery_addresses.json(+3/-0)
+===== 5220 Restore owner-box subscription sources through generic native login | base conv/c6-forward-deploy | head feat/box-subscription-sources | draft
+C6 removed subscription sources, leaving subscription-only owners at setup_required. Restore subscription_cli through one generic owner-box runtime and editable source definitions. Native CLIs install on demand into the owner volume with pinned npm integrity/lockfiles or complete hash-pinned pip requirements; credentials stay in the owner volume.
+
+The connect dialog generates Claude, ChatGPT, Gemini and Kimi buttons from data. It hands off the CLI's own authorization URL/device code, supports returned authorization codes and terminal-only native login, then publishes the source and enables normal owner model selection. Model calls use the existing supervised box execution path and the engine's tool-message contract, with native CLI tools disabled by definition data.
+
+First slice was pushed and reported separately at fa9def948be34f0e9e76dc776d3c5ffc744260b1 (17 Linux tests passing). This follow-up completes application routing, source definitions and controls.
+
+Validation: 91 focused linux_oracle tests passed (including Chromium desktop/native-browser handoff, fake npm install, native approval, engine tool message, 150 KB stdin prompt, authorized router reply, durable allocation, restart persistence, second-owner isolation, PTY completion, pip hash enforcement and exact registry host denial). The final model-picker follow-up passed all 8 integration tests. Four opt-in real
+FILES(47): .github/workflows/linux-jail-proof.yml(+2/-0) .github/workflows/real-browser-proof.yml(+2/-0) openspec/changes/box-subscription-sources/.openspec.yaml(+2/-0) openspec/changes/box-subscription-sources/design.md(+92/-0) openspec/changes/box-subscription-sources/proposal.md(+16/-0) openspec/changes/box-subscription-sources/specs/box-subscription-sources/spec.md(+40/-0) openspec/changes/box-subscription-sources/tasks.md(+7/-0) openspec/specs/box-subscription-sources/spec.md(+45/-0) tests/manual_subscription_packages.py(+61/-0) tests/test_onboarding_app.py(+2/-1) tests/test_owner_volumes_proof.py(+2/-1) tests/test_subscription_box_runtime.py(+261/-0) tests/test_subscription_source_browser.py(+73/-0) tests/test_subscription_source_integration.py(+292/-0) tinyassets/agent_loop/owner_tools.py(+3/-2) tinyassets/api/connection_uses.py(+4/-4) tinyassets/api/model_options.py(+13/-7) tinyassets/api/pending_requests.py(+7/-0) tinyassets/boxes/boxd.py(+5/-2) tinyassets/broker/owner_sources.py(+6/-6) tinyassets/onboarding/__init__.py(+2/-0) tinyassets/onboarding/app/main.js(+95/-2) tinyassets/onboarding/serving.py(+4/-4) tinyassets/onboarding/subscription_connect.py(+68/-0) tinyassets/owner_process.py(+62/-11) tinyassets/owner_public_egress.py(+42/-4) tinyassets/owner_router.py(+7/-3) tinyassets/owner_runtime.py(+7/-0) tinyassets/provider_assignment.py(+8/-6) tinyassets/provider_serving_binding.py(+11/-6) tinyassets/providers/definition.py(+7/-4) tinyassets/providers/discovery_snapshot.py(+22/-0) tinyassets/providers/model_policy.py(+2/-2) tinyassets/providers/model_selection.py(+8/-6) tinyassets/providers/provider_resolver.py(+8/-2) tinyassets/providers/router.py(+2/-2) tinyassets/providers/served_model_plan.py(+19/-6) tinyassets/providers/subscription_catalog.py(+58/-0) tinyassets/providers/subscription_provider.py(+83/-0) tinyassets/providers/subscription_runtime.py(+480/-0) tinyassets/providers/subscription_source.py(+141/-0) tinyassets/providers/subscription_sources/claude-code.json(+89/-0) tinyassets/providers/subscription_sources/codex.json(+107/-0) tinyassets/providers/subscription_sources/gemini.json(+82/-0) tinyassets/providers/subscription_sources/kimi.json(+82/-0) tinyassets/providers/work_candidate_data.py(+1/-1) tinyassets/storage/provider_work_authority.py(+1/-1)
+===== 5219 Keep hosted OAuth one tap and every AI alternative visible | base main | head fix/connect-any-source 
+Lane: U, round 2.
+
+The connection dialog keeps OAuth as the first, one-tap path. Every installed hosted source gets a visible Continue button; API-key sources and Connect any OpenAI-compatible endpoint remain visible below. The needs-connection chat card always offers Connect. No provider is preselected.
+
+Choosing any source silently abandons stale client setup, including when cancellation fails or never answers. A valid hosted return completes through the existing model-access answer path and closes the dialog without another tap. The server change only replaces the single primary preset with the full installed hosted-source list. The page also accepts the old primary-only payload during rollout, preventing the missing-OpenRouter regression from the reverted hotfix.
+
+Desktop defaults to a centered readable app column and dialog; phone retains the full-width app and bottom sheet.
+
+Validation:
+- 45 focused payload/controller, hosted-persistence, universe-path and affected heavy instruction-surface tests passed in the Linux oracle.
+- Five real Chromium cases passed against locally served app.html and main.js: 390, 1366, 1920 and 2400 widths, plus the legacy payload. All external requests were intercepted.
+- Browser checks cover visible source choices, endpoint/key forms, stale cancellation, direct authorize navigation, callback completion without another tap, viewport 
+FILES(63): deploy/boxhostd.service(+3/-1) deploy/deploy_fail_safe.sh(+4/-7) deploy/install-boxhostd-preflight.sh(+10/-0) deploy/install-tinyassets-env.sh(+34/-2) docs/host-actions.md(+1/-0) openspec/changes/neutral-model-connect/.openspec.yaml(+2/-0) openspec/changes/neutral-model-connect/design.md(+10/-0) openspec/changes/neutral-model-connect/proposal.md(+15/-0) openspec/changes/neutral-model-connect/specs/first-run-model-connect/spec.md(+28/-0) openspec/changes/neutral-model-connect/tasks.md(+11/-0) openspec/changes/owner-daemon-in-box/design.md(+24/-3) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+18/-0) openspec/specs/first-run-model-connect/spec.md(+22/-3) openspec/specs/owner-box/spec.md(+19/-0) openspec/specs/owner-isolation/spec.md(+2/-0) tests/control_plane_timer_inventory.py(+4/-0) tests/support/owner_router_process.py(+10/-0) tests/test_box_restore_authority.py(+11/-0) tests/test_boxhostd_restart.py(+193/-0) tests/test_broker_lifecycle_authority.py(+35/-0) tests/test_canary_sign_in.py(+62/-2) tests/test_center_admissions.py(+2/-0) tests/test_deleted_authentication.py(+8/-8) tests/test_deploy_bundle_transaction.py(+6/-9) tests/test_deploy_fix_forward.py(+22/-1) tests/test_flow_store_layout.py(+50/-0) tests/test_neutral_model_connect.py(+214/-0) tests/test_neutral_model_connect_browser.py(+128/-0) tests/test_owner_box_lifecycle.py(+66/-0) tests/test_owner_box_public_url.py(+79/-0) tests/test_owner_first_admission.py(+146/-0) tests/test_owner_router.py(+44/-2) tests/test_owner_session_key.py(+82/-0) tests/test_owner_volume_lifecycle.py(+6/-2) tests/test_platform_secret_scope.py(+69/-1) tests/test_router_store_guard.py(+9/-1) tests/test_universe_path_io_guard.py(+0/-1) tests/test_workos_provider.py(+67/-20) tinyassets/api/pending_requests.py(+8/-38) tinyassets/auth/workos_provider.py(+20/-11) tinyassets/boxes/bootstrap.py(+56/-3) tinyassets/boxes/gvisor_runtime.py(+10/-0) tinyassets/boxes/owner_daemons.py(+4/-1) tinyassets/boxes/session_key.py(+54/-0) tinyassets/boxes/volumes.py(+4/-4) tinyassets/broker/owner_identities.py(+14/-3) tinyassets/broker/process.py(+7/-10) tinyassets/broker/server.py(+6/-0) tinyassets/broker/volume_lifecycle.py(+8/-4) tinyassets/connection_oauth/pkce.py(+17/-0) tinyassets/onboarding/__init__.py(+14/-2) tinyassets/onboarding/app.html(+22/-21) tinyassets/onboarding/app/main.js(+150/-116) tinyassets/onboarding/canary_sign_in.py(+16/-3) tinyassets/onboarding/model_connect.py(+7/-1) tinyassets/onboarding/session_store.py(+22/-1) tinyassets/owner_router.py(+40/-3) tinyassets/owner_stores.py(+1/-0) tinyassets/providers/free_sources.py(+17/-0) tinyassets/restore_recovery.py(+14/-0)
+===== 5217 [floor] Make reversible hotfixes the default fix delivery path | base main | head feat/hotfix-tool 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: 4dc9fc75326be04a3fe931a46c01daa34d29f08a
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5217#issuecomment-6336117902
+
+Lane: scripts/hotfix.py tests/test_hotfix.py deploy/deploy_fail_safe.sh .github/workflows/deploy-prod.yml AGENTS.md openspec/specs/development-coordination-runtime/spec.md
+
+Fixes currently wait for the full image pipeline. Add `scripts/hotfix.py apply --branch <pushed-branch> [--files auto]` to test the exact pushed tree, install eligible runtime files, preserve originals, and automatically revert on failed health or smoke. List, revert, apply and deployment share durable records and the host mutation lock.
+
+Round-two corrections address all four blocking findings:
+
+- **Existing host records:** one validated reader supports `id`, `commit`, `result`, `containers`, `files` as a path-to-applied-SHA256 map, `applied_at`, and `active`. Both `hf-5206-first-admission` and `hf-5216-desktop-open` are accepted, including their `.orig/` backups. Malformed records refuse with the record path and repair instructions. Before deployment, verified applied bytes are retained for rollback even when legacy records have no `after/` directory. The shell guard and rollback call this same helper rather than maintaining separate parsers.
+- **Squash merges:** apply records the PR number. Under the host lock, deploy r
+FILES(6): .github/workflows/deploy-prod.yml(+23/-2) AGENTS.md(+3/-7) deploy/deploy_fail_safe.sh(+22/-0) openspec/specs/development-coordination-runtime/spec.md(+30/-0) scripts/hotfix.py(+921/-0) tests/test_hotfix.py(+694/-0)
+===== 5216 App: older desktop shells open sign-in and model connect in the system browser | base main | head fix/desktop-open-fallback 
+Lane: tinyassets/onboarding/app/main.js
+
+Desktop 0.1.0 has no `tinyassetsDesktop` bridge, so sign-in and model connect stopped at "Update the desktop app to open the system browser." That shell's `setWindowOpenHandler` already sends every `window.open` to the system browser (desktop-app/src/main.js at 0.1.0), so the page uses it as the fallback. Shipped first as a live hotfix; this PR is the full path.
+
+Tests: test_onboarding_app, test_app_owner_sign_in and test_account_deletion: 23 passed on the Linux oracle.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+https://claude.ai/code/session_01Et5W6kuxbf1bBCvYpiYR3z
+
+FILES(1): tinyassets/onboarding/app/main.js(+2/-1)
+===== 5215 Require hosted OAuth sign-in proof after production deploys | base main | head feat/live-signin-probe | draft
+Lane: .github/workflows/deploy-prod.yml docs/host-actions.md scripts/live_signin_probe.py tests/test_live_signin_probe.py tests/test_live_signin_probe_browser.py
+
+Lane P. Draft to prevent this repository's auto-enrollment from merging and deploying the change under the no-production constraint.
+
+The existing core canary authenticates through the password grant and a dedicated router door, so it can stay green while AuthKit OAuth bearers are refused for real users. This adds a required post-deploy probe immediately after the public MCP canary: hosted AuthKit password form -> authorization code with S256 PKCE -> query-bearing /app callback -> POST /app/token -> bearer-only /app/me with the pinned canary principal_id.
+
+The probe reads the deployed app's public client/issuer/resource/scopes, uses a fresh browser context, checks OAuth state, and sends exactly the code/code_verifier/redirect_uri JSON used by main.js's code exchange. Missing configuration, hosted challenges, HTTP refusals, malformed replies and identity mismatches fail loudly. Diagnostics preserve refusal text while redacting credentials; no traces, screenshots, saved sessions, API keys or password-grant fallback. Cookies are cleared before /app/me so they cannot hide a rejected bearer. The failure joins the existing guarded hold/rollback path and deploy summary, without the core-canary waiver.
+
+Run by hand: install
+FILES(5): .github/workflows/deploy-prod.yml(+18/-2) docs/host-actions.md(+4/-0) scripts/live_signin_probe.py(+351/-0) tests/test_live_signin_probe.py(+421/-0) tests/test_live_signin_probe_browser.py(+109/-0)
+===== 5214 [floor] Sign-in: revocation is a local not-before, never a per-request WorkOS session listing | base main | head fix/signin-local-revocation 
+AuthKit OAuth access tokens are not listed by WorkOS's user-session API. Requiring their sid in that list rejected every sign-in after successful code exchange.
+
+Bearer resolution now checks a durable router-local per-owner not-before time and permanent deletion bit, with no per-request session listing. Account deletion records the fence before local credential cleanup; platform restore advances it offline, retains upstream session revocation, preserves deletion, and restores router ownership before admission. Upstream user deletion continues to end account refresh authority.
+
+New refresh cookies reference the existing sealed local session store. Legacy raw refresh cookies cannot regain authority for a fenced owner through a freshly minted access token. Fresh sign-in and subsequent sealed-cookie refresh work after restore. C3 tests were rewritten in place, including the production regression; no whole test was retired. The C3 design, delta spec, and main spec are synchronized.
+
+Validation:
+- Linux oracle: requested four test files, 95 passed.
+- Linux oracle as root: tests/test_box_restore_authority.py, 64 passed.
+- Ruff and commit hooks passed. SQLite writer-inventory tests: 5 passed; the initially missing router-infrastructure classification is fixed.
+- CI affected selection: 81 files. Shard 2: 433 passed; three root-only cases initially skipped by the CI user venue 
+FILES(14): openspec/changes/owner-daemon-in-box/design.md(+8/-2) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+2/-0) openspec/specs/owner-isolation/spec.md(+2/-0) tests/test_box_restore_authority.py(+11/-0) tests/test_deleted_authentication.py(+8/-8) tests/test_router_store_guard.py(+6/-1) tests/test_workos_provider.py(+67/-20) tinyassets/auth/workos_provider.py(+20/-11) tinyassets/onboarding/__init__.py(+14/-2) tinyassets/owner_stores.py(+1/-0) tinyassets/restore_recovery.py(+14/-0) tinyassets/router_account_deletion.py(+39/-7) tinyassets/router_credentials.py(+2/-0) tinyassets/storage_accounting.py(+1/-0)
+===== 5213 Prompt for app shell updates and prepare signed desktop releases | base main | head feat/app-update-prompts 
+Lane: .github/workflows/desktop-chat-release.yml desktop-app/ docs/host-actions.md mobile/ tests/app_updates/ tests/test_app_updates.py tinyassets/onboarding/
+
+Adds server-declared minimum/latest versions for desktop, Android, and iOS to the served app page. Native shells compare their own version and show a blocking Update required screen or a dismissible Update available banner. The old Electron shell without a browser bridge now gets the same update screen. Android uses the Play market intent with an HTTPS fallback; iOS uses the configured App Store listing.
+
+The Electron shell now exposes its version and includes a Windows NSIS auto-updater. Unsigned CI artifacts keep installation disabled. A manual signed-release workflow verifies signatures and publishes the rolling GitHub release feed; it does not run in this PR.
+
+Verification: 6 Node prompt/version tests; 71 targeted Python tests; ruff; Windows NSIS package build with latest.yml and blockmap; npm ci for both shells.
+
+Founder-only: add DESKTOP_WIN_CSC_LINK and DESKTOP_WIN_CSC_KEY_PASSWORD to the restricted production GitHub Environment, dispatch the signed desktop release on main at 0.1.2 or higher, then raise desktop.latest in app_versions.json. Existing 0.1.0 shells need one manual reinstall from the release page.
+
+FILES(18): .github/workflows/desktop-chat-release.yml(+78/-0) desktop-app/README.md(+9/-3) desktop-app/package-lock.json(+50/-11) desktop-app/package.json(+7/-0) desktop-app/src/main.js(+19/-0) desktop-app/src/preload.js(+1/-0) desktop-app/src/update-channel.json(+1/-0) docs/host-actions.md(+1/-0) mobile/package-lock.json(+10/-0) mobile/package.json(+1/-0) tests/app_updates/app_updates.test.cjs(+96/-0) tests/test_app_updates.py(+22/-0) tinyassets/onboarding/__init__.py(+5/-0) tinyassets/onboarding/app.html(+17/-0) tinyassets/onboarding/app/main.js(+2/-1) tinyassets/onboarding/app_modules.py(+1/-1) tinyassets/onboarding/app_updates.js(+90/-0) tinyassets/onboarding/app_versions.json(+17/-0)
+===== 5212 Fix synthetic cutover archive broker directory custody | base main | head fix/jail-proof-broker-private 
+Lane: J
+
+The synthetic cutover archive inherited root-owned 0755 broker directories from the census fixture. Since #5202 preserves existing shared-directory metadata, that invalid fixture custody reached broker startup and triggered the private-directory check. Unchanged main at f63350670a7614fdfe86d0957ac690c93fe31faf reproduces the exact #5204 failure; the deploy hold/rollback change is not required to trigger it.
+
+Set the rehearsal archive's directories to production's shape: `.broker` and `.broker/accounts` are 1002:1101 mode 2700; `.broker/state` is 1002:1101 mode 0700. Assert those values after successful apply and verify, including crash resume. This changes only the synthetic test; publish behavior and the broker privacy check remain intact.
+
+Validation:
+- Baseline: the workflow's root Docker-engine oracle invocation failed at host startup with `PermissionError: owner identities require a private broker directory`; 1 failed, 0 skipped, 634.31s. Apply, verify, restore, crash resume and cleanup passed.
+- Fixed: the entire touched test file passed under the same oracle, candidate image and checksum-verified production-pinned runtime: 27 passed, 0 skipped, 1071.77s. The required synthetic rehearsal passed, including startup, serving, recovery and cleanup.
+- Ruff, diff checks and commit hooks passed. Lead-reviewed fixture-only change.
+
+Commands (image built from u
+FILES(1): tests/test_box_move_rehearsal.py(+13/-0)
+===== 5211 Recover owner wakes after host failures and restarts | base main | head fix/owner-wake-uptime | draft
+Owner wakes must recover after a failed drain or a boxhostd restart without restarting the broker or router. This keeps the host as the isolation executor and lifecycle intent in the broker.
+
+Lane: deploy/boxhostd.service tinyassets/boxes/bootstrap.py tinyassets/boxes/owner_daemons.py tinyassets/boxes/volumes.py tinyassets/broker/process.py tinyassets/broker/volume_lifecycle.py tests/test_boxhostd_restart.py tests/test_broker_lifecycle_authority.py tests/test_owner_box_lifecycle.py tests/test_owner_volume_lifecycle.py
+
+Root causes and fixes:
+- `status` opens a fresh socket for every request, but the host took the same blocking per-UID flock as snapshot/restore. Those operations can outlast the 65-second socket deadline; abandoned status handlers could remain queued. Status now refuses lock contention immediately so the existing waker retries. The timeout is not increased.
+- A failed sleep closes owner work admission and retains snapshot intent. The old prepare path overwrote that intent with running before launch rejected the draining box. Prepare now finishes the pending stop before replacing its intent. Host status also reports draining, so recovery repairs already-stranded running records without waiting for the idle limit.
+- systemd removed the runtime directory bound into both containers. `RuntimeDirectoryPreserve=yes` retains its inode across restart and stop/start; liste
+FILES(10): deploy/boxhostd.service(+2/-0) tests/test_boxhostd_restart.py(+193/-0) tests/test_broker_lifecycle_authority.py(+35/-0) tests/test_owner_box_lifecycle.py(+66/-0) tests/test_owner_volume_lifecycle.py(+6/-2) tinyassets/boxes/bootstrap.py(+56/-3) tinyassets/boxes/owner_daemons.py(+4/-1) tinyassets/boxes/volumes.py(+4/-4) tinyassets/broker/process.py(+7/-10) tinyassets/broker/volume_lifecycle.py(+8/-4)
+===== 5210 [floor] C6 forward deploy: new sign-ups get a box, durable owner session keys | base main | head conv/c6-forward-deploy 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: 3fb3c31e1cf839dff28560023608abff3af40780
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5210#issuecomment-6334349227
+
+Lane: deploy/boxhostd.service deploy/deploy_fail_safe.sh docs/host-actions.md openspec/changes/owner-daemon-in-box/design.md openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md openspec/specs/owner-box/spec.md openspec/specs/owner-isolation/spec.md tests/support/owner_router_process.py tests/test_box_restore_authority.py tests/test_boxhostd_restart.py tests/test_broker_lifecycle_authority.py tests/test_canary_sign_in.py tests/test_center_admissions.py tests/test_deleted_authentication.py tests/test_deploy_bundle_transaction.py tests/test_deploy_fix_forward.py tests/test_owner_box_lifecycle.py tests/test_owner_first_admission.py tests/test_owner_router.py tests/test_owner_session_key.py tests/test_owner_volume_lifecycle.py tests/test_router_store_guard.py tests/test_workos_provider.py tinyassets/auth/workos_provider.py tinyassets/boxes/bootstrap.py tinyassets/boxes/owner_daemons.py tinyassets/boxes/session_key.py tinyassets/boxes/volumes.py tinyassets/broker/owner_identities.py tinyassets/broker/process.py tinyassets/broker/server.py tinyassets/broker/volume_lifecycle.py tinyassets/onboarding/__init__.py tinyassets/onboarding/app/main.js tinyassets/onboarding/canary_sign_in.py t
+FILES(51): deploy/boxhostd.service(+3/-1) deploy/deploy_fail_safe.sh(+4/-7) deploy/install-boxhostd-preflight.sh(+10/-0) deploy/install-tinyassets-env.sh(+34/-2) docs/host-actions.md(+1/-0) openspec/changes/owner-daemon-in-box/design.md(+24/-3) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+18/-0) openspec/specs/owner-box/spec.md(+19/-0) openspec/specs/owner-isolation/spec.md(+2/-0) tests/control_plane_timer_inventory.py(+4/-0) tests/support/owner_router_process.py(+10/-0) tests/test_box_restore_authority.py(+11/-0) tests/test_boxhostd_restart.py(+193/-0) tests/test_broker_lifecycle_authority.py(+35/-0) tests/test_canary_sign_in.py(+62/-2) tests/test_center_admissions.py(+2/-0) tests/test_deleted_authentication.py(+8/-8) tests/test_deploy_bundle_transaction.py(+6/-9) tests/test_deploy_fix_forward.py(+22/-1) tests/test_flow_store_layout.py(+50/-0) tests/test_owner_box_lifecycle.py(+66/-0) tests/test_owner_box_public_url.py(+79/-0) tests/test_owner_first_admission.py(+146/-0) tests/test_owner_router.py(+44/-2) tests/test_owner_session_key.py(+82/-0) tests/test_owner_volume_lifecycle.py(+6/-2) tests/test_platform_secret_scope.py(+69/-1) tests/test_router_store_guard.py(+9/-1) tests/test_workos_provider.py(+67/-20) tinyassets/auth/workos_provider.py(+20/-11) tinyassets/boxes/bootstrap.py(+56/-3) tinyassets/boxes/gvisor_runtime.py(+10/-0) tinyassets/boxes/owner_daemons.py(+4/-1) tinyassets/boxes/session_key.py(+54/-0) tinyassets/boxes/volumes.py(+4/-4) tinyassets/broker/owner_identities.py(+14/-3) tinyassets/broker/process.py(+7/-10) tinyassets/broker/server.py(+6/-0) tinyassets/broker/volume_lifecycle.py(+8/-4) tinyassets/connection_oauth/pkce.py(+17/-0) tinyassets/onboarding/__init__.py(+14/-2) tinyassets/onboarding/app/main.js(+9/-1) tinyassets/onboarding/canary_sign_in.py(+16/-3) tinyassets/onboarding/model_connect.py(+7/-1) tinyassets/onboarding/session_store.py(+22/-1) tinyassets/owner_router.py(+40/-3) tinyassets/owner_stores.py(+1/-0) tinyassets/restore_recovery.py(+14/-0) tinyassets/router_account_deletion.py(+39/-7) tinyassets/router_credentials.py(+2/-0) tinyassets/storage_accounting.py(+1/-0)
+===== 5209 [floor] Gate missing deploy canary only at pending data moves | base main | head fix/deploy-canary-check-at-move | draft
+Lane: deploy/deploy_fail_safe.sh tests/test_deploy_bundle_transaction.py tests/test_deploy_fix_forward.py
+
+A missing core canary currently rejects every owner-box candidate, including ordinary deploys onto the committed layout. Remove that early refusal so the canary provisioning fix can deploy. Missing canaries warn; pending agent-files and box-layout moves retain their apply-time refusal before any stop or snapshot.
+
+Update the pending-move assertions, preserve the fix-forward failure proof using an in-flight turn, and add a consumed owner-box deploy proof that warns and succeeds without moving data. No tests removed or renamed.
+
+Validation at 21d0a1f03065362f78c2f3f1a29654fe6e32573b:
+- Ruff and git diff --check pass.
+- Both touched test files pass under the Linux oracle required runner: 34 bundle-transaction cases and 29 fix-forward cases, no skips in either file. An initial direct unprivileged run failed two root-only transaction cases; both pass in CI's root venue.
+- Exact PR selection: `python scripts/ci_required_tests.py --ci-select pr --base origin/main --out output/lane-l-ci/affected.txt` selects 14 files.
+- `python scripts/linux_oracle.py --required-runner --docker-engine --out output/lane-l-ci --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor --env TINYASSETS_DATA_DIR=/tmp/ta-data --env CI=true --env GITHUB_ACTIONS=true -- --junit /out/junit.xml --exclude-from .github/heavy-t
+FILES(3): deploy/deploy_fail_safe.sh(+4/-7) tests/test_deploy_bundle_transaction.py(+6/-9) tests/test_deploy_fix_forward.py(+22/-1)
+===== 5208 [floor] Persist a separate seal key in each owner box volume | base main | head fix/box-session-seal-key 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: 8909aa604a7c6dcac70fdb9830a463dd04d65c1d
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5208#issuecomment-6333590127
+
+Lane: tinyassets/boxes/session_key.py tinyassets/onboarding/session_store.py tests/test_owner_session_key.py tests/support/owner_router_process.py openspec/specs/owner-box/spec.md
+
+Work lane: K
+
+Owner boxes currently start without a durable session seal key. This change generates a private random 32-byte key once in each owner's volume and loads it on subsequent starts, so sealed owner data remains usable after sleep/wake. Shared authentication stays in the router.
+
+### Trace and choice
+
+- Before C6, `deploy/install-tinyassets-env.sh` rendered `/etc/tinyassets/env` into `daemon.env`, excluding `DAEMON_FORBIDDEN_ENV` and retired names. `TINYASSETS_SESSION_SEAL_KEY` is not excluded. `deploy/compose.yml` loads that file into the shared daemon. `session_store` consumes and removes the variable at import.
+- `deploy/boxhostd.py` starts the host service from the extracted harness. `OwnerDaemons._launch` passes the owner volume, generation, relay and per-box ingress secret to `GvisorRuntime`. Its OCI environment is explicitly PATH, HOME, volume generation and browser path; it does not inherit daemon.env. `owner_runtime.start` adds only data-dir and app/engine flags and refuses raw platform credential
+FILES(5): openspec/specs/owner-box/spec.md(+19/-0) tests/support/owner_router_process.py(+10/-0) tests/test_owner_session_key.py(+82/-0) tinyassets/boxes/session_key.py(+54/-0) tinyassets/onboarding/session_store.py(+16/-0)
+===== 5206 [floor] C6: the core canary is a real owner on the owner-box layout | base main | head fix/c6-canary-owner-box 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: 85fbbfe56d349ba9103a17d79b05d064ee41af8a
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5206#issuecomment-6333202401
+Test-Removal: wrong -- test_missing_invalid_and_erased_owners_refuse_without_mutation asserted that a never-allocated owner is refused, which is the missing first-admission defect this PR fixes (no new sign-up could get a box). Invalid and erased refusals stay as test_invalid_and_erased_owners_refuse_without_mutation; first admission is covered by tests/test_owner_first_admission.py. The adversarial reviewer approved this change.
+
+
+Lane: tinyassets/owner_router.py, tinyassets/broker/owner_identities.py, tinyassets/broker/server.py, tinyassets/onboarding/canary_sign_in.py, tests/test_owner_first_admission.py, tests/test_canary_sign_in.py, tests/test_owner_router.py, tests/test_center_admissions.py, openspec/changes/owner-daemon-in-box/design.md, docs/host-actions.md
+
+## Causes (cutover attempt 10)
+
+1. **Old daemon, 401 `authentication_required` in about 0.8 ms, no DB calls.** Production ran `6aa7dd1` (branch `hotfix/native-sign-in`), which is built on `5870f0bd` (#5036). That is older than #5160, which added the canary door. So `6aa7dd1` has no `/app/canary-sign-in` route and no auth carve-out for it. The middleware's bearer challenge for `/app/*` refused the request before any handler ran (`6a
+FILES(10): docs/host-actions.md(+1/-0) openspec/changes/owner-daemon-in-box/design.md(+16/-1) tests/test_canary_sign_in.py(+62/-2) tests/test_center_admissions.py(+7/-3) tests/test_owner_first_admission.py(+146/-0) tests/test_owner_router.py(+6/-2) tinyassets/broker/owner_identities.py(+14/-3) tinyassets/broker/server.py(+6/-0) tinyassets/onboarding/canary_sign_in.py(+16/-3) tinyassets/owner_router.py(+25/-3)
+===== 5205 Fix empty affected test shards in oracle CI | base main | head fix/ci-empty-affected-shard 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: b5c4bb9a7cc19c3e8ea83752f01c18b4acc129e3
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5205#issuecomment-6333427564
+
+Lane: scripts/ci_required_tests.py, tests/test_tests_workflow.py, tests/host_uptime_helpers.py, tests/test_backup_owner_box.py
+
+## Change
+- Pass an affected shard with no selected files, or with a positive slow-only deselection proof, including through the oracle venue.
+- Keep unexpected empty reports and unexplained nonzero exits red. Preserve the oracle root-proof receipt checks.
+- Record a green shard receipt only for the proven deselection case.
+
+## Verification
+- `python -m pytest tests/test_tests_workflow.py -q` (45 passed)
+- `python -m ruff check scripts/ci_required_tests.py tests/test_tests_workflow.py`
+- `git diff --check`
+
+
+
+FILES(4): scripts/ci_required_tests.py(+27/-5) tests/host_uptime_helpers.py(+0/-0) tests/test_backup_owner_box.py(+1/-1) tests/test_tests_workflow.py(+105/-0)
+===== 5200 [floor] C6 rehearsal: start the stack through production compose | base main | head conv/rehearsal-prod-compose 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: a90962440f64af2a12a2f15ef1f902635a13ac4f
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5200#issuecomment-6333606948
+
+Registry row(s): S8, S27 (C6 rehearsal)
+Net core lines: 0
+
+The cutover rehearsal now starts daemon and broker through production `deploy/compose.yml`, with the production identities, groups, capabilities, security options, healthcheck and dependencies. The disposable host runs the installed boxhostd entry point with the service interpreter and cgroup limits. Serving assertions use HTTP/MCP and real runsc owner boxes.
+
+Round 2 review dispositions (AGREE):
+
+- Browser keys have their own fresh named volume. Docker populates `/var/lib/ta-broker` from the image, preserving 1002:1002 / 0700. The local synthetic snapshot remote is a separate `/snapshots/owner-snapshots` bind; only that subtree is exposed to the broker, never the raw archive volume. Live assertions check mount separation and key-store custody.
+- `deploy/install-tinyassets-env.sh` renders `daemon.env`, `broker.env`, `boxhostd.env`, and the broker rclone config from synthetic inputs. The named `spaces` local remote uses the same rclone config produced for migration; the broker receives the renderer's `RCLONE_CONFIG`. No hand-written service env files or awake-cap override remain. Since the application image lacks host `sudo`, the rende
+FILES(6): .github/workflows/linux-jail-proof.yml(+57/-2) deploy/compose.yml(+8/-8) scripts/archive_rehearsal.py(+458/-127) scripts/rehearsal_launch.py(+33/-88) scripts/rehearsal_serve.py(+222/-735) tests/test_box_move_rehearsal.py(+150/-15)
+===== 5199 [floor] C6: normal deploys install the router's operational credentials | base main | head fix/c6-operational-credentials 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: bd32a22c009f42013b6573064e5ae1b28aadecaa
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5199#issuecomment-6331350675
+
+Cutover attempt 8 reached compose startup but `/mcp/pulse` returned 401: normal deployment only installed the canary settings into `/etc/tinyassets/env`, while the router reads `.router-credentials.json` exclusively.
+
+The env installer now reconciles the router JSON after `set`, `set-once`, `set-pair`, or `delete` of any of the three canary settings. It discovers the `tinyassets-data` mountpoint, preserves unrelated JSON keys, removes names absent from the env, and atomically replaces the file with mode 0600 and owner 1001:1001. An explicit `sync-operational-credentials` command also supports reconciliation. Credential values use the existing set-pair portable unquoted alphabet; malformed input fails without replacing the JSON. No environment fallback or workflow change is added.
+
+Credential installer audit:
+
+| Name | Reader | Normal installer |
+| --- | --- | --- |
+| `TINYASSETS_WIKI_CANARY_TOKEN` | `wiki_canary_token_matches` via `credential()` | Existing bearer sync step calls `set`; now also writes router JSON |
+| `TINYASSETS_CANARY_DOOR_KEY` | `canary_sign_in.configured` via `credential()` | Existing door sync step calls `set-pair` or `delete`; now also reconciles router JSON |
+| `TINYASS
+FILES(2): deploy/install-tinyassets-env.sh(+170/-7) tests/test_deploy_operational_credentials.py(+223/-0)
+===== 5197 [floor] C6 cutover: automatic rollback and self-healing retry | base main | head conv/llg-rollback 
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: b3d1f8c168138b3ac8b58d8686055b94a12d160f
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5197#issuecomment-6332875415
+
+Test-Removal: retired -- test_live_cutover_rollback_installs_old_layout_and_only_then_restarts exercised the retired store-less rollback_live API; test_manual_rollback_cleans_and_archives replaces it with paired-store restore, old-layout-before-restart, cleanup and archival proof on separate XFS.
+
+A failed owner-box cutover restores the recorded old system automatically and leaves the host ready for another attempt. Consumed rollback residue is finalized before both deploy entry points, and manual rollback runs the same cleanup after old-image acceptance. Cleanup requires the verified old layout and image, no live or registered owner boxes, and only recognized attempt artifacts; it preserves the data volume, backups and backed-up legacy deletion targets.
+
+Successful admission now archives its consumed receipt under the receipt lock. If admission succeeded but archiving was interrupted, both deploy entry points recognize the consumed receipt, stable owner-box layout and open admission, archive only the receipt, and leave live owner images untouched. A later refusal suppresses daemon restart only when this deploy started the in-flight cutover. Missing or closed admission still refuses cleanup. 
+FILES(11): deploy/deploy_fail_safe.sh(+159/-32) openspec/changes/owner-daemon-in-box/design.md(+16/-0) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+40/-0) openspec/specs/owner-isolation/spec.md(+51/-0) scripts/archive_rehearsal.py(+9/-2) tests/support/cutover_rollback_cases.py(+567/-0) tests/test_cutover_rollback_xfs.py(+45/-0) tests/test_cutover_self_heal.py(+318/-0) tests/test_owner_cutover_restore.py(+16/-49) tinyassets/cutover_control.py(+333/-10) tinyassets/storage_accounting.py(+2/-0)
+===== 5195 Peer agents default to Opus for Claude builders and reviewers | base main | head chore/peer-default-opus 
+The founder prefers the current Opus over Fable. `scripts/peer_agent.py` now defaults Claude peers to `opus`, and the peer-agents skill (both mirrors) says so. `WORKFLOW_CLAUDE_MODEL` and `--model` still override it.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+https://claude.ai/code/session_01Et5W6kuxbf1bBCvYpiYR3z
+FILES(3): .agents/skills/peer-agents/SKILL.md(+1/-1) .claude/skills/peer-agents/SKILL.md(+1/-1) scripts/peer_agent.py(+3/-4)
+===== 5194 Live-like deploy gate: every PR deploys through production's driver to a throwaway live host | base main | head conv/live-like-gate | draft
+Draft and non-required. The live-like deploy gate: every change deploys, through the driver production deploys with, to a throwaway production-like host running TinyAssets live on synthetic data.
+
+- `deploy/deploy_host.sh` is the one host-side deploy driver. deploy-prod's steps call its phases with the values they already compute; authority stays with the caller.
+- `.github/workflows/live-like-gate.yml` prepares the runner as a droplet-like host and starts the image production serves, live on synthetic production-shaped data. It then runs the driver phases in production's order with the candidate. It never binds the production environment.
+- `tests/test_deploy_phase_parity.py` checks the gate calls the same phases in the same order, with the same wiring, as deploy-prod.
+
+## Manual inputs (workflow_dispatch only; merge_group and pull_request always run the full path, both cases)
+- `base_revision`: start the host from this revision instead of the one production serves.
+- `candidate_revision`: deploy any revision. The workspace is that revision for the image and every host-side file; only the caller-side driver and the harness are the gate's.
+- `cases`: run `both`, `cutover` or `rollback`.
+- `skip_ahead`: reuse the candidate image an earlier run built and cached for that revision, instead of rebuilding.
+
+## Evidence (base 6aa7dd1, pinned because production `/app` returned 502 duri
+FILES(32): .github/workflows/deploy-prod.yml(+59/-422) .github/workflows/live-like-gate.yml(+612/-0) deploy/deploy_fail_safe.sh(+156/-32) deploy/deploy_host.sh(+700/-0) deploy/live_like/shape-profile.json(+4013/-0) deploy/wait_for_turns.sh(+14/-5) openspec/changes/live-like-deploy-gate/.openspec.yaml(+2/-0) openspec/changes/live-like-deploy-gate/design.md(+74/-0) openspec/changes/live-like-deploy-gate/profile.md(+1/-0) openspec/changes/live-like-deploy-gate/proposal.md(+24/-0) openspec/changes/owner-daemon-in-box/design.md(+16/-0) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+40/-0) openspec/specs/owner-isolation/spec.md(+51/-0) scripts/ci_required_tests.py(+1/-0) scripts/live_like/fixture.py(+381/-0) scripts/live_like/host_prepare.sh(+195/-0) scripts/live_like/make_live.sh(+142/-0) scripts/live_like/refresh_profile.sh(+22/-0) scripts/live_like/s3_remote.sh(+69/-0) scripts/live_like/shape_profile.py(+535/-0) scripts/live_preflight.py(+245/-0) scripts/roll_owner_boxes.py(+12/-4) tests/support/cutover_rollback_cases.py(+565/-0) tests/test_backup_snapshot_retention.py(+3/-0) tests/test_cutover_rollback_xfs.py(+45/-0) tests/test_cutover_self_heal.py(+318/-0) tests/test_deploy_phase_parity.py(+141/-0) tests/test_live_like_profile.py(+92/-0) tests/test_live_like_workload.py(+73/-0) tests/test_owner_box_deploy.py(+6/-2) tests/test_owner_cutover_restore.py(+13/-51) tinyassets/cutover_control.py(+333/-10)
+===== 5178 [floor] C6 cutover: lifecycle, scheduled wakes, migration, dual-path deletion and per-box deploy | base conv/c6-owner-daemon-s3c | head conv/c6-owner-daemon-s4 | draft
+Registry row(s): S8
+Net core lines: see diff (slices 4, 5, 6, 6a and 6b of C6 folded into one cutover PR)
+Test-Removal: retired -- tests of deleted code only: the box-side account_revoke channel op and public account-deletion route (deletion is orchestrated at the shared door), the per-call box backend (frontend, production_files, file/exec workers, executions, gvisor_files, box_tools/start_exec bridge, old guest forwarder), the pre-C6 compatibility paths (consent move on start, PROGRAM.md premise mirror, legacy-byte refusal, first-contact fail-open), and the classified shared-daemon owner forks. Each retired test is listed in openspec/changes/owner-daemon-in-box/main-audit.md, and surviving behaviour is re-covered by the in-box, door and boxhostd tests.
+
+**C6, the cutover PR.** This PR folds slices 4, 5, 6, 6a and 6b of `openspec/changes/owner-daemon-in-box/` into one PR. They ship together in one maintenance deploy, so they now get one CI run and one review. It's stacked on 3c (#5176), which sits on #5175 and #5172; those are already receipted. Slice 5's PR, #5179, is folded into this one.
+
+**The clean shape.** One gVisor box per owner is the isolation. The shared layer keeps six things: identity and router, the owner→box map, billing, the broker (credential and egress proxy), the next-wake index, and the published commons. The agent loop, history, files, owner DB, schedules 
+FILES(100): .github/workflows/build-image.yml(+5/-0) .github/workflows/deploy-prod.yml(+45/-7) .github/workflows/dr-drill.yml(+70/-4) .github/workflows/linux-jail-proof.yml(+100/-15) Dockerfile(+1/-0) deploy/DEPLOY.md(+56/-0) deploy/RESTORE.md(+49/-203) deploy/backup-owner-box.sh(+7/-5) deploy/backup-restore.sh(+124/-49) deploy/backup.sh(+11/-2) deploy/box-store-check.sh(+33/-0) deploy/box-store-device.service(+1/-0) deploy/box-store-quotas.py(+89/-104) deploy/box_daemon_entry.py(+18/-26) deploy/boxhostd.py(+33/-2) deploy/boxhostd.service(+4/-1) deploy/boxhostd_idle.py(+3/-16) deploy/daemon-watchdog.service(+1/-0) deploy/deploy_fail_safe.sh(+107/-42) deploy/install-boxhostd-preflight.sh(+5/-6) deploy/install-host-uptime-services.sh(+11/-28) deploy/tinyassets-backup.service(+1/-0) deploy/tinyassets-disk-watch.service(+4/-3) deploy/tinyassets-prune.service(+1/-0) deploy/tinyassets-ship-logs.service(+1/-0) deploy/tinyassets-watchdog.service(+1/-0) docker/linux-oracle.Dockerfile(+10/-0) docs/concerns/2026-10-18-assigned-queue-refusals-index-drift.md(+16/-0) docs/concerns/2026-10-18-dr-drill-provider-isolation.md(+26/-0) docs/concerns/2026-10-18-shell-watchdog-restarts-on-failed-measurement.md(+17/-0) docs/ops/backup-restore-runbook.md(+25/-65) docs/ops/cloud-daemon-restart.md(+8/-3) docs/ops/dr-drill-runbook.md(+6/-2) docs/ops/owner-split-cutover-runbook.md(+27/-0) domains/fantasy_daemon/phases/reflect.py(+2/-5) domains/fantasy_daemon/phases/worldbuild.py(+7/-12) openspec/changes/archive/2026-10-11-tools-connections-images-regression/design.md(+0/-1) openspec/changes/one-box-per-owner/specs/owner-box/spec.md(+95/-0) openspec/changes/owner-daemon-in-box/design.md(+694/-24) openspec/changes/owner-daemon-in-box/main-audit.md(+2331/-0) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+363/-1) openspec/changes/owner-daemon-in-box/tasks.md(+35/-14) openspec/specs/owner-box/spec.md(+77/-0) openspec/specs/owner-isolation/spec.md(+30/-0) scripts/_canary_common.py(+31/-0) scripts/archive_rehearsal.py(+748/-0) scripts/box_acceptance.py(+0/-219) scripts/box_preflight.py(+2/-2) scripts/boxhostd_install_files.py(+12/-5) scripts/canary_secret_keys.txt(+5/-0) scripts/check_background_authority_inventory.py(+0/-10) scripts/check_shapes.py(+23/-1) scripts/ci_required_tests.py(+32/-2) scripts/daemon_image_retention.py(+1/-1) scripts/disk_watch.py(+5/-5) scripts/host_service_bundle.py(+192/-0) scripts/linux_oracle.py(+46/-8) scripts/load_secrets.ps1(+3/-0) scripts/load_secrets.sh(+3/-0) scripts/mcp_public_canary.py(+26/-10)
+===== 5176 [floor] C6 clean shape, 3c: connections at the door, broker custody, one model path | base conv/c6-owner-daemon-s3 | head conv/c6-owner-daemon-s3c | draft
+Drain-Review-Verdict: APPROVE
+Drain-Review-Diff: cde4d6a35fcb66687deeeee9e150e7d3d268bf62858f731dbaa554e7595af164
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5176#issuecomment-6238443042
+Registry row(s): S8
+Net core lines: -13503 (this slice over slice 3: +2770 / -16273)
+Test-Removal: retired -- the provider-CLI stack (Claude Code/Codex subscription sources, native discovery and launch, CLI credential deposit, OpenAI device flow) is deleted by founder decision, so its tests are deleted with it; tests of box-side secret entry, daemon-side vault writes, the box REFRESH frame, router reads of owner stores and per-center billing assert paths this slice deletes. Every behaviour that survives is re-covered at the door/broker (nine per-auth-type lifecycle tests, secret-free box actions, request_ref completion, broker custody/refresh/revoke, owner-keyed plans). Full per-test inventory with reasons: openspec/changes/owner-daemon-in-box/main-audit.md (3c sections).
+
+C6 built in the clean shape, task 3c of `openspec/changes/owner-daemon-in-box/` (design.md "D3c decisions"), stacked on slice 3 (#5175). Model and service connections move to the shared door and the broker, provider-agnostic, every auth type, and the box never holds a secret.
+
+**3c-1, one model path.** The provider-CLI stack and every provider-specific connection branch are deleted (founder: "Delete i
+FILES(100): .github/channel-specific-baseline.txt(+0/-14) .github/test-durations.json(+0/-176) .github/workflows/build-bundle.yml(+0/-2) .github/workflows/build-image.yml(+0/-2) .github/workflows/linux-jail-proof.yml(+0/-8) Dockerfile(+2/-59) deploy/codex-flock-wrapper.sh(+0/-49) deploy/compose.owner-box.yml(+3/-0) deploy/compose.yml(+3/-0) deploy/install-tinyassets-env.sh(+30/-0) docker/linux-oracle.Dockerfile(+1/-23) docs/architecture.md(+2/-2) docs/concerns/2026-08-28-an-agent-cannot-withdraw-its-own-stale-ask.md(+2/-2) models/README.md(+0/-47) models/subscription.json(+0/-15) openspec/changes/owner-daemon-in-box/design.md(+181/-1) openspec/changes/owner-daemon-in-box/main-audit.md(+565/-0) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+112/-1) openspec/changes/owner-daemon-in-box/tasks.md(+47/-1) packaging/mcpb/README.md(+1/-1) packaging/mcpb/build_bundle.py(+0/-1) scripts/box_preflight.py(+19/-23) scripts/check_background_authority_inventory.py(+1/-2) scripts/check_channel_agnostic.py(+2/-0) scripts/check_model_lists.py(+0/-75) scripts/codex_cli_smoke.py(+0/-280) scripts/deposit_slack_credentials.py(+0/-286) scripts/native_cli_payload.py(+0/-274) scripts/peer_agent.py(+10/-9) scripts/run_slack_agent.py(+1/-3) scripts/slack_live_test.py(+5/-87) scripts/turns_in_flight.py(+2/-2) tests/conftest.py(+0/-17) tests/control_plane_timer_inventory.py(+7/-26) tests/fixtures/external_agents/baseline_inventory.json(+0/-108) tests/fixtures/external_agents/cli_transcripts.json(+0/-29) tests/owner_answer.py(+10/-0) tests/runtime_repo_fixture.py(+2/-2) tests/served_authority_baseline.py(+0/-253) tests/support/broker_double.py(+1/-0) tests/support/connection_door.py(+114/-0) tests/support/http_model.py(+141/-0) tests/support/model_connect.py(+30/-0) tests/support/onboarding.py(+49/-0) tests/support/owned_spawn.py(+0/-92) tests/support/owner_bound.py(+0/-1) tests/test_a_failed_turn_says_what_actually_happened.py(+0/-1) tests/test_account_plan_action.py(+24/-47) tests/test_activity_http_yield.py(+5/-121) tests/test_agent_access_controls.py(+1/-1) tests/test_agent_capacity_boundary.py(+0/-46) tests/test_agent_native_journal.py(+0/-329) tests/test_agent_node.py(+0/-32) tests/test_agent_sessions.py(+5/-66) tests/test_agent_work_journal.py(+9/-18) tests/test_agent_workflow_fences.py(+2/-2) tests/test_api_key_http_provider.py(+0/-10) tests/test_api_status.py(+0/-15) tests/test_app_connect_disclosure.py(+1/-3) tests/test_app_connection_controls.py(+14/-1)
+===== 5175 [floor] C6 clean shape, slice 3: broker-only egress from the owner box | base conv/c6-owner-daemon-s2 | head conv/c6-owner-daemon-s3 | draft
+Drain-Review-Verdict: APPROVE
+Drain-Review-Diff: 8ab990a494f690df6ab85deca598bf3900ce0c177f2c04d71bd75a45d74fa0bf
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5175#issuecomment-6233143934
+Registry row(s): S8
+Net core lines: +534 at first push (this slice over slice 2), plus the review and CI fixes below
+Test-Removal: retired -- test_symlinked_provider_definition_cannot_reach_credentials asserted that the broker refuses a symlinked provider_definitions.json at request time; the broker no longer reads that file at request time (metering is a broker-held latch). It is replaced by six cases proving regular, symlinked, empty, retargeted or malformed definition files cannot latch or unlatch a grant.
+
+C6 built in the clean shape, slice 3 of `openspec/changes/owner-daemon-in-box/`, stacked on slice 2 (#5172). The owner's box reaches the outside world only through the broker over its admitted relay channel, and holds no secret.
+
+**What the box gets** (design.md "D3 decisions (slice 3)"):
+- Model calls and authenticated HTTP (effectors) open `BOX_CONNECT` on the relay; the broker derives identity, center and fence from `BOX_CHANNEL`. The existing HTTP model executor, grant/source queries, accounting gate and credit-bounded `OPEN` stream are reused; only validated, credential-free source descriptors are published into the broker ledger. No host-client fallback.
+- A
+FILES(56): openspec/changes/owner-daemon-in-box/compat-audit.md(+173/-0) openspec/changes/owner-daemon-in-box/design.md(+15/-0) openspec/changes/owner-daemon-in-box/main-audit.md(+79/-0) openspec/changes/owner-daemon-in-box/specs/owner-isolation/spec.md(+48/-0) openspec/changes/owner-daemon-in-box/tasks.md(+52/-1) tests/control_plane_timer_inventory.py(+4/-0) tests/support/broker_double.py(+15/-0) tests/support/owner_router_process.py(+5/-0) tests/test_broker_definition_modes.py(+16/-1) tests/test_broker_model_grants.py(+198/-0) tests/test_broker_resource_consumers.py(+12/-9) tests/test_broker_serving_consumers.py(+7/-3) tests/test_broker_upstream_stream.py(+3/-1) tests/test_inline_owner_sessions.py(+3/-1) tests/test_learning_never_locks_out.py(+2/-2) tests/test_model_discovery_capability.py(+5/-2) tests/test_model_options_api.py(+3/-1) tests/test_onboarding_serving.py(+4/-4) tests/test_open_provider_routing.py(+2/-0) tests/test_owner_broker_egress.py(+442/-0) tests/test_owner_daemon.py(+85/-5) tests/test_provider_definition_registry.py(+4/-1) tests/test_provider_resolver.py(+2/-0) tests/test_request_budget_broker.py(+52/-16) tests/test_request_usage_store.py(+14/-1) tests/test_unify_connection_uses.py(+2/-0) tests/test_work_agent_authority.py(+6/-0) tests/test_work_consumer_model_bridge.py(+39/-0) tests/test_workspace_effector.py(+11/-0) tinyassets/boxes/relay.py(+12/-6) tinyassets/broker/aclient.py(+17/-3) tinyassets/broker/client.py(+62/-22) tinyassets/broker/owner_identities.py(+6/-0) tinyassets/broker/owner_reads.py(+64/-0) tinyassets/broker/owner_sources.py(+94/-0) tinyassets/broker/server.py(+121/-17) tinyassets/broker/supervisor.py(+4/-0) tinyassets/commons_catalog.py(+24/-0) tinyassets/credential_vault.py(+4/-0) tinyassets/external_agents/provider.py(+6/-0) tinyassets/owner_channel.py(+115/-0) tinyassets/owner_runtime.py(+64/-4) tinyassets/owner_stores.py(+4/-0) tinyassets/providers/api_key_http_provider.py(+6/-0) tinyassets/providers/definition.py(+17/-0) tinyassets/providers/model_call.py(+6/-0) tinyassets/providers/owned_process.py(+5/-0) tinyassets/providers/served_model_plan.py(+4/-0) tinyassets/request_budget.py(+21/-9) tinyassets/scoped_reset.py(+16/-11) tinyassets/storage/agent_request_usage.py(+28/-27) tinyassets/storage/outbound_connections.py(+59/-4) tinyassets/storage/subscription_state.py(+18/-0) tinyassets/storage_accounting.py(+2/-0) tinyassets/subscription_refresh.py(+6/-0) tinyassets/universe_owner.py(+6/-0)
+===== 5172 [floor] C6 slice 2: the shared daemon becomes the router to each owner's box | base main | head conv/c6-owner-daemon-s2 | draft
+Drain-Review-Verdict: APPROVE
+Drain-Review-Diff: 40aa8305e95b720fb3922ddca418d375b03e3ec9261586cb61885ad2da67176c
+Drain-Review-Artifact: https://github.com/TinyAssets/TinyAssets/pull/5172#issuecomment-6230222041
+Registry row(s): S8
+Net core lines: +361 (this slice; +795 including slice 1 until #5171 merges)
+Test-Removal: retired -- the shared daemon no longer starts owner initialization, recovery, engines or the assigned consumer, and no longer serves stdio or the local-operator transport. Those paths are deleted in this PR, because owner work runs in the owner's box. The 9 retired tests (startup order, consumer start, recovery sweep, local operator, staged-bundle stdio) asserted those deleted shared paths. Their replacements assert that the router refuses those transports and touches no owner storage, and the owner-lifespan tests keep the storage ordering inside the box.
+
+C6 built in the clean shape, slice 2 of `openspec/changes/owner-daemon-in-box/`: the shared daemon becomes the router (on top of slice 1, #5171).
+
+**Router (`owner_router.py`):** authenticate (WorkOS session, MCP OAuth, `/api` keys, or inbound-hook digest map) → `owner_id` → box resolved only through broker admission (`owner_box_route`) → one streaming unix-socket reverse proxy with the per-box secret. It parses no body and opens no owner store.
+- **Forwarded:** owner `/app/*` and `/app/api/*`, `/api/*`, `/mc
+FILES(100): docs/concerns/2026-09-29-redeposit-race-sends-new-secret-to-old-endpoint.md(+1/-1) docs/host-actions.md(+1/-1) openspec/changes/archive/2026-09-08-no-anonymous-principal/design.md(+1/-1) openspec/changes/archive/2026-09-08-no-anonymous-principal/specs/identity-auth-and-access-control/spec.md(+2/-2) openspec/changes/archive/2026-09-08-no-anonymous-principal/tasks.md(+1/-1) openspec/changes/archive/2026-09-30-capability-url-connections/design.md(+9/-9) openspec/changes/archive/2026-09-30-capability-url-connections/proposal.md(+3/-3) openspec/changes/archive/2026-09-30-capability-url-connections/specs/http-connections-and-outbound-authority/spec.md(+9/-9) openspec/changes/archive/2026-09-30-capability-url-connections/tasks.md(+1/-1) openspec/changes/archive/2026-10-06-bind-immutable-run-files/app-byte-intake-shape-review.md(+1/-1) openspec/changes/archive/2026-10-06-channel-agnostic-inbound/REVIEW.md(+2/-3) openspec/changes/archive/2026-10-06-channel-agnostic-inbound/design.md(+7/-8) openspec/changes/archive/2026-10-06-channel-agnostic-inbound/proposal.md(+2/-2) openspec/changes/archive/2026-10-06-channel-agnostic-inbound/specs/webhook-inbound/spec.md(+4/-4) openspec/changes/archive/2026-10-06-channel-agnostic-inbound/tasks.md(+3/-3) openspec/changes/owner-daemon-in-box/design.md(+34/-3) openspec/changes/owner-daemon-in-box/main-audit.md(+165/-1) openspec/changes/owner-daemon-in-box/tasks.md(+4/-1) openspec/specs/http-connections-and-outbound-authority/spec.md(+9/-9) openspec/specs/identity-auth-and-access-control/spec.md(+2/-2) scripts/check_background_authority_inventory.py(+4/-0) scripts/probes/capability_url_live_proof.py(+5/-5) tests/control_plane_timer_inventory.py(+2/-2) tests/fixtures/deploy_ingress_process.py(+3/-2) tests/owner_app_fixture.py(+14/-0) tests/support/owner_router_process.py(+105/-0) tests/test_account_deletion.py(+34/-0) tests/test_activity_shape_migration.py(+11/-10) tests/test_approval_browser_handoff.py(+27/-0) tests/test_assigned_queue_consumer.py(+10/-2) tests/test_authkit_mcp_discovery.py(+1/-1) tests/test_branch_version_read_authority.py(+27/-0) tests/test_capability_url_connections.py(+33/-33) tests/test_cloud_admission_serving_startup.py(+2/-7) tests/test_consumer_startup.py(+6/-8) tests/test_credential_shape.py(+1/-1) tests/test_delivery_account_deletion.py(+2/-1) tests/test_ingress_http.py(+3/-4) tests/test_inline_owner_sessions.py(+101/-1) tests/test_mcp_sse_keepalive.py(+2/-1) tests/test_no_anonymous_principal.py(+6/-28) tests/test_observability.py(+4/-3) tests/test_onboarding_auth_boundary.py(+3/-3) tests/test_onboarding_session_refresh.py(+7/-0) tests/test_orphaned_turn_reconcile.py(+2/-1) tests/test_outbound_user_agent.py(+1/-1) tests/test_owner_daemon.py(+14/-1) tests/test_owner_lease.py(+12/-9) tests/test_owner_policy.py(+22/-2) tests/test_owner_router.py(+765/-0) tests/test_packaging_build.py(+18/-124) tests/test_refresh_session_hardening.py(+3/-3) tests/test_refresh_session_seal.py(+49/-25) tests/test_remote_mcp_oauth_journey.py(+1/-1) tests/test_require_auth_challenge.py(+5/-8) tests/test_rest_api_keys.py(+1/-1) tests/test_router_store_guard.py(+78/-0) tests/test_run_recovery_boot_order.py(+11/-2) tests/test_served_webhook_triggers.py(+1/-1) tests/test_session_credential_source.py(+3/-3)
+===== 4994 Print disk measurements when deploy retention refuses a pull | base main | head cursor/deploy-disk-headroom-d468 | draft
+<!-- CURSOR_AGENT_PR_BODY_BEGIN -->
+Registry row(s): none — deploy retention, no shape registry row
+Net core lines: +438 (scripts/daemon_image_retention.py, deploy-prod.yml, uptime spec; tests excluded)
+
+**This PR must merge only after #4976.** It stays a draft until the fail-closed deploy gates are on main. Do not mark it ready.
+
+Tracks #4988. Production deploy runs [38665234235](https://github.com/TinyAssets/TinyAssets/actions/runs/38665234235) and [38665471406](https://github.com/TinyAssets/TinyAssets/actions/runs/38665471406) (#4845, `6b0856a`) exit 2 at "Prune daemon images and require pull headroom" with only `{"status": "refused", "reason": "deploy_disk_headroom_insufficient"}` after retention finished.
+
+`PULL_FREE_BYTES` (10 GiB) and the 80% used threshold are unchanged. No host was edited.
+
+### Behavior
+
+1. Every refusal prints free/total/used-percent per path, `docker system df` totals by type, and the kept/removed lists.
+2. Count-mode retention covers every `ghcr.io/tinyassets/…` repository named by a deployed `*_IMAGE` key, plus the box harness store from #4944 (`harness-<image id>` under `BOX_HARNESS_ROOT`). Each store keeps current + one rollback. Current comes from `/etc/tinyassets/env`. A repo or harness whose current cannot be resolved is not deleted.
+3. Apply prunes dangling layers (`docker image prune -f`) and the builder cache (`docker builder prune -af`). V
+FILES(5): .github/workflows/deploy-prod.yml(+3/-1) openspec/specs/uptime-and-alarms/spec.md(+3/-2) scripts/daemon_image_retention.py(+505/-70) tests/test_daemon_image_retention.py(+178/-1) tests/test_prune_units.py(+2/-0)
+===== 4984 Share one app across accounts, and conflict writes on an etag | base main | head cursor/box-record-cas-a062 
+<!-- CURSOR_AGENT_PR_BODY_BEGIN -->
+Registry row(s): S8, S10, S14, S26
+Net core lines: +3707
+
+Head `7693c8bc01e1b2ecbde7315fac77d90467ec277b`. Current `main` (`f08e9ae37`) is merged in with a normal merge. No rebase. Not merged. Not shipped.
+
+## Why `infra-change`
+
+The three-dot diff touches one release-critical path: `deploy/box-store-quotas.py`. On an owner-box restore, `fence_restore` copies `record_fence` and the `records` rows (owner, center, path, etag), then bumps epoch, generation, `record_fence`, and every record etag by 1. Restored bytes cannot replay under the etag that named the previous copies. `check_snapshot` requires the `records` table in the host journal. The label is for that restore fence.
+
+## Final shape
+
+- **Box files (S8).** Each command-center path has a host-journal etag. A write presents `expect_etag`. A mismatch raises `RecordConflict` before any effect. A match bumps that path's etag and the owner generation in one journal transaction before the guest runs. The host returns the new etag.
+
+- **Transient / durable (S10).** One `app/v1` document is stored once, under the owner. Records, the public log, and the per-app sequence live in the author database. A kind declares `durability` `transient` or `durable` (the default) and `checkpoint_s` (default 1.0, range 0.2–60). Creating a transient record is a durable insert. Later transient updates are a memory
+FILES(33): deploy/box-store-quotas.py(+22/-7) openspec/changes/one-box-per-owner/specs/owner-box/spec.md(+24/-0) openspec/changes/shared-app-state/.openspec.yaml(+2/-0) openspec/changes/shared-app-state/design.md(+65/-0) openspec/changes/shared-app-state/proposal.md(+32/-0) openspec/changes/shared-app-state/specs/shared-app-state/spec.md(+117/-0) openspec/changes/shared-app-state/tasks.md(+29/-0) tests/control_plane_timer_inventory.py(+17/-0) tests/test_box_restore_authority.py(+1/-0) tests/test_onboarding_app.py(+5/-1) tests/test_owner_file_runtime.py(+98/-4) tests/test_scoped_identity_reset.py(+80/-0) tests/test_shared_live_http.py(+723/-0) tests/test_shared_state_apps.py(+566/-0) tests/test_shared_state_blind.py(+397/-0) tinyassets/account_deletion.py(+6/-0) tinyassets/boxes/file_channel.py(+1/-1) tinyassets/boxes/gvisor_files.py(+1/-0) tinyassets/boxes/owner_files.py(+38/-10) tinyassets/boxes/production_files.py(+6/-2) tinyassets/boxes/provider.py(+19/-1) tinyassets/boxes/state.py(+77/-6) tinyassets/daemon_server.py(+5/-3) tinyassets/engine_mcp_server.py(+14/-2) tinyassets/onboarding/__init__.py(+6/-0) tinyassets/onboarding/app_ui.js(+108/-0) tinyassets/onboarding/ui_frame.py(+42/-0) tinyassets/owner_stores.py(+6/-0) tinyassets/scoped_reset.py(+123/-1) tinyassets/shared_live.py(+439/-0) tinyassets/shared_state.py(+2792/-0) tinyassets/storage_accounting.py(+21/-1) tinyassets/universe_seats.py(+15/-0)
+===== 4983 [WIP handoff] Preserve excluded C7–C12 integration patches | base main | head codex/c7-c12-uncomposed-handoff | draft
+Jonathan requested publishing remaining C1–C12 work so other sessions can use it. This draft preserves excluded shared-file patches and handoff material without applying them to another owner's branch.
+
+Contains the C9 broker inference_usage seam, C10 extensions/probe retirements, C11/C12 shell integration patch, exact remaining C10 working-tree diff, five review briefs, source-byte hashes and dependency notes under openspec/changes/shape-convergence/handoff/2026-10-15/README.md.
+
+This is an inert patch archive, not a runnable integration or a deployment candidate. Do not merge it as the convergence implementation. Existing implementation PRs #4936, #4937, #4938, #4939 and #4940 remain unchanged. C6 #4920 and C12 #4903 have advanced: fetch and reconcile their latest work before composing these older patches. The C10 combined patch is an alternative representation of its two component patches, not an additional change to apply.
+
+Verification: all four original patches pass isolated-index git apply --cached --check against their documented bases; the two C10 patches exactly reproduce the dirty worktree; copied artifacts match source hashes. Existing worktrees were inspected and all five implementation heads matched git ls-remote and GitHub PR metadata. git diff --check reports expected trailing context-marker spaces inside the literal .patch payloads; original bytes are deliberat
+FILES(100): .github/heavy-test-files.txt(+0/-3) .github/workflows/linux-jail-proof.yml(+2/-2) Dockerfile(+8/-12) affected-c7.txt(+1260/-0) deploy/RESTORE.md(+15/-3) deploy/backup-restore.sh(+38/-9) deploy/backup.sh(+97/-52) deploy/box-store-quotas.py(+144/-16) deploy/box_daemon_entry.py(+40/-0) deploy/boxhostd.py(+67/-0) deploy/boxhostd.service(+4/-4) deploy/compose.owner-box.yml(+45/-0) deploy/deploy_fail_safe.sh(+120/-6) deploy/install-boxhostd-preflight.sh(+1/-1) deploy/install-host-uptime-services.sh(+3/-0) docs/architecture.md(+9/-10) domains/fantasy_daemon/__init__.py(+0/-12) domains/fantasy_daemon/phases/authorial_priority_review.py(+3/-18) domains/fantasy_daemon/producers.py(+0/-110) fantasy_daemon/__init__.py(+0/-7) fantasy_daemon/__main__.py(+0/-3682) fantasy_daemon/api.py(+0/-2584) fantasy_daemon/auth/__init__.py(+0/-2) fantasy_daemon/auth/middleware.py(+0/-2) fantasy_daemon/auth/provider.py(+0/-2) fantasy_daemon/auth/wellknown.py(+0/-2) fantasy_daemon/branch_registrations.py(+0/-253) fantasy_daemon/branches.py(+0/-2) fantasy_daemon/branches/universe_cycle.yaml(+0/-103) fantasy_daemon/checkpointing/__init__.py(+0/-2) fantasy_daemon/checkpointing/sqlite_saver.py(+0/-2) fantasy_daemon/config.py(+0/-2) fantasy_daemon/constraints/__init__.py(+0/-2) fantasy_daemon/constraints/asp_engine.py(+0/-2) fantasy_daemon/constraints/constraint_surface.py(+0/-2) fantasy_daemon/constraints/constraint_synthesis.py(+0/-2) fantasy_daemon/desktop/__init__.py(+0/-2) fantasy_daemon/desktop/app.ico(+0/-0) fantasy_daemon/desktop/dashboard.py(+0/-2) fantasy_daemon/desktop/icon_gen.py(+0/-2) fantasy_daemon/desktop/notifications.py(+0/-2) fantasy_daemon/desktop/tray.py(+0/-2) fantasy_daemon/evaluation/__init__.py(+0/-2) fantasy_daemon/evaluation/editorial.py(+0/-2) fantasy_daemon/evaluation/process.py(+0/-2) fantasy_daemon/evaluation/structural.py(+0/-2) fantasy_daemon/exceptions.py(+0/-2) fantasy_daemon/graphs/__init__.py(+0/-2) fantasy_daemon/graphs/book.py(+0/-2) fantasy_daemon/graphs/chapter.py(+0/-2) fantasy_daemon/graphs/scene.py(+0/-2) fantasy_daemon/graphs/universe.py(+0/-2) fantasy_daemon/ingestion/__init__.py(+0/-2) fantasy_daemon/ingestion/core.py(+0/-2) fantasy_daemon/ingestion/extractors.py(+0/-2) fantasy_daemon/ingestion/image_extractor.py(+0/-2) fantasy_daemon/ingestion/indexer.py(+0/-2) fantasy_daemon/ingestion/video_extractor.py(+0/-2) fantasy_daemon/knowledge/__init__.py(+0/-2) fantasy_daemon/knowledge/entity_extraction.py(+0/-2)
+===== 4982 [WIP] Preserve starter-watch observation validation (B1) | base main | head codex/b1-monitor-result-integrity | draft
+Publishing pre-existing Shape reconciliation work for other sessions, as Jonathan requested. No new implementation was added during this publication audit.
+
+Branch: `codex/b1-monitor-result-integrity`
+Exact pushed head: `695fd243f8efad8fd0d3fd7298a396b5b5a40c62`
+Original base: `a1fb3d91062feb1257af11c2cce065ea02dfa7a4`
+
+Starter watch checks previously treated malformed or stale non-matching observations as ordinary no-match results. This existing five-file change validates boolean `matched` and observation freshness before deciding whether to notify. A fresh valid no-match still produces no notification and retains the previous change ID. Active sources still require refresh; this does not suppress stale-monitor failures.
+
+Handoff:
+- This is the earlier B1 starter-package slice discovered alongside C12 #4903, not an extension of the C12 implementation.
+- The branch is already remote and its worktree is clean. No unpublished implementation patches remain for this slice.
+- Fresh verification at the exact head: `tests/test_starter_muse_package.py` **35 passed**; Ruff on both changed Python files and whitespace checks passed.
+- Preserve as draft. Reconcile with current main and current starter-package ownership, inspect the existing tests/spec change, and complete any required review and hosted gates before considering readiness. No claim of cross-family approval or live acceptance
+FILES(5): openspec/specs/starter-muse-package/spec.md(+10/-0) tests/test_starter_muse_package.py(+68/-0) tinyassets/skills/starter-monitors/SKILL.md(+5/-2) tinyassets/starter/muse/README.md(+5/-0) tinyassets/starter/muse/checkins.py(+9/-4)
+===== 4959 Revert "Keep a waiting chat's status line, and record a provider-allocation failure. (#4951)" (required tests red on main) | base main | head auto-revert/62fad370e0cf 
+<!-- main-red:62fad370e0cf15570d311627708053d9de3cfb10 -->
+The required tests went red on main at `62fad370e0cf` (Keep a waiting chat's status line, and record a provider-allocation failure. (#4951)) and stayed red after one re-run: https://github.com/TinyAssets/TinyAssets/actions/runs/38638099219
+
+Its parent was green and failing test IDs were reported; this merge is a candidate cause.
+This PR reverts it. It is not armed: it needs a Drain-Review receipt like every PR. Re-land the change with a fix once main is green.
+
+New failures (outside the quarantine ledger):
+- `tests/test_extension_remote.py::test_binding_incarnation_fences_replaced_connection`
+
+FILES(5): openspec/specs/universe-seats/spec.md(+1/-13) tests/test_chat_turn_seat.py(+14/-91) tests/test_universe_seats.py(+0/-32) tinyassets/universe_intelligence.py(+4/-30) tinyassets/universe_seats.py(+16/-113)
+===== 4949 Seal credentials under the broker key hierarchy | base main | head cursor/broker-key-hierarchy-9924 
+<!-- CURSOR_AGENT_PR_BODY_BEGIN -->
+Registry row(s): S28
+Net core lines: the cleartext writer shrinks; the hierarchy lives in `tinyassets/broker/`.
+
+Fresh branch off current main, replacing #4653. That PR seals the same vault but grows `credential_vault.py` (the deleting S28 path) and is 83 commits behind main, including generated plugin runtime copies. This branch does not update #4653.
+
+An account KEK is wrapped by the AWS KMS root. A command-center DEK is wrapped by that KEK. Records and browser sessions are AES-GCM under the DEK. The daemon no longer writes `.credential-vault.json`. Browser custody no longer keeps a raw per-owner key file. `credential_vault.py` and `broker/browser_vault.py` both shrink.
+
+Release-critical paths (4/8): `deploy/compose.yml`, `deploy/deploy_fail_safe.sh`, `deploy/install-tinyassets-env.sh`, `deploy/role_migrate.py`.
+
+Head: `781947b7a`.
+
+<!-- CURSOR_AGENT_PR_BODY_END -->
+
+<div><a href="https://cursor.com/agents/bc-4f65951a-c733-5151-8741-d4926b649924?cursor_ref=pr_footer&cursor_cta=open_in_web"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cursor.com/assets/images/open-in-web-dark.png"><source media="(prefers-color-scheme: light)" srcset="https://cursor.com/assets/images/open-in-web-light.png"><img alt="Open in Web" width="114" height="28" src="https://cursor.com/assets/images/open-in-web-dark.png"></picture></a>&nbsp;<a 
+FILES(39): deploy/compose.yml(+6/-5) deploy/deploy_fail_safe.sh(+8/-0) deploy/install-tinyassets-env.sh(+40/-0) deploy/role_launcher.py(+6/-0) deploy/role_migrate.py(+5/-1) scripts/core_capability_image.py(+5/-4) scripts/vault_cutover.py(+292/-0) scripts/vault_dr_open.py(+99/-0) tests/conftest.py(+2/-0) tests/control_plane_timer_inventory.py(+5/-0) tests/support/broker_double.py(+30/-0) tests/test_broker_disconnect.py(+9/-4) tests/test_broker_vault_modes.py(+44/-32) tests/test_browser_login.py(+66/-68) tests/test_credential_custody.py(+151/-0) tests/test_credential_vault.py(+1/-1) tests/test_deploy_bundle_transaction.py(+2/-0) tests/test_llm_deposit_surface.py(+23/-14) tests/test_platform_secret_scope.py(+21/-1) tests/test_role_launcher.py(+19/-0) tests/test_universe_path_io_guard.py(+0/-3) tests/test_vault_account_deletion_guard.py(+2/-2) tests/test_vault_cutover.py(+427/-0) tests/test_vault_envelope.py(+166/-0) tinyassets/broker/account_erasure.py(+2/-4) tinyassets/broker/browser_vault.py(+54/-68) tinyassets/broker/credential_store.py(+266/-0) tinyassets/broker/key_service.py(+935/-0) tinyassets/broker/process.py(+45/-0) tinyassets/broker/root_key.py(+286/-0) tinyassets/broker/server.py(+24/-0) tinyassets/broker/token_revocation.py(+87/-0) tinyassets/broker/vault_cutover.py(+733/-0) tinyassets/broker/vault_kms_file.py(+76/-0) tinyassets/credential_vault.py(+58/-112) tinyassets/owner_stores.py(+2/-0) tinyassets/platform_secrets.py(+5/-0) tinyassets/storage_accounting.py(+4/-0) tinyassets/vault_envelope.py(+166/-0)
+===== 4903 [floor] [WIP] C12: canonical knowledge consumers and reviewed export/import | base main | head codex/c12-knowledge-files-export | draft
+Canonical knowledge consumers previously opened host SQLite/vector stores beside the declared file source. This change makes project, daemon, episodic, knowledge-graph, promise, version and temporal operations use reviewed owner-box records, with disposable indexes and one canonical CAS for related rows. It also provides the owner export/import and offline migration tooling required by S17.
+
+**Keep draft. Cross-family code review is APPROVE; C6/C7 integration, migration, oracle/integration proof and live acceptance remain merge/deployment gates.**
+
+Registry row(s): S17
+
+Implemented:
+- Lossless typed snapshot census, provenance-bound namespace assignments and restricted custody for unresolved rows; canonical revisions and fresh offline restore preserve peer/excluded records. No production census or migration ran.
+- All seven consumers use SourceRecords. Scoped services refuse missing admission, another owner context and closed sessions. Unknown columns survive updates; exact SQL round trips reject affinity loss. Stable operations retain exact pending writes after uncertain replies and recover from deterministic refusals.
+- Immutable paged commit/deletion history prevents history growth from exhausting the current write envelope. Compact tombstones reserve forgotten identities, deletion counters preserve AUTOINCREMENT, and recomputed community relations remain replaceable. Daemon
+FILES(100): docs/architecture.md(+1/-1) openspec/changes/c12-knowledge-files-export/design.md(+470/-0) openspec/changes/c12-knowledge-files-export/proposal.md(+33/-0) openspec/changes/c12-knowledge-files-export/specs/command-center-export/spec.md(+281/-0) openspec/changes/c12-knowledge-files-export/specs/knowledge-retrieval-and-memory/spec.md(+176/-0) openspec/changes/c12-knowledge-files-export/tasks.md(+31/-0) packaging/command-center/README.md(+51/-0) scripts/check_shapes.py(+63/-0) scripts/rehearse_box_move.py(+195/-9) tests/conftest.py(+2/-1) tests/support/canonical_sources.py(+202/-0) tests/support/legacy_memory_snapshot.py(+83/-0) tests/support/project_snapshot.py(+71/-0) tests/test_account_box_destroy.py(+191/-0) tests/test_account_deletion.py(+13/-1) tests/test_activity_shape_migration.py(+1/-0) tests/test_api_status.py(+2/-2) tests/test_api_universe.py(+3/-1) tests/test_app_transfer_ui.py(+157/-0) tests/test_box_layout_migration.py(+374/-2) tests/test_box_lifecycle.py(+8/-3) tests/test_branch_runner.py(+3/-0) tests/test_canonical_consumer_indexes.py(+599/-0) tests/test_canonical_project_runtime.py(+162/-0) tests/test_checkpointing.py(+1/-1) tests/test_command_center_release_deletion.py(+16/-7) tests/test_commit_kg_integration.py(+14/-4) tests/test_context_budget_regression.py(+10/-4) tests/test_context_debug_instrumentation.py(+15/-6) tests/test_daemon_brain.py(+41/-34) tests/test_daemon_brain_api.py(+12/-2) tests/test_daemon_brain_eval.py(+9/-9) tests/test_daemon_wiki.py(+4/-1) tests/test_evaluation.py(+1/-0) tests/test_export_local_runner.py(+403/-0) tests/test_export_local_schedule.py(+223/-0) tests/test_export_local_workflow.py(+180/-0) tests/test_export_terminal_rules.py(+91/-0) tests/test_graph_topology.py(+21/-5) tests/test_import_custody_atomicity.py(+299/-0) tests/test_integration.py(+40/-12) tests/test_knowledge_graph.py(+8/-2) tests/test_knowledge_tag_matrix.py(+8/-2) tests/test_memory.py(+73/-58) tests/test_memory_scope_stage_2a.py(+55/-26) tests/test_memory_scope_stage_2b.py(+58/-26) tests/test_nodes_real.py(+3/-0) tests/test_okf_canonical_bundle.py(+677/-0) tests/test_okf_export.py(+49/-9) tests/test_okf_namespace_census.py(+198/-0) tests/test_okf_policy_export.py(+99/-0) tests/test_okf_provider_capture.py(+147/-0) tests/test_okf_restore.py(+152/-0) tests/test_okf_source_records.py(+135/-0) tests/test_okf_transfer.py(+470/-0) tests/test_okf_workflow_export.py(+149/-0) tests/test_onboarding_app.py(+3/-0) tests/test_owner_stores.py(+17/-2) tests/test_owner_transfer.py(+436/-0) tests/test_phase7.py(+82/-36)
+===== 4653 Seal the credential vault under a broker-only AWS KMS root | base main | head cursor/credential-vault-kms-4dae 
+<!-- CURSOR_AGENT_PR_BODY_BEGIN -->
+Test-Removal: retired -- the cleartext vault writer and the raw browser key files these tests covered are deleted
+
+## Summary
+
+Implements `openspec/changes/credential-vault-reshape/` (merged in #4622). This is not the closed #4611 design: there is no application-held master key and no offline escrow.
+
+The founder decisions recorded 2026-10-11 match the spec. No conflict to flag.
+
+- The root key is AWS KMS behind `TINYASSETS_VAULT_KMS_KEY_ARN`. The broker is the only process that reads the credential file.
+- Each account KEK and each command-center DEK stays in the broker. Records and browser sessions are AES-256-GCM envelopes. Associated data binds account, command center, record id, and generation.
+- A missing or unreachable KMS key fails closed (`key_service_unavailable`). One unopenable record asks for reconnect; the others still open. There is no plaintext fallback.
+- CI uses `MemoryRootKey` when `TINYASSETS_VAULT_TEST_DOUBLE=1`. That double is refused when `TINYASSETS_ENV=production`.
+- `scripts/vault_cutover.py` is the broker entrypoint. It seals the existing cleartext vault, compares, and deletes the legacy file only after every compare passes. `deploy/backup.sh` refuses to archive a `.credential-vault.json` or a raw `browser-vault/*.key`.
+- `tests/test_credential_custody.py` is the structural guard. The plugin runtime mirror was regen
+FILES(61): deploy/backup.sh(+25/-7) deploy/compose.yml(+6/-5) deploy/deploy_fail_safe.sh(+8/-0) deploy/install-tinyassets-env.sh(+40/-0) deploy/role_launcher.py(+5/-0) deploy/role_migrate.py(+5/-1) docs/architecture.md(+1/-1) docs/host-actions.md(+45/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/http_connection.py(+7/-2) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/account_erasure.py(+62/-28) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/browser_vault.py(+191/-132) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/credential_store.py(+247/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/key_service.py(+935/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/process.py(+73/-18) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/root_key.py(+286/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/server.py(+24/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/token_revocation.py(+87/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/vault_cutover.py(+733/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/broker/vault_kms_file.py(+76/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/credential_vault.py(+382/-260) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/owner_stores.py(+2/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/platform_secrets.py(+5/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/storage_accounting.py(+4/-0) packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/vault_envelope.py(+166/-0) scripts/ci_structural_guards.py(+4/-0) scripts/core_capability_image.py(+5/-4) scripts/vault_cutover.py(+292/-0) scripts/vault_dr_open.py(+99/-0) tests/conftest.py(+3/-0) tests/control_plane_timer_inventory.py(+5/-0) tests/support/broker_double.py(+42/-0) tests/test_backup_script.py(+35/-3) tests/test_broker_disconnect.py(+10/-3) tests/test_broker_vault_modes.py(+34/-74) tests/test_browser_login.py(+36/-94) tests/test_credential_custody.py(+119/-0) tests/test_credential_vault.py(+4/-16) tests/test_deploy_bundle_transaction.py(+2/-0) tests/test_llm_deposit_surface.py(+9/-12) tests/test_platform_secret_scope.py(+22/-1) tests/test_role_launcher.py(+12/-0) tests/test_universe_path_io_guard.py(+0/-1) tests/test_vault_account_deletion_guard.py(+2/-2) tests/test_vault_cutover.py(+427/-0) tests/test_vault_envelope.py(+166/-0) tinyassets/api/http_connection.py(+7/-2) tinyassets/broker/account_erasure.py(+62/-28) tinyassets/broker/browser_vault.py(+191/-132) tinyassets/broker/credential_store.py(+247/-0) tinyassets/broker/key_service.py(+935/-0) tinyassets/broker/process.py(+73/-18) tinyassets/broker/root_key.py(+286/-0) tinyassets/broker/server.py(+24/-0) tinyassets/broker/token_revocation.py(+87/-0) tinyassets/broker/vault_cutover.py(+733/-0) tinyassets/broker/vault_kms_file.py(+76/-0) tinyassets/credential_vault.py(+382/-260) tinyassets/owner_stores.py(+2/-0) tinyassets/platform_secrets.py(+5/-0) tinyassets/storage_accounting.py(+4/-0)

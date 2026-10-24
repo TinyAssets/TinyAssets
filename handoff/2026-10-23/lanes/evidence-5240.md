@@ -1,0 +1,4 @@
+Approval of the N3 (realtime voice/video) and N9 (media results) specs, spec only.
+- Cross-family review: DISAGREE_EVIDENCE (HIGH: old voice bridge still required by four specs; HIGH: no spending/cap rules for realtime or media; plus storage-rule mismatch, kept speech input, call definition, source selection vs Direction 4).
+- Fix f0e1497ee68, checked by the lead: old voice-bridge requirements retired (net -377 lines), one realtime session path in the S3 loop; broker reserves bounded time-and-usage slices against the parent cap and renews them, a stream stopped at its cap ends with a receipt; one receipt per model turn; one storage rule shared by N3 and N9 (transcript kept by default, partial frames ephemeral); visible capability gaps instead of silent fallback to a weaker source.
+- Validation: strict OpenSpec, 7 targeted broker-stream Linux oracle tests, ruff.
