@@ -40,14 +40,12 @@ PRODUCTION_SECRETS = (
     "DO_SSH_USER",
     "DIGITALOCEAN_TOKEN",
     "DO_API_TOKEN",
-    # The canary signs in and repairs its own account, so a branch run must
-    # never see it.
-    "TINYASSETS_CANARY_EMAIL",
-    "TINYASSETS_CANARY_PASSWORD",
+    # The canary's session and signing key repair its own account, so a
+    # branch run must never see them.
+    "TINYASSETS_CANARY_SESSION_KEY",
+    "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
+    "TINYASSETS_CANARY_SESSION_SEED_UPTIME",
     "TINYASSETS_CANARY_HMAC_KEY",
-    # Half the proof the canary-only sign-in door needs; the deployment holds
-    # the other copy. A branch run must never see it.
-    "TINYASSETS_CANARY_DOOR_KEY",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch

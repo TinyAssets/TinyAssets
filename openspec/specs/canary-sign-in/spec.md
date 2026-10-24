@@ -1,85 +1,43 @@
 # canary-sign-in Specification
 
 ## Purpose
-The deploy canary's own sign-in, for one pinned synthetic account, when the
-identity provider's hosted page refuses headless browsers. Never a second way
-for a real user or an attacker to reach an owner session.
+The canary signs in like any user. No account has its own sign-in path,
+credential type, admission rule or host role, so a canary failure is a real
+user failure and its fix repairs every account.
 
 ## Requirements
-### Requirement: The door exists only for the one configured account
-The deployment SHALL enable the door only when the host configures BOTH a
-shared door key of at least 32 bytes and the canary's provider user id, SHALL
-take the account from that configuration and never from the request, and SHALL
-answer the same 404 as an absent route whenever either is missing.
+### Requirement: The canary is an ordinary account
+The canary SHALL sign in once through the same system-browser flow the phone
+and desktop apps use (`POST /app/native-sign-in`, then `/app/token`
+`authorization_code` with `native_ref`, `code_verifier` and `return_secret`),
+and SHALL renew through `/app/token` `refresh_token` with its rotating session
+handle, exactly like a signed-in app. The platform SHALL hold no route, secret,
+pinned user id or admission exception for the canary.
 
-#### Scenario: unconfigured deployment
-- **WHEN** the door key or the pinned user id is unset, short, or malformed
-- **THEN** the route answers 404 and no account is asked about upstream
+#### Scenario: no canary-only door
+- **WHEN** a client POSTs to `/app/canary-sign-in`
+- **THEN** the router answers as for any unknown app route, and no environment
+  value names a canary account
 
-### Requirement: Two proofs, and the pin decides the account
-A caller SHALL present the shared key, compared in constant time, AND the
-account's real password, which the identity provider authenticates
-server-side. The server SHALL refuse unless the authenticated user id equals
-the pinned one.
+#### Scenario: the canary renews like an app
+- **WHEN** a deploy or the uptime canary needs a session
+- **THEN** `scripts/canary_session.py` renews the stored handle through
+  `/app/token`, stores the rotated handle before using the access token, and
+  uses that token as an ordinary bearer on `/app` and `/mcp`
 
-#### Scenario: wrong key, wrong password, or another account
-- **WHEN** the key does not match, the provider refuses the password, or the
-  authenticated user is not the pinned canary
-- **THEN** sign-in is refused, nothing upstream is asked before the key
-  verifies, and no session is issued
+### Requirement: Each workflow keeps its own sealed chain
+CI SHALL keep the session handle sealed with AES-GCM under
+`TINYASSETS_CANARY_SESSION_KEY`, one chain per workflow (`deploy`, `uptime`),
+restored from and saved to the Actions cache on `main` only. A run on any
+other ref SHALL NOT renew a chain. With no saved chain, the chain's sealed seed
+secret starts it.
 
-### Requirement: One answer for every failed proof
-Every refusal of a proof SHALL be the identical client response — same status,
-same body, same headers — so the door is an oracle for nothing, including for
-a caller holding the key. Only a malformed request, the rate limit, the
-unconfigured 404 and a genuine server or upstream failure MAY answer
-differently, and the distinguishing reason SHALL exist only in the server log.
+#### Scenario: an ended session
+- **WHEN** renewal answers 401
+- **THEN** the probe fails with `canary_signed_out`, and one ordinary sign-in
+  (`scripts/canary_session.py begin` then `finish --set-secret <seed>`) restarts that chain
 
-#### Scenario: a key holder probes which proof failed
-- **WHEN** requests fail on the key, on the password, on an address that is
-  not the pinned account's, and on an authenticated id that is not the pin
-- **THEN** all four responses are identical and only the log tells them apart
-
-### Requirement: Only a session the connector already accepts
-The door SHALL return a session the identity provider issued, SHALL mint no
-credential of its own, and SHALL return nothing that this server's own bearer
-validation does not accept for the pinned account.
-
-#### Scenario: upstream returns an unusable or foreign session
-- **WHEN** the provider's token fails this server's validation or resolves to
-  another account
-- **THEN** the request fails and no token reaches the caller
-
-### Requirement: No new cookie path and no approval authority
-The door SHALL NOT issue the protected owner cookie or any other browser
-session, so approval-answering authority stays with interactive sign-in.
-
-#### Scenario: canary exercises capabilities
-- **WHEN** the canary signs in through the door
-- **THEN** it holds the ordinary bearer only, and its approval capability is
-  reported as unexercised rather than passed
-
-### Requirement: Bounded attempts and secret-free records
-Attempts that present the correct key SHALL be rate-limited per caller with
-bounded limiter state. A request without the correct key SHALL consume no
-limiter state, so no volume of unkeyed requests can deny the door to its own
-account. Every outcome SHALL be logged as a code without key, password,
-address or token material.
-
-#### Scenario: repeated keyed attempts
-- **WHEN** a keyed caller exceeds the attempt budget inside the window
-- **THEN** further attempts are refused with a retry hint and reach no upstream
-
-#### Scenario: unkeyed flood
-- **WHEN** many addresses send requests with a wrong key
-- **THEN** each is refused, no limiter state is recorded, and the correct key
-  still signs in
-
-## Residuals
-Accepted, 2026-10-15. Revocation lands when the daemon next reads its
-environment: deleting the secret removes the host values on the next deploy,
-and that deploy restarts the daemon — to revoke outside a deploy, remove the
-values and run the daemon restart. A compromised key is answered by rotating
-the key, not by the limiter: a caller who holds the key can still fill the
-bounded limiter table from enough addresses and deny the canary its own door
-until the window passes.
+#### Scenario: a transient renewal failure
+- **WHEN** renewal fails with any other status
+- **THEN** nothing is stored, and the existing handle is still used on the
+  next attempt

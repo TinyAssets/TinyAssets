@@ -367,7 +367,8 @@ def test_router_admission_is_positive_and_has_no_restore_predicates(tmp_path, mo
     assert not admits(tmp_path, "canary")
     close_admission(tmp_path)
     assert admits(tmp_path, "canary")
-    assert admits(tmp_path, "probe-owner")
+    # The canary user is an ordinary account: no admission exception.
+    assert not admits(tmp_path, "probe-owner")
     assert not admits(tmp_path, "alice")
     assert not admits(tmp_path, None)
     (tmp_path / NAME).write_text(json.dumps({"ordinary": True}))
@@ -391,7 +392,7 @@ def test_router_admission_is_positive_and_has_no_restore_predicates(tmp_path, mo
         ("/app", "POST", 503),
         ("/app", "GET", 200),
         ("/app/m/build/main.js", "GET", 200),
-        ("/app/canary-sign-in", "POST", 200),
+        ("/app/canary-sign-in", "POST", 503),
     ],
 )
 def test_closed_admission_blocks_anonymous_writers(tmp_path, monkeypatch, path, method, status):
@@ -480,39 +481,29 @@ def test_missing_current_operational_credential_never_uses_environment(
     source,
 ):
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV, wiki_canary_token_matches
-    from tinyassets.onboarding import canary_sign_in as door
-
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(WIKI_CANARY_TOKEN_ENV, "old" * 32)
-    monkeypatch.setenv(door.KEY_ENV, "old" * 32)
-    monkeypatch.setenv(door.USER_ENV, "user_fixture")
     if source is not None:
         values = {
             "missing_key": "{}",
-            "empty": json.dumps({WIKI_CANARY_TOKEN_ENV: "", door.KEY_ENV: ""}),
+            "empty": json.dumps({WIKI_CANARY_TOKEN_ENV: ""}),
             "malformed": "{",
-            "wrong_type": json.dumps({WIKI_CANARY_TOKEN_ENV: 42, door.KEY_ENV: 42}),
+            "wrong_type": json.dumps({WIKI_CANARY_TOKEN_ENV: 42}),
         }
         (tmp_path / ".router-credentials.json").write_text(values[source])
     assert not wiki_canary_token_matches("old" * 32)
-    assert door.configured() is None
 
 
 def test_current_operational_credentials_replace_previous_environment(tmp_path, monkeypatch):
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV, wiki_canary_token_matches
-    from tinyassets.onboarding import canary_sign_in as door
-
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(WIKI_CANARY_TOKEN_ENV, "old" * 32)
-    monkeypatch.setenv(door.KEY_ENV, "old" * 32)
-    monkeypatch.setenv(door.USER_ENV, "user_fixture")
     current = "new" * 32
     (tmp_path / ".router-credentials.json").write_text(
-        json.dumps({WIKI_CANARY_TOKEN_ENV: current, door.KEY_ENV: current})
+        json.dumps({WIKI_CANARY_TOKEN_ENV: current})
     )
     assert wiki_canary_token_matches(current)
     assert not wiki_canary_token_matches("old" * 32)
-    assert door.configured() == (current, "user_fixture")
 
 
 def test_platform_recovery_uses_current_admission_not_erased_identity_history(

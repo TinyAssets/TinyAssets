@@ -63,12 +63,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: ./.github/actions/canary-session
+        with:
+          mode: restore
+          chain: uptime
+          key: ${{ secrets.TINYASSETS_CANARY_SESSION_KEY }}
+          seed: ${{ secrets.TINYASSETS_CANARY_SESSION_SEED_UPTIME }}
       - uses: ./.github/actions/core-capability-canary
         continue-on-error: true
         with:
-          email: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
-          password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
-          door-key: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
@@ -76,6 +79,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}
           pushover-token: ${{ secrets.PUSHOVER_APP_TOKEN }}
+      - uses: ./.github/actions/canary-session
+        if: always()
+        with:
+          mode: save
+          chain: uptime
 
   probe:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'

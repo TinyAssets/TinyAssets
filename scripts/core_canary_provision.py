@@ -1,9 +1,7 @@
 """Make the dedicated core-canary owner ready, the way a normal user would.
 
-The canary signs in with four secrets (``TINYASSETS_CANARY_EMAIL``,
-``TINYASSETS_CANARY_PASSWORD``, ``TINYASSETS_CANARY_HMAC_KEY``,
-``TINYASSETS_CANARY_DOOR_KEY``) through the canary-only door the deployment
-pins to this one account, refuses any account whose home is not
+The canary is an ordinary account. It renews its app session like any signed-in
+phone app (``scripts/canary_session.py``), refuses any account whose home is not
 ``TINYASSETS_CANARY_UNIVERSE_ID``, and then creates or repairs, through the
 same public doors any owner uses:
 
@@ -45,18 +43,12 @@ BRANCH_SPEC = {
     "edges": [{"from": "echo", "to": "END"}],
     "state_schema": [{"name": "nonce", "type": "str"}, {"name": "echo", "type": "str"}],
 }
-SECRETS = (
-    "TINYASSETS_CANARY_EMAIL",
-    "TINYASSETS_CANARY_PASSWORD",
-    "TINYASSETS_CANARY_HMAC_KEY",
-    # The canary-only sign-in door's shared key. The deployment holds the same
-    # value and pins the one account it works for.
-    "TINYASSETS_CANARY_DOOR_KEY",
-)
-# The dedicated canary's home id (repo variable, not a secret). Sign-in refuses
-# any other account, so wrong credentials can never repair a real owner.
+SECRETS = ("TINYASSETS_CANARY_HMAC_KEY", "TINYASSETS_CANARY_SESSION_KEY")
+# The dedicated canary's home id (repo variable, not a secret). The probe
+# refuses any other account, so a wrong session can never repair a real owner.
 HOME = "TINYASSETS_CANARY_UNIVERSE_ID"
 REQUIRED = (*SECRETS, HOME)
+SESSION = "TINYASSETS_CANARY_SESSION_SEED or a saved session"
 
 
 class ProvisionError(RuntimeError):
@@ -64,22 +56,20 @@ class ProvisionError(RuntimeError):
 
 
 def credentials() -> dict | None:
-    """The canary secrets and dedicated home id, or None when any is unset."""
-    values = [os.environ.get(name, "") for name in REQUIRED]
-    if not all(values):
+    """The canary's signing key and dedicated home id, or None when anything is missing."""
+    if missing_secrets():
         return None
-    email, password, key, door_key, home = values
     return {
-        "email": email,
-        "password": password,
-        "service_hmac_key": key,
-        "door_key": door_key,
-        "universe_id": home,
+        "service_hmac_key": os.environ["TINYASSETS_CANARY_HMAC_KEY"],
+        "universe_id": os.environ[HOME],
     }
 
 
 def missing_secrets() -> list[str]:
-    return [name for name in REQUIRED if not os.environ.get(name)]
+    from scripts.canary_session import configured
+
+    missing = [name for name in REQUIRED if not os.environ.get(name)]
+    return missing if configured() else [*missing, SESSION]
 
 
 def pick_free_model(options: dict, current: dict | None) -> dict | None:

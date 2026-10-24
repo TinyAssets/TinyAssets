@@ -14,7 +14,6 @@ from tinyassets.auth.provider import OAuthProvider
 from tinyassets.connection_oauth.pkce import flows_db
 from tinyassets.onboarding import (
     approval_handoff,
-    canary_sign_in,
     inline_model_connect,
     native_sign_in,
     owner_sessions,
@@ -37,7 +36,6 @@ OPENERS = [
     ("owner_sessions", lambda root: approval_handoff.flows()),
     ("refresh_sessions", lambda root: session_store.store_dir()),
     ("native_sign_in", lambda root: native_sign_in.flows()),
-    ("canary_sign_in", lambda root: canary_sign_in._limits()),
     ("oauth_pkce", flows_db),
     ("api_keys", lambda root: ApiKeyStore(root).db()),
     ("hook_owners", HookOwners),
@@ -49,7 +47,7 @@ OPENERS = [
 
 @pytest.mark.parametrize("name,opener", OPENERS, ids=[
     "plans", "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
-    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "workos_revocations", "mcp_oauth",
+    "oauth_pkce", "api_keys", "hook_owners", "workos_revocations", "mcp_oauth",
     "mcp_oauth_connect",
 ])
 @pytest.mark.parametrize("inside", [True, False], ids=["box", "router"])
@@ -224,9 +222,6 @@ _ROLE_DISPATCH = {
     ),
     ('connection_oauth/pkce.py', 'flows_db'): (
         'Router owns OAuth flows; direct box access must refuse.'
-    ),
-    ('onboarding/canary_sign_in.py', '_limits'): (
-        'Router owns sign-in limits; direct box access must refuse.'
     ),
     ('onboarding/native_sign_in.py', 'flows'): (
         'Router owns native sign-in flows; direct box access must refuse.'

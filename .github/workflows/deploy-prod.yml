@@ -196,26 +196,33 @@ jobs:
           TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
         run: python scripts/validate_request_idempotency_hmac.py
 
+      - uses: ./.github/actions/canary-session
+        with:
+          mode: restore
+          chain: deploy
+          key: ${{ secrets.TINYASSETS_CANARY_SESSION_KEY }}
+          seed: ${{ secrets.TINYASSETS_CANARY_SESSION_SEED_DEPLOY }}
+
       - name: Verify core canary is provisioned
         id: core_canary_provision
-        # Signs in as the canary owner and creates or repairs its model,
-        # connection and branch (scripts/core_canary_provision.py).
+        # Renews the canary's ordinary app session and creates or repairs its
+        # model, connection and branch (scripts/core_canary_provision.py).
         env:
-          TINYASSETS_CANARY_EMAIL: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
-          TINYASSETS_CANARY_PASSWORD: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
-          TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           TINYASSETS_CANARY_HMAC_KEY: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           TINYASSETS_CANARY_SERVICE_URL: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
         run: |
-          # No browser install: the canary signs in through the canary-only
-          # door. This runs against the CURRENTLY deployed daemon, so the first
-          # deploy that carries that door reports not-provisioned here (a loud
-          # warning, never a rollback) and the post-deploy canary exercises it.
-          if [ -n "${TINYASSETS_CANARY_EMAIL}" ]; then
+          # No browser install: the canary renews like a signed-in phone app.
+          if [ -n "${TINYASSETS_CANARY_SESSION_KEY:-}" ]; then
             pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1
           fi
           python scripts/verify_core_canary_provision.py
+
+      - uses: ./.github/actions/canary-session
+        if: always()
+        with:
+          mode: save
+          chain: deploy
 
       - name: Resolve the core canary gate (founder waiver)
         id: canary_gate
@@ -537,38 +544,13 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_WIKI_CANARY_TOKEN"
           echo "canary bearer synced"
 
-      - name: Sync the canary sign-in door into /etc/tinyassets/env
-        # The canary-only sign-in (tinyassets/onboarding/canary_sign_in.py)
-        # needs BOTH the shared key and the pinned WorkOS user id, and 404s
-        # with either missing. OPTIONAL on purpose: until the founder creates
-        # them the deploy continues and the canary reports not-provisioned,
-        # exactly as it does for any other missing canary secret. The pair is
-        # installed in one atomic write so the door is never half-configured.
-        #
-        # This step is the whole revocation path, so absent HERE must mean
-        # absent THERE: deleting the GitHub secret is how a leaked key is
-        # revoked, and leaving the host copy would keep the door open with the
-        # value being revoked. Both names are removed instead (a no-op when the
-        # host never had them), so that deploy closes the door back to 404.
-        env:
-          TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
-          TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
+      - name: Remove the retired canary sign-in door from /etc/tinyassets/env
+        # The canary is an ordinary account now (scripts/canary_session.py);
+        # the door and its pinned account are gone. A no-op once removed.
         run: |
           set -euo pipefail
-          if [ -z "${TINYASSETS_CANARY_DOOR_KEY}" ] || [ -z "${TINYASSETS_CANARY_USER_ID}" ]; then
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID"
-            echo "::warning::canary sign-in door not configured (needs secret TINYASSETS_CANARY_DOOR_KEY and variable TINYASSETS_CANARY_USER_ID); any host copies were removed, so the route is 404 and the core canary cannot sign in"
-            exit 0
-          fi
-          if [ "${#TINYASSETS_CANARY_DOOR_KEY}" -lt 32 ]; then
-            echo "::error::TINYASSETS_CANARY_DOOR_KEY is under 32 bytes; the daemon refuses a short door key"
-            exit 1
-          fi
-          printf '%s\n%s\n' "${TINYASSETS_CANARY_DOOR_KEY}" "${TINYASSETS_CANARY_USER_ID}" \
-            | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set-pair TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID"
-          echo "canary sign-in door synced"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID"
 
       # Expected-instance state for cloud provenance admission
       # (openspec change cloud-only-runtime-admission, task 4). This MUST run
@@ -737,9 +719,6 @@ jobs:
         continue-on-error: ${{ steps.core_canary_provision.outputs.provisioned != '1' }}
         timeout-minutes: 10
         with:
-          email: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
-          password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
-          door-key: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
@@ -747,6 +726,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}
           pushover-token: ${{ secrets.PUSHOVER_APP_TOKEN }}
+
+      - uses: ./.github/actions/canary-session
+        if: always()
+        with:
+          mode: save
+          chain: deploy
 
       - name: Public MCP canary (--assert-handles)
         env:
@@ -773,9 +758,6 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           EXPECTED_SHA: ${{ steps.tag.outputs.revision }}
-          TINYASSETS_CANARY_EMAIL: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
-          TINYASSETS_CANARY_PASSWORD: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
-          TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
           TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
         run: |
@@ -783,6 +765,12 @@ jobs:
           python scripts/roll_owner_boxes.py --image-ref "${IMAGE_REF}" \
             --ssh-target "${DO_SSH_USER}@${DO_DROPLET_HOST}" --ssh-key ~/.ssh/do_deploy \
             --expected-sha "${EXPECTED_SHA}" --receipt "${RUNNER_TEMP}/owner-box-roll.json"
+
+      - uses: ./.github/actions/canary-session
+        if: always()
+        with:
+          mode: save
+          chain: deploy
 
       - name: Consume cutover eligibility and open ordinary admission after acceptance
         if: steps.deploy.outputs.cutover_admission_pending == 'true'

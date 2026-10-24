@@ -1,9 +1,8 @@
 """Sign in as the dedicated core-canary owner and make it ready, before a deploy.
 
-The canary self-provisions (``scripts/core_canary_provision.py``): from the
-four ``TINYASSETS_CANARY_*`` secrets it signs in through the canary-only door
-and creates or repairs its default model, signing connection and echo branch.
-Secret values are never printed.
+The canary self-provisions (``scripts/core_canary_provision.py``): it renews its
+ordinary app session (``scripts/canary_session.py``) and creates or repairs its
+default model, signing connection and echo branch. Secret values are never printed.
 
 Missing secrets or a failed sign-in/repair is not provisioned: this prints a
 loud warning, writes ``provisioned=0``, and exits 0. ``deploy_fail_safe.sh``

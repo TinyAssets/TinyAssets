@@ -28,7 +28,7 @@ _INBOUND_PROOF = {b"x-slack-signature", b"x-hub-signature-256",
 _SHARED_APP = {
     "/app/account/delete",
     "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
-    "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/canary-sign-in",
+    "/app/owner-sign-in", "/app/owner-sign-in/complete",
     "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
     # Sign-in navigation: its rows live in the router's owner-sessions store.
     "/app/approval-handoff", "/app/connections",
@@ -119,16 +119,15 @@ class OwnerRouter:
                 scope, receive, send)
         identity = current_identity_or_none()
         if not forwarded_path(scope["path"]):
-            # Only immutable public app assets and the independently keyed
-            # canary sign-in may bypass closed admission. Anonymous token,
-            # OAuth and billing callbacks can write shared authority too.
+            # Only immutable public app assets may bypass closed admission.
+            # Anonymous token, OAuth and billing callbacks can write shared
+            # authority too.
             path = scope["path"]
             probe = (scope["method"] in {"GET", "HEAD"} and (
                 path in {"/app", "/app/sw.js", "/app/ui-frame",
                          "/app/oauth/client-metadata.json"}
                 or path.startswith("/app/m/")))
-            canary_login = path == "/app/canary-sign-in"
-            if not probe and not canary_login and not await run_in_threadpool(
+            if not probe and not await run_in_threadpool(
                     admits, data_dir(), identity.user_id if identity else None):
                 return await JSONResponse({"error": "maintenance"}, status_code=503)(
                     scope, receive, send)
