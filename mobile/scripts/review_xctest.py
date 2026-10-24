@@ -71,6 +71,27 @@ def redact(line: str, secrets) -> str:
     return line
 
 
+# The old pattern required `file:line: error:` with no column. Xcode 26 prints
+# `file:line:column: error:` and a suite summary (`** TEST FAILED **`,
+# `with N issues`) instead, so run 40013667520 kept `"assertions": []`.
+_ASSERTION_LINE = re.compile(
+    r"ReviewVideoTests\.swift:\d+(?::\d+)?: (?:error|warning):"
+    r"|xcodebuild: error:"
+    r"|ReviewVideoTests\.swift:\d+(?::\d+)?: (?:Expectation failed|Issue recorded)"
+    r"|\*\* TEST FAILED \*\*"
+    r"|Failing tests:"
+    r"|\bwith [1-9]\d* issues?\b"
+    r"|Test [Cc]ase '.*ReviewVideoTests .*' failed"
+    r"|Verify you are human"
+    r"|Can't verify the user is human"
+)
+
+
+def assertion_lines(log: str) -> list[str]:
+    """Public failure lines. Credentials are redacted by the caller."""
+    return [line for line in log.splitlines() if _ASSERTION_LINE.search(line)]
+
+
 def export_shots(result: Path, output: Path, private: Path) -> set[str]:
     exported = private / "attachments"
     subprocess.run(
@@ -158,10 +179,10 @@ def run_test(source: Path, destination: str, output: Path, launch_only: bool = F
             found = export_shots(result, output, private) if result.exists() else set()
             result_code = 0 if process.returncode == 0 and found == expected_shots else 1
             # Only assertion lines, with credentials redacted, are useful publicly.
-            errors = []
-            for line in (private / "xcode.log").read_text(errors="replace").splitlines():
-                if re.search(r"ReviewVideoTests.swift:\d+: error:|xcodebuild: error:", line):
-                    errors.append(redact(line, credentials.values()))
+            errors = [
+                redact(line, credentials.values())
+                for line in assertion_lines((private / "xcode.log").read_text(errors="replace"))
+            ]
             summary = {
                 "passed": result_code == 0,
                 "scope": "signed-out launch only" if launch_only else "six-step review journey",
