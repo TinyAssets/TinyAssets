@@ -2,7 +2,7 @@
 """Read-only census of why connected_sources() is empty, for every owner.
 
 Awake boxes are read through the mount boxhostd already holds. Asleep images
-are attached with a private read-only XFS mount (ro,norecovery) and detached
+are attached with a private read-only XFS mount (ro,norecovery,nouuid) and detached
 before exit. Nothing here wakes a box, formats an image, or replaces one.
 
 The report is aggregate counts. It does not contain principals, tokens,
@@ -22,7 +22,7 @@ import sys
 from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 
-READONLY_MOUNT_OPTIONS = "ro,norecovery,nosuid,nodev,loop"
+READONLY_MOUNT_OPTIONS = "ro,norecovery,nouuid,nosuid,nodev,loop"
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _UID = range(300001, 400000)
 _403 = re.compile(
@@ -74,8 +74,12 @@ class LocalView:
     def is_symlink(self, rel: str) -> bool:
         return self._path(rel).is_symlink()
 
-    def is_file(self, rel: str) -> bool:
+    def is_file(self, rel: str, *, follow_symlinks: bool = False) -> bool:
         path = self._path(rel)
+        # Default rejects a symlink. The CLI opts in: Path.is_file() is true
+        # when the link's target is a regular file.
+        if follow_symlinks:
+            return path.is_file()
         return path.is_file() and not path.is_symlink()
 
     def is_dir(self, rel: str) -> bool:
@@ -115,7 +119,11 @@ class NsenterView:
     def is_symlink(self, rel: str) -> bool:
         return self._ok(["test", "-L", self._path(rel)])
 
-    def is_file(self, rel: str) -> bool:
+    def is_file(self, rel: str, *, follow_symlinks: bool = False) -> bool:
+        # test -f follows links, matching Path.is_file(). The CLI is the only
+        # caller that wants that; state files stay non-symlinks.
+        if follow_symlinks:
+            return self._ok(["test", "-f", self._path(rel)])
         return not self.is_symlink(rel) and self._ok(["test", "-f", self._path(rel)])
 
     def is_dir(self, rel: str) -> bool:
@@ -243,7 +251,8 @@ def _image_binary(source, cli_root: Path) -> str | None:
             Path("venv/bin") / install["bin"] if install["manager"] == "pip"
             else Path("node_modules/.bin") / install["bin"]
         )
-        if binary.is_symlink() or not binary.is_file():
+        # npm ci links node_modules/.bin/<bin>. Path.is_file() accepts that.
+        if not binary.is_file():
             return "binary_missing"
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return "binary_lock_mismatch"
@@ -257,7 +266,7 @@ def _owner_binary(view, source) -> bool:
         if install["manager"] == "pip"
         else f".ta-cli/{source['id']}/node_modules/.bin/{install['bin']}"
     )
-    return view.is_file(relative)
+    return view.is_file(relative, follow_symlinks=True)
 
 
 def _load_vault(path: Path | None) -> tuple[dict, str | None]:

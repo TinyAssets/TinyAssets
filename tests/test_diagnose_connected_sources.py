@@ -240,6 +240,31 @@ def test_image_lock_mismatch_precedes_the_marker_and_a_good_image_supplies_the_b
     assert result["subscription"] == [None]
 
 
+def test_image_npm_symlink_binary_is_not_missing(tmp_path, shipped):
+    sources, digest = shipped
+    source = sources["claude-code"]
+    install = source.sign_in["cli_login"]["install"]
+    expected = digest({"install": install, "registry": source["egress"]["registry"]})
+    directory = tmp_path / "cli" / "claude-code"
+    lock = b'{"name":"claude"}\n'
+    directory.mkdir(parents=True)
+    (directory / "package-lock.json").write_bytes(lock)
+    (directory / "installed.json").write_text(json.dumps({
+        "source": expected, "lock": hashlib.sha256(lock).hexdigest()}), encoding="utf-8")
+    target = directory / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"bin")
+    binary = directory / "node_modules" / ".bin" / install["bin"]
+    binary.parent.mkdir(parents=True)
+    binary.symlink_to(Path("..") / "@anthropic-ai" / "claude-code" / "cli.js")
+    assert binary.is_symlink() and binary.is_file()
+    owner = tmp_path / "owner"
+    _definitions(owner, [_row("claude-code")])
+    _marker(owner, "claude-code", digest(source))
+    result = _inspect(owner, None, cli_root=directory.parent)
+    assert result["subscription"] != ["binary_missing"]
+
+
 def test_symlink_vault_is_not_followed(tmp_path, shipped):
     sources, digest = shipped
     source = sources["claude-code"]
@@ -349,11 +374,11 @@ def test_asleep_mount_is_read_only_and_the_script_does_not_mutate():
     image, dest = Path("/var/lib/boxhostd/owners/300001.img"), Path("/tmp/ta-ro-300001")
     assert diag.mount_argv(image, dest) == [
         "mount", "-t", "xfs", "-o", diag.READONLY_MOUNT_OPTIONS, str(image), str(dest)]
-    assert diag.READONLY_MOUNT_OPTIONS == "ro,norecovery,nosuid,nodev,loop"
+    assert diag.READONLY_MOUNT_OPTIONS == "ro,norecovery,nouuid,nosuid,nodev,loop"
     assert diag.umount_argv(dest) == ["umount", "--no-canonicalize", str(dest)]
     text = SCRIPT.read_text(encoding="utf-8")
     for banned in (
-        "nouuid", "mkfs", "volumes.restore", "umount -l", "umount -f", "os.replace",
+        "mkfs", "volumes.restore", "umount -l", "umount -f", "os.replace",
         "attach(", "lease(", "migrate(", "query_ledger(", "require_accepted(",
         "SubscriptionRuntime", "authenticated(", "context(", "systemctl restart",
     ):
