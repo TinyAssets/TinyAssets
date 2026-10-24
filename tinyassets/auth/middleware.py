@@ -1381,7 +1381,11 @@ class AuthContextMiddleware:
                     await self.app(scope, receive, send)
                     return
                 linking_body = None
-                if not self.router and method == "POST" and path in ("/mcp", "/mcp/"):
+                # The owner router does not change this door. An anonymous
+                # tools/call has no owner to forward to, and a hosted connector
+                # that cached the catalog must get the linking result rather
+                # than a transport 401. Initialize stays on the 401 path.
+                if method == "POST" and path in ("/mcp", "/mcp/"):
                     request_body, _, disconnected, oversized = await _buffer_request_body(receive)
                     if oversized:
                         await _send_payload_too_large_413(send)
