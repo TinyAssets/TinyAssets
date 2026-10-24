@@ -298,6 +298,36 @@ production on Simulator; that proof alone is not Apple's required device video.
    latest-public-iOS request before sending it to the lead. Apple attachment and
    resubmission still require the lead's explicit go.
 
+### Exempt the review account from AuthKit's "Verify you are human" check
+
+Approved: the App Store review account (and the runners that sign in as it) may skip
+that check. The review test must not tap the checkbox or otherwise defeat it
+(`tinyassets/onboarding/canary_sign_in.py`). The sheet is Hosted AuthKit, opened by
+`ASWebAuthenticationSession` at the production authorization server
+`https://unassuming-environment-16.authkit.app`. The widget is Cloudflare Turnstile
+that WorkOS embeds on that page. It is not configured in this repo: `deploy/cloudflare-worker`
+has no Turnstile site and no WAF skip, and a skip rule on the `tinyassets.io` zone
+does not see requests to `*.authkit.app`.
+
+WorkOS's own note (Radar → Troubleshoot Turnstile verification,
+<https://workos.com/docs/authkit/radar>): the message `Can't verify the user is human`
+is not a Radar challenge. Do not change Cloudflare or Turnstile settings. Radar custom
+restrictions that Allow this user do not skip Turnstile. Support disables it only after
+explicit permission, which is this item.
+
+1. From the WorkOS account owner, email `support@workos.com`.
+2. Name the production environment `unassuming-environment-16.authkit.app`
+   (not `inventive-van-62-staging.authkit.app`).
+3. Name the affected user as the App Store review account. Its address is the
+   `app-store` environment secret `APP_STORE_REVIEW_USERNAME`. Do not include
+   `APP_STORE_REVIEW_PASSWORD` or any other secret.
+4. Name the clients: GitHub `macos-15` Simulator runners and AWS Device Farm in
+   `us-west-2`. Give one recent time: simulator job `120674283255` in run
+   `40013667520` (2026-10-23, signed-out shot only, then the journey stopped).
+5. Quote the page text `Verify you are human` / `Can't verify the user is human`.
+6. Give permission to exempt that one account only. Ask them not to turn Turnstile
+   off for every user.
+
 Optional hardening: set `prevent_self_review` and `can_admins_bypass` only if another available reviewer preserves the founder's approval path; stricter settings can block a sole founder's own dispatches.
 
 ```json
