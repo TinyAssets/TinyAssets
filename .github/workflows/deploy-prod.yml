@@ -51,6 +51,11 @@ on:
         required: false
         type: boolean
         default: false
+      owner_box_roll_only:
+        description: 'Publish the harness the running daemon already uses onto every owner box (select_image, then sleep owners that are already awake). Does not swap the daemon image, does not restore a snapshot, and does not wake an asleep owner. Then census every owner volume. Mutually exclusive with owner_volume_audit_only.'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # One deploy at a time; never cancel an in-flight deploy mid-swap.
@@ -84,9 +89,26 @@ permissions:
   actions: read
 
 jobs:
+  dispatch-conflict:
+    # No secrets. A mixed dispatch must not swap, roll, or look like a census.
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.owner_box_roll_only &&
+      inputs.owner_volume_audit_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse mixed dispatch
+        run: |
+          echo "::error::owner_box_roll_only and owner_volume_audit_only cannot be combined"
+          exit 1
+
   owner-volume-audit:
     # Read-only. Same mutation group as deploy so a census cannot race a restart.
-    if: github.event_name == 'workflow_dispatch' && inputs.owner_volume_audit_only
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.owner_volume_audit_only &&
+      inputs.owner_box_roll_only != true
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 10
@@ -118,15 +140,7 @@ jobs:
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             'sudo python3 - audit --baseline /var/lib/tinyassets-deploy/owner-image-hold.json' \
             < scripts/owner_volume_audit.py | tee "$out"
-          python3 - "$out" <<'PY'
-          import json, sys
-          doc = json.load(open(sys.argv[1], encoding="utf-8"))
-          print(
-              f"owners={doc.get('owners')} affected={doc.get('affected')} "
-              f"ok={doc.get('ok')} baseline={doc.get('baseline')} "
-              f"failures={','.join(doc.get('failures') or []) or 'none'}"
-          )
-          PY
+          python3 -c 'import json,sys; doc=json.load(open(sys.argv[1],encoding="utf-8")); fails=",".join(doc.get("failures") or []) or "none"; print("owners=%s affected=%s ok=%s baseline=%s failures=%s" % (doc.get("owners"), doc.get("affected"), doc.get("ok"), doc.get("baseline"), fails))' "$out"
 
       - name: Upload owner volume census
         if: always()
@@ -137,12 +151,103 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  owner-box-roll:
+    # The running daemon's harness, not a new image. select_image plus sleep of
+    # owners that are already awake. No snapshot restore and no image swap.
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.owner_box_roll_only &&
+      inputs.owner_volume_audit_only != true
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 40
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${DO_DROPLET_HOST:?}"
+          : "${DO_SSH_USER:?}"
+          : "${SSH_KEY:?}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Publish the running harness onto every owner box
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          ref="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "docker inspect -f '{{.Image}}' tinyassets-daemon 2>/dev/null | xargs -r docker image inspect -f '{{index .RepoDigests 0}}' 2>/dev/null")"
+          case "$ref" in
+            *@sha256:*) ;;
+            *) ref="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                 "grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env | head -1 | cut -d= -f2-")" ;;
+          esac
+          if ! printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9./_-]+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::running daemon has no immutable image ref"
+            exit 1
+          fi
+          echo "publishing the running daemon image"
+          set +e
+          out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo python3 - --control --image-ref ${ref}" \
+            < scripts/roll_owner_boxes.py)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | python3 -c 'import json,sys; lines=[ln for ln in sys.stdin.read().splitlines() if ln.startswith("{")]; assert lines, "owner roll returned no JSON"; doc=json.loads(lines[-1]); assert isinstance(doc, dict) and "error" not in doc, "owner roll error"; inc=doc.get("incomplete"); assert type(inc) is int and inc==0, "owner roll incomplete"; print("owner_roll=complete slept=%s asleep=%s" % (doc.get("slept"), doc.get("asleep")))'
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::owner roll control failed rc=${rc}"
+            exit 1
+          fi
+
+      - name: Census every owner volume
+        if: always()
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/owner-volume-audit.json"
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            'sudo python3 - audit --baseline /var/lib/tinyassets-deploy/owner-image-hold.json' \
+            < scripts/owner_volume_audit.py | tee "$out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          python3 -c 'import json,sys; doc=json.load(open(sys.argv[1],encoding="utf-8")); fails=",".join(doc.get("failures") or []) or "none"; print("owners=%s affected=%s ok=%s baseline=%s failures=%s" % (doc.get("owners"), doc.get("affected"), doc.get("ok"), doc.get("baseline"), fails)); assert doc.get("ok") is True, "owner census is not ok"' "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::owner census failed rc=${rc}"
+            exit 1
+          fi
+
+      - name: Upload owner volume census
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owner-box-roll-census-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/owner-volume-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+
   deploy:
-    # Skip failed build-image runs. A manual audit-only dispatch skips the swap.
+    # Skip failed build-image runs. Audit-only and roll-only dispatches skip the swap.
     if: >
       (
         github.event_name == 'workflow_dispatch' &&
-        inputs.owner_volume_audit_only != true
+        inputs.owner_volume_audit_only != true &&
+        inputs.owner_box_roll_only != true
       ) ||
       (
         github.event_name == 'workflow_run' &&
@@ -752,7 +857,7 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/deploy_fail_safe.sh deploy/install-tinyassets-env.sh \
               deploy/snapshot_candidate_evidence.sh scripts/hotfix.py \
-              scripts/owner_volume_audit.py \
+              scripts/owner_volume_audit.py scripts/roll_owner_boxes.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               scripts/turns_in_flight.py \
@@ -762,7 +867,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 RECOVER_DIRTY_BUNDLE=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 RECOVER_DIRTY_BUNDLE=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
@@ -773,6 +878,8 @@ jobs:
           echo "deployed_image=${deployed}" >> "$GITHUB_OUTPUT"
           pending="$(printf '%s\n' "${out}" | awk -F= '/^cutover_admission_pending=/{print $2}' | tail -1)"
           echo "cutover_admission_pending=${pending}" >> "$GITHUB_OUTPUT"
+          owner_roll="$(printf '%s\n' "${out}" | awk -F= '/^owner_roll=/{print $2}' | tail -1)"
+          echo "owner_roll=${owner_roll}" >> "$GITHUB_OUTPUT"
           # rc 0 = deployed new, 2 = rolled back to previous (prod still up), 1/3 = hard fail.
           if [ "${rc}" -eq 0 ]; then
             echo "::notice::deployed ${deployed}"
@@ -1171,7 +1278,7 @@ jobs:
           # same guard used by deploy health failure and manual bundle restore.
           # SSH/read failure cannot fall through to another rollback command.
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=20 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo HEALTH_TIMEOUT=180 ON_POST_COMMIT_FAILURE='${ON_POST_COMMIT_FAILURE}' POST_COMMIT_REASON='${POST_COMMIT_REASON}' IMAGE_ROLLBACK_ALLOWED='${IMAGE_ROLLBACK_ALLOWED}' ROLLBACK_IMAGE='${PREV_IMAGE}' bash /tmp/deploy_fail_safe.sh --post-deploy-failure '${IMAGE_REF}'" 2>&1)"
+            "sudo HEALTH_TIMEOUT=180 ON_POST_COMMIT_FAILURE='${ON_POST_COMMIT_FAILURE}' POST_COMMIT_REASON='${POST_COMMIT_REASON}' IMAGE_ROLLBACK_ALLOWED='${IMAGE_ROLLBACK_ALLOWED}' ROLLBACK_IMAGE='${PREV_IMAGE}' OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py bash /tmp/deploy_fail_safe.sh --post-deploy-failure '${IMAGE_REF}'" 2>&1)"
           rc=$?
           printf '%s\n' "$out"
           if [ "$rc" != 0 ] && [ "$rc" != 2 ] && ! printf '%s\n' "$out" | grep -q '^deploy_result='; then

@@ -2589,6 +2589,18 @@ def _already_owner_box_deploy(box: Box, store: Path, **overrides):
     return completed
 
 
+def _roll_stub(path: Path, source: str) -> str:
+    path.write_text(source, encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+_ROLL_OK = (
+    "import json, sys\n"
+    "json.dump({'slept': 0, 'asleep': 1, 'incomplete': 0}, sys.stdout)\n"
+)
+
+
 @pytest.mark.verifies("owner-daemon-in-box:C2")
 def test_owner_image_hold_allows_an_unchanged_store(box: Box, tmp_path: Path):
     store = tmp_path / "owners"
@@ -2601,9 +2613,12 @@ def test_owner_image_hold_allows_an_unchanged_store(box: Box, tmp_path: Path):
         box, store,
         OWNER_VOLUME_AUDIT=str(REPO / "scripts" / "owner_volume_audit.py"),
         OWNER_IMAGE_BASELINE=str(baseline),
+        OWNER_ROLL_SCRIPT=_roll_stub(tmp_path / "roll.py", _ROLL_OK),
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert _result(completed) == "deployed"
+    assert "owner_roll=complete" in completed.stdout
+    assert "owner roll: published" in completed.stdout
     assert "owner image hold: record ok" in completed.stdout
     assert "owner image hold: check ok" in completed.stdout
     assert image.stat().st_ino == before.st_ino
@@ -2651,3 +2666,62 @@ def test_owner_image_hold_refuses_to_restart_without_the_audit_program(
     assert completed.returncode != 0, completed.stdout + completed.stderr
     assert _result(completed) != "deployed"
     assert "audit program missing" in completed.stderr
+
+
+@pytest.mark.verifies("owner-daemon-in-box:C12")
+def test_owner_roll_refuses_to_finish_deployed_when_control_fails(
+        box: Box, tmp_path: Path):
+    store = tmp_path / "owners"
+    store.mkdir()
+    image = store / "300001.img"
+    image.write_bytes(b"x" * 8192)
+    before = image.stat()
+    completed = _already_owner_box_deploy(
+        box, store,
+        OWNER_VOLUME_AUDIT=str(REPO / "scripts" / "owner_volume_audit.py"),
+        OWNER_IMAGE_BASELINE=str(tmp_path / "hold.json"),
+        OWNER_ROLL_SCRIPT=_roll_stub(tmp_path / "roll.py", "import sys\nsys.exit(1)\n"),
+    )
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+    assert _result(completed) == "owner_roll_incomplete"
+    assert "deploy_result=deployed" not in completed.stdout
+    assert "control failed" in completed.stderr
+    assert image.stat().st_ino == before.st_ino
+    assert image.stat().st_size == before.st_size
+
+
+@pytest.mark.verifies("owner-daemon-in-box:C12")
+def test_owner_roll_refuses_an_incomplete_drain(box: Box, tmp_path: Path):
+    store = tmp_path / "owners"
+    store.mkdir()
+    (store / "300001.img").write_bytes(b"x" * 8192)
+    completed = _already_owner_box_deploy(
+        box, store,
+        OWNER_VOLUME_AUDIT=str(REPO / "scripts" / "owner_volume_audit.py"),
+        OWNER_IMAGE_BASELINE=str(tmp_path / "hold.json"),
+        OWNER_ROLL_SCRIPT=_roll_stub(
+            tmp_path / "roll.py",
+            "import json, sys\n"
+            "json.dump({'slept': 0, 'asleep': 0, 'incomplete': 1}, sys.stdout)\n",
+        ),
+    )
+    assert _result(completed) == "owner_roll_incomplete"
+    assert completed.returncode != 0
+    assert "deploy_result=deployed" not in completed.stdout
+    assert "incomplete or unreadable" in completed.stderr
+
+
+@pytest.mark.verifies("owner-daemon-in-box:C12")
+def test_owner_roll_refuses_to_finish_when_the_program_is_missing(
+        box: Box, tmp_path: Path):
+    store = tmp_path / "owners"
+    store.mkdir()
+    (store / "300001.img").write_bytes(b"x" * 8192)
+    completed = _already_owner_box_deploy(
+        box, store,
+        OWNER_VOLUME_AUDIT=str(REPO / "scripts" / "owner_volume_audit.py"),
+        OWNER_IMAGE_BASELINE=str(tmp_path / "hold.json"),
+    )
+    assert _result(completed) == "owner_roll_incomplete"
+    assert "roll program missing" in completed.stderr
+    assert "deploy_result=deployed" not in completed.stdout

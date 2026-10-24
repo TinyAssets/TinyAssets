@@ -290,10 +290,49 @@ def test_audit_dispatch_skips_the_image_swap():
     assert "sudo python3 - audit --baseline /var/lib/tinyassets-deploy/owner-image-hold.json" in text
     deploy = text.split("\n  deploy:\n", 1)[1].split("\n    runs-on:", 1)[0]
     assert "inputs.owner_volume_audit_only != true" in deploy
+    assert "inputs.owner_box_roll_only != true" in deploy
     assert "github.event.workflow_run.conclusion == 'success'" in deploy
-    audit_job = text.split("\n  owner-volume-audit:\n", 1)[1].split("\n  deploy:\n", 1)[0]
+    audit_job = text.split("\n  owner-volume-audit:\n", 1)[1].split("\n  owner-box-roll:\n", 1)[0]
     assert "inputs.owner_volume_audit_only" in audit_job
+    assert "inputs.owner_box_roll_only != true" in audit_job
     assert "environment: production" in audit_job
+
+
+@pytest.mark.verifies("owner-daemon-in-box:C12")
+def test_roll_only_dispatch_publishes_the_running_image_and_then_censuses():
+    text = (REPO / ".github" / "workflows" / "deploy-prod.yml").read_text(encoding="utf-8")
+    assert "owner_box_roll_only" in text
+    assert "Does not swap the daemon image" in text
+    assert "does not restore a snapshot" in text
+    assert "OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py" in text
+    assert "scripts/roll_owner_boxes.py" in text
+    assert "--post-deploy-failure" in text
+    rollback = text.split("--post-deploy-failure", 1)[0].rsplit("sudo ", 1)[1]
+    assert "OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py" in rollback
+    assert "OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py" in rollback
+    conflict = text.split("\n  dispatch-conflict:\n", 1)[1].split("\n  owner-volume-audit:\n", 1)[0]
+    assert "inputs.owner_box_roll_only" in conflict
+    assert "inputs.owner_volume_audit_only" in conflict
+    assert "environment: production" not in conflict
+    roll = text.split("\n  owner-box-roll:\n", 1)[1].split("\n  deploy:\n", 1)[0]
+    assert "inputs.owner_box_roll_only" in roll
+    assert "inputs.owner_volume_audit_only != true" in roll
+    assert "environment: production" in roll
+    assert "--control --image-ref" in roll
+    assert "volumes.restore" not in roll
+    assert "owner census is not ok" in roll
+    script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    for marker in ("finish deployed", "finish rolled_back"):
+        start = 0
+        found = 0
+        while True:
+            pos = script.find(marker, start)
+            if pos < 0:
+                break
+            found += 1
+            assert "publish_owner_harness" in script[max(0, pos - 700):pos]
+            start = pos + len(marker)
+        assert found
 
 
 def test_measure_tree_does_not_follow_a_run_store_symlink(tmp_path: Path):

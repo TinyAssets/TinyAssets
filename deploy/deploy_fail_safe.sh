@@ -884,6 +884,59 @@ owner_image_hold() {
   return 0
 }
 
+# Publish the accepted image into images.json before this script exits.
+# A harness-current flip does not roll a box: the next wake keeps the recorded
+# rootfs while that directory still exists. GitHub cannot run a later step
+# after it cancels the job, so the workflow roll is not the publication. This
+# is the same broker deploy() that roll uses: select_image, then ordinary
+# sleep of owners that are already awake. It does not restore an image, format
+# a volume, or wake an asleep owner. The host lock stays held; that drain does
+# not take the lock. A missing store (deploy tests, a host with no owner boxes)
+# is a no-op. A store without the roll program refuses, so success cannot be
+# reported while owner boxes are still unrolled.
+publish_owner_harness() {
+  local image="$1" store script out rc line
+  if [ "${BOX_CANDIDATE_LAYOUT:-}" != owner-box ]; then
+    log "owner roll: layout is not owner-box; nothing to publish"
+    return 0
+  fi
+  store="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
+  if [ -L "$store" ]; then
+    err "owner roll: store path is a symlink"
+    return 1
+  fi
+  if [ ! -d "$store" ]; then
+    log "owner roll: no owner store; nothing to publish"
+    return 0
+  fi
+  script="${OWNER_ROLL_SCRIPT:-}"
+  if [ -z "$script" ] || [ ! -f "$script" ] || [ -L "$script" ]; then
+    err "owner roll: roll program missing; refusing to finish with owner boxes unrolled"
+    return 1
+  fi
+  rc=0
+  out="$(python3 "$script" --control --image-ref "$image")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    err "owner roll: control failed"
+    return 1
+  fi
+  line="$(printf '%s\n' "$out" | awk '/^\{/{line=$0} END{print line}')"
+  if ! printf '%s\n' "$line" | python3 -c '
+import json, sys
+doc = json.loads(sys.stdin.read())
+if not isinstance(doc, dict) or "error" in doc:
+    raise SystemExit(1)
+incomplete = doc.get("incomplete")
+if type(incomplete) is not int or incomplete != 0:
+    raise SystemExit(1)
+'; then
+    err "owner roll: incomplete or unreadable"
+    return 1
+  fi
+  log "owner roll: published"
+  return 0
+}
+
 # Converge the production services onto TINYASSETS_IMAGE. Drives docker
 # compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
 # never depends on the systemd unit being startable; the unit is then asked to
@@ -2915,6 +2968,15 @@ if [ "$MIGRATION_OK" = "1" ]; then
       [ "$pending_rc" = 1 ] || { echo "deploy_result=cutover_state_unreadable"; exit 3; }
     fi
     log "deploy healthy on ${NEW_IMAGE}"
+    # Publish before either success exit. A failed publish leaves this image
+    # up: select may already have happened, and swapping the daemon back would
+    # not put owner boxes on a known harness. Roll-only can finish it.
+    if ! publish_owner_harness "$NEW_IMAGE"; then
+      clear_dirty || true
+      echo "deploy_result=owner_roll_incomplete"
+      exit 1
+    fi
+    echo "owner_roll=complete"
     if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
       clear_dirty || true
       finish rolled_back "$NEW_IMAGE" 2
@@ -3008,6 +3070,13 @@ if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
   discard_candidate_harness
   clear_dirty || true
+  # The daemon is the previous image. Owner boxes stay on the recorded rootfs
+  # until that image is published too.
+  if ! publish_owner_harness "$PREV_IMAGE"; then
+    echo "deploy_result=owner_roll_incomplete"
+    exit 1
+  fi
+  echo "owner_roll=complete"
   finish rolled_back "$PREV_IMAGE" 2
 fi
 
