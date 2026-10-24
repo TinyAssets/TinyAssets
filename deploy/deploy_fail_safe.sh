@@ -867,21 +867,30 @@ restart_stack() {
   systemctl stop "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
-  # image's startup. Docker SIGKILLs after --time; reaching that bound means
-  # a live turn may have been cut, even when docker stop returns success.
-  # Compose keeps its own bound in case another writer recreated the daemon.
-  local started elapsed
+  # image's startup. Docker SIGKILLs after --time. That cuts a turn only when
+  # a healthy daemon may still be serving one. A proved-idle probe, or a
+  # daemon that is already unhealthy, means the process is wedged and not
+  # serving: SIGKILL must not refuse the swap (the 143b1a92 rollback image
+  # never exits on SIGTERM, so every forward deploy deadlocked on this bound).
+  # A non-zero `docker stop` still refuses. Compose keeps its own bound in
+  # case another writer recreated the daemon.
+  local started elapsed prior_state=""
   if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+    prior_state="$(container_state "$DAEMON_CONTAINER")"
     started="$SECONDS"
     if ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"; then
       err "the old daemon did not stop cleanly"
       return 1
     fi
     elapsed=$((SECONDS - started))
-    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s)"
+    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s, prior ${prior_state:-unknown})"
     if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
-      err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
-      return 1
+      if [ "$TURNS_IDLE_PROVED" = "1" ] || [ "$prior_state" = "unhealthy" ]; then
+        log "old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound (prior ${prior_state:-unknown}, idle proved ${TURNS_IDLE_PROVED}); no in-flight turn, continuing the swap"
+      else
+        err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
+        return 1
+      fi
     fi
   fi
   # A boxhostd restart during rollback replaces /run/tinyassets-boxhostd with a

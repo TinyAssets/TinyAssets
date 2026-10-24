@@ -1743,6 +1743,87 @@ def test_recover_dirty_bundle_refuses_pre_traffic_cutover(box: Box):
     assert box.live() == before
 
 
+def _drain_bound_s() -> int:
+    for line in (REPO / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8").splitlines():
+        if line.startswith("MAX_DAEMON_STOP_GRACE_S="):
+            return int(line.split("=", 1)[1])
+    raise AssertionError("MAX_DAEMON_STOP_GRACE_S missing")
+
+
+def _daemon_health(box: Box, health: str) -> None:
+    state = box.docker_state_json()
+    state["containers"]["tinyassets-daemon"]["health"] = health
+    state["containers"]["tinyassets-daemon"]["status"] = "running"
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_idle_or_unhealthy_daemon_at_the_drain_bound_still_swaps(box: Box):
+    """A wedged daemon that ignores SIGTERM must not block the next image.
+
+    The forward path has already proved no turn is in flight. Reaching the
+    stop grace then means docker SIGKILLed a process that was not serving,
+    including when its health is still reported healthy. A rollback that
+    never ran that probe still continues when the running daemon is unhealthy.
+    """
+    box.stage_bundle()
+    box.set_docker_state(stop_delay_s=_drain_bound_s() + 1)
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    assert "prior healthy, idle proved 1" in completed.stdout
+    assert "no in-flight turn, continuing the swap" in completed.stdout
+    assert "refusing this deploy rather than accepting a cut turn" not in (
+        completed.stdout + completed.stderr
+    )
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == NEW_IMAGE
+
+    _daemon_health(box, "unhealthy")
+    state = box.docker_state_json()
+    state["stop_delay_s"] = _drain_bound_s() + 1
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert _result(restored) == "deployed"
+    assert "no in-flight turn, continuing the swap" in restored.stdout
+    assert "idle proved 0" in restored.stdout
+    assert box.env_image() == OLD_IMAGE
+
+
+def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box: Box):
+    """A healthy daemon that was not proved idle is still a cut turn."""
+    box.stage_bundle()
+    deployed = box.run(NEW_IMAGE)
+    assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+    state = box.docker_state_json()
+    state["stop_delay_s"] = _drain_bound_s() + 1
+    state["containers"]["tinyassets-daemon"]["health"] = "healthy"
+    state["containers"]["tinyassets-daemon"]["status"] = "running"
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    marked = len(box.docker_calls_text().splitlines())
+
+    refused = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    assert _result(refused) == "rollback_failed"
+    assert "refusing this deploy rather than accepting a cut turn" in refused.stderr
+    assert "no in-flight turn, continuing the swap" not in refused.stdout
+    calls = box.docker_calls_text().splitlines()[marked:]
+    assert not any(" up " in line and "compose" in line for line in calls)
+
+
+def test_a_failed_docker_stop_still_refuses_an_unhealthy_daemon(box: Box):
+    """The grace waiver applies only after docker stop itself succeeds."""
+    box.stage_bundle()
+    _daemon_health(box, "unhealthy")
+    box.set_docker_state(stop_refused=True)
+    refused = box.run(NEW_IMAGE)
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    assert _result(refused) == "rollback_failed"
+    assert "did not stop cleanly" in refused.stderr
+    assert "no in-flight turn, continuing the swap" not in refused.stdout
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == OLD_IMAGE
+
+
 def test_restore_bundle_clears_dirty_marker_and_stops_broker(box: Box):
     """``--restore-bundle`` clears ``bundle-dirty`` after it converges.
 
