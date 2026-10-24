@@ -28,6 +28,7 @@ def chain(monkeypatch, tmp_path):
     return tmp_path / "state", sent, post
 
 
+@pytest.mark.verifies("canary-sign-in:The canary is an ordinary account")
 def test_renewal_stores_the_rotated_handle_before_returning(chain):
     state, sent, post = chain
     post(
@@ -45,6 +46,7 @@ def test_renewal_stores_the_rotated_handle_before_returning(chain):
     )
 
 
+@pytest.mark.verifies("canary-sign-in:Each workflow keeps its own sealed chain")
 @pytest.mark.parametrize(
     "status,code", [(401, "canary_signed_out"), (503, "canary_renewal_failed")]
 )
@@ -57,6 +59,7 @@ def test_failed_renewal_keeps_the_current_handle(chain, status, code):
     assert canary_session.unseal(state.read_text()) == "h1"
 
 
+@pytest.mark.verifies("canary-sign-in:Each workflow keeps its own sealed chain")
 def test_a_sealed_handle_needs_the_key(chain, monkeypatch):
     sealed = canary_session.seal("h")
     monkeypatch.setenv(

@@ -351,6 +351,8 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             monkeypatch=monkeypatch, upstream=_boom, data_dir=str(tmp_path))
         assert status == 401 and body["error"] == "no_refresh_token"
         assert not calls
+    # The other owner's separate device session is untouched, value and all.
+    assert session_store.read(refresh_handles["bob"][2])[0] == "bob-other-device"
     assert owner_sessions.lookup("alice-cookie") is None
     assert owner_sessions.lookup("bob-cookie") is not None
     assert approval_handoff.load("a" * 43) is None

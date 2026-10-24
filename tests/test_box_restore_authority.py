@@ -492,6 +492,8 @@ def test_missing_current_operational_credential_never_uses_environment(
         }
         (tmp_path / ".router-credentials.json").write_text(values[source])
     assert not wiki_canary_token_matches("old" * 32)
+    # No current value means no bearer matches at all, not just the old one.
+    assert not wiki_canary_token_matches("new" * 32)
 
 
 def test_current_operational_credentials_replace_previous_environment(tmp_path, monkeypatch):
@@ -504,6 +506,7 @@ def test_current_operational_credentials_replace_previous_environment(tmp_path, 
     )
     assert wiki_canary_token_matches(current)
     assert not wiki_canary_token_matches("old" * 32)
+    assert not wiki_canary_token_matches(current + "x")
 
 
 def test_platform_recovery_uses_current_admission_not_erased_identity_history(
