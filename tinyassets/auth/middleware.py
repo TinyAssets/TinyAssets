@@ -30,13 +30,7 @@ from tinyassets.auth.provider import (
     action_scope_for,
     create_provider,
 )
-from tinyassets.auth.wiki_canary import (
-    canary_request_allowed,
-    is_exact_wiki_canary_request,
-    reset_wiki_canary_authority,
-    set_wiki_canary_authority,
-    wiki_canary_token_matches,
-)
+from tinyassets.auth.wiki_canary import canary_request_allowed, wiki_canary_token_matches
 
 logger = logging.getLogger("universe_server.auth")
 
@@ -1227,7 +1221,6 @@ class AuthContextMiddleware:
         previous: Token[Identity | None] = _current_identity.set(None)
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
         previous_boundary: Token[str | None] = _current_request_boundary_id.set(None)
-        previous_canary = set_wiki_canary_authority(False)
         previous_router = router_authentication.set(self.router)
         try:
             trusted = scope.get("tinyassets_router_identity")
@@ -1301,13 +1294,12 @@ class AuthContextMiddleware:
                     if disconnected or not canary_request_allowed(body):
                         await _send_forbidden_403(
                             send, "the canary bearer may only initialize, list tools, "
-                            "read status, and write its own probe page"
+                            "and read status"
                         )
                         return
                     receive = _replay_receive(messages, receive)
                     _current_identity.set(CANARY)
                     _current_bearer_present.set(True)
-                    set_wiki_canary_authority(is_exact_wiki_canary_request(body))
                     canary_authorized = True
             # The inbound webhook receiver's sole boundary is its unguessable URL
             # token + owner-bound handler; a generic channel may POST with its OWN
@@ -1420,7 +1412,6 @@ class AuthContextMiddleware:
                 observe_identity(_current_identity.get())
             except Exception:
                 logger.exception("session trail identity snapshot failed")
-            reset_wiki_canary_authority(previous_canary)
             router_authentication.reset(previous_router)
             _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)

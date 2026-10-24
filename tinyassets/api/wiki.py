@@ -111,30 +111,6 @@ def _wiki_log_path() -> Path:
     return _wiki_root() / "log.md"
 
 
-def _write_reserved_wiki_canary(content: str) -> str:
-    """Write only the reserved uptime draft, with no other wiki mutation."""
-    from tinyassets.auth.wiki_canary import WIKI_CANARY_RELATIVE_PATH
-
-    if not content:
-        return json.dumps({"error": "content is required."})
-    draft_path = _wiki_root() / WIKI_CANARY_RELATIVE_PATH
-    try:
-        ensure_data_directory(draft_path.parent)
-        is_new = not draft_path.exists()
-        write_data_path(draft_path, content)
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to write reserved canary draft: {exc}"})
-    return json.dumps({
-        "path": WIKI_CANARY_RELATIVE_PATH,
-        "status": "drafted" if is_new else "updated",
-        "note": (
-            "Drafted reserved uptime canary page."
-            if is_new
-            else "Updated reserved uptime canary page."
-        ),
-    })
-
-
 def _ensure_wiki_scaffold(wiki_root: Path) -> None:
     """Ensure the wiki tree exists so read/list/search don't error on a
     fresh deploy (Task #6 — post-scrub droplet boot has an empty

@@ -240,8 +240,7 @@ identity `canary`. The canary SHALL hold no capability set; instead the auth
 middleware SHALL admit a request under it only when every item of its
 JSON-RPC body (single or batch) is one of: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call get_status` with no
-arguments, `tools/call read_graph` with `target=status`, or the wiki canary's
-exact `write_page` / `read_page` shapes. Exact `GET /mcp/pulse` is also
+arguments, or `tools/call read_graph` with `target=status`. Exact `GET /mcp/pulse` is also
 admitted under the canary bearer. Any other item SHALL be refused before
 dispatch. Every probe script in `scripts/` that calls the MCP endpoint
 SHALL send the bearer; without the variable set the script SHALL exit 2
