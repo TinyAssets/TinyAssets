@@ -108,6 +108,32 @@ def pending(identities, *, include_running=True):
                 if admission(db, owner).state in {"admitted", "suspended"}]
 
 
+def pending_counts(identities, *, include_running=False):
+    """Counts for the same rows as pending(). Principals stay in the database."""
+    counts = {}
+    cold_before = time.time() - COLD_AFTER
+    with closing(identities._connect(write=False)) as db:
+        rows = db.execute(
+            "SELECT v.principal, v.work, v.local, v.asleep_at, v.snapshot_id, "
+            "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal) "
+            "FROM owner_volumes v JOIN owner_identities i "
+            "ON i.principal=v.principal AND i.machine_id=v.uid").fetchall()
+        from tinyassets.broker.admission import admission
+
+        for principal, work, local, asleep_at, snapshot_id, snapshots in rows:
+            if admission(db, principal).state not in {"admitted", "suspended"}:
+                continue
+            kind = json.loads(work).get("kind") if work else None
+            if work and kind != "create" and (include_running or kind != "running"):
+                key = kind if isinstance(kind, str) else "work"
+                counts[key] = counts.get(key, 0) + 1
+            if snapshots > 7:
+                counts["excess_snapshots"] = counts.get("excess_snapshots", 0) + 1
+            if local and asleep_at is not None and asleep_at < cold_before and snapshot_id:
+                counts["cold"] = counts.get("cold", 0) + 1
+    return counts
+
+
 def awake_owners(identities, *, stopping=False):
     """Explicit running owners, not the pending-work queue (C15)."""
     with closing(identities._connect(write=False)) as db:
@@ -133,7 +159,8 @@ def dispatch(identities, document):
               "restore": {"snapshot_id"}, "continue_restore": set(),
               "restored": {"snapshot_id"}, "pending": set(),
               "snapshots": set(), "forget": {"snapshot_id"},
-              "wake": set(), "evict": set(), "evicted": set(), "erase": set()}
+              "wake": set(), "evict": set(), "evicted": set(), "erase": set(),
+              "image_absent": set()}
     if action == "restore":
         if (not isinstance(arguments, dict) or "snapshot_id" not in arguments
                 or set(arguments) - {"expected_generation"} != {"snapshot_id"}):
@@ -189,6 +216,19 @@ def dispatch(identities, document):
             if work != {"kind": "create"}:
                 raise PermissionError("volume creation is not pending")
             work = None
+        elif action == "image_absent":
+            # The copy cannot be taken: the local file is already gone. A
+            # published snapshot remains the volume. With no snapshot at all,
+            # the next wake formats, which is the create path.
+            if (not work or work.get("kind") != "snapshot"
+                    or work.get("restore_snapshot_id")):
+                raise PermissionError("snapshot is not blocked on a missing image")
+            if record["snapshot_id"]:
+                db.execute("UPDATE owner_volumes SET local=0 WHERE principal=?", (owner,))
+                record["local"] = False
+                work = None
+            else:
+                work = {"kind": "create"}
         elif action == "sleep":
             if work in (None, {"kind": "running"}):
                 work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex}

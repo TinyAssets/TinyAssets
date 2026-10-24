@@ -184,7 +184,8 @@ def test_lazy_create_does_not_block_readiness_and_live_snapshot_waits(storage):
     assert work["kind"] == "snapshot"
     assert uid in storage.live
     assert owner_volumes.pending(storage.identities, include_running=False) == ["alice"]
-    assert drive(routing.readiness()) == {"ready": False}
+    blocked = drive(routing.readiness())
+    assert blocked["ready"] is False and blocked["pending"] == {"snapshot": 1}
 
     pending = drive(storage.lifecycle._publish_snapshot("alice", work))
     assert pending["work"] == work
@@ -198,6 +199,24 @@ def test_lazy_create_does_not_block_readiness_and_live_snapshot_waits(storage):
     assert storage.volumes.remote[uid, work["snapshot_id"]] == b"initial"
     assert storage.lifecycle.volume("bob")["work"] == {"kind": "create"}
     assert drive(routing.readiness()) == {"ready": True}
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_missing_local_image_releases_the_published_snapshot(storage):
+    record, _mount = start(storage)
+    uid = record["uid"]
+    published = sleep(storage)
+    assert published["work"] is None and published["snapshot_id"]
+    storage.volumes.images.pop(uid)
+    intent = storage.lifecycle.volume("alice", "sleep")
+    assert intent["work"]["kind"] == "snapshot"
+    drive(storage.lifecycle.tick_owner("alice"))
+    cleared = storage.lifecycle.volume("alice")
+    assert cleared["work"] is None
+    assert cleared["local"] is False
+    assert cleared["snapshot_id"] == published["snapshot_id"]
+    assert owner_volumes.pending(storage.identities, include_running=False) == []
+    assert drive(storage.lifecycle.lifecycle.readiness()) == {"ready": True}
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C1')

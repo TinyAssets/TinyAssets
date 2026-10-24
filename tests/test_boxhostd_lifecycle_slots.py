@@ -58,16 +58,20 @@ def test_broker_readiness_counts_durable_pending_and_running_work(monkeypatch):
         broker.identities = SimpleNamespace(work_ready=True)
         broker.tasks = {}
         monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: ["owner"])
-        assert await broker.readiness() == {"ready": False}
+        monkeypatch.setattr(owner_volumes, "pending_counts", lambda _, **__: {"snapshot": 1})
+        blocked = await broker.readiness()
+        assert blocked["ready"] is False and blocked["pending"] == {"snapshot": 1}
         monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: [])
         broker.identities.work_ready = False
-        assert await broker.readiness() == {"ready": False}
+        closed = await broker.readiness()
+        assert closed == {"ready": False, "blocked": "admission"}
         broker.identities.work_ready = True
         assert await broker.readiness() == {"ready": True}
         release = asyncio.Event()
         broker.tasks["owner"] = asyncio.create_task(release.wait())
         try:
-            assert await broker.readiness() == {"ready": False}
+            busy = await broker.readiness()
+            assert busy["ready"] is False and busy["tasks"] == 1
         finally:
             release.set()
             await broker.tasks["owner"]
@@ -163,11 +167,14 @@ def test_host_slot_wait_is_bounded_and_readiness_tracks_post_drain_work():
     service.broker_ready.set()
     assert service.lifecycle({"lifecycle": "readiness"}, 0) == {"ready": True}
     with service._broker_slots.claim(request_driven=False, timeout=0.1):
-        assert service.lifecycle({"lifecycle": "readiness"}, 0) == {"ready": False}
+        busy = service.lifecycle({"lifecycle": "readiness"}, 0)
+        assert busy["ready"] is False and busy["background_active"] == 1
         assert service.broker_lifecycle({"lifecycle": "status", "uid": 300001},
                                         1002, timeout=0.02) == {
             "error": "boxhostd lifecycle wait timed out"}
     assert service.lifecycle({"lifecycle": "readiness"}, 0) == {"ready": True}
+    with service._broker_slots.claim(request_driven=True, timeout=0.1):
+        assert service.lifecycle({"lifecycle": "readiness"}, 0) == {"ready": True}
 
 
 @pytest.mark.verifies("owner-daemon-in-box:T1")

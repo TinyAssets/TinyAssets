@@ -32,6 +32,7 @@ class BrokerLifecycleSlots:
         self.background_capacity = max(1, capacity - 1)
         self.active = 0
         self.background_active = 0
+        self.background_waiting = 0
         self.waiting = 0
         self.request_wakes = 0
         self.condition = threading.Condition()
@@ -41,6 +42,22 @@ class BrokerLifecycleSlots:
         with self.condition:
             return self.active == self.waiting == 0
 
+    @property
+    def background_idle(self) -> bool:
+        """True when no clock-driven copy is running or queued.
+
+        An interactive wake holds a request slot on purpose. Deploy readiness
+        waits for background copies, not for users who are retrying the app.
+        """
+        with self.condition:
+            return self.background_active == self.background_waiting == 0
+
+    def readiness_facts(self) -> dict:
+        with self.condition:
+            return {"background_active": self.background_active,
+                    "background_waiting": self.background_waiting,
+                    "request_active": self.active - self.background_active}
+
     @contextmanager
     def claim(self, *, request_driven: bool, timeout: float):
         deadline = time.monotonic() + timeout
@@ -48,6 +65,8 @@ class BrokerLifecycleSlots:
             self.waiting += 1
             if request_driven:
                 self.request_wakes += 1
+            else:
+                self.background_waiting += 1
             try:
                 while (self.active >= self.capacity or
                        (not request_driven and
@@ -64,6 +83,8 @@ class BrokerLifecycleSlots:
                 self.waiting -= 1
                 if request_driven:
                     self.request_wakes -= 1
+                else:
+                    self.background_waiting -= 1
                 self.condition.notify_all()
         try:
             yield
@@ -188,7 +209,14 @@ class HostService:
                 raise BoxError("owner lifecycle is unavailable")
             operation = document.get("lifecycle")
             if uid == 0 and document == {"lifecycle": "readiness"}:
-                return {"ready": self.broker_ready.is_set() and self._broker_slots.idle}
+                # Background copies still block. A request wake does not: during
+                # an outage those retries hold a slot for the whole window and
+                # the owner-box roll never starts.
+                slots = self._broker_slots
+                if self.broker_ready.is_set() and slots.background_idle:
+                    return {"ready": True}
+                return {"ready": False, "broker_ready": self.broker_ready.is_set(),
+                        **slots.readiness_facts()}
             if (uid == 1002 and operation == "select_image"
                     and set(document) == {"lifecycle", "image"}):
                 self.daemons.images.select(document["image"])

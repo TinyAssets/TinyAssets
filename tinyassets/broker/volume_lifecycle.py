@@ -133,6 +133,14 @@ class VolumeLifecycle:
         except (RuntimeError, ValueError) as exc:
             message = str(exc)
             if "local image is absent" in message:
+                current = self.volume(owner, "pending")["work"] or {}
+                if not current.get("restore_snapshot_id"):
+                    # Leaving this intent made deploy readiness wait forever:
+                    # recover retries a copy that can never be taken.
+                    if locked:
+                        return self.volume(owner, "image_absent")
+                    async with owner_lock(self.identities.path, owner):
+                        return self.volume(owner, "image_absent")
                 result = None
             elif ("volume operation requires a stopped box" in message
                     or "volume must be fully detached" in message):

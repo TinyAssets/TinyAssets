@@ -139,7 +139,7 @@ def main(argv=None):
              "sudo env PYTHONPATH=/opt/tinyassets/boxhostd python3 -"],
             input=(Path(__file__).with_name("wait_boxhostd_ready.py")
                    .read_text(encoding="utf-8")),
-            check=True, capture_output=True, text=True, timeout=650)
+            check=True, capture_output=True, text=True, timeout=1100)
 
     receipt, code = run(control, lambda: probe(args.origin, args.expected_sha),
                         lambda: wake(args.origin), ready)

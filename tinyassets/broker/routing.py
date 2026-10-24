@@ -199,14 +199,18 @@ class BrokerLifecycle:
 
     async def readiness(self):
         """Include durable work that the next waker tick has not dispatched."""
-        from tinyassets.broker.owner_volumes import pending
+        from tinyassets.broker.owner_volumes import pending, pending_counts
 
         if not self.identities.work_ready:
-            return {"ready": False}
-        if any(not task.done() for task in self.tasks.values()):
-            return {"ready": False}
-        return {"ready": not bool(await asyncio.to_thread(
-            pending, self.identities, include_running=False))}
+            return {"ready": False, "blocked": "admission"}
+        tasks = sum(not task.done() for task in self.tasks.values())
+        owners = await asyncio.to_thread(
+            pending, self.identities, include_running=False)
+        if not tasks and not owners:
+            return {"ready": True}
+        counts = (await asyncio.to_thread(
+            pending_counts, self.identities, include_running=False) if owners else {})
+        return {"ready": False, "tasks": tasks, "pending": counts}
 
     async def deploy(self, image):
         """C12: publish once, then use ordinary sleep; wake remains demand-driven."""
