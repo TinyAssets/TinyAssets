@@ -120,6 +120,11 @@ class HostService:
         priority = document.pop("_request_driven", False)
         if type(priority) is not bool:
             return {"error": "invalid lifecycle priority"}
+        # A pin read classifies readiness. It must not occupy a background
+        # slot: the deploy probe requires the host to be idle in the same
+        # window the broker asks which excess rows a backup still pins.
+        if document == {"lifecycle": "pins"}:
+            return self.lifecycle(document, uid)
         request_driven = priority or (document.get("lifecycle") == "wake" and
                                       document.get("scheduled") is False)
         try:
@@ -217,6 +222,12 @@ class HostService:
                     return {"ready": True}
                 return {"ready": False, "broker_ready": self.broker_ready.is_set(),
                         **slots.readiness_facts()}
+            if uid == 1002 and document == {"lifecycle": "pins"}:
+                from tinyassets.platform_backup import pinned_snapshots
+
+                pinned = sorted(pinned_snapshots(self.volumes.remote))
+                return {"pinned": [[owner_uid, snapshot_id]
+                                   for owner_uid, snapshot_id in pinned]}
             if (uid == 1002 and operation == "select_image"
                     and set(document) == {"lifecycle", "image"}):
                 self.daemons.images.select(document["image"])
