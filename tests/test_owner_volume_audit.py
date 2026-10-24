@@ -256,29 +256,10 @@ def test_mounted_tree_counts_runs_and_serving_bindings(tmp_path: Path):
     assert asleep == []
 
 
-def test_hold_calls_bracket_the_boxhostd_restart():
+def test_deploy_does_not_hold_or_roll_inside_the_fail_safe_script():
     script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
-    for marker in (
-            'log "box layout: already owner-box; no move"',
-            'echo "cutover_admission_pending=true"',
-    ):
-        block = script.split(marker, 1)[1].split(";;", 1)[0]
-        assert block.index("owner_image_hold record") < block.index(
-            "systemctl restart boxhostd.service")
-        assert block.index("systemctl restart boxhostd.service") < block.index(
-            "owner_image_hold check")
-    start = script.index("owner_image_hold() {")
-    end = script.index("\nrestart_stack() {", start)
-    function = script[start:end]
-    # A store that does not exist is a no-op, which is what deploy tests hit.
-    prelude = "log() { printf '%s\\n' \"$*\"; }\nerr() { printf '%s\\n' \"$*\" >&2; }\n"
-    completed = subprocess.run(
-        ["bash", "-c", prelude + function + "\nowner_image_hold record"],
-        capture_output=True, text=True, check=False,
-        env={**os.environ, "BOX_STORE_DIR": "/tmp/tinyassets-no-such-owner-store",
-             "BUNDLE_STATE_DIR": "/tmp"})
-    assert completed.returncode == 0, completed.stderr
-    assert "nothing to hold" in completed.stdout
+    assert "owner_image_hold" not in script
+    assert "publish_owner_harness" not in script
 
 
 def test_audit_dispatch_skips_the_image_swap():
@@ -286,7 +267,7 @@ def test_audit_dispatch_skips_the_image_swap():
     assert "owner_volume_audit_only" in text
     assert "Does not swap the image" in text
     assert "scripts/owner_volume_audit.py" in text
-    assert "OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py" in text
+    assert "OWNER_VOLUME_AUDIT" not in text
     assert "sudo python3 - audit --baseline /var/lib/tinyassets-deploy/owner-image-hold.json" in text
     deploy = text.split("\n  deploy:\n", 1)[1].split("\n    runs-on:", 1)[0]
     assert "inputs.owner_volume_audit_only != true" in deploy
@@ -304,12 +285,8 @@ def test_roll_only_dispatch_publishes_the_running_image_and_then_censuses():
     assert "owner_box_roll_only" in text
     assert "Does not swap the daemon image" in text
     assert "does not restore a snapshot" in text
-    assert "OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py" in text
     assert "scripts/roll_owner_boxes.py" in text
-    assert "--post-deploy-failure" in text
-    rollback = text.split("--post-deploy-failure", 1)[0].rsplit("sudo ", 1)[1]
-    assert "OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py" in rollback
-    assert "OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py" in rollback
+    assert "OWNER_ROLL_SCRIPT" not in text
     conflict = text.split("\n  dispatch-conflict:\n", 1)[1].split("\n  owner-volume-audit:\n", 1)[0]
     assert "inputs.owner_box_roll_only" in conflict
     assert "inputs.owner_volume_audit_only" in conflict
@@ -322,17 +299,9 @@ def test_roll_only_dispatch_publishes_the_running_image_and_then_censuses():
     assert "volumes.restore" not in roll
     assert "owner census is not ok" in roll
     script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
-    for marker in ("finish deployed", "finish rolled_back"):
-        start = 0
-        found = 0
-        while True:
-            pos = script.find(marker, start)
-            if pos < 0:
-                break
-            found += 1
-            assert "publish_owner_harness" in script[max(0, pos - 700):pos]
-            start = pos + len(marker)
-        assert found
+    assert "publish_owner_harness" not in script
+    agents = (REPO / "AGENTS.md").read_text(encoding="utf-8")
+    assert "outage fix covers every owner" not in agents
 
 
 def test_measure_tree_does_not_follow_a_run_store_symlink(tmp_path: Path):

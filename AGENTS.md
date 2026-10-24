@@ -37,8 +37,6 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
     internal; after DNS/tunnel/connector edits, run the handles canary.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
-14. An outage fix covers every owner. A deploy that accepts an image and stops
-    before the owner roll is unfinished until every owner box is on that image.
 
 Sandbox, filesystem or process-limit work needs `scripts/linux_oracle.py`;
 a skip is not a pass. Secrets: `set -a; source scripts/load_secrets.sh;

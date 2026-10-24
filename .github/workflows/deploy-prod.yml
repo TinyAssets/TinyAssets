@@ -857,7 +857,6 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/deploy_fail_safe.sh deploy/install-tinyassets-env.sh \
               deploy/snapshot_candidate_evidence.sh scripts/hotfix.py \
-              scripts/owner_volume_audit.py scripts/roll_owner_boxes.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               scripts/turns_in_flight.py \
@@ -867,7 +866,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 RECOVER_DIRTY_BUNDLE=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 RECOVER_DIRTY_BUNDLE=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
@@ -878,8 +877,6 @@ jobs:
           echo "deployed_image=${deployed}" >> "$GITHUB_OUTPUT"
           pending="$(printf '%s\n' "${out}" | awk -F= '/^cutover_admission_pending=/{print $2}' | tail -1)"
           echo "cutover_admission_pending=${pending}" >> "$GITHUB_OUTPUT"
-          owner_roll="$(printf '%s\n' "${out}" | awk -F= '/^owner_roll=/{print $2}' | tail -1)"
-          echo "owner_roll=${owner_roll}" >> "$GITHUB_OUTPUT"
           # rc 0 = deployed new, 2 = rolled back to previous (prod still up), 1/3 = hard fail.
           if [ "${rc}" -eq 0 ]; then
             echo "::notice::deployed ${deployed}"
@@ -1278,7 +1275,7 @@ jobs:
           # same guard used by deploy health failure and manual bundle restore.
           # SSH/read failure cannot fall through to another rollback command.
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=20 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo HEALTH_TIMEOUT=180 ON_POST_COMMIT_FAILURE='${ON_POST_COMMIT_FAILURE}' POST_COMMIT_REASON='${POST_COMMIT_REASON}' IMAGE_ROLLBACK_ALLOWED='${IMAGE_ROLLBACK_ALLOWED}' ROLLBACK_IMAGE='${PREV_IMAGE}' OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py OWNER_ROLL_SCRIPT=/tmp/roll_owner_boxes.py bash /tmp/deploy_fail_safe.sh --post-deploy-failure '${IMAGE_REF}'" 2>&1)"
+            "sudo HEALTH_TIMEOUT=180 ON_POST_COMMIT_FAILURE='${ON_POST_COMMIT_FAILURE}' POST_COMMIT_REASON='${POST_COMMIT_REASON}' IMAGE_ROLLBACK_ALLOWED='${IMAGE_ROLLBACK_ALLOWED}' ROLLBACK_IMAGE='${PREV_IMAGE}' bash /tmp/deploy_fail_safe.sh --post-deploy-failure '${IMAGE_REF}'" 2>&1)"
           rc=$?
           printf '%s\n' "$out"
           if [ "$rc" != 0 ] && [ "$rc" != 2 ] && ! printf '%s\n' "$out" | grep -q '^deploy_result='; then
