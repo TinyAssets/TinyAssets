@@ -867,21 +867,30 @@ restart_stack() {
   systemctl stop "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
-  # image's startup. Docker SIGKILLs after --time; reaching that bound means
-  # a live turn may have been cut, even when docker stop returns success.
-  # Compose keeps its own bound in case another writer recreated the daemon.
-  local started elapsed
+  # image's startup. Docker SIGKILLs after --time. That cuts a turn only when
+  # a healthy daemon may still be serving one. A proved-idle probe, or a
+  # daemon that is already unhealthy, means the process is wedged and not
+  # serving: SIGKILL must not refuse the swap (the 143b1a92 rollback image
+  # never exits on SIGTERM, so every forward deploy deadlocked on this bound).
+  # A non-zero `docker stop` still refuses. Compose keeps its own bound in
+  # case another writer recreated the daemon.
+  local started elapsed prior_state=""
   if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+    prior_state="$(container_state "$DAEMON_CONTAINER")"
     started="$SECONDS"
     if ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"; then
       err "the old daemon did not stop cleanly"
       return 1
     fi
     elapsed=$((SECONDS - started))
-    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s)"
+    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s, prior ${prior_state:-unknown})"
     if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
-      err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
-      return 1
+      if [ "$TURNS_IDLE_PROVED" = "1" ] || [ "$prior_state" = "unhealthy" ]; then
+        log "old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound (prior ${prior_state:-unknown}, idle proved ${TURNS_IDLE_PROVED}); no in-flight turn, continuing the swap"
+      else
+        err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
+        return 1
+      fi
     fi
   fi
   # A boxhostd restart during rollback replaces /run/tinyassets-boxhostd with a
@@ -2209,6 +2218,26 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
   # Undoing an install, never performing one: the staged bundle (if it is even
   # still on the box) is exactly what this run is rolling back. This path runs
   # even with the dirty marker set — it is the way out of that state.
+  # A post-canary rollback starts from a candidate that already passed health.
+  # Snapshot that tree first so a rollback image that cannot converge can be
+  # put back, instead of leaving the tunnel on the image that just failed.
+  if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+    CANDIDATE_HOLD_IMAGE="$PREV_IMAGE"
+    if [ -z "$BUNDLE_WORK" ] && [ -f "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" ]; then
+      claim_bundle || {
+        err "could not read the staged host bundle to snapshot the healthy candidate"
+        echo "deploy_result=rollback_failed"
+        exit 3
+      }
+    fi
+    if ! snapshot_bundle; then
+      err "could not snapshot the healthy candidate before image rollback"
+      echo "deploy_result=rollback_failed"
+      exit 3
+    fi
+    CANDIDATE_HOLD_SNAPSHOT="$SNAPSHOT_PATH"
+    log "candidate hold snapshot ${CANDIDATE_HOLD_SNAPSHOT} image ${CANDIDATE_HOLD_IMAGE}"
+  fi
   if ! restore_previous_bundle; then
     err "--restore-bundle could not restore the previous bundle; refusing to converge an image over a bundle in an unknown state"
     [ -n "$RESTORE_SNAPSHOT" ] && { mark_dirty "$RESTORE_SNAPSHOT" || true; }
@@ -2391,14 +2420,23 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
   esac
 }
 prune_old_harnesses() {  # successful deploys must not keep every historical rootfs
-  local root link name
+  local root link name previous
   root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
   [ -d "$root" ] || return 0
   link="$(readlink "${root}/harness-current" 2>/dev/null || true)"
+  # The public canary runs after this script returns. Its image rollback
+  # restores the harness-current symlink captured before this install, so the
+  # rootfs that symlink names has to still be here. The next successful deploy
+  # prunes it, once it is no longer the rollback target.
+  previous="${HARNESS_PREVIOUS_LINK:-}"
+  previous="${previous##*/}"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     [ "$name" = "harness-current" ] && continue
     if [ -n "$link" ] && { [ "$name" = "$link" ] || [ "$name" = "${link##*/}" ]; }; then
+      continue
+    fi
+    if [ -n "$previous" ] && [ "$name" = "$previous" ]; then
       continue
     fi
     # Directories need write to unlink children. Do not follow symlinks.
@@ -2867,6 +2905,17 @@ fi
 
 # --- 6. unhealthy -> hold the candidate, or restore then roll back --------
 if [ "$RESTORE_BUNDLE" = 1 ]; then
+  if [ "$POST_DEPLOY_FAILURE" = 1 ] && [ -n "${CANDIDATE_HOLD_SNAPSHOT:-}" ] \
+     && [ -d "$CANDIDATE_HOLD_SNAPSHOT" ] && [ -n "${CANDIDATE_HOLD_IMAGE:-}" ]; then
+    err "requested rollback did not become healthy; returning to ${CANDIDATE_HOLD_IMAGE}"
+    if restore_bundle_from "$CANDIDATE_HOLD_SNAPSHOT" \
+       && set_image "$CANDIDATE_HOLD_IMAGE" && restart_stack; then
+      clear_dirty || true
+      log "candidate held: ${CANDIDATE_HOLD_IMAGE} is the last image that passed health"
+      finish candidate_held "$CANDIDATE_HOLD_IMAGE" 2
+    fi
+    err "could not return to the candidate that passed health"
+  fi
   err "requested rollback failed; refusing to pair its restored bundle with another image"
   echo "deploy_result=rollback_failed"
   exit 3
