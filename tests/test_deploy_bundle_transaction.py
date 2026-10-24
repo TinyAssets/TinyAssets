@@ -1581,7 +1581,12 @@ def test_layout_two_still_refuses_rollback_to_an_older_image(box: Box, explicit)
 
 @pytest.mark.parametrize("post_deploy", [False, True])
 def test_restart_stack_failure_leaves_bundle_dirty(box: Box, post_deploy):
-    """A restored tree whose containers never converged stays marked dirty."""
+    """A forward rollback that cannot converge stays dirty.
+
+    A post-canary rollback starts from a candidate that already passed health.
+    If the recorded previous image cannot converge, that candidate is put back
+    and the tunnel is not left on the image that just failed.
+    """
     host_env = _stage_required_host_bundle(box)
     if post_deploy:
         deployed = box.run(NEW_IMAGE, **host_env)
@@ -1592,9 +1597,17 @@ def test_restart_stack_failure_leaves_bundle_dirty(box: Box, post_deploy):
             "--post-deploy-failure", NEW_IMAGE,
             IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE, **host_env,
         )
-    else:
-        box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
-        failed = box.run(NEW_IMAGE, **host_env)
+        assert failed.returncode == 2, failed.stdout + failed.stderr
+        assert _result(failed) == "candidate_held"
+        assert "returning to" in failed.stderr
+        assert not box.dirty.exists()
+        assert box.env_image() == NEW_IMAGE
+        assert box.live()["compose"] != OLD_COMPOSE
+        assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "new\n"
+        return
+
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
 
     assert failed.returncode == 3, failed.stdout + failed.stderr
     assert _result(failed) == "rollback_failed"
@@ -2531,7 +2544,9 @@ def test_rollback_converge_failure_discards_the_candidate_harness(box: Box):
 def test_successful_deploy_prunes_readonly_historical_harnesses(box: Box):
     volume, harness = _owner_box_already(box)
     previous = "harness-" + "1" * 64
+    older = "harness-" + "2" * 64
     _readonly_harness(harness / previous)
+    _readonly_harness(harness / older)
     (harness / "harness-current").symlink_to(previous)
     box.set_docker_state(
         active_box_layout={NEW_IMAGE: "owner-box"},
@@ -2552,8 +2567,11 @@ def test_successful_deploy_prunes_readonly_historical_harnesses(box: Box):
     current = _harness_name(NEW_IMAGE)
     assert (harness / "harness-current").readlink() == Path(current)
     assert (harness / current / "app" / "tinyassets" / "boxd.py").is_file()
-    assert not (harness / previous).exists()
-    assert f"removed old harness {previous}" in completed.stdout
+    # The public canary can still roll back to the rootfs this deploy replaced.
+    assert (harness / previous).is_dir()
+    assert not (harness / older).exists()
+    assert f"removed old harness {older}" in completed.stdout
+    assert f"removed old harness {previous}" not in completed.stdout
     assert "box layout: already owner-box; no move" in completed.stdout
     events = box.event_log.read_text().splitlines()
     creates = [i for i, event in enumerate(events) if event.startswith("docker create ")]

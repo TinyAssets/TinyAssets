@@ -145,3 +145,52 @@ def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> in
     starts = [m for m in sent if m["type"] == "http.response.start"]
     assert starts, "no response.start emitted"
     return starts[0]["status"]
+
+
+def test_owner_router_still_links_an_anonymous_tool_call(require_auth_provider):
+    """Anonymous tools/call is the hosted linking result on the router too.
+
+    The public canary proves that contract at https://tinyassets.io/mcp.
+    The owner router has no box to forward an anonymous call to, so a
+    transport 401 here is the canary's HTTP 401 and a rollback of a healthy
+    daemon. Initialize with no bearer stays a 401.
+    """
+    import json
+
+    called = {"app": False}
+
+    async def app(scope, receive, send):
+        called["app"] = True
+        await _ok_app(scope, receive, send)
+
+    middleware = mw.AuthContextMiddleware(app, router=True)
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "converse", "arguments": {"message": "probe"}},
+    }).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "method": "POST", "path": "/mcp",
+        "headers": [(b"content-type", b"application/json"),
+                    (b"accept", b"application/json, text/event-stream")],
+    }
+    asyncio.run(middleware(scope, receive, send))
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    bodies = [message.get("body", b"") for message in sent if message["type"] == "http.response.body"]
+    assert starts[0]["status"] == 200
+    payload = json.loads(b"".join(bodies))
+    assert payload["id"] == 3
+    assert payload["result"]["isError"] is True
+    assert payload["result"]["_meta"]["mcp/www_authenticate"]
+    assert called["app"] is False
+    assert _drive("/mcp", "POST") == 401
