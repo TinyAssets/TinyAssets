@@ -134,6 +134,69 @@ def pending_counts(identities, *, include_running=False):
     return counts
 
 
+def _pin_set(pinned):
+    if not isinstance(pinned, list):
+        raise ValueError("pinned snapshot report is not a list")
+    pins = set()
+    for item in pinned:
+        if (not isinstance(item, (list, tuple)) or len(item) != 2
+                or type(item[0]) is not int
+                or not isinstance(item[1], str)
+                or not re.fullmatch(r"[a-f0-9]{32}", item[1])):
+            raise ValueError("pinned snapshot report is malformed")
+        pins.add((item[0], item[1]))
+    return pins
+
+
+def actionable_excess(identities, pinned):
+    """Owners whose prune can still delete a snapshot.
+
+    The retained set matches VolumeLifecycle.prune: the current snapshot,
+    then the newest rows until seven, plus an in-flight restore or
+    pre-snapshot. A row outside that set that a platform backup pins cannot
+    be deleted, so it is not unfinished deploy work. pending() still returns
+    the owner, and the tick still prunes.
+    """
+    pins = _pin_set(pinned)
+    count = 0
+    with closing(identities._connect(write=False)) as db:
+        rows = db.execute(
+            "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
+            "ON i.principal=v.principal AND i.machine_id=v.uid "
+            "WHERE (SELECT COUNT(*) FROM owner_snapshots s "
+            "WHERE s.principal=v.principal)>7").fetchall()
+        from tinyassets.broker.admission import admission
+
+        for (owner,) in rows:
+            if admission(db, owner).state not in {"admitted", "suspended"}:
+                continue
+            if _has_deletable_excess(db, owner, pins):
+                count += 1
+    return count
+
+
+def _has_deletable_excess(db, owner, pins):
+    row = db.execute(
+        "SELECT v.uid,v.snapshot_id,v.work FROM owner_volumes v "
+        "JOIN owner_identities i ON i.principal=v.principal AND i.machine_id=v.uid "
+        "WHERE v.principal=?", (owner,)).fetchone()
+    if row is None:
+        return False
+    uid, snapshot_id, work_json = row
+    work = json.loads(work_json) if work_json else {}
+    retained = {snapshot_id}
+    snapshots = [item[0] for item in db.execute(
+        "SELECT snapshot_id FROM owner_snapshots WHERE principal=? "
+        "ORDER BY sequence DESC", (owner,))]
+    for snap in snapshots:
+        if len(retained) < 7:
+            retained.add(snap)
+    for key in ("restore_snapshot_id", "pre_snapshot_id"):
+        if work.get(key):
+            retained.add(work[key])
+    return any(snap not in retained and (uid, snap) not in pins for snap in snapshots)
+
+
 def awake_owners(identities, *, stopping=False):
     """Explicit running owners, not the pending-work queue (C15)."""
     with closing(identities._connect(write=False)) as db:

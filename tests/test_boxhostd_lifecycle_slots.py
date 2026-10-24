@@ -80,6 +80,63 @@ def test_broker_readiness_counts_durable_pending_and_running_work(monkeypatch):
 
 
 @pytest.mark.verifies("owner-daemon-in-box:T1")
+def test_readiness_asks_for_pins_only_when_excess_rows_remain(monkeypatch):
+    from tinyassets.broker import owner_volumes
+    from tinyassets.broker.routing import BrokerLifecycle
+
+    async def scenario():
+        broker = BrokerLifecycle.__new__(BrokerLifecycle)
+        broker.identities = SimpleNamespace(work_ready=True)
+        broker.tasks = {}
+        broker.config = SimpleNamespace(volume_concurrency=1)
+        calls = []
+        forwarded = {}
+
+        def execute(operation, owner=None, **fields):
+            calls.append(operation)
+            forwarded["pinned"] = [[300001, "a" * 32]]
+            return {"pinned": forwarded["pinned"]}
+
+        broker.volumes = SimpleNamespace(execute=execute)
+        monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: [])
+        monkeypatch.setattr(owner_volumes, "pending_counts", lambda _, **__: {})
+        assert await broker.readiness() == {"ready": True}
+        assert calls == []
+
+        monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: ["alice"])
+        monkeypatch.setattr(owner_volumes, "pending_counts",
+                            lambda _, **__: {"excess_snapshots": 2})
+
+        def capture(identities, pinned):
+            forwarded["seen"] = pinned
+            return 0
+
+        monkeypatch.setattr(owner_volumes, "actionable_excess", capture)
+        assert await broker.readiness() == {"ready": True}
+        assert calls == ["pins"] and forwarded["seen"] == [[300001, "a" * 32]]
+
+        monkeypatch.setattr(owner_volumes, "actionable_excess", lambda identities, pinned: 1)
+        assert await broker.readiness() == {
+            "ready": False, "tasks": 0, "pending": {"excess_snapshots": 1}}
+
+        def broken(operation, owner=None, **fields):
+            raise RuntimeError("catalog unreadable")
+
+        broker.volumes.execute = broken
+        held = await broker.readiness()
+        assert held["pending"] == {"excess_snapshots": 2}
+
+        monkeypatch.setattr(owner_volumes, "actionable_excess", lambda identities, pinned: 0)
+        monkeypatch.setattr(owner_volumes, "pending_counts",
+                            lambda _, **__: {"snapshot": 1, "excess_snapshots": 2})
+        broker.volumes.execute = execute
+        assert await broker.readiness() == {
+            "ready": False, "tasks": 0, "pending": {"snapshot": 1}}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.verifies("owner-daemon-in-box:T1")
 def test_broker_connection_reaches_serve_when_shared_nonbroker_slots_are_full(
     tmp_path, monkeypatch,
 ):
@@ -175,6 +232,24 @@ def test_host_slot_wait_is_bounded_and_readiness_tracks_post_drain_work():
     assert service.lifecycle({"lifecycle": "readiness"}, 0) == {"ready": True}
     with service._broker_slots.claim(request_driven=True, timeout=0.1):
         assert service.lifecycle({"lifecycle": "readiness"}, 0) == {"ready": True}
+
+
+@pytest.mark.verifies("owner-daemon-in-box:C2")
+def test_pin_report_does_not_occupy_a_readiness_slot(monkeypatch):
+    service = HostService(None, SimpleNamespace(remote="remote:box"), None, SimpleNamespace())
+    service._broker_slots = service._new_broker_slots(1)
+    monkeypatch.setattr(
+        "tinyassets.platform_backup.pinned_snapshots",
+        lambda destination: {(300001, "a" * 32), (300002, "b" * 32)}
+        if destination == "remote:box" else set())
+    with service._broker_slots.claim(request_driven=False, timeout=0.1):
+        assert service.broker_lifecycle({"lifecycle": "pins"}, 1002, timeout=0.02) == {
+            "pinned": [[300001, "a" * 32], [300002, "b" * 32]]}
+        assert service._broker_slots.background_active == 1
+        assert service.broker_lifecycle(
+            {"lifecycle": "pins", "released": []}, 1002, timeout=0.02) == {
+            "error": "boxhostd lifecycle wait timed out"}
+    assert "error" in service.lifecycle({"lifecycle": "pins"}, 0)
 
 
 @pytest.mark.verifies("owner-daemon-in-box:T1")
