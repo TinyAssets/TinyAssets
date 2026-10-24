@@ -6,7 +6,9 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -250,7 +252,7 @@ def test_scope_mismatch_symlink_marker_and_unreadable_marker(tmp_path, shipped):
     path = broken / ".ta-cli" / "claude-code" / "connection"
     path.parent.mkdir(parents=True)
     path.write_text("{", encoding="utf-8")
-    assert _inspect(broken, None)["subscription"] == ["require_accepted_unreadable"]
+    assert _inspect(broken, None)["subscription"] == ["marker_not_json"]
 
     blank = tmp_path / "blank"
     _definitions(blank, [_row("claude-code")])
@@ -345,16 +347,122 @@ def test_http_grant_failures_and_a_passing_capability(tmp_path):
         """
     )
     assert diag.classify_http(PRINCIPAL, "grant-1", None) == "ledger:OSError"
-    assert diag.classify_http(PRINCIPAL, "grant-1", db) == "ledger:GrantResolutionError"
+    assert diag.classify_http(PRINCIPAL, "", db) == "ledger:GrantResolutionError"
+    assert diag.classify_http(PRINCIPAL, "grant-1", db) == "grant_absent"
     db.execute(
-        "INSERT INTO outbound_connection_grants VALUES ('grant-1', ?, NULL, 'conn-1')",
+        "INSERT INTO outbound_connection_grants VALUES ('grant-other', ?, NULL, 'conn-x')",
+        (OTHER,))
+    assert diag.classify_http(PRINCIPAL, "grant-other", db) == "grant_owner_mismatch"
+    db.execute(
+        "INSERT INTO outbound_connection_grants VALUES ('grant-revoked', ?, '1', 'conn-x')",
         (PRINCIPAL,))
+    assert diag.classify_http(PRINCIPAL, "grant-revoked", db) == "grant_revoked"
     db.execute(
-        "INSERT INTO outbound_connections VALUES ('conn-1', ?, NULL)", (PRINCIPAL,))
+        "INSERT INTO outbound_connection_grants VALUES ('grant-1', ?, NULL, 'conn-missing')",
+        (PRINCIPAL,))
+    assert diag.classify_http(PRINCIPAL, "grant-1", db) == "connection_absent"
+    db.execute(
+        "INSERT INTO outbound_connections VALUES ('conn-revoked', ?, '1')", (PRINCIPAL,))
+    db.execute(
+        "INSERT INTO outbound_connection_grants VALUES ('grant-crev', ?, NULL, 'conn-revoked')",
+        (PRINCIPAL,))
+    assert diag.classify_http(PRINCIPAL, "grant-crev", db) == "connection_revoked"
+    db.execute(
+        "INSERT INTO outbound_connections VALUES ('conn-1', ?, NULL)", (OTHER,))
+    db.execute(
+        "UPDATE outbound_connection_grants SET connection_id='conn-1' WHERE grant_id='grant-1'")
+    assert diag.classify_http(PRINCIPAL, "grant-1", db) == "connection_owner_mismatch"
+    db.execute("UPDATE outbound_connections SET owner_user_id=? WHERE connection_id='conn-1'",
+               (PRINCIPAL,))
     assert diag.classify_http(PRINCIPAL, "grant-1", db) == "ledger_not_model_source"
     db.execute("INSERT INTO connection_capabilities VALUES ('conn-1', 'model_use')")
     assert diag.classify_http(PRINCIPAL, "grant-1", db) is None
+    totals = diag.ledger_totals(db)
+    assert totals["outbound_connection_grants"]["exists"] is True
+    assert totals["outbound_connection_grants"]["rows"] == 4
+    assert totals["outbound_connection_grants"]["revoked"] == 1
+    assert totals["outbound_connections"]["revoked"] == 1
+    assert totals["connection_capabilities"]["rows"] == 1
+    assert totals["connection_capabilities"]["revoked"] == 0
+    assert totals["box_model_sources"]["exists"] is False
+    assert diag.ledger_totals(None)["outbound_connections"] == {
+        "exists": False, "rows": 0, "revoked": 0}
     db.close()
+
+
+def test_cli_dir_broker_dates_and_marker_shape(tmp_path, shipped):
+    root = tmp_path / "owner"
+    _definitions(root, [_row("claude-code")])
+    assert _inspect(root, None)["ta_cli"] is False
+    (root / ".ta-cli").mkdir()
+    shaped = root / ".ta-cli" / "claude-code" / "connection"
+    shaped.parent.mkdir(parents=True)
+    shaped.write_text("[]", encoding="utf-8")
+    assert _inspect(root, None)["ta_cli"] is True
+    assert _inspect(root, None)["subscription"] == ["marker_not_object"]
+    broker = tmp_path / ".broker"
+    broker.mkdir()
+    outbound = broker / "outbound.db"
+    outbound.write_bytes(b"db")
+    stamp = datetime(2026, 10, 24, 17, 36, tzinfo=timezone.utc).timestamp()
+    os.utime(outbound, (stamp, stamp))
+    dates = diag._broker_dates(tmp_path)
+    assert dates == {"outbound.db": "2026-10-24", "credential-custody.db": None}
+    report = _report(
+        [], subscription_state={"present": 1, "absent": 6},
+        ta_cli={"present": 2, "absent": 5}, broker_dates=dates)
+    assert report["subscription_state"] == {"present": 1, "absent": 6}
+    assert report["ta_cli"] == {"present": 2, "absent": 5}
+    assert report["broker_dates"]["outbound.db"] == "2026-10-24"
+    text = diag.safe_json(report, {PRINCIPAL})
+    assert PRINCIPAL not in text
+
+
+def test_canary_census_counts_codes_and_lines_without_log_text():
+    secret = "user_01SECRET"
+    journal = (
+        "canary_sign_in refused code=wrong_door_key\n"
+        "canary_sign_in refused code=not_a_code " + secret + "\n"
+    )
+    broker = (
+        "noise\n"
+        "canary_sign_in refused code=password_refused workos=invalid_credentials\n"
+    )
+
+    def run(argv, **kwargs):
+        class Done:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        if argv[:2] == ["journalctl", "-u"]:
+            Done.stdout = b""
+        elif argv[0] == "journalctl":
+            Done.stdout = journal.encode()
+        elif argv[:2] == ["docker", "ps"]:
+            Done.stdout = b"tinyassets-daemon\ntinyassets-broker\nnginx\n"
+        elif argv[:3] == ["docker", "logs", "--since"] and argv[-1] == "tinyassets-daemon":
+            Done.stderr = b"canary_sign_in refused code=wrong_door_key\n"
+        elif argv[:3] == ["docker", "logs", "--since"] and argv[-1] == "tinyassets-broker":
+            Done.stdout = broker.encode()
+        else:
+            raise AssertionError(argv)
+        return Done()
+
+    text, sources = diag._canary_census(run=run)
+    assert secret not in text and "noise" not in text and "not_a_code" not in text
+    report = _report([], canary_journal=text, canary_sources=sources)
+    codes = report["canary_sign_in"]["codes"]
+    assert codes["wrong_door_key"] == 1
+    assert codes["password_refused workos=invalid_credentials"] == 1
+    assert sources == {
+        "journalctl_unit": 0,
+        "journalctl": 2,
+        "docker:tinyassets-daemon": 1,
+        "docker:tinyassets-broker": 2,
+    }
+    dumped = diag.safe_json(report, {secret, PRINCIPAL})
+    assert secret not in dumped and "noise" not in dumped
 
 
 def test_aggregate_counts_owners_once_and_keeps_the_canary_code(tmp_path):
@@ -465,7 +573,7 @@ def test_attached_asleep_image_is_not_mounted_and_counts_unreadable(tmp_path, mo
     monkeypatch.setattr(diag, "_current_harness", lambda: tmp_path)
     monkeypatch.setattr(diag, "_harness_package", lambda _harness: tmp_path)
     monkeypatch.setattr(diag, "_boxhostd_pid", lambda: None)
-    monkeypatch.setattr(diag, "_journal", lambda: "")
+    monkeypatch.setattr(diag, "_canary_census", lambda: ("", {}))
     monkeypatch.setattr(diag, "_image", lambda _uid: image)
     monkeypatch.setattr(diag.subprocess, "run", run)
     report, private = diag.collect()
