@@ -454,6 +454,15 @@ def inspect_owner(view, principal: str, *, cli_root: Path | None, vault_path: Pa
             "vault_secrets": _vault_secrets(vault)}
 
 
+_FIXED_LEAVES = frozenset({"readonly_loop", "unavailable", "runsc", "not_run"})
+_ORDINARY_WORD = re.compile(r"[a-z_-]+\Z")
+
+
+def _credential_like(value: str) -> bool:
+    """Long vault strings that are not ordinary lowercase words."""
+    return len(value) >= 20 and _ORDINARY_WORD.fullmatch(value) is None
+
+
 def _vault_secrets(vault: dict) -> set[str]:
     found = set()
     for entry in vault.values() if isinstance(vault, dict) else ():
@@ -461,9 +470,45 @@ def _vault_secrets(vault: dict) -> set[str]:
         if not isinstance(state, dict):
             continue
         for value in state.values():
-            if isinstance(value, str) and len(value) >= 8:
+            if isinstance(value, str) and _credential_like(value):
                 found.add(value)
     return found
+
+
+def _data_leaves(report: dict) -> list[str]:
+    """Journal-derived canary codes, plus any string leaf that is not fixed vocabulary."""
+    leaves: list[str] = []
+
+    def walk(value):
+        if isinstance(value, str):
+            if value not in _FIXED_LEAVES:
+                leaves.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    if not isinstance(report, dict):
+        walk(report)
+        return leaves
+    canary = report.get("canary_sign_in")
+    codes = canary.get("codes") if isinstance(canary, dict) else None
+    if isinstance(codes, dict):
+        for code in codes:
+            if isinstance(code, str):
+                leaves.append(code)
+    for key, value in report.items():
+        if key == "canary_sign_in" and isinstance(value, dict):
+            for subkey, item in value.items():
+                if subkey == "codes" and isinstance(item, dict):
+                    walk(list(item.values()))
+                else:
+                    walk(item)
+        else:
+            walk(value)
+    return leaves
 
 
 def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_image: int,
@@ -537,11 +582,11 @@ def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_
 
 
 def safe_json(report: dict, private: set[str]) -> str:
-    text = json.dumps(report, sort_keys=True)
+    leaves = _data_leaves(report)
     for secret in private:
-        if secret and secret in text:
-            raise SystemExit("diagnostic output refused")
-    return text
+        if secret and any(secret in leaf for leaf in leaves):
+            raise SystemExit("diagnostic refused: output_contains_private_value")
+    return json.dumps(report, sort_keys=True)
 
 
 def _harness_package(harness: Path) -> Path | None:
@@ -671,7 +716,7 @@ def _image(uid: int) -> Path:
 
 def collect() -> tuple[dict, set[str]]:
     if os.geteuid() != 0:
-        raise SystemExit("diagnostic output refused")
+        raise SystemExit("diagnostic refused: not_root")
     data = _data_root()
     owners = _owners(data)
     awake, census = _awake()

@@ -126,8 +126,59 @@ def test_file_checks_pass_without_printing_secrets(tmp_path, shipped):
 
 
 def test_safe_json_refuses_a_planted_principal():
-    with pytest.raises(SystemExit, match="diagnostic output refused"):
+    with pytest.raises(SystemExit) as planted:
         diag.safe_json({"note": PRINCIPAL}, {PRINCIPAL})
+    assert str(planted.value) == "diagnostic refused: output_contains_private_value"
+    assert PRINCIPAL not in str(planted.value)
+    account = hashlib.sha256(PRINCIPAL.encode()).hexdigest()
+    coded = _report([], canary_journal=(
+        "canary_sign_in refused code=password_refused workos=" + account + "\n"))
+    with pytest.raises(SystemExit) as hashed:
+        diag.safe_json(coded, {account})
+    assert str(hashed.value) == "diagnostic refused: output_contains_private_value"
+    assert account not in str(hashed.value)
+
+
+def test_ordinary_vault_words_do_not_refuse(tmp_path):
+    vault = {"claude-code": {"state": {
+        ".claude/.credentials.json": "subscription_cli",
+        "status": "connected",
+        "phase": "authenticated",
+    }}}
+    private = diag._vault_secrets(vault)
+    assert private == set()
+    report = _report(
+        [{"subscription": ["authenticated_state_check"], "http": [], "owner_errors": []}],
+        canary_journal="canary_sign_in refused code=authenticated_other_account\n"
+        "canary_sign_in refused code=wrong_door_key\n",
+    )
+    text = diag.safe_json(report, private)
+    assert "subscription_cli" in text and "authenticated" in text
+    assert diag.safe_json(report, {"subscription_cli", "connected"}) == text
+    assert tmp_path.name not in text
+
+
+def test_credential_in_a_canary_code_or_leaf_refuses():
+    secret = "k9" * 20
+    assert diag._credential_like(secret)
+    journal = "canary_sign_in refused code=password_refused workos=" + secret + "\n"
+    coded = _report([], canary_journal=journal)
+    with pytest.raises(SystemExit) as coded_refusal:
+        diag.safe_json(coded, {secret})
+    assert str(coded_refusal.value) == "diagnostic refused: output_contains_private_value"
+    assert secret not in str(coded_refusal.value)
+    leaf = _report([], canary_journal="canary_sign_in refused code=wrong_door_key\n")
+    leaf["awake_census"] = secret
+    with pytest.raises(SystemExit) as leaf_refusal:
+        diag.safe_json(leaf, {secret})
+    assert str(leaf_refusal.value) == "diagnostic refused: output_contains_private_value"
+
+
+def test_not_root_refusal_names_the_check(monkeypatch):
+    monkeypatch.setattr(diag.os, "geteuid", lambda: 1)
+    with pytest.raises(SystemExit) as refused:
+        diag.collect()
+    assert str(refused.value) == "diagnostic refused: not_root"
 
 
 def test_missing_marker_fails_before_a_missing_owner_binary(tmp_path, shipped):
