@@ -583,6 +583,58 @@ def test_attached_asleep_image_is_not_mounted_and_counts_unreadable(tmp_path, mo
     assert PRINCIPAL in private
 
 
+def test_collect_reads_ledger_totals_before_the_connection_closes(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    broker = data / ".broker"
+    broker.mkdir(parents=True)
+    db = sqlite3.connect(broker / "outbound.db")
+    db.executescript(
+        """
+        CREATE TABLE outbound_connections (
+            connection_id TEXT, owner_user_id TEXT, revoked_at TEXT);
+        CREATE TABLE outbound_connection_grants (
+            grant_id TEXT, owner_user_id TEXT, revoked_at TEXT, connection_id TEXT);
+        CREATE TABLE connection_capabilities (
+            connection_id TEXT, capability_kind TEXT);
+        CREATE TABLE box_model_sources (owner TEXT, id TEXT, definition TEXT);
+        """
+    )
+    db.execute("INSERT INTO outbound_connections VALUES ('conn-1', ?, NULL)", (PRINCIPAL,))
+    db.execute("INSERT INTO outbound_connections VALUES ('conn-2', ?, '1')", (PRINCIPAL,))
+    db.execute(
+        "INSERT INTO outbound_connection_grants VALUES ('grant-1', ?, NULL, 'conn-1')",
+        (PRINCIPAL,))
+    db.commit()
+    db.close()
+    opened = {}
+    real = diag.ledger_totals
+
+    def watching(connection):
+        assert connection is not None
+        connection.execute("SELECT 1")
+        opened["open"] = True
+        return real(connection)
+
+    monkeypatch.setattr(diag, "ledger_totals", watching)
+    monkeypatch.setattr(diag.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(diag, "_data_root", lambda: data)
+    monkeypatch.setattr(diag, "_owners", lambda _root: [(300001, PRINCIPAL)])
+    monkeypatch.setattr(diag, "_awake", lambda: (set(), "runsc"))
+    monkeypatch.setattr(diag, "_private_namespace", lambda: True)
+    monkeypatch.setattr(diag, "_current_harness", lambda: tmp_path)
+    monkeypatch.setattr(diag, "_harness_package", lambda _harness: tmp_path)
+    monkeypatch.setattr(diag, "_boxhostd_pid", lambda: None)
+    monkeypatch.setattr(diag, "_canary_census", lambda: ("", {}))
+    monkeypatch.setattr(diag, "_image", lambda _uid: tmp_path / "missing.img")
+    report, _private = diag.collect()
+    assert opened["open"] is True
+    tables = report["ledger_tables"]
+    assert tables["outbound_connections"] == {"exists": True, "rows": 2, "revoked": 1}
+    assert tables["outbound_connection_grants"]["rows"] == 1
+    assert tables["connection_capabilities"]["exists"] is True
+    assert tables["box_model_sources"]["exists"] is True
+
+
 def test_workflow_is_a_manual_production_read():
     text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)

@@ -944,6 +944,7 @@ def collect() -> tuple[dict, set[str]]:
             else:
                 ta_absent += 1
             results.append(inspected)
+        tables = ledger_totals(ledger)
     finally:
         if ledger is not None:
             ledger.close()
@@ -954,7 +955,7 @@ def collect() -> tuple[dict, set[str]]:
         missing_image=missing, image_without_binding=len(images - bound),
         unreadable=unreadable, asleep_inspection=asleep_inspection,
         awake_census=census, canary_journal=canary_journal,
-        canary_sources=canary_sources, ledger_tables=ledger_totals(ledger),
+        canary_sources=canary_sources, ledger_tables=tables,
         ta_cli={"present": ta_present, "absent": ta_absent},
         subscription_state={"present": state_present, "absent": state_absent},
         broker_dates=_broker_dates(data),
