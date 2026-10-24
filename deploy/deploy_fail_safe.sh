@@ -840,6 +840,50 @@ sys.exit(0 if ok else 1)
 BUNDLE_IMAGE_PY
 }
 
+# Record owner-image identity before boxhostd restarts, and refuse the deploy
+# if that restart removes, replaces, or shrinks one. Snapshot upload and the
+# owner roll do not replace the live image; create() refuses an image that
+# already exists. This check runs before deploy_result is printed, so cancelling
+# a later workflow step cannot skip it. A missing store (deploy tests, a host
+# with no owner boxes) is a no-op. A store without the audit program refuses,
+# so a restart cannot proceed without a recorded hold.
+owner_image_hold() {
+  local mode="$1" store audit baseline data_root rc
+  store="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
+  if [ -L "$store" ]; then
+    err "owner image hold: store path is a symlink"
+    return 1
+  fi
+  if [ ! -d "$store" ]; then
+    log "owner image hold: no owner store; nothing to hold"
+    return 0
+  fi
+  audit="${OWNER_VOLUME_AUDIT:-}"
+  if [ -z "$audit" ] || [ ! -f "$audit" ] || [ -L "$audit" ]; then
+    err "owner image hold: audit program missing; refusing to restart boxhostd"
+    return 1
+  fi
+  baseline="${OWNER_IMAGE_BASELINE:-${BUNDLE_STATE_DIR}/owner-image-hold.json}"
+  data_root="${OWNER_VOLUME_DATA_ROOT:-}"
+  if [ -z "$data_root" ]; then
+    data_root="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data 2>/dev/null || true)"
+  fi
+  rc=0
+  if [ -n "$data_root" ] && [ ! -L "$data_root" ] && [ -d "$data_root" ]; then
+    python3 "$audit" "$mode" --store "$store" --baseline "$baseline" \
+      --images-only --skip-mounts --data-root "$data_root" || rc=$?
+  else
+    python3 "$audit" "$mode" --store "$store" --baseline "$baseline" \
+      --images-only --skip-mounts || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    err "owner image hold: ${mode} failed"
+    return 1
+  fi
+  log "owner image hold: ${mode} ok"
+  return 0
+}
+
 # Converge the production services onto TINYASSETS_IMAGE. Drives docker
 # compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
 # never depends on the systemd unit being startable; the unit is then asked to
@@ -2718,9 +2762,18 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # install_bundle restarted boxhostd before install_box_harness moved
           # harness-current. Reload it before compose recreates the broker.
           log "box layout: already owner-box; no move"
-          if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+          # The restart stops sandboxes. The next wake attaches the same image.
+          # Record identity first so a restart that replaces or shrinks an image
+          # cannot be reported as deployed.
+          if ! owner_image_hold record; then
+            MIGRATION_OK=0
+            err "owner image hold could not be recorded; refusing to restart boxhostd"
+          elif ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
             MIGRATION_OK=0
             err "boxhostd could not start on the updated harness"
+          elif ! owner_image_hold check; then
+            MIGRATION_OK=0
+            err "owner image hold failed: an owner image was removed, replaced, or shrunk"
           fi
           ;;
         10)
@@ -2790,9 +2843,15 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
             MIGRATION_COMMITTED=1
             log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
             echo "cutover_admission_pending=true"
-            if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+            if ! owner_image_hold record; then
+              MIGRATION_OK=0
+              err "owner image hold could not be recorded; refusing to restart boxhostd"
+            elif ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
               MIGRATION_OK=0
               err "boxhostd could not start on the committed layout; $(migration_restore_command)"
+            elif ! owner_image_hold check; then
+              MIGRATION_OK=0
+              err "owner image hold failed: an owner image was removed, replaced, or shrunk; $(migration_restore_command)"
             fi
           else
             MIGRATION_COMMIT_UNVERIFIED=1

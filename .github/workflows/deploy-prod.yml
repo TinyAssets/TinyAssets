@@ -46,6 +46,11 @@ on:
         required: false
         type: boolean
         default: false
+      owner_volume_audit_only:
+        description: 'Read-only census of every owner image, grant count, and subscription file. Does not swap the image, roll boxes, restore a snapshot, or wake an owner.'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # One deploy at a time; never cancel an in-flight deploy mid-swap.
@@ -79,11 +84,70 @@ permissions:
   actions: read
 
 jobs:
+  owner-volume-audit:
+    # Read-only. Same mutation group as deploy so a census cannot race a restart.
+    if: github.event_name == 'workflow_dispatch' && inputs.owner_volume_audit_only
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${DO_DROPLET_HOST:?}"
+          : "${DO_SSH_USER:?}"
+          : "${SSH_KEY:?}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Census every owner volume
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/owner-volume-audit.json"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            'sudo python3 - audit --baseline /var/lib/tinyassets-deploy/owner-image-hold.json' \
+            < scripts/owner_volume_audit.py | tee "$out"
+          python3 - "$out" <<'PY'
+          import json, sys
+          doc = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(
+              f"owners={doc.get('owners')} affected={doc.get('affected')} "
+              f"ok={doc.get('ok')} baseline={doc.get('baseline')} "
+              f"failures={','.join(doc.get('failures') or []) or 'none'}"
+          )
+          PY
+
+      - name: Upload owner volume census
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owner-volume-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/owner-volume-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+
   deploy:
-    # Skip failed build-image runs; manual dispatch always allowed.
+    # Skip failed build-image runs. A manual audit-only dispatch skips the swap.
     if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.owner_volume_audit_only != true
+      ) ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success'
+      )
     runs-on: ubuntu-latest
     environment: production
     # 15 min of deploy work, 15 for backup verification/repair, 10 for advisory
@@ -688,6 +752,7 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/deploy_fail_safe.sh deploy/install-tinyassets-env.sh \
               deploy/snapshot_candidate_evidence.sh scripts/hotfix.py \
+              scripts/owner_volume_audit.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               scripts/turns_in_flight.py \
@@ -697,7 +762,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 RECOVER_DIRTY_BUNDLE=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 BOXHOSTD_BUNDLE_REQUIRED=1 RECOVER_DIRTY_BUNDLE=1 HOTFIX_PROOF='${HOTFIX_PROOF}' DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' OWNER_VOLUME_AUDIT=/tmp/owner_volume_audit.py CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
