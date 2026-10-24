@@ -374,15 +374,54 @@ def test_asleep_mount_is_read_only_and_the_script_does_not_mutate():
     image, dest = Path("/var/lib/boxhostd/owners/300001.img"), Path("/tmp/ta-ro-300001")
     assert diag.mount_argv(image, dest) == [
         "mount", "-t", "xfs", "-o", diag.READONLY_MOUNT_OPTIONS, str(image), str(dest)]
-    assert diag.READONLY_MOUNT_OPTIONS == "ro,norecovery,nouuid,nosuid,nodev,loop"
+    assert diag.READONLY_MOUNT_OPTIONS == "ro,norecovery,nosuid,nodev,loop"
     assert diag.umount_argv(dest) == ["umount", "--no-canonicalize", str(dest)]
     text = SCRIPT.read_text(encoding="utf-8")
     for banned in (
-        "mkfs", "volumes.restore", "umount -l", "umount -f", "os.replace",
+        "nouuid", "mkfs", "volumes.restore", "umount -l", "umount -f", "os.replace",
         "attach(", "lease(", "migrate(", "query_ledger(", "require_accepted(",
         "SubscriptionRuntime", "authenticated(", "context(", "systemctl restart",
     ):
         assert banned not in text, banned
+
+
+def test_attached_asleep_image_is_not_mounted_and_counts_unreadable(tmp_path, monkeypatch):
+    image = tmp_path / "300001.img"
+    image.write_bytes(b"image")
+    data = tmp_path / "data"
+    data.mkdir()
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(list(argv))
+        if argv[:2] == ["losetup", "-j"]:
+            assert argv[2] == str(image)
+            assert kwargs.get("timeout") == 10
+
+            class Done:
+                returncode = 0
+                stdout = b"/dev/loop0: [0001]:1 (/var/lib/boxhostd/owners/300001.img)\n"
+                stderr = b""
+
+            return Done()
+        raise OSError("mounted an attached image")
+
+    monkeypatch.setattr(diag.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(diag, "_data_root", lambda: data)
+    monkeypatch.setattr(diag, "_owners", lambda _root: [(300001, PRINCIPAL)])
+    monkeypatch.setattr(diag, "_awake", lambda: (set(), "runsc"))
+    monkeypatch.setattr(diag, "_private_namespace", lambda: True)
+    monkeypatch.setattr(diag, "_current_harness", lambda: tmp_path)
+    monkeypatch.setattr(diag, "_harness_package", lambda _harness: tmp_path)
+    monkeypatch.setattr(diag, "_boxhostd_pid", lambda: None)
+    monkeypatch.setattr(diag, "_journal", lambda: "")
+    monkeypatch.setattr(diag, "_image", lambda _uid: image)
+    monkeypatch.setattr(diag.subprocess, "run", run)
+    report, private = diag.collect()
+    assert commands == [["losetup", "-j", str(image)]]
+    assert all(argv[0] != "mount" for argv in commands)
+    assert report["unreadable"] == 1
+    assert PRINCIPAL in private
 
 
 def test_workflow_is_a_manual_production_read():

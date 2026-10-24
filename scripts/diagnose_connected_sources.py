@@ -2,7 +2,7 @@
 """Read-only census of why connected_sources() is empty, for every owner.
 
 Awake boxes are read through the mount boxhostd already holds. Asleep images
-are attached with a private read-only XFS mount (ro,norecovery,nouuid) and detached
+are attached with a private read-only XFS mount (ro,norecovery) and detached
 before exit. Nothing here wakes a box, formats an image, or replaces one.
 
 The report is aggregate counts. It does not contain principals, tokens,
@@ -22,7 +22,7 @@ import sys
 from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 
-READONLY_MOUNT_OPTIONS = "ro,norecovery,nouuid,nosuid,nodev,loop"
+READONLY_MOUNT_OPTIONS = "ro,norecovery,nosuid,nodev,loop"
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _UID = range(300001, 400000)
 _403 = re.compile(
@@ -729,6 +729,14 @@ def collect() -> tuple[dict, set[str]]:
                 elif asleep_inspection != "readonly_loop":
                     raise OSError("asleep inspection is unavailable")
                 else:
+                    # A box can wake after _awake(). losetup -j is the live
+                    # attachment, and a second loop mount of that image is refused.
+                    attached = subprocess.run(
+                        ["losetup", "-j", str(image)],
+                        capture_output=True, timeout=10,
+                    )
+                    if attached.returncode != 0 or attached.stdout or attached.stderr:
+                        raise OSError("asleep image is already attached")
                     dest = Path(f"/tmp/ta-ro-{uid}")
                     with _readonly_image(image, dest) as mounted:
                         inspected = inspect_owner(
