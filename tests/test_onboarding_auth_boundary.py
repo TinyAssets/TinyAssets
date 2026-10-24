@@ -147,6 +147,7 @@ def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> in
     return starts[0]["status"]
 
 
+@pytest.mark.verifies("live-mcp-connector-surface:Every handle requires a named principal")
 def test_owner_router_still_links_an_anonymous_tool_call(require_auth_provider):
     """Anonymous tools/call is the hosted linking result on the router too.
 
