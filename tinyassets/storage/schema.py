@@ -44,6 +44,18 @@ APPEND_HISTORY = {
     "founder_home": ("platform_generated",),
 }
 
+# Pre-#2800 CREATE TABLE declared author DEFAULT 'anonymous'. C6 cutover copied
+# that DDL verbatim, before _current_table_ddl existed, so owner stores and
+# /data/.published still carry it. SQLite cannot change a column default
+# without rebuilding the table. Stored author values are already explicit;
+# only the unused default expression differs from the current ''. Accept that
+# exact historical default in place. Any other default is still schema drift.
+# Never rebuild owner rows to chase a default.
+HISTORICAL_DEFAULTS = {
+    "branch_definitions": {"author": "'anonymous'"},
+    "goals": {"author": "'anonymous'"},
+}
+
 
 def initialize_author_server(base_path: str | Path) -> Path:
     # Compatibility entry point; the unfenced writer stays in its existing home.

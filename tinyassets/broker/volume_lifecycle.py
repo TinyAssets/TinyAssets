@@ -131,9 +131,17 @@ class VolumeLifecycle:
         try:
             result = await self.host(owner, "snapshot", snapshot_id=work["snapshot_id"])
         except (RuntimeError, ValueError) as exc:
-            if "local image is absent" not in str(exc):
+            message = str(exc)
+            if "local image is absent" in message:
+                result = None
+            elif ("volume operation requires a stopped box" in message
+                    or "volume must be fully detached" in message):
+                # C15: the copy does not stop or detach a live box, and a
+                # concurrent wake may own it. Leave the recorded intent; the
+                # next recover sleeps before retrying.
+                return self.volume(owner, "pending")
+            else:
                 raise
-            result = None
 
         def commit():
             current = self.volume(owner, "pending")["work"]

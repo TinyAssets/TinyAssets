@@ -1069,7 +1069,11 @@ def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
     step = next(s for s in structural["steps"]
                 if "scripts.ci_structural_guards" in s.get("run", ""))
     assert "if" not in step and not step.get("continue-on-error")
-    slow_run = "\n".join(s.get("run", "") for s in jobs["slow-tests"]["steps"])
+    slow = jobs["slow-tests"]
+    # Playwright 1.58 cannot install chromium on ubuntu 26.04, which is
+    # what ubuntu-latest is now. The queue runs this install before pytest.
+    assert slow["runs-on"] == "ubuntu-24.04"
+    slow_run = "\n".join(s.get("run", "") for s in slow["steps"])
     assert "pip install -e '.[dev,browser]'" in slow_run
     assert "python -m playwright install --with-deps chromium" in slow_run
 
