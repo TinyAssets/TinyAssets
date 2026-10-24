@@ -1,10 +1,18 @@
-"""Wait for boxhostd's broker lifecycle work to drain before a deploy canary.
+"""Wait until boxhostd and the broker both report exactly {"ready": True}.
 
 Run as root on the host with PYTHONPATH=/opt/tinyassets/boxhostd.
 
-The cap outlasts one snapshot transfer. volumes.snapshot gives rclone 900s;
-a shorter wait declared the deploy failed while that copy was still the
-drain the gate is waiting for.
+The host returns that document only when the broker registration is held and
+no background copy is running or queued. A request wake is not that copy.
+The broker returns it only when admission is open, every lifecycle task has
+finished, and pending() is empty. pending() ignores kind=create and
+kind=running. It still counts snapshot, restore, evict, and erase, plus
+excess snapshots and a cold local volume.
+
+volumes.snapshot gives rclone --timeout 900s twice: the upload and the
+readback. The cap outlasts that publish. A shorter wait declared the deploy
+failed while the copy the gate is waiting for was still running, and the
+probe used to discard the answer that said which side was false.
 """
 
 from __future__ import annotations
@@ -14,12 +22,14 @@ import time
 from tinyassets.boxes.daemon_control import request
 from tinyassets.broker.lifecycle_control import request as broker_request
 
-# rclone --timeout 900s, plus two readiness probes.
+# One rclone --timeout. A publish uploads, then reads the object back.
 SNAPSHOT_TRANSFER_S = 900
+PUBLISH_TRANSFERS = 2
+WAIT_TIMEOUT_S = PUBLISH_TRANSFERS * SNAPSHOT_TRANSFER_S + 120
 
 
 def wait_ready(probe=request, *, broker_probe=broker_request,
-               timeout=SNAPSHOT_TRANSFER_S + 120, interval=5, clock=time.monotonic,
+               timeout=WAIT_TIMEOUT_S, interval=5, clock=time.monotonic,
                sleep=time.sleep, log=None):
     def ask(fn):
         try:

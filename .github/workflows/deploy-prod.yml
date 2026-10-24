@@ -719,11 +719,12 @@ jobs:
 
       - name: Wait for box host lifecycle readiness
         id: host_ready
-        # The waiter outlasts one 900s snapshot transfer. Leave headroom for SSH.
-        timeout-minutes: 20
+        # The waiter outlasts one publish: rclone upload and readback, each
+        # --timeout 900s, plus the script's 120s margin. Leave headroom for SSH.
+        timeout-minutes: 35
         run: |
           set -euo pipefail
-          timeout 1100s ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+          timeout 2000s ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             'sudo env PYTHONPATH=/opt/tinyassets/boxhostd python3 -' \
             < scripts/wait_boxhostd_ready.py
@@ -766,7 +767,9 @@ jobs:
 
       - name: Roll owner boxes and accept the canary box
         id: owner_boxes
-        timeout-minutes: 50
+        # Includes a second readiness wait after the fleet sleep, long enough
+        # for the same upload-and-readback publish as the host gate.
+        timeout-minutes: 70
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           EXPECTED_SHA: ${{ steps.tag.outputs.revision }}
