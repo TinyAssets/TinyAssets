@@ -32,6 +32,12 @@ _403 = re.compile(
     r"|password_refused workos=[a-z0-9_]{1,64})"
 )
 _STORE = "provider_definitions.json"
+# The assignment record is the membership the router enforces, so it is what a
+# user actually sees offered. A definition walk alone reports sources nobody has.
+_ASSIGNMENT = ".provider-authority/assignment.json"
+_MEMBER_METHODS = ("subscription_cli", "api_key_http")
+_MEMBERSHIP = (*_MEMBER_METHODS, "other", "definitions_without_member",
+               "members_without_definition")
 
 
 def _unreadable() -> dict:
@@ -226,6 +232,24 @@ def _definitions(view, center: str) -> tuple[list[dict], str | None]:
     if not isinstance(rows, list):
         return [], "definition_store_unreadable"
     return [row for row in rows if isinstance(row, dict)], None
+
+
+def _members(view, center: str) -> tuple[set[str], str | None]:
+    """The provider names this center's assignment record admits. No ids leave here."""
+    raw = view.read_bytes(f"{center}/{_ASSIGNMENT}")
+    if raw is None:
+        return set(), None
+    try:
+        record = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeError):
+        return set(), "assignment_record_unreadable"
+    if not isinstance(record, dict):
+        return set(), "assignment_record_unreadable"
+    allowed = record.get("allowed_providers")
+    if not isinstance(allowed, list):
+        # None is the never-assigned default; anything else is a malformed ceiling.
+        return set(), None if allowed is None else "assignment_record_unreadable"
+    return {name for name in allowed if isinstance(name, str)}, None
 
 
 def _image_binary(source, cli_root: Path) -> str | None:
@@ -487,6 +511,7 @@ def inspect_owner(view, principal: str, *, cli_root: Path | None, vault_path: Pa
     subscription: list[str | None] = []
     http: list[str | None] = []
     owner_errors = [center_error] if center_error else []
+    membership = dict.fromkeys(_MEMBERSHIP, 0)
     for center in centers:
         if view.is_symlink(center):
             owner_errors.append("center_symlink")
@@ -495,6 +520,17 @@ def inspect_owner(view, principal: str, *, cli_root: Path | None, vault_path: Pa
         if store_error:
             owner_errors.append(store_error)
             continue
+        members, member_error = _members(view, center)
+        if member_error:
+            owner_errors.append(member_error)
+        served = set()
+        for name in members:
+            method, _, ident = name.partition(":")
+            membership[method if method in _MEMBER_METHODS else "other"] += 1
+            served.add(ident)
+        defined = {row["id"] for row in rows if isinstance(row.get("id"), str)}
+        membership["definitions_without_member"] += len(defined - served)
+        membership["members_without_definition"] += len(served - defined)
         for row in rows:
             method = row.get("access_method")
             if method == "subscription_cli":
@@ -505,6 +541,7 @@ def inspect_owner(view, principal: str, *, cli_root: Path | None, vault_path: Pa
                 http.append(classify_http(principal, str(row.get("ref", "")), ledger))
     return {"subscription": subscription, "http": http, "owner_errors": owner_errors,
             "vault_secrets": _vault_secrets(vault),
+            "assignment_members": membership,
             "ta_cli": view.is_dir(".ta-cli")}
 
 
@@ -578,6 +615,8 @@ def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_
     passed_sub_owners: set[int] = set()
     passed_http_owners: set[int] = set()
     passed_sub = passed_http = 0
+    membership = dict.fromkeys(_MEMBERSHIP, 0)
+    member_owners: set[int] = set()
 
     def bump(name: str, index: int, definitions: bool = True):
         slot = failures.setdefault(name, {"owners": 0, "definitions": 0, "_owners": set()})
@@ -610,6 +649,13 @@ def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_
                 bump(item, index)
         for item in result.get("owner_errors") or []:
             bump(item, index, definitions=False)
+        counts = result.get("assignment_members") or {}
+        for name in _MEMBERSHIP:
+            value = counts.get(name, 0)
+            if type(value) is int:
+                membership[name] += value
+        if any(counts.get(name) for name in _MEMBER_METHODS):
+            member_owners.add(index)
     public_failures = {
         name: {"owners": len(slot["_owners"]), "definitions": slot["definitions"]}
         for name, slot in sorted(failures.items())
@@ -627,6 +673,7 @@ def build_report(owner_results: list[dict], *, awake: int, asleep: int, missing_
         "owners_with_api_key_http": len(http_owners),
         "subscription_cli_definitions": sub_defs,
         "api_key_http_definitions": http_defs,
+        "assignment_members": {**membership, "owners": len(member_owners)},
         "failures": public_failures,
         "passed_file_checks": {
             "owners": len(passed_sub_owners),

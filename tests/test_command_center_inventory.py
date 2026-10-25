@@ -34,6 +34,7 @@ OTHER = "u-01ky3zh1arr8qth8jee7zx63pq"
     ("workspace", USER), ("workspaces", USER), (".agent-workspace", USER),
     ("soul.edit.md", PLATFORM), ("dispatcher_config.yaml", PLATFORM),
     (".soul.lock", PLATFORM), (".provider-assignment-admission.lock", PLATFORM),
+    (".provider_definitions.json.lock", PLATFORM),
     # nobody writes a bare .lock as a home entry -- its creator puts it inside a
     # credential snapshot directory, so at the top level it is unknown
     (".lock", None),

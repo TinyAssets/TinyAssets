@@ -68,6 +68,38 @@ def test_connection_upgrade_accepts_record_before_lock_digest(connected):
         connected.require_accepted()
 
 
+@pytest.mark.verifies("box-subscription-sources:Record-bound acceptance")
+def test_interrupted_upgrade_leaves_a_marker_the_next_tap_accepts(connected, monkeypatch):
+    import os
+
+    from tinyassets.providers.source_record import SourceRecord
+    from tinyassets.providers.subscription_source import digest
+
+    old = connected.source.document()
+    old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)
+    current = connected.source.document()
+    current["sign_in"]["cli_login"]["install"]["lock_sha256"] = "a" * 64
+    connected.source = SourceRecord.parse(current)
+    marker = connected.directory / "connection"
+    legacy = json.dumps({"source": digest(old), "incarnation": "preserved"})
+    marker.write_text(legacy)
+
+    def interrupted(*args, **kwargs):
+        raise OSError("interrupted before the upgraded marker became the name")
+
+    monkeypatch.setattr(os, "replace", interrupted)
+    with pytest.raises(PermissionError, match="reconnect required"):
+        connected.require_accepted()
+    monkeypatch.undo()
+    # Truncated JSON would leave this source unreconnectable; the whole legacy
+    # marker survives, so the retry upgrades it and one tap is enough.
+    assert marker.read_text() == legacy
+    connected.require_accepted()
+    assert json.loads(marker.read_text()) == {
+        "source": digest(connected.source), "incarnation": "preserved"}
+    assert sorted(p.name for p in connected.directory.glob(".connection*")) == []
+
+
 @pytest.mark.parametrize("record", [None, "{broken"])
 def test_disconnect_without_resolvable_record(connected, record):
     from tinyassets.providers.subscription_runtime import disconnect_source

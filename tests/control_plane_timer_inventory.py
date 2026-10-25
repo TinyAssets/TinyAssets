@@ -243,6 +243,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_assignment.py::_acquire_windows_file_lock": (
         CALL_SCOPED, "lock acquisition",
     ),
+    "tinyassets/providers/definition.py::_store_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/run_file_upload.py::StreamBridge.chunks#2": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push#2": (CALL_SCOPED, "upload stream"),
     "tinyassets/storage/automation_activations.py::AutomationActivationStore.connection": (

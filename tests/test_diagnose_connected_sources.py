@@ -80,6 +80,17 @@ def _definitions(root: Path, rows: list) -> None:
     (center / "provider_definitions.json").write_text(json.dumps(rows), encoding="utf-8")
 
 
+def _assignment(root: Path, allowed) -> None:
+    path = root / CENTER / ".provider-authority" / "assignment.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "allowed_providers": allowed,
+        "engine_assignment_state": "ready",
+        "engine_assignment_generation": 1,
+        "provider_authority_bindings": {},
+    }), encoding="utf-8")
+
+
 def _vault(tmp: Path, payload: dict) -> Path:
     path = tmp / "vault.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -500,6 +511,49 @@ def test_aggregate_counts_owners_once_and_keeps_the_canary_code(tmp_path):
     text = diag.safe_json(report, {"user_01SECRET", PRINCIPAL})
     assert "user_01SECRET" not in text and "not_a_code" not in text
     assert tmp_path.name not in text
+
+
+def test_census_counts_assignment_membership_not_just_definitions(tmp_path, shipped):
+    sources, digest = shipped
+    source = sources["claude-code"]
+    root = tmp_path / "owner"
+    _definitions(root, [_row("claude-code")])
+    _marker(root, "claude-code", digest(source))
+    _binary(root, source)
+    # One member the definitions explain, one definition nobody serves, and one
+    # member whose definition disconnect left behind.
+    _assignment(root, ["subscription_cli:" + DEFINITION_ID,
+                       "api_key_http:provdef_gone_with_the_grant"])
+    result = _inspect(root, None)
+    assert result["assignment_members"] == {
+        "subscription_cli": 1, "api_key_http": 1, "other": 0,
+        "definitions_without_member": 0, "members_without_definition": 1}
+
+    bare = tmp_path / "bare"
+    _definitions(bare, [_row("claude-code")])
+    assert diag.inspect_owner(diag.LocalView(bare), PRINCIPAL, cli_root=None,
+                              vault_path=None, ledger=None)["assignment_members"] == {
+        "subscription_cli": 0, "api_key_http": 0, "other": 0,
+        "definitions_without_member": 1, "members_without_definition": 0}
+
+    report = _report([result, {"subscription": [], "http": [], "owner_errors": []}], awake=1)
+    assert report["assignment_members"] == {
+        "subscription_cli": 1, "api_key_http": 1, "other": 0,
+        "definitions_without_member": 0, "members_without_definition": 1, "owners": 1}
+    text = diag.safe_json(report, {PRINCIPAL, DEFINITION_ID})
+    assert DEFINITION_ID not in text and "provdef_gone_with_the_grant" not in text
+
+
+def test_unreadable_assignment_record_is_an_owner_failure(tmp_path):
+    root = tmp_path / "owner"
+    _definitions(root, [_row("claude-code")])
+    path = root / CENTER / ".provider-authority" / "assignment.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{broken", encoding="utf-8")
+    result = _inspect(root, None)
+    assert result["owner_errors"] == ["assignment_record_unreadable"]
+    assert _report([result])["failures"]["assignment_record_unreadable"] == {
+        "owners": 1, "definitions": 0}
 
 
 def test_owner_view_rejects_paths_and_awake_identity():

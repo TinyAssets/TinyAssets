@@ -96,7 +96,7 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
 #: would read the example as a real on-disk name nobody accounts for.)
 PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
     ".provider-assignment-admission.lock", ".soul.lock",
-    ".auto_ship_attempts.jsonl.lock",
+    ".auto_ship_attempts.jsonl.lock", ".provider_definitions.json.lock",
 }) | RETIRED_PLATFORM_LOCK_NAMES
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({
