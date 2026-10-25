@@ -424,8 +424,8 @@ def _vault_facts(data):
     return http, subscription, other, dests
 
 
-def _owner_groups(db_path):
-    """center -> {owner, ...}. Empty when the custody table cannot be read."""
+def _owner_groups(db_path, centers):
+    """center -> {owner, ...}. A missing file is empty. An unreadable file refuses all."""
     groups = {}
     path = Path(db_path) if db_path is not None else None
     if path is None or path.is_symlink() or not path.is_file():
@@ -457,7 +457,7 @@ def _owner_groups(db_path):
                 if isinstance(owner, str) and owner:
                     slot.add(owner)
     except (OSError, sqlite3.Error):
-        return {}
+        return {center: {"\0custody-a", "\0custody-b"} for center in centers}
     return groups
 
 
@@ -469,10 +469,11 @@ def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
     a center maps only if its directory name is the grant ``universe_id`` and
     that grant's ``vault://http/`` destination is one of the vault's http
     destinations, and every such row names one owner. A provider definition
-    counts only on that same pair. Disagreement refuses the center.
+    counts only on that same pair. Disagreement refuses the center. A custody
+    or ledger file that exists but cannot be read refuses every center.
     """
-    groups = _owner_groups(db_path)
-    ledger_groups, evidence = _ledger_owner_groups(
+    groups = _owner_groups(db_path, centers)
+    ledger_groups, evidence, ledger_failed = _ledger_owner_groups(
         ledger_path, center_dests or {}, definition_root, definition_docs,
     )
     mapping = {}
@@ -495,7 +496,7 @@ def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
         "centers_zero_owners": zero,
         "centers_several_owners": several,
         "centers_ledger_one_owner": ledger_one,
-    }, evidence
+    }, evidence, ledger_failed
 
 
 def _member_parts(name):
@@ -568,7 +569,7 @@ def inspect_legacy(archive):
         if ledger is not None:
             ledger_path = Path(directory) / "outbound.db"
             ledger_path.write_bytes(ledger)
-        _mapping, owner_counts, _evidence = legacy_center_owners(
+        _mapping, owner_counts, _evidence, _ledger_failed = legacy_center_owners(
             custody_path, centers, ledger_path=ledger_path,
             center_dests=center_dests, definition_docs=definition_docs,
         )
@@ -611,7 +612,7 @@ def inspect_legacy_tree(root):
             counts["llm_subscription"] += subscription
             counts["other"] += other
             slot.update(dests)
-    _mapping, owner_counts, _evidence = legacy_center_owners(
+    _mapping, owner_counts, _evidence, _ledger_failed = legacy_center_owners(
         custody if counts["custody_db"] else None, centers,
         ledger_path=ledger if ledger.is_file() and not ledger.is_symlink() else None,
         center_dests=center_dests, definition_root=root,
@@ -897,30 +898,38 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
             evidence[center].add(dest)
 
 
+def _refused_ledger(groups):
+    """Two owners on every center and no destinations. The file is unreadable."""
+    for owners in groups.values():
+        owners.update(("\0ledger-a", "\0ledger-b"))
+    return groups, {center: set() for center in groups}, True
+
+
 def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_docs):
     """Owners and the destinations that named them. A failed read refuses all."""
     groups = {center: set() for center in center_dests}
     evidence = {center: set() for center in center_dests}
     path = Path(ledger_path) if ledger_path is not None else None
     if path is None or path.is_symlink() or not path.is_file():
-        return groups, evidence
+        return groups, evidence, False
     try:
         db = _open_ro(path)
     except (OSError, sqlite3.Error):
-        return groups, evidence
+        return _refused_ledger(groups)
     try:
         _add_grant_owners(db, groups, center_dests, evidence)
         docs = list(definition_docs or [])
         if definition_root is not None:
             docs.extend(_definition_files(definition_root, center_dests))
         _add_definition_owners(db, groups, center_dests, docs, evidence)
-    except (OSError, sqlite3.Error, TypeError):
-        for owners in groups.values():
-            owners.update(("\0ledger-a", "\0ledger-b"))
-        return groups, {center: set() for center in center_dests}
+    except (OSError, sqlite3.Error):
+        return _refused_ledger(groups)
+    except TypeError:
+        refused, cleared, _failed = _refused_ledger(groups)
+        return refused, cleared, False
     finally:
         db.close()
-    return groups, evidence
+    return groups, evidence, False
 
 
 def _vault_resolver(namespace):
@@ -1105,7 +1114,9 @@ def convert_legacy_vaults(source_root):
     a grant maps it only together with a vault destination. When a grant or
     definition names destinations for that center, only those destinations
     are copied. A grant for another universe, or a destination column that
-    disagrees with the credential ref, leaves its secret unread.
+    disagrees with the credential ref, leaves its secret unread. A custody
+    or ledger file that exists but cannot be read refuses every center and
+    is not opened again.
     """
     stats = {
         "http_kept": 0,
@@ -1129,13 +1140,15 @@ def convert_legacy_vaults(source_root):
     ledger_path = source_root / ".broker" / "outbound.db"
     if ledger_path.is_symlink() or not ledger_path.is_file():
         ledger_path = None
-    mapping, owner_counts, evidence = legacy_center_owners(
+    mapping, owner_counts, evidence, ledger_failed = legacy_center_owners(
         custody if custody.is_file() and not custody.is_symlink() else None,
         centers, ledger_path=ledger_path,
         center_dests=_center_http_dests(platform, local),
         definition_root=source_root,
     )
     stats.update(owner_counts)
+    if ledger_failed:
+        return stats
     ledger = source_root / ".broker" / "outbound.db"
     db = None
     if ledger.is_file() and not ledger.is_symlink():
@@ -1338,9 +1351,14 @@ def _groups(root):
     ledger = root / ".broker" / "outbound.db"
     rows = {table: [] for table in TABLES}
     if ledger.is_file() and not ledger.is_symlink():
-        with _open_ro(ledger) as db:
-            for table in TABLES:
-                rows[table] = _rows(db, table)
+        try:
+            with _open_ro(ledger) as db:
+                loaded = {}
+                for table in TABLES:
+                    loaded[table] = _rows(db, table)
+            rows = loaded
+        except (OSError, sqlite3.Error):
+            rows = {table: [] for table in TABLES}
     grouped = {}
 
     def bucket(owner):

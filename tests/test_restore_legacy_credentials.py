@@ -1432,6 +1432,94 @@ def test_ledger_type_error_refuses_every_mapped_center(tmp_path, monkeypatch):
     _assert_hidden(json.dumps(plan))
 
 
+def test_unreadable_custody_does_not_fall_through_to_the_grant(tmp_path):
+    """A custody file that is not a database refuses the center."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_B, "c-beta", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_B, "gb", "c-beta", "alpha")],
+    ))
+    (source / ".broker" / "credential-custody.db").write_bytes(b"not a database")
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["centers_ledger_one_owner"] == 0
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_B).exists()
+    assert not _owner_vault(source, OWNER_B).exists()
+    _assert_hidden(json.dumps(plan))
+
+
+def test_ledger_open_failure_does_not_let_custody_map(tmp_path, monkeypatch):
+    """_open_ro failing on the ledger refuses the center that custody names."""
+    real_open = rc._open_ro
+
+    def open_ro(path):
+        if Path(path).name == "outbound.db":
+            raise sqlite3.OperationalError("ledger unreadable")
+        return real_open(path)
+
+    monkeypatch.setattr(rc, "_open_ro", open_ro)
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (OWNER_A,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(source, OWNER_A).exists()
+    _assert_hidden(json.dumps(plan))
+
+
+def test_non_database_ledger_refuses_without_raising(tmp_path):
+    """A ledger that is not a database stays a counts-only refusal."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"not a database")
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    _assert_hidden(json.dumps(plan))
+
+
 def test_workflow_modes_include_inspect_legacy():
     workflow = (ROOT / ".github/workflows/restore-credentials.yml").read_text(encoding="utf-8")
     shell = (ROOT / "deploy/restore-credentials.sh").read_text(encoding="utf-8")
