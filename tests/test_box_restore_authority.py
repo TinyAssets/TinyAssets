@@ -392,7 +392,7 @@ def test_router_admission_is_positive_and_has_no_restore_predicates(tmp_path, mo
         ("/app", "POST", 503),
         ("/app", "GET", 200),
         ("/app/m/build/main.js", "GET", 200),
-        ("/app/canary-sign-in", "POST", 503),
+        ("/app/owner-sign-in/complete", "POST", 503),
     ],
 )
 def test_closed_admission_blocks_anonymous_writers(tmp_path, monkeypatch, path, method, status):
