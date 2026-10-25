@@ -79,27 +79,32 @@ def disconnect_subscription(owner, source_id):
     import sqlite3
 
     from tinyassets.config import write_provider_assignment_projection
+    from tinyassets.owner_centers import Centers
     from tinyassets.provider_assignment import (
         ensure_provider_assignment_schema,
         load_provider_assignment_in_transaction,
         provider_assignment_admission,
     )
-    from tinyassets.providers.definition import get_definition
+    from tinyassets.providers.definition import get_definition, remove_definitions
     from tinyassets.storage import db_path
 
     with sqlite3.connect(db_path(owner.root)) as conn:
         ensure_provider_assignment_schema(conn)
-        centers = [row[0] for row in conn.execute("SELECT universe_id FROM provider_assignments")]
+        assigned = {row[0] for row in conn.execute("SELECT universe_id FROM provider_assignments")}
+    # A candidate registered but never assigned has no assignment row, and its
+    # definition still has to go, so every active center is visited.
+    centers = sorted(assigned | set(Centers(owner.root).active()))
     with ExitStack() as locks:
-        for uid in sorted(centers):
+        for uid in centers:
             locks.enter_context(provider_assignment_admission().exclusive(owner.root / uid))
         for uid in centers:
             universe = owner.root / uid
+            updated = None
             with sqlite3.connect(db_path(owner.root)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("BEGIN IMMEDIATE")
                 assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
-                if assignment.owner_user_id != owner.principal:
+                if assignment is not None and assignment.owner_user_id != owner.principal:
                     raise PermissionError("owned assignment required")
 
                 def departing(member):
@@ -109,17 +114,22 @@ def disconnect_subscription(owner, source_id):
                     definition = get_definition(uid, ident)
                     return definition is not None and definition.ref == source_id
 
-                kept = tuple(m for m in assignment.candidates if not departing(m))
-                if kept == assignment.candidates:
-                    continue
-                updated = remove_members(conn, assignment, kept)
-            write_provider_assignment_projection(universe, state=updated.state,
-                generation=updated.generation, provider=updated.provider,
-                binding={"binding_id": updated.binding_id,
-                         "generation": updated.binding_generation,
-                         "binding_digest": updated.binding_digest,
-                         "assignment_digest": updated.assignment_digest},
-                assignment_candidates=(updated.candidates or None)
-                if updated.state == "ready" else None)
+                if assignment is not None:
+                    kept = tuple(m for m in assignment.candidates if not departing(m))
+                    if kept != assignment.candidates:
+                        updated = remove_members(conn, assignment, kept)
+            if updated is not None:
+                write_provider_assignment_projection(universe, state=updated.state,
+                    generation=updated.generation, provider=updated.provider,
+                    binding={"binding_id": updated.binding_id,
+                             "generation": updated.binding_generation,
+                             "binding_digest": updated.binding_digest,
+                             "assignment_digest": updated.assignment_digest},
+                    assignment_candidates=(updated.candidates or None)
+                    if updated.state == "ready" else None)
+            # After membership, never before: departing() resolves the member
+            # through the definition this removes.
+            remove_definitions(uid, owner_user_id=owner.principal,
+                               access_method="subscription_cli", ref=source_id)
 
         yield

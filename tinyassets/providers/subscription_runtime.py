@@ -366,9 +366,11 @@ class SubscriptionRuntime:
 
     def accept(self):
         """Bind this explicit login to the exact source the owner connected."""
+        from tinyassets.providers.subscription_lease import write_owner_text
+
         if sources(self.home).get(self.source.id) != self.source:
             raise PermissionError("source changed during sign-in")
-        (self.directory / "connection").write_text(json.dumps({
+        write_owner_text(self.directory / "connection", json.dumps({
             "source": digest(self.source), "incarnation": secrets.token_hex(32)}))
 
     def require_accepted(self):

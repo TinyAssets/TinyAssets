@@ -332,6 +332,30 @@ def list_definitions(universe_id: str) -> list[ProviderDefinition]:
     ]
 
 
+def remove_definitions(
+    universe_id: str, *, owner_user_id: str, access_method: str, ref: str
+) -> int:
+    """Drop this owner's candidates for one disconnected ``ref``; return how many.
+
+    Registration creates a candidate that points at a connection; when the owner
+    disconnects that connection the candidate is a source nothing can serve, and
+    ``connected_sources`` is built from these rows, so leaving it behind shows the
+    account a dangling, broken source forever. Disconnect leaves nothing. Only the
+    asking owner's rows are matched -- another principal's candidate for the same
+    ``ref`` is never theirs to remove.
+    """
+    rows = _load(universe_id)
+    kept = [
+        row for row in rows
+        if (row.get("owner_user_id"), row.get("access_method"), row.get("ref"))
+        != (owner_user_id, access_method, ref)
+    ]
+    removed = len(rows) - len(kept)
+    if removed:
+        _write(universe_id, kept)
+    return removed
+
+
 def list_commons_definitions(base: str | Path) -> list[dict[str, Any]]:
     """Every ``commons``-visibility definition across universes, as remixable
     SHAPE-only public views (no owner, no ref). This is what a user connecting

@@ -81,6 +81,27 @@ def state_path(root, name):
     return path
 
 
+def write_owner_text(path, text):
+    """An owner-visible sign-in file, whole or not at all.
+
+    A write interrupted part way through leaves truncated JSON behind, and both
+    readers treat that as a source the owner has to reconnect -- permanently,
+    because nothing rewrites the file on its own. So the name only ever moves
+    onto a complete, fsynced file in the same directory.
+    """
+    fd, name = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".", suffix=".tmp")
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def capture(runtime, root, *, previous=None):
     state, total = dict(previous or {}), 0
     for name in runtime.source.state["paths"]:
@@ -128,7 +149,7 @@ def migrate(runtime, entry):
             document["state"]["location"] = "broker"
             if SourceRecord.parse(document) != runtime.source:
                 raise PermissionError("source changed during custody migration")
-            declaration.write_text(json.dumps(document, indent=2) + "\n")
+            write_owner_text(declaration, json.dumps(document, indent=2) + "\n")
     return entry
 
 
@@ -248,4 +269,4 @@ def upgrade_connection(runtime, marker):
     accepted.add(digest(old))
     if marker.get("source") in accepted:
         marker["source"] = digest(runtime.source)
-        (runtime.directory / "connection").write_text(json.dumps(marker))
+        write_owner_text(runtime.directory / "connection", json.dumps(marker))

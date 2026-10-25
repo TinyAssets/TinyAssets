@@ -375,6 +375,24 @@ def test_disconnect_removes_declared_state_and_owner_install_only(connected, tmp
     assert disconnect("fake-cli")["status"] == "disconnected"
 
 
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+def test_disconnect_removes_the_candidate_the_account_can_no_longer_serve(connected):
+    from tinyassets.onboarding.subscription_connect import disconnect
+    from tinyassets.providers.definition import list_definitions, register_definition
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    root = connected.home
+    kept = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="fake-cli")
+    # A candidate registered and never assigned has no assignment row at all; its
+    # definition still has to go, or the account keeps a broken source forever.
+    assert connected_sources(root, root / "center", "owner") == frozenset(
+        {"subscription_cli:" + kept.id})
+    assert disconnect("fake-cli")["status"] == "disconnected"
+    assert list_definitions("center") == []
+    assert connected_sources(root, root / "center", "owner") == frozenset()
+
+
 def test_changed_record_invalidates_acceptance_before_running_cli(connected, monkeypatch):
     from tinyassets.onboarding.subscription_connect import finish
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime
