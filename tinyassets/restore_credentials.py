@@ -1104,6 +1104,43 @@ def _source_grants(db):
     return {row[0] for row in db.execute(query) if isinstance(row[0], str)}
 
 
+def _raw_ref(raw):
+    try:
+        document = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    ref = document.get("ref")
+    return ref if isinstance(ref, str) else None
+
+
+def _grant_http_dest(db, owner, grant_id):
+    """Destination of a live non-revoked grant, or None when it cannot be used."""
+    if not grant_id or not isinstance(owner, str) or not owner:
+        return None
+    if not (_table_exists(db, "outbound_connection_grants")
+            and _table_exists(db, "outbound_connections")):
+        return None
+    connection_columns = set(_columns(db, "outbound_connections"))
+    grant_columns = set(_columns(db, "outbound_connection_grants"))
+    if "credential_ref" not in connection_columns or "owner_user_id" not in grant_columns:
+        return None
+    revoked_grant = "AND g.revoked_at IS NULL" if "revoked_at" in grant_columns else ""
+    revoked_conn = "AND c.revoked_at IS NULL" if "revoked_at" in connection_columns else ""
+    row = db.execute(
+        "SELECT c.credential_ref FROM outbound_connection_grants g "
+        "JOIN outbound_connections c ON c.connection_id=g.connection_id "
+        "WHERE g.grant_id=? AND g.owner_user_id=? AND c.owner_user_id=? "
+        f"{revoked_grant} {revoked_conn}",
+        (grant_id, owner, owner),
+    ).fetchone()
+    if row is None or not isinstance(row[0], str) or not row[0].startswith(_HTTP_PREFIX):
+        return None
+    dest = row[0][len(_HTTP_PREFIX):].strip()
+    return dest or None
+
+
 def _copy_definitions(live_db, source_root, live_root):
     """Copy verified api_key_http descriptors. A live row or file stays."""
     ledger = source_root / ".broker" / "outbound.db"
@@ -1117,9 +1154,18 @@ def _copy_definitions(live_db, source_root, live_root):
             for owner, definition_id, raw in src.execute(
                 "SELECT owner, id, definition FROM box_model_sources"
             ):
-                document = _verified_definition(
-                    owner, definition_id, raw, _source_grants(live_db),
+                ref = _raw_ref(raw)
+                dest = _grant_http_dest(live_db, owner, ref)
+                if not isinstance(owner, str) or dest is None:
+                    continue
+                digest = hashlib.sha256(owner.encode()).hexdigest()
+                vault = (
+                    live_root / ".broker" / "accounts" / digest / "credentials"
+                    / FILES["credential_vault"]
                 )
+                if dest not in _vault_http_dests(vault):
+                    continue
+                document = _verified_definition(owner, definition_id, raw, {ref})
                 if document is not None:
                     pending.append((owner, definition_id, document))
     except sqlite3.Error:

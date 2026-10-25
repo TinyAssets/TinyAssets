@@ -414,6 +414,46 @@ def test_existing_source_vault_is_not_overwritten(tmp_path):
         assert db.execute("SELECT COUNT(*) FROM outbound_connections").fetchone()[0] == 0
 
 
+def test_definition_requires_the_secret_in_the_live_vault(tmp_path):
+    snap = tmp_path / "snaps"
+    snap.mkdir()
+    archive = _tar(snap / ARCHIVE)
+    live = _live(tmp_path)
+    digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    vault = (
+        live / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    vault.parent.mkdir(parents=True)
+    vault.write_text(json.dumps({"schema_version": 1, "credentials": [
+        {"credential_type": "http", "destination": "elsewhere", "token": TOKEN_LIVE},
+    ]}), encoding="utf-8")
+    before = vault.read_bytes()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        db.execute(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES ('c-live', ?, NULL, ?, 'ok')",
+            (OWNER_A, f"vault://http/{DEST_OK}"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES ('ga-live', 'c-live', ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (OWNER_A,),
+        )
+    extracted = rc.extract_needed(archive, tmp_path / "extracted")
+    plan = rc.merge(live, extracted)
+    assert vault.read_bytes() == before
+    assert plan["legacy"]["definitions"] == 0
+    assert not (live / "alpha" / "provider_definitions.json").exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        present = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='box_model_sources'"
+        ).fetchone()
+        if present is not None:
+            assert db.execute("SELECT COUNT(*) FROM box_model_sources").fetchone()[0] == 0
+
+
 def test_non_string_destination_does_not_abort_the_other_center(tmp_path):
     source = tmp_path / "source"
     ledger = source / ".broker" / "outbound.db"
