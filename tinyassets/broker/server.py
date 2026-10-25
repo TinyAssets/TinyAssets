@@ -515,9 +515,11 @@ class _Connection:
                     # the action and the error class only, never the message.
                     document = doc.get("document")
                     action = document.get("action") if isinstance(document, dict) else None
+                    if not (isinstance(action, str)
+                            and action in {"read", "begin", "save", "delete"}):
+                        action = "invalid"
                     _LOG.warning("subscription custody %s refused: %s",
-                                 action if action in {"read", "begin", "save", "delete"}
-                                 else "invalid", type(exc).__name__)
+                                 action, type(exc).__name__)
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
