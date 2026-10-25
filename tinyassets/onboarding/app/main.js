@@ -7199,8 +7199,27 @@
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
       const result=await response.json();
       if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
-      if(!response.ok||result.error)throw new Error("Connection did not finish. Sign in to the owner view and retry.");
+      if(!response.ok||result.error){
+        const error=new Error("Connection did not finish. Sign in to the owner view and retry.");
+        error.signIn=result.error==="interactive_approval_required";throw error;
+      }
+      try{sessionStorage.removeItem("ta_owner_again");}catch(_e){}
       return result;
+    },
+    // A lapsed owner session is a sign-in, not a dead end: go straight to the
+    // one sign-in, which returns to the app. A refusal within minutes of that
+    // sign-in is one signing in cannot cure, so it is reported, never looped;
+    // a later lapse redirects again.
+    async signInAgain(note){
+      if(NATIVE||DESKTOP_SHELL){note.textContent=ownerProofUnavailable();return;}
+      let again=false;
+      try{
+        const at=Number(sessionStorage.getItem("ta_owner_again"));
+        again=at>0&&Date.now()-at<600000;
+        if(!again)sessionStorage.setItem("ta_owner_again",String(Date.now()));
+      }catch(_e){}
+      if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
+      await openSignIn("/app/owner-sign-in?app=1");
     },
     async poll(flow,epoch){
       try{return await this.post("poll",{flow},epoch);}
@@ -8658,7 +8677,10 @@
             JSON.stringify({verifier,preset:result.source_id,title:"Connect "+selected,
               source:true,center:queueScope||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
           await openSignIn(url.href);
-        }catch(_error){note.textContent="That address has no AI we can connect to";}
+        }catch(_error){
+          if(_error&&_error.signIn){await SubscriptionSources.signInAgain(note);return;}
+          note.textContent="That address has no AI we can connect to";
+        }
         finally{key="";go.disabled=false;address.disabled=false;}
       });
       address.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();go.click();}});

@@ -27,6 +27,7 @@ def test_native_subscription_connect_controls(native):
     script = """
       const $=id=>document.getElementById(id),NATIVE=NATIVE_VALUE,DESKTOP_SHELL=false;
       const ConnectedAI={load(){}};
+      const ownerProofUnavailable=()=>'Use a regular browser.';
       const CFG={model_source_address:'https://fixture.example'},MCP={_loginEpoch:1};
       const pkceStore=sessionStorage,queueOwner='owner',queueScope='center';
       const token=()=>true,ensureFreshToken=async()=>{},authHeaders=()=>({});
@@ -87,5 +88,65 @@ def test_native_subscription_connect_controls(native):
         assert ('begin', {'source_id': 'fixture-cli'}) in calls
         assert ('finish', {'flow': 'fixture-flow'}) in calls
         assert page.evaluate("sessionStorage.getItem('ta_cli_login')") is None
+        context.close()
+        browser.close()
+
+
+@pytest.mark.verifies("onboarding-web-app:Sign-in completion uses flow-bound owner consent")
+def test_a_lapsed_owner_session_goes_straight_to_sign_in():
+    from playwright.sync_api import expect, sync_playwright
+
+    source = Path("tinyassets/onboarding/app/main.js").read_text("utf-8")
+    cli = source[source.index("  const SubscriptionSources={"):
+                 source.index("\n  };", source.index("  const SubscriptionSources={")) + 6]
+    cli = source[source.index("  function copyButton("):
+                 source.index("  function focusCommandCenter(")] + cli
+    address = source[source.index("  const ModelDiscovery={"):
+                     source.index("  // ---- End unified address connection ----")]
+    script = """
+      const $=id=>document.getElementById(id),NATIVE=false,DESKTOP_SHELL=false;
+      const ConnectedAI={load(){}};
+      const ownerProofUnavailable=()=>'Use a regular browser.';
+      const CFG={model_source_address:'https://fixture.example'},MCP={_loginEpoch:1};
+      const pkceStore=sessionStorage,queueOwner='owner',queueScope='center';
+      const token=()=>true,ensureFreshToken=async()=>{},authHeaders=()=>({});
+      const refreshRail=async()=>{},closeExternal=async()=>{},appendMessage=()=>{};
+      const closeConnectRequest=()=>{};
+      const openSignIn=async url=>{window.location.assign(url);};
+      const sleep=ms=>new Promise(resolve=>setTimeout(resolve,25));
+      const randToken=()=> 'v'.repeat(43),challengeFor=async()=> 'c'.repeat(43);
+      const ConnectOAuth={post:async()=>{throw Error('no discovery after a refusal');}};
+    """ + cli + address + """
+      ModelDiscovery.render($('connect-panel'),true);
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context()
+        context.route('**/*', lambda route: route.abort())
+        context.route('https://app.example/app', lambda route: route.fulfill(
+            body='<div id="connect-panel"></div><script>'+script+'</script>',
+            content_type='text/html'))
+        context.route('https://app.example/app/owner-sign-in?app=1', lambda route: route.fulfill(
+            body='signing in', content_type='text/html'))
+        context.route('**/app/subscription-connect/*', lambda route: route.fulfill(
+            status=403, content_type='application/json',
+            body=json.dumps({'error': 'interactive_approval_required'})))
+        page = context.new_page()
+        page.goto('https://app.example/app')
+        page.get_by_role('button', name='Connect', exact=True).click()
+        page.wait_for_url('https://app.example/app/owner-sign-in?app=1')
+        # Back in the app and still refused: say so instead of looping.
+        page.goto('https://app.example/app')
+        page.get_by_role('button', name='Connect', exact=True).click()
+        expect(page.get_by_text('Signing in again did not restore access')).to_be_visible()
+        # Retrying the same lapse keeps reporting; it never cycles back to sign-in.
+        page.evaluate("document.body.dataset.stay = 'yes'")
+        page.get_by_role('button', name='Connect', exact=True).click()
+        expect(page.get_by_text('Signing in again did not restore access')).to_be_visible()
+        assert page.evaluate("document.body.dataset.stay") == 'yes'
+        # A sign-in that was never retried does not suppress a later lapse.
+        page.evaluate("sessionStorage.setItem('ta_owner_again', String(Date.now() - 9 * 3600e3))")
+        page.get_by_role('button', name='Connect', exact=True).click()
+        page.wait_for_url('https://app.example/app/owner-sign-in?app=1')
         context.close()
         browser.close()
