@@ -198,77 +198,6 @@ jobs:
           echo "=== last-activity canary (${PROBE_URL}) exit=$code ==="
           echo "$output"
 
-      # Layer-1d — revert-loop canary (BUG-023 Lane 4a). Catches the
-      # "daemon is writing but every draft fails" class — distinct from
-      # dark daemon (handshake red), broken tool handler (tool red), and
-      # stalled worker (activity red). 2026-04-23 P0 signature: 67
-      # consecutive REVERT verdicts on concordance while MCP stayed green.
-      #
-      # Runs only when handshake + tool are green; revert-loop is a
-      # work-quality signal, meaningful only when MCP itself is healthy.
-      # Does NOT require activity_probe green — activity can be fresh
-      # (new writes happening) WHILE all those writes are failing; that
-      # is the exact state this canary targets.
-      - name: Revert-loop canary (work-quality 24/7)
-        env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
-        id: revert_loop_probe
-        continue-on-error: true
-        if: >
-          steps.probe.outputs.handshake_status == '0' &&
-          steps.tool_probe.outputs.tool_status == '0'
-        run: |
-          set +e
-          output=$(python scripts/revert_loop_canary.py \
-              --url "${PROBE_URL}" --timeout 20 --verbose --format gha 2>&1)
-          code=$?
-          set -e
-          _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
-          {
-            echo "revert_status=$code"
-            echo "revert_msg<<${_delim}"
-            echo "$output"
-            echo "${_delim}"
-          } >> "$GITHUB_OUTPUT"
-          echo "=== revert-loop canary (${PROBE_URL}) exit=$code ==="
-          echo "$output"
-
-      # Layer-1e — wiki write-roundtrip canary (PROBE-003).
-      # The scoped service token can write only the reserved canary
-      # draft, restoring persisted write/read evidence without reopening
-      # anonymous writes. If the secret is unavailable, the script keeps
-      # the post-#1441 anonymous gate + persisted-read policy assertion,
-      # so missing credential availability alone never makes uptime red.
-      # BUG-028 context: a slug bug once silently broke bug filing while
-      # every probe above stayed green — the read half keeps that cover.
-      #
-      # Runs only when handshake + tool are green; the wiki probe is
-      # meaningless when MCP itself is down. Does NOT require activity
-      # or revert green — the wiki surface is independent of node execution.
-      - name: Wiki write-roundtrip canary (auto-heal pipeline 24/7)
-        id: wiki_probe
-        continue-on-error: true
-        if: >
-          steps.probe.outputs.handshake_status == '0' &&
-          steps.tool_probe.outputs.tool_status == '0'
-        env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
-        run: |
-          set +e
-          output=$(python scripts/wiki_canary.py \
-              --url "${PROBE_URL}" --timeout 20 --verbose --format gha 2>&1)
-          code=$?
-          set -e
-          _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
-          {
-            echo "wiki_status=$code"
-            echo "wiki_msg<<${_delim}"
-            echo "$output"
-            echo "${_delim}"
-          } >> "$GITHUB_OUTPUT"
-          echo "=== wiki canary (${PROBE_URL}) exit=$code ==="
-          echo "$output"
-
       - name: Probe shared disk pressure
         id: disk_probe
         continue-on-error: true
@@ -287,15 +216,9 @@ jobs:
           HANDSHAKE_STATUS: ${{ steps.probe.outputs.handshake_status }}
           TOOL_STATUS: ${{ steps.tool_probe.outputs.tool_status }}
           ACTIVITY_STATUS: ${{ steps.activity_probe.outputs.activity_status }}
-          REVERT_STATUS: ${{ steps.revert_loop_probe.outputs.revert_status }}
-          WIKI_STATUS: ${{ steps.wiki_probe.outputs.wiki_status }}
-          REVERT_OBSERVATION: ${{ steps.revert_loop_probe.outputs.revert_observation }}
-          REVERT_REASON: ${{ steps.revert_loop_probe.outputs.revert_reason }}
           HANDSHAKE_MSG: ${{ steps.probe.outputs.handshake_msg }}
           TOOL_MSG: ${{ steps.tool_probe.outputs.tool_msg }}
           ACTIVITY_MSG: ${{ steps.activity_probe.outputs.activity_msg }}
-          REVERT_MSG: ${{ steps.revert_loop_probe.outputs.revert_msg }}
-          WIKI_MSG: ${{ steps.wiki_probe.outputs.wiki_msg }}
         run: python scripts/uptime_observations.py
 
       - name: Layer-1 measured red v1

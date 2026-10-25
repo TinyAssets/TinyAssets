@@ -1,11 +1,9 @@
 """Shared helpers for the canary script family.
 
 Eliminates triplicate copies of `_post`, `_extract_tool_text`,
-`_INIT_PAYLOAD`, `_INITIALIZED_NOTIF` across mcp_tool_canary,
-last_activity_canary, revert_loop_canary, and wiki_canary. A bug fix
-to the JSON-RPC POST path (e.g. SSE/JSON parser, retry-after handling,
-header tweak) now lands in one place — the partial-fix landmine that
-BUG-028 demonstrated for the wiki path.
+`_INIT_PAYLOAD`, `_INITIALIZED_NOTIF` across mcp_tool_canary and
+last_activity_canary. A bug fix to the JSON-RPC POST path (e.g.
+SSE/JSON parser, retry-after handling, header tweak) lands in one place.
 
 Scope (intentionally tight):
     - HTTP POST + parse logic.
@@ -13,8 +11,8 @@ Scope (intentionally tight):
     - Tool-result text / structured payload extraction.
 
 Out of scope (per Task #14 conservative-scope rule):
-    - Per-canary exception classes (ToolCanaryError, LastActivityError,
-      RevertLoopError). Callers do `except XError as e` and depend on
+    - Per-canary exception classes (ToolCanaryError, LastActivityError).
+      Callers do `except XError as e` and depend on
       the type identity. Each canary keeps its own.
     - Each canary's main() body, CLI shape, exit codes. Pure
       import-substitution.
@@ -107,7 +105,7 @@ def _post(
     Network/HTTP/TLS failures raise `error_factory(step_code, msg)` so
     the caller's exit code matches its own failure ladder. The caller
     passes its own exception constructor (e.g. `ToolCanaryError`,
-    `LastActivityError`, `RevertLoopError`) and User-Agent string —
+    `LastActivityError`) and User-Agent string —
     these are the only meaningful per-canary differences in the
     pre-consolidation `_post` copies.
 

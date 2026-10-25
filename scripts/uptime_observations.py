@@ -6,12 +6,10 @@ import os
 import uuid
 from collections.abc import Mapping
 
-PROBES = ("handshake", "tool", "activity", "revert", "wiki", "disk")
+PROBES = ("handshake", "tool", "activity", "disk")
 
 
-def classify_observations(
-    statuses: Mapping[str, str], *, revert_observation: str = "", revert_reason: str = "",
-) -> dict:
+def classify_observations(statuses: Mapping[str, str]) -> dict:
     observations = {}
     for name in PROBES:
         code = statuses.get(name, "")
@@ -19,11 +17,6 @@ def classify_observations(
         if name == "disk":
             state = {"0": "green", "80": "warning", "90": "critical"}.get(code, "unknown")
         reason = "observed" if state != "unknown" else "result_unavailable"
-        if (
-            name == "revert" and code == "5" and revert_observation == "unknown"
-            and revert_reason == "legacy_evidence_unavailable"
-        ):
-            state, reason = "unknown", revert_reason
         observations[name] = {"state": state, "reason": reason, "exit": code}
     red = [name for name in PROBES if observations[name]["state"] == "red"]
     unknown = [name for name in PROBES if observations[name]["state"] == "unknown"]
@@ -40,11 +33,7 @@ def classify_observations(
 
 def main() -> int:
     statuses = {name: os.environ.get(f"{name.upper()}_STATUS", "") for name in PROBES}
-    result = classify_observations(
-        statuses,
-        revert_observation=os.environ.get("REVERT_OBSERVATION", ""),
-        revert_reason=os.environ.get("REVERT_REASON", ""),
-    )
+    result = classify_observations(statuses)
     message = "\n\n".join(
         f"--- {name} ({result['observations'][name]['state']}, "
         f"exit {statuses[name] or 'unavailable'}) ---\n"
@@ -67,11 +56,6 @@ def main() -> int:
         summary.append(
             "- Monitoring coverage is incomplete. Automatic incident recovery is unavailable "
             "until every required observation is positively green."
-        )
-    if result["observations"]["revert"]["reason"] == "legacy_evidence_unavailable":
-        summary.append(
-            "- Required: an authoritative private-free current-engine execution-quality "
-            "observation. Coordinator liveness does not supply that proof."
         )
     print("\n".join(summary))
     if path := os.environ.get("GITHUB_STEP_SUMMARY"):

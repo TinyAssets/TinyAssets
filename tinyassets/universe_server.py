@@ -58,17 +58,9 @@ from tinyassets.api.universe import (
     _universe_impl,
     admit_request_v2,
 )
-from tinyassets.api.wiki import _write_reserved_wiki_canary
 from tinyassets.api.wiki import wiki as _wiki_impl
 from tinyassets.api.workflow_actions import _extensions_impl
 from tinyassets.auth.middleware import write_gate_rejection
-from tinyassets.auth.wiki_canary import (
-    current_wiki_canary_authority,
-    is_exact_wiki_canary_arguments,
-    reset_wiki_canary_authority,
-    set_wiki_canary_authority,
-    wiki_canary_token_matches,
-)
 from tinyassets.capability_health import observed
 from tinyassets.command_center_names import (
     CommandCenterNames,
@@ -2198,41 +2190,10 @@ def write_page(
     is_patch_preview = (
         not normalized_kind and bool(old_text or new_text) and dry_run
     )
-    is_canary_write = (
-        current_wiki_canary_authority()
-        and not any((
-            page,
-            log_entry,
-            old_text,
-            new_text,
-            expected_sha256,
-            title,
-            normalized_kind,
-            component,
-            severity,
-            repro,
-            observed,
-            expected,
-            workaround,
-            tags,
-            reporter_context,
-            universe_id,
-            scope,
-        ))
-        and force_new is False
-        and is_exact_wiki_canary_arguments({
-            "category": category,
-            "filename": filename,
-            "content": content,
-            "dry_run": dry_run,
-        })
-    )
     if not is_patch_preview:
         rejection = write_gate_rejection("write_page")
-        if rejection and not is_canary_write:
+        if rejection:
             return rejection
-    if is_canary_write:
-        return _write_reserved_wiki_canary(content)
     if scope not in {"", "commons", "universe"}:
         return json.dumps({
             "error": "scope must be one of: commons, command_center",
@@ -3702,44 +3663,6 @@ _mcp_get_status = _register_structured_tool(
 )
 
 
-class _WikiCanaryExecutionAuthority(Middleware):
-    """Re-establish exact canary authority in FastMCP's tool task."""
-
-    async def on_call_tool(self, context, call_next):
-        from fastmcp.server.dependencies import get_http_request
-
-        authorized = False
-        try:
-            request = get_http_request()
-            auth_headers = request.headers.getlist("authorization")
-            scheme, separator, credential = (
-                auth_headers[0].partition(" ")
-                if len(auth_headers) == 1
-                else ("", "", "")
-            )
-            arguments = getattr(context.message, "arguments", None)
-            authorized = (
-                request.method.upper() == "POST"
-                and request.url.path in {"/mcp", "/mcp/"}
-                and scheme.lower() == "bearer"
-                and bool(separator)
-                and bool(credential.strip())
-                and wiki_canary_token_matches(credential.strip())
-                and getattr(context.message, "name", "") == "write_page"
-                and isinstance(arguments, dict)
-                and is_exact_wiki_canary_arguments(arguments)
-            )
-        except RuntimeError:
-            # Non-HTTP transports and missing request context are never eligible.
-            authorized = False
-
-        previous = set_wiki_canary_authority(authorized)
-        try:
-            return await call_next(context)
-        finally:
-            reset_wiki_canary_authority(previous)
-
-
 class _ProviderRequestAuthority(Middleware):
     """Mint an inert, exact-message reserve before FastMCP selects a worker."""
 
@@ -3786,7 +3709,6 @@ class _ProviderRequestAuthority(Middleware):
             reset_provider_request_reserve(token)
 
 
-mcp.add_middleware(_WikiCanaryExecutionAuthority())
 mcp.add_middleware(_ProviderRequestAuthority())
 # Innermost: the rename's public edge (retired names refused, current names out).
 mcp.add_middleware(CommandCenterNames(frozenset({
