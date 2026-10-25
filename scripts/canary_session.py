@@ -164,6 +164,8 @@ def begin(pending: Path, origin: str = ORIGIN) -> str:
 
 def finish(pending: Path, link: str, origin: str = ORIGIN) -> str:
     """Redeem the page's "Open TinyAssets" link; returns the sealed seed."""
+    # Redeeming spends the sign-in, so a missing key must refuse first.
+    _key()
     flow = json.loads(pending.read_text(encoding="utf-8"))
     query = parse_qs(urlsplit(link.strip()).query)
     ref = (query.get("signin") or [""])[0]
