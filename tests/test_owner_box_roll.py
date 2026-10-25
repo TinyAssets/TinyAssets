@@ -60,7 +60,7 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
 
 
 @pytest.mark.parametrize("keep_awake", [True, False])
-def test_a_busy_owner_is_left_serving_and_adopts_the_image_at_its_next_wake(rolling,
+def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(rolling,
                                                                           keep_awake):
     uid = rolling.wake("a")
     activity = rolling.states[uid]
@@ -75,9 +75,13 @@ def test_a_busy_owner_is_left_serving_and_adopts_the_image_at_its_next_wake(roll
         thread.start()
         thread.join()
         assert admitted == ["admitted"]
+        # Still on its own image while it serves; the next wake already gets the new one.
+        assert rolling.manager.boxes[uid].image == rolling.old
+        assert rolling.manager.images.current == rolling.new
     # Its own ordinary sleep later, then the next wake starts the new image.
     drive(rolling.routing.sleep("a"))
     assert rolling.runtime.stops == [uid]
+    assert len(rolling.runtime.starts) == 1
     rolling.wake("a")
     assert rolling.manager.boxes[uid].image == rolling.new
 

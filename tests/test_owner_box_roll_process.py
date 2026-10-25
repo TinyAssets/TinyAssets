@@ -14,7 +14,7 @@ from tests.test_owner_router import admitted, boxes, cloud_runtime, router  # no
 from tinyassets.boxes.images import Images
 
 
-def test_deploy_leaves_a_busy_owner_serving_then_router_wakes_published_image(
+def test_deploy_drains_real_request_then_router_wakes_published_image(
     router, boxes, admitted, tmp_path, broker,  # noqa: F811
 ):
     manager = boxes.manager
