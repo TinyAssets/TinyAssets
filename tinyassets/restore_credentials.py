@@ -172,6 +172,24 @@ def _source_key(path):
         return str(path)
 
 
+def _linked_inside(root, path):
+    """True when ``path`` or a parent inside ``root`` is a symlink.
+
+    The root itself may be reached through a symlink. A link inside the tree
+    is not followed.
+    """
+    root = Path(root)
+    path = Path(path)
+    if path.is_symlink():
+        return True
+    current = path
+    while current != root and root in current.parents:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return False
+
+
 def _close_source(path):
     """Remember a source database the owner scan could not read."""
     _CLOSED_SOURCES.add(_source_key(path))
@@ -201,6 +219,7 @@ class _SourceSnapshot:
         self.failed = False
         self.holds = 0
         self.written = []
+        self.skipped_owners = set()
         self._directory = tempfile.TemporaryDirectory(prefix="ta-cred-snap-")
         self.root = Path(self._directory.name)
         self.paths = {}
@@ -226,18 +245,22 @@ def _ensure_snapshot(source_root):
         for name in ("outbound.db", "credential-custody.db"):
             origin = Path(source_root) / ".broker" / name
             origins.append(origin)
-            if origin.is_symlink() or not origin.is_file():
+            if _linked_inside(source_root, origin):
+                raise OSError("source path is a symlink")
+            if not origin.is_file():
                 continue
             dest = snap.root / name
             with _open_ro(origin) as src, sqlite3.connect(dest) as dst:
                 src.backup(dst)
             snap.paths[name] = dest
     except Exception:
-        for origin in origins:
-            if origin.is_file() and not origin.is_symlink():
-                _close_source(origin)
         snap.failed = True
         snap.paths.clear()
+        for origin in origins:
+            if _linked_inside(source_root, origin):
+                continue
+            if origin.is_file() and not origin.is_symlink():
+                _close_source(origin)
     return snap
 
 
@@ -263,7 +286,8 @@ def _active_db(source_root, name):
     snap = _SNAPSHOTS.get(_source_key(source_root))
     if snap is None:
         origin = Path(source_root) / ".broker" / name
-        if _source_closed(origin) or origin.is_symlink() or not origin.is_file():
+        if (_linked_inside(source_root, origin) or _source_closed(origin)
+                or origin.is_symlink() or not origin.is_file()):
             return None
         return origin
     if snap.failed:
@@ -307,6 +331,7 @@ def _unlink_written(snap):
 
 
 def _refusal_plan(source_root):
+    """Counts only. ``error`` is how apply and the CLI learn the read failed."""
     legacy = _refused_center_stats(source_root)
     return {
         "accounts": 0,
@@ -316,6 +341,7 @@ def _refusal_plan(source_root):
         "files": {kind: _slot() for kind in FILES},
         "tables": {table: _slot() for table in TABLES},
         "legacy": legacy,
+        "error": "unreadable",
     }
 
 
@@ -323,17 +349,19 @@ def account_files(root):
     """hash -> {kind: Path}. Skips symlinks and non-hash directory names."""
     found = {}
     accounts = root / ".broker" / "accounts"
-    if not accounts.is_dir() or accounts.is_symlink():
+    if (_linked_inside(root, accounts) or not accounts.is_dir()
+            or accounts.is_symlink()):
         return found
     for directory in accounts.iterdir():
-        if directory.is_symlink() or not directory.is_dir():
+        if (_linked_inside(root, directory) or directory.is_symlink()
+                or not directory.is_dir()):
             continue
         if not _HASH_RE.fullmatch(directory.name):
             continue
         slot = {}
         for kind, filename in FILES.items():
             path = directory / "credentials" / filename
-            if path.is_symlink() or not path.is_file():
+            if _linked_inside(root, path) or path.is_symlink() or not path.is_file():
                 continue
             slot[kind] = path
         if slot:
@@ -379,6 +407,9 @@ def _count_files(root):
 
 def _ledger_counts(path):
     counts = {table: 0 for table in TABLES}
+    root = path.parent.parent
+    if _linked_inside(root, path):
+        raise SourceRefused("unreadable")
     if _source_closed(path) or not path.is_file() or path.is_symlink():
         return counts
     try:
@@ -757,11 +788,12 @@ def inspect_legacy_tree(root):
     root = Path(root)
     custody = root / ".broker" / "credential-custody.db"
     ledger = root / ".broker" / "outbound.db"
-    if custody.is_file() and not custody.is_symlink():
+    if (custody.is_file() and not custody.is_symlink()
+            and not _linked_inside(root, custody)):
         counts["custody_db"] = True
     if root.is_dir() and not root.is_symlink():
         for path in root.rglob(".credential-vault.json"):
-            if path.is_symlink():
+            if path.is_symlink() or _linked_inside(root, path):
                 continue
             try:
                 parts = path.relative_to(root).parts
@@ -786,7 +818,10 @@ def inspect_legacy_tree(root):
             slot.update(dests)
     _mapping, owner_counts, _evidence, _ledger_failed = legacy_center_owners(
         custody if counts["custody_db"] else None, centers,
-        ledger_path=ledger if ledger.is_file() and not ledger.is_symlink() else None,
+        ledger_path=(
+            ledger if ledger.is_file() and not ledger.is_symlink()
+            and not _linked_inside(root, ledger) else None
+        ),
         center_dests=center_dests, definition_root=root,
     )
     counts.update(owner_counts)
@@ -804,7 +839,9 @@ def _definition_id(document):
 
 
 def _load_vault_records(path):
-    if path.is_symlink() or not path.is_file():
+    if path.is_symlink() or any(
+        parent.is_symlink() for parent in path.parents if parent != path.anchor
+    ) or not path.is_file():
         raise OSError("vault is not a regular file")
     if path.stat().st_size > 8 * 1024 * 1024:
         raise OSError("vault is too large")
@@ -863,21 +900,26 @@ def _write_private_json(path, payload):
 def _legacy_vault_paths(source_root):
     platform, local = {}, {}
     vault_root = source_root / ".platform" / "credential-vaults"
-    if vault_root.is_dir() and not vault_root.is_symlink():
+    if (not _linked_inside(source_root, vault_root) and vault_root.is_dir()
+            and not vault_root.is_symlink()):
         for directory in vault_root.iterdir():
             if (directory.is_symlink() or not directory.is_dir()
                     or not _CENTER_RE.fullmatch(directory.name)):
                 continue
             path = directory / ".credential-vault.json"
-            if path.is_file() and not path.is_symlink():
-                platform[directory.name] = path
+            if (_linked_inside(source_root, path) or path.is_symlink()
+                    or not path.is_file()):
+                continue
+            platform[directory.name] = path
     if source_root.is_dir() and not source_root.is_symlink():
         for child in source_root.iterdir():
             if child.is_symlink() or not child.is_dir() or not _CENTER_RE.fullmatch(child.name):
                 continue
             path = child / ".credential-vault.json"
-            if path.is_file() and not path.is_symlink():
-                local[child.name] = path
+            if (_linked_inside(source_root, path) or path.is_symlink()
+                    or not path.is_file()):
+                continue
+            local[child.name] = path
     return platform, local
 
 
@@ -940,7 +982,7 @@ def _definition_files(root, center_dests):
         return found
     for center in center_dests:
         path = root / center / "provider_definitions.json"
-        if path.is_symlink() or not path.is_file():
+        if _linked_inside(root, path) or path.is_symlink() or not path.is_file():
             continue
         try:
             if path.stat().st_size > 8 * 1024 * 1024:
@@ -1172,15 +1214,16 @@ def _served_destinations(path):
     return served
 
 
-def _keep_vault_backed(db, source_root, kept_ids):
+def _keep_vault_backed(db, source_root, kept_ids, skipped=()):
     """Keep a connection when its destination is already in that owner's vault."""
     if db is None or not _table_exists(db, "outbound_connections"):
         return
+    skipped = set(skipped)
     owners = [
         row[0] for row in db.execute(
             "SELECT DISTINCT owner_user_id FROM outbound_connections"
         )
-        if isinstance(row[0], str) and row[0]
+        if isinstance(row[0], str) and row[0] and row[0] not in skipped
     ]
     for owner in owners:
         digest = hashlib.sha256(owner.encode()).hexdigest()
@@ -1188,7 +1231,8 @@ def _keep_vault_backed(db, source_root, kept_ids):
             source_root / ".broker" / "accounts" / digest / "credentials"
             / ".credential-vault.json"
         )
-        if path.is_symlink() or not path.is_file():
+        if (_linked_inside(source_root, path) or path.is_symlink()
+                or not path.is_file()):
             continue
         have = _served_destinations(path)
         live_refs, _revoked = _connection_refs(db, owner)
@@ -1315,6 +1359,32 @@ def convert_legacy_vaults(source_root):
             _release_snapshot(source_root)
 
 
+def _forget_owner(snap, source_root, owner, stats, kept_ids, owner_kept, owner_ids, written):
+    """A failed vault write leaves this owner with no secret and no row."""
+    snap.skipped_owners.add(owner)
+    stats["http_kept"] -= owner_kept.pop(owner, 0)
+    if stats["http_kept"] < 0:
+        stats["http_kept"] = 0
+    for connection_id in owner_ids.pop(owner, ()):
+        kept_ids.discard(connection_id)
+    digest = hashlib.sha256(owner.encode()).hexdigest()
+    prefix = source_root / ".broker" / "accounts" / digest
+    kept_paths = []
+    for path in snap.written:
+        try:
+            path.relative_to(prefix)
+        except ValueError:
+            kept_paths.append(path)
+            continue
+        written.discard(path)
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+        except OSError:
+            pass
+    snap.written[:] = kept_paths
+
+
 def _convert_snapshot(source_root, snap):
     stats = _legacy_stat_template()
     platform, local = _legacy_vault_paths(source_root)
@@ -1338,10 +1408,12 @@ def _convert_snapshot(source_root, snap):
         db = _open_source(ledger_path)
     kept_ids = set()
     written = set()
+    owner_kept = {}
+    owner_ids = {}
     try:
         for center in sorted(centers):
             owner = mapping.get(center)
-            if owner is None:
+            if owner is None or owner in snap.skipped_owners:
                 continue
             try:
                 records = []
@@ -1365,6 +1437,7 @@ def _convert_snapshot(source_root, snap):
                     revoked_dests = {dest for dest in revoked_dests if dest in limit}
                 chosen = []
                 seen = set()
+                kept_here = 0
                 for record in records:
                     raw_kind = record.get("credential_type")
                     if raw_kind == "llm_subscription":
@@ -1388,7 +1461,7 @@ def _convert_snapshot(source_root, snap):
                     if served is not None:
                         chosen.append(record)
                         seen.add(served)
-                        stats["http_kept"] += 1
+                        kept_here += 1
                     elif missing is not None:
                         stats["secret_missing"] += 1
                     else:
@@ -1403,6 +1476,8 @@ def _convert_snapshot(source_root, snap):
                         source_root / ".broker" / "accounts" / digest / "credentials"
                         / ".credential-vault.json"
                     )
+                    if _linked_inside(source_root, path):
+                        raise OSError("credential path is a symlink")
                     if path in written:
                         current = _load_vault_records(path)
                         have = _served_destinations(path)
@@ -1419,12 +1494,12 @@ def _convert_snapshot(source_root, snap):
                         seen = {dest for dest in seen if dest in have}
                     elif path.is_symlink() or path.exists():
                         if path.is_symlink() or not path.is_file():
-                            stats["http_kept"] -= len(seen)
+                            kept_here -= len(seen)
                             seen = set()
                         else:
                             have = _served_destinations(path)
                             dropped = {dest for dest in seen if dest not in have}
-                            stats["http_kept"] -= len(dropped)
+                            kept_here -= len(dropped)
                             seen = seen - dropped
                     else:
                         _write_private_json(path, json.dumps(
@@ -1435,16 +1510,23 @@ def _convert_snapshot(source_root, snap):
                         snap.written.append(path)
                     have = _served_destinations(path)
                     dropped = {dest for dest in seen if dest not in have}
-                    stats["http_kept"] -= len(dropped)
+                    kept_here -= len(dropped)
                     if dropped:
                         stats["secret_missing"] += len(dropped)
                     seen = seen - dropped
+                stats["http_kept"] += kept_here
+                owner_kept[owner] = owner_kept.get(owner, 0) + kept_here
                 for connection_id, dest in live_refs:
                     if dest in seen:
                         kept_ids.add(connection_id)
+                        owner_ids.setdefault(owner, set()).add(connection_id)
             except (OSError, ValueError, sqlite3.Error, TypeError):
                 stats["accounts_failed"] += 1
-        _keep_vault_backed(db, source_root, kept_ids)
+                _forget_owner(
+                    snap, source_root, owner, stats, kept_ids, owner_kept, owner_ids,
+                    written,
+                )
+        _keep_vault_backed(db, source_root, kept_ids, snap.skipped_owners)
     finally:
         if db is not None:
             db.close()
@@ -1561,6 +1643,10 @@ def _groups(root):
             _close_source_databases(root)
             return {}
     grouped = {}
+    skipped = set(snap.skipped_owners) if snap is not None else set()
+    skipped_digests = {
+        hashlib.sha256(owner.encode()).hexdigest() for owner in skipped
+    }
 
     def bucket(owner):
         return grouped.setdefault(owner, {
@@ -1570,7 +1656,7 @@ def _groups(root):
     connection_owner = {}
     for row in rows["outbound_connections"]:
         owner = _named_owner(row, "owner_user_id")
-        if owner is None:
+        if owner is None or owner in skipped:
             continue
         connection_owner[row.get("connection_id")] = owner
         bucket(owner)["rows"]["outbound_connections"].append(row)
@@ -1578,19 +1664,23 @@ def _groups(root):
         column = OWNER_COLUMN[table]
         for row in rows[table]:
             owner = _named_owner(row, column)
-            if owner is None:
+            if owner is None or owner in skipped:
                 continue
             bucket(owner)["rows"][table].append(row)
     for row in rows["connection_capabilities"]:
         owner = connection_owner.get(row.get("connection_id"))
-        if owner is None:
+        if owner is None or owner in skipped:
             continue
         bucket(owner)["rows"]["connection_capabilities"].append(row)
     hashes = _owner_hashes([key for key in grouped if key and not key.startswith("\0")])
     for digest, files in account_files(root).items():
+        if digest in skipped_digests:
+            continue
         owner = hashes.get(digest)
         if owner is None:
             owner = "\0" + digest
+        if owner in skipped:
+            continue
         slot = bucket(owner)
         slot["files"] = files
         slot["hash"] = digest
@@ -1734,9 +1824,15 @@ def _copy_definitions(live_db, source_root, live_root):
         with _open_ro(ledger) as src:
             if not _table_exists(src, "box_model_sources"):
                 return 0
+            skipped = set()
+            active = _SNAPSHOTS.get(_source_key(source_root))
+            if active is not None:
+                skipped = active.skipped_owners
             for owner, definition_id, raw in src.execute(
                 "SELECT owner, id, definition FROM box_model_sources"
             ):
+                if owner in skipped:
+                    continue
                 ref = _raw_ref(raw)
                 dest = _grant_http_dest(live_db, owner, ref)
                 if not isinstance(owner, str) or dest is None:
@@ -1876,6 +1972,14 @@ def merge(live_root, source_root):
 
 
 def _merge_snapshot(live_root, source_root, snap):
+    """One owner's failed vault write is skipped. A failed read refuses everyone.
+
+    Merge keeps a savepoint per account, so a bad row does not roll the other
+    accounts back. A vault write that fails is that owner's row: the secret is
+    not counted, and that owner's connections and browser rows are not inserted.
+    A failed read of the source snapshot is different. It unlinks every file
+    this merge wrote and returns ``error`` ``unreadable``.
+    """
     if snap.failed:
         legacy = _refused_center_stats(source_root)
         grouped = {}
@@ -1883,11 +1987,13 @@ def _merge_snapshot(live_root, source_root, snap):
         legacy = prepare_legacy(source_root)
         if snap.failed:
             _unlink_written(snap)
+            legacy = _refused_center_stats(source_root)
             grouped = {}
         else:
             grouped = _groups(source_root)
             if snap.failed:
                 _unlink_written(snap)
+                legacy = _refused_center_stats(source_root)
                 grouped = {}
     ledger = live_root / ".broker" / "outbound.db"
     legacy_bound = any(legacy.get(name) for name in (
@@ -1943,7 +2049,7 @@ def _merge_snapshot(live_root, source_root, snap):
             legacy["definitions"] = _copy_definitions(db, source_root, live_root)
         except (sqlite3.Error, OSError):
             legacy["accounts_failed"] += 1
-    return {
+    plan = {
         "accounts": len(grouped),
         "accounts_affected": affected,
         "accounts_failed": failed + legacy["accounts_failed"],
@@ -1952,6 +2058,9 @@ def _merge_snapshot(live_root, source_root, snap):
         "tables": tables,
         "legacy": legacy,
     }
+    if snap.failed:
+        plan["error"] = "unreadable"
+    return plan
 
 
 def _definitions(root):
@@ -2226,6 +2335,7 @@ def _safe_refusal_plan(source_root):
             "files": {kind: _slot() for kind in FILES},
             "tables": {table: _slot() for table in TABLES},
             "legacy": _legacy_stat_template(),
+            "error": "unreadable",
         }
 
 
@@ -2249,6 +2359,8 @@ def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
     try:
         kept = take_rollback(live_root, rollback_dir)
         plan = merge(live_root, source_root)
+        if isinstance(plan, dict) and plan.get("error"):
+            merge_error = plan["error"]
         restored = restore_markers(mounts, source_root)
     except SourceRefused as refused:
         merge_error = refused.code
@@ -2573,8 +2685,10 @@ def main(argv=None):
     apply_facts = None
     error = None
     if args.mode in {"dry-run", "apply"}:
-        if chosen is None or not chosen["readable"]:
+        if chosen is None:
             error = "source_missing"
+        elif not chosen["readable"]:
+            error = chosen.get("error") or "unreadable"
         elif args.mode == "apply" and chosen["kind"] == "archive" and not chosen["digest_known"]:
             error = "digest_unknown"
         else:
@@ -2584,6 +2698,8 @@ def main(argv=None):
             try:
                 if args.mode == "dry-run":
                     plan = _plan_only(root, source_root)
+                    if error is None and isinstance(plan, dict) and plan.get("error"):
+                        error = plan["error"]
                     would, uids = marker_plan(args.mounts, source_root)
                     verification = verify(
                         root, args.mounts,
