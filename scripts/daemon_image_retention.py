@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import sys
 import shutil
 import stat
 import subprocess
@@ -249,12 +250,22 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
         if identity not in by_id:
             raise Refusal("container_image_unmapped")
         protected.add(identity)
-    for ref in (configured, receipt.get("rollback_target")):
+    for slot, ref in (("configured", configured), ("rollback_target", receipt.get("rollback_target"))):
         if ref == "" and ref == receipt.get("rollback_target"):
             continue
-        if not isinstance(ref, str) or not ref or ref not in refs:
-            raise Refusal("protected_reference_unmapped")
-        protected.add(refs[ref])
+        if isinstance(ref, str) and ref and ref in refs:
+            protected.add(refs[ref])
+            continue
+        # An immutable rollback digest that no local image carries is already
+        # gone: there is nothing left to protect, and refusing would block
+        # every later deploy. A mutable tag may still name a present image
+        # under another reference, so it keeps refusing.
+        if slot == "rollback_target" and immutable(ref) and not any(
+                digest.endswith("@" + ref.rsplit("@", 1)[1])
+                for row in by_id.values() for digest in row.get("RepoDigests") or []):
+            print("rollback_target_absent", file=sys.stderr)
+            continue
+        raise Refusal("protected_reference_unmapped:" + slot)
     if not configured:
         raise Refusal("configured_image_missing")
     older = []
