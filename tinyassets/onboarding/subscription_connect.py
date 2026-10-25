@@ -53,9 +53,25 @@ def connected_sources():
     from tinyassets.providers.subscription_source import sources
 
     home = current().root
-    return {"sources": [{"id": doc["id"], "name": doc["display_name"]}
+    return {"sources": [{"id": doc["id"], "name": doc["display_name"],
+                         "signed_in": _signed_in(doc["id"])}
                         for doc in sources(home).values()
                         if (home / ".ta-cli" / doc["id"] / "connection").is_file()]}
+
+
+def _signed_in(source_id):
+    """The agent's own readiness test, so the list never says connected when a
+    turn would say no model: an accepted connection with a saved sign-in. Like
+    readiness it takes no source lock and runs no CLI."""
+    from tinyassets.providers.subscription_lease import capture, custody
+    from tinyassets.providers.subscription_runtime import SubscriptionRuntime
+
+    try:
+        runtime = SubscriptionRuntime(source_id)
+        return bool(runtime.accepted() and (custody(runtime, "read")["state"]
+                                            or capture(runtime, runtime.home)))
+    except Exception:  # noqa: BLE001 - unknown readiness reads as needing sign-in
+        return False
 
 
 def disconnect(source_id):
