@@ -7197,7 +7197,7 @@
   // asks the server for the platform's own connect request, then hands it to the
   // generic sign-in client: the browser names only the source's id.
   const SubscriptionSources={
-    busy:false,storageKey:"ta_cli_login",
+    busy:false,storageKey:"ta_cli_login",leaving:false,
     saved(){
       try{const saved=JSON.parse(pkceStore.getItem(this.storageKey)||"null");
         return saved&&saved.owner===queueOwner&&saved.expires>Date.now()?saved:null;
@@ -7242,6 +7242,8 @@
     },
     async start(source,ui,resume=null){
       if(this.busy)return;
+      if(!this.watching){this.watching=true;const leave=()=>{this.leaving=true;};
+        addEventListener("pagehide",leave);addEventListener("beforeunload",leave);}
       const external=NATIVE||DESKTOP_SHELL;
       const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
       this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
@@ -7324,6 +7326,9 @@
         }
         throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){
+        // Leaving the page aborts the in-flight poll; that is not a failed sign-in.
+        // Keep the saved flow so the reloaded page resumes it instead of cancelling.
+        if(SubscriptionSources.leaving)return;
         ui.status.textContent=error.message;
         if(pending)appendMessage("system",source.name+": "+error.message);
         pkceStore.removeItem(this.storageKey);
