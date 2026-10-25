@@ -6110,9 +6110,12 @@
     // pinch-zoom only rescales it, and only the keyboard should shrink the app.
     // Phones only: desktop and the Electron app keep 100dvh exactly as before.
     const vv=window.visualViewport, root=document.documentElement;
-    if(vv && (NATIVE || window.matchMedia("(pointer:coarse)").matches || window.matchMedia("(max-width:600px)").matches))
-      root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
-    else root.style.removeProperty("--app-h");
+    if(vv && (NATIVE || window.matchMedia("(pointer:coarse)").matches || window.matchMedia("(max-width:600px)").matches)){
+      const height=vv.height*(vv.scale||1);
+      root.style.setProperty("--app-h",height+"px");
+      // The keyboard is up: the composer needs the recovery bar's room.
+      root.classList.toggle("app-short",height<520);
+    }else{root.style.removeProperty("--app-h");root.classList.remove("app-short");}
   }
   function paintRailChip(){}
   function wirePhoneConversation(){

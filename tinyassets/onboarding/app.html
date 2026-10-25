@@ -944,9 +944,10 @@
        under the phone's status bar), clear of notches, with 44px tap targets. */
     #app-recovery-controls{flex:0 0 auto;margin-top:auto;display:flex;flex-wrap:nowrap;overflow-x:auto;align-items:center;gap:8px;padding:0 max(10px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(10px,env(safe-area-inset-left));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:14px;white-space:nowrap}
     #app-recovery-controls a{color:var(--ink,#111);display:inline-flex;align-items:center;min-height:44px;padding:0 8px}
-    /* While the app works and the keyboard leaves little height, the composer
+    /* While the app works and the keyboard leaves little visible height (main.js
+       fitToVisualViewport sets .app-short from the visual viewport), the composer
        needs the room; a failed start (every view hidden) always shows the bar. */
-    @media (max-height:520px){.app:has(.view:not([hidden])) #app-recovery-controls{display:none}}
+    .app-short .app:has(.view:not([hidden])) #app-recovery-controls{display:none}
   </style>
   <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
   <script nonce="__TA_NONCE__">
