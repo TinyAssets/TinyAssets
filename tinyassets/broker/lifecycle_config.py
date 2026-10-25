@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 class LifecycleConfig:
     idle_limit: float = field(default_factory=lambda: float(
         os.environ.get("TINYASSETS_BOX_IDLE_SECONDS", "900")))
+    # 3 awake x 2 GiB stays inside boxhostd's MemoryMax=7G on the 8 GB droplet.
     awake_cap: int = field(default_factory=lambda: int(
-        os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "6")))
+        os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "3")))
     wake_timeout: float = 60
     volume_concurrency: int = 3
 
