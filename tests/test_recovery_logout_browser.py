@@ -43,9 +43,10 @@ def test_log_out_from_the_recovery_bar_without_the_app(reachable):
             localStorage.setItem('ta_pkce', 'pending-native-flow');
             sessionStorage.setItem('ta_access_token', 'token');
         }""")
-        page.get_by_role("link", name="Log out").click()
-        page.wait_for_function("sessionStorage.getItem('ta_access_token') === null")
+        with page.expect_navigation():
+            page.get_by_role("link", name="Log out").click()
         page.wait_for_load_state()
+        assert page.evaluate("sessionStorage.getItem('ta_access_token')") is None
         assert sent == [{"grant_type": "logout", "session_ref": "handle"}]
         stored = page.evaluate("""() => [localStorage.getItem('ta_sref'),
                                          localStorage.getItem('ta_logout_pending')]""")
