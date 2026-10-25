@@ -749,13 +749,47 @@ def prune_box_harnesses(
         identity = refs[configured]
         if isinstance(identity, str):
             keep.add("harness-" + identity.removeprefix("sha256:"))
-    # An owner left serving through a deploy still runs its previous image until
-    # its own sleep; its sandbox reads that directory directly.
-    live = _live_box_harnesses(Path(os.environ.get(
-        "TINYASSETS_BOX_BUNDLE_ROOT", "/var/lib/boxhostd/state/bundles")), root)
-    if live is None:
-        return legacy  # Unknown live set: remove no box image at all.
-    keep |= live
+    removed = []
+    # Launches hold this lock shared from image selection until their bundle names
+    # the image (tinyassets/boxes/images.py harness_lease); hold it exclusively from
+    # the bundle scan through deletion. Busy launches: leave every image this time.
+    lock = _harness_lock(root)
+    if lock is None:
+        return legacy
+    try:
+        # An owner left serving through a deploy still runs its previous image
+        # until its own sleep; its sandbox reads that directory directly.
+        live = _live_box_harnesses(Path(os.environ.get(
+            "TINYASSETS_BOX_BUNDLE_ROOT", "/var/lib/boxhostd/state/bundles")), root)
+        if live is None:
+            return legacy  # Unknown live set: remove no box image at all.
+        keep |= live
+        removed = _remove_harnesses(root, keep)
+    finally:
+        os.close(lock)
+    return removed + legacy
+
+
+def _harness_lock(root, timeout=None):
+    import fcntl
+
+    if timeout is None:
+        timeout = float(os.environ.get("TINYASSETS_HARNESS_LOCK_SECONDS", "120"))
+
+    fd = os.open(root / ".harness.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.5)
+
+
+def _remove_harnesses(root, keep):
     removed = []
     for entry in root.iterdir():
         name = entry.name
@@ -766,7 +800,7 @@ def prune_box_harnesses(
         _grant_harness_write(entry)
         shutil.rmtree(entry)
         removed.append(name)
-    return removed + legacy
+    return removed
 
 
 def prune_dangling(docker):

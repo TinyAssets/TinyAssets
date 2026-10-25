@@ -2445,6 +2445,15 @@ prune_old_harnesses() {  # successful deploys must not keep every historical roo
   # prunes it, once it is no longer the rollback target.
   previous="${HARNESS_PREVIOUS_LINK:-}"
   previous="${previous##*/}"
+  # Launches hold .harness.lock shared from image selection until their bundle
+  # names the image; hold it exclusively from the bundle scan through deletion.
+  local lock_fd
+  exec {lock_fd}>"${root}/.harness.lock" || return 0
+  if ! flock -x -w 120 "$lock_fd"; then
+    log "kept every harness: owner launches held the harness lock"
+    exec {lock_fd}>&-
+    return 0
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     [ "$name" = "harness-current" ] && continue
@@ -2467,6 +2476,7 @@ prune_old_harnesses() {  # successful deploys must not keep every historical roo
       err "could not remove old harness ${name}"
     fi
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name 'harness-[0-9a-f]*' -printf '%f\n')
+  exec {lock_fd}>&-
   return 0
 }
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.

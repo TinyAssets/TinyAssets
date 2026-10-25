@@ -576,3 +576,24 @@ def test_prune_keeps_the_image_a_running_owner_still_reads(tmp_path: Path, monke
     # an unknowable live set removes no image at all.
     assert set(removed) == ({stale} if bundle == "live" else set())
     assert (root / deferred).is_dir()
+
+
+def test_prune_removes_no_image_while_a_launch_holds_the_harness_lease(tmp_path: Path,
+                                                                     monkeypatch):
+    from scripts import daemon_image_retention as retention
+    from tinyassets.boxes.images import harness_lease
+
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current, stale = _name(IMAGE), "harness-" + "78" * 32
+    for name in (current, stale):
+        _seal(root / name)
+    (root / "harness-current").symlink_to(current)
+    monkeypatch.setenv("TINYASSETS_HARNESS_LOCK_SECONDS", "0.2")
+    # A launch between image selection and its bundle holds the lease shared:
+    # pruning waits, then removes nothing rather than race it.
+    with harness_lease(root):
+        assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root) == []
+        assert (root / stale).is_dir()
+    assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root) == [stale]
+    del retention
