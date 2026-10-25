@@ -493,3 +493,16 @@ def test_a_listed_source_without_a_saved_sign_in_reads_as_needing_reconnect(conn
     assert (connected.directory / "connection").is_file()
     assert connected_sources() == {
         "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": False}]}
+
+
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
+def test_a_slow_store_reads_as_unknown_not_expired(connected, monkeypatch):
+    from tinyassets import owner_channel
+    from tinyassets.onboarding.subscription_connect import connected_sources
+
+    def slow(*args, **kwargs):
+        raise TimeoutError("custody read timed out")
+
+    monkeypatch.setattr(owner_channel, "request", slow)
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": None}]}

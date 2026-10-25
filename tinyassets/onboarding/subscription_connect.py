@@ -62,16 +62,26 @@ def connected_sources():
 def _signed_in(source_id):
     """The agent's own readiness test, so the list never says connected when a
     turn would say no model: an accepted connection with a saved sign-in. Like
-    readiness it takes no source lock and runs no CLI."""
-    from tinyassets.providers.subscription_lease import capture, custody
+    readiness it takes no source lock and runs no CLI.
+
+    True or False only when known; None when the store could not answer in
+    time, so a slow broker never tells the owner their sign-in expired."""
+    from tinyassets.owner_channel import request
+    from tinyassets.providers.subscription_lease import capture
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime
 
     try:
         runtime = SubscriptionRuntime(source_id)
-        return bool(runtime.accepted() and (custody(runtime, "read")["state"]
-                                            or capture(runtime, runtime.home)))
-    except Exception:  # noqa: BLE001 - unknown readiness reads as needing sign-in
-        return False
+    except Exception:  # noqa: BLE001
+        return None
+    if not runtime.accepted():
+        return False  # Reconnect re-accepts a changed or missing acceptance.
+    try:
+        entry = request(runtime.owner.principal, {"op": "SUBSCRIPTION_CUSTODY", "document": {
+            "action": "read", "source": runtime.source.id}}, timeout=3)
+        return bool(entry["state"] or capture(runtime, runtime.home))
+    except Exception:  # noqa: BLE001 - unknown, never "expired"
+        return None
 
 
 def disconnect(source_id):
