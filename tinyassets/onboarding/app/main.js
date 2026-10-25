@@ -7242,8 +7242,13 @@
     },
     async start(source,ui,resume=null){
       if(this.busy)return;
-      if(!this.watching){this.watching=true;const leave=()=>{this.leaving=true;};
-        addEventListener("pagehide",leave);addEventListener("beforeunload",leave);}
+      if(!this.watching){this.watching=true;
+        // pagehide is the departure itself (not a cancellable prompt). A page the
+        // back-forward cache restores is live again; reload it so a saved flow
+        // resumes the ordinary way.
+        addEventListener("pagehide",()=>{this.leaving=true;});
+        addEventListener("pageshow",event=>{this.leaving=false;
+          if(event.persisted&&this.saved())location.reload();});}
       const external=NATIVE||DESKTOP_SHELL;
       const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
       this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
