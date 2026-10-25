@@ -162,8 +162,36 @@ def _rows(db, table):
     return [dict(row) for row in db.execute(f"SELECT * FROM {_quote(table)}")]
 
 
+_CLOSED_SOURCES = set()
+
+
+def _source_key(path):
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
+
+
+def _close_source(path):
+    """Remember a source database the owner scan could not read."""
+    _CLOSED_SOURCES.add(_source_key(path))
+
+
+def _source_closed(path):
+    return path is not None and _source_key(path) in _CLOSED_SOURCES
+
+
 def _open_ro(path):
+    if _source_closed(path):
+        raise sqlite3.OperationalError("source closed")
     return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def _open_source(path):
+    """Writable open of a source database. A closed file is not opened."""
+    if _source_closed(path):
+        raise sqlite3.OperationalError("source closed")
+    return sqlite3.connect(path)
 
 
 def account_files(root):
@@ -226,7 +254,7 @@ def _count_files(root):
 
 def _ledger_counts(path):
     counts = {table: 0 for table in TABLES}
-    if not path.is_file() or path.is_symlink():
+    if _source_closed(path) or not path.is_file() or path.is_symlink():
         return counts
     try:
         with _open_ro(path) as db:
@@ -430,6 +458,8 @@ def _owner_groups(db_path, centers):
     path = Path(db_path) if db_path is not None else None
     if path is None or path.is_symlink() or not path.is_file():
         return groups
+    if _source_closed(path):
+        return {center: {"\0custody-a", "\0custody-b"} for center in centers}
     try:
         with _open_ro(path) as db:
             if not _table_exists(db, "llm_credential_deposit_owners"):
@@ -457,6 +487,7 @@ def _owner_groups(db_path, centers):
                 if isinstance(owner, str) and owner:
                     slot.add(owner)
     except (OSError, sqlite3.Error):
+        _close_source(path)
         return {center: {"\0custody-a", "\0custody-b"} for center in centers}
     return groups
 
@@ -912,9 +943,12 @@ def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_
     path = Path(ledger_path) if ledger_path is not None else None
     if path is None or path.is_symlink() or not path.is_file():
         return groups, evidence, False
+    if _source_closed(path):
+        return _refused_ledger(groups)
     try:
         db = _open_ro(path)
     except (OSError, sqlite3.Error):
+        _close_source(path)
         return _refused_ledger(groups)
     try:
         _add_grant_owners(db, groups, center_dests, evidence)
@@ -923,6 +957,7 @@ def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_
             docs.extend(_definition_files(definition_root, center_dests))
         _add_definition_owners(db, groups, center_dests, docs, evidence)
     except (OSError, sqlite3.Error):
+        _close_source(path)
         return _refused_ledger(groups)
     except TypeError:
         refused, cleared, _failed = _refused_ledger(groups)
@@ -1026,10 +1061,10 @@ def _keep_vault_backed(db, source_root, kept_ids):
 
 def _restrict_ledger(source_root, kept_ids):
     ledger = source_root / ".broker" / "outbound.db"
-    if ledger.is_symlink() or not ledger.is_file():
+    if ledger.is_symlink() or not ledger.is_file() or _source_closed(ledger):
         return
     ids = list(kept_ids)
-    with sqlite3.connect(ledger) as db:
+    with _open_source(ledger) as db:
         def delete_except(table, extra=""):
             if not _table_exists(db, table):
                 return
@@ -1073,9 +1108,9 @@ def _verified_definition(owner, definition_id, raw, grants):
 
 def _restrict_definitions(source_root):
     ledger = source_root / ".broker" / "outbound.db"
-    if ledger.is_symlink() or not ledger.is_file():
+    if ledger.is_symlink() or not ledger.is_file() or _source_closed(ledger):
         return
-    with sqlite3.connect(ledger) as db:
+    with _open_source(ledger) as db:
         if not _table_exists(db, "box_model_sources"):
             return
         grants = set()
@@ -1115,8 +1150,8 @@ def convert_legacy_vaults(source_root):
     definition names destinations for that center, only those destinations
     are copied. A grant for another universe, or a destination column that
     disagrees with the credential ref, leaves its secret unread. A custody
-    or ledger file that exists but cannot be read refuses every center and
-    is not opened again.
+    or ledger file that exists but cannot be read refuses every center.
+    That file stays closed for the rest of convert, merge, and apply.
     """
     stats = {
         "http_kept": 0,
@@ -1147,12 +1182,12 @@ def convert_legacy_vaults(source_root):
         definition_root=source_root,
     )
     stats.update(owner_counts)
-    if ledger_failed:
-        return stats
     ledger = source_root / ".broker" / "outbound.db"
+    if ledger_failed or _source_closed(ledger):
+        return stats
     db = None
     if ledger.is_file() and not ledger.is_symlink():
-        db = sqlite3.connect(ledger)
+        db = _open_source(ledger)
     kept_ids = set()
     written = set()
     try:
@@ -1350,7 +1385,7 @@ def _owner_hashes(owners):
 def _groups(root):
     ledger = root / ".broker" / "outbound.db"
     rows = {table: [] for table in TABLES}
-    if ledger.is_file() and not ledger.is_symlink():
+    if ledger.is_file() and not ledger.is_symlink() and not _source_closed(ledger):
         try:
             with _open_ro(ledger) as db:
                 loaded = {}
@@ -1519,7 +1554,7 @@ def _grant_http_dest(db, owner, grant_id):
 def _copy_definitions(live_db, source_root, live_root):
     """Copy verified api_key_http descriptors. A live row or file stays."""
     ledger = source_root / ".broker" / "outbound.db"
-    if ledger.is_symlink() or not ledger.is_file():
+    if ledger.is_symlink() or not ledger.is_file() or _source_closed(ledger):
         return 0
     pending = []
     try:
@@ -1710,7 +1745,7 @@ def merge(live_root, source_root):
 
 def _definitions(root):
     ledger = root / ".broker" / "outbound.db"
-    if not ledger.is_file() or ledger.is_symlink():
+    if _source_closed(ledger) or not ledger.is_file() or ledger.is_symlink():
         return []
     try:
         with _open_ro(ledger) as db:
@@ -1801,7 +1836,10 @@ def verify(live_root, mounts=None, *, source_markers=0, markers_restored=0,
     definitions = live = 0
     cli_owners = set()
     ledger = live_root / ".broker" / "outbound.db"
-    db = _open_ro(ledger) if ledger.is_file() and not ledger.is_symlink() else None
+    db = (
+        _open_ro(ledger) if ledger.is_file() and not ledger.is_symlink()
+        and not _source_closed(ledger) else None
+    )
     try:
         for raw in _definitions(live_root):
             try:

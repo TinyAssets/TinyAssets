@@ -1520,6 +1520,155 @@ def test_non_database_ledger_refuses_without_raising(tmp_path):
     _assert_hidden(json.dumps(plan))
 
 
+def _same_file(path, other):
+    try:
+        return Path(path).resolve() == Path(other).resolve()
+    except OSError:
+        return False
+
+
+def test_closed_ledger_is_not_read_again_for_any_row(tmp_path, monkeypatch):
+    """The first failed open stays closed, so no later row is written."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    source_db = source / ".broker" / "outbound.db"
+    source_db.parent.mkdir(parents=True)
+    source_db.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga-live", "c-alpha", "alpha")],
+    ))
+    definition = _source_definition(OWNER_A, "alpha", "ga-live")
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(source_db) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b1', ?, ?)",
+            (OWNER_B, sealed),
+        )
+        db.execute(
+            "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
+            (OWNER_A, definition["id"], json.dumps(definition)),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    live_db = live / ".broker" / "outbound.db"
+    with sqlite3.connect(live_db) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES ('c-live', ?, NULL, ?, 'ok')",
+            (OWNER_A, f"vault://http/{DEST_OK}"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES ('ga-live', 'c-live', ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (OWNER_A,),
+        )
+    seeded = _owner_vault(live, OWNER_A)
+    seeded.parent.mkdir(parents=True)
+    seeded.write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    before = seeded.read_bytes()
+    ro_opens = []
+    connect_opens = []
+    real_open = rc._open_ro
+    real_connect = sqlite3.connect
+
+    def open_ro(path):
+        if _same_file(path, source_db):
+            ro_opens.append(path)
+            if len(ro_opens) == 1:
+                raise sqlite3.OperationalError("first open")
+        return real_open(path)
+
+    def connect(path, *args, **kwargs):
+        if _same_file(path, source_db):
+            connect_opens.append(path)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(rc, "_open_ro", open_ro)
+    monkeypatch.setattr(rc.sqlite3, "connect", connect)
+    plan = rc.merge(live, source)
+    assert len(ro_opens) == 1
+    assert connect_opens == []
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    for table in (
+        "outbound_connections", "outbound_connection_grants",
+        "connection_capabilities", "browser_vault",
+    ):
+        assert plan["tables"][table]["insert"] == 0
+    assert seeded.read_bytes() == before
+    assert not (live / "alpha" / "provider_definitions.json").exists()
+    with sqlite3.connect(live_db) as db:
+        assert db.execute("SELECT COUNT(*) FROM browser_vault").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM box_model_sources").fetchone()[0] == 0
+    text = json.dumps(plan)
+    assert sealed.decode() not in text
+    _assert_hidden(text)
+
+
+def test_closed_custody_file_is_not_opened_again(tmp_path, monkeypatch):
+    """A custody file the scan could not open is not opened for a later pass."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (OWNER_A,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    opens = []
+    real_open = rc._open_ro
+
+    def open_ro(path):
+        if _same_file(path, custody):
+            opens.append(path)
+            if len(opens) == 1:
+                raise sqlite3.OperationalError("first open")
+        return real_open(path)
+
+    monkeypatch.setattr(rc, "_open_ro", open_ro)
+    plan = rc.merge(live, source)
+    assert len(opens) == 1
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    _mapping, counts, _evidence, _failed = rc.legacy_center_owners(
+        custody, {"alpha"}, ledger_path=ledger,
+        center_dests={"alpha": {DEST_OK}},
+    )
+    assert len(opens) == 1
+    assert counts["centers_one_owner"] == 0
+    assert counts["centers_several_owners"] == 1
+    assert not _owner_vault(live, OWNER_A).exists()
+    _assert_hidden(json.dumps(plan))
+
+
 def test_workflow_modes_include_inspect_legacy():
     workflow = (ROOT / ".github/workflows/restore-credentials.yml").read_text(encoding="utf-8")
     shell = (ROOT / "deploy/restore-credentials.sh").read_text(encoding="utf-8")
