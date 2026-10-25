@@ -185,7 +185,7 @@ def test_one_broken_owner_and_low_volume_never_alarm():
 def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tmp_path, capsys):
     from scripts import core_capability_live as live
 
-    monkeypatch.delenv("TINYASSETS_CANARY_EMAIL", raising=False)
+    monkeypatch.delenv("TINYASSETS_CANARY_SESSION_KEY", raising=False)
     report = asyncio.run(live.collect())
     assert report["warnings"][0]["code"] == "canary_not_provisioned"
     assert not report["failures"]
@@ -246,7 +246,7 @@ def test_live_platform_failure_fails_the_step_and_model_rows_do_not(monkeypatch,
 
     async def model_red(report):
         # The probe's real advisory set: the rows it cannot observe at all
-        # (`approval` needs the protected cookie the canary door never issues)
+        # (`approval` needs the protected cookie an app session never issues)
         # must not roll a deploy back either.
         report["model_dependent"] = ["chat_stream", "patch_request", "approval"]
         for name in CAPABILITIES:

@@ -1,0 +1,61 @@
+name: Canary session
+description: >-
+  Restore or save the canary's sealed app session (scripts/canary_session.py).
+  The canary is an ordinary account that renews like a signed-in phone app; each
+  workflow keeps its own chain so two runs never renew one handle. Main only: a
+  branch run that renewed main's handle would strand main's chain.
+inputs:
+  mode:
+    description: restore (before the first sign-in of a job) or save (after any step that renewed)
+    required: true
+  chain:
+    description: Chain name, one per workflow (deploy, uptime)
+    required: true
+  key:
+    description: TINYASSETS_CANARY_SESSION_KEY
+    required: false
+  seed:
+    description: The chain's sealed seed secret, used only when no saved session exists
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Prepare
+      if: inputs.mode == 'restore' && github.ref == 'refs/heads/main'
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+        SEED: ${{ inputs.seed }}
+      run: |
+        set -euo pipefail
+        pip install cryptography==49.0.0
+        # A new sign-in replaces the seed, and the seed's digest names its
+        # chain: saves from a dead chain are never restored over a new one.
+        generation="$(printf '%s' "${SEED}" | sha256sum | cut -c1-16)"
+        {
+          echo "TINYASSETS_CANARY_SESSION_GENERATION=${generation}"
+          echo "TINYASSETS_CANARY_SESSION_STATE=${RUNNER_TEMP}/canary-session/state"
+          echo "TINYASSETS_CANARY_SESSION_KEY=${KEY}"
+          echo "TINYASSETS_CANARY_SESSION_SEED=${SEED}"
+        } >> "$GITHUB_ENV"
+    - name: Restore the newest saved session
+      if: inputs.mode == 'restore' && github.ref == 'refs/heads/main'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/canary-session
+        key: canary-session-${{ inputs.chain }}-${{ env.TINYASSETS_CANARY_SESSION_GENERATION }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: canary-session-${{ inputs.chain }}-${{ env.TINYASSETS_CANARY_SESSION_GENERATION }}-
+    - name: Name the save
+      id: name
+      if: inputs.mode == 'save' && github.ref == 'refs/heads/main'
+      shell: bash
+      run: |
+        if [ -f "${RUNNER_TEMP}/canary-session/state" ]; then
+          echo "key=canary-session-${{ inputs.chain }}-${TINYASSETS_CANARY_SESSION_GENERATION}-${{ github.run_id }}-${{ github.run_attempt }}-$(date +%s%N)" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Save the rotated session
+      if: steps.name.outputs.key != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/canary-session
+        key: ${{ steps.name.outputs.key }}

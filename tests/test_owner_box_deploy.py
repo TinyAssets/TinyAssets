@@ -87,18 +87,23 @@ def test_canary_public_wake_precedes_drain_and_acceptance(router_box):
 
     receipt, code = driver.run(control, accept, prepare)
     assert code == 0 and receipt["canary"] == "passed"
-    assert state.calls == ["/app/canary-sign-in", "/app/canary-sign-in",
-                           "/mcp", "/mcp", "/mcp"]
+    assert state.calls == ["/app/token", "/app/token", "/mcp", "/mcp", "/mcp"]
     assert state.broker_turns == 1
 
 
 @pytest.fixture
-def router_box(monkeypatch):
-    for name, value in {"EMAIL": "canary@example.invalid", "PASSWORD": "synthetic-password",
-                        "DOOR_KEY": "synthetic-door", "USER_ID": "canary-owner",
-                        "UNIVERSE_ID": "canary-home"}.items():
+def router_box(monkeypatch, tmp_path):
+    import base64
+
+    from scripts import canary_session
+
+    for name, value in {"USER_ID": "canary-owner", "UNIVERSE_ID": "canary-home"}.items():
         monkeypatch.setenv("TINYASSETS_CANARY_" + name, value)
-    state = SimpleNamespace(failure="", calls=[], broker_turns=0)
+    monkeypatch.setenv("TINYASSETS_CANARY_SESSION_KEY",
+                       base64.urlsafe_b64encode(b"k" * 32).decode())
+    monkeypatch.setenv("TINYASSETS_CANARY_SESSION_STATE", str(tmp_path / "session"))
+    monkeypatch.setenv("TINYASSETS_CANARY_SESSION_SEED", canary_session.seal("handle-0"))
+    state = SimpleNamespace(failure="", calls=[], broker_turns=0, handle="handle-0")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -123,11 +128,14 @@ def router_box(monkeypatch):
         def do_POST(self):
             doc = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state.calls.append(self.path)
-            if self.path == "/app/canary-sign-in":
-                assert doc == {"email": "canary@example.invalid", "password": "synthetic-password",
-                               "key": "synthetic-door"}
-                return self.respond({"access_token": "synthetic-session"}, status=(
-                    401 if state.failure == "login" else 200))
+            if self.path == "/app/token":
+                # Renewal always presents the newest rotated handle.
+                assert doc == {"grant_type": "refresh_token", "session_ref": state.handle}
+                if state.failure == "login":
+                    return self.respond({"error": "refresh_failed"}, status=401)
+                state.handle = "handle-" + str(len(state.calls))
+                return self.respond({"access_token": "synthetic-session",
+                                     "session_ref": state.handle})
             assert self.path == "/mcp"
             assert self.headers["Authorization"] == "Bearer synthetic-session"
             if doc["method"] == "tools/call":
@@ -155,7 +163,7 @@ def router_box(monkeypatch):
 def test_canary_signs_in_and_runs_one_turn_through_router_box(router_box):
     origin, state = router_box
     assert canary.main(["--origin", origin, "--expected-sha", SHA]) == 0
-    assert state.calls == ["/app/canary-sign-in", "/mcp", "/mcp", "/mcp"]
+    assert state.calls == ["/app/token", "/mcp", "/mcp", "/mcp"]
     assert state.broker_turns == 1
 
 
@@ -255,9 +263,7 @@ def test_install_image_extracts_only_static_image_and_reuses_it(tmp_path, monkey
 
 def test_existing_secret_loader_can_select_only_the_canary_profile(tmp_path):
     source = tmp_path / "synthetic.env"
-    source.write_text("TINYASSETS_CANARY_EMAIL=canary@example.invalid\n"
-                      "TINYASSETS_CANARY_PASSWORD=synthetic-only-password\n"
-                      "TINYASSETS_CANARY_DOOR_KEY=synthetic-only-door\n"
+    source.write_text("TINYASSETS_CANARY_SESSION_KEY=synthetic-only-key\n"
                       "UNRELATED_CANARY_PROBE_SECRET=must-stay-out\n")
     env = {**os.environ, "TINYASSETS_SECRETS_PROFILE": "canary",
            "TINYASSETS_SECRETS_VENDOR": "plaintext",
@@ -266,11 +272,11 @@ def test_existing_secret_loader_can_select_only_the_canary_profile(tmp_path):
     if os.name == "nt":
         command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                    '. ./scripts/load_secrets.ps1; '
-                   'if ($env:TINYASSETS_CANARY_PASSWORD -ne "synthetic-only-password") {exit 1}; '
+                   'if ($env:TINYASSETS_CANARY_SESSION_KEY -ne "synthetic-only-key") {exit 1}; '
                    'if ($env:UNRELATED_CANARY_PROBE_SECRET) {exit 2}']
     else:
         command = ["bash", "-c", '. scripts/load_secrets.sh && '
-                   'test "$TINYASSETS_CANARY_PASSWORD" = synthetic-only-password && '
+                   'test "$TINYASSETS_CANARY_SESSION_KEY" = synthetic-only-key && '
                    'test -z "${UNRELATED_CANARY_PROBE_SECRET:-}"']
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr

@@ -15,7 +15,7 @@ _SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 # First segments of the product /app routes. A published slug cannot take one.
 RESERVED = frozenset({
     "account", "api", "api-keys", "approval-handoff", "approvals", "apps",
-    "billing", "canary-sign-in", "client-error", "connection-discovery",
+    "billing", "client-error", "connection-discovery",
     "connections", "devices", "files", "live", "m", "me", "memory",
     "model-callback", "model-connect", "model-discovery", "models",
     "native-sign-in", "notify", "oauth", "outside-clients", "owner",

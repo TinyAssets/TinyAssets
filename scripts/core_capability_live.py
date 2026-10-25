@@ -65,34 +65,18 @@ def passed(report, capability, observation):
 
 
 async def login(config, http):
-    """Sign in through the canary-only door with the shared key and the real password.
+    """Renew the canary's ordinary app session (``scripts/canary_session.py``).
 
-    AuthKit's hosted page shows a headless browser a human check, and defeating
-    one is never an option, so the deployment pins this one synthetic account
-    and authenticates its password with WorkOS server-side
-    (``tinyassets/onboarding/canary_sign_in.py``). What comes back is the
-    ordinary session ``/mcp`` and ``/app`` accept. No protected approval cookie
-    is issued, by design — see ``exercise``.
+    The canary is an ordinary account: it signed in once like any phone-app
+    user and renews like one. No protected approval cookie is issued, by
+    design — see ``exercise``.
     """
-    response = await http.post(
-        ORIGIN + "/app/canary-sign-in",
-        json={"key": config["door_key"], "email": config["email"], "password": config["password"]},
-    )
-    if response.status_code != 200:
-        # The door answers bounded codes only, and gives every failed proof the
-        # same one so it cannot be used as an oracle: which proof failed is in
-        # the daemon log. Neither the door nor this prints a value.
-        try:
-            code = str(response.json().get("error", ""))[:64]
-        except ValueError:
-            code = ""
-        raise ProbeFailure(
-            f"canary sign-in refused (HTTP {response.status_code} {code}); "
-            "the daemon log names the reason"
-        )
-    token = str(response.json().get("access_token", ""))
-    if not token:
-        raise ProbeFailure("canary sign-in returned no session")
+    from scripts.canary_session import CanarySessionError, access_token
+
+    try:
+        token = await asyncio.to_thread(access_token, ORIGIN)
+    except CanarySessionError as exc:
+        raise ProbeFailure(str(exc)) from None
     http.headers["Authorization"] = "Bearer " + token
     me = await http.get(ORIGIN + "/app/me")
     me.raise_for_status()

@@ -146,13 +146,10 @@ def reset_credentials(staged, now):
         for path in staged.glob(pattern):
             _safe(staged, path.relative_to(staged)).unlink()
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV
-    from tinyassets.onboarding.canary_sign_in import KEY_ENV
 
     operational = _safe(staged, ".router-credentials.json")
     operational.unlink(missing_ok=True)
-    operational.write_text(
-        json.dumps({name: secrets.token_urlsafe(48) for name in (WIKI_CANARY_TOKEN_ENV, KEY_ENV)})
-    )
+    operational.write_text(json.dumps({WIKI_CANARY_TOKEN_ENV: secrets.token_urlsafe(48)}))
     operational.chmod(0o600)
     os.chown(operational, 1001, 1001)
     from tinyassets.cutover_control import close_admission
