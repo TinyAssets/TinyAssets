@@ -1313,7 +1313,7 @@ are described in the 3c-2 as-built contract above.
   explicit. `--host-uds=all` allows opening the bound relay and creating the
   exported socket. No host credential environment is inherited.
 - **Defaults.** Idle threshold 900 seconds (`TINYASSETS_BOX_IDLE_SECONDS`),
-  awake cap 3 (`TINYASSETS_BOX_AWAKE_CAP`), memory 2 GiB per box
+  awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`; 2 GiB is a ceiling, and MemoryMax bounds the fleet), memory 2 GiB per box
   (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB; raised
   2026-10-25 for the agent plus one subscription CLI run).
   The service's aggregate MemoryMax is 7G. Interactive wakes evict the least
