@@ -134,9 +134,35 @@ window.AppRecovery=(()=>{
     try{
       sessionStorage.removeItem("ta_access_token");sessionStorage.removeItem("ta_access_exp");
       sessionStorage.removeItem(key);sessionStorage.removeItem(draftKey);
+      // A half-finished sign-in must not complete into the account that left.
+      sessionStorage.removeItem("ta_pkce");localStorage.removeItem("ta_pkce");
       if(ok){localStorage.removeItem("ta_sref");localStorage.removeItem("ta_logout_pending");}
     }catch(_e){}
+    await silenceNotifications();
     location.replace("/app");
+  }
+  // The same teardown as the app's sign-out (main.js enterSignedOut): this
+  // device stops receiving and showing the previous owner's notifications.
+  async function silenceNotifications(){
+    const plugins=window.Capacitor&&window.Capacitor.Plugins;
+    const native=!!(window.Capacitor&&typeof window.Capacitor.isNativePlatform==="function"
+      &&window.Capacitor.isNativePlatform());
+    if(native&&plugins){
+      try{["app.push.fcm","app.push.owner","app.push.recipient"].forEach(k=>localStorage.removeItem(k));}
+      catch(_e){}
+      const reply=plugins.NotificationReply,push=plugins.PushNotifications;
+      try{if(reply){await reply.setActive({active:false,recipient:""});await reply.consume();}}catch(_e){}
+      try{if(push){await push.unregister();await push.removeAllDeliveredNotifications();}}catch(_e){}
+      return;
+    }
+    try{
+      if(!navigator.serviceWorker) return;
+      const registration=await navigator.serviceWorker.getRegistration("/app");
+      if(!registration) return;
+      const subscription=await registration.pushManager.getSubscription();
+      if(subscription) await subscription.unsubscribe();
+      (await registration.getNotifications()).forEach(n=>n.close());
+    }catch(_e){}
   }
   document.addEventListener("click",event=>{
     const target=event.target.closest&&event.target.closest("[data-app-recovery]");
