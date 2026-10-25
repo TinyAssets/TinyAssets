@@ -2,7 +2,7 @@
 
 Reads one mounted owner volume and the stopped broker's grant ledger. No catalogue,
 credential probe, or runtime caller; absence alone removes membership. ``--dry-run``
-computes the same plan with everything open read-only and writes nothing.
+computes the same plan from verified disposable copies and writes nothing.
 """
 from __future__ import annotations
 
@@ -135,39 +135,42 @@ def _plan(conn, owner_root: Path, centers, grant_ids):
     return planned
 
 
-def _preview(owner_db: str, owner_root: Path, grant_ids):
-    """The real run's plan, with every byte of the volume opened read-only."""
-    with sqlite3.connect(owner_db + "?mode=ro", uri=True) as conn:
+def _preview(owner_db: Path, owner_root: Path, grant_ids):
+    """The real run's plan, read through a verified disposable copy.
+
+    mode=ro is not enough: on a WAL store SQLite still writes the -wal/-shm index
+    beside the source, and production owner storage is WAL. readonly_db copies the
+    database and its WAL and opens only the copy, which also lets the schema
+    helpers prepare exactly the tables and indexes the repair run would create --
+    on the copy -- so the preview accepts every input the repair run accepts. A
+    missing or misspelled path still refuses rather than reading an empty store.
+    """
+    from tinyassets.sqlite_readonly import readonly_db
+
+    with readonly_db(owner_db) as conn:
         conn.row_factory = sqlite3.Row
-        conn.execute("BEGIN")  # Deferred: a consistent read that takes no write lock.
-        try:
-            return [c for _, _, c in _plan(conn, owner_root, _center_ids(conn), grant_ids)]
-        except sqlite3.OperationalError as exc:
-            if "readonly" not in str(exc):
-                raise
-            raise RuntimeError("cannot plan this volume read-only: its assignment "
-                               "schema predates the tables the repair run creates") from exc
-        finally:
-            conn.rollback()
+        conn.execute("BEGIN")
+        return [c for _, _, c in _plan(conn, owner_root, _center_ids(conn), grant_ids)]
 
 
 def repair(owner_root: Path, ledger: Path, *, dry_run: bool = False):
     from tinyassets.provider_assignment import load_provider_assignment_in_transaction
     from tinyassets.provider_assignment_departure import remove_members
+    from tinyassets.sqlite_readonly import readonly_db
     from tinyassets.storage import DB_FILENAME, db_path
 
     require_stopped(owner_root)
     changes = []
-    # mode=rw/ro refuses a misspelled path rather than inventing an empty ledger.
-    with sqlite3.connect(ledger.resolve().as_uri() + "?mode=ro", uri=True) as grants:
+    # The stopped broker's ledger is not ours to touch in either mode, and mode=ro
+    # would leave a WAL index beside it: read a verified copy instead.
+    with readonly_db(ledger) as grants:
         grant_ids = set(grants.execute(
             "SELECT owner_user_id,grant_id FROM outbound_connection_grants"))
     # db_path promotes a legacy filename by renaming it, which is a write: a dry run
-    # reads the canonical name and mode=ro refuses when it is absent.
-    owner_db = (owner_root / DB_FILENAME if dry_run else db_path(owner_root)).resolve().as_uri()
+    # reads the canonical name instead.
     if dry_run:
-        return _preview(owner_db, owner_root, grant_ids)
-    with sqlite3.connect(owner_db + "?mode=rw", uri=True) as conn:
+        return _preview(owner_root / DB_FILENAME, owner_root, grant_ids)
+    with sqlite3.connect(db_path(owner_root).resolve().as_uri() + "?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         centers = _center_ids(conn)

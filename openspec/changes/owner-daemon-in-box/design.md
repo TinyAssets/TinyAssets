@@ -1930,10 +1930,13 @@ Delete this command with the cutover migration:
 
 `python -m tinyassets.cutover_assignment_repair --owner-root <mounted-owner-volume> --ledger <broker-outbound.db> --stopped [--dry-run]`
 
-`--dry-run` opens the volume, the ledger and the definition stores read-only,
-computes the same plan through the same code and prints the same summary without
-writing a byte; the repair run then refuses if the root it anchors differs from
-the root it planned.
+`--dry-run` computes the same plan through the same code and prints the same
+summary without writing a byte: both databases are read through
+`sqlite_readonly.readonly_db`, because `mode=ro` still writes a WAL index beside
+a WAL source, and the schema helpers prepare the copy rather than the volume, so
+the preview accepts exactly the inputs the repair run accepts. The stopped
+broker's ledger is read that way in both modes. The repair run then refuses if
+the root it anchors differs from the root it planned.
 
 Run once per owner volume with both services stopped. A transient probe failure
 is never evidence for this repair. Saved-default fallback requires the source to

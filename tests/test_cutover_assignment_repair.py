@@ -124,6 +124,7 @@ def _owner_volume(tmp_path, members, bindings, *, stored, grants):
             "INSERT INTO outbound_connection_grants VALUES ('owner',?)",
             [(grant,) for grant in grants],
         )
+    conn.close()
     with sqlite3.connect(db_path(tmp_path)) as conn:
         ensure_provider_assignment_schema(conn)
         conn.execute(
@@ -178,7 +179,30 @@ def _owner_volume(tmp_path, members, bindings, *, stored, grants):
             ),
         )
         store_provider_assignment_in_transaction(conn, assignment)
+    conn.close()  # The last connection's close is what checkpoints the WAL away.
+    _checkpointed_wal(ledger)
+    _checkpointed_wal(db_path(tmp_path))
     return ledger
+
+
+def _sidecars(path):
+    return [
+        suffix
+        for suffix in ("-wal", "-shm", "-journal")
+        if path.with_name(path.name + suffix).exists()
+    ]
+
+
+def _checkpointed_wal(path):
+    """Leave the store the way production owner storage sits: WAL mode, index
+    checkpointed away. A `mode=ro` open of exactly this writes a -wal and -shm."""
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    assert _sidecars(path) == []
 
 
 def _volume_bytes(root):
@@ -239,6 +263,8 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
 
 @pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
 def test_dry_run_previews_the_real_plan_and_writes_nothing(tmp_path):
+    from tinyassets.storage import db_path
+
     definitions, members, bindings = _accepted()
     ledger = _owner_volume(
         tmp_path, members, bindings, stored=definitions[1:], grants=["grant-0", "grant-2"]
@@ -253,10 +279,46 @@ def test_dry_run_previews_the_real_plan_and_writes_nothing(tmp_path):
             "root": min(m.provider for m in members[1:]),
         }
     ]
+    # No file created, removed or changed anywhere under the volume -- which holds
+    # the ledger too -- and no WAL index beside either WAL database.
     assert _volume_bytes(tmp_path) == untouched
+    assert _sidecars(db_path(tmp_path)) == [] and _sidecars(ledger) == []
     assert repair(tmp_path, ledger) == preview
     assert _volume_bytes(tmp_path) != untouched
+    # The repair run leaves its own WAL behind: the preview must read that too.
     assert repair(tmp_path, ledger, dry_run=True) == []
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
+def test_dry_run_plans_every_schema_the_repair_run_accepts(tmp_path):
+    from tinyassets.storage import db_path
+
+    definitions, members, bindings = _accepted()
+    ledger = _owner_volume(
+        tmp_path, members, bindings, stored=definitions[1:], grants=["grant-0", "grant-2"]
+    )
+    index = "idx_provider_assignment_owner"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(f"DROP INDEX {index}")
+    conn.close()
+    _checkpointed_wal(db_path(tmp_path))
+    untouched = _volume_bytes(tmp_path)
+    preview = repair(tmp_path, ledger, dry_run=True)
+    assert preview == [
+        {
+            "universe_id": "center",
+            "removed": [members[0].provider],
+            "old_root": members[0].provider,
+            "root": min(m.provider for m in members[1:]),
+        }
+    ]
+    # The schema the repair run creates is prepared on the copy, not the volume.
+    assert _volume_bytes(tmp_path) == untouched
+    assert repair(tmp_path, ledger) == preview
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=?", (index,)
+        ).fetchone() == (1,)
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
