@@ -7206,10 +7206,17 @@
     async post(operation,body,epoch){
       await ensureFreshToken();
       if(epoch!==MCP._loginEpoch||!token())throw new Error("Sign in again to continue.");
-      const response=await fetch("/app/subscription-connect/"+operation,{
-        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
-      const result=await response.json();
+      let response,result;
+      try{
+        response=await fetch("/app/subscription-connect/"+operation,{
+          method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
+        result=await response.json();
+      }catch(_error){
+        // No answer (dropped connection, aborted by a reload): not a refusal.
+        const error=new Error("Connection interrupted. Reopen this to continue.");
+        error.transport=true;throw error;
+      }
       if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
       if(!response.ok||result.error){
         const error=new Error("Connection did not finish. Sign in to the owner view and retry.");
@@ -7238,7 +7245,10 @@
     },
     async poll(flow,epoch){
       try{return await this.post("poll",{flow},epoch);}
-      catch(_error){throw new Error("Sign-in was interrupted. Tap Connect to try again.");}
+      catch(error){
+        if(error.transport)throw error;
+        throw new Error("Sign-in was interrupted. Tap Connect to try again.");
+      }
     },
     async start(source,ui,resume=null){
       if(this.busy)return;
@@ -7331,9 +7341,11 @@
         }
         throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){
-        // Leaving the page aborts the in-flight poll; that is not a failed sign-in.
-        // Keep the saved flow so the reloaded page resumes it instead of cancelling.
+        // A dropped or aborted request (a reload aborts the in-flight poll) is not
+        // a failed sign-in: keep the saved flow so the next load resumes it.
+        // Only an explicit cancel or a server-reported end cancels.
         if(SubscriptionSources.leaving)return;
+        if(error.transport&&flow&&!cancelled){ui.status.textContent=error.message;return;}
         ui.status.textContent=error.message;
         if(pending)appendMessage("system",source.name+": "+error.message);
         pkceStore.removeItem(this.storageKey);
