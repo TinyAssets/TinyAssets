@@ -123,13 +123,23 @@ window.AppRecovery=(()=>{
     leaving=true;
     try{localStorage.setItem("ta_logout_pending","1");}catch(_e){}
     let ok=false;
+    const end=async()=>{
+      try{
+        let ref="";try{ref=localStorage.getItem("ta_sref")||"";}catch(_e){}
+        const response=await fetch("/app/token",{method:"POST",credentials:"same-origin",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({grant_type:"logout",session_ref:ref||undefined}),
+          signal:AbortSignal.timeout(10000)});
+        ok=response.ok;
+      }catch(_e){}
+    };
+    // The app's renewal lock (main.js withRefreshLock): a renewal already running
+    // in another tab finishes first, so it cannot re-issue the session afterwards.
     try{
-      let ref="";try{ref=localStorage.getItem("ta_sref")||"";}catch(_e){}
-      const response=await fetch("/app/token",{method:"POST",credentials:"same-origin",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({grant_type:"logout",session_ref:ref||undefined}),
-        signal:AbortSignal.timeout(10000)});
-      ok=response.ok;
+      if(navigator.locks&&navigator.locks.request)
+        await Promise.race([navigator.locks.request("ta-session-refresh",end),
+                            new Promise(resolve=>setTimeout(resolve,15000))]);
+      else await end();
     }catch(_e){}
     try{
       sessionStorage.removeItem("ta_access_token");sessionStorage.removeItem("ta_access_exp");
@@ -138,7 +148,10 @@ window.AppRecovery=(()=>{
       sessionStorage.removeItem("ta_pkce");localStorage.removeItem("ta_pkce");
       if(ok){localStorage.removeItem("ta_sref");localStorage.removeItem("ta_logout_pending");}
     }catch(_e){}
-    await silenceNotifications();
+    // Bounded: a plugin or service worker that never answers must not strand
+    // the page, since `leaving` already swallows every other recovery control.
+    await Promise.race([silenceNotifications().catch(()=>{}),
+                        new Promise(resolve=>setTimeout(resolve,3000))]);
     location.replace("/app");
   }
   // The same teardown as the app's sign-out (main.js enterSignedOut): this

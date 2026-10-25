@@ -96,3 +96,36 @@ def test_native_log_out_disarms_and_unregisters_notifications():
                          ["unregister", None], ["removeAll", None]]
         context.close()
         browser.close()
+
+
+def test_a_hung_notification_plugin_cannot_strand_log_out():
+    from playwright.sync_api import sync_playwright
+
+    recovery = Path("tinyassets/onboarding/app_recovery.js").read_text("utf-8").replace(
+        "__TA_ONBOARDING_CONFIG__", "{}")
+    hung = """
+      const never=()=>new Promise(()=>{});
+      window.Capacitor={isNativePlatform:()=>true,Plugins:{
+        NotificationReply:{setActive:never,consume:never},
+        PushNotifications:{unregister:never,removeAllDeliveredNotifications:never}}};
+    """
+    page_html = (
+        '<nav><a href="/app" data-app-recovery="logout">Log out</a></nav>'
+        '<span id="app-recovery-failed" hidden></span>'
+        "<script>" + hung + recovery + "</script>"
+    )
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context()
+        context.route("**/*", lambda route: route.abort())
+        context.route("https://app.example/app", lambda route: route.fulfill(
+            body=page_html, content_type="text/html"))
+        context.route("https://app.example/app/token", lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"ok":true}'))
+        page = context.new_page()
+        page.goto("https://app.example/app")
+        page.evaluate("sessionStorage.setItem('marker', 'before')")
+        with page.expect_navigation(timeout=8000):
+            page.get_by_role("link", name="Log out").click()
+        context.close()
+        browser.close()
