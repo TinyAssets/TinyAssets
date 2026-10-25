@@ -366,6 +366,11 @@ def test_live_vault_is_not_overwritten(tmp_path):
     assert vault.read_bytes() == before
     assert plan["files"]["credential_vault"]["conflict"] == 1
     assert plan["files"]["credential_vault"]["insert"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 0
+    assert plan["tables"]["connection_capabilities"]["insert"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    assert _ids(live) == set()
     assert TOKEN_OK not in vault.read_bytes().decode()
 
 
@@ -407,6 +412,91 @@ def test_existing_source_vault_is_not_overwritten(tmp_path):
     assert stats["http_kept"] == 0
     with sqlite3.connect(ledger) as db:
         assert db.execute("SELECT COUNT(*) FROM outbound_connections").fetchone()[0] == 0
+
+
+def test_non_string_destination_does_not_abort_the_other_center(tmp_path):
+    source = tmp_path / "source"
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.execute(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES ('c-live', ?, NULL, ?, 'ok')",
+            (OWNER_A, f"vault://http/{DEST_OK}"),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.executemany(
+            "INSERT INTO llm_credential_deposit_owners VALUES (?, ?)",
+            (("alpha", OWNER_A), ("epsilon", OWNER_A)),
+        )
+    good = source / ".platform" / "credential-vaults" / "alpha"
+    bad = source / "epsilon"
+    good.mkdir(parents=True)
+    bad.mkdir()
+    (good / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    (bad / ".credential-vault.json").write_bytes(_vault_bytes([{
+        "credential_type": "http",
+        "destination": {"not": "a string"},
+        "token": TOKEN_OTHER,
+    }]))
+    stats = rc.convert_legacy_vaults(source)
+    digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    vault = (
+        source / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    assert stats["http_kept"] == 1
+    assert stats["unmatched"] >= 1
+    assert json.loads(vault.read_text(encoding="utf-8"))["credentials"][0]["destination"] == DEST_OK
+
+
+def test_center_local_record_is_kept_beside_the_platform_file(tmp_path):
+    source = tmp_path / "source"
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.executemany(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES (?, ?, NULL, ?, 'ok')",
+            (
+                ("c-live", OWNER_A, f"vault://http/{DEST_OK}"),
+                ("c-local", OWNER_A, f"vault://http/{DEST_GAMMA}"),
+            ),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)", (OWNER_A,),
+        )
+    platform = source / ".platform" / "credential-vaults" / "alpha"
+    platform.mkdir(parents=True)
+    (platform / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    local = source / "alpha"
+    local.mkdir()
+    (local / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_GAMMA, TOKEN_GAMMA)]))
+    stats = rc.convert_legacy_vaults(source)
+    digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    vault = (
+        source / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    dests = {
+        item["destination"]
+        for item in json.loads(vault.read_text(encoding="utf-8"))["credentials"]
+    }
+    assert stats["http_kept"] == 2
+    assert dests == {DEST_OK, DEST_GAMMA}
 
 
 def test_workflow_modes_include_inspect_legacy():

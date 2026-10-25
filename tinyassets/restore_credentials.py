@@ -619,6 +619,11 @@ def _write_private_json(path, payload):
     try:
         temporary.write_text(payload, encoding="utf-8")
         temporary.chmod(0o600)
+        try:
+            parent_stat = path.parent.stat()
+            os.chown(temporary, parent_stat.st_uid, parent_stat.st_gid)
+        except PermissionError:
+            pass
         os.replace(temporary, path)
     except OSError:
         temporary.unlink(missing_ok=True)
@@ -666,11 +671,12 @@ def _keep_vault_backed(db, source_root, kept_ids):
             continue
         try:
             records = _load_vault_records(path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             continue
         have = {
             item.get("destination") for item in records
             if item.get("credential_type") == "http"
+            and isinstance(item.get("destination"), str)
         }
         live_refs, _revoked = _connection_refs(db, owner)
         for connection_id, dest in live_refs:
@@ -796,7 +802,18 @@ def convert_legacy_vaults(source_root):
             if owner is None:
                 continue
             try:
-                records = _load_vault_records(platform.get(center) or local[center])
+                records = []
+                loaded = False
+                for vault_path in (platform.get(center), local.get(center)):
+                    if vault_path is None:
+                        continue
+                    try:
+                        records.extend(_load_vault_records(vault_path))
+                        loaded = True
+                    except (OSError, ValueError, TypeError):
+                        stats["accounts_failed"] += 1
+                if not loaded:
+                    continue
                 live_refs, revoked_refs = _connection_refs(db, owner)
                 live_dests = {dest for _connection_id, dest in live_refs}
                 revoked_dests = {dest for _connection_id, dest in revoked_refs}
@@ -834,6 +851,7 @@ def convert_legacy_vaults(source_root):
                         have = {
                             item.get("destination") for item in current
                             if item.get("credential_type") == "http"
+                            and isinstance(item.get("destination"), str)
                         }
                         extra = [
                             item for item in chosen
@@ -855,6 +873,7 @@ def convert_legacy_vaults(source_root):
                             have = {
                                 item.get("destination") for item in current
                                 if item.get("credential_type") == "http"
+                                and isinstance(item.get("destination"), str)
                             }
                             dropped = {dest for dest in seen if dest not in have}
                             stats["http_kept"] -= len(dropped)
@@ -868,7 +887,7 @@ def convert_legacy_vaults(source_root):
                 for connection_id, dest in live_refs:
                     if dest in seen:
                         kept_ids.add(connection_id)
-            except (OSError, ValueError, sqlite3.Error):
+            except (OSError, ValueError, sqlite3.Error, TypeError):
                 stats["accounts_failed"] += 1
         _keep_vault_backed(db, source_root, kept_ids)
     finally:
@@ -1095,11 +1114,12 @@ def _copy_definitions(live_db, source_root, live_root):
         with _open_ro(ledger) as src:
             if not _table_exists(src, "box_model_sources"):
                 return 0
-            grants = _source_grants(src)
             for owner, definition_id, raw in src.execute(
                 "SELECT owner, id, definition FROM box_model_sources"
             ):
-                document = _verified_definition(owner, definition_id, raw, grants)
+                document = _verified_definition(
+                    owner, definition_id, raw, _source_grants(live_db),
+                )
                 if document is not None:
                     pending.append((owner, definition_id, document))
     except sqlite3.Error:
@@ -1143,6 +1163,77 @@ def _copy_definitions(live_db, source_root, live_root):
     return inserted
 
 
+def _ref_dest(row):
+    ref = row.get("credential_ref")
+    if not isinstance(ref, str) or not ref.startswith(_HTTP_PREFIX):
+        return None
+    dest = ref[len(_HTTP_PREFIX):].strip()
+    return dest or None
+
+
+def _vault_http_dests(path):
+    """HTTP destinations in a vault file. Unreadable or absent is an empty set."""
+    if path is None or path.is_symlink() or not path.is_file():
+        return set()
+    try:
+        records = _load_vault_records(path)
+    except (OSError, ValueError, TypeError):
+        return set()
+    dests = set()
+    for item in records:
+        if item.get("credential_type") != "http":
+            continue
+        dest = item.get("destination")
+        if isinstance(dest, str) and dest.strip():
+            dests.add(dest.strip())
+    return dests
+
+
+def _surviving_dests(live_root, spec):
+    """Destinations whose secret will still be in the vault after this merge.
+
+    An existing live file wins, so only destinations already in it qualify.
+    """
+    digest = spec.get("hash")
+    live_path = None
+    if isinstance(digest, str) and _HASH_RE.fullmatch(digest):
+        live_path = (
+            live_root / ".broker" / "accounts" / digest / "credentials"
+            / FILES["credential_vault"]
+        )
+    if live_path is not None and (live_path.exists() or live_path.is_symlink()):
+        return _vault_http_dests(live_path)
+    return _vault_http_dests(spec["files"].get("credential_vault"))
+
+
+def _bind_rows(spec, dests):
+    """Keep connection rows only when that destination's secret survives."""
+    kept = set()
+    connections = []
+    for row in spec["rows"]["outbound_connections"]:
+        dest = _ref_dest(row)
+        connection_id = row.get("connection_id")
+        if dest in dests and isinstance(connection_id, str):
+            connections.append(row)
+            kept.add(connection_id)
+    return {
+        "rows": {
+            "outbound_connections": connections,
+            "outbound_connection_grants": [
+                row for row in spec["rows"]["outbound_connection_grants"]
+                if row.get("connection_id") in kept
+            ],
+            "connection_capabilities": [
+                row for row in spec["rows"]["connection_capabilities"]
+                if row.get("connection_id") in kept
+            ],
+            "browser_vault": spec["rows"]["browser_vault"],
+        },
+        "files": spec["files"],
+        "hash": spec["hash"],
+    }
+
+
 def merge(live_root, source_root):
     """Insert missing rows and files. Existing live rows and files stay."""
     ledger = live_root / ".broker" / "outbound.db"
@@ -1150,23 +1241,31 @@ def merge(live_root, source_root):
         raise SourceRefused("ledger_missing")
     legacy = prepare_legacy(source_root)
     grouped = _groups(source_root)
+    legacy_bound = any(legacy.get(name) for name in (
+        "centers_one_owner", "centers_zero_owners", "centers_several_owners",
+    ))
     files = {kind: _slot() for kind in FILES}
     tables = {table: _slot() for table in TABLES}
     affected = failed = unchanged = 0
     with sqlite3.connect(ledger) as db:
         db.execute("PRAGMA busy_timeout=5000")
         for spec in grouped.values():
+            account = spec
+            if legacy_bound:
+                account = _bind_rows(spec, _surviving_dests(live_root, spec))
             account_files_slot = {kind: _slot() for kind in FILES}
             account_tables = {table: _slot() for table in TABLES}
             db.execute("SAVEPOINT account")
             created = []
             try:
                 for table in TABLES:
-                    for row in spec["rows"][table]:
+                    for row in account["rows"][table]:
                         outcome = _insert_missing(db, table, row)
                         account_tables[table][outcome] += 1
-                for kind, path in spec["files"].items():
-                    outcome, written = _copy_missing(live_root, spec["hash"], kind, path)
+                for kind, path in account["files"].items():
+                    outcome, written = _copy_missing(
+                        live_root, account["hash"], kind, path,
+                    )
                     account_files_slot[kind][outcome] += 1
                     if written is not None:
                         created.append(written)
