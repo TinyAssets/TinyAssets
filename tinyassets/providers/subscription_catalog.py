@@ -17,8 +17,14 @@ def context(definition, owner, universe):
             or definition.access_method != "subscription_cli"):
         raise PermissionError("subscription source scope mismatch")
     runtime = SubscriptionRuntime(definition.ref)
-    runtime.require_accepted()
-    if not runtime.authenticated():
+    if not runtime.accepted():
+        runtime.require_accepted()
+    # Readiness never takes the source lock or runs the CLI. A running turn holds
+    # that lock for its whole invocation, so checking here made /app/me and turn
+    # launch wait up to ten minutes behind it. The invocation re-checks the login.
+    from tinyassets.providers.subscription_lease import capture, custody
+
+    if not custody(runtime, "read")["state"] and not capture(runtime, runtime.home):
         raise PermissionError("subscription login is unavailable")
     # This is a credential-free connection incarnation; native token refresh
     # does not revoke the owner's accepted model scope.

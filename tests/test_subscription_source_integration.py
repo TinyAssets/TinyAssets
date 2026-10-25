@@ -444,3 +444,36 @@ pytestmark = [
         'box-subscription-sources:Broker custody and one-run native leases',
     ),
 ]
+
+
+@pytest.mark.verifies("box-subscription-sources:Generic invocation and selection")
+def test_readiness_does_not_wait_behind_a_running_invocation(connected):
+    import threading
+    import time
+
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.provider_resolver import provider_for_definition
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    root = connected.home
+    definition = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="fake-cli")
+    held, release = threading.Event(), threading.Event()
+
+    def running_turn():
+        # An invocation holds the source lock for its whole CLI run.
+        with connected.lock():
+            held.set()
+            release.wait(30)
+
+    turn = threading.Thread(target=running_turn)
+    turn.start()
+    try:
+        assert held.wait(10)
+        started = time.monotonic()
+        sources = connected_sources(root, root / "center", "owner")
+        assert time.monotonic() - started < 5
+        assert provider_for_definition(definition).name in sources
+    finally:
+        release.set()
+        turn.join(10)
