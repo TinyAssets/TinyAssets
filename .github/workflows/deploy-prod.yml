@@ -88,8 +88,9 @@ jobs:
     environment: production
     # 15 min of deploy work, 15 for backup verification/repair, 10 for advisory
     # capabilities, up to 55 for in-flight turns, 12 for host readiness,
-    # and 50 for owner-box acceptance, with room for rollback.
-    timeout-minutes: 165
+    # and 110 for owner-box acceptance (including a busy-canary wait), with
+    # room for rollback.
+    timeout-minutes: 240
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
