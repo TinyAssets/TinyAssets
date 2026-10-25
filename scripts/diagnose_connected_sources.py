@@ -829,6 +829,42 @@ def _capture(argv: list[str], run, *, stderr: bool = False, timeout: int = 20) -
     return raw.decode("utf-8", "replace")[:_CAPTURE_LIMIT]
 
 
+# The same closed vocabularies the box logs with (subscription_runtime): a line
+# carrying any other word is dropped, never reported.
+_RUN_SOURCES = ("cerebras", "claude-code", "codex", "gemini", "google_ai_studio", "groq",
+                "kimi", "mistral", "openrouter_user_models_v1", "custom")
+_RUN_EVENTS = ("thread.started", "turn.started", "turn.completed", "turn.failed",
+               "item.started", "item.updated", "item.completed", "error", "system",
+               "assistant", "user", "result", "stream_event", "other")
+_RUN_EVENT = "(?:" + "|".join(re.escape(name) for name in _RUN_EVENTS) + ")"
+_RUN_LINE = re.compile(
+    r"subscription run (ended|exit): source=("
+    + "|".join(re.escape(name) for name in _RUN_SOURCES) + r") seconds=(\d{1,6}) "
+    r"prompt_bytes=(\d{1,9}) output_bytes=(\d{1,9}) events=(none|"
+    + _RUN_EVENT + "(?:," + _RUN_EVENT + r"){0,11})\s*\Z")
+
+
+def _subscription_runs(run=None) -> dict:
+    """Owner boxes log to boxhostd's journal. Only the fixed failure shape is kept."""
+    run = run or subprocess.run
+    text = _capture([
+        "journalctl", "-u", "boxhostd", "--since", "12 hours ago",
+        "--no-pager", "--output=cat", "-g", "subscription run ",
+    ], run)
+    counts: dict[str, int] = {}
+    recent: list[dict] = []
+    for line in text.splitlines():
+        match = _RUN_LINE.search(line)
+        if match is None:
+            continue
+        how, source, seconds, prompt, output, events = match.groups()
+        counts[how] = counts.get(how, 0) + 1
+        recent.append({"how": how, "source": source, "seconds": int(seconds),
+                       "prompt_bytes": int(prompt), "output_bytes": int(output),
+                       "events": events})
+    return {"counts": counts, "recent": recent[-10:]}
+
+
 def _canary_container(name: str) -> bool:
     if not _CANARY_NAME.fullmatch(name):
         return False
@@ -1007,6 +1043,7 @@ def collect() -> tuple[dict, set[str]]:
         subscription_state={"present": state_present, "absent": state_absent},
         broker_dates=_broker_dates(data),
     )
+    report["subscription_runs"] = _subscription_runs()
     return report, private
 
 
