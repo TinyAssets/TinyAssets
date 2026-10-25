@@ -35,22 +35,20 @@ def test_repair_refuses_live_writers_before_opening_owner_data(tmp_path, monkeyp
             repair(tmp_path, tmp_path / "absent-ledger.db")
 
 
-@pytest.mark.parametrize("absence", ["grant", "definition", "all_definitions"])
-def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
-    from tinyassets.provider_assignment import (
-        ProviderAssignment,
-        ensure_provider_assignment_schema,
-        load_provider_assignment_in_transaction,
-        provider_assignment_digest,
-        store_provider_assignment_in_transaction,
-    )
-    from tinyassets.provider_assignment_manifest import AssignmentCandidate, manifest_digest
+STAMP, DIGEST = "2026-01-01T00:00:00Z", "sha256:" + "0" * 64
+
+
+def _accepted(overrides=None):
+    """Three accepted members (HTTP, CLI, HTTP) with their definitions and bindings.
+
+    ``overrides`` maps a member index to definition fields that differ from this
+    owner's center: a row naming another owner or center still carries a valid
+    content address, so only an ownership check can reject it.
+    """
+    from tinyassets.provider_assignment_manifest import AssignmentCandidate
     from tinyassets.provider_work_authority import ProviderWorkBinding, ProviderWorkBindingState
     from tinyassets.providers.definition import ProviderDefinition, _definition_id
-    from tinyassets.storage import db_path
-    from tinyassets.storage.provider_work_authority import _payload, _record
 
-    stamp, digest = "2026-01-01T00:00:00Z", "sha256:" + "0" * 64
     definitions, members, bindings = [], [], []
     for index, method in enumerate(("api_key_http", "subscription_cli", "api_key_http")):
         fields = dict(
@@ -61,8 +59,9 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
             model="fixture",
             ref=f"grant-{index}",
         )
+        fields.update((overrides or {}).get(index, {}))
         definition = ProviderDefinition(
-            id=_definition_id(**fields), **fields, visibility="private", created_at=stamp
+            id=_definition_id(**fields), **fields, visibility="private", created_at=STAMP
         )
         definitions.append(definition.as_dict())
         provider = method + ":" + definition.id
@@ -70,23 +69,23 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
             1,
             f"binding-{index}",
             1,
-            digest,
+            DIGEST,
             ProviderWorkBindingState.ACTIVE,
             "owner",
             "center",
             provider,
-            digest,
+            DIGEST,
             ("converse",),
             ("writer",),
             1,
-            digest,
+            DIGEST,
             0,
             10,
             100,
             0,
             "2099-01-01T00:00:00Z",
-            stamp,
-            stamp,
+            STAMP,
+            STAMP,
         )
         binding = replace(binding, binding_digest=binding.expected_digest())
         bindings.append(binding)
@@ -98,25 +97,33 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
                 binding.binding_digest,
                 f"reference-{index}",
                 1,
-                digest,
+                DIGEST,
             )
         )
-    (tmp_path / "center").mkdir()
-    (tmp_path / "center/provider_definitions.json").write_text(
-        json.dumps(
-            []
-            if absence == "all_definitions"
-            else definitions[1:]
-            if absence == "definition"
-            else definitions
-        )
+    return definitions, members, bindings
+
+
+def _owner_volume(tmp_path, members, bindings, *, stored, grants):
+    """Write the center's definition store, the broker grant ledger and the owner DB."""
+    from tinyassets.provider_assignment import (
+        ProviderAssignment,
+        ensure_provider_assignment_schema,
+        provider_assignment_digest,
+        store_provider_assignment_in_transaction,
     )
+    from tinyassets.provider_assignment_manifest import manifest_digest
+    from tinyassets.storage import db_path
+    from tinyassets.storage.provider_work_authority import _payload
+
+    (tmp_path / "center").mkdir()
+    (tmp_path / "center/provider_definitions.json").write_text(json.dumps(stored))
     ledger = tmp_path / "ledger.db"
     with sqlite3.connect(ledger) as conn:
         conn.execute("CREATE TABLE outbound_connection_grants(owner_user_id,grant_id)")
-        conn.execute("INSERT INTO outbound_connection_grants VALUES ('owner','grant-2')")
-        if absence == "definition":
-            conn.execute("INSERT INTO outbound_connection_grants VALUES ('owner','grant-0')")
+        conn.executemany(
+            "INSERT INTO outbound_connection_grants VALUES ('owner',?)",
+            [(grant,) for grant in grants],
+        )
     with sqlite3.connect(db_path(tmp_path)) as conn:
         ensure_provider_assignment_schema(conn)
         conn.execute(
@@ -145,9 +152,9 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
             members[0].binding_digest,
             "reference-0",
             1,
-            digest,
-            digest,
-            stamp,
+            DIGEST,
+            DIGEST,
+            STAMP,
             manifest_digest(members[0].provider, tuple(members)),
             tuple(members),
         )
@@ -171,6 +178,37 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
             ),
         )
         store_provider_assignment_in_transaction(conn, assignment)
+    return ledger
+
+
+def _volume_bytes(root):
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("absence", ["grant", "definition", "all_definitions"])
+def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.storage import db_path
+    from tinyassets.storage.provider_work_authority import _record
+
+    definitions, members, bindings = _accepted()
+    ledger = _owner_volume(
+        tmp_path,
+        members,
+        bindings,
+        stored=(
+            []
+            if absence == "all_definitions"
+            else definitions[1:]
+            if absence == "definition"
+            else definitions
+        ),
+        grants=["grant-2", "grant-0"] if absence == "definition" else ["grant-2"],
+    )
     changed = repair(tmp_path, ledger)
     remaining = [] if absence == "all_definitions" else members[1:]
     assert changed == [
@@ -197,6 +235,64 @@ def test_repair_reanchors_and_is_idempotent(tmp_path, absence):
         assert json.loads(
             conn.execute("SELECT configuration_json FROM agent_bindings").fetchone()[0]
         ) == {"provider_ref": repaired.binding_id, "name": "My agent"}
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
+def test_dry_run_previews_the_real_plan_and_writes_nothing(tmp_path):
+    definitions, members, bindings = _accepted()
+    ledger = _owner_volume(
+        tmp_path, members, bindings, stored=definitions[1:], grants=["grant-0", "grant-2"]
+    )
+    untouched = _volume_bytes(tmp_path)
+    preview = repair(tmp_path, ledger, dry_run=True)
+    assert preview == [
+        {
+            "universe_id": "center",
+            "removed": [members[0].provider],
+            "old_root": members[0].provider,
+            "root": min(m.provider for m in members[1:]),
+        }
+    ]
+    assert _volume_bytes(tmp_path) == untouched
+    assert repair(tmp_path, ledger) == preview
+    assert _volume_bytes(tmp_path) != untouched
+    assert repair(tmp_path, ledger, dry_run=True) == []
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Cutover accounts for loss without guessing ownership")
+@pytest.mark.parametrize(
+    "reason,override",
+    [
+        ("definition_center_mismatch", {"universe_id": "other-center"}),
+        ("definition_owner_mismatch", {"owner_user_id": "other-owner"}),
+    ],
+)
+def test_a_foreign_definition_is_reported_instead_of_aborting_the_owner(tmp_path, reason, override):
+    definitions, members, bindings = _accepted({0: override})
+    ledger = _owner_volume(
+        tmp_path, members, bindings, stored=definitions, grants=["grant-0", "grant-2"]
+    )
+    survivor = min(m.provider for m in members[1:])
+    planned = {
+        "universe_id": "center",
+        "removed": [members[0].provider],
+        "old_root": members[0].provider,
+        "root": survivor,
+        "foreign_definitions": {reason: 1},
+    }
+    assert repair(tmp_path, ledger, dry_run=True) == [planned]
+    assert repair(tmp_path, ledger) == [planned]
+    # The foreign row stays in the store, is reported again, and changes nothing more.
+    assert json.loads((tmp_path / "center/provider_definitions.json").read_text()) == definitions
+    assert repair(tmp_path, ledger) == [
+        {
+            "universe_id": "center",
+            "removed": [],
+            "old_root": survivor,
+            "root": survivor,
+            "foreign_definitions": {reason: 1},
+        }
+    ]
 
 
 def test_cooling_saved_default_is_not_stale(monkeypatch):
