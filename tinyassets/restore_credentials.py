@@ -458,6 +458,9 @@ def _marker_count(root):
 
 def measure_root(root):
     ledger = root / ".broker" / "outbound.db"
+    custody = root / ".broker" / "credential-custody.db"
+    if _linked_inside(root, custody):
+        raise SourceRefused("unreadable")
     measured = _count_files(root)
     measured.update(_ledger_counts(ledger))
     measured["connection_markers"] = _marker_count(root)
@@ -788,8 +791,9 @@ def inspect_legacy_tree(root):
     root = Path(root)
     custody = root / ".broker" / "credential-custody.db"
     ledger = root / ".broker" / "outbound.db"
-    if (custody.is_file() and not custody.is_symlink()
-            and not _linked_inside(root, custody)):
+    if _linked_inside(root, custody) or _linked_inside(root, ledger):
+        raise SourceRefused("unreadable")
+    if custody.is_file() and not custody.is_symlink():
         counts["custody_db"] = True
     if root.is_dir() and not root.is_symlink():
         for path in root.rglob(".credential-vault.json"):
@@ -1848,7 +1852,10 @@ def _copy_definitions(live_db, source_root, live_root):
                 if document is not None:
                     pending.append((owner, definition_id, document))
     except sqlite3.Error:
-        return 0
+        active = _SNAPSHOTS.get(_source_key(source_root))
+        if active is not None:
+            active.failed = True
+        raise
     if not pending:
         return 0
     live_db.execute(
@@ -1975,10 +1982,12 @@ def _merge_snapshot(live_root, source_root, snap):
     """One owner's failed vault write is skipped. A failed read refuses everyone.
 
     Merge keeps a savepoint per account, so a bad row does not roll the other
-    accounts back. A vault write that fails is that owner's row: the secret is
-    not counted, and that owner's connections and browser rows are not inserted.
-    A failed read of the source snapshot is different. It unlinks every file
-    this merge wrote and returns ``error`` ``unreadable``.
+    accounts back. The account savepoint is not the outer transaction: that
+    stays open until the snapshot re-read finishes, and a failed re-read rolls
+    every account back. A vault write that fails is that owner's row: the
+    secret is not counted, and that owner's connections and browser rows are
+    not inserted. A failed read of the source snapshot is different. It unlinks
+    every file this merge wrote and returns ``error`` ``unreadable``.
     """
     if snap.failed:
         legacy = _refused_center_stats(source_root)
@@ -2004,6 +2013,8 @@ def _merge_snapshot(live_root, source_root, snap):
     affected = failed = unchanged = 0
     with sqlite3.connect(ledger) as db:
         db.execute("PRAGMA busy_timeout=5000")
+        # A released account savepoint would commit if it opened the transaction.
+        db.execute("BEGIN")
         for spec in grouped.values():
             account = spec
             if legacy_bound:
@@ -2048,6 +2059,8 @@ def _merge_snapshot(live_root, source_root, snap):
         try:
             legacy["definitions"] = _copy_definitions(db, source_root, live_root)
         except (sqlite3.Error, OSError):
+            if snap.failed:
+                raise
             legacy["accounts_failed"] += 1
     plan = {
         "accounts": len(grouped),
@@ -2787,11 +2800,15 @@ def _copy_wanted(source, dest):
     if source.is_symlink() or not source.is_dir():
         raise SourceRefused("unreadable")
     for path in source.rglob("*"):
-        if path.is_symlink() or not path.is_file():
-            continue
         try:
             parts = path.relative_to(source).parts
         except ValueError:
+            continue
+        if path.is_symlink():
+            if _wanted(parts) is not None:
+                raise SourceRefused("unreadable")
+            continue
+        if not path.is_file():
             continue
         relative = _wanted(parts)
         if relative is None:

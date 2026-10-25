@@ -2168,6 +2168,223 @@ def test_symlinked_broker_is_not_followed(tmp_path, monkeypatch):
     _assert_hidden(json.dumps(applied))
 
 
+def _custody_db(path, owner):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (owner,),
+        )
+    return path
+
+
+def _owner_a_tree(root, custody_target):
+    """Ledger and vault name owner-a. The browser row names owner-b."""
+    ledger = root / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b1', ?, ?)",
+            (OWNER_B, sealed),
+        )
+    alpha = root / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    (root / ".broker" / "credential-custody.db").symlink_to(custody_target)
+    return sealed
+
+
+def _assert_nothing_written(live, sealed, text):
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(live, OWNER_B).exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM outbound_connections").fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM outbound_connection_grants"
+        ).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM browser_vault").fetchone()[0] == 0
+    assert sealed.decode() not in text
+    _assert_hidden(text)
+
+
+def test_symlinked_custody_is_unreadable_on_the_workflow_path(
+        tmp_path, monkeypatch, capsys):
+    """Catalog, retained copy, and inspect refuse a custody symlink."""
+    monkeypatch.setattr(rc.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("BACKUP_DEST", raising=False)
+    calls = []
+
+    def run(argv, timeout=0):
+        calls.append(tuple(argv))
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setitem(rc.apply_tree.__kwdefaults__, "run", run)
+    garbage = tmp_path / "not-a-database"
+    garbage.write_bytes(b"not a database")
+    other = _custody_db(tmp_path / "other-owner.db", OWNER_B)
+    for name, target in (("garbage", garbage), ("other-owner", other)):
+        base = tmp_path / name
+        live = _live(base)
+        _browser_table(live)
+        retained = base / ".tinyassets-restore-old.Ab12"
+        sealed = _owner_a_tree(retained, target)
+        with pytest.raises(rc.SourceRefused) as measured:
+            rc.measure_root(retained)
+        assert measured.value.code == "unreadable"
+        with pytest.raises(rc.SourceRefused) as copied:
+            rc._copy_wanted(retained, base / "copied")
+        assert copied.value.code == "unreadable"
+        with pytest.raises(rc.SourceRefused) as inspected:
+            rc.inspect_legacy_tree(retained)
+        assert inspected.value.code == "unreadable"
+        argv = [
+            "--root", str(live), "--source", retained.name,
+            "--snapshot-dir", str(base / "snaps"),
+            "--backup-log", str(base / "missing.log"),
+            "--mounts", str(base / "mounts"),
+        ]
+        with pytest.raises(SystemExit) as inspect_exit:
+            rc.main(["--mode", "inspect-legacy", *argv])
+        assert inspect_exit.value.code == 2
+        inspect_out = capsys.readouterr().out
+        inspect_report = json.loads(inspect_out)
+        assert inspect_report["error"] == "unreadable"
+        assert inspect_report["legacy"]["custody_db"] is False
+        assert inspect_report["legacy"]["centers_one_owner"] == 0
+        _assert_nothing_written(live, sealed, inspect_out)
+        with pytest.raises(SystemExit) as apply_exit:
+            rc.main(["--mode", "apply", *argv])
+        assert apply_exit.value.code == 2
+        apply_out = capsys.readouterr().out
+        apply_report = json.loads(apply_out)
+        assert apply_report["error"] == "unreadable"
+        assert "plan" not in apply_report
+        chosen = next(
+            item for item in apply_report["sources"] if item["name"] == retained.name
+        )
+        assert chosen["readable"] is False
+        assert chosen["error"] == "unreadable"
+        _assert_nothing_written(live, sealed, apply_out)
+    assert calls == []
+
+
+def test_corrupt_snapshot_reread_refuses_the_merge(tmp_path, monkeypatch, capsys):
+    """Garbage between groups and the definition copy refuses every owner."""
+    base = tmp_path / "reread"
+    live = _live(base)
+    _browser_table(live)
+    retained = base / ".tinyassets-restore-old.Ab12"
+    ledger = retained / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [
+            _conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha"),
+            _conn_universe(OWNER_B, "c-beta", DEST_BETA, "beta"),
+        ],
+        [
+            _grant_universe(OWNER_A, "ga", "c-alpha", "alpha"),
+            _grant_universe(OWNER_B, "gb", "c-beta", "beta"),
+        ],
+    ))
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.executemany(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES (?, 'model_use')",
+            (("c-alpha",), ("c-beta",)),
+        )
+        db.executemany(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES (?, ?, ?)",
+            (("b-a", OWNER_A, sealed), ("b-b", OWNER_B, sealed)),
+        )
+    _custody_db(retained / ".broker" / "credential-custody.db", OWNER_A)
+    with sqlite3.connect(retained / ".broker" / "credential-custody.db") as db:
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('beta', ?)",
+            (OWNER_B,),
+        )
+    for center, dest, token in (
+        ("alpha", DEST_OK, TOKEN_OK), ("beta", DEST_BETA, TOKEN_BETA),
+    ):
+        directory = retained / center
+        directory.mkdir()
+        (directory / ".credential-vault.json").write_bytes(
+            _vault_bytes([_http(dest, token)])
+        )
+    real_groups = rc._groups
+
+    def groups(root):
+        loaded = real_groups(root)
+        snap = rc._SNAPSHOTS[rc._source_key(root)]
+        snap.paths["outbound.db"].write_bytes(b"not a database")
+        return loaded
+
+    monkeypatch.setattr(rc, "_groups", groups)
+    monkeypatch.setattr(rc.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("BACKUP_DEST", raising=False)
+    calls = []
+
+    def run(argv, timeout=0):
+        calls.append(tuple(argv))
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setitem(rc.apply_tree.__kwdefaults__, "run", run)
+    with pytest.raises(SystemExit) as raised:
+        rc.main([
+            "--mode", "apply", "--root", str(live), "--source", retained.name,
+            "--snapshot-dir", str(base / "snaps"),
+            "--backup-log", str(base / "missing.log"),
+            "--mounts", str(base / "mounts"),
+        ])
+    assert raised.value.code == 2
+    assert calls == [
+        ("docker", "stop", "tinyassets-broker"),
+        ("docker", "start", "tinyassets-broker"),
+    ]
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert report["error"] == "unreadable"
+    plan = report["plan"]
+    assert plan["error"] == "unreadable"
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    assert plan["accounts"] == 0
+    for table in (
+        "outbound_connections", "outbound_connection_grants",
+        "connection_capabilities", "browser_vault",
+    ):
+        assert plan["tables"][table]["insert"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(live, OWNER_B).exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        for table in (
+            "outbound_connections", "outbound_connection_grants",
+            "connection_capabilities", "browser_vault",
+        ):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert sealed.decode() not in out
+    _assert_hidden(out)
+
+
 def test_workflow_modes_include_inspect_legacy():
     workflow = (ROOT / ".github/workflows/restore-credentials.yml").read_text(encoding="utf-8")
     shell = (ROOT / "deploy/restore-credentials.sh").read_text(encoding="utf-8")
