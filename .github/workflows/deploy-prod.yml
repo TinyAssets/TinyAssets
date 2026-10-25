@@ -737,6 +737,7 @@ jobs:
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: canary
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           # The deploy leaves every box asleep, so this first request includes a

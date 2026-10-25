@@ -54,23 +54,34 @@ def stream_transport(token, observations):
 
 
 _TOKEN = re.compile(r"[a-z][a-z0-9_]{0,63}")
-_WORDS = re.compile(r"[^A-Za-z ,.:_-]+")
+# The job log is public, so the server's words never leave this process: each
+# label below is printed only when its phrase appears in them.
+_SIGNS = (
+    ("schema_drift", ("schema drift", "drifted")),
+    ("disabled", ("disabled", "not enabled", "turned off")),
+    ("not_found", ("not found", "no such", "unknown", "does not exist")),
+    ("already_exists", ("already exists", "duplicate")),
+    ("not_allowed", ("not allowed", "forbidden", "not permitted", "refused", "denied")),
+    ("not_admitted", ("not admitted", "admission")),
+    ("invalid_request", ("invalid", "malformed", "required", "must be")),
+    ("limit_reached", ("limit", "quota", "too many", "too large")),
+    ("approval_required", ("approval", "confirm")),
+    ("unavailable", ("unavailable", "not ready", "timed out", "timeout")),
+    ("readonly", ("read-only", "readonly", "read only")),
+)
 
 
 def refusal(name, arguments, code):
-    """The bounded code, plus which call and what the server said.
-
-    The job log is public, so any word holding a digit (ids, hashes, sizes) is
-    dropped, the rest keep letters and plain punctuation only, and the text
-    stops at 120 characters: enough to name the refusing check, never a value."""
+    """The bounded code, plus which call and fixed labels naming what the
+    server's words were about. The words themselves are never printed."""
     where = " ".join(
         str(arguments[key])
         for key in ("target", "operation")
         if _TOKEN.fullmatch(str(arguments.get(key, "")))
     )
-    words = [word for word in str(code).split() if not any(ch.isdigit() for ch in word)]
-    said = " ".join(_WORDS.sub(" ", " ".join(words)).split())[:120]
-    server = f" (server: {said})" if said else ""
+    said = str(code).lower()
+    signs = ",".join(label for label, phrases in _SIGNS if any(p in said for p in phrases))
+    server = f" ({signs})" if signs else ""
     return ProbeFailure(" ".join(f"{name} {where} refused: {failure_code(code)}{server}".split()))
 
 

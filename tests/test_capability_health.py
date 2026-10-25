@@ -311,9 +311,9 @@ def test_a_refusal_names_the_check_without_any_value():
 
     message = str(live.refusal(
         "write_graph", {"target": "branch", "operation": "create", "payload_json": "{}"},
-        "durable table has schema drift for user_01ABCDEF at /data/u-7f/x",
+        "Durable table has schema drift for alice@example.com at /home/alice sk-abcdefghij",
     ))
-    assert message.startswith("write_graph branch create refused: operation_failed (server: ")
-    assert "durable table has schema drift" in message
-    assert not any(ch.isdigit() for ch in message)
-    assert "ABCDEF" not in message and "payload" not in message
+    assert message == "write_graph branch create refused: operation_failed (schema_drift)"
+    # The server's own words never appear, whatever they hold.
+    unknown = str(live.refusal("write_graph", {"target": "x"}, "alice.internal YWJjZGVm"))
+    assert unknown == "write_graph x refused: operation_failed"
