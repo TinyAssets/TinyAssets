@@ -194,6 +194,131 @@ def _open_source(path):
     return sqlite3.connect(path)
 
 
+class _SourceSnapshot:
+    """One private copy of the source ledger and custody database."""
+
+    def __init__(self):
+        self.failed = False
+        self.holds = 0
+        self.written = []
+        self._directory = tempfile.TemporaryDirectory(prefix="ta-cred-snap-")
+        self.root = Path(self._directory.name)
+        self.paths = {}
+
+    def cleanup(self):
+        self.paths.clear()
+        self._directory.cleanup()
+
+
+_SNAPSHOTS = {}
+
+
+def _ensure_snapshot(source_root):
+    """Open each source database once and copy it. Later steps read the copy."""
+    key = _source_key(source_root)
+    snap = _SNAPSHOTS.get(key)
+    if snap is not None:
+        return snap
+    snap = _SourceSnapshot()
+    _SNAPSHOTS[key] = snap
+    origins = []
+    try:
+        for name in ("outbound.db", "credential-custody.db"):
+            origin = Path(source_root) / ".broker" / name
+            origins.append(origin)
+            if origin.is_symlink() or not origin.is_file():
+                continue
+            dest = snap.root / name
+            with _open_ro(origin) as src, sqlite3.connect(dest) as dst:
+                src.backup(dst)
+            snap.paths[name] = dest
+    except Exception:
+        for origin in origins:
+            if origin.is_file() and not origin.is_symlink():
+                _close_source(origin)
+        snap.failed = True
+        snap.paths.clear()
+    return snap
+
+
+def _acquire_snapshot(source_root):
+    snap = _ensure_snapshot(source_root)
+    snap.holds += 1
+    return snap
+
+
+def _release_snapshot(source_root):
+    key = _source_key(source_root)
+    snap = _SNAPSHOTS.get(key)
+    if snap is None:
+        return
+    snap.holds -= 1
+    if snap.holds <= 0:
+        _SNAPSHOTS.pop(key, None)
+        snap.cleanup()
+
+
+def _active_db(source_root, name):
+    """The private copy, when this restore already snapped the source."""
+    snap = _SNAPSHOTS.get(_source_key(source_root))
+    if snap is None:
+        origin = Path(source_root) / ".broker" / name
+        if _source_closed(origin) or origin.is_symlink() or not origin.is_file():
+            return None
+        return origin
+    if snap.failed:
+        return None
+    return snap.paths.get(name)
+
+
+def _legacy_stat_template():
+    return {
+        "http_kept": 0,
+        "llm_subscription": 0,
+        "unmatched": 0,
+        "revoked": 0,
+        "other": 0,
+        "centers_one_owner": 0,
+        "centers_zero_owners": 0,
+        "centers_several_owners": 0,
+        "centers_ledger_one_owner": 0,
+        "accounts_failed": 0,
+        "definitions": 0,
+        "secret_missing": 0,
+    }
+
+
+def _refused_center_stats(source_root):
+    """Every vault center refused. No secret and no row is written."""
+    stats = _legacy_stat_template()
+    platform, local = _legacy_vault_paths(source_root)
+    stats["centers_several_owners"] = len(set(platform) | set(local))
+    return stats
+
+
+def _unlink_written(snap):
+    for path in snap.written:
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+        except OSError:
+            pass
+    snap.written.clear()
+
+
+def _refusal_plan(source_root):
+    legacy = _refused_center_stats(source_root)
+    return {
+        "accounts": 0,
+        "accounts_affected": 0,
+        "accounts_failed": 0,
+        "accounts_unchanged": 0,
+        "files": {kind: _slot() for kind in FILES},
+        "tables": {table: _slot() for table in TABLES},
+        "legacy": legacy,
+    }
+
+
 def account_files(root):
     """hash -> {kind: Path}. Skips symlinks and non-hash directory names."""
     found = {}
@@ -452,18 +577,26 @@ def _vault_facts(data):
     return http, subscription, other, dests
 
 
+def _custody_refused(centers):
+    return {center: {"\0custody-a", "\0custody-b"} for center in centers}
+
+
 def _owner_groups(db_path, centers):
-    """center -> {owner, ...}. A missing file is empty. An unreadable file refuses all."""
+    """center -> owners, plus whether the file could not be read.
+
+    A missing file is empty and not a failure. Any failed read refuses every
+    center and reports the failure so the caller writes nothing.
+    """
     groups = {}
     path = Path(db_path) if db_path is not None else None
     if path is None or path.is_symlink() or not path.is_file():
-        return groups
+        return groups, False
     if _source_closed(path):
-        return {center: {"\0custody-a", "\0custody-b"} for center in centers}
+        return _custody_refused(centers), True
     try:
         with _open_ro(path) as db:
             if not _table_exists(db, "llm_credential_deposit_owners"):
-                return groups
+                return groups, False
             columns = set(_columns(db, "llm_credential_deposit_owners"))
             center_col = next(
                 (name for name in ("universe_id", "center", "center_id") if name in columns),
@@ -475,7 +608,7 @@ def _owner_groups(db_path, centers):
                 None,
             )
             if center_col is None or owner_col is None:
-                return groups
+                return groups, False
             query = (
                 f"SELECT {_quote(center_col)}, {_quote(owner_col)} "
                 f"FROM {_quote('llm_credential_deposit_owners')}"
@@ -484,12 +617,12 @@ def _owner_groups(db_path, centers):
                 if not isinstance(center, str) or not _CENTER_RE.fullmatch(center):
                     continue
                 slot = groups.setdefault(center, set())
-                if isinstance(owner, str) and owner:
+                if isinstance(owner, str) and owner and not owner.startswith("\0"):
                     slot.add(owner)
-    except (OSError, sqlite3.Error):
+    except Exception:
         _close_source(path)
-        return {center: {"\0custody-a", "\0custody-b"} for center in centers}
-    return groups
+        return _custody_refused(centers), True
+    return groups, False
 
 
 def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
@@ -503,10 +636,18 @@ def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
     counts only on that same pair. Disagreement refuses the center. A custody
     or ledger file that exists but cannot be read refuses every center.
     """
-    groups = _owner_groups(db_path, centers)
+    groups, custody_failed = _owner_groups(db_path, centers)
     ledger_groups, evidence, ledger_failed = _ledger_owner_groups(
         ledger_path, center_dests or {}, definition_root, definition_docs,
     )
+    if custody_failed or ledger_failed:
+        named = set(centers)
+        return {}, {
+            "centers_one_owner": 0,
+            "centers_zero_owners": 0,
+            "centers_several_owners": len(named),
+            "centers_ledger_one_owner": 0,
+        }, {center: set() for center in named}, True
     mapping = {}
     one = zero = several = ledger_one = 0
     for center in set(centers):
@@ -947,7 +1088,7 @@ def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_
         return _refused_ledger(groups)
     try:
         db = _open_ro(path)
-    except (OSError, sqlite3.Error):
+    except Exception:
         _close_source(path)
         return _refused_ledger(groups)
     try:
@@ -956,12 +1097,9 @@ def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_
         if definition_root is not None:
             docs.extend(_definition_files(definition_root, center_dests))
         _add_definition_owners(db, groups, center_dests, docs, evidence)
-    except (OSError, sqlite3.Error):
+    except Exception:
         _close_source(path)
         return _refused_ledger(groups)
-    except TypeError:
-        refused, cleared, _failed = _refused_ledger(groups)
-        return refused, cleared, False
     finally:
         db.close()
     return groups, evidence, False
@@ -1060,8 +1198,8 @@ def _keep_vault_backed(db, source_root, kept_ids):
 
 
 def _restrict_ledger(source_root, kept_ids):
-    ledger = source_root / ".broker" / "outbound.db"
-    if ledger.is_symlink() or not ledger.is_file() or _source_closed(ledger):
+    ledger = _active_db(source_root, "outbound.db")
+    if ledger is None or _source_closed(ledger):
         return
     ids = list(kept_ids)
     with _open_source(ledger) as db:
@@ -1107,8 +1245,8 @@ def _verified_definition(owner, definition_id, raw, grants):
 
 
 def _restrict_definitions(source_root):
-    ledger = source_root / ".broker" / "outbound.db"
-    if ledger.is_symlink() or not ledger.is_file() or _source_closed(ledger):
+    ledger = _active_db(source_root, "outbound.db")
+    if ledger is None or _source_closed(ledger):
         return
     with _open_source(ledger) as db:
         if not _table_exists(db, "box_model_sources"):
@@ -1137,6 +1275,12 @@ def _restrict_definitions(source_root):
         )
 
 
+def _close_source_databases(source_root):
+    broker = Path(source_root) / ".broker"
+    _close_source(broker / "outbound.db")
+    _close_source(broker / "credential-custody.db")
+
+
 def convert_legacy_vaults(source_root):
     """Copy http secrets that match one owner's live vault://http connection.
 
@@ -1151,43 +1295,47 @@ def convert_legacy_vaults(source_root):
     are copied. A grant for another universe, or a destination column that
     disagrees with the credential ref, leaves its secret unread. A custody
     or ledger file that exists but cannot be read refuses every center.
-    That file stays closed for the rest of convert, merge, and apply.
+    The source database is copied once; later steps read that private copy.
+    Any failure of that copy refuses every center and leaves every secret unwritten.
     """
-    stats = {
-        "http_kept": 0,
-        "llm_subscription": 0,
-        "unmatched": 0,
-        "revoked": 0,
-        "other": 0,
-        "centers_one_owner": 0,
-        "centers_zero_owners": 0,
-        "centers_several_owners": 0,
-        "centers_ledger_one_owner": 0,
-        "accounts_failed": 0,
-        "definitions": 0,
-        "secret_missing": 0,
-    }
+    snap = None
+    try:
+        snap = _acquire_snapshot(source_root)
+        if snap.failed:
+            return _refused_center_stats(source_root)
+        return _convert_snapshot(source_root, snap)
+    except Exception:
+        if snap is not None:
+            _unlink_written(snap)
+            snap.failed = True
+        _close_source_databases(source_root)
+        return _refused_center_stats(source_root)
+    finally:
+        if snap is not None:
+            _release_snapshot(source_root)
+
+
+def _convert_snapshot(source_root, snap):
+    stats = _legacy_stat_template()
     platform, local = _legacy_vault_paths(source_root)
     centers = set(platform) | set(local)
     if not centers:
         return stats
-    custody = source_root / ".broker" / "credential-custody.db"
-    ledger_path = source_root / ".broker" / "outbound.db"
-    if ledger_path.is_symlink() or not ledger_path.is_file():
-        ledger_path = None
+    custody = snap.paths.get("credential-custody.db")
+    ledger_path = snap.paths.get("outbound.db")
     mapping, owner_counts, evidence, ledger_failed = legacy_center_owners(
-        custody if custody.is_file() and not custody.is_symlink() else None,
-        centers, ledger_path=ledger_path,
+        custody, centers, ledger_path=ledger_path,
         center_dests=_center_http_dests(platform, local),
         definition_root=source_root,
     )
     stats.update(owner_counts)
-    ledger = source_root / ".broker" / "outbound.db"
-    if ledger_failed or _source_closed(ledger):
+    if ledger_failed:
+        snap.failed = True
+        _close_source_databases(source_root)
         return stats
     db = None
-    if ledger.is_file() and not ledger.is_symlink():
-        db = _open_source(ledger)
+    if ledger_path is not None and ledger_path.is_file() and not _source_closed(ledger_path):
+        db = _open_source(ledger_path)
     kept_ids = set()
     written = set()
     try:
@@ -1284,6 +1432,7 @@ def convert_legacy_vaults(source_root):
                             sort_keys=True,
                         ))
                         written.add(path)
+                        snap.written.append(path)
                     have = _served_destinations(path)
                     dropped = {dest for dest in seen if dest not in have}
                     stats["http_kept"] -= len(dropped)
@@ -1382,18 +1531,35 @@ def _owner_hashes(owners):
     return {hashlib.sha256(owner.encode()).hexdigest(): owner for owner in owners if owner}
 
 
+def _named_owner(row, column):
+    """An owner a secret may be filed under. Empty and sentinel names are not."""
+    owner = row.get(column)
+    if isinstance(owner, str) and owner and not owner.startswith("\0"):
+        return owner
+    return None
+
+
 def _groups(root):
-    ledger = root / ".broker" / "outbound.db"
+    snap = _SNAPSHOTS.get(_source_key(root))
+    if snap is not None and snap.failed:
+        return {}
+    if snap is not None:
+        ledger = snap.paths.get("outbound.db")
+    else:
+        ledger = _active_db(root, "outbound.db")
     rows = {table: [] for table in TABLES}
-    if ledger.is_file() and not ledger.is_symlink() and not _source_closed(ledger):
+    if ledger is not None and ledger.is_file() and not _source_closed(ledger):
         try:
             with _open_ro(ledger) as db:
                 loaded = {}
                 for table in TABLES:
                     loaded[table] = _rows(db, table)
             rows = loaded
-        except (OSError, sqlite3.Error):
-            rows = {table: [] for table in TABLES}
+        except Exception:
+            if snap is not None:
+                snap.failed = True
+            _close_source_databases(root)
+            return {}
     grouped = {}
 
     def bucket(owner):
@@ -1403,15 +1569,22 @@ def _groups(root):
 
     connection_owner = {}
     for row in rows["outbound_connections"]:
-        owner = str(row.get("owner_user_id") or "")
+        owner = _named_owner(row, "owner_user_id")
+        if owner is None:
+            continue
         connection_owner[row.get("connection_id")] = owner
         bucket(owner)["rows"]["outbound_connections"].append(row)
     for table in ("outbound_connection_grants", "browser_vault"):
         column = OWNER_COLUMN[table]
         for row in rows[table]:
-            bucket(str(row.get(column) or ""))["rows"][table].append(row)
+            owner = _named_owner(row, column)
+            if owner is None:
+                continue
+            bucket(owner)["rows"][table].append(row)
     for row in rows["connection_capabilities"]:
-        owner = connection_owner.get(row.get("connection_id"), "")
+        owner = connection_owner.get(row.get("connection_id"))
+        if owner is None:
+            continue
         bucket(owner)["rows"]["connection_capabilities"].append(row)
     hashes = _owner_hashes([key for key in grouped if key and not key.startswith("\0")])
     for digest, files in account_files(root).items():
@@ -1553,8 +1726,8 @@ def _grant_http_dest(db, owner, grant_id):
 
 def _copy_definitions(live_db, source_root, live_root):
     """Copy verified api_key_http descriptors. A live row or file stays."""
-    ledger = source_root / ".broker" / "outbound.db"
-    if ledger.is_symlink() or not ledger.is_file() or _source_closed(ledger):
+    ledger = _active_db(source_root, "outbound.db")
+    if ledger is None or _source_closed(ledger):
         return 0
     pending = []
     try:
@@ -1616,6 +1789,9 @@ def _copy_definitions(live_db, source_root, live_root):
             _write_private_json(path, json.dumps(documents, sort_keys=True))
         except OSError:
             continue
+        active = _SNAPSHOTS.get(_source_key(source_root))
+        if active is not None:
+            active.written.append(path)
     return inserted
 
 
@@ -1674,12 +1850,46 @@ def _bind_rows(spec, dests):
 
 
 def merge(live_root, source_root):
-    """Insert missing rows and files. Existing live rows and files stay."""
+    """Insert missing rows and files. Existing live rows and files stay.
+
+    The source ledger and custody file are opened once. A later failure removes
+    anything this merge wrote and returns counts only.
+    """
     ledger = live_root / ".broker" / "outbound.db"
     if not ledger.is_file() or ledger.is_symlink():
         raise SourceRefused("ledger_missing")
-    legacy = prepare_legacy(source_root)
-    grouped = _groups(source_root)
+    snap = None
+    try:
+        snap = _acquire_snapshot(source_root)
+        return _merge_snapshot(live_root, source_root, snap)
+    except SourceRefused:
+        raise
+    except Exception:
+        if snap is not None:
+            _unlink_written(snap)
+            snap.failed = True
+        _close_source_databases(source_root)
+        return _refusal_plan(source_root)
+    finally:
+        if snap is not None:
+            _release_snapshot(source_root)
+
+
+def _merge_snapshot(live_root, source_root, snap):
+    if snap.failed:
+        legacy = _refused_center_stats(source_root)
+        grouped = {}
+    else:
+        legacy = prepare_legacy(source_root)
+        if snap.failed:
+            _unlink_written(snap)
+            grouped = {}
+        else:
+            grouped = _groups(source_root)
+            if snap.failed:
+                _unlink_written(snap)
+                grouped = {}
+    ledger = live_root / ".broker" / "outbound.db"
     legacy_bound = any(legacy.get(name) for name in (
         "centers_one_owner", "centers_zero_owners", "centers_several_owners",
     ))
@@ -1708,6 +1918,7 @@ def merge(live_root, source_root):
                     account_files_slot[kind][outcome] += 1
                     if written is not None:
                         created.append(written)
+                        snap.written.append(written)
                 db.execute("RELEASE account")
             except (sqlite3.Error, OSError):
                 db.execute("ROLLBACK TO account")
@@ -1988,8 +2199,42 @@ def _rollback_date(path, kept):
     return stamp[:10] if _DATE_RE.fullmatch(stamp[:10]) else None
 
 
+def _verification_counts(source_markers=0, markers_restored=0):
+    return {
+        "api_key_http_definitions": 0,
+        "api_key_http_grants_live": 0,
+        "cli_accounts": 0,
+        "cli_with_custody": 0,
+        "cli_marker_consistent": 0,
+        "cli_marker_missing": 0,
+        "cli_marker_unreadable": 0,
+        "cli_marker_separate_step": 0,
+        "source_connection_markers": source_markers,
+        "cli_markers_restored": markers_restored,
+    }
+
+
+def _safe_refusal_plan(source_root):
+    try:
+        return _refusal_plan(source_root)
+    except Exception:
+        return {
+            "accounts": 0,
+            "accounts_affected": 0,
+            "accounts_failed": 0,
+            "accounts_unchanged": 0,
+            "files": {kind: _slot() for kind in FILES},
+            "tables": {table: _slot() for table in TABLES},
+            "legacy": _legacy_stat_template(),
+        }
+
+
 def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
-    """Stop the broker, keep a verified copy, merge, start the broker again."""
+    """Stop the broker, keep a verified copy, merge, start the broker again.
+
+    An unexpected failure becomes a counts-only refusal after the broker starts.
+    ``SourceRefused`` still leaves the plan unset.
+    """
     ledger = live_root / ".broker" / "outbound.db"
     if ledger.is_symlink() or not ledger.is_file():
         raise SourceRefused("ledger_missing")
@@ -2000,20 +2245,24 @@ def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
     kept = False
     started = False
     merge_error = None
+    unexpected = False
     try:
         kept = take_rollback(live_root, rollback_dir)
         plan = merge(live_root, source_root)
         restored = restore_markers(mounts, source_root)
     except SourceRefused as refused:
         merge_error = refused.code
-    except OSError:
+    except Exception:
         merge_error = "unreadable"
+        unexpected = True
     finally:
         try:
             broker("start", run)
             started = True
         except SourceRefused:
             started = False
+    if unexpected and plan is None:
+        plan = _safe_refusal_plan(source_root)
     facts = {
         "rollback_kept": kept,
         "broker_stopped": True,
@@ -2021,9 +2270,16 @@ def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
         "ledger_missing": False,
         "rollback_date": _rollback_date(rollback_dir, kept),
     }
-    checked = verify(
-        live_root, mounts, source_markers=markers, markers_restored=restored,
-    )
+    try:
+        checked = verify(
+            live_root, mounts, source_markers=markers, markers_restored=restored,
+        )
+    except Exception:
+        checked = _verification_counts(markers, restored)
+        if merge_error is None:
+            merge_error = "unreadable"
+        if plan is None:
+            plan = _safe_refusal_plan(source_root)
     error = "broker_start_failed" if not started else merge_error
     return plan, facts, checked, error
 

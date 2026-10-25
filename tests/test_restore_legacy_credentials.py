@@ -408,11 +408,17 @@ def test_existing_source_vault_is_not_overwritten(tmp_path):
         db.execute(
             "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)", (OWNER_A,),
         )
-    stats = rc.convert_legacy_vaults(source)
+    live = _live(tmp_path)
+    plan = rc.merge(live, source)
     assert existing.read_bytes() == before
-    assert stats["http_kept"] == 0
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert TOKEN_OK.encode() not in existing.read_bytes()
     with sqlite3.connect(ledger) as db:
-        assert db.execute("SELECT COUNT(*) FROM outbound_connections").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM outbound_connections").fetchone()[0] == 1
+    copied = _owner_vault(live, OWNER_A)
+    if copied.exists():
+        assert TOKEN_OK.encode() not in copied.read_bytes()
 
 
 def test_definition_requires_the_secret_in_the_live_vault(tmp_path):
@@ -1419,21 +1425,43 @@ def test_ledger_type_error_refuses_every_mapped_center(tmp_path, monkeypatch):
             "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
             (OWNER_A,),
         )
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b1', ?, ?)",
+            (OWNER_B, sealed),
+        )
     alpha = source / "alpha"
     alpha.mkdir()
     (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
     plan = rc.merge(live, source)
     assert plan["legacy"]["centers_one_owner"] == 0
     assert plan["legacy"]["centers_several_owners"] == 1
     assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert plan["tables"]["browser_vault"]["insert"] == 0
+    assert plan["legacy"]["definitions"] == 0
     assert _ids(live) == set()
     assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(source, OWNER_A).exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM browser_vault").fetchone()[0] == 0
+    assert sealed.decode() not in json.dumps(plan)
     assert TOKEN_OK not in json.dumps(plan)
     _assert_hidden(json.dumps(plan))
 
 
-def test_unreadable_custody_does_not_fall_through_to_the_grant(tmp_path):
-    """A custody file that is not a database refuses the center."""
+def test_unreadable_custody_does_not_fall_through_to_the_grant(tmp_path, monkeypatch):
+    """A custody file that is not a database refuses every row, not only the center."""
     source = tmp_path / "source"
     live = _live(tmp_path)
     ledger = source / ".broker" / "outbound.db"
@@ -1442,20 +1470,49 @@ def test_unreadable_custody_does_not_fall_through_to_the_grant(tmp_path):
         [_conn_universe(OWNER_B, "c-beta", DEST_OK, "alpha")],
         [_grant_universe(OWNER_B, "gb", "c-beta", "alpha")],
     ))
-    (source / ".broker" / "credential-custody.db").write_bytes(b"not a database")
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b1', ?, ?)",
+            (OWNER_B, sealed),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    custody.write_bytes(b"not a database")
     alpha = source / "alpha"
     alpha.mkdir()
     (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+    ro_opens, connect_opens = _watch_source_opens(monkeypatch, ledger, custody)
     plan = rc.merge(live, source)
+    assert ro_opens.count(ledger.resolve()) == 1
+    assert ro_opens.count(custody.resolve()) == 1
+    assert connect_opens == []
     assert plan["legacy"]["centers_one_owner"] == 0
     assert plan["legacy"]["centers_several_owners"] == 1
     assert plan["legacy"]["centers_ledger_one_owner"] == 0
     assert plan["legacy"]["http_kept"] == 0
-    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    for table in (
+        "outbound_connections", "outbound_connection_grants",
+        "connection_capabilities", "browser_vault",
+    ):
+        assert plan["tables"][table]["insert"] == 0
     assert _ids(live) == set()
     assert not _owner_vault(live, OWNER_B).exists()
     assert not _owner_vault(source, OWNER_B).exists()
-    _assert_hidden(json.dumps(plan))
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM browser_vault").fetchone()[0] == 0
+    text = json.dumps(plan)
+    assert sealed.decode() not in text
+    _assert_hidden(text)
 
 
 def test_ledger_open_failure_does_not_let_custody_map(tmp_path, monkeypatch):
@@ -1666,6 +1723,216 @@ def test_closed_custody_file_is_not_opened_again(tmp_path, monkeypatch):
     assert counts["centers_one_owner"] == 0
     assert counts["centers_several_owners"] == 1
     assert not _owner_vault(live, OWNER_A).exists()
+    _assert_hidden(json.dumps(plan))
+
+
+def _watch_source_opens(monkeypatch, *paths):
+    """Count sqlite opens of these source files. Copies elsewhere do not count."""
+    wanted = [Path(path).resolve() for path in paths]
+    ro_opens = []
+    connect_opens = []
+    real_open = rc._open_ro
+    real_connect = sqlite3.connect
+
+    def open_ro(path):
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, TypeError):
+            resolved = None
+        if resolved in wanted:
+            ro_opens.append(resolved)
+        return real_open(path)
+
+    def connect(path, *args, **kwargs):
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, TypeError):
+            resolved = None
+        if resolved in wanted:
+            connect_opens.append(resolved)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(rc, "_open_ro", open_ro)
+    monkeypatch.setattr(rc.sqlite3, "connect", connect)
+    return ro_opens, connect_opens
+
+
+def _mapped_source(tmp):
+    """One center, one owner, and a browser secret filed under a second owner."""
+    source = tmp / "source"
+    live = _live(tmp)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b1', ?, ?)",
+            (OWNER_B, sealed),
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b-empty', '', ?)",
+            (sealed,),
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b-sentinel', ?, ?)",
+            ("\0nope", sealed),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (OWNER_A,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+    return source, live, ledger, custody, sealed
+
+
+def _assert_one_owner_restore(live, plan, sealed):
+    assert plan["legacy"]["centers_one_owner"] == 1
+    assert plan["legacy"]["http_kept"] == 1
+    assert plan["tables"]["outbound_connections"]["insert"] == 1
+    assert plan["tables"]["browser_vault"]["insert"] == 1
+    assert _ids(live) == {"c-alpha"}
+    vault = _owner_vault(live, OWNER_A)
+    assert TOKEN_OK.encode() in vault.read_bytes()
+    assert not _owner_vault(live, OWNER_B).exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        owners = [row[0] for row in db.execute("SELECT owner FROM browser_vault")]
+    assert owners == [OWNER_B]
+    text = json.dumps(plan)
+    assert sealed.decode() not in text
+    _assert_hidden(text)
+
+
+def test_source_databases_are_opened_once(tmp_path, monkeypatch):
+    """Merge reads the source ledger and custody once, then only the private copy."""
+    source, live, ledger, custody, sealed = _mapped_source(tmp_path)
+    ro_opens, connect_opens = _watch_source_opens(monkeypatch, ledger, custody)
+    plan = rc.merge(live, source)
+    assert ro_opens.count(ledger.resolve()) == 1
+    assert ro_opens.count(custody.resolve()) == 1
+    assert connect_opens == []
+    _assert_one_owner_restore(live, plan, sealed)
+
+
+def test_source_replaced_after_the_scan_uses_the_private_copy(tmp_path, monkeypatch):
+    """Garbage written after the scan does not reopen the source or drop a row."""
+    source, live, ledger, custody, sealed = _mapped_source(tmp_path)
+    ro_opens, connect_opens = _watch_source_opens(monkeypatch, ledger, custody)
+    garbage = b"not a database"
+    real_owners = rc.legacy_center_owners
+    real_keep = rc._keep_vault_backed
+    real_restrict = rc._restrict_ledger
+    real_definitions = rc._restrict_definitions
+    real_groups = rc._groups
+    real_copy = rc._copy_definitions
+    steps = []
+
+    def owners(*args, **kwargs):
+        result = real_owners(*args, **kwargs)
+        ledger.write_bytes(garbage)
+        custody.write_bytes(garbage)
+        return result
+
+    def guard(name, real):
+        def wrapped(*args, **kwargs):
+            assert ledger.read_bytes() == garbage
+            assert custody.read_bytes() == garbage
+            steps.append(name)
+            return real(*args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(rc, "legacy_center_owners", owners)
+    monkeypatch.setattr(rc, "_keep_vault_backed", guard("keep", real_keep))
+    monkeypatch.setattr(rc, "_restrict_ledger", guard("restrict", real_restrict))
+    monkeypatch.setattr(rc, "_restrict_definitions", guard("definitions", real_definitions))
+    monkeypatch.setattr(rc, "_groups", guard("groups", real_groups))
+    monkeypatch.setattr(rc, "_copy_definitions", guard("copy", real_copy))
+    plan = rc.merge(live, source)
+    assert steps == ["keep", "restrict", "definitions", "groups", "copy"]
+    assert ro_opens.count(ledger.resolve()) == 1
+    assert ro_opens.count(custody.resolve()) == 1
+    assert connect_opens == []
+    assert ledger.read_bytes() == garbage
+    assert custody.read_bytes() == garbage
+    _assert_one_owner_restore(live, plan, sealed)
+
+
+def test_failure_after_the_scan_writes_nothing(tmp_path, monkeypatch):
+    """A database error after the scan does not escape merge or leave a secret."""
+    source, live, ledger, custody, sealed = _mapped_source(tmp_path)
+
+    def boom(*_args, **_kwargs):
+        raise sqlite3.DatabaseError("unreadable after scan")
+
+    monkeypatch.setattr(rc, "_keep_vault_backed", boom)
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    for table in (
+        "outbound_connections", "outbound_connection_grants",
+        "connection_capabilities", "browser_vault",
+    ):
+        assert plan["tables"][table]["insert"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(source, OWNER_A).exists()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(live, OWNER_B).exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM browser_vault").fetchone()[0] == 0
+    text = json.dumps(plan)
+    assert sealed.decode() not in text
+    _assert_hidden(text)
+
+
+def test_apply_tree_turns_an_unexpected_error_into_a_refusal(tmp_path, monkeypatch):
+    """apply restarts the broker, then returns counts instead of the traceback."""
+    _source, live, _ledger, _custody, _sealed = _mapped_source(tmp_path)
+    calls = []
+
+    def run(argv, timeout=0):
+        calls.append(tuple(argv))
+        return type("Done", (), {"returncode": 0})()
+
+    def boom(*_args, **_kwargs):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(rc, "merge", boom)
+    plan, facts, _checked, error = rc.apply_tree(
+        live, tmp_path / "source",
+        tmp_path / "credential-restore-2026-10-25T01-02-03Z", run=run,
+    )
+    assert calls == [
+        ("docker", "stop", "tinyassets-broker"),
+        ("docker", "start", "tinyassets-broker"),
+    ]
+    assert facts["broker_started"] is True
+    assert error == "unreadable"
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["browser_vault"]["insert"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert plan["accounts"] == 0
     _assert_hidden(json.dumps(plan))
 
 
