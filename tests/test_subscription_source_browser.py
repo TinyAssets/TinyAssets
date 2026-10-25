@@ -81,6 +81,9 @@ def test_native_subscription_connect_controls(native):
             # The provider sign-in opens in its own tab; the app tab keeps the flow.
             sign_in = page.get_by_role('link', name=re.compile('sign-in$'))
             expect(sign_in).to_have_attribute('target', '_blank')
+            # Showing the link is not opening it: a reload brings it back.
+            page.reload()
+            expect(sign_in).to_be_visible()
             with context.expect_page() as opened:
                 sign_in.click()
             opened.value.wait_for_url('https://login.example.test/authorize')
@@ -156,5 +159,14 @@ def test_a_lapsed_owner_session_goes_straight_to_sign_in():
         page.evaluate("sessionStorage.setItem('ta_owner_again', String(Date.now() - 9 * 3600e3))")
         page.get_by_role('button', name='Connect', exact=True).click()
         page.wait_for_url('https://app.example/app/owner-sign-in?app=1')
+        # A Connect saved by another account never runs for this one.
+        page.goto('https://app.example/app')
+        page.evaluate("""() => sessionStorage.setItem('ta_connect_resume', JSON.stringify(
+            {address: 'https://other.example', owner: 'someone-else', at: Date.now()}))""")
+        page.reload()
+        page.wait_for_timeout(500)
+        assert page.url == 'https://app.example/app'
+        expect(page.get_by_role('textbox', name='Provider address')).not_to_have_value(
+            'https://other.example')
         context.close()
         browser.close()

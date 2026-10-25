@@ -7232,8 +7232,8 @@
       }catch(_e){}
       if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
       // Come back to the same Connect, not an empty app.
-      if(address){try{sessionStorage.setItem("ta_connect_resume",
-        JSON.stringify({address,at:Date.now()}));}catch(_e){}}
+      if(address&&queueOwner){try{sessionStorage.setItem("ta_connect_resume",
+        JSON.stringify({address,owner:queueOwner,at:Date.now()}));}catch(_e){}}
       await openSignIn("/app/owner-sign-in?app=1");
     },
     async poll(flow,epoch){
@@ -7271,7 +7271,7 @@
           if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
           if(state.status==="cancelled")throw new Error("Sign-in was interrupted. Tap Connect to try again.");
           if(state.status==="failed")throw new Error("Sign-in did not complete. Retry to connect.");
-          if(state.authorize_url&&!opened){
+          if(state.authorize_url&&(!opened||(!external&&!pending&&!ui.link))){
             const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
             if(pending){
               const signIn=document.createElement("button");signIn.type="button";
@@ -7284,12 +7284,12 @@
                 else window.open(url.href,"_blank","noopener,noreferrer");};
               appendMessage("system",source.name+" is ready to sign in.",signIn);
             }else if(!external){
-              const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
-                JSON.stringify({...saved,opened:true}));
               // A tab of its own: leaving this one lost the code and the flow.
               const open=document.createElement("a");open.href=url.href;open.target="_blank";
               open.rel="noopener noreferrer";open.className="btn";
               open.textContent="Open "+source.name+" sign-in";
+              open.addEventListener("click",()=>{const saved=this.saved();
+                if(saved)pkceStore.setItem(this.storageKey,JSON.stringify({...saved,opened:true}));});
               ui.link?.remove();ui.link=open;ui.status.after(open);
             }else{
               const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
@@ -8625,7 +8625,8 @@
     resume:(()=>{try{
       const saved=JSON.parse(sessionStorage.getItem("ta_connect_resume")||"null");
       sessionStorage.removeItem("ta_connect_resume");
-      return saved&&typeof saved.address==="string"&&Date.now()-saved.at<600000?saved.address:null;
+      return saved&&typeof saved.address==="string"&&typeof saved.owner==="string"
+        &&Date.now()-saved.at<600000?saved:null;
     }catch(_e){return null;}})(),
     render(panel,visible){
       let card=$("model-discovery");
@@ -8721,8 +8722,11 @@
         clean.searchParams.delete("connect_ai");history.replaceState({},"",clean.pathname+clean.search);}
       const saved=SubscriptionSources.saved();
       if(visible&&saved)SubscriptionSources.start({id:saved.source_id},ui,saved);
-      else if(visible&&this.resume){address.value=this.resume;this.resume=null;
-        setTimeout(()=>go.click(),0);}
+      else if(visible&&this.resume){
+        const resume=this.resume;this.resume=null;
+        // Another account signed in during the step-up: its Connect is its own.
+        if(resume.owner===queueOwner){address.value=resume.address;setTimeout(()=>go.click(),0);}
+      }
     },
     async finish(result){
       if(result.status==="confirmation_required"){
