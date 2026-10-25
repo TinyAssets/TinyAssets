@@ -157,9 +157,17 @@
     if(!saved.return_secret)return; // Focus alone is not proof of the browser return.
     nativeSignInBusy=true;
     try{
-      const response=await withRefreshLock(()=>fetch('/app/token',{method:'POST',credentials:'same-origin',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier,return_secret:saved.return_secret})}));
+      const response=await withRefreshLock(()=>{
+        // Re-read under the lock: a sign-out queued ahead of this exchange drops
+        // the flow, and a sent exchange would set a new session cookie.
+        let leaving=logoutPending;
+        try{leaving=leaving||localStorage.getItem('ta_logout_pending')==='1';}catch(_e){}
+        if(leaving||pkceStore.getItem(PKCE_KEY)!==JSON.stringify(saved))return null;
+        return fetch('/app/token',{method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier,return_secret:saved.return_secret})});
+      });
+      if(!response)return;
       const result=await response.json();
       // A replaced/cancelled flow must never install a late session.
       if(pkceStore.getItem(PKCE_KEY)!==JSON.stringify(saved))return;
@@ -373,6 +381,10 @@
   // resurrect the session on reload) and the next sign-out retries.
   let logoutPending = false;
   async function endServerSession(){
+    // Before the lock: a native sign-in queued behind it re-reads both and
+    // stands down instead of minting a session for the account that left.
+    logoutPending = true;
+    try{ pkceStore.removeItem(PKCE_KEY); }catch(_e){}
     return withRefreshLock(async()=>{
       logoutPending = true;
       try{

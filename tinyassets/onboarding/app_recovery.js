@@ -114,12 +114,77 @@ window.AppRecovery=(()=>{
     }catch(_e){/* offline: the next probe retries */}
     finally{probing=false;}
   }
+  // Sign-out must work in every state, including an app that never booted, so
+  // it needs nothing from the main script. The same logout grant the app uses
+  // drops the renewable session; if it cannot be reached, the pending mark
+  // makes the next start finish the sign-out before renewing anything.
+  async function logout(){
+    if(leaving) return;
+    leaving=true;
+    // Before any wait: a native sign-in queued behind the renewal lock re-reads
+    // these and stands down instead of minting a new session.
+    try{localStorage.setItem("ta_logout_pending","1");}catch(_e){}
+    try{sessionStorage.removeItem("ta_pkce");localStorage.removeItem("ta_pkce");}catch(_e){}
+    let ok=false;
+    const end=async()=>{
+      try{
+        let ref="";try{ref=localStorage.getItem("ta_sref")||"";}catch(_e){}
+        const response=await fetch("/app/token",{method:"POST",credentials:"same-origin",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({grant_type:"logout",session_ref:ref||undefined}),
+          signal:AbortSignal.timeout(10000)});
+        ok=response.ok;
+      }catch(_e){}
+    };
+    // The app's renewal lock (main.js withRefreshLock): a renewal already running
+    // in another tab finishes first, so it cannot re-issue the session afterwards.
+    try{
+      if(navigator.locks&&navigator.locks.request)
+        await Promise.race([navigator.locks.request("ta-session-refresh",end),
+                            new Promise(resolve=>setTimeout(resolve,15000))]);
+      else await end();
+    }catch(_e){}
+    try{
+      sessionStorage.removeItem("ta_access_token");sessionStorage.removeItem("ta_access_exp");
+      sessionStorage.removeItem(key);sessionStorage.removeItem(draftKey);
+      if(ok){localStorage.removeItem("ta_sref");localStorage.removeItem("ta_logout_pending");}
+    }catch(_e){}
+    // Bounded: a plugin or service worker that never answers must not strand
+    // the page, since `leaving` already swallows every other recovery control.
+    await Promise.race([silenceNotifications().catch(()=>{}),
+                        new Promise(resolve=>setTimeout(resolve,3000))]);
+    location.replace("/app");
+  }
+  // The same teardown as the app's sign-out (main.js enterSignedOut): this
+  // device stops receiving and showing the previous owner's notifications.
+  async function silenceNotifications(){
+    const plugins=window.Capacitor&&window.Capacitor.Plugins;
+    const native=!!(window.Capacitor&&typeof window.Capacitor.isNativePlatform==="function"
+      &&window.Capacitor.isNativePlatform());
+    if(native&&plugins){
+      try{["app.push.fcm","app.push.owner","app.push.recipient"].forEach(k=>localStorage.removeItem(k));}
+      catch(_e){}
+      const reply=plugins.NotificationReply,push=plugins.PushNotifications;
+      try{if(reply){await reply.setActive({active:false,recipient:""});await reply.consume();}}catch(_e){}
+      try{if(push){await push.unregister();await push.removeAllDeliveredNotifications();}}catch(_e){}
+      return;
+    }
+    try{
+      if(!navigator.serviceWorker) return;
+      const registration=await navigator.serviceWorker.getRegistration("/app");
+      if(!registration) return;
+      const subscription=await registration.pushManager.getSubscription();
+      if(subscription) await subscription.unsubscribe();
+      (await registration.getNotifications()).forEach(n=>n.close());
+    }catch(_e){}
+  }
   document.addEventListener("click",event=>{
     const target=event.target.closest&&event.target.closest("[data-app-recovery]");
     if(!target) return;
     event.preventDefault();event.stopImmediatePropagation();
     const action=target.dataset.appRecovery;
     if(action==="reload"){navigate(true);return;}
+    if(action==="logout"){logout();return;}
     try{
       if(action==="chat"&&hooks){hooks.openChat();return;}
       if(action==="browse"&&hooks&&hooks.browse())return;
