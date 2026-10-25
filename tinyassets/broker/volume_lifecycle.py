@@ -49,7 +49,11 @@ class VolumeLifecycle:
             if status["awake"]:
                 self.lifecycle.awake.add(owner)
                 active = status.get("active", 0)
-                if active is None or (type(active) is int and active > 0):
+                # The 24-hour snapshot deadline still drains a busy box (admission
+                # closes, the turn finishes, then it sleeps); only an unanswering
+                # box, which cannot be drained, is never given a sleep intent.
+                if active is None or (type(active) is int and active > 0
+                                      and status["uptime"] < 86400):
                     # Busy or not answering (boxhostd reports None; an older host
                     # without the field reads as idle, as before): no sleep intent
                     # while a stop would be refused anyway; the next pass after
@@ -69,7 +73,8 @@ class VolumeLifecycle:
             if not work.get("restore_snapshot_id"):
                 status = await self.host(owner, "status")
                 active = status.get("active", 0)
-                if status["awake"] and (active is None or (type(active) is int and active > 0)):
+                if status["awake"] and (active is None or (
+                        type(active) is int and active > 0 and status["uptime"] < 86400)):
                     # Still awake with work, or not answering: a refused sleep left
                     # this intent. Withdraw it rather than hold readiness forever;
                     # the box sleeps later through its ordinary idle path.
