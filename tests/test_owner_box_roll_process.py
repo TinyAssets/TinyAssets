@@ -14,7 +14,7 @@ from tests.test_owner_router import admitted, boxes, cloud_runtime, router  # no
 from tinyassets.boxes.images import Images
 
 
-def test_deploy_drains_real_request_then_router_wakes_published_image(
+def test_deploy_leaves_a_busy_owner_serving_then_router_wakes_published_image(
     router, boxes, admitted, tmp_path, broker,  # noqa: F811
 ):
     manager = boxes.manager
@@ -42,13 +42,13 @@ def test_deploy_drains_real_request_then_router_wakes_published_image(
                 thread.start()
                 await asyncio.to_thread(thread.join, 10)
                 assert not thread.is_alive()
-                # The busy owner receives a retryable response after admission closes.
+                # The busy owner is never drained: it keeps serving new requests.
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(router),
                                              base_url="http://test") as client:
                     response = await client.post("/app/api/file", headers={
                         "authorization": "Bearer alice"}, json={"graph_id": "cc-alice",
                                                                  "path": "hello.txt"})
-                    assert response.status_code == 503
+                    assert response.status_code == 200
                 assert original.poll() is None
                 await incoming.put({"type": "http.disconnect"})
 
@@ -64,8 +64,8 @@ def test_deploy_drains_real_request_then_router_wakes_published_image(
         assert not thread.is_alive()
 
     asyncio.run(exercise())
-    assert results == [{"slept": 1, "asleep": 0, "incomplete": 1}]
-    # Alice's busy drain is pending on the normal lifecycle path. Bob slept.
+    assert results == [{"slept": 1, "asleep": 0, "busy": 1, "incomplete": 0}]
+    # Alice was left serving; her own ordinary sleep comes later. Bob slept.
     drive(broker.server.routing.sleep("alice"))
     assert original.poll() == 0 and other.poll() == 0
     assert not manager.boxes[uid].awake and not manager.boxes[other_uid].awake

@@ -20,11 +20,12 @@ SHA = "a" * 40
 
 @pytest.mark.parametrize("counts,code", [
     ({"slept": 2, "asleep": 3, "incomplete": 0}, 0),
-    ({"slept": 1, "asleep": 3, "incomplete": 1}, 0),
+    ({"slept": 1, "asleep": 3, "busy": 2, "incomplete": 0}, 0),
+    ({"slept": 1, "asleep": 3, "incomplete": 1}, 1),
     ({"error": "private owner data"}, 1),
     ({"slept": -1, "asleep": 0, "incomplete": 0}, 1),
 ])
-def test_receipt_counts_are_allowlisted_and_a_busy_owner_defers_to_its_next_wake(counts, code):
+def test_receipt_counts_are_allowlisted_and_incomplete_drain_blocks_canary(counts, code):
     calls = []
     receipt, actual = driver.run(lambda: counts, lambda: calls.append("canary") or True,
                                  lambda: None)
@@ -33,11 +34,13 @@ def test_receipt_counts_are_allowlisted_and_a_busy_owner_defers_to_its_next_wake
     assert set(receipt["counts"]) == set(driver.OUTCOMES)
     assert calls == ([] if code else ["canary"])
     assert "private" not in json.dumps(receipt)
-    if counts.get("incomplete"):
-        # The busy owner adopts the image at its next wake; the canary decides.
-        assert receipt["control"] == "deferred"
-        assert receipt["reason"] == "passed"
-        assert receipt["canary"] == "passed"
+    if counts.get("busy") and not counts.get("incomplete"):
+        # Never drained; adopts the image at its next wake. The canary decides.
+        assert receipt["control"] == "deferred" and receipt["reason"] == "passed"
+    elif counts.get("incomplete"):
+        assert receipt["control"] == "incomplete"
+        assert receipt["reason"] == "incomplete_drain"
+        assert receipt["canary"] == "failed"
     elif code == 0:
         assert receipt["reason"] == "passed"
     else:
@@ -68,7 +71,7 @@ def test_control_ssh_error_code_is_kept_and_other_text_is_not():
 
     receipt, code = driver.run(coded, lambda: True, lambda: None)
     assert code == 1 and receipt["reason"] == "image_drain_failed"
-    assert receipt["counts"] == {"slept": 0, "asleep": 0, "incomplete": 0}
+    assert receipt["counts"] == {"slept": 0, "asleep": 0, "busy": 0, "incomplete": 0}
 
     def leaked():
         raise subprocess.CalledProcessError(1, ["ssh"], output=json.dumps({"error": secret}))
@@ -94,7 +97,8 @@ def test_deploy_uses_one_control_call_regardless_of_fleet_size():
         calls.append("deploy")
         return {"slept": 6, "asleep": 1000, "incomplete": 0}
     receipt, code = driver.run(control, lambda: True, lambda: None)
-    assert code == 0 and receipt["counts"] == {"slept": 6, "asleep": 1000, "incomplete": 0}
+    assert code == 0 and receipt["counts"] == {
+        "slept": 6, "asleep": 1000, "busy": 0, "incomplete": 0}
     assert calls == ["deploy"]
 
 

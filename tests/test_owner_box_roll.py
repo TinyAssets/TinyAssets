@@ -36,7 +36,7 @@ def test_deploy_sleeps_awake_owners_without_eager_restart(rolling):
     uid = rolling.wake("a")
     before = len(rolling.runtime.starts)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 1, "asleep": 2, "incomplete": 0}
+        "slept": 1, "asleep": 2, "busy": 0, "incomplete": 0}
     assert rolling.runtime.live == set()
     assert rolling.runtime.stops == [uid]
     assert len(rolling.runtime.starts) == before
@@ -49,7 +49,7 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
     drive(rolling.routing.sleep("a"))
     before = len(rolling.runtime.starts), len(rolling.runtime.stops)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 0, "asleep": 3, "incomplete": 0}
+        "slept": 0, "asleep": 3, "busy": 0, "incomplete": 0}
     assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == before
     recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
     assert recovered.current == rolling.new
@@ -60,23 +60,24 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
 
 
 @pytest.mark.parametrize("keep_awake", [True, False])
-def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(rolling, keep_awake):
+def test_a_busy_owner_is_left_serving_and_adopts_the_image_at_its_next_wake(rolling,
+                                                                          keep_awake):
     uid = rolling.wake("a")
     activity = rolling.states[uid]
     with activity.enter(keep_awake=keep_awake):
         result = drive(rolling.routing.deploy(rolling.new))
-        assert result == {"slept": 0, "asleep": 2, "incomplete": 1}
-        assert activity.draining and activity.active == 1
+        assert result == {"slept": 0, "asleep": 2, "busy": 1, "incomplete": 0}
+        # Never drained: its turn and new turns keep running on this image.
+        assert not activity.draining and activity.active == 1
         assert rolling.runtime.live == {uid} and rolling.runtime.stops == []
-        refused = []
-        thread = threading.Thread(target=_other_turn, args=(activity, refused))
+        admitted = []
+        thread = threading.Thread(target=_other_turn, args=(activity, admitted))
         thread.start()
         thread.join()
-        assert isinstance(refused[0], RuntimeError)
-        assert "draining" in str(refused[0])
-    rolling.tick()
-    assert rolling.runtime.live == set() and rolling.runtime.stops == [uid]
-    assert len(rolling.runtime.starts) == 1
+        assert admitted == ["admitted"]
+    # Its own ordinary sleep later, then the next wake starts the new image.
+    drive(rolling.routing.sleep("a"))
+    assert rolling.runtime.stops == [uid]
     rolling.wake("a")
     assert rolling.manager.boxes[uid].image == rolling.new
 
