@@ -114,12 +114,10 @@ def run(control, canary, prepare, ready=lambda: None):
             receipt["reason"] = "invalid_drain"
             return receipt, 1
         receipt["counts"] = counts
-        if counts["incomplete"]:
-            # The control call returned. One owner did not finish ordinary sleep.
-            receipt["control"] = "incomplete"
-            receipt["reason"] = "incomplete_drain"
-            return receipt, 1
-        receipt["control"] = "passed"
+        # A busy owner never blocks a deploy: the image is already published and
+        # that box starts it at its next ordinary wake. Acceptance is the canary,
+        # which must itself wake on the new image and prove its revision.
+        receipt["control"] = "deferred" if counts["incomplete"] else "passed"
         stage = "readiness_failed"
         ready()
         stage = "canary_failed"

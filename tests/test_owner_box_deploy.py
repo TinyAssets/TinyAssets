@@ -20,11 +20,11 @@ SHA = "a" * 40
 
 @pytest.mark.parametrize("counts,code", [
     ({"slept": 2, "asleep": 3, "incomplete": 0}, 0),
-    ({"slept": 1, "asleep": 3, "incomplete": 1}, 1),
+    ({"slept": 1, "asleep": 3, "incomplete": 1}, 0),
     ({"error": "private owner data"}, 1),
     ({"slept": -1, "asleep": 0, "incomplete": 0}, 1),
 ])
-def test_receipt_counts_are_allowlisted_and_incomplete_drain_blocks_canary(counts, code):
+def test_receipt_counts_are_allowlisted_and_a_busy_owner_defers_to_its_next_wake(counts, code):
     calls = []
     receipt, actual = driver.run(lambda: counts, lambda: calls.append("canary") or True,
                                  lambda: None)
@@ -34,9 +34,10 @@ def test_receipt_counts_are_allowlisted_and_incomplete_drain_blocks_canary(count
     assert calls == ([] if code else ["canary"])
     assert "private" not in json.dumps(receipt)
     if counts.get("incomplete"):
-        assert receipt["control"] == "incomplete"
-        assert receipt["reason"] == "incomplete_drain"
-        assert receipt["canary"] == "failed"
+        # The busy owner adopts the image at its next wake; the canary decides.
+        assert receipt["control"] == "deferred"
+        assert receipt["reason"] == "passed"
+        assert receipt["canary"] == "passed"
     elif code == 0:
         assert receipt["reason"] == "passed"
     else:

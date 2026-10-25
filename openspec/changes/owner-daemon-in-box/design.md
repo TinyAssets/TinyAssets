@@ -704,7 +704,9 @@ draining again; it is never a per-box operation.
   request and background-turn admission, lets already-admitted work finish, then
   takes the normal flush, detach and snapshot sleep path.
 - A timeout or unknown activity state never authorizes killing a turn; it is
-  reported as an incomplete drain.
+  reported as an incomplete drain, and that box starts the published image at
+  its next ordinary wake. A busy owner never blocks a deploy (2026-10-25: every
+  deploy failed while one, then three, owners were mid-turn).
 - Concurrent requests wait or get a retryable response; they are never replayed
   after ambiguous execution.
 - Draining doesn't eagerly restart ordinary owners.
@@ -730,8 +732,9 @@ ordinary public router before publishing. Its one root-authenticated broker
 permanent volume bindings. Awake owners use the existing `VolumeLifecycle.sleep`
 under the broker owner lock. A busy or unknown drain stays pending on that same
 volume state machine and reports `incomplete`; no ordinary owner is restarted.
-Only a complete drain proceeds to public canary acceptance, which wakes the canary
-on `images.current`, checks its baked revision and completes a model turn.
+Every drain result proceeds to public canary acceptance, which wakes the canary
+on `images.current`, checks its baked revision and completes a model turn; owners
+still busy are reported as deferred and adopt the image at their next wake.
 Rollback repeats publication and drain with the previous compatible image.
 `RoutingAuthority.roll`, host roll/drain operations, per-box rollback, image-last
 records, restart flags/waits, wake image overrides and the driver's UID loop are
@@ -1772,7 +1775,8 @@ restore and withdrawal. The host executes the bound operation. New work receives
 a retryable response after the in-box Activity gate closes; existing request and
 background turns finish before flush, detach and snapshot. Unknown activity or a
 busy turn reports an incomplete drain and remains pending on the normal lifecycle
-path. An incomplete result fails acceptance. Healthy ordinary owners remain
+path; it is reported as deferred and never fails acceptance, which the canary
+alone decides. Healthy ordinary owners remain
 asleep until a request or schedule wakes them on the current image.
 
 The static image's `ACTIVE_BOX_LAYOUT` declaration still rejects pre-cutover
