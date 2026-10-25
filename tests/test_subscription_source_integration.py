@@ -356,7 +356,8 @@ def test_disconnect_removes_declared_state_and_owner_install_only(connected, tmp
     from tinyassets.onboarding.subscription_connect import connected_sources, disconnect
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime
 
-    assert connected_sources() == {"sources": [{"id": "fake-cli", "name": "Fixture"}]}
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": True}]}
     image = tmp_path / "shared-image" / "fake-cli"
     image.mkdir(parents=True)
     binary = image / "binary"
@@ -477,3 +478,31 @@ def test_readiness_does_not_wait_behind_a_running_invocation(connected):
     finally:
         release.set()
         turn.join(10)
+
+
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
+def test_a_listed_source_without_a_saved_sign_in_reads_as_needing_reconnect(connected):
+    from tinyassets.onboarding.subscription_connect import connected_sources
+
+    # The connection marker stays while the saved sign-in is gone: the list must
+    # say what a turn would say, not "connected".
+    entry = custody(connected, "read")
+    if entry["revision"] is not None:
+        custody(connected, "delete", revision=entry["revision"])
+    (connected.home / ".fake-login").unlink(missing_ok=True)
+    assert (connected.directory / "connection").is_file()
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": False}]}
+
+
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
+def test_a_slow_store_reads_as_unknown_not_expired(connected, monkeypatch):
+    from tinyassets import owner_channel
+    from tinyassets.onboarding.subscription_connect import connected_sources
+
+    def slow(*args, **kwargs):
+        raise TimeoutError("custody read timed out")
+
+    monkeypatch.setattr(owner_channel, "request", slow)
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": None}]}

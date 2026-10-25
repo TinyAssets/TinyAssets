@@ -8567,7 +8567,8 @@
         rows.push({name:typeof c.label==="string"&&c.label?c.label:c.destination,
           path:"/app/connections",body:{destination:c.destination,incarnation:c.incarnation}});
       for(const s of (subs&&Array.isArray(subs.sources)?subs.sources:[]))
-        rows.push({name:s.name,path:"/app/subscription-connect/disconnect",body:{source_id:s.id}});
+        rows.push({name:s.name,path:"/app/subscription-connect/disconnect",body:{source_id:s.id},
+          reconnect:s.signed_in===false?{id:s.id,name:s.name}:null});
       host.replaceChildren();host.hidden=!rows.length;
       if(!rows.length)return;
       const title=document.createElement("p");title.textContent="Connected";host.append(title);
@@ -8603,7 +8604,23 @@
           go.disabled=cancel.disabled=false;
         }
       };
-      item.append(name,go,cancel,note);return item;
+      item.append(name);
+      if(row.reconnect){
+        // Listed but unusable: say so and offer the one action that fixes it.
+        const state=document.createElement("span");state.textContent="Sign-in expired ";
+        const again=document.createElement("button");again.type="button";again.className="btn";
+        again.textContent="Reconnect";
+        const code=document.createElement("input");code.type="text";code.hidden=true;
+        code.setAttribute("aria-label","Code returned after sign-in");
+        const send=document.createElement("button");send.type="button";send.textContent="Finish sign-in";
+        send.hidden=true;
+        const stop=document.createElement("button");stop.type="button";stop.textContent="Cancel";
+        stop.hidden=true;
+        again.onclick=()=>SubscriptionSources.start({...row.reconnect},
+          {button:again,status:note,input:code,submit:send,cancel:stop});
+        item.append(state,again,code,send,stop);
+      }
+      item.append(go,cancel,note);return item;
     },
   };
 
