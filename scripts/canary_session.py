@@ -164,6 +164,8 @@ def begin(pending: Path, origin: str = ORIGIN) -> str:
 
 def finish(pending: Path, link: str, origin: str = ORIGIN) -> str:
     """Redeem the page's "Open TinyAssets" link; returns the sealed seed."""
+    # Redeeming spends the sign-in, so prove sealing works (key and library) first.
+    seal("")
     flow = json.loads(pending.read_text(encoding="utf-8"))
     query = parse_qs(urlsplit(link.strip()).query)
     ref = (query.get("signin") or [""])[0]
@@ -180,11 +182,16 @@ def finish(pending: Path, link: str, origin: str = ORIGIN) -> str:
             "return_secret": return_secret,
         },
     )
-    pending.unlink()
     handle = str(body.get("session_ref", "")) if status == 200 else ""
-    if not handle:
+    sealed = seal(handle) if handle else ""
+    # The flow is spent either way; failing to tidy it must not lose the seed.
+    try:
+        pending.unlink()
+    except OSError:
+        pass
+    if not sealed:
         raise CanarySessionError("sign_in_exchange_failed: " + str(body.get("error", status))[:64])
-    return seal(handle)
+    return sealed
 
 
 def main(argv: list[str] | None = None) -> int:

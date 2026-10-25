@@ -67,3 +67,15 @@ def test_a_sealed_handle_needs_the_key(chain, monkeypatch):
     )
     with pytest.raises(canary_session.CanarySessionError, match="unreadable"):
         canary_session.unseal(sealed)
+
+
+@pytest.mark.verifies("canary-sign-in:Each workflow keeps its own sealed chain")
+def test_finish_without_the_key_keeps_the_sign_in(chain, monkeypatch, tmp_path):
+    _, sent, post = chain
+    post([(200, {"session_ref": "h"})])
+    pending = tmp_path / "flow.pending"
+    pending.write_text('{"ref": "r", "verifier": "v"}', encoding="utf-8")
+    monkeypatch.delenv("TINYASSETS_CANARY_SESSION_KEY")
+    with pytest.raises(canary_session.CanarySessionError, match="key_missing"):
+        canary_session.finish(pending, "intent://auth?signin=r&return_secret=s")
+    assert sent == [] and pending.is_file()
