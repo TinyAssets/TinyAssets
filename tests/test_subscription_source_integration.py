@@ -393,6 +393,36 @@ def test_disconnect_removes_the_candidate_the_account_can_no_longer_serve(connec
     assert connected_sources(root, root / "center", "owner") == frozenset()
 
 
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+def test_disconnect_retracts_the_broker_descriptor_for_this_owner_only(connected, box):  # noqa: F811
+    from tinyassets.broker.owner_sources import publish, read
+    from tinyassets.onboarding.subscription_connect import disconnect
+    from tinyassets.providers.definition import (
+        ProviderDefinition,
+        _definition_id,
+        register_definition,
+    )
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    mine = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="fake-cli")
+    fields = dict(universe_id="center", owner_user_id="other", access_method="subscription_cli",
+                  protocol="cli_json", ref="fake-cli", model="default")
+    theirs = ProviderDefinition(id=_definition_id(**fields), **fields, visibility="private",
+                                created_at="2026-10-24T00:00:00+00:00")
+    other = ConnectionLedger(box.ledger._db_path, data_root=box.shared,
+                             verify_authenticated_principal=lambda: "other")
+    publish(other, "other", "other", theirs.as_dict())
+    assert [item["id"] for item in read(box.ledger, "ignored")] == [mine.id]
+
+    assert disconnect("fake-cli")["status"] == "disconnected"
+    assert read(box.ledger, "ignored") == []
+    # The same source id under another principal was never this owner's to withdraw.
+    assert [item["id"] for item in read(other, "other")] == [theirs.id]
+    # Idempotent: a repeated disconnect finds nothing left to withdraw.
+    assert disconnect("fake-cli")["status"] == "disconnected"
+
+
 def test_changed_record_invalidates_acceptance_before_running_cli(connected, monkeypatch):
     from tinyassets.onboarding.subscription_connect import finish
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime

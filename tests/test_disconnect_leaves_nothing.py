@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 
 import pytest
 
@@ -64,6 +65,57 @@ def test_removing_definitions_is_scoped_to_the_asking_owner(tmp_path, monkeypatc
     assert remove_definitions("center", owner_user_id="owner",
                               access_method="subscription_cli", ref="fake-cli") == 0
     assert (center / _STORE_FILENAME).read_bytes() == before
+
+
+class _Ledger:
+    """Only ``_connect`` is what ``retract`` uses; the SQL and file are real."""
+
+    def __init__(self, path):
+        self._db_path = str(path)
+
+    def _connect(self):
+        return sqlite3.connect(self._db_path)
+
+
+def _descriptor(conn, owner, ref, method="subscription_cli"):
+    document = {"id": f"provdef_{owner}_{ref}_{method}", "owner_user_id": owner,
+                "universe_id": "center", "ref": ref, "access_method": method}
+    conn.execute("INSERT INTO box_model_sources VALUES (?, ?, ?)",
+                 (owner, document["id"], json.dumps(document)))
+    return document["id"]
+
+
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+def test_retract_withdraws_only_the_asking_owner_s_native_descriptor(tmp_path):
+    from tinyassets.broker.owner_sources import retract
+
+    ledger = _Ledger(tmp_path / "outbound.db")
+    # No table yet is nothing to withdraw, not a failure: this owner never
+    # registered a definition, so the broker holds no descriptor for them.
+    assert retract(ledger, "owner", "fake-cli") == {"retracted": 0}
+    with sqlite3.connect(ledger._db_path) as conn:
+        conn.execute("CREATE TABLE box_model_sources (owner TEXT NOT NULL, id TEXT NOT NULL, "
+                     "definition TEXT NOT NULL, PRIMARY KEY(owner, id))")
+        mine = _descriptor(conn, "owner", "fake-cli")
+        kept = [_descriptor(conn, "other", "fake-cli"),
+                _descriptor(conn, "owner", "second-cli"),
+                _descriptor(conn, "owner", "fake-cli", "api_key_http")]
+
+    assert retract(ledger, "owner", "fake-cli") == {"retracted": 1}
+    with sqlite3.connect(ledger._db_path) as conn:
+        remaining = [row[0] for row in conn.execute("SELECT id FROM box_model_sources")]
+    assert mine not in remaining
+    assert sorted(remaining) == sorted(kept)
+    assert retract(ledger, "owner", "fake-cli") == {"retracted": 0}
+
+
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+@pytest.mark.parametrize("ref", ["", "Fake-CLI", "a" * 300, "fake cli", None])
+def test_retract_refuses_a_reference_outside_the_grammar(tmp_path, ref):
+    from tinyassets.broker.owner_sources import retract
+
+    with pytest.raises(ValueError):
+        retract(_Ledger(tmp_path / "outbound.db"), "owner", ref)
 
 
 @pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")

@@ -245,6 +245,9 @@ def disconnect(owner, source_id):
             owner.root, source_id, threading.local()):
         request(owner.principal, {"op": "SUBSCRIPTION_CUSTODY", "document": {
             "action": "delete", "source": source_id}})
+        # The broker holds a credential-free descriptor per registered
+        # definition; it is withdrawn on the same bound channel that published it.
+        request(owner.principal, {"op": "MODEL_SOURCE", "retract": source_id})
         source = sources(owner.root).get(source_id)
         if source is not None:
             for name in source.state["paths"]:

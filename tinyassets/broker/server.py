@@ -788,16 +788,22 @@ class _Connection:
             return {"op": "OWNER_ADMIT_IS", "machine": identity.uid}
 
     def _model_source(self, doc):
-        from tinyassets.broker.owner_sources import publish
+        from tinyassets.broker.owner_sources import publish, retract
 
+        fixed = {"op", "principal", "generation", "token"}
         try:
-            if set(doc) != {"op", "principal", "generation", "token",
-                            "definition"}:
+            # One op, two directions: a descriptor is published with the
+            # definition that registered it and withdrawn by the ref the owner
+            # disconnected. Either way the principal is the channel's bind.
+            if set(doc) not in ({*fixed, "definition"}, {*fixed, "retract"}):
                 raise ValueError("unsupported source fields")
             _owner(doc["principal"])
             with self._server._fence.send(doc["generation"], doc["token"]):
-                result = publish(self._server._ledger_for(doc["principal"]),
-                                 doc["principal"], doc["principal"], doc["definition"])
+                ledger = self._server._ledger_for(doc["principal"])
+                result = (retract(ledger, doc["principal"], doc["retract"])
+                          if "retract" in doc else
+                          publish(ledger, doc["principal"], doc["principal"],
+                                  doc["definition"]))
             return {"op": "BOX_RESULT", "result": result}
         except Exception:
             return {"op": "BOX_REFUSED"}
