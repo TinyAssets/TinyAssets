@@ -525,3 +525,33 @@ def test_production_harness_root_clears_legacy_snapshots(tmp_path: Path, monkeyp
     assert "cutover/bundle/host/root/release-old" in removed
     assert not paths["current"].exists()
     assert not paths["release-20260928.0"].exists()
+
+
+def _two_images():
+    return [
+        {"Id": IMAGE, "RepoDigests": [REF], "RepoTags": [REF],
+         "Created": "2026-10-02T00:00:00+00:00"},
+        {"Id": OTHER, "RepoDigests": [OTHER_REF], "RepoTags": [OTHER_REF],
+         "Created": "2026-10-01T00:00:00+00:00"},
+    ]
+
+
+def test_an_already_absent_rollback_digest_does_not_block_retention(capsys):
+    gone = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "9f" * 32
+    choices, protected = candidates(
+        _two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, REF, {"rollback_target": gone},
+    )
+    assert IMAGE in protected
+    assert [item["image_id"] for item in choices] == [OTHER]
+    assert "rollback_target_absent" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("receipt,configured,slot", [
+    ({"rollback_target": "ghcr.io/tinyassets/tinyassets-daemon:previous"}, REF,
+     "rollback_target"),
+    ({"rollback_target": REF},
+     "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "ef" * 32, "configured"),
+])
+def test_a_missing_tag_or_configured_image_still_refuses_by_name(receipt, configured, slot):
+    with pytest.raises(Refusal, match="protected_reference_unmapped:" + slot):
+        candidates(_two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, configured, receipt)
