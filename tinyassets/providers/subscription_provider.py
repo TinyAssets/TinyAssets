@@ -6,9 +6,17 @@ import json
 import threading
 import time
 
-from tinyassets.exceptions import ProviderAuthenticationError, ProviderProtocolError
+from tinyassets.exceptions import (
+    ProviderAuthenticationError,
+    ProviderProtocolError,
+    ProviderReplyTimeoutError,
+)
 from tinyassets.providers.base import BaseProvider, ProviderResponse
-from tinyassets.providers.subscription_runtime import SubscriptionError, SubscriptionRuntime
+from tinyassets.providers.subscription_runtime import (
+    SubscriptionError,
+    SubscriptionRuntime,
+    SubscriptionTimeout,
+)
 
 
 class SubscriptionProvider(BaseProvider):
@@ -59,6 +67,10 @@ class SubscriptionProvider(BaseProvider):
             except Exception:
                 pass
             raise
+        except SubscriptionTimeout as exc:
+            # A run past its bound says nothing about sign-in; probing it here
+            # would block this loop on the source lock and the status CLI.
+            raise ProviderReplyTimeoutError(str(exc)) from exc
         except SubscriptionError as exc:
             if not runtime.authenticated():
                 raise ProviderAuthenticationError(str(exc)) from exc

@@ -713,6 +713,10 @@ def test_subscription_runs_keep_only_the_fixed_failure_shape():
         "output_bytes=0 events=none\n"
         "subscription run ended: source=codex seconds=5 prompt_bytes=1 output_bytes=1 "
         "events=turn.started user_01SECRET\n"
+        "subscription run ended: source=private-project seconds=5 prompt_bytes=1 "
+        "output_bytes=1 events=turn.started\n"
+        "subscription run ended: source=codex seconds=5 prompt_bytes=1 output_bytes=1 "
+        "events=private_customer_name\n"
         "unrelated noise\n"
     )
 
@@ -730,4 +734,5 @@ def test_subscription_runs_keep_only_the_fixed_failure_shape():
     assert runs["recent"][0] == {"how": "ended", "source": "codex", "seconds": 600,
                                  "prompt_bytes": 812345, "output_bytes": 41,
                                  "events": "thread.started,turn.started"}
-    assert "user_01SECRET" not in json.dumps(runs)
+    dumped = json.dumps(runs)
+    assert "user_01SECRET" not in dumped and "private" not in dumped

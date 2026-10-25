@@ -399,6 +399,7 @@ state = Path(os.environ['HOME']) / '.fake-login'
 if sys.argv[1] == 'status':
     sys.exit(0 if state.is_file() else 1)
 print(json.dumps({'type': 'turn.started'}), flush=True)
+print(json.dumps({'type': 'private_customer_name'}), flush=True)
 time.sleep(60)
 '''
 
@@ -410,6 +411,7 @@ def test_a_stalled_run_fails_visibly_and_names_where_it_stopped(connected, caplo
     with caplog.at_level("WARNING", logger="tinyassets.providers.subscription_runtime"):
         with pytest.raises(SubscriptionError, match="did not finish"):
             connected.invoke("private prompt words", timeout=2)
-    assert "subscription run ended: source=fake-cli" in caplog.text
-    assert "events=turn.started" in caplog.text
+    assert "subscription run ended: source=custom" in caplog.text
+    assert "events=turn.started,other" in caplog.text
+    assert "private_customer_name" not in caplog.text
     assert "private prompt words" not in caplog.text

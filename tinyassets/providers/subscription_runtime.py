@@ -26,6 +26,22 @@ class SubscriptionError(RuntimeError):
     pass
 
 
+class SubscriptionTimeout(SubscriptionError):
+    """The CLI ran past its bound: a reply timeout, never evidence of sign-in state."""
+
+
+#: Public CLI event names (Codex `exec --json`, Claude Code stream). Anything
+#: else is logged as "other": event names come from CLI output, so only this
+#: closed vocabulary may reach the host journal.
+_EVENT_NAMES = frozenset({
+    "thread.started", "turn.started", "turn.completed", "turn.failed",
+    "item.started", "item.updated", "item.completed", "error",
+    "system", "assistant", "user", "result", "stream_event",
+})
+_BUILT_IN_SOURCES = frozenset(
+    path.stem for path in (Path(__file__).parent / "source_records").glob("*.json"))
+
+
 class SubscriptionRuntime:
     IMAGE_ROOT = Path("/opt/tinyassets/cli")
 
@@ -412,11 +428,13 @@ class SubscriptionRuntime:
                 kind = json.loads(line).get("type")
             except (ValueError, AttributeError):
                 continue
-            if isinstance(kind, str) and re.fullmatch(r"[a-z_.]{1,40}", kind):
-                kinds.append(kind)
+            if isinstance(kind, str):
+                kinds.append(kind if kind in _EVENT_NAMES else "other")
+        # An owner-declared source id may itself be private.
+        source = self.source.id if self.source.id in _BUILT_IN_SOURCES else "custom"
         _LOG.warning(
             "subscription run %s: source=%s seconds=%d prompt_bytes=%d output_bytes=%d "
-            "events=%s", how, self.source.id, time.monotonic() - started, prompt_bytes,
+            "events=%s", how, source, time.monotonic() - started, prompt_bytes,
             len(output or b""), ",".join(kinds[-12:]) or "none")
 
     def invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
@@ -451,7 +469,7 @@ class SubscriptionRuntime:
             # A stall is a failed turn the owner must see, not a silent one.
             self._report_failure("ended", started, len(stdin.encode()),
                                  getattr(exc, "output", b""))
-            raise SubscriptionError("subscription invocation did not finish") from exc
+            raise SubscriptionTimeout("subscription invocation did not finish") from exc
         if result.returncode:
             self._report_failure("exit", started, len(stdin.encode()), result.stdout)
             raise SubscriptionError("subscription invocation failed")

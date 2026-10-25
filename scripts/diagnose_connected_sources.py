@@ -829,9 +829,19 @@ def _capture(argv: list[str], run, *, stderr: bool = False, timeout: int = 20) -
     return raw.decode("utf-8", "replace")[:_CAPTURE_LIMIT]
 
 
+# The same closed vocabularies the box logs with (subscription_runtime): a line
+# carrying any other word is dropped, never reported.
+_RUN_SOURCES = ("cerebras", "claude-code", "codex", "gemini", "google_ai_studio", "groq",
+                "kimi", "mistral", "openrouter_user_models_v1", "custom")
+_RUN_EVENTS = ("thread.started", "turn.started", "turn.completed", "turn.failed",
+               "item.started", "item.updated", "item.completed", "error", "system",
+               "assistant", "user", "result", "stream_event", "other")
+_RUN_EVENT = "(?:" + "|".join(re.escape(name) for name in _RUN_EVENTS) + ")"
 _RUN_LINE = re.compile(
-    r"subscription run (ended|exit): source=([a-z0-9][a-z0-9-]{1,63}) seconds=(\d{1,6}) "
-    r"prompt_bytes=(\d{1,9}) output_bytes=(\d{1,9}) events=([a-z_.,]{1,600})\s*\Z")
+    r"subscription run (ended|exit): source=("
+    + "|".join(re.escape(name) for name in _RUN_SOURCES) + r") seconds=(\d{1,6}) "
+    r"prompt_bytes=(\d{1,9}) output_bytes=(\d{1,9}) events=(none|"
+    + _RUN_EVENT + "(?:," + _RUN_EVENT + r"){0,11})\s*\Z")
 
 
 def _subscription_runs(run=None) -> dict:
