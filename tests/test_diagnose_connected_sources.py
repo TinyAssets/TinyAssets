@@ -628,6 +628,7 @@ def test_attached_asleep_image_is_not_mounted_and_counts_unreadable(tmp_path, mo
     monkeypatch.setattr(diag, "_harness_package", lambda _harness: tmp_path)
     monkeypatch.setattr(diag, "_boxhostd_pid", lambda: None)
     monkeypatch.setattr(diag, "_canary_census", lambda: ("", {}))
+    monkeypatch.setattr(diag, "_subscription_runs", lambda: {"counts": {}, "recent": []})
     monkeypatch.setattr(diag, "_image", lambda _uid: image)
     monkeypatch.setattr(diag.subprocess, "run", run)
     report, private = diag.collect()
@@ -679,6 +680,7 @@ def test_collect_reads_ledger_totals_before_the_connection_closes(tmp_path, monk
     monkeypatch.setattr(diag, "_harness_package", lambda _harness: tmp_path)
     monkeypatch.setattr(diag, "_boxhostd_pid", lambda: None)
     monkeypatch.setattr(diag, "_canary_census", lambda: ("", {}))
+    monkeypatch.setattr(diag, "_subscription_runs", lambda: {"counts": {}, "recent": []})
     monkeypatch.setattr(diag, "_image", lambda _uid: tmp_path / "missing.img")
     report, _private = diag.collect()
     assert opened["open"] is True

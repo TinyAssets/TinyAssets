@@ -30,7 +30,7 @@ class SubscriptionTimeout(SubscriptionError):
     """The CLI ran past its bound: a reply timeout, never evidence of sign-in state."""
 
 
-#: Public CLI event names (Codex `exec --json`, Claude Code stream). Anything
+#: Public event names of the shipped source records' CLI streams. Anything
 #: else is logged as "other": event names come from CLI output, so only this
 #: closed vocabulary may reach the host journal.
 _EVENT_NAMES = frozenset({
