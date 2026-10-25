@@ -454,6 +454,195 @@ def test_definition_requires_the_secret_in_the_live_vault(tmp_path):
             assert db.execute("SELECT COUNT(*) FROM box_model_sources").fetchone()[0] == 0
 
 
+def _source_definition(owner, universe, ref):
+    fields = {
+        "universe_id": universe,
+        "owner_user_id": owner,
+        "access_method": "api_key_http",
+        "protocol": "openai_chat",
+        "ref": ref,
+        "model": "gpt-test",
+    }
+    return {
+        "id": _definition_id(**fields),
+        **fields,
+        "visibility": "private",
+        "created_at": "2026-10-22T04:41:03+00:00",
+    }
+
+
+def test_record_without_a_secret_inserts_nothing(tmp_path):
+    """A matching destination with no usable secret is skipped, not connected."""
+    assert rc._usable_secret({"token": "   "}) is False
+    assert rc._usable_secret({}) is False
+    assert rc._usable_secret({"access_token": "kept"}) is True
+    assert rc._usable_secret({"secret": "kept"}) is True
+    assert rc._usable_secret({"api_key": "kept"}) is True
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    (live / "beta").mkdir()
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    missing = _source_definition(OWNER_A, "alpha", "ga-missing")
+    kept = _source_definition(OWNER_B, "beta", "gb-live")
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.executemany(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES (?, ?, NULL, ?, 'ok')",
+            (
+                ("c-missing", OWNER_A, "vault://http/missing.example.com"),
+                ("c-empty", OWNER_A, "vault://http/empty.example.com"),
+                ("c-beta", OWNER_B, f"vault://http/{DEST_BETA}"),
+                ("c-access", OWNER_B, "vault://http/access.example.com"),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES (?, ?, ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (
+                ("ga-missing", "c-missing", OWNER_A),
+                ("ga-empty", "c-empty", OWNER_A),
+                ("gb-live", "c-beta", OWNER_B),
+                ("gb-access", "c-access", OWNER_B),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES (?, 'model_use')",
+            (("c-missing",), ("c-empty",), ("c-beta",), ("c-access",)),
+        )
+        for document in (missing, kept):
+            db.execute(
+                "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
+                (document["owner_user_id"], document["id"], json.dumps(document)),
+            )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.executemany(
+            "INSERT INTO llm_credential_deposit_owners VALUES (?, ?)",
+            (("alpha", OWNER_A), ("beta", OWNER_B)),
+        )
+    alpha = source / ".platform" / "credential-vaults" / "alpha"
+    beta = source / ".platform" / "credential-vaults" / "beta"
+    alpha.mkdir(parents=True)
+    beta.mkdir(parents=True)
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        {
+            "credential_type": "http",
+            "service": "missing.example.com",
+            "destination": "missing.example.com",
+        },
+        {
+            "credential_type": "http",
+            "service": "empty.example.com",
+            "destination": "empty.example.com",
+            "token": "   ",
+        },
+    ]))
+    (beta / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_BETA, TOKEN_OK),
+        {
+            "credential_type": "http",
+            "service": "access.example.com",
+            "destination": "access.example.com",
+            "access_token": TOKEN_OK,
+        },
+    ]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["secret_missing"] == 2
+    assert plan["legacy"]["http_kept"] == 2
+    assert plan["tables"]["outbound_connections"]["insert"] == 2
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 2
+    assert plan["tables"]["connection_capabilities"]["insert"] == 2
+    assert plan["legacy"]["definitions"] == 1
+    assert _ids(live) == {"c-beta", "c-access"}
+    absent = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    assert not (
+        live / ".broker" / "accounts" / absent / "credentials" / ".credential-vault.json"
+    ).exists()
+    present = hashlib.sha256(OWNER_B.encode()).hexdigest()
+    written = (
+        live / ".broker" / "accounts" / present / "credentials" / ".credential-vault.json"
+    )
+    dests = {
+        item["destination"]
+        for item in json.loads(written.read_text(encoding="utf-8"))["credentials"]
+    }
+    assert dests == {DEST_BETA, "access.example.com"}
+    assert not (live / "alpha" / "provider_definitions.json").exists()
+    assert (live / "beta" / "provider_definitions.json").is_file()
+    text = json.dumps(plan)
+    _assert_hidden(text)
+
+
+def test_live_vault_without_a_secret_authorizes_no_rows(tmp_path):
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    vault = (
+        live / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    vault.parent.mkdir(parents=True)
+    vault.write_text(json.dumps({"schema_version": 1, "credentials": [
+        {"credential_type": "http", "destination": DEST_OK, "token": ""},
+    ]}), encoding="utf-8")
+    before = vault.read_bytes()
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.execute(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES ('c-live', ?, NULL, ?, 'ok')",
+            (OWNER_A, f"vault://http/{DEST_OK}"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at) "
+            "VALUES ('ga-live', 'c-live', ?, NULL)",
+            (OWNER_A,),
+        )
+        db.execute(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES ('c-live', 'model_use')"
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)", (OWNER_A,),
+        )
+    platform = source / ".platform" / "credential-vaults" / "alpha"
+    platform.mkdir(parents=True)
+    (platform / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    # The same secret-less file on the source side must not keep the row either.
+    existing = (
+        source / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(before)
+    plan = rc.merge(live, source)
+    assert vault.read_bytes() == before
+    assert existing.read_bytes() == before
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 0
+    assert plan["tables"]["connection_capabilities"]["insert"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    assert _ids(live) == set()
+
+
 def test_non_string_destination_does_not_abort_the_other_center(tmp_path):
     source = tmp_path / "source"
     ledger = source / ".broker" / "outbound.db"

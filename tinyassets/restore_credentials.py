@@ -77,7 +77,7 @@ _KEYS = frozenset({
     "legacy", "platform_vault_files", "center_vault_files", "http",
     "llm_subscription", "other", "custody_db", "centers_one_owner",
     "centers_zero_owners", "centers_several_owners", "http_kept",
-    "unmatched", "revoked", "definitions",
+    "unmatched", "revoked", "definitions", "secret_missing",
 })
 
 
@@ -312,6 +312,7 @@ def _archive_date(name):
 
 _CENTER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _HTTP_PREFIX = "vault://http/"
+_SECRET_FIELDS = ("token", "access_token", "secret", "api_key")
 _DEFINITION_FIELDS = (
     "id", "universe_id", "owner_user_id", "access_method", "protocol",
     "model", "ref", "visibility", "created_at",
@@ -651,6 +652,43 @@ def _legacy_vault_paths(source_root):
     return platform, local
 
 
+def _record_dest(record):
+    dest = record.get("destination")
+    if not isinstance(dest, str) or not dest.strip():
+        service = record.get("service")
+        dest = service if isinstance(service, str) else ""
+    if not isinstance(dest, str):
+        return ""
+    return dest.strip()
+
+
+def _usable_secret(record):
+    """True when the resolver would return this record's secret."""
+    for key in _SECRET_FIELDS:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _http_secret_dest(record):
+    """HTTP destination that has a usable secret, else None."""
+    if not isinstance(record, dict) or record.get("credential_type") != "http":
+        return None
+    if not _usable_secret(record):
+        return None
+    return _record_dest(record) or None
+
+
+def _secret_dests(records):
+    found = set()
+    for record in records:
+        dest = _http_secret_dest(record)
+        if dest:
+            found.add(dest)
+    return found
+
+
 def _keep_vault_backed(db, source_root, kept_ids):
     """Keep a connection when its destination is already in that owner's vault."""
     if db is None or not _table_exists(db, "outbound_connections"):
@@ -673,11 +711,7 @@ def _keep_vault_backed(db, source_root, kept_ids):
             records = _load_vault_records(path)
         except (OSError, ValueError, TypeError):
             continue
-        have = {
-            item.get("destination") for item in records
-            if item.get("credential_type") == "http"
-            and isinstance(item.get("destination"), str)
-        }
+        have = _secret_dests(records)
         live_refs, _revoked = _connection_refs(db, owner)
         for connection_id, dest in live_refs:
             if dest in have:
@@ -765,6 +799,8 @@ def _restrict_definitions(source_root):
 def convert_legacy_vaults(source_root):
     """Copy http secrets that match one owner's live vault://http connection.
 
+    A destination counts only when ``token``, ``access_token``, ``secret``, or
+    ``api_key`` is a non-empty string. Anything else is ``secret_missing``.
     ``llm_subscription`` records are counted and skipped. A center with zero
     or several owners is refused. One center's bad file does not stop the rest.
     """
@@ -779,6 +815,7 @@ def convert_legacy_vaults(source_root):
         "centers_several_owners": 0,
         "accounts_failed": 0,
         "definitions": 0,
+        "secret_missing": 0,
     }
     platform, local = _legacy_vault_paths(source_root)
     centers = set(platform) | set(local)
@@ -827,12 +864,11 @@ def convert_legacy_vaults(source_root):
                     if kind != "http":
                         stats["other"] += 1
                         continue
-                    dest = record.get("destination")
-                    if not isinstance(dest, str) or not dest.strip():
-                        service = record.get("service")
-                        dest = service if isinstance(service, str) else ""
-                    dest = dest.strip() if isinstance(dest, str) else ""
+                    dest = _record_dest(record)
                     if dest in live_dests and dest not in seen:
+                        if not _usable_secret(record):
+                            stats["secret_missing"] += 1
+                            continue
                         chosen.append(record)
                         seen.add(dest)
                         stats["http_kept"] += 1
@@ -848,21 +884,17 @@ def convert_legacy_vaults(source_root):
                     )
                     if path in written:
                         current = _load_vault_records(path)
-                        have = {
-                            item.get("destination") for item in current
-                            if item.get("credential_type") == "http"
-                            and isinstance(item.get("destination"), str)
-                        }
+                        have = _secret_dests(current)
                         extra = [
                             item for item in chosen
-                            if item.get("destination") not in have
+                            if _record_dest(item) not in have
                         ]
                         if extra:
                             _write_private_json(path, json.dumps(
                                 {"schema_version": 1, "credentials": current + extra},
                                 sort_keys=True,
                             ))
-                            have.update(item.get("destination") for item in extra)
+                            have.update(_secret_dests(extra))
                         seen = {dest for dest in seen if dest in have}
                     elif path.is_symlink() or path.exists():
                         if path.is_symlink() or not path.is_file():
@@ -870,11 +902,7 @@ def convert_legacy_vaults(source_root):
                             seen = set()
                         else:
                             current = _load_vault_records(path)
-                            have = {
-                                item.get("destination") for item in current
-                                if item.get("credential_type") == "http"
-                                and isinstance(item.get("destination"), str)
-                            }
+                            have = _secret_dests(current)
                             dropped = {dest for dest in seen if dest not in have}
                             stats["http_kept"] -= len(dropped)
                             seen = seen - dropped
@@ -1225,14 +1253,7 @@ def _vault_http_dests(path):
         records = _load_vault_records(path)
     except (OSError, ValueError, TypeError):
         return set()
-    dests = set()
-    for item in records:
-        if item.get("credential_type") != "http":
-            continue
-        dest = item.get("destination")
-        if isinstance(dest, str) and dest.strip():
-            dests.add(dest.strip())
-    return dests
+    return _secret_dests(records)
 
 
 def _surviving_dests(live_root, spec):
