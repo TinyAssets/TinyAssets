@@ -220,6 +220,8 @@ jobs:
 
       - uses: ./.github/actions/canary-session
         if: always()
+        # A lost save names itself; it must not stop a deploy midway.
+        continue-on-error: true
         with:
           mode: save
           chain: deploy
@@ -729,6 +731,8 @@ jobs:
 
       - uses: ./.github/actions/canary-session
         if: always()
+        # A lost save names itself; it must not stop a deploy midway.
+        continue-on-error: true
         with:
           mode: save
           chain: deploy
@@ -772,6 +776,8 @@ jobs:
 
       - uses: ./.github/actions/canary-session
         if: always()
+        # A lost save names itself; it must not stop a deploy midway.
+        continue-on-error: true
         with:
           mode: save
           chain: deploy
