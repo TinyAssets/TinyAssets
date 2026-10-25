@@ -351,3 +351,49 @@ def test_workflow_requires_box_acceptance_after_health_and_keeps_failure_local()
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')
+
+
+
+def test_a_busy_canary_is_waited_for_then_accepted_on_the_new_image():
+    calls, probes = [], iter([RuntimeError("canary_box_revision_mismatch"),
+                              RuntimeError("canary_box_revision_mismatch"), True])
+
+    def canary():
+        result = next(probes)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def control():
+        calls.append("drain")
+        busy = 1 if len(calls) == 1 else 0
+        return {"slept": 1 - busy, "asleep": 2, "busy": busy, "incomplete": 0}
+
+    receipt, code = driver.run(control, canary, lambda: None, pause=lambda _s: None,
+                               clock=lambda: 0)
+    assert code == 0 and receipt["canary"] == "passed" and receipt["reason"] == "passed"
+    assert calls == ["drain", "drain", "drain"]
+    assert receipt["counts"] == {"slept": 2, "asleep": 6, "busy": 1, "incomplete": 0}
+
+
+def test_a_canary_still_on_the_old_image_after_the_wait_fails_and_others_fail_at_once():
+    times = iter(range(0, 10000, 300))
+
+    def stale():
+        raise RuntimeError("canary_box_revision_mismatch")
+
+    def drain():
+        return {"slept": 0, "asleep": 1, "busy": 1, "incomplete": 0}
+
+    receipt, code = driver.run(drain, stale, lambda: None, pause=lambda _s: None,
+                               clock=lambda: next(times))
+    assert code == 1 and receipt["reason"] == "canary_box_revision_mismatch"
+    calls = []
+
+    def broken():
+        calls.append("probe")
+        raise RuntimeError("canary_probe_failed")
+
+    receipt, code = driver.run(drain, broken, lambda: None, pause=lambda _s: None,
+                               clock=lambda: 0)
+    assert code == 1 and calls == ["probe"]
