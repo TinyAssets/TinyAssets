@@ -51,8 +51,9 @@ class VolumeLifecycle:
                 active = status.get("active", 0)
                 if active is None or (type(active) is int and active > 0):
                     # Busy or not answering (boxhostd reports None; an older host
-                    # without the field reads as idle, as before): no sleep intent while a stop would be
-                    # refused anyway; the next pass after its turns end sleeps it.
+                    # without the field reads as idle, as before): no sleep intent
+                    # while a stop would be refused anyway; the next pass after
+                    # its turns end sleeps it.
                     return record
                 idle = status["idle_seconds"]
                 if not status.get("draining") and (idle is None or (
