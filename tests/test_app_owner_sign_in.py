@@ -149,10 +149,13 @@ def test_renewal_slides_only_the_live_protected_session_of_the_same_account(logi
                 # Still using the app: no sign-in again mid-task.
                 assert expires[0] > time.time() + 28000
                 assert sessions.lookup(cookie)
+            elif state == "expired":
+                # Lapsed proof is never revived: the store sweeps it and nothing returns.
+                assert expires is None
+                assert sessions.lookup(cookie) is None
             else:
-                # Lapsed proof is never revived, and another account never inherits it.
+                # Another account never inherits or extends this owner's proof.
                 assert expires[0] < soon + 1
-                assert state != "expired" or sessions.lookup(cookie) is None
     asyncio.run(run())
 
 
