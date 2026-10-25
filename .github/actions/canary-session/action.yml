@@ -59,3 +59,40 @@ runs:
       with:
         path: ${{ runner.temp }}/canary-session
         key: ${{ steps.name.outputs.key }}
+    # cache/save only warns when it cannot reserve a key, and a lost save
+    # strands the chain: the server retired the old handle at rotation, so
+    # the next run's seed or older save is dead within the grace window.
+    # Prove the save landed, try once more under a fresh key, else fail loudly.
+    - name: Check the save landed
+      id: check
+      if: steps.name.outputs.key != ''
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/canary-session
+        key: ${{ steps.name.outputs.key }}
+        lookup-only: true
+    - name: Name the retry
+      id: retry
+      if: steps.name.outputs.key != '' && steps.check.outputs.cache-hit != 'true'
+      shell: bash
+      run: echo "key=${{ steps.name.outputs.key }}-retry" >> "$GITHUB_OUTPUT"
+    - name: Save again
+      if: steps.retry.outputs.key != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/canary-session
+        key: ${{ steps.retry.outputs.key }}
+    - name: Check the retry landed
+      id: recheck
+      if: steps.retry.outputs.key != ''
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/canary-session
+        key: ${{ steps.retry.outputs.key }}
+        lookup-only: true
+    - name: Fail on a lost session
+      if: steps.retry.outputs.key != '' && steps.recheck.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        echo "::error::canary_session_save_lost: the ${{ inputs.chain }} chain's renewed session was not saved; it needs one ordinary sign-in"
+        exit 1

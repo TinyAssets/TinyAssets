@@ -42,3 +42,8 @@ sign-in starts a fresh chain and a dead chain's saves are never restored over it
 - **WHEN** renewal fails with any other status
 - **THEN** nothing is stored, and the existing handle is still used on the
   next attempt
+
+#### Scenario: a save that does not land
+- **WHEN** the Actions cache does not hold a renewed session after saving it
+- **THEN** it is saved once more under a fresh key, and if that does not land
+  either the step fails with `canary_session_save_lost` naming the chain
