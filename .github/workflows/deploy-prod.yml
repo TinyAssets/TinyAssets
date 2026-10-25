@@ -737,9 +737,13 @@ jobs:
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: canary
+        timeout-minutes: 5
         run: |
           set -euo pipefail
-          python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles
+          # The deploy leaves every box asleep, so this first request includes a
+          # cold wake (over 10s on 2026-10-25, which rolled a healthy image
+          # back). Real connector clients wait that long; so does this gate.
+          python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles --timeout 60
 
       # The app is the second public surface this deploy can break, and the MCP
       # canary says nothing about it: the connector can be perfectly green while

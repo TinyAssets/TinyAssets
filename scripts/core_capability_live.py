@@ -53,6 +53,38 @@ def stream_transport(token, observations):
     return StreamableHttpTransport(ORIGIN + "/mcp", auth=token, httpx_client_factory=factory)
 
 
+_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+# The job log is public, so the server's words never leave this process: each
+# label below is printed only when its phrase appears in them.
+_SIGNS = (
+    ("schema_drift", ("schema drift", "drifted")),
+    ("disabled", ("disabled", "not enabled", "turned off")),
+    ("not_found", ("not found", "no such", "unknown", "does not exist")),
+    ("already_exists", ("already exists", "duplicate")),
+    ("not_allowed", ("not allowed", "forbidden", "not permitted", "refused", "denied")),
+    ("not_admitted", ("not admitted", "admission")),
+    ("invalid_request", ("invalid", "malformed", "required", "must be")),
+    ("limit_reached", ("limit", "quota", "too many", "too large")),
+    ("approval_required", ("approval", "confirm")),
+    ("unavailable", ("unavailable", "not ready", "timed out", "timeout")),
+    ("readonly", ("read-only", "readonly", "read only")),
+)
+
+
+def refusal(name, arguments, code):
+    """The bounded code, plus which call and fixed labels naming what the
+    server's words were about. The words themselves are never printed."""
+    where = " ".join(
+        str(arguments[key])
+        for key in ("target", "operation")
+        if _TOKEN.fullmatch(str(arguments.get(key, "")))
+    )
+    said = str(code).lower()
+    signs = ",".join(label for label, phrases in _SIGNS if any(p in said for p in phrases))
+    server = f" ({signs})" if signs else ""
+    return ProbeFailure(" ".join(f"{name} {where} refused: {failure_code(code)}{server}".split()))
+
+
 def passed(report, capability, observation):
     report["capabilities"].append(
         dict(
@@ -176,7 +208,7 @@ async def exercise(config, http, token, report):
                 code = (
                     value.get("error", "tool_failed") if isinstance(value, dict) else "tool_failed"
                 )
-                raise ProbeFailure(name + " refused: " + failure_code(code))
+                raise refusal(name, arguments, code)
             return value
 
         # Imported here: core_capability_image.py mounts this file without the package.

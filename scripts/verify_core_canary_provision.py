@@ -41,7 +41,7 @@ async def _provision(config: dict) -> None:
                 value = json.loads(result.data) if isinstance(result.data, str) else result.data
                 if result.is_error or not isinstance(value, dict) or value.get("error"):
                     code = value.get("error", "tool_failed") if isinstance(value, dict) else ""
-                    raise live.ProbeFailure(name + " refused: " + live.failure_code(code))
+                    raise live.refusal(name, arguments, code)
                 return value
 
             await provision(config, http, live.ORIGIN, call)
