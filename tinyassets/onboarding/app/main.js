@@ -7207,15 +7207,17 @@
       return result;
     },
     // A lapsed owner session is a sign-in, not a dead end: go straight to the
-    // one sign-in, which returns to the app. Once per lapse, so a refusal that
-    // signing in cannot cure never loops.
+    // one sign-in, which returns to the app. A refusal within minutes of that
+    // sign-in is one signing in cannot cure, so it is reported, never looped;
+    // a later lapse redirects again.
     async signInAgain(note){
       if(NATIVE||DESKTOP_SHELL){note.textContent=ownerProofUnavailable();return;}
       let again=false;
       try{
-        again=sessionStorage.getItem("ta_owner_again")==="1";
+        const at=Number(sessionStorage.getItem("ta_owner_again"));
+        again=at>0&&Date.now()-at<600000;
         if(again)sessionStorage.removeItem("ta_owner_again");
-        else sessionStorage.setItem("ta_owner_again","1");
+        else sessionStorage.setItem("ta_owner_again",String(Date.now()));
       }catch(_e){}
       if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
       await openSignIn("/app/owner-sign-in?app=1");
