@@ -6,6 +6,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import logging
 import queue
 import re
 import secrets
@@ -14,7 +15,11 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from tinyassets.boxes.provider import BoxError
+from tinyassets.owner_process import OwnerProcessCancelled
 from tinyassets.providers.subscription_source import digest, select, sources
+
+_LOG = logging.getLogger(__name__)
 
 
 class SubscriptionError(RuntimeError):
@@ -399,6 +404,21 @@ class SubscriptionRuntime:
             pass
         raise PermissionError("source changed or has not been accepted; reconnect required")
 
+    def _report_failure(self, how, started, prompt_bytes, output):
+        """Name where a run stopped: event types and sizes only, never content."""
+        kinds = []
+        for line in (output or b"").decode("utf-8", "replace").splitlines():
+            try:
+                kind = json.loads(line).get("type")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(kind, str) and re.fullmatch(r"[a-z_.]{1,40}", kind):
+                kinds.append(kind)
+        _LOG.warning(
+            "subscription run %s: source=%s seconds=%d prompt_bytes=%d output_bytes=%d "
+            "events=%s", how, self.source.id, time.monotonic() - started, prompt_bytes,
+            len(output or b""), ",".join(kinds[-12:]) or "none")
+
     def invoke(self, prompt, system="", model="", *, should_cancel=None, timeout=None):
         with self.lock():
             self.require_accepted()
@@ -420,10 +440,20 @@ class SubscriptionRuntime:
                 raise SubscriptionError("source cannot select a model")
             argv += self.argv(invoke["model_argv"], model=model)
         stdin = self.argv([invoke.get("stdin", "")], prompt=prompt, system=system, model=model)[0]
-        result = self.run(argv, stdin=stdin.encode(), phase="provider",
-                          timeout=min(invoke.get("timeout", 600), timeout or 600),
-                          separate_stderr=True, should_cancel=should_cancel)
+        started = time.monotonic()
+        try:
+            result = self.run(argv, stdin=stdin.encode(), phase="provider",
+                              timeout=min(invoke.get("timeout", 600), timeout or 600),
+                              separate_stderr=True, should_cancel=should_cancel)
+        except OwnerProcessCancelled:
+            raise
+        except BoxError as exc:
+            # A stall is a failed turn the owner must see, not a silent one.
+            self._report_failure("ended", started, len(stdin.encode()),
+                                 getattr(exc, "output", b""))
+            raise SubscriptionError("subscription invocation did not finish") from exc
         if result.returncode:
+            self._report_failure("exit", started, len(stdin.encode()), result.stdout)
             raise SubscriptionError("subscription invocation failed")
         output = result.stdout.decode("utf-8")
         if invoke["format"] == "text":

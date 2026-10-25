@@ -390,3 +390,26 @@ def test_cancelled_login_cannot_recreate_custody_after_disconnect(connected):
             pytest.fail("cancelled login acquired custody")
     assert custody(connected, "read") == {"revision": None, "state": {}}
     assert not connected.directory.exists()
+
+
+STALLING_CLI = '''#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+state = Path(os.environ['HOME']) / '.fake-login'
+if sys.argv[1] == 'status':
+    sys.exit(0 if state.is_file() else 1)
+print(json.dumps({'type': 'turn.started'}), flush=True)
+time.sleep(60)
+'''
+
+
+def test_a_stalled_run_fails_visibly_and_names_where_it_stopped(connected, caplog):
+    from tinyassets.providers.subscription_runtime import SubscriptionError
+
+    connected.binary.write_text(STALLING_CLI)
+    with caplog.at_level("WARNING", logger="tinyassets.providers.subscription_runtime"):
+        with pytest.raises(SubscriptionError, match="did not finish"):
+            connected.invoke("private prompt words", timeout=2)
+    assert "subscription run ended: source=fake-cli" in caplog.text
+    assert "events=turn.started" in caplog.text
+    assert "private prompt words" not in caplog.text

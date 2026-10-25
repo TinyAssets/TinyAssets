@@ -703,3 +703,31 @@ def test_workflow_is_a_manual_production_read():
     assert "scripts/diagnose_connected_sources.py" in text
     for banned in ("systemctl", "compose", "mkfs", "volumes.restore", "mount "):
         assert banned not in text, banned
+
+
+def test_subscription_runs_keep_only_the_fixed_failure_shape():
+    journal = (
+        "subscription run ended: source=codex seconds=600 prompt_bytes=812345 "
+        "output_bytes=41 events=thread.started,turn.started\n"
+        "subscription run exit: source=claude-code seconds=3 prompt_bytes=10 "
+        "output_bytes=0 events=none\n"
+        "subscription run ended: source=codex seconds=5 prompt_bytes=1 output_bytes=1 "
+        "events=turn.started user_01SECRET\n"
+        "unrelated noise\n"
+    )
+
+    def run(argv, **kwargs):
+        assert argv[:3] == ["journalctl", "-u", "boxhostd"]
+
+        class Done:
+            returncode = 0
+            stdout = journal.encode()
+            stderr = b""
+        return Done()
+
+    runs = diag._subscription_runs(run=run)
+    assert runs["counts"] == {"ended": 1, "exit": 1}
+    assert runs["recent"][0] == {"how": "ended", "source": "codex", "seconds": 600,
+                                 "prompt_bytes": 812345, "output_bytes": 41,
+                                 "events": "thread.started,turn.started"}
+    assert "user_01SECRET" not in json.dumps(runs)
