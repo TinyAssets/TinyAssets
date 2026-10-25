@@ -114,12 +114,37 @@ window.AppRecovery=(()=>{
     }catch(_e){/* offline: the next probe retries */}
     finally{probing=false;}
   }
+  // Sign-out must work in every state, including an app that never booted, so
+  // it needs nothing from the main script. The same logout grant the app uses
+  // drops the renewable session; if it cannot be reached, the pending mark
+  // makes the next start finish the sign-out before renewing anything.
+  async function logout(){
+    if(leaving) return;
+    leaving=true;
+    try{localStorage.setItem("ta_logout_pending","1");}catch(_e){}
+    let ok=false;
+    try{
+      let ref="";try{ref=localStorage.getItem("ta_sref")||"";}catch(_e){}
+      const response=await fetch("/app/token",{method:"POST",credentials:"same-origin",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({grant_type:"logout",session_ref:ref||undefined}),
+        signal:AbortSignal.timeout(10000)});
+      ok=response.ok;
+    }catch(_e){}
+    try{
+      sessionStorage.removeItem("ta_access_token");sessionStorage.removeItem("ta_access_exp");
+      sessionStorage.removeItem(key);sessionStorage.removeItem(draftKey);
+      if(ok){localStorage.removeItem("ta_sref");localStorage.removeItem("ta_logout_pending");}
+    }catch(_e){}
+    location.replace("/app");
+  }
   document.addEventListener("click",event=>{
     const target=event.target.closest&&event.target.closest("[data-app-recovery]");
     if(!target) return;
     event.preventDefault();event.stopImmediatePropagation();
     const action=target.dataset.appRecovery;
     if(action==="reload"){navigate(true);return;}
+    if(action==="logout"){logout();return;}
     try{
       if(action==="chat"&&hooks){hooks.openChat();return;}
       if(action==="browse"&&hooks&&hooks.browse())return;

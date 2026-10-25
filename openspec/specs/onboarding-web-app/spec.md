@@ -435,3 +435,13 @@ The shell SHALL prohibit stale cache reuse on load, identify its served content 
 - **WHEN** the server serves a new shell version while an idle tab has an unsent draft
 - **THEN** the tab loads the new version and restores the draft without sending it
 - **AND** unavailable storage defers automatic navigation
+
+### Requirement: The recovery bar can always sign out
+The always-present recovery controls SHALL include Log out, which works without
+the main app script. It SHALL use the ordinary logout grant and clear this
+tab's access token; if the server cannot be reached, the pending-logout mark
+SHALL make the next start finish the sign-out before any renewal.
+
+#### Scenario: The app never booted
+- **WHEN** the page is blank because the app did not start, and the user taps Log out
+- **THEN** the renewable session is dropped and the app reloads signed out
