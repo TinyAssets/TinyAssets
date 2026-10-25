@@ -76,7 +76,8 @@ _KEYS = frozenset({
     "source_connection_markers", "cli_markers_restored",
     "legacy", "platform_vault_files", "center_vault_files", "http",
     "llm_subscription", "other", "custody_db", "centers_one_owner",
-    "centers_zero_owners", "centers_several_owners", "http_kept",
+    "centers_zero_owners", "centers_several_owners", "centers_ledger_one_owner",
+    "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
 })
 
@@ -344,6 +345,9 @@ def _wanted(parts):
         return parts
     if _center_from_parts(parts):
         return parts
+    if (len(parts) == 2 and parts[1] == "provider_definitions.json"
+            and _CENTER_RE.fullmatch(parts[0])):
+        return parts
     return None
 
 
@@ -387,18 +391,21 @@ def _legacy_counts():
         "centers_one_owner": 0,
         "centers_zero_owners": 0,
         "centers_several_owners": 0,
+        "centers_ledger_one_owner": 0,
     }
 
 
-def _record_kinds(data):
+def _vault_facts(data):
+    """Kind counts plus http destinations. Destinations are not reported."""
     http = subscription = other = 0
+    dests = set()
     try:
         document = json.loads(data)
     except (ValueError, UnicodeError):
-        return http, subscription, other
+        return http, subscription, other, dests
     records = document.get("credentials") if isinstance(document, dict) else None
     if not isinstance(records, list):
-        return http, subscription, other
+        return http, subscription, other, dests
     for record in records:
         if not isinstance(record, dict):
             other += 1
@@ -410,7 +417,11 @@ def _record_kinds(data):
             subscription += 1
         else:
             other += 1
-    return http, subscription, other
+        if isinstance(kind, str) and kind.strip() == "http":
+            key = _record_destination(record)
+            if key:
+                dests.add(key)
+    return http, subscription, other, dests
 
 
 def _owner_groups(db_path):
@@ -450,13 +461,28 @@ def _owner_groups(db_path):
     return groups
 
 
-def legacy_center_owners(db_path, centers):
-    """Map each vault center to its single owner. Zero or several are refused."""
+def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
+                         definition_root=None, definition_docs=None):
+    """Map each vault center to its single owner. Zero or several are refused.
+
+    Custody rows win when they are the only evidence. When they are absent,
+    a center maps only if its directory name is the grant ``universe_id`` and
+    that grant's ``vault://http/`` destination is one of the vault's http
+    destinations, and every such row names one owner. A provider definition
+    counts only on that same pair. Disagreement refuses the center.
+    """
     groups = _owner_groups(db_path)
+    ledger_groups = _ledger_owner_groups(
+        ledger_path, center_dests or {}, definition_root, definition_docs,
+    )
     mapping = {}
-    one = zero = several = 0
+    one = zero = several = ledger_one = 0
     for center in set(centers):
-        owners = groups.get(center, set())
+        custody_owners = groups.get(center, set())
+        ledger_owners = ledger_groups.get(center, set())
+        owners = custody_owners | ledger_owners
+        if len(ledger_owners) == 1 and owners == ledger_owners:
+            ledger_one += 1
         if len(owners) == 1:
             one += 1
             mapping[center] = next(iter(owners))
@@ -468,6 +494,7 @@ def legacy_center_owners(db_path, centers):
         "centers_one_owner": one,
         "centers_zero_owners": zero,
         "centers_several_owners": several,
+        "centers_ledger_one_owner": ledger_one,
     }
 
 
@@ -482,7 +509,10 @@ def inspect_legacy(archive):
     """Count old vault files and owner mappings. The report has no identifiers."""
     counts = _legacy_counts()
     centers = set()
+    center_dests = {}
     custody = None
+    ledger = None
+    definition_docs = []
     try:
         handle = tarfile.open(archive, "r:gz")
     except (OSError, tarfile.TarError):
@@ -497,28 +527,51 @@ def inspect_legacy(archive):
                 stream = handle.extractfile(member)
                 custody = b"" if stream is None else stream.read()
                 continue
+            if parts == (".broker", "outbound.db"):
+                stream = handle.extractfile(member)
+                ledger = b"" if stream is None else stream.read()
+                continue
+            if (len(parts) == 2 and parts[1] == "provider_definitions.json"
+                    and _CENTER_RE.fullmatch(parts[0])):
+                if member.size > 8 * 1024 * 1024:
+                    continue
+                stream = handle.extractfile(member)
+                if stream is None:
+                    continue
+                definition_docs.extend(
+                    (parts[0], item) for item in _definition_list(stream.read())
+                )
+                continue
             located = _center_from_parts(parts)
             if located is None:
                 continue
             kind, center = located
             centers.add(center)
             counts["platform_vault_files" if kind == "platform" else "center_vault_files"] += 1
+            slot = center_dests.setdefault(center, set())
             if member.size > 8 * 1024 * 1024:
                 continue
             stream = handle.extractfile(member)
             if stream is None:
                 continue
-            http, subscription, other = _record_kinds(stream.read())
+            http, subscription, other, dests = _vault_facts(stream.read())
             counts["http"] += http
             counts["llm_subscription"] += subscription
             counts["other"] += other
-    if custody is not None:
-        with tempfile.TemporaryDirectory(prefix="ta-cred-legacy-") as directory:
-            db_path = Path(directory) / "credential-custody.db"
-            db_path.write_bytes(custody)
-            _mapping, owner_counts = legacy_center_owners(db_path, centers)
-    else:
-        _mapping, owner_counts = legacy_center_owners(None, centers)
+            slot.update(dests)
+    with tempfile.TemporaryDirectory(prefix="ta-cred-legacy-") as directory:
+        custody_path = None
+        ledger_path = None
+        if custody is not None:
+            custody_path = Path(directory) / "credential-custody.db"
+            custody_path.write_bytes(custody)
+        if ledger is not None:
+            ledger_path = Path(directory) / "outbound.db"
+            ledger_path.write_bytes(ledger)
+        _mapping, owner_counts = legacy_center_owners(
+            custody_path, centers, ledger_path=ledger_path,
+            center_dests=center_dests, definition_docs=definition_docs,
+        )
     counts.update(owner_counts)
     return counts
 
@@ -527,8 +580,10 @@ def inspect_legacy_tree(root):
     """Same counts as :func:`inspect_legacy`, for an already extracted tree."""
     counts = _legacy_counts()
     centers = set()
+    center_dests = {}
     root = Path(root)
     custody = root / ".broker" / "credential-custody.db"
+    ledger = root / ".broker" / "outbound.db"
     if custody.is_file() and not custody.is_symlink():
         counts["custody_db"] = True
     if root.is_dir() and not root.is_symlink():
@@ -544,18 +599,22 @@ def inspect_legacy_tree(root):
                 continue
             kind, center = located
             centers.add(center)
+            slot = center_dests.setdefault(center, set())
             counts["platform_vault_files" if kind == "platform" else "center_vault_files"] += 1
             try:
                 if path.stat().st_size > 8 * 1024 * 1024:
                     continue
-                http, subscription, other = _record_kinds(path.read_bytes())
+                http, subscription, other, dests = _vault_facts(path.read_bytes())
             except OSError:
                 continue
             counts["http"] += http
             counts["llm_subscription"] += subscription
             counts["other"] += other
+            slot.update(dests)
     _mapping, owner_counts = legacy_center_owners(
         custody if counts["custody_db"] else None, centers,
+        ledger_path=ledger if ledger.is_file() and not ledger.is_symlink() else None,
+        center_dests=center_dests, definition_root=root,
     )
     counts.update(owner_counts)
     return counts
@@ -649,6 +708,25 @@ def _legacy_vault_paths(source_root):
     return platform, local
 
 
+def _center_http_dests(platform, local):
+    """Http destinations in each center's vault files. Not reported."""
+    dests = {}
+    for center in set(platform) | set(local):
+        found = set()
+        for path in (platform.get(center), local.get(center)):
+            if path is None:
+                continue
+            try:
+                if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
+                    continue
+                _http, _sub, _other, keys = _vault_facts(path.read_bytes())
+            except OSError:
+                continue
+            found.update(keys)
+        dests[center] = found
+    return dests
+
+
 def _http_record_key(ref):
     """Vault key the general resolver looks up for this credential ref.
 
@@ -669,6 +747,172 @@ def _record_destination(record):
     if not isinstance(record, dict):
         return ""
     return str(record.get("destination") or "").strip()
+
+
+def _definition_list(data):
+    try:
+        document = json.loads(data)
+    except (ValueError, UnicodeError):
+        return []
+    if not isinstance(document, list):
+        return []
+    return [item for item in document if isinstance(item, dict)]
+
+
+def _definition_files(root, center_dests):
+    """(center, document) from ``<center>/provider_definitions.json``."""
+    found = []
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        return found
+    for center in center_dests:
+        path = root / center / "provider_definitions.json"
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > 8 * 1024 * 1024:
+                continue
+            data = path.read_bytes()
+        except OSError:
+            continue
+        found.extend((center, item) for item in _definition_list(data))
+    return found
+
+
+def _confirmed_definition_owner(db, center, document, dests):
+    """Owner a definition names only when its grant matches this center's vault."""
+    if not isinstance(document, dict) or document.get("universe_id") != center:
+        return None
+    owner = document.get("owner_user_id")
+    ref = document.get("ref")
+    if not isinstance(owner, str) or not owner or not isinstance(ref, str) or not ref:
+        return None
+    if not (_table_exists(db, "outbound_connection_grants")
+            and _table_exists(db, "outbound_connections")):
+        return None
+    grant_cols = set(_columns(db, "outbound_connection_grants"))
+    conn_cols = set(_columns(db, "outbound_connections"))
+    if not {"grant_id", "owner_user_id", "connection_id"} <= grant_cols:
+        return None
+    if not {"connection_id", "owner_user_id", "credential_ref"} <= conn_cols:
+        return None
+    universe_sql = "g.universe_id" if "universe_id" in grant_cols else "NULL"
+    dest_sql = "c.destination" if "destination" in conn_cols else "NULL"
+    rows = list(db.execute(
+        "SELECT g.owner_user_id, c.owner_user_id, c.credential_ref, "
+        f"{universe_sql}, {dest_sql} "
+        "FROM outbound_connection_grants g "
+        "JOIN outbound_connections c ON c.connection_id = g.connection_id "
+        "WHERE g.grant_id=?",
+        (ref,),
+    ))
+    if len(rows) != 1:
+        return None
+    grant_owner, conn_owner, ref_value, grant_universe, stored_dest = rows[0]
+    if grant_owner != owner or conn_owner != owner:
+        return None
+    if "universe_id" in grant_cols and grant_universe != center:
+        return None
+    dest = _http_record_key(ref_value)
+    if dest is None or dest not in dests:
+        return None
+    if stored_dest is not None and not isinstance(stored_dest, str):
+        return None
+    if isinstance(stored_dest, str) and stored_dest.strip() and stored_dest.strip() != dest:
+        return None
+    return owner
+
+
+def _add_grant_owners(db, groups, center_dests):
+    if not (_table_exists(db, "outbound_connection_grants")
+            and _table_exists(db, "outbound_connections")):
+        return
+    grant_cols = set(_columns(db, "outbound_connection_grants"))
+    conn_cols = set(_columns(db, "outbound_connections"))
+    if not {"universe_id", "owner_user_id", "connection_id"} <= grant_cols:
+        return
+    if not {"owner_user_id", "connection_id", "credential_ref"} <= conn_cols:
+        return
+    dest_sql = "c.destination" if "destination" in conn_cols else "NULL"
+    query = (
+        "SELECT g.universe_id, g.owner_user_id, c.owner_user_id, "
+        f"c.credential_ref, {dest_sql} "
+        "FROM outbound_connection_grants g "
+        "JOIN outbound_connections c ON c.connection_id = g.connection_id"
+    )
+    for universe_id, grant_owner, conn_owner, ref, stored_dest in db.execute(query):
+        if universe_id not in center_dests:
+            continue
+        if (not isinstance(grant_owner, str) or not grant_owner
+                or grant_owner != conn_owner):
+            continue
+        dest = _http_record_key(ref)
+        if dest is None or dest not in center_dests[universe_id]:
+            continue
+        if stored_dest is not None and not isinstance(stored_dest, str):
+            continue
+        if isinstance(stored_dest, str) and stored_dest.strip() and stored_dest.strip() != dest:
+            continue
+        groups[universe_id].add(grant_owner)
+
+
+def _add_definition_owners(db, groups, center_dests, docs):
+    for center, document in docs:
+        if center not in groups:
+            continue
+        owner = _confirmed_definition_owner(
+            db, center, document, center_dests.get(center, set()),
+        )
+        if owner is not None:
+            groups[center].add(owner)
+    if not _table_exists(db, "box_model_sources"):
+        return
+    columns = set(_columns(db, "box_model_sources"))
+    if not {"owner", "definition"} <= columns:
+        return
+    for row_owner, raw in db.execute("SELECT owner, definition FROM box_model_sources"):
+        try:
+            document = json.loads(raw) if isinstance(raw, str) else None
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        center = document.get("universe_id")
+        if center not in groups:
+            continue
+        doc_owner = document.get("owner_user_id")
+        if (isinstance(row_owner, str) and isinstance(doc_owner, str)
+                and row_owner and doc_owner and row_owner != doc_owner):
+            groups[center].update((row_owner, doc_owner))
+            continue
+        owner = _confirmed_definition_owner(
+            db, center, document, center_dests.get(center, set()),
+        )
+        if owner is not None:
+            groups[center].add(owner)
+
+
+def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_docs):
+    """Owners implied by grants and definitions. Empty when the ledger cannot say."""
+    groups = {center: set() for center in center_dests}
+    path = Path(ledger_path) if ledger_path is not None else None
+    if path is None or path.is_symlink() or not path.is_file():
+        return groups
+    try:
+        db = _open_ro(path)
+    except (OSError, sqlite3.Error):
+        return groups
+    try:
+        _add_grant_owners(db, groups, center_dests)
+        docs = list(definition_docs or [])
+        if definition_root is not None:
+            docs.extend(_definition_files(definition_root, center_dests))
+        _add_definition_owners(db, groups, center_dests, docs)
+    except (OSError, sqlite3.Error, TypeError):
+        return {center: set() for center in center_dests}
+    finally:
+        db.close()
+    return groups
 
 
 def _vault_resolver(namespace):
@@ -849,6 +1093,8 @@ def convert_legacy_vaults(source_root):
     with no usable secret is ``secret_missing``. ``service`` is not consulted.
     ``llm_subscription`` records are counted and skipped. A center with zero
     or several owners is refused. One center's bad file does not stop the rest.
+    Without a custody row, the center directory is that center's universe id:
+    a grant maps it only together with a vault destination.
     """
     stats = {
         "http_kept": 0,
@@ -859,6 +1105,7 @@ def convert_legacy_vaults(source_root):
         "centers_one_owner": 0,
         "centers_zero_owners": 0,
         "centers_several_owners": 0,
+        "centers_ledger_one_owner": 0,
         "accounts_failed": 0,
         "definitions": 0,
         "secret_missing": 0,
@@ -868,9 +1115,14 @@ def convert_legacy_vaults(source_root):
     if not centers:
         return stats
     custody = source_root / ".broker" / "credential-custody.db"
+    ledger_path = source_root / ".broker" / "outbound.db"
+    if ledger_path.is_symlink() or not ledger_path.is_file():
+        ledger_path = None
     mapping, owner_counts = legacy_center_owners(
         custody if custody.is_file() and not custody.is_symlink() else None,
-        centers,
+        centers, ledger_path=ledger_path,
+        center_dests=_center_http_dests(platform, local),
+        definition_root=source_root,
     )
     stats.update(owner_counts)
     ledger = source_root / ".broker" / "outbound.db"

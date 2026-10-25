@@ -275,6 +275,7 @@ def test_inspect_legacy_reports_counts_only(tmp_path, monkeypatch, capsys):
     assert legacy["centers_one_owner"] == 2
     assert legacy["centers_zero_owners"] == 1
     assert legacy["centers_several_owners"] == 1
+    assert legacy["centers_ledger_one_owner"] == 1
     assert "error" not in report
 
 
@@ -986,6 +987,222 @@ def test_center_local_record_is_kept_beside_the_platform_file(tmp_path):
     }
     assert stats["http_kept"] == 2
     assert dests == {DEST_OK, DEST_GAMMA}
+
+
+def _universe_ledger(connections, grants):
+    script = SCHEMA.replace(
+        "    revoked_at TEXT,\n    granted_at TEXT,\n    unprompted_action_cap_json TEXT",
+        "    universe_id TEXT,\n    revoked_at TEXT,\n    granted_at TEXT,\n"
+        "    unprompted_action_cap_json TEXT",
+    ).replace(
+        "    credential_ref TEXT,\n    label TEXT,",
+        "    credential_ref TEXT,\n    destination TEXT,\n    label TEXT,",
+    )
+    return _sqlite_bytes(script, {
+        "outbound_connections": connections,
+        "outbound_connection_grants": grants,
+    })
+
+
+def _conn_universe(owner, connection_id, dest, universe):
+    return {
+        "connection_id": connection_id,
+        "owner_user_id": owner,
+        "revoked_at": None,
+        "credential_ref": f"vault://http/{dest}",
+        "destination": dest,
+        "label": "ok",
+    }
+
+
+def _grant_universe(owner, grant_id, connection_id, universe):
+    return {
+        "grant_id": grant_id,
+        "connection_id": connection_id,
+        "owner_user_id": owner,
+        "universe_id": universe,
+        "revoked_at": None,
+        "granted_at": "2026-10-22T04:41:03+00:00",
+        "unprompted_action_cap_json": None,
+    }
+
+
+def test_grant_universe_maps_a_center_only_with_its_vault_destination(
+        tmp_path, monkeypatch, capsys):
+    """The center directory is the universe id, and only with a vault destination."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    (live / "beta").mkdir()
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [
+            _conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha"),
+            _conn_universe(OWNER_B, "c-beta", DEST_BETA, "beta"),
+            _conn_universe(OWNER_A, "c-gamma", DEST_GAMMA, "gamma"),
+            _conn_universe(OWNER_D, "c-delta", DEST_OK, "delta"),
+        ],
+        [
+            _grant_universe(OWNER_A, "ga", "c-alpha", "alpha"),
+            _grant_universe(OWNER_B, "gb", "c-beta", "beta"),
+            _grant_universe(OWNER_A, "gg", "c-gamma", "gamma"),
+            _grant_universe(OWNER_D, "gd", "c-delta", "delta"),
+        ],
+    ))
+    alpha = source / "alpha"
+    alpha.mkdir(parents=True)
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    beta = source / ".platform" / "credential-vaults" / "beta"
+    beta.mkdir(parents=True)
+    (beta / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_BETA, TOKEN_BETA)]))
+    gamma = source / "gamma"
+    gamma.mkdir()
+    (gamma / ".credential-vault.json").write_bytes(
+        _vault_bytes([_http(DEST_UNMATCHED, TOKEN_UNMATCHED)])
+    )
+    delta = source / "delta"
+    delta.mkdir()
+    (delta / ".credential-vault.json").write_bytes(_vault_bytes([{
+        "credential_type": "http",
+        "service": DEST_OK,
+        "token": TOKEN_OTHER,
+    }]))
+    snap = tmp_path / "snaps"
+    snap.mkdir()
+    archive = snap / ARCHIVE
+    with tarfile.open(archive, "w:gz") as handle:
+        for path in source.rglob("*"):
+            if not path.is_file():
+                continue
+            info = tarfile.TarInfo("_data/" + path.relative_to(source).as_posix())
+            data = path.read_bytes()
+            info.size = len(data)
+            handle.addfile(info, io.BytesIO(data))
+    monkeypatch.setattr(rc.os, "geteuid", lambda: 0)
+    assert rc.main([
+        "--mode", "inspect-legacy", "--source", ARCHIVE,
+        "--root", str(tmp_path / "unused"),
+        "--snapshot-dir", str(snap),
+        "--backup-log", str(tmp_path / "missing.log"),
+    ]) == 0
+    text = capsys.readouterr().out
+    _assert_hidden(text)
+    legacy = json.loads(text)["legacy"]
+    assert legacy["custody_db"] is False
+    assert legacy["center_vault_files"] == 3
+    assert legacy["platform_vault_files"] == 1
+    assert legacy["centers_one_owner"] == 2
+    assert legacy["centers_ledger_one_owner"] == 2
+    assert legacy["centers_zero_owners"] == 2
+    assert legacy["centers_several_owners"] == 0
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_ledger_one_owner"] == 2
+    assert plan["legacy"]["http_kept"] == 2
+    assert plan["tables"]["outbound_connections"]["insert"] == 2
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 2
+    assert _ids(live) == {"c-alpha", "c-beta"}
+    from tinyassets.credential_vault import custody_namespace
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+    for owner, dest, token in ((OWNER_A, DEST_OK, TOKEN_OK), (OWNER_B, DEST_BETA, TOKEN_BETA)):
+        resolved = _GeneralVaultCredentialResolver(
+            universe_dir=custody_namespace(live, owner),
+        )(f"vault://http/{dest}")
+        assert resolved == token
+    _assert_hidden(json.dumps(plan))
+
+
+def test_two_grant_owners_or_a_custody_disagreement_maps_nobody(tmp_path):
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [
+            _conn_universe(OWNER_A, "c-a", DEST_OK, "alpha"),
+            _conn_universe(OWNER_B, "c-b", DEST_BETA, "alpha"),
+            _conn_universe(OWNER_B, "c-d", DEST_GAMMA, "delta"),
+        ],
+        [
+            _grant_universe(OWNER_A, "ga", "c-a", "alpha"),
+            _grant_universe(OWNER_B, "gb", "c-b", "alpha"),
+            _grant_universe(OWNER_B, "gd", "c-d", "delta"),
+        ],
+    ))
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('delta', ?)",
+            (OWNER_D,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_OK, TOKEN_OK),
+        _http(DEST_BETA, TOKEN_BETA),
+    ]))
+    delta = source / "delta"
+    delta.mkdir()
+    (delta / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_GAMMA, TOKEN_GAMMA)]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_ledger_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 2
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert _ids(live) == set()
+
+
+def test_definition_file_maps_when_its_grant_destination_is_in_the_vault(tmp_path):
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.execute(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES ('c-live', ?, NULL, ?, 'ok')",
+            (OWNER_A, f"vault://http/{DEST_OK}"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES ('ga-live', 'c-live', ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (OWNER_A,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir(parents=True)
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    (alpha / "provider_definitions.json").write_text(json.dumps([{
+        "universe_id": "alpha",
+        "owner_user_id": OWNER_A,
+        "ref": "ga-live",
+    }]), encoding="utf-8")
+    wrong = source / "beta"
+    wrong.mkdir()
+    (wrong / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_BETA, TOKEN_BETA)]))
+    (wrong / "provider_definitions.json").write_text(json.dumps([{
+        "universe_id": "alpha",
+        "owner_user_id": OWNER_A,
+        "ref": "ga-live",
+    }]), encoding="utf-8")
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 1
+    assert plan["legacy"]["centers_ledger_one_owner"] == 1
+    assert plan["legacy"]["centers_zero_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 1
+    assert _ids(live) == {"c-live"}
+    from tinyassets.credential_vault import custody_namespace
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+    resolved = _GeneralVaultCredentialResolver(
+        universe_dir=custody_namespace(live, OWNER_A),
+    )(f"vault://http/{DEST_OK}")
+    assert resolved == TOKEN_OK
 
 
 def test_workflow_modes_include_inspect_legacy():
