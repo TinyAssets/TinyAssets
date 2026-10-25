@@ -946,8 +946,9 @@
     #app-recovery-controls a{color:var(--ink,#111);display:inline-flex;align-items:center;min-height:44px;padding:0 8px}
     /* While the app works and the keyboard leaves little visible height (main.js
        fitToVisualViewport sets .app-short from the visual viewport), the composer
-       needs the room; a failed start (every view hidden) always shows the bar. */
-    .app-short .app:has(.view:not([hidden])) #app-recovery-controls{display:none}
+       needs the room. A failed start (every view hidden) or a reported failure
+       (#app-recovery-failed shown) always shows the bar. */
+    .app-short .app:has(.view:not([hidden])):not(:has(#app-recovery-failed:not([hidden]))) #app-recovery-controls{display:none}
   </style>
   <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
   <script nonce="__TA_NONCE__">
