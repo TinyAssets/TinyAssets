@@ -137,12 +137,13 @@ def test_renewal_slides_only_the_live_protected_session_of_the_same_account(logi
                 conn.execute("UPDATE owner_sessions SET expires_at=?",
                              (time.time() - 1 if state == "expired" else soon,))
             if state == "other_account":
-                other = Identity(user_id="someone-else", username="someone-else")
-                monkeypatch.setattr("tinyassets.auth.middleware._get_provider",
-                                    lambda: SimpleNamespace(resolve_token=lambda _: other))
-            renewed = await client.post("/app/token", json={"grant_type": "refresh_token"},
-                                        headers={"origin": "https://tinyassets.io"})
-            assert renewed.status_code == 200
+                # A renewal proving another account never slides this owner's proof.
+                assert sessions.extend(cookie, "someone-else") is False
+            else:
+                renewed = await client.post("/app/token",
+                                            json={"grant_type": "refresh_token"},
+                                            headers={"origin": "https://tinyassets.io"})
+                assert renewed.status_code == 200
             with sessions.store() as conn:
                 expires = conn.execute("SELECT expires_at FROM owner_sessions").fetchone()
             if state == "live":
