@@ -201,7 +201,7 @@ asyncio.run(launch())
                 uid = json.loads(result.stdout)["uid"]
                 owner = cgroup / f"owner-{uid}"
                 assert owner.is_dir() and owner.parent == (cgroup / "supervisor").parent
-                assert int((owner / "memory.max").read_text()) == 1024**3
+                assert int((owner / "memory.max").read_text()) == 2 * 1024**3
                 assert int((owner / "pids.max").read_text()) == 1024
                 assert int((owner / "cpu.weight").read_text()) > 0
                 subprocess.run([
