@@ -41,7 +41,11 @@ def test_broker_bounds_owner_custody(connected, monkeypatch, caplog):
     initial_size = len(json.dumps({f"source-{i}": entry for i, entry in enumerate(entries)}))
     monkeypatch.setattr(store, "MAX_OWNER_BYTES", initial_size + 100)
     state = {"token": base64.b64encode(b"x" * 40).decode()}
-    saved = call("save", "source-0", revision=entries[0]["revision"], state=state)
+    with caplog.at_level("WARNING", logger="tinyassets.broker.subscription_custody"):
+        saved = call("save", "source-0", revision=entries[0]["revision"], state=state)
+    # Every change is logged by action and outcome, never by owner-chosen name.
+    assert "subscription custody save: source=custom state=saved remaining=16" in caplog.text
+    assert "source-0" not in caplog.text
     with pytest.raises(PermissionError):
         call("save", "source-1", revision=entries[1]["revision"], state=state)
     assert call("read", "source-0") == saved
