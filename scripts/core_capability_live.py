@@ -53,6 +53,27 @@ def stream_transport(token, observations):
     return StreamableHttpTransport(ORIGIN + "/mcp", auth=token, httpx_client_factory=factory)
 
 
+_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_WORDS = re.compile(r"[^A-Za-z ,.:_-]+")
+
+
+def refusal(name, arguments, code):
+    """The bounded code, plus which call and what the server said.
+
+    The job log is public, so any word holding a digit (ids, hashes, sizes) is
+    dropped, the rest keep letters and plain punctuation only, and the text
+    stops at 120 characters: enough to name the refusing check, never a value."""
+    where = " ".join(
+        str(arguments[key])
+        for key in ("target", "operation")
+        if _TOKEN.fullmatch(str(arguments.get(key, "")))
+    )
+    words = [word for word in str(code).split() if not any(ch.isdigit() for ch in word)]
+    said = " ".join(_WORDS.sub(" ", " ".join(words)).split())[:120]
+    server = f" (server: {said})" if said else ""
+    return ProbeFailure(" ".join(f"{name} {where} refused: {failure_code(code)}{server}".split()))
+
+
 def passed(report, capability, observation):
     report["capabilities"].append(
         dict(
@@ -176,7 +197,7 @@ async def exercise(config, http, token, report):
                 code = (
                     value.get("error", "tool_failed") if isinstance(value, dict) else "tool_failed"
                 )
-                raise ProbeFailure(name + " refused: " + failure_code(code))
+                raise refusal(name, arguments, code)
             return value
 
         # Imported here: core_capability_image.py mounts this file without the package.

@@ -301,3 +301,19 @@ def test_alert_transport_and_report_errors_never_fail_the_step(
     runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/core_capability_alert.py"),
                    run_name="__main__")
     assert "::warning::Core capability alert delivery failed:" in capsys.readouterr().out
+
+
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
+def test_a_refusal_names_the_check_without_any_value():
+    from scripts import core_capability_live as live
+
+    message = str(live.refusal(
+        "write_graph", {"target": "branch", "operation": "create", "payload_json": "{}"},
+        "durable table has schema drift for user_01ABCDEF at /data/u-7f/x",
+    ))
+    assert message.startswith("write_graph branch create refused: operation_failed (server: ")
+    assert "durable table has schema drift" in message
+    assert not any(ch.isdigit() for ch in message)
+    assert "ABCDEF" not in message and "payload" not in message
