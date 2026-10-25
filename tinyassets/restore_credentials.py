@@ -472,7 +472,7 @@ def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
     counts only on that same pair. Disagreement refuses the center.
     """
     groups = _owner_groups(db_path)
-    ledger_groups = _ledger_owner_groups(
+    ledger_groups, evidence = _ledger_owner_groups(
         ledger_path, center_dests or {}, definition_root, definition_docs,
     )
     mapping = {}
@@ -495,7 +495,7 @@ def legacy_center_owners(db_path, centers, ledger_path=None, center_dests=None,
         "centers_zero_owners": zero,
         "centers_several_owners": several,
         "centers_ledger_one_owner": ledger_one,
-    }
+    }, evidence
 
 
 def _member_parts(name):
@@ -568,7 +568,7 @@ def inspect_legacy(archive):
         if ledger is not None:
             ledger_path = Path(directory) / "outbound.db"
             ledger_path.write_bytes(ledger)
-        _mapping, owner_counts = legacy_center_owners(
+        _mapping, owner_counts, _evidence = legacy_center_owners(
             custody_path, centers, ledger_path=ledger_path,
             center_dests=center_dests, definition_docs=definition_docs,
         )
@@ -611,7 +611,7 @@ def inspect_legacy_tree(root):
             counts["llm_subscription"] += subscription
             counts["other"] += other
             slot.update(dests)
-    _mapping, owner_counts = legacy_center_owners(
+    _mapping, owner_counts, _evidence = legacy_center_owners(
         custody if counts["custody_db"] else None, centers,
         ledger_path=ledger if ledger.is_file() and not ledger.is_symlink() else None,
         center_dests=center_dests, definition_root=root,
@@ -820,10 +820,10 @@ def _confirmed_definition_owner(db, center, document, dests):
         return None
     if isinstance(stored_dest, str) and stored_dest.strip() and stored_dest.strip() != dest:
         return None
-    return owner
+    return owner, dest
 
 
-def _add_grant_owners(db, groups, center_dests):
+def _add_grant_owners(db, groups, center_dests, evidence):
     if not (_table_exists(db, "outbound_connection_grants")
             and _table_exists(db, "outbound_connections")):
         return
@@ -841,7 +841,7 @@ def _add_grant_owners(db, groups, center_dests):
         "JOIN outbound_connections c ON c.connection_id = g.connection_id"
     )
     for universe_id, grant_owner, conn_owner, ref, stored_dest in db.execute(query):
-        if universe_id not in center_dests:
+        if not isinstance(universe_id, str) or universe_id not in center_dests:
             continue
         if (not isinstance(grant_owner, str) or not grant_owner
                 or grant_owner != conn_owner):
@@ -854,17 +854,20 @@ def _add_grant_owners(db, groups, center_dests):
         if isinstance(stored_dest, str) and stored_dest.strip() and stored_dest.strip() != dest:
             continue
         groups[universe_id].add(grant_owner)
+        evidence[universe_id].add(dest)
 
 
-def _add_definition_owners(db, groups, center_dests, docs):
+def _add_definition_owners(db, groups, center_dests, docs, evidence):
     for center, document in docs:
-        if center not in groups:
+        if not isinstance(center, str) or center not in groups:
             continue
-        owner = _confirmed_definition_owner(
+        confirmed = _confirmed_definition_owner(
             db, center, document, center_dests.get(center, set()),
         )
-        if owner is not None:
+        if confirmed is not None:
+            owner, dest = confirmed
             groups[center].add(owner)
+            evidence[center].add(dest)
     if not _table_exists(db, "box_model_sources"):
         return
     columns = set(_columns(db, "box_model_sources"))
@@ -878,41 +881,46 @@ def _add_definition_owners(db, groups, center_dests, docs):
         if not isinstance(document, dict):
             continue
         center = document.get("universe_id")
-        if center not in groups:
+        if not isinstance(center, str) or center not in groups:
             continue
         doc_owner = document.get("owner_user_id")
         if (isinstance(row_owner, str) and isinstance(doc_owner, str)
                 and row_owner and doc_owner and row_owner != doc_owner):
             groups[center].update((row_owner, doc_owner))
             continue
-        owner = _confirmed_definition_owner(
+        confirmed = _confirmed_definition_owner(
             db, center, document, center_dests.get(center, set()),
         )
-        if owner is not None:
+        if confirmed is not None:
+            owner, dest = confirmed
             groups[center].add(owner)
+            evidence[center].add(dest)
 
 
 def _ledger_owner_groups(ledger_path, center_dests, definition_root, definition_docs):
-    """Owners implied by grants and definitions. Empty when the ledger cannot say."""
+    """Owners and the destinations that named them. A failed read refuses all."""
     groups = {center: set() for center in center_dests}
+    evidence = {center: set() for center in center_dests}
     path = Path(ledger_path) if ledger_path is not None else None
     if path is None or path.is_symlink() or not path.is_file():
-        return groups
+        return groups, evidence
     try:
         db = _open_ro(path)
     except (OSError, sqlite3.Error):
-        return groups
+        return groups, evidence
     try:
-        _add_grant_owners(db, groups, center_dests)
+        _add_grant_owners(db, groups, center_dests, evidence)
         docs = list(definition_docs or [])
         if definition_root is not None:
             docs.extend(_definition_files(definition_root, center_dests))
-        _add_definition_owners(db, groups, center_dests, docs)
+        _add_definition_owners(db, groups, center_dests, docs, evidence)
     except (OSError, sqlite3.Error, TypeError):
-        return {center: set() for center in center_dests}
+        for owners in groups.values():
+            owners.update(("\0ledger-a", "\0ledger-b"))
+        return groups, {center: set() for center in center_dests}
     finally:
         db.close()
-    return groups
+    return groups, evidence
 
 
 def _vault_resolver(namespace):
@@ -1094,7 +1102,10 @@ def convert_legacy_vaults(source_root):
     ``llm_subscription`` records are counted and skipped. A center with zero
     or several owners is refused. One center's bad file does not stop the rest.
     Without a custody row, the center directory is that center's universe id:
-    a grant maps it only together with a vault destination.
+    a grant maps it only together with a vault destination. When a grant or
+    definition names destinations for that center, only those destinations
+    are copied. A grant for another universe, or a destination column that
+    disagrees with the credential ref, leaves its secret unread.
     """
     stats = {
         "http_kept": 0,
@@ -1118,7 +1129,7 @@ def convert_legacy_vaults(source_root):
     ledger_path = source_root / ".broker" / "outbound.db"
     if ledger_path.is_symlink() or not ledger_path.is_file():
         ledger_path = None
-    mapping, owner_counts = legacy_center_owners(
+    mapping, owner_counts, evidence = legacy_center_owners(
         custody if custody.is_file() and not custody.is_symlink() else None,
         centers, ledger_path=ledger_path,
         center_dests=_center_http_dests(platform, local),
@@ -1152,6 +1163,10 @@ def convert_legacy_vaults(source_root):
                 live_refs, revoked_refs = _connection_refs(db, owner)
                 live_dests = {dest for _connection_id, dest in live_refs}
                 revoked_dests = {dest for _connection_id, dest in revoked_refs}
+                limit = evidence.get(center) or set()
+                if limit:
+                    live_dests = {dest for dest in live_dests if dest in limit}
+                    revoked_dests = {dest for dest in revoked_dests if dest in limit}
                 chosen = []
                 seen = set()
                 for record in records:

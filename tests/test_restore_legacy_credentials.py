@@ -291,8 +291,8 @@ def test_legacy_conversion_keeps_only_matching_http_secrets(tmp_path, monkeypatc
     plan = rc.merge(live, extracted)
     assert plan["legacy"]["http_kept"] == 1
     assert plan["legacy"]["llm_subscription"] == 1
-    assert plan["legacy"]["unmatched"] == 1
-    assert plan["legacy"]["revoked"] == 1
+    assert plan["legacy"]["unmatched"] == 2
+    assert plan["legacy"]["revoked"] == 0
     assert plan["legacy"]["accounts_failed"] >= 1
     assert plan["tables"]["outbound_connections"]["insert"] == 1
     assert plan["tables"]["outbound_connection_grants"]["insert"] == 1
@@ -480,7 +480,9 @@ def test_record_without_a_secret_inserts_nothing(tmp_path):
     ledger = source / ".broker" / "outbound.db"
     ledger.parent.mkdir(parents=True)
     missing = _source_definition(OWNER_A, "alpha", "ga-missing")
+    blank = _source_definition(OWNER_A, "alpha", "ga-empty")
     kept = _source_definition(OWNER_B, "beta", "gb-live")
+    access = _source_definition(OWNER_B, "beta", "gb-access")
     with sqlite3.connect(ledger) as db:
         db.executescript(SCHEMA)
         db.executemany(
@@ -510,7 +512,7 @@ def test_record_without_a_secret_inserts_nothing(tmp_path):
             "VALUES (?, 'model_use')",
             (("c-missing",), ("c-empty",), ("c-beta",), ("c-access",)),
         )
-        for document in (missing, kept):
+        for document in (missing, blank, kept, access):
             db.execute(
                 "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
                 (document["owner_user_id"], document["id"], json.dumps(document)),
@@ -557,7 +559,7 @@ def test_record_without_a_secret_inserts_nothing(tmp_path):
     assert plan["tables"]["outbound_connections"]["insert"] == 2
     assert plan["tables"]["outbound_connection_grants"]["insert"] == 2
     assert plan["tables"]["connection_capabilities"]["insert"] == 2
-    assert plan["legacy"]["definitions"] == 1
+    assert plan["legacy"]["definitions"] == 2
     assert _ids(live) == {"c-beta", "c-access"}
     absent = hashlib.sha256(OWNER_A.encode()).hexdigest()
     assert not (
@@ -1203,6 +1205,231 @@ def test_definition_file_maps_when_its_grant_destination_is_in_the_vault(tmp_pat
         universe_dir=custody_namespace(live, OWNER_A),
     )(f"vault://http/{DEST_OK}")
     assert resolved == TOKEN_OK
+
+
+def _owner_vault(root, owner):
+    digest = hashlib.sha256(owner.encode()).hexdigest()
+    return (
+        root / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+
+
+def _resolved(root, owner, dest):
+    from tinyassets.credential_vault import custody_namespace
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+    return _GeneralVaultCredentialResolver(
+        universe_dir=custody_namespace(root, owner),
+    )(f"vault://http/{dest}")
+
+
+def test_another_universes_grant_does_not_receive_this_centers_token(tmp_path):
+    """A token stays behind when its only grant names a different universe."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [
+            _conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha"),
+            _conn_universe(OWNER_A, "c-gamma", DEST_BETA, "gamma"),
+        ],
+        [
+            _grant_universe(OWNER_A, "ga", "c-alpha", "alpha"),
+            _grant_universe(OWNER_A, "gg", "c-gamma", "gamma"),
+        ],
+    ))
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_OK, TOKEN_OK),
+        _http(DEST_BETA, TOKEN_BETA),
+    ]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 1
+    assert plan["legacy"]["http_kept"] == 1
+    assert plan["tables"]["outbound_connections"]["insert"] == 1
+    assert _ids(live) == {"c-alpha"}
+    vault = _owner_vault(live, OWNER_A)
+    text = vault.read_text(encoding="utf-8")
+    assert TOKEN_BETA not in text
+    assert [item["destination"] for item in json.loads(text)["credentials"]] == [DEST_OK]
+    assert _resolved(live, OWNER_A, DEST_OK) == TOKEN_OK
+    _assert_hidden(json.dumps(plan))
+
+
+def test_destination_disagreement_does_not_restore_that_token(tmp_path):
+    """A destination column that disagrees with the ref is not evidence."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    disagreed = _conn_universe(OWNER_A, "c-bad", DEST_BETA, "alpha")
+    disagreed["destination"] = DEST_GAMMA
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [
+            _conn_universe(OWNER_A, "c-ok", DEST_OK, "alpha"),
+            disagreed,
+        ],
+        [
+            _grant_universe(OWNER_A, "ga", "c-ok", "alpha"),
+            _grant_universe(OWNER_A, "gb", "c-bad", "alpha"),
+        ],
+    ))
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_OK, TOKEN_OK),
+        _http(DEST_BETA, TOKEN_BETA),
+    ]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 1
+    assert plan["legacy"]["http_kept"] == 1
+    assert _ids(live) == {"c-ok"}
+    text = _owner_vault(live, OWNER_A).read_text(encoding="utf-8")
+    assert TOKEN_BETA not in text
+    assert _resolved(live, OWNER_A, DEST_OK) == TOKEN_OK
+    _assert_hidden(json.dumps(plan))
+
+
+def test_definition_does_not_copy_another_destination(tmp_path):
+    """One definition does not give that owner every token in the vault."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.executemany(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES (?, ?, NULL, ?, 'ok')",
+            (
+                ("c-live", OWNER_A, f"vault://http/{DEST_OK}"),
+                ("c-other", OWNER_A, f"vault://http/{DEST_BETA}"),
+                ("c-beta", OWNER_B, f"vault://http/{DEST_BETA}"),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES (?, ?, ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (
+                ("ga-live", "c-live", OWNER_A),
+                ("ga-other", "c-other", OWNER_A),
+                ("gb-beta", "c-beta", OWNER_B),
+            ),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_OK, TOKEN_OK),
+        _http(DEST_BETA, TOKEN_BETA),
+    ]))
+    (alpha / "provider_definitions.json").write_text(json.dumps([{
+        "universe_id": "alpha",
+        "owner_user_id": OWNER_A,
+        "ref": "ga-live",
+    }]), encoding="utf-8")
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 1
+    assert plan["legacy"]["centers_ledger_one_owner"] == 1
+    assert plan["legacy"]["http_kept"] == 1
+    assert _ids(live) == {"c-live"}
+    text = _owner_vault(live, OWNER_A).read_text(encoding="utf-8")
+    assert TOKEN_BETA not in text
+    assert not _owner_vault(live, OWNER_B).exists()
+    assert _resolved(live, OWNER_A, DEST_OK) == TOKEN_OK
+    _assert_hidden(json.dumps(plan))
+
+
+def test_bad_definition_row_does_not_hand_the_center_to_custody(tmp_path):
+    """A non-string universe id must not erase two grant owners."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [
+            _conn_universe(OWNER_A, "c-a", DEST_OK, "alpha"),
+            _conn_universe(OWNER_B, "c-b", DEST_BETA, "alpha"),
+        ],
+        [
+            _grant_universe(OWNER_A, "ga", "c-a", "alpha"),
+            _grant_universe(OWNER_B, "gb", "c-b", "alpha"),
+        ],
+    ))
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
+            (OWNER_A, "bad", json.dumps({
+                "universe_id": ["alpha"],
+                "owner_user_id": OWNER_A,
+                "ref": "ga",
+            })),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (OWNER_A,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_OK, TOKEN_OK),
+        _http(DEST_BETA, TOKEN_BETA),
+    ]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["centers_ledger_one_owner"] == 0
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(source, OWNER_A).exists()
+    _assert_hidden(json.dumps(plan))
+
+
+def test_ledger_type_error_refuses_every_mapped_center(tmp_path, monkeypatch):
+    """A failed ledger read refuses the center instead of trusting custody."""
+    def boom(*_args, **_kwargs):
+        raise TypeError("definition row")
+
+    monkeypatch.setattr(rc, "_add_definition_owners", boom)
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (OWNER_A,),
+        )
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["http_kept"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert TOKEN_OK not in json.dumps(plan)
+    _assert_hidden(json.dumps(plan))
 
 
 def test_workflow_modes_include_inspect_legacy():
