@@ -761,8 +761,10 @@ jobs:
       - name: Roll owner boxes and accept the canary box
         id: owner_boxes
         # Includes a second readiness wait after the fleet sleep, long enough
-        # for the same upload-and-readback publish as the host gate.
-        timeout-minutes: 70
+        # for the same upload-and-readback publish as the host gate, plus the
+        # busy-canary wait: 32 min readiness + up to 10 min of retries + one more
+        # 32 min readiness after the last drain, with headroom.
+        timeout-minutes: 110
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           EXPECTED_SHA: ${{ steps.tag.outputs.revision }}

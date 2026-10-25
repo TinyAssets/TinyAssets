@@ -154,7 +154,10 @@ def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None)
             except RuntimeError as exc:
                 # Only "the canary answered on the old image" is retried; any
                 # other refusal fails acceptance at once.
-                if str(exc) != "canary_box_revision_mismatch" or clock() >= deadline:
+                # No retry starts once its pause would pass the budget, so one
+                # final drain and readiness wait is the most that can follow.
+                if (str(exc) != "canary_box_revision_mismatch"
+                        or clock() + CANARY_RETRY_SECONDS >= deadline):
                     raise
             pause(CANARY_RETRY_SECONDS)
             stage = "control_failed"
