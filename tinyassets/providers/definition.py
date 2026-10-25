@@ -27,11 +27,14 @@ owner's ``ref`` or credential — the remixer supplies their own.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +54,9 @@ _HTTP_PROTOCOLS = known_names()
 PROTOCOLS = (*_HTTP_PROTOCOLS, "cli_json")
 
 _STORE_FILENAME = "provider_definitions.json"
+# One writer at a time for a whole read-modify-write of the store, on the sidecar
+# convention the other per-center stores use (``auto_ship_ledger``).
+_LOCK_FILENAME = ".provider_definitions.json.lock"
 
 # ``ref`` grammar: bounded ASCII, no whitespace/control; a connection grant id.
 _REF_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,190}$")
@@ -146,6 +152,64 @@ def _store_path(universe_id: str) -> Path:
     return _universe_dir(universe_id) / _STORE_FILENAME
 
 
+@contextlib.contextmanager
+def _store_lock(universe_id: str):
+    """Hold the store for one WHOLE read-modify-write. Every writer takes this.
+
+    ``_write`` replaces the entire file, so ``_load`` -> mutate -> ``_write`` is
+    not safe on its own no matter how atomic the replace is: a registration that
+    lands between a disconnect's load and write is erased by the disconnect
+    (silently deleting an unrelated definition and orphaning its broker
+    descriptor), and a registration that writes its stale snapshot afterwards
+    brings a disconnected definition back (Codex review 2026-10-25). The two
+    writers took no common lock -- disconnect's assignment admission is a
+    different, non-reentrant lock that registration never touches -- so this
+    store gets its own.
+
+    Readers deliberately take nothing: ``_write`` is an atomic replace, so a
+    reader always sees one whole generation, old or new.
+
+    Cross-platform blocking lock on a sidecar beside the store, opened link-free
+    through ``universe_files.open_lock_file`` -- the convention the other
+    per-center stores already use (``auto_ship_ledger._file_lock``).
+    """
+    from tinyassets.universe_files import open_lock_file
+
+    directory = _store_path(universe_id).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = open_lock_file(directory, _LOCK_FILENAME, mode=0o600)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                import msvcrt
+
+                with contextlib.suppress(OSError):
+                    os.lseek(fd, 0, 0)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def _load(universe_id: str) -> list[dict[str, Any]]:
     """Load the per-universe registry store.
 
@@ -176,10 +240,9 @@ def _write(universe_id: str, rows: list[dict[str, Any]]) -> None:
     path = _store_path(universe_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     # A UNIQUE temp file per write + atomic replace (Codex review): a fixed temp name
-    # let two concurrent writers clobber each other mid-replace. NOTE (MVP-deferred,
-    # matching the single-founder concurrency-edge law): the load->append->write cycle
-    # is not yet locked, so two truly-concurrent registrations could still lose a row;
-    # a per-universe lock is the follow-up when multi-writer concurrency is in scope.
+    # let two concurrent writers clobber each other mid-replace. The surrounding
+    # load->mutate->write cycle is serialized by ``_store_lock``; every caller of
+    # this function holds it, so no writer can replace the file over another's rows.
     fd, tmp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=".provdef-", suffix=".json.tmp"
     )
@@ -234,41 +297,45 @@ def register_definition(
         ref=ref,
         model=model,
     )
-    rows = _load(universe_id)
-    for row in rows:
-        if row.get("id") != definition_id:
-            continue
-        # Idempotent re-register: everything is derived from the id inputs except
-        # owner + visibility. Owner mismatch is a conflict; visibility may be
-        # re-declared by the owner (private<->commons) without a new id.
-        if row.get("owner_user_id") != owner_user_id:
-            raise ProviderDefinitionError("definition owned by another principal")
-        # Integrity re-check on the idempotent path (Codex adapt #3): a stored row
-        # sharing this id whose fields no longer content-address it (e.g. a swapped
-        # ref) must fail closed, never be returned or rewritten under a trusted id.
-        verified = _verified_definition(row)
-        _publish_source(verified)
-        if verified.visibility != visibility:
-            row["visibility"] = visibility
-            _write(universe_id, rows)
-            return _verified_definition(row)
-        return verified
+    # The broker publication stays INSIDE the lock, before the local write: its
+    # grant latch is what makes a registration succeed, and releasing the store
+    # to publish would reopen the lost-write window this lock closes.
+    with _store_lock(universe_id):
+        rows = _load(universe_id)
+        for row in rows:
+            if row.get("id") != definition_id:
+                continue
+            # Idempotent re-register: everything is derived from the id inputs except
+            # owner + visibility. Owner mismatch is a conflict; visibility may be
+            # re-declared by the owner (private<->commons) without a new id.
+            if row.get("owner_user_id") != owner_user_id:
+                raise ProviderDefinitionError("definition owned by another principal")
+            # Integrity re-check on the idempotent path (Codex adapt #3): a stored row
+            # sharing this id whose fields no longer content-address it (e.g. a swapped
+            # ref) must fail closed, never be returned or rewritten under a trusted id.
+            verified = _verified_definition(row)
+            _publish_source(verified)
+            if verified.visibility != visibility:
+                row["visibility"] = visibility
+                _write(universe_id, rows)
+                return _verified_definition(row)
+            return verified
 
-    definition = ProviderDefinition(
-        id=definition_id,
-        universe_id=universe_id,
-        owner_user_id=owner_user_id,
-        access_method=access_method,
-        protocol=protocol,
-        model=model,
-        ref=ref,
-        visibility=visibility,
-        created_at=now or _now_iso(),
-    )
-    rows.append(definition.as_dict())
-    _publish_source(definition)
-    _write(universe_id, rows)
-    return definition
+        definition = ProviderDefinition(
+            id=definition_id,
+            universe_id=universe_id,
+            owner_user_id=owner_user_id,
+            access_method=access_method,
+            protocol=protocol,
+            model=model,
+            ref=ref,
+            visibility=visibility,
+            created_at=now or _now_iso(),
+        )
+        rows.append(definition.as_dict())
+        _publish_source(definition)
+        _write(universe_id, rows)
+        return definition
 
 
 def _publish_source(definition: ProviderDefinition) -> None:
@@ -344,16 +411,17 @@ def remove_definitions(
     asking owner's rows are matched -- another principal's candidate for the same
     ``ref`` is never theirs to remove.
     """
-    rows = _load(universe_id)
-    kept = [
-        row for row in rows
-        if (row.get("owner_user_id"), row.get("access_method"), row.get("ref"))
-        != (owner_user_id, access_method, ref)
-    ]
-    removed = len(rows) - len(kept)
-    if removed:
-        _write(universe_id, kept)
-    return removed
+    with _store_lock(universe_id):
+        rows = _load(universe_id)
+        kept = [
+            row for row in rows
+            if (row.get("owner_user_id"), row.get("access_method"), row.get("ref"))
+            != (owner_user_id, access_method, ref)
+        ]
+        removed = len(rows) - len(kept)
+        if removed:
+            _write(universe_id, kept)
+        return removed
 
 
 def list_commons_definitions(base: str | Path) -> list[dict[str, Any]]:

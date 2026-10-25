@@ -1,8 +1,10 @@
 """Reconnect in one tap, and disconnect leaves nothing: the two file-level rules."""
 
+import contextlib
 import json
 import os
 import sqlite3
+import threading
 
 import pytest
 
@@ -65,6 +67,88 @@ def test_removing_definitions_is_scoped_to_the_asking_owner(tmp_path, monkeypatc
     assert remove_definitions("center", owner_user_id="owner",
                               access_method="subscription_cli", ref="fake-cli") == 0
     assert (center / _STORE_FILENAME).read_bytes() == before
+
+
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+@pytest.mark.parametrize("first", ["remove", "register"])
+def test_registration_and_removal_cannot_lose_each_other_s_write(tmp_path, monkeypatch, first):
+    """Both interleavings of the store's two writers, forced deterministically.
+
+    ``_write`` replaces the whole file, so without one common lock the writer
+    that loaded first overwrites the other: a disconnect erases an unrelated
+    registration that landed after its load, or a registration writes its stale
+    snapshot afterwards and brings the disconnected definition back.
+    """
+    from tinyassets.providers import definition as registry
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (tmp_path / "center").mkdir()
+    # The broker publication is not what this test is about; the store is.
+    monkeypatch.setattr(registry, "_publish_source", lambda definition: None)
+    disconnecting = registry.register_definition(
+        universe_id="center", owner_user_id="owner", access_method="subscription_cli",
+        protocol="cli_json", model="default", ref="fake-cli")
+
+    second = "register" if first == "remove" else "remove"
+    events: list[tuple[str, str]] = []
+    holding, release, at_lock, second_loaded = (threading.Event() for _ in range(4))
+    real_load, real_write, real_lock = registry._load, registry._write, registry._store_lock
+
+    def who():
+        return threading.current_thread().name
+
+    def load(universe_id):
+        rows = real_load(universe_id)
+        events.append(("load", who()))
+        if who() == second:
+            second_loaded.set()
+        if who() == first:
+            holding.set()
+            release.wait(30)
+        return rows
+
+    def write(universe_id, rows):
+        events.append(("write", who()))
+        return real_write(universe_id, rows)
+
+    @contextlib.contextmanager
+    def lock(universe_id):
+        if who() == second:
+            at_lock.set()
+        with real_lock(universe_id):
+            yield
+
+    monkeypatch.setattr(registry, "_load", load)
+    monkeypatch.setattr(registry, "_write", write)
+    monkeypatch.setattr(registry, "_store_lock", lock)
+
+    work = {
+        "remove": lambda: registry.remove_definitions(
+            "center", owner_user_id="owner", access_method="subscription_cli", ref="fake-cli"),
+        # An unrelated HTTP source, registered by the same owner at the same moment.
+        "register": lambda: registry.register_definition(
+            universe_id="center", owner_user_id="owner", access_method="api_key_http",
+            protocol="openai_chat", model="reply-model", ref="grant-1"),
+    }
+    threads = [threading.Thread(target=work[name], name=name) for name in (first, second)]
+    threads[0].start()
+    assert holding.wait(30), "the first writer never reached its load"
+    threads[1].start()
+    assert at_lock.wait(30), "the second writer never reached the store lock"
+    # The first writer is parked between its load and its write. An unlocked
+    # store lets the second writer load that same stale generation right here.
+    assert not second_loaded.wait(0.5), "the second writer loaded while the first held the store"
+    release.set()
+    for thread in threads:
+        thread.join(30)
+        assert not thread.is_alive()
+
+    # Whichever went first: the disconnected definition stays gone and the
+    # unrelated registration survives. Neither write was lost.
+    assert {(d.access_method, d.ref) for d in registry.list_definitions("center")} == {
+        ("api_key_http", "grant-1")}
+    assert disconnecting.id not in {d.id for d in registry.list_definitions("center")}
+    assert events.index(("load", second)) > events.index(("write", first))
 
 
 class _Ledger:
