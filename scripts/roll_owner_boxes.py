@@ -13,6 +13,12 @@ import tempfile
 from pathlib import Path
 
 OUTCOMES = ("slept", "asleep", "incomplete")
+_SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}\Z")
+_CONTROL_CODES = frozenset({
+    "image_drain_failed", "image_refused", "image_install_failed",
+    "image_drain_timeout", "broker_peer_refused", "harness_missing",
+    "control_timeout",
+})
 
 
 def install_image(image_ref, image_id, root):
@@ -55,26 +61,78 @@ def install_image(image_ref, image_id, root):
     return target
 
 
+def _public_code(exc):
+    text = str(exc)
+    if type(exc) is RuntimeError and _SAFE_CODE.fullmatch(text):
+        return text
+    return ""
+
+
+def _control_error(exc):
+    """A fixed code from the control SSH, never its text or a principal."""
+    stdout = getattr(exc, "stdout", None)
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    if isinstance(stdout, str) and stdout.strip():
+        try:
+            payload = json.loads(stdout)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("error") in _CONTROL_CODES:
+            return payload["error"]
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "control_timeout"
+    return _public_code(exc)
+
+
+def _host_error(exc):
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "image_drain_timeout"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "image_install_failed"
+    if isinstance(exc, PermissionError):
+        return "broker_peer_refused"
+    if isinstance(exc, FileNotFoundError):
+        return "harness_missing"
+    if isinstance(exc, ValueError):
+        return "image_refused"
+    return "image_drain_failed"
+
+
 def run(control, canary, prepare, ready=lambda: None):
     receipt = {"counts": dict.fromkeys(OUTCOMES, 0),
-               "canary": "failed", "control": "failed"}
+               "canary": "failed", "control": "failed", "reason": "control_failed"}
+    stage = "prepare_failed"
     try:
         # A public request first makes the canary awake. Successful fleet drain
         # then proves its ordinary sleep before the acceptance request wakes it.
         prepare()
+        stage = "control_failed"
         counts = control()
         if (set(counts) != set(OUTCOMES)
                 or any(type(n) is not int or n < 0 for n in counts.values())):
-            raise ValueError("invalid deployment drain result")
+            receipt["reason"] = "invalid_drain"
+            return receipt, 1
         receipt["counts"] = counts
         if counts["incomplete"]:
+            # The control call returned. One owner did not finish ordinary sleep.
+            receipt["control"] = "incomplete"
+            receipt["reason"] = "incomplete_drain"
             return receipt, 1
         receipt["control"] = "passed"
+        stage = "readiness_failed"
         ready()
+        stage = "canary_failed"
         if canary() is True:
             receipt["canary"] = "passed"
-    except Exception:
-        pass
+            receipt["reason"] = "passed"
+        else:
+            receipt["reason"] = "canary_probe_failed"
+    except Exception as exc:
+        if stage == "control_failed":
+            receipt["reason"] = _control_error(exc) or "control_failed"
+        else:
+            receipt["reason"] = _public_code(exc) or stage
     return receipt, int(receipt["canary"] != "passed")
 
 
@@ -114,8 +172,8 @@ def main(argv=None):
         try:
             print(json.dumps(host_control(args.image_ref)))
             return 0
-        except Exception:
-            print('{"error":"image_drain_failed"}')
+        except Exception as exc:
+            print(json.dumps({"error": _host_error(exc)}))
             return 1
     if not all((args.ssh_target, args.ssh_key, args.expected_sha, args.receipt)):
         parser.error("deploy mode needs SSH target/key, expected SHA and receipt path")

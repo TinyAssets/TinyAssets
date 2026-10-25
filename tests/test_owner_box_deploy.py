@@ -29,10 +29,19 @@ def test_receipt_counts_are_allowlisted_and_incomplete_drain_blocks_canary(count
     receipt, actual = driver.run(lambda: counts, lambda: calls.append("canary") or True,
                                  lambda: None)
     assert actual == code
-    assert set(receipt) == {"counts", "canary", "control"}
+    assert set(receipt) == {"counts", "canary", "control", "reason"}
     assert set(receipt["counts"]) == set(driver.OUTCOMES)
     assert calls == ([] if code else ["canary"])
     assert "private" not in json.dumps(receipt)
+    if counts.get("incomplete"):
+        assert receipt["control"] == "incomplete"
+        assert receipt["reason"] == "incomplete_drain"
+        assert receipt["canary"] == "failed"
+    elif code == 0:
+        assert receipt["reason"] == "passed"
+    else:
+        assert receipt["control"] == "failed"
+        assert receipt["reason"] == "invalid_drain"
 
 
 def test_canary_failure_and_control_failure_are_fatal_and_do_not_leak():
@@ -41,10 +50,41 @@ def test_canary_failure_and_control_failure_are_fatal_and_do_not_leak():
     receipt, code = driver.run(broken, lambda: pytest.fail("control failed"), lambda: None)
     assert code == 1
     assert receipt["control"] == receipt["canary"] == "failed"
+    assert receipt["reason"] == "control_failed"
     assert "private" not in json.dumps(receipt)
     receipt, code = driver.run(lambda: {"slept": 1, "asleep": 0, "incomplete": 0},
                                lambda: False, lambda: None)
     assert code == 1 and receipt["canary"] == "failed"
+    assert receipt["reason"] == "canary_probe_failed"
+
+
+def test_control_ssh_error_code_is_kept_and_other_text_is_not():
+    secret = "LEAK-TOKEN-0123456789abcdef"
+
+    def coded():
+        raise subprocess.CalledProcessError(
+            1, ["ssh"], output='{"error":"image_drain_failed"}')
+
+    receipt, code = driver.run(coded, lambda: True, lambda: None)
+    assert code == 1 and receipt["reason"] == "image_drain_failed"
+    assert receipt["counts"] == {"slept": 0, "asleep": 0, "incomplete": 0}
+
+    def leaked():
+        raise subprocess.CalledProcessError(1, ["ssh"], output=json.dumps({"error": secret}))
+
+    receipt, code = driver.run(leaked, lambda: True, lambda: None)
+    assert receipt["reason"] == "control_failed"
+    assert secret not in json.dumps(receipt)
+
+
+def test_host_control_failure_prints_a_fixed_code(capsys, monkeypatch):
+    def boom(_image_ref):
+        raise PermissionError("peer uid 1 principal secret")
+
+    monkeypatch.setattr(driver, "host_control", boom)
+    code = driver.main(["--image-ref", "synthetic@sha256:" + "a" * 64, "--control"])
+    assert code == 1
+    assert capsys.readouterr().out.strip() == '{"error": "broker_peer_refused"}'
 
 
 def test_deploy_uses_one_control_call_regardless_of_fleet_size():
