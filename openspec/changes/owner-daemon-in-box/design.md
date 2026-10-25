@@ -703,8 +703,12 @@ draining again; it is never a per-box operation.
 - Deployment drain closes the box's existing work-admission gate atomically with
   request and background-turn admission, lets already-admitted work finish, then
   takes the normal flush, detach and snapshot sleep path.
+- An owner whose status reports work in progress is never drained: it is
+  reported as busy, keeps serving, and starts the published image at its next
+  ordinary sleep and wake. A busy owner never blocks a deploy (2026-10-25: every
+  deploy failed while one, then three, owners were mid-turn).
 - A timeout or unknown activity state never authorizes killing a turn; it is
-  reported as an incomplete drain.
+  reported as an incomplete drain, which still fails acceptance.
 - Concurrent requests wait or get a retryable response; they are never replayed
   after ambiguous execution.
 - Draining doesn't eagerly restart ordinary owners.
@@ -730,6 +734,10 @@ ordinary public router before publishing. Its one root-authenticated broker
 permanent volume bindings. Awake owners use the existing `VolumeLifecycle.sleep`
 under the broker owner lock. A busy or unknown drain stays pending on that same
 volume state machine and reports `incomplete`; no ordinary owner is restarted.
+An owner confirmed mid-turn by its status is not drained at all and is reported
+as `busy` (deferred to its next wake); it does not block acceptance. Image retention keeps every
+harness a running sandbox's bundle names, and removes no harness while that set
+is unknowable, so a deferred owner never loses its rootfs mid-turn.
 Only a complete drain proceeds to public canary acceptance, which wakes the canary
 on `images.current`, checks its baked revision and completes a model turn.
 Rollback repeats publication and drain with the previous compatible image.

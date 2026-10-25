@@ -2410,6 +2410,10 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
   elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
     rm -f -- "${root}/harness-current"
   fi
+  if harness_in_use "$name"; then
+    log "kept candidate harness ${name}: a running owner still reads it"
+    return 0
+  fi
   case "$name" in
     harness-[0-9a-f]*)
       # Directories need write to unlink children. chmod -R follows symlinks
@@ -2418,6 +2422,17 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
       rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
         || err "could not remove candidate harness ${name}" ;;
   esac
+}
+harness_in_use() {  # a running owner sandbox still reads it (or that is unknowable)
+  local bundles="${BOX_BUNDLE_ROOT:-/var/lib/boxhostd/state/bundles}" config
+  [ -e "$bundles" ] || return 1
+  [ -d "$bundles" ] && [ -r "$bundles" ] || return 0
+  for config in "$bundles"/owner-*/config.json; do
+    [ -e "$config" ] || continue
+    [ -L "$config" ] || [ ! -r "$config" ] && return 0
+    grep -qF -- "/${1}\"" "$config" && return 0
+  done
+  return 1
 }
 prune_old_harnesses() {  # successful deploys must not keep every historical rootfs
   local root link name previous
@@ -2430,6 +2445,15 @@ prune_old_harnesses() {  # successful deploys must not keep every historical roo
   # prunes it, once it is no longer the rollback target.
   previous="${HARNESS_PREVIOUS_LINK:-}"
   previous="${previous##*/}"
+  # Launches hold .harness.lock shared from image selection until their bundle
+  # names the image; hold it exclusively from the bundle scan through deletion.
+  local lock_fd
+  exec {lock_fd}>"${root}/.harness.lock" || return 0
+  if ! flock -x -w 120 "$lock_fd"; then
+    log "kept every harness: owner launches held the harness lock"
+    exec {lock_fd}>&-
+    return 0
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     [ "$name" = "harness-current" ] && continue
@@ -2437,6 +2461,11 @@ prune_old_harnesses() {  # successful deploys must not keep every historical roo
       continue
     fi
     if [ -n "$previous" ] && [ "$name" = "$previous" ]; then
+      continue
+    fi
+    # An owner left serving through a deploy runs its image until its own sleep.
+    if harness_in_use "$name"; then
+      log "kept harness ${name}: a running owner still reads it"
       continue
     fi
     # Directories need write to unlink children. Do not follow symlinks.
@@ -2447,6 +2476,7 @@ prune_old_harnesses() {  # successful deploys must not keep every historical roo
       err "could not remove old harness ${name}"
     fi
   done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name 'harness-[0-9a-f]*' -printf '%f\n')
+  exec {lock_fd}>&-
   return 0
 }
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.

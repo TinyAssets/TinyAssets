@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-OUTCOMES = ("slept", "asleep", "incomplete")
+OUTCOMES = ("slept", "asleep", "busy", "incomplete")
 _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}\Z")
 _CONTROL_CODES = frozenset({
     "image_drain_failed", "image_refused", "image_install_failed",
@@ -109,6 +109,8 @@ def run(control, canary, prepare, ready=lambda: None):
         prepare()
         stage = "control_failed"
         counts = control()
+        if isinstance(counts, dict) and "busy" not in counts:
+            counts = {**counts, "busy": 0}  # a broker from before the busy count
         if (set(counts) != set(OUTCOMES)
                 or any(type(n) is not int or n < 0 for n in counts.values())):
             receipt["reason"] = "invalid_drain"
@@ -119,7 +121,10 @@ def run(control, canary, prepare, ready=lambda: None):
             receipt["control"] = "incomplete"
             receipt["reason"] = "incomplete_drain"
             return receipt, 1
-        receipt["control"] = "passed"
+        # A busy owner never blocks a deploy: it was never drained, and it
+        # starts the published image at its next ordinary wake. The canary
+        # still decides acceptance on that image.
+        receipt["control"] = "deferred" if counts["busy"] else "passed"
         stage = "readiness_failed"
         ready()
         stage = "canary_failed"

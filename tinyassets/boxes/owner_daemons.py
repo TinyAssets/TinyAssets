@@ -1,6 +1,7 @@
 """boxhostd executes broker-authorized sandbox operations and reports facts."""
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import logging
@@ -104,6 +105,29 @@ class OwnerDaemons:
         if not record:
             raise BoxAuthError("broker launch authorization is missing")
         launch_options = {}
+        from tinyassets.boxes.images import harness_lease
+
+        lease = (harness_lease(self.images.directory) if self.images is not None
+                 else contextlib.nullcontext())
+        with lease:
+            self._start_sandbox(box, record, launch_options)
+        while True:
+            if not self.runtime.alive(box.uid):
+                raise BoxError("owner daemon exited during startup")
+            try:
+                status = self._rpc(box)
+                if not status["draining"]:
+                    box.started = box.last = time.monotonic()
+                    box.error = ""
+                    return
+            except (OSError, http.client.HTTPException):
+                pass
+            if time.monotonic() >= deadline:
+                raise BoxError("owner app socket did not become ready")
+            time.sleep(.05)
+
+    def _start_sandbox(self, box, record, launch_options):
+        """Image selection through the written bundle, under the harness lease."""
         if self.images is not None:
             image = self.images.current
             selected = self.images.directory / image
@@ -132,20 +156,6 @@ class OwnerDaemons:
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
                            volume_generation=record["volume_generation"], **launch_options)
-        while True:
-            if not self.runtime.alive(box.uid):
-                raise BoxError("owner daemon exited during startup")
-            try:
-                status = self._rpc(box)
-                if not status["draining"]:
-                    box.started = box.last = time.monotonic()
-                    box.error = ""
-                    return
-            except (OSError, http.client.HTTPException):
-                pass
-            if time.monotonic() >= deadline:
-                raise BoxError("owner app socket did not become ready")
-            time.sleep(.05)
 
     def _failed(self, box, error):
         box.failures += 1
