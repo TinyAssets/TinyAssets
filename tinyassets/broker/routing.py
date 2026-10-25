@@ -251,7 +251,9 @@ class BrokerLifecycle:
                     if not status["awake"]:
                         counts["asleep"] += 1
                         continue
-                    active = status.get("active")
+                    # boxhostd reports None when the box does not answer; a host
+                    # without the field reads as idle, as before.
+                    active = status.get("active", 0)
                     if active is None:
                         # Awake but its own status does not answer: never drained
                         # on a guess (no sleep intent for readiness to wait on),
