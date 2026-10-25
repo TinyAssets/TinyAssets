@@ -25,10 +25,10 @@ import json
 import math
 import os
 import re
-import sys
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -250,7 +250,8 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
         if identity not in by_id:
             raise Refusal("container_image_unmapped")
         protected.add(identity)
-    for slot, ref in (("configured", configured), ("rollback_target", receipt.get("rollback_target"))):
+    rollback = receipt.get("rollback_target")
+    for slot, ref in (("configured", configured), ("rollback_target", rollback)):
         if ref == "" and ref == receipt.get("rollback_target"):
             continue
         if isinstance(ref, str) and ref and ref in refs:
