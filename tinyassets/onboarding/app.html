@@ -940,8 +940,10 @@
   </nav>
   </main>
   <style nonce="__TA_NONCE__">
-    #app-recovery-controls{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;padding-bottom:max(6px,env(safe-area-inset-bottom));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:12px}
-    #app-recovery-controls a{color:var(--ink,#111)}
+    /* Always at the bottom, even when nothing above it loaded (it used to rise
+       under the phone's status bar), clear of notches, with 44px tap targets. */
+    #app-recovery-controls{flex:0 0 auto;margin-top:auto;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:4px max(10px,env(safe-area-inset-right)) max(4px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:14px}
+    #app-recovery-controls a{color:var(--ink,#111);display:inline-flex;align-items:center;min-height:44px;padding:0 8px}
   </style>
   <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
   <script nonce="__TA_NONCE__">
