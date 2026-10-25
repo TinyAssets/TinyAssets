@@ -473,11 +473,6 @@ def _source_definition(owner, universe, ref):
 
 def test_record_without_a_secret_inserts_nothing(tmp_path):
     """A matching destination with no usable secret is skipped, not connected."""
-    assert rc._usable_secret({"token": "   "}) is False
-    assert rc._usable_secret({}) is False
-    assert rc._usable_secret({"access_token": "kept"}) is True
-    assert rc._usable_secret({"secret": "kept"}) is True
-    assert rc._usable_secret({"api_key": "kept"}) is True
     source = tmp_path / "source"
     live = _live(tmp_path)
     (live / "beta").mkdir()
@@ -641,6 +636,271 @@ def test_live_vault_without_a_secret_authorizes_no_rows(tmp_path):
     assert plan["tables"]["connection_capabilities"]["insert"] == 0
     assert plan["legacy"]["definitions"] == 0
     assert _ids(live) == set()
+
+
+def test_service_is_not_a_resolver_destination(tmp_path):
+    """Only a destination the real resolver can serve becomes a connection."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    (live / "beta").mkdir()
+    bad_def = _source_definition(OWNER_A, "alpha", "ga-service")
+    good_def = _source_definition(OWNER_B, "beta", "gb-live")
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.executemany(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES (?, ?, NULL, ?, 'ok')",
+            (
+                ("c-omitted", OWNER_A, "vault://http/omitted.example.com"),
+                ("c-blank", OWNER_A, "vault://http/blank.example.com"),
+                ("c-mismatch", OWNER_A, "vault://http/mismatch.example.com"),
+                ("c-beta", OWNER_B, f"vault://http/{DEST_BETA}"),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES (?, ?, ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (
+                ("ga-service", "c-omitted", OWNER_A),
+                ("ga-blank", "c-blank", OWNER_A),
+                ("ga-mismatch", "c-mismatch", OWNER_A),
+                ("gb-live", "c-beta", OWNER_B),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES (?, 'model_use')",
+            (("c-omitted",), ("c-blank",), ("c-mismatch",), ("c-beta",)),
+        )
+        for document in (bad_def, good_def):
+            db.execute(
+                "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
+                (document["owner_user_id"], document["id"], json.dumps(document)),
+            )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.executemany(
+            "INSERT INTO llm_credential_deposit_owners VALUES (?, ?)",
+            (("alpha", OWNER_A), ("beta", OWNER_B)),
+        )
+    alpha = source / ".platform" / "credential-vaults" / "alpha"
+    beta = source / ".platform" / "credential-vaults" / "beta"
+    alpha.mkdir(parents=True)
+    beta.mkdir(parents=True)
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([
+        {
+            "credential_type": "http",
+            "service": "omitted.example.com",
+            "token": TOKEN_OK,
+        },
+        {
+            "credential_type": "http",
+            "service": "blank.example.com",
+            "destination": "   ",
+            "token": TOKEN_OK,
+        },
+        {
+            "credential_type": "http",
+            "service": "mismatch.example.com",
+            "destination": "other.example.com",
+            "token": TOKEN_OK,
+        },
+    ]))
+    (beta / ".credential-vault.json").write_bytes(_vault_bytes([
+        _http(DEST_BETA, TOKEN_OK),
+    ]))
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["http_kept"] == 1
+    assert plan["legacy"]["secret_missing"] == 0
+    assert plan["legacy"]["unmatched"] == 3
+    assert plan["tables"]["outbound_connections"]["insert"] == 1
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 1
+    assert plan["tables"]["connection_capabilities"]["insert"] == 1
+    assert plan["legacy"]["definitions"] == 1
+    assert _ids(live) == {"c-beta"}
+    assert not (live / "alpha" / "provider_definitions.json").exists()
+    from tinyassets.credential_vault import custody_namespace
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+    resolved = _GeneralVaultCredentialResolver(
+        universe_dir=custody_namespace(live, OWNER_B),
+    )(f"vault://http/{DEST_BETA}")
+    assert resolved == TOKEN_OK
+    _assert_hidden(json.dumps(plan))
+
+
+def test_resolver_serves_every_kept_row(tmp_path):
+    """Kept rows are exactly the refs the general resolver can answer."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    secret_dest = "secret.example.com"
+    key_dest = "key.example.com"
+    spaced_dest = "spaced.example.com"
+    records = (
+        ("c-pad", f"vault://http/{DEST_OK} ", {
+            "credential_type": "http ",
+            "service": "not-the-host.example.com",
+            "destination": f"  {DEST_OK}  ",
+            "token": TOKEN_OK,
+        }, TOKEN_OK, DEST_OK),
+        ("c-lead", f"  vault://http/{spaced_dest}", {
+            "credential_type": "http",
+            "service": "other-service.example.com",
+            "destination": f"  {spaced_dest}  ",
+            "token": "   ",
+            "secret": TOKEN_OTHER,
+        }, TOKEN_OTHER, spaced_dest),
+        ("c-secret", f"vault://http/{secret_dest}", {
+            "credential_type": "http",
+            "service": secret_dest,
+            "destination": secret_dest,
+            "token": 0,
+            "secret": TOKEN_REVOKED,
+        }, TOKEN_REVOKED, secret_dest),
+        ("c-key", f"vault://http/{key_dest}", {
+            "credential_type": "http",
+            "service": "unused.example.com",
+            "destination": key_dest,
+            "api_key": TOKEN_UNMATCHED,
+        }, TOKEN_UNMATCHED, key_dest),
+    )
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.executemany(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES (?, ?, NULL, ?, 'ok')",
+            tuple(
+                (connection_id, OWNER_A, ref)
+                for connection_id, ref, _record, _token, _dest in records
+            ),
+        )
+        db.executemany(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES (?, ?, ?, NULL, '2026-10-22T04:41:03+00:00')",
+            tuple(
+                (f"g-{connection_id}", connection_id, OWNER_A)
+                for connection_id, _ref, _record, _token, _dest in records
+            ),
+        )
+        db.executemany(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES (?, 'model_use')",
+            tuple((connection_id,) for connection_id, _ref, _record, _token, _dest in records),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)", (OWNER_A,),
+        )
+    platform = source / ".platform" / "credential-vaults" / "alpha"
+    platform.mkdir(parents=True)
+    (platform / ".credential-vault.json").write_bytes(
+        _vault_bytes([record for _connection_id, _ref, record, _token, _dest in records])
+    )
+    plan = rc.merge(live, source)
+    assert plan["legacy"]["http_kept"] == 4
+    assert plan["legacy"]["secret_missing"] == 0
+    assert plan["legacy"]["unmatched"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 4
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 4
+    assert plan["tables"]["connection_capabilities"]["insert"] == 4
+    assert _ids(live) == {connection_id for connection_id, _ref, _record, _token, _dest in records}
+    from tinyassets.credential_vault import custody_namespace
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+    resolver = _GeneralVaultCredentialResolver(universe_dir=custody_namespace(live, OWNER_A))
+    for _connection_id, ref, _record, token, dest in records:
+        assert resolver(ref) == token
+        assert resolver(f"vault://http/{dest}") == token
+    _assert_hidden(json.dumps(plan))
+
+
+def test_earlier_empty_secret_blocks_a_later_token(tmp_path):
+    """The resolver raises on the first match, so a later token does not count."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    payload = json.dumps({"schema_version": 1, "credentials": [
+        {"credential_type": "http", "destination": DEST_OK, "token": "   "},
+        {"credential_type": "http", "destination": DEST_OK, "token": TOKEN_OK},
+    ]})
+    vault = (
+        live / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    vault.parent.mkdir(parents=True)
+    vault.write_text(payload, encoding="utf-8")
+    before = vault.read_bytes()
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        db.execute(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, revoked_at, credential_ref, label) "
+            "VALUES ('c-live', ?, NULL, ?, 'ok')",
+            (OWNER_A, f"vault://http/{DEST_OK}"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants "
+            "(grant_id, connection_id, owner_user_id, revoked_at, granted_at) "
+            "VALUES ('ga-live', 'c-live', ?, NULL, '2026-10-22T04:41:03+00:00')",
+            (OWNER_A,),
+        )
+        db.execute(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES ('c-live', 'model_use')"
+        )
+        db.execute(
+            "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
+            (OWNER_A, _definition()["id"], json.dumps(_definition())),
+        )
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)", (OWNER_A,),
+        )
+    platform = source / ".platform" / "credential-vaults" / "alpha"
+    platform.mkdir(parents=True)
+    (platform / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    existing = (
+        source / ".broker" / "accounts" / digest / "credentials" / ".credential-vault.json"
+    )
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(before)
+    plan = rc.merge(live, source)
+    assert vault.read_bytes() == before
+    assert existing.read_bytes() == before
+    assert plan["legacy"]["http_kept"] == 0
+    assert plan["legacy"]["secret_missing"] == 0
+    assert plan["tables"]["outbound_connections"]["insert"] == 0
+    assert plan["tables"]["outbound_connection_grants"]["insert"] == 0
+    assert plan["tables"]["connection_capabilities"]["insert"] == 0
+    assert plan["legacy"]["definitions"] == 0
+    assert _ids(live) == set()
+    assert not (live / "alpha" / "provider_definitions.json").exists()
+    from tinyassets.credential_vault import custody_namespace
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+    resolver = _GeneralVaultCredentialResolver(universe_dir=custody_namespace(live, OWNER_A))
+    with pytest.raises(RuntimeError, match="credential reference is unavailable"):
+        resolver(f"vault://http/{DEST_OK}")
 
 
 def test_non_string_destination_does_not_abort_the_other_center(tmp_path):
