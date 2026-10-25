@@ -139,6 +139,11 @@ def test_a_lapsed_owner_session_goes_straight_to_sign_in():
         page.goto('https://app.example/app')
         page.get_by_role('button', name='Connect', exact=True).click()
         expect(page.get_by_text('Signing in again did not restore access')).to_be_visible()
+        # Retrying the same lapse keeps reporting; it never cycles back to sign-in.
+        page.evaluate("document.body.dataset.stay = 'yes'")
+        page.get_by_role('button', name='Connect', exact=True).click()
+        expect(page.get_by_text('Signing in again did not restore access')).to_be_visible()
+        assert page.evaluate("document.body.dataset.stay") == 'yes'
         # A sign-in that was never retried does not suppress a later lapse.
         page.evaluate("sessionStorage.setItem('ta_owner_again', String(Date.now() - 9 * 3600e3))")
         page.get_by_role('button', name='Connect', exact=True).click()

@@ -7216,8 +7216,7 @@
       try{
         const at=Number(sessionStorage.getItem("ta_owner_again"));
         again=at>0&&Date.now()-at<600000;
-        if(again)sessionStorage.removeItem("ta_owner_again");
-        else sessionStorage.setItem("ta_owner_again",String(Date.now()));
+        if(!again)sessionStorage.setItem("ta_owner_again",String(Date.now()));
       }catch(_e){}
       if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
       await openSignIn("/app/owner-sign-in?app=1");
