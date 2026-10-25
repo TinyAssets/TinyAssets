@@ -243,7 +243,7 @@ class BrokerLifecycle:
         await self.host_call(request, "select_image", image=image)
         with closing(self.identities._connect(write=False)) as db:
             owners = [row[0] for row in db.execute("SELECT principal FROM owner_volumes")]
-        counts = {"slept": 0, "asleep": 0, "busy": 0, "incomplete": 0}
+        counts = {"slept": 0, "asleep": 0, "busy": 0, "unresponsive": 0, "incomplete": 0}
         for owner in owners:
             try:
                 async with owner_lock(self.identities.path, owner):
@@ -252,6 +252,12 @@ class BrokerLifecycle:
                         counts["asleep"] += 1
                         continue
                     active = status.get("active")
+                    if active is None:
+                        # Awake but its own status does not answer: never drained
+                        # on a guess (no sleep intent for readiness to wait on),
+                        # and one owner's wedged box never blocks the fleet.
+                        counts["unresponsive"] += 1
+                        continue
                     if type(active) is int and active > 0:
                         # Confirmed mid-turn: never drained, and no sleep intent is
                         # left for readiness to wait on. It starts the selected

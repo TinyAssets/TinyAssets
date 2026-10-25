@@ -36,7 +36,7 @@ def test_deploy_sleeps_awake_owners_without_eager_restart(rolling):
     uid = rolling.wake("a")
     before = len(rolling.runtime.starts)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 1, "asleep": 2, "busy": 0, "incomplete": 0}
+        "slept": 1, "asleep": 2, "busy": 0, "unresponsive": 0, "incomplete": 0}
     assert rolling.runtime.live == set()
     assert rolling.runtime.stops == [uid]
     assert len(rolling.runtime.starts) == before
@@ -49,7 +49,7 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
     drive(rolling.routing.sleep("a"))
     before = len(rolling.runtime.starts), len(rolling.runtime.stops)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 0, "asleep": 3, "busy": 0, "incomplete": 0}
+        "slept": 0, "asleep": 3, "busy": 0, "unresponsive": 0, "incomplete": 0}
     assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == before
     recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
     assert recovered.current == rolling.new
@@ -66,7 +66,8 @@ def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(ro
     activity = rolling.states[uid]
     with activity.enter(keep_awake=keep_awake):
         result = drive(rolling.routing.deploy(rolling.new))
-        assert result == {"slept": 0, "asleep": 2, "busy": 1, "incomplete": 0}
+        assert result == {"slept": 0, "asleep": 2, "busy": 1, "unresponsive": 0,
+                          "incomplete": 0}
         # Never drained: its turn and new turns keep running on this image.
         assert not activity.draining and activity.active == 1
         assert rolling.runtime.live == {uid} and rolling.runtime.stops == []
@@ -91,7 +92,8 @@ def test_unknown_activity_is_incomplete_and_never_stops_a_turn(rolling, monkeypa
     original = rolling.manager._rpc
     monkeypatch.setattr(rolling.manager, "_rpc", lambda *a, **k: (_ for _ in ()).throw(
         OSError("unknown activity")))
-    assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
+    # Not answering its own status: left untouched, never drained on a guess.
+    assert drive(rolling.routing.deploy(rolling.new))["unresponsive"] == 1
     assert rolling.runtime.live == {uid} and not rolling.runtime.stops
     monkeypatch.setattr(rolling.manager, "_rpc", original)
     assert drive(rolling.routing.deploy(rolling.new))["slept"] == 1
