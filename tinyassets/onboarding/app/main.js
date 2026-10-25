@@ -7214,7 +7214,7 @@
         result=await response.json();
       }catch(_error){
         // No answer (dropped connection, aborted by a reload): not a refusal.
-        const error=new Error("Connection interrupted. Reopen this to continue.");
+        const error=new Error("Connection interrupted. Reload this page to continue.");
         error.transport=true;throw error;
       }
       if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
