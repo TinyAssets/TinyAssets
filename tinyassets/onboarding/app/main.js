@@ -7200,7 +7200,7 @@
   // asks the server for the platform's own connect request, then hands it to the
   // generic sign-in client: the browser names only the source's id.
   const SubscriptionSources={
-    busy:false,storageKey:"ta_cli_login",
+    busy:false,storageKey:"ta_cli_login",leaving:false,
     saved(){
       try{const saved=JSON.parse(pkceStore.getItem(this.storageKey)||"null");
         return saved&&saved.owner===queueOwner&&saved.expires>Date.now()?saved:null;
@@ -7209,10 +7209,17 @@
     async post(operation,body,epoch){
       await ensureFreshToken();
       if(epoch!==MCP._loginEpoch||!token())throw new Error("Sign in again to continue.");
-      const response=await fetch("/app/subscription-connect/"+operation,{
-        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
-      const result=await response.json();
+      let response,result;
+      try{
+        response=await fetch("/app/subscription-connect/"+operation,{
+          method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
+        result=await response.json();
+      }catch(_error){
+        // No answer (dropped connection, aborted by a reload): not a refusal.
+        const error=new Error("Connection interrupted. Reload this page to continue.");
+        error.transport=true;throw error;
+      }
       if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
       if(!response.ok||result.error){
         const error=new Error("Connection did not finish. Sign in to the owner view and retry.");
@@ -7225,7 +7232,7 @@
     // one sign-in, which returns to the app. A refusal within minutes of that
     // sign-in is one signing in cannot cure, so it is reported, never looped;
     // a later lapse redirects again.
-    async signInAgain(note){
+    async signInAgain(note,address){
       if(NATIVE||DESKTOP_SHELL){note.textContent=ownerProofUnavailable();return;}
       let again=false;
       try{
@@ -7234,14 +7241,27 @@
         if(!again)sessionStorage.setItem("ta_owner_again",String(Date.now()));
       }catch(_e){}
       if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
+      // Come back to the same Connect, not an empty app.
+      if(address&&queueOwner){try{sessionStorage.setItem("ta_connect_resume",
+        JSON.stringify({address,owner:queueOwner,at:Date.now()}));}catch(_e){}}
       await openSignIn("/app/owner-sign-in?app=1");
     },
     async poll(flow,epoch){
       try{return await this.post("poll",{flow},epoch);}
-      catch(_error){throw new Error("Sign-in was interrupted. Tap Connect to try again.");}
+      catch(error){
+        if(error.transport)throw error;
+        throw new Error("Sign-in was interrupted. Tap Connect to try again.");
+      }
     },
     async start(source,ui,resume=null){
       if(this.busy)return;
+      if(!this.watching){this.watching=true;
+        // pagehide is the departure itself (not a cancellable prompt). A page the
+        // back-forward cache restores is live again; reload it so a saved flow
+        // resumes the ordinary way.
+        addEventListener("pagehide",()=>{this.leaving=true;});
+        addEventListener("pageshow",event=>{this.leaving=false;
+          if(event.persisted&&this.saved())location.reload();});}
       const external=NATIVE||DESKTOP_SHELL;
       const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
       this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
@@ -7271,7 +7291,7 @@
           if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
           if(state.status==="cancelled")throw new Error("Sign-in was interrupted. Tap Connect to try again.");
           if(state.status==="failed")throw new Error("Sign-in did not complete. Retry to connect.");
-          if(state.authorize_url&&!opened){
+          if(state.authorize_url&&(!opened||(!external&&!pending&&!ui.link))){
             const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
             if(pending){
               const signIn=document.createElement("button");signIn.type="button";
@@ -7280,13 +7300,21 @@
                 const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
                   JSON.stringify({...saved,opened:true}));
                 openConnectRequest();
-                void openSignIn(url.href);};
+                if(external)void openSignIn(url.href);
+                else window.open(url.href,"_blank","noopener,noreferrer");};
               appendMessage("system",source.name+" is ready to sign in.",signIn);
+            }else if(!external){
+              // A tab of its own: leaving this one lost the code and the flow.
+              const open=document.createElement("a");open.href=url.href;open.target="_blank";
+              open.rel="noopener noreferrer";open.className="btn";
+              open.textContent="Open "+source.name+" sign-in";
+              open.addEventListener("click",()=>{const saved=this.saved();
+                if(saved)pkceStore.setItem(this.storageKey,JSON.stringify({...saved,opened:true}));});
+              ui.link?.remove();ui.link=open;ui.status.after(open);
             }else{
               const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
                 JSON.stringify({...saved,opened:true}));
               await openSignIn(url.href);
-              if(!external)return;
             }
             opened=true;
           }
@@ -7316,11 +7344,17 @@
         }
         throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){
+        // A dropped or aborted request (a reload aborts the in-flight poll) is not
+        // a failed sign-in: keep the saved flow so the next load resumes it.
+        // Only an explicit cancel or a server-reported end cancels.
+        if(SubscriptionSources.leaving)return;
+        if(error.transport&&flow&&!cancelled){ui.status.textContent=error.message;return;}
         ui.status.textContent=error.message;
         if(pending)appendMessage("system",source.name+": "+error.message);
         pkceStore.removeItem(this.storageKey);
         if(flow&&epoch===MCP._loginEpoch){try{await this.post("cancel",{flow},epoch);}catch(_e){}}
       }finally{
+        ui.link?.remove();ui.link=null;
         ui.input.value="";ui.input.hidden=ui.submit.hidden=ui.cancel.hidden=true;
         ui.button.disabled=false;this.busy=false;
       }
@@ -8630,6 +8664,12 @@
   // ---- Unified address connection ----
   const ModelDiscovery={
     incoming:new URLSearchParams(window.location.search).get("connect_ai"),
+    resume:(()=>{try{
+      const saved=JSON.parse(sessionStorage.getItem("ta_connect_resume")||"null");
+      sessionStorage.removeItem("ta_connect_resume");
+      return saved&&typeof saved.address==="string"&&typeof saved.owner==="string"
+        &&Date.now()-saved.at<600000?saved:null;
+    }catch(_e){return null;}})(),
     render(panel,visible){
       let card=$("model-discovery");
       if(card){card.hidden=!visible;if(visible)ConnectedAI.load($("connected-ai"));return;}
@@ -8710,7 +8750,7 @@
               source:true,center:queueScope||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
           await openSignIn(url.href);
         }catch(_error){
-          if(_error&&_error.signIn){await SubscriptionSources.signInAgain(note);return;}
+          if(_error&&_error.signIn){await SubscriptionSources.signInAgain(note,selected);return;}
           note.textContent="That address has no AI we can connect to";
         }
         finally{key="";go.disabled=false;address.disabled=false;}
@@ -8724,6 +8764,11 @@
         clean.searchParams.delete("connect_ai");history.replaceState({},"",clean.pathname+clean.search);}
       const saved=SubscriptionSources.saved();
       if(visible&&saved)SubscriptionSources.start({id:saved.source_id},ui,saved);
+      else if(visible&&this.resume){
+        const resume=this.resume;this.resume=null;
+        // Another account signed in during the step-up: its Connect is its own.
+        if(resume.owner===queueOwner){address.value=resume.address;setTimeout(()=>go.click(),0);}
+      }
     },
     async finish(result){
       if(result.status==="confirmation_required"){
@@ -9577,7 +9622,8 @@
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){
       await enterSignedIn();
-      if(ModelDiscovery.incoming||SubscriptionSources.saved())openConnectRequest();
+      if(ModelDiscovery.incoming||ModelDiscovery.resume||SubscriptionSources.saved())
+        openConnectRequest();
       if(modelCallback) await HostedModelConnect.complete(modelCallback);
     } else {
       enterSignedOut();

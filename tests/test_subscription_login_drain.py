@@ -109,8 +109,12 @@ def test_pending_login_cancels_without_blocking_and_page_can_retry(
                     resume?{flow:'flow'}:null);
                   return {text:ui.status.textContent,disabled:ui.button.disabled};
                 }""", {"failure": failure, "resume": resume})
-                assert result == {"text": "Sign-in was interrupted. Tap Connect to try again.",
-                                  "disabled": False}
+                # A dropped connection keeps the flow for a reload; a refusal or a
+                # server-reported end says to start again.
+                expected = ("Connection interrupted. Reload this page to continue."
+                            if failure == "network"
+                            else "Sign-in was interrupted. Tap Connect to try again.")
+                assert result == {"text": expected, "disabled": False}
         browser.close()
 
 

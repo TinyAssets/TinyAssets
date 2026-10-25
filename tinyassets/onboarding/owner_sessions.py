@@ -144,6 +144,23 @@ def require(request, *, owner=None, optional=False):
     return session
 
 
+def extend(cookie, owner):
+    """Slide a live protected session while its own browser keeps renewing.
+
+    Only the HttpOnly owner cookie this browser already holds is extended, and
+    only for the account the renewal just proved; nothing here mints proof from
+    a bearer or a page-held handle. An owner who keeps using the app is never
+    sent through sign-in again mid-task; one who returns after the window is.
+    """
+    session = lookup(cookie)
+    if session is None or json.loads(session["identity_json"])["user_id"] != owner:
+        return False
+    with store() as conn:
+        conn.execute("UPDATE owner_sessions SET expires_at=? WHERE session_hash=?",
+                     (time.time() + 28800, hashed(cookie)))
+    return True
+
+
 def revoke(cookie):
     with store() as conn:
         conn.execute("DELETE FROM owner_sessions WHERE session_hash=?", (hashed(cookie),))
