@@ -2385,6 +2385,206 @@ def test_corrupt_snapshot_reread_refuses_the_merge(tmp_path, monkeypatch, capsys
     _assert_hidden(out)
 
 
+_WANTED_LINK = (
+    "center", "platform", "provider", "account-vault", "account-subscription", "marker",
+)
+_ACCOUNT_HASH = "a" * 64
+
+
+def _wanted_link(retained, kind, target):
+    if kind == "center":
+        path = retained / "alpha" / ".credential-vault.json"
+    elif kind == "platform":
+        path = (
+            retained / ".platform" / "credential-vaults" / "alpha" / ".credential-vault.json"
+        )
+    elif kind == "provider":
+        path = retained / "alpha" / "provider_definitions.json"
+    elif kind == "account-vault":
+        path = (
+            retained / ".broker" / "accounts" / _ACCOUNT_HASH / "credentials"
+            / ".credential-vault.json"
+        )
+    elif kind == "account-subscription":
+        path = (
+            retained / ".broker" / "accounts" / _ACCOUNT_HASH / "credentials"
+            / ".subscription-state.json"
+        )
+    else:
+        path = retained / "300001" / ".ta-cli" / "box" / "connection"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    return path
+
+
+def _readable_measure(_root):
+    return {
+        "accounts": 0,
+        "accounts_with_vault": 0,
+        "accounts_with_subscription": 0,
+        **{table: 0 for table in rc.TABLES},
+        "connection_markers": 0,
+    }
+
+
+def _cli_retained(live, retained, base, mode):
+    return [
+        "--mode", mode, "--root", str(live), "--source", retained.name,
+        "--snapshot-dir", str(base / "snaps"),
+        "--backup-log", str(base / "missing.log"),
+        "--mounts", str(base / "mounts"),
+    ]
+
+
+def _assert_symlink_refused(live, target, capsys, before):
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert report["error"] == "unreadable"
+    assert "plan" not in report
+    assert str(target) not in out
+    assert target.name not in out
+    assert TOKEN_OK not in out
+    _assert_hidden(out)
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(live, OWNER_B).exists()
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM browser_vault").fetchone()[0] == 0
+    after = set(Path(tempfile.gettempdir()).glob("ta-cred-src-*"))
+    assert after - before == set()
+    return report
+
+
+def test_wanted_symlink_is_a_counts_only_refusal(tmp_path, monkeypatch, capsys):
+    """Catalog and main both refuse a wanted symlink with exit 2 and no temp copy."""
+    monkeypatch.setattr(rc.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("BACKUP_DEST", raising=False)
+    calls = []
+
+    def run(argv, timeout=0):
+        calls.append(tuple(argv))
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setitem(rc.apply_tree.__kwdefaults__, "run", run)
+    real_measure = rc.measure_root
+    for kind in _WANTED_LINK:
+        base = tmp_path / kind
+        live = _live(base)
+        _browser_table(live)
+        retained = base / ".tinyassets-restore-old.Ab12"
+        ledger = retained / ".broker" / "outbound.db"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_bytes(_universe_ledger(
+            [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+            [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+        ))
+        target = base / "secret-target-vault"
+        target.write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+        _wanted_link(retained, kind, target)
+        with pytest.raises(rc.SourceRefused) as measured:
+            rc.measure_root(retained)
+        assert measured.value.code == "unreadable"
+        with pytest.raises(rc.SourceRefused) as copied:
+            rc._copy_wanted(retained, base / "copied")
+        assert copied.value.code == "unreadable"
+        for mode in ("dry-run", "apply"):
+            before = set(Path(tempfile.gettempdir()).glob("ta-cred-src-*"))
+            with pytest.raises(SystemExit) as raised:
+                rc.main(_cli_retained(live, retained, base, mode))
+            assert raised.value.code == 2
+            report = _assert_symlink_refused(live, target, capsys, before)
+            chosen = next(
+                item for item in report["sources"] if item["name"] == retained.name
+            )
+            assert chosen["readable"] is False
+            assert chosen["error"] == "unreadable"
+        monkeypatch.setattr(rc, "measure_root", _readable_measure)
+        for mode in ("dry-run", "apply"):
+            before = set(Path(tempfile.gettempdir()).glob("ta-cred-src-*"))
+            with pytest.raises(SystemExit) as raised:
+                rc.main(_cli_retained(live, retained, base, mode))
+            assert raised.value.code == 2
+            report = _assert_symlink_refused(live, target, capsys, before)
+            chosen = next(
+                item for item in report["sources"] if item["name"] == retained.name
+            )
+            assert chosen["readable"] is True
+        monkeypatch.setattr(rc, "measure_root", real_measure)
+    assert calls == []
+
+
+def test_unwanted_symlink_still_restores(tmp_path, monkeypatch, capsys):
+    """A link that is not a credential member does not block the restore."""
+    base = tmp_path / "keep"
+    live = _live(base)
+    _browser_table(live)
+    retained = base / ".tinyassets-restore-old.Ab12"
+    ledger = retained / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    sealed = b"sealed-browser-secret"
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE browser_vault (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
+            "sealed BLOB)"
+        )
+        db.execute(
+            "INSERT INTO browser_vault (id, owner, sealed) VALUES ('b1', ?, ?)",
+            (OWNER_B, sealed),
+        )
+    _custody_db(retained / ".broker" / "credential-custody.db", OWNER_A)
+    alpha = retained / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    outside = base / "outside-link-target"
+    outside.write_text("OUTSIDE-LINK-SECRET-0123456789", encoding="utf-8")
+    (retained / "notes.txt").symlink_to(outside)
+    mirror = base / "outside-dir"
+    mirror.mkdir()
+    (mirror / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_BETA, TOKEN_BETA)]))
+    (retained / "mirror").symlink_to(mirror, target_is_directory=True)
+    rc.measure_root(retained)
+    monkeypatch.setattr(rc.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("BACKUP_DEST", raising=False)
+    calls = []
+
+    def run(argv, timeout=0):
+        calls.append(tuple(argv))
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setitem(rc.apply_tree.__kwdefaults__, "run", run)
+    before = set(Path(tempfile.gettempdir()).glob("ta-cred-src-*"))
+    assert rc.main(_cli_retained(live, retained, base, "dry-run")) == 0
+    dry = capsys.readouterr().out
+    dry_report = json.loads(dry)
+    assert "error" not in dry_report
+    assert dry_report["plan"]["legacy"]["http_kept"] == 1
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert "OUTSIDE-LINK-SECRET-0123456789" not in dry
+    assert str(outside) not in dry
+    assert TOKEN_BETA not in dry
+    _assert_hidden(dry)
+    assert rc.main(_cli_retained(live, retained, base, "apply")) == 0
+    applied = capsys.readouterr().out
+    report = json.loads(applied)
+    assert "error" not in report
+    _assert_one_owner_restore(live, report["plan"], sealed)
+    assert "OUTSIDE-LINK-SECRET-0123456789" not in applied
+    assert str(outside) not in applied
+    assert str(mirror) not in applied
+    assert TOKEN_BETA.encode() not in _owner_vault(live, OWNER_A).read_bytes()
+    _assert_hidden(applied)
+    assert calls == [
+        ("docker", "stop", "tinyassets-broker"),
+        ("docker", "start", "tinyassets-broker"),
+    ]
+    after = set(Path(tempfile.gettempdir()).glob("ta-cred-src-*"))
+    assert after - before == set()
+
+
 def test_workflow_modes_include_inspect_legacy():
     workflow = (ROOT / ".github/workflows/restore-credentials.yml").read_text(encoding="utf-8")
     shell = (ROOT / "deploy/restore-credentials.sh").read_text(encoding="utf-8")

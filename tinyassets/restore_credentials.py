@@ -461,6 +461,7 @@ def measure_root(root):
     custody = root / ".broker" / "credential-custody.db"
     if _linked_inside(root, custody):
         raise SourceRefused("unreadable")
+    _refuse_wanted_symlink(root)
     measured = _count_files(root)
     measured.update(_ledger_counts(ledger))
     measured["connection_markers"] = _marker_count(root)
@@ -2705,10 +2706,12 @@ def main(argv=None):
         elif args.mode == "apply" and chosen["kind"] == "archive" and not chosen["digest_known"]:
             error = "digest_unknown"
         else:
-            source_root, cleanup = _materialize(
-                root, args.snapshot_dir, chosen, destination=destination, digests=digests,
-            )
+            cleanup = None
             try:
+                source_root, cleanup = _materialize(
+                    root, args.snapshot_dir, chosen,
+                    destination=destination, digests=digests,
+                )
                 if args.mode == "dry-run":
                     plan = _plan_only(root, source_root)
                     if error is None and isinstance(plan, dict) and plan.get("error"):
@@ -2729,7 +2732,8 @@ def main(argv=None):
             except (SourceRefused, OSError) as refused:
                 error = refused.code if isinstance(refused, SourceRefused) else "unreadable"
             finally:
-                cleanup()
+                if cleanup is not None:
+                    cleanup()
     report = build_report(
         mode=args.mode, requested=args.source, live=live, sources=sources,
         selected=selected_name if isinstance(selected_name, str) and _string_ok(selected_name)
@@ -2795,20 +2799,33 @@ def _stage_archive(directory, snapshot_dir, chosen, destination, digests):
     return local
 
 
+def _refuse_wanted_symlink(root):
+    """A credential member that is a symlink is unreadable. Other links are not."""
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        return
+    for path in root.rglob("*"):
+        if not path.is_symlink():
+            continue
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            continue
+        if _wanted(parts) is not None:
+            raise SourceRefused("unreadable")
+
+
 def _copy_wanted(source, dest):
     """Copy credential members so preparing a retained backup cannot change it."""
     if source.is_symlink() or not source.is_dir():
         raise SourceRefused("unreadable")
+    _refuse_wanted_symlink(source)
     for path in source.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
         try:
             parts = path.relative_to(source).parts
         except ValueError:
-            continue
-        if path.is_symlink():
-            if _wanted(parts) is not None:
-                raise SourceRefused("unreadable")
-            continue
-        if not path.is_file():
             continue
         relative = _wanted(parts)
         if relative is None:
