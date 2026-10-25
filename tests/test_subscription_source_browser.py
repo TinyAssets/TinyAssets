@@ -1,5 +1,6 @@
 """Real browser address-to-CLI handoff, including same-tab return and native sheet."""
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -77,9 +78,13 @@ def test_native_subscription_connect_controls(native):
             expect(page.get_by_role('textbox', name='Code returned after sign-in')).to_be_visible()
             assert page.evaluate('window.externalUrl') == 'https://login.example.test/authorize'
         else:
-            page.wait_for_url('https://login.example.test/authorize')
-            assert len(context.pages) == 1
-            page.get_by_role('link', name='Return to app').click()
+            # The provider sign-in opens in its own tab; the app tab keeps the flow.
+            sign_in = page.get_by_role('link', name=re.compile('sign-in$'))
+            expect(sign_in).to_have_attribute('target', '_blank')
+            with context.expect_page() as opened:
+                sign_in.click()
+            opened.value.wait_for_url('https://login.example.test/authorize')
+            assert page.url == 'https://app.example/app'
         expect(page.get_by_role('textbox', name='Code returned after sign-in')).to_be_visible()
         page.get_by_role('textbox', name='Code returned after sign-in').fill('approved')
         page.get_by_role('button', name='Finish sign-in', exact=True).click()
@@ -133,12 +138,15 @@ def test_a_lapsed_owner_session_goes_straight_to_sign_in():
             body=json.dumps({'error': 'interactive_approval_required'})))
         page = context.new_page()
         page.goto('https://app.example/app')
+        page.get_by_role('textbox', name='Provider address').fill('https://chatgpt.com')
         page.get_by_role('button', name='Connect', exact=True).click()
         page.wait_for_url('https://app.example/app/owner-sign-in?app=1')
-        # Back in the app and still refused: say so instead of looping.
+        # Back in the app, Connect resumes with the same address by itself; still
+        # refused, it says so instead of looping.
         page.goto('https://app.example/app')
-        page.get_by_role('button', name='Connect', exact=True).click()
         expect(page.get_by_text('Signing in again did not restore access')).to_be_visible()
+        expect(page.get_by_role('textbox', name='Provider address')).to_have_value(
+            'https://chatgpt.com')
         # Retrying the same lapse keeps reporting; it never cycles back to sign-in.
         page.evaluate("document.body.dataset.stay = 'yes'")
         page.get_by_role('button', name='Connect', exact=True).click()

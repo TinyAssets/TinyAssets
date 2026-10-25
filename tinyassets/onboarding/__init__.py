@@ -580,6 +580,14 @@ async def _handle_token(request: Any) -> Any:
     if handle:
         body["session_ref"] = handle
     response = JSONResponse(body, headers={"Cache-Control": "no-store"})
+    if grant == "refresh_token":
+        from tinyassets.onboarding.owner_sessions import COOKIE as OWNER_COOKIE
+        from tinyassets.onboarding.owner_sessions import extend
+
+        owner_cookie = str(request.cookies.get(OWNER_COOKIE, ""))
+        if owner_cookie and await run_in_threadpool(extend, owner_cookie, identity.user_id):
+            response.set_cookie(OWNER_COOKIE, owner_cookie, max_age=28800, secure=True,
+                                httponly=True, samesite="lax")
     if refresh_token and len(refresh_token) <= 4096:
         response.set_cookie(
             _REFRESH_COOKIE,

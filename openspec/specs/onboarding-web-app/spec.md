@@ -445,3 +445,15 @@ SHALL make the next start finish the sign-out before any renewal.
 #### Scenario: The app never booted
 - **WHEN** the page is blank because the app did not start, and the user taps Log out
 - **THEN** the renewable session is dropped and the app reloads signed out
+
+### Requirement: Connecting never loses the app
+While the owner keeps using the web app, each cookie-based renewal SHALL extend a
+live protected owner session of the same account by its full window; renewal
+SHALL never mint, revive or transfer owner proof. When a protected step-up is
+still needed, Connect SHALL resume with the same address after it. A provider
+sign-in on the web SHALL open in its own tab while the app tab keeps the flow.
+
+#### Scenario: Connecting after hours of use
+- **WHEN** the owner has used the app for longer than the protected window and taps Connect
+- **THEN** no sign-in step appears and the provider sign-in opens in a new tab
+- **AND** the app tab shows the code and finishes when the provider confirms
