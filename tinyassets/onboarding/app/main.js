@@ -381,6 +381,10 @@
   // resurrect the session on reload) and the next sign-out retries.
   let logoutPending = false;
   async function endServerSession(){
+    // Before the lock: a native sign-in queued behind it re-reads both and
+    // stands down instead of minting a session for the account that left.
+    logoutPending = true;
+    try{ pkceStore.removeItem(PKCE_KEY); }catch(_e){}
     return withRefreshLock(async()=>{
       logoutPending = true;
       try{
