@@ -377,6 +377,15 @@ class SubscriptionRuntime:
         with self.lock():
             self._require_accepted()
 
+    def accepted(self):
+        """Lock-free: the marker is replaced atomically. False means ask
+        require_accepted(), which may upgrade the marker under the lock."""
+        try:
+            marker = json.loads((self.directory / "connection").read_text())
+            return marker["source"] == digest(self.source) and bool(marker["incarnation"])
+        except (ValueError, TypeError, KeyError, OSError):
+            return False
+
     def _require_accepted(self):
         try:
             marker = json.loads((self.directory / "connection").read_text())
