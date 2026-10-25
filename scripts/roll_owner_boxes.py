@@ -99,7 +99,28 @@ def _host_error(exc):
     return "image_drain_failed"
 
 
-def run(control, canary, prepare, ready=lambda: None):
+#: The deploy's own capability probes run turns in the canary's box just before
+#: this step; a busy canary is left serving its old image like any owner. Wait
+#: for it to go idle, re-run the idempotent drain, and probe again.
+CANARY_WAIT_SECONDS = 600
+CANARY_RETRY_SECONDS = 30
+
+
+def _counts(control):
+    counts = control()
+    if isinstance(counts, dict) and "busy" not in counts:
+        counts = {**counts, "busy": 0}  # a broker from before the busy count
+    if (not isinstance(counts, dict) or set(counts) != set(OUTCOMES)
+            or any(type(n) is not int or n < 0 for n in counts.values())):
+        return None
+    return counts
+
+
+def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None):
+    import time
+
+    pause = pause or time.sleep
+    clock = clock or time.monotonic
     receipt = {"counts": dict.fromkeys(OUTCOMES, 0),
                "canary": "failed", "control": "failed", "reason": "control_failed"}
     stage = "prepare_failed"
@@ -108,11 +129,8 @@ def run(control, canary, prepare, ready=lambda: None):
         # then proves its ordinary sleep before the acceptance request wakes it.
         prepare()
         stage = "control_failed"
-        counts = control()
-        if isinstance(counts, dict) and "busy" not in counts:
-            counts = {**counts, "busy": 0}  # a broker from before the busy count
-        if (set(counts) != set(OUTCOMES)
-                or any(type(n) is not int or n < 0 for n in counts.values())):
+        counts = _counts(control)
+        if counts is None:
             receipt["reason"] = "invalid_drain"
             return receipt, 1
         receipt["counts"] = counts
@@ -128,7 +146,31 @@ def run(control, canary, prepare, ready=lambda: None):
         stage = "readiness_failed"
         ready()
         stage = "canary_failed"
-        if canary() is True:
+        deadline = clock() + CANARY_WAIT_SECONDS
+        while True:
+            try:
+                accepted = canary() is True
+                break
+            except RuntimeError as exc:
+                # Only "the canary answered on the old image" is retried; any
+                # other refusal fails acceptance at once.
+                # No retry starts once its pause would pass the budget, so one
+                # final drain and readiness wait is the most that can follow.
+                if (str(exc) != "canary_box_revision_mismatch"
+                        or clock() + CANARY_RETRY_SECONDS >= deadline):
+                    raise
+            pause(CANARY_RETRY_SECONDS)
+            stage = "control_failed"
+            again = _counts(control)
+            if again is None or again["incomplete"]:
+                receipt["reason"] = "invalid_drain" if again is None else "incomplete_drain"
+                receipt["control"] = "incomplete" if again else "failed"
+                return receipt, 1
+            receipt["counts"] = {k: receipt["counts"][k] + again[k] for k in OUTCOMES}
+            stage = "readiness_failed"
+            ready()
+            stage = "canary_failed"
+        if accepted:
             receipt["canary"] = "passed"
             receipt["reason"] = "passed"
         else:

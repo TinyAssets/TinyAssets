@@ -86,10 +86,11 @@ jobs:
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     environment: production
-    # 15 min of deploy work, 15 for backup verification/repair, 10 for advisory
-    # capabilities, up to 55 for in-flight turns, 12 for host readiness,
-    # and 50 for owner-box acceptance, with room for rollback.
-    timeout-minutes: 165
+    # The bounded steps sum to 258 min (55 in-flight turns, 35 host readiness,
+    # 110 owner-box acceptance including a busy-canary wait, 20 cutover backup,
+    # and the short steps), plus ~15 of unbounded deploy work and ~15 of backup
+    # verification/repair, with room for rollback.
+    timeout-minutes: 310
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -761,8 +762,10 @@ jobs:
       - name: Roll owner boxes and accept the canary box
         id: owner_boxes
         # Includes a second readiness wait after the fleet sleep, long enough
-        # for the same upload-and-readback publish as the host gate.
-        timeout-minutes: 70
+        # for the same upload-and-readback publish as the host gate, plus the
+        # busy-canary wait: 32 min readiness + up to 10 min of retries + one more
+        # 32 min readiness after the last drain, with headroom.
+        timeout-minutes: 110
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           EXPECTED_SHA: ${{ steps.tag.outputs.revision }}
