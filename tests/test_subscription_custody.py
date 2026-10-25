@@ -23,7 +23,7 @@ def decoded(runtime):
     return {name: base64.b64decode(value) for name, value in state.items()}
 
 
-def test_broker_bounds_owner_custody(connected, monkeypatch):
+def test_broker_bounds_owner_custody(connected, monkeypatch, caplog):
     from tinyassets.broker import subscription_custody as store
     from tinyassets.owner_channel import request
 
@@ -32,8 +32,12 @@ def test_broker_bounds_owner_custody(connected, monkeypatch):
             "document": {"action": action, "source": source, **fields}})
 
     entries = [call("begin", f"source-{i}") for i in range(16)]
-    with pytest.raises(PermissionError):
-        call("begin", "source-overflow")
+    with caplog.at_level("WARNING", logger="tinyassets.broker.server"):
+        with pytest.raises(PermissionError):
+            call("begin", "source-overflow")
+    # A refusal names its action and error class, never the source or message.
+    assert "subscription custody begin refused: ValueError" in caplog.text
+    assert "source-overflow" not in caplog.text
     initial_size = len(json.dumps({f"source-{i}": entry for i, entry in enumerate(entries)}))
     monkeypatch.setattr(store, "MAX_OWNER_BYTES", initial_size + 100)
     state = {"token": base64.b64encode(b"x" * 40).decode()}
