@@ -50,11 +50,16 @@ FILES = {
     "subscription_state": ".subscription-state.json",
 }
 _SLOTS = ("insert", "kept_live", "conflict", "skipped")
+# A refusal names one of these. They are counts-safe and carry no row data.
+_STAGE_TOKENS = frozenset({
+    "snapshot", "ledger", "definitions", "groups", "bind", "convert", "merge",
+})
 _FIXED_STRINGS = frozenset({
     "inspect", "inspect-legacy", "dry-run", "apply", "auto", "archive", "retained",
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
     "ledger_missing", "source_missing", "broker_stop_failed",
     "broker_start_failed",
+    *_STAGE_TOKENS,
 })
 _KEYS = frozenset({
     "mode", "source_requested", "selected", "catalog_readable", "live",
@@ -79,6 +84,7 @@ _KEYS = frozenset({
     "centers_zero_owners", "centers_several_owners", "centers_ledger_one_owner",
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
+    "stage",
 })
 
 
@@ -217,6 +223,7 @@ class _SourceSnapshot:
 
     def __init__(self):
         self.failed = False
+        self.stage = ""
         self.holds = 0
         self.written = []
         self.skipped_owners = set()
@@ -255,6 +262,7 @@ def _ensure_snapshot(source_root):
             snap.paths[name] = dest
     except Exception:
         snap.failed = True
+        snap.stage = "snapshot"
         snap.paths.clear()
         for origin in origins:
             if _linked_inside(source_root, origin):
@@ -320,6 +328,25 @@ def _refused_center_stats(source_root):
     return stats
 
 
+def _remember_stage(source_root, stage):
+    snap = _SNAPSHOTS.get(_source_key(source_root))
+    if snap is not None and stage in _STAGE_TOKENS and snap.stage not in _STAGE_TOKENS:
+        snap.stage = stage
+
+
+def _refusal_stage(source_root):
+    snap = _SNAPSHOTS.get(_source_key(source_root))
+    stage = snap.stage if snap is not None else ""
+    return stage if stage in _STAGE_TOKENS else "merge"
+
+
+def _refused_legacy(source_root):
+    """The all-centers refusal, plus the fixed token for the step that failed."""
+    legacy = _refused_center_stats(source_root)
+    legacy["stage"] = _refusal_stage(source_root)
+    return legacy
+
+
 def _unlink_written(snap):
     for path in snap.written:
         try:
@@ -332,7 +359,7 @@ def _unlink_written(snap):
 
 def _refusal_plan(source_root):
     """Counts only. ``error`` is how apply and the CLI learn the read failed."""
-    legacy = _refused_center_stats(source_root)
+    legacy = _refused_legacy(source_root)
     return {
         "accounts": 0,
         "accounts_affected": 0,
@@ -1293,35 +1320,123 @@ def _verified_definition(owner, definition_id, raw, grants):
     return document
 
 
+def _json_object(raw):
+    try:
+        document = json.loads(raw) if isinstance(raw, str) else None
+    except (ValueError, TypeError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _source_definition_rows(db):
+    """``(owner, id, raw)`` from the current table or the pre-cutover one.
+
+    The table created before the owner column is ``(center, id, definition)``.
+    ``center`` is the universe id. The owner is ``owner_user_id`` inside the
+    document. Selecting ``owner`` from that table is an error, and that error
+    used to refuse every center.
+    """
+    if not _table_exists(db, "box_model_sources"):
+        return []
+    columns = set(_columns(db, "box_model_sources"))
+    if "definition" not in columns:
+        return []
+    selected = [
+        name for name in ("owner", "id", "definition", "center") if name in columns
+    ]
+    if "owner" not in selected and "center" not in selected:
+        return []
+    query = (
+        "SELECT " + ", ".join(_quote(name) for name in selected)
+        + " FROM box_model_sources"
+    )
+    rows = []
+    for record in db.execute(query):
+        values = dict(zip(selected, record))
+        raw = values.get("definition")
+        document = _json_object(raw)
+        owner = values.get("owner")
+        if not isinstance(owner, str) or not owner:
+            candidate = document.get("owner_user_id") if document else None
+            owner = candidate if isinstance(candidate, str) and candidate else None
+        definition_id = values.get("id")
+        if not isinstance(definition_id, str) or not definition_id:
+            candidate = document.get("id") if document else None
+            if isinstance(candidate, str) and candidate:
+                definition_id = candidate
+            elif document is not None and owner:
+                derived = _definition_id(document)
+                if derived is None:
+                    continue
+                document = dict(document)
+                document["id"] = derived
+                definition_id = derived
+                raw = json.dumps(document, sort_keys=True)
+            else:
+                continue
+        if not owner or not isinstance(raw, str):
+            continue
+        rows.append((owner, definition_id, raw))
+    return rows
+
+
+def _rewrite_source_definitions(db, kept):
+    """Put the verified rows back in the columns this private copy already has."""
+    columns = set(_columns(db, "box_model_sources"))
+    if {"owner", "id", "definition"} <= columns:
+        db.execute("DELETE FROM box_model_sources")
+        if kept:
+            db.executemany(
+                "INSERT INTO box_model_sources (owner, id, definition) "
+                "VALUES (?, ?, ?)",
+                kept,
+            )
+        return
+    if {"center", "id", "definition"} <= columns:
+        payload = []
+        for _owner, definition_id, raw in kept:
+            document = _json_object(raw)
+            center = document.get("universe_id") if document else None
+            if isinstance(center, str) and center:
+                payload.append((center, definition_id, raw))
+        db.execute("DELETE FROM box_model_sources")
+        if payload:
+            db.executemany(
+                "INSERT INTO box_model_sources (center, id, definition) "
+                "VALUES (?, ?, ?)",
+                payload,
+            )
+
+
 def _restrict_definitions(source_root):
     ledger = _active_db(source_root, "outbound.db")
     if ledger is None or _source_closed(ledger):
         return
-    with _open_source(ledger) as db:
-        if not _table_exists(db, "box_model_sources"):
-            return
-        grants = set()
-        if _table_exists(db, "outbound_connection_grants"):
-            columns = set(_columns(db, "outbound_connection_grants"))
-            query = f"SELECT grant_id FROM {_quote('outbound_connection_grants')}"
-            if "revoked_at" in columns:
-                query += " WHERE revoked_at IS NULL"
-            grants = {
-                row[0] for row in db.execute(query) if isinstance(row[0], str)
-            }
-        kept = []
-        for owner, definition_id, raw in db.execute(
-            "SELECT owner, id, definition FROM box_model_sources"
-        ):
-            document = _verified_definition(owner, definition_id, raw, grants)
-            if document is None:
-                continue
-            kept.append((owner, definition_id, json.dumps(document, sort_keys=True)))
-        db.execute("DELETE FROM box_model_sources")
-        db.executemany(
-            "INSERT INTO box_model_sources (owner, id, definition) VALUES (?, ?, ?)",
-            kept,
-        )
+    try:
+        with _open_source(ledger) as db:
+            if not _table_exists(db, "box_model_sources"):
+                return
+            grants = set()
+            if _table_exists(db, "outbound_connection_grants"):
+                columns = set(_columns(db, "outbound_connection_grants"))
+                query = f"SELECT grant_id FROM {_quote('outbound_connection_grants')}"
+                if "revoked_at" in columns:
+                    query += " WHERE revoked_at IS NULL"
+                grants = {
+                    row[0] for row in db.execute(query) if isinstance(row[0], str)
+                }
+            kept = []
+            for owner, definition_id, raw in _source_definition_rows(db):
+                document = _verified_definition(owner, definition_id, raw, grants)
+                if document is None:
+                    continue
+                kept.append((
+                    owner, definition_id, json.dumps(document, sort_keys=True),
+                ))
+            _rewrite_source_definitions(db, kept)
+    except sqlite3.Error:
+        _remember_stage(source_root, "definitions")
+        raise
 
 
 def _close_source_databases(source_root):
@@ -1357,6 +1472,8 @@ def convert_legacy_vaults(source_root):
         if snap is not None:
             _unlink_written(snap)
             snap.failed = True
+            if snap.stage not in _STAGE_TOKENS:
+                snap.stage = "convert"
         _close_source_databases(source_root)
         return _refused_center_stats(source_root)
     finally:
@@ -1406,6 +1523,7 @@ def _convert_snapshot(source_root, snap):
     stats.update(owner_counts)
     if ledger_failed:
         snap.failed = True
+        snap.stage = "ledger"
         _close_source_databases(source_root)
         return stats
     db = None
@@ -1645,6 +1763,7 @@ def _groups(root):
         except Exception:
             if snap is not None:
                 snap.failed = True
+                snap.stage = "groups"
             _close_source_databases(root)
             return {}
     grouped = {}
@@ -1833,9 +1952,7 @@ def _copy_definitions(live_db, source_root, live_root):
             active = _SNAPSHOTS.get(_source_key(source_root))
             if active is not None:
                 skipped = active.skipped_owners
-            for owner, definition_id, raw in src.execute(
-                "SELECT owner, id, definition FROM box_model_sources"
-            ):
+            for owner, definition_id, raw in _source_definition_rows(src):
                 if owner in skipped:
                     continue
                 ref = _raw_ref(raw)
@@ -1856,6 +1973,7 @@ def _copy_definitions(live_db, source_root, live_root):
         active = _SNAPSHOTS.get(_source_key(source_root))
         if active is not None:
             active.failed = True
+            active.stage = "definitions"
         raise
     if not pending:
         return 0
@@ -1972,6 +2090,8 @@ def merge(live_root, source_root):
         if snap is not None:
             _unlink_written(snap)
             snap.failed = True
+            if snap.stage not in _STAGE_TOKENS:
+                snap.stage = "merge"
         _close_source_databases(source_root)
         return _refusal_plan(source_root)
     finally:
@@ -1991,19 +2111,19 @@ def _merge_snapshot(live_root, source_root, snap):
     every file this merge wrote and returns ``error`` ``unreadable``.
     """
     if snap.failed:
-        legacy = _refused_center_stats(source_root)
+        legacy = _refused_legacy(source_root)
         grouped = {}
     else:
         legacy = prepare_legacy(source_root)
         if snap.failed:
             _unlink_written(snap)
-            legacy = _refused_center_stats(source_root)
+            legacy = _refused_legacy(source_root)
             grouped = {}
         else:
             grouped = _groups(source_root)
             if snap.failed:
                 _unlink_written(snap)
-                legacy = _refused_center_stats(source_root)
+                legacy = _refused_legacy(source_root)
                 grouped = {}
     ledger = live_root / ".broker" / "outbound.db"
     legacy_bound = any(legacy.get(name) for name in (
@@ -2019,7 +2139,10 @@ def _merge_snapshot(live_root, source_root, snap):
         for spec in grouped.values():
             account = spec
             if legacy_bound:
+                snap.stage = "bind"
                 account = _bind_rows(spec, _surviving_dests(live_root, spec))
+                if snap.stage == "bind":
+                    snap.stage = ""
             account_files_slot = {kind: _slot() for kind in FILES}
             account_tables = {table: _slot() for table in TABLES}
             db.execute("SAVEPOINT account")
@@ -2348,7 +2471,7 @@ def _safe_refusal_plan(source_root):
             "accounts_unchanged": 0,
             "files": {kind: _slot() for kind in FILES},
             "tables": {table: _slot() for table in TABLES},
-            "legacy": _legacy_stat_template(),
+            "legacy": {**_legacy_stat_template(), "stage": "merge"},
             "error": "unreadable",
         }
 

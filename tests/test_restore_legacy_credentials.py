@@ -2596,3 +2596,242 @@ def test_workflow_modes_include_inspect_legacy():
                    "backup-restore.sh"):
         assert banned not in workflow
         assert banned not in shell
+
+
+def _owned_definition(owner, center, ref):
+    fields = {
+        "universe_id": center,
+        "owner_user_id": owner,
+        "access_method": "api_key_http",
+        "protocol": "openai_chat",
+        "ref": ref,
+        "model": "gpt-test",
+    }
+    return {
+        "id": _definition_id(**fields),
+        **fields,
+        "visibility": "private",
+        "created_at": "2026-10-22T04:41:03+00:00",
+    }
+
+
+def _identities(root, owners):
+    path = root / ".broker" / "state" / "owner-identities.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE owner_volumes (uid INTEGER, principal TEXT)")
+        db.executemany(
+            "INSERT INTO owner_volumes VALUES (?, ?)",
+            [(300000 + index, owner) for index, owner in enumerate(owners)],
+        )
+
+
+def _production_shape(tmp_path):
+    """The dry-run that refused: old definition columns, and the reported counts."""
+    owners = [OWNER_A, OWNER_B, "owner-c", OWNER_D, "owner-e", "owner-f", "owner-g"]
+    centers = ("alpha", "beta", "gamma")
+    mapped = owners[:3]
+    dests = [f"dest-{index}.example" for index in range(10)]
+    center_dests = {"alpha": dests[:4], "beta": dests[4:7], "gamma": dests[7:]}
+    source = tmp_path / "source"
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    db = sqlite3.connect(ledger)
+    db.executescript(SCHEMA + "ALTER TABLE outbound_connection_grants ADD COLUMN universe_id TEXT;")
+    db.execute("DROP TABLE box_model_sources")
+    db.execute(
+        "CREATE TABLE box_model_sources ("
+        "center TEXT NOT NULL, id TEXT NOT NULL, definition TEXT NOT NULL, "
+        "PRIMARY KEY (center, id))"
+    )
+    db.execute("PRAGMA journal_mode=WAL")
+    connections = []
+    for center, owner in zip(centers, mapped, strict=True):
+        for dest in center_dests[center][:2]:
+            connections.append((owner, dest, center, False))
+        connections.append((owner, center_dests[center][0], center, True))
+    while len(connections) < 14:
+        connections.append(("owner-extra", "other.example", "no-center", False))
+    for index, (owner, dest, center, revoked) in enumerate(connections, start=1):
+        db.execute(
+            "INSERT INTO outbound_connections ("
+            "connection_id, owner_user_id, revoked_at, credential_ref, label, "
+            "granted_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"c-{index}", owner, "2026-10-01" if revoked else None,
+             f"vault://http/{dest}", "source-label", "2026-10-22T04:41:03+00:00"),
+        )
+    # Twelve grants: the nine center rows, then three that name no vault center.
+    for index in range(1, 13):
+        owner, _dest, center, revoked = connections[index - 1]
+        db.execute(
+            "INSERT INTO outbound_connection_grants ("
+            "grant_id, connection_id, owner_user_id, universe_id, revoked_at, "
+            "granted_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"g-{index}", f"c-{index}", owner, center,
+             "2026-10-01" if revoked else None, "2026-10-22T04:41:03+00:00"),
+        )
+    for index in range(1, 4):
+        db.execute(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES (?, ?)",
+            (f"c-{index}", "model_use"),
+        )
+    for center, owner in zip(centers, mapped, strict=True):
+        ref = next(
+            f"g-{index}" for index, (row_owner, _dest, row_center, revoked)
+            in enumerate(connections, start=1)
+            if row_owner == owner and row_center == center and not revoked
+        )
+        document = _owned_definition(owner, center, ref)
+        db.execute(
+            "INSERT INTO box_model_sources (center, id, definition) VALUES (?, ?, ?)",
+            (center, document["id"], json.dumps(document)),
+        )
+        directory = source / center
+        directory.mkdir(parents=True)
+        (directory / "provider_definitions.json").write_text(
+            json.dumps([document]), encoding="utf-8",
+        )
+    db.execute(
+        "INSERT INTO box_model_sources (center, id, definition) VALUES (?, ?, ?)",
+        ("alpha", "not-a-definition", "not-json"),
+    )
+    records = {
+        "alpha": [_http(dest, f"tok-{dest}") for dest in dests[:4]]
+        + [{"credential_type": "llm_subscription", "service": "cli"}],
+        "beta": [_http(dest, f"tok-{dest}") for dest in dests[4:7]],
+        "gamma": [_http(dest, f"tok-{dest}") for dest in dests[7:]]
+        + [{"credential_type": "llm_subscription", "service": "cli"}],
+    }
+    for center, vault_records in records.items():
+        (source / center / ".credential-vault.json").write_bytes(_vault_bytes(vault_records))
+    db.commit()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    db.close()
+    for extra in ledger.parent.glob("outbound.db-*"):
+        extra.unlink()
+
+    live = _live(tmp_path)
+    _identities(live, owners)
+    digest = hashlib.sha256(OWNER_A.encode()).hexdigest()
+    credentials = live / ".broker" / "accounts" / digest / "credentials"
+    credentials.mkdir(parents=True)
+    (credentials / ".credential-vault.json").write_bytes(
+        _vault_bytes([_http(dests[0], "live-tok")])
+    )
+    (credentials / ".subscription-state.json").write_text("{}", encoding="utf-8")
+    with sqlite3.connect(live / ".broker" / "outbound.db") as db:
+        db.execute(
+            "INSERT INTO outbound_connections ("
+            "connection_id, owner_user_id, credential_ref, label, granted_at"
+            ") VALUES ('c-1', ?, ?, 'changed', '2026-10-22T04:41:03+00:00')",
+            (OWNER_A, f"vault://http/{dests[0]}"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connections ("
+            "connection_id, owner_user_id, credential_ref, label, granted_at"
+            ") VALUES ('live-2', ?, ?, 'live', '2026-10-22T04:41:03+00:00')",
+            (OWNER_A, "vault://http/live.example"),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants ("
+            "grant_id, connection_id, owner_user_id, granted_at"
+            ") VALUES ('live-g1', 'c-1', ?, '2026-10-22T04:41:03+00:00')",
+            (OWNER_A,),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants ("
+            "grant_id, connection_id, owner_user_id, granted_at"
+            ") VALUES ('live-g2', 'live-2', ?, '2026-10-22T04:41:03+00:00')",
+            (OWNER_A,),
+        )
+        db.execute(
+            "INSERT INTO connection_capabilities (connection_id, capability_kind) "
+            "VALUES ('live-2', 'model_use')"
+        )
+    (live / ".layout.json").write_text(
+        json.dumps({"preparation": {"credential_roots_reset": False}}),
+        encoding="utf-8",
+    )
+    return source, live
+
+
+def test_precutover_definition_table_does_not_refuse_the_dry_run(tmp_path):
+    source, live = _production_shape(tmp_path)
+    inspected = rc.inspect_legacy_tree(source)
+    assert inspected["center_vault_files"] == 3
+    assert inspected["http"] == 10
+    assert inspected["llm_subscription"] == 2
+    assert inspected["custody_db"] is False
+    assert inspected["centers_one_owner"] == 3
+    assert inspected["centers_ledger_one_owner"] == 3
+    assert inspected["centers_several_owners"] == 0
+    assert inspected["centers_zero_owners"] == 0
+    measured = rc.measure_root(source)
+    assert measured["outbound_connections"] == 14
+    assert measured["outbound_connection_grants"] == 12
+    assert measured["connection_capabilities"] == 3
+    assert measured["accounts_with_vault"] == 0
+    assert measured["accounts_with_subscription"] == 0
+    assert measured["browser_vault"] == 0
+    assert measured["connection_markers"] == 0
+    live_measured = rc.measure_root(live)
+    assert live_measured["accounts"] == 7
+    assert live_measured["accounts_with_vault"] == 1
+    assert live_measured["accounts_with_subscription"] == 1
+    assert live_measured["outbound_connections"] == 2
+    assert live_measured["outbound_connection_grants"] == 2
+    assert live_measured["connection_capabilities"] == 1
+    assert live_measured["browser_vault"] == 0
+    assert rc.layout_facts(live)["layout_readable"] is True
+    plan = rc._plan_only(live, source)
+    assert plan.get("error") is None
+    assert "stage" not in plan["legacy"]
+    assert plan["legacy"]["centers_one_owner"] == 3
+    assert plan["legacy"]["centers_several_owners"] == 0
+    assert plan["legacy"]["centers_ledger_one_owner"] == 3
+    assert plan["legacy"]["http_kept"] > 0
+    assert plan["accounts"] > 0
+    assert plan["legacy"]["definitions"] >= 1
+    assert plan["tables"]["outbound_connections"]["conflict"] >= 1
+
+
+def test_refusal_names_the_failing_stage(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    alpha = source / "alpha"
+    alpha.mkdir(parents=True)
+    (alpha / ".credential-vault.json").write_bytes(
+        _vault_bytes([_http("alpha.example", TOKEN_OK)])
+    )
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"not a database")
+    plan = rc.merge(live, source)
+    assert plan["error"] == "unreadable"
+    assert plan["legacy"]["stage"] == "snapshot"
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["accounts"] == 0
+
+    grouped = tmp_path / "grouped"
+    beta = grouped / "beta"
+    beta.mkdir(parents=True)
+    (beta / ".credential-vault.json").write_bytes(
+        _vault_bytes([_http("beta.example", TOKEN_BETA)])
+    )
+    ledger = grouped / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_B, "c1", "beta.example", "beta")],
+        [_grant_universe(OWNER_B, "g1", "c1", "beta")],
+    ))
+
+    def boom(*_args, **_kwargs):
+        raise sqlite3.OperationalError("definition columns")
+
+    monkeypatch.setattr(rc, "_source_definition_rows", boom)
+    refused = rc.merge(live, grouped)
+    assert refused["error"] == "unreadable"
+    assert refused["legacy"]["stage"] == "definitions"
+    assert refused["legacy"]["centers_several_owners"] == 1
+    assert refused["accounts"] == 0
