@@ -204,6 +204,16 @@ class BrokerServer:
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         self._loop = asyncio.get_running_loop()
+        try:
+            # A count only: saved sign-ins that vanish across a restart or deploy
+            # show up as a drop between two starts.
+            from tinyassets.broker.subscription_custody import FILENAME
+
+            saved = sum(1 for _ in (Path(self._data_root) / ".broker" / "accounts").glob(
+                "*/credentials/" + FILENAME))
+            _LOG.warning("subscription custody at start: %d saved", saved)
+        except OSError:
+            _LOG.warning("subscription custody at start: unreadable")
         return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
 
     async def _connection(self, reader: asyncio.StreamReader,

@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import secrets
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 FILENAME = ".subscription-state.json"
+_LOG = logging.getLogger(__name__)
+_BUILT_IN = frozenset(
+    path.stem
+    for path in (Path(__file__).parents[1] / "providers" / "source_records").glob("*.json"))
 MAX_STATE = 2 * 1024 * 1024
 MAX_OWNER_ENTRIES = 16
 MAX_OWNER_BYTES = 8 * 1024 * 1024
@@ -73,4 +78,9 @@ def operation(data_root, owner, document):
         else:
             path.unlink(missing_ok=True)
         _fsync_directory(path.parent)
+        # Every change, never contents: a saved sign-in that disappears without a
+        # logged delete was removed by something outside this store.
+        _LOG.warning("subscription custody %s: source=%s state=%s remaining=%d",
+                     action, source if source in _BUILT_IN else "custom",
+                     "saved" if result["state"] else "empty", len(records))
         return result
