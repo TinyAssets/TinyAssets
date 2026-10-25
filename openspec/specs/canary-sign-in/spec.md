@@ -30,7 +30,8 @@ CI SHALL keep the session handle sealed with AES-GCM under
 `TINYASSETS_CANARY_SESSION_KEY`, one chain per workflow (`deploy`, `uptime`),
 restored from and saved to the Actions cache on `main` only. A run on any
 other ref SHALL NOT renew a chain. With no saved chain, the chain's sealed seed
-secret starts it.
+secret starts it. Saved chains SHALL be keyed by their seed's digest, so a new
+sign-in starts a fresh chain and a dead chain's saves are never restored over it.
 
 #### Scenario: an ended session
 - **WHEN** renewal answers 401

@@ -29,7 +29,11 @@ runs:
       run: |
         set -euo pipefail
         pip install cryptography==49.0.0
+        # A new sign-in replaces the seed, and the seed's digest names its
+        # chain: saves from a dead chain are never restored over a new one.
+        generation="$(printf '%s' "${SEED}" | sha256sum | cut -c1-16)"
         {
+          echo "TINYASSETS_CANARY_SESSION_GENERATION=${generation}"
           echo "TINYASSETS_CANARY_SESSION_STATE=${RUNNER_TEMP}/canary-session/state"
           echo "TINYASSETS_CANARY_SESSION_KEY=${KEY}"
           echo "TINYASSETS_CANARY_SESSION_SEED=${SEED}"
@@ -39,15 +43,15 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/canary-session
-        key: canary-session-${{ inputs.chain }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: canary-session-${{ inputs.chain }}-
+        key: canary-session-${{ inputs.chain }}-${{ env.TINYASSETS_CANARY_SESSION_GENERATION }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: canary-session-${{ inputs.chain }}-${{ env.TINYASSETS_CANARY_SESSION_GENERATION }}-
     - name: Name the save
       id: name
       if: inputs.mode == 'save' && github.ref == 'refs/heads/main'
       shell: bash
       run: |
         if [ -f "${RUNNER_TEMP}/canary-session/state" ]; then
-          echo "key=canary-session-${{ inputs.chain }}-${{ github.run_id }}-${{ github.run_attempt }}-$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          echo "key=canary-session-${{ inputs.chain }}-${TINYASSETS_CANARY_SESSION_GENERATION}-${{ github.run_id }}-${{ github.run_attempt }}-$(date +%s%N)" >> "$GITHUB_OUTPUT"
         fi
     - name: Save the rotated session
       if: steps.name.outputs.key != ''
