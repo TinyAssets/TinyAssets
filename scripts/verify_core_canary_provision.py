@@ -15,8 +15,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
+
+_HTTP_PATH = re.compile(r"/(?:app|mcp)(?:/[A-Za-z0-9_./-]{1,80})?\Z")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.core_canary_provision import credentials, missing_secrets, provision  # noqa: E402
@@ -47,6 +50,20 @@ async def _provision(config: dict) -> None:
             await provision(config, http, live.ORIGIN, call)
 
 
+def http_failure_detail(exc) -> str:
+    """Path and status only. Query, body, and principals stay off the log."""
+    request = getattr(exc, "request", None)
+    response = getattr(exc, "response", None)
+    url = getattr(request, "url", None)
+    raw = getattr(url, "path", "") if url is not None else ""
+    path = raw if isinstance(raw, str) and _HTTP_PATH.fullmatch(raw) else "redacted"
+    detail = " path=" + path
+    status = getattr(response, "status_code", None)
+    if type(status) is int and 100 <= status <= 599:
+        detail += " status=" + str(status)
+    return detail
+
+
 def classify() -> tuple[bool, str]:
     """Return ``(provisioned, reason)``. ``reason`` is empty when provisioned."""
     config = credentials()
@@ -56,7 +73,12 @@ def classify() -> tuple[bool, str]:
         asyncio.run(_provision(config))
     except Exception as exc:  # noqa: BLE001 - reported as a code, never a value
         name = type(exc).__name__
-        detail = f" ({exc})" if name in ("ProvisionError", "ProbeFailure") else ""
+        if name in ("ProvisionError", "ProbeFailure"):
+            detail = f" ({exc})"
+        elif name == "HTTPStatusError":
+            detail = http_failure_detail(exc)
+        else:
+            detail = ""
         return False, "canary setup failed: " + name + detail
     return True, ""
 
