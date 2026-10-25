@@ -735,7 +735,9 @@ permanent volume bindings. Awake owners use the existing `VolumeLifecycle.sleep`
 under the broker owner lock. A busy or unknown drain stays pending on that same
 volume state machine and reports `incomplete`; no ordinary owner is restarted.
 An owner confirmed mid-turn by its status is not drained at all and is reported
-as `busy` (deferred to its next wake); it does not block acceptance.
+as `busy` (deferred to its next wake); it does not block acceptance. Image retention keeps every
+harness a running sandbox's bundle names, and removes no harness while that set
+is unknowable, so a deferred owner never loses its rootfs mid-turn.
 Only a complete drain proceeds to public canary acceptance, which wakes the canary
 on `images.current`, checks its baked revision and completes a model turn.
 Rollback repeats publication and drain with the previous compatible image.

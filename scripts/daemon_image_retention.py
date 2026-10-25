@@ -687,6 +687,27 @@ def _remove_legacy_snapshot_dirs(host_root: Path) -> list[str]:
     return removed
 
 
+def _live_box_harnesses(bundles, root):
+    """Harness names a running owner sandbox reads, or None when unknowable.
+
+    boxhostd writes each sandbox's rootfs into its bundle's config.json and
+    removes that file when the sandbox stops.
+    """
+    if not bundles.exists():
+        return set()
+    names = set()
+    try:
+        for config in bundles.glob("owner-*/config.json"):
+            if config.is_symlink():
+                return None
+            path = Path(json.loads(config.read_text(encoding="utf-8"))["root"]["path"])
+            if path.parent == root and HARNESS_TREE.fullmatch(path.name):
+                names.add(path.name)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return names
+
+
 def prune_box_harnesses(
     daemon, configured, refs, root=None, *, repair_host=False, host_root=None,
 ):
@@ -728,6 +749,13 @@ def prune_box_harnesses(
         identity = refs[configured]
         if isinstance(identity, str):
             keep.add("harness-" + identity.removeprefix("sha256:"))
+    # An owner left serving through a deploy still runs its previous image until
+    # its own sleep; its sandbox reads that directory directly.
+    live = _live_box_harnesses(Path(os.environ.get(
+        "TINYASSETS_BOX_BUNDLE_ROOT", "/var/lib/boxhostd/state/bundles")), root)
+    if live is None:
+        return legacy  # Unknown live set: remove no box image at all.
+    keep |= live
     removed = []
     for entry in root.iterdir():
         name = entry.name

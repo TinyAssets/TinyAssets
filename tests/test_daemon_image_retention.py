@@ -555,3 +555,24 @@ def test_an_already_absent_rollback_digest_does_not_block_retention(capsys):
 def test_a_missing_tag_or_configured_image_still_refuses_by_name(receipt, configured, slot):
     with pytest.raises(Refusal, match="protected_reference_unmapped:" + slot):
         candidates(_two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, configured, receipt)
+
+
+@pytest.mark.parametrize("bundle", ["live", "unreadable"])
+def test_prune_keeps_the_image_a_running_owner_still_reads(tmp_path: Path, monkeypatch, bundle):
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current, deferred, stale = _name(IMAGE), "harness-" + "56" * 32, "harness-" + "78" * 32
+    for name in (current, deferred, stale):
+        _seal(root / name)
+    (root / "harness-current").symlink_to(current)
+    bundles = tmp_path / "bundles"
+    (bundles / "owner-300001").mkdir(parents=True)
+    config = bundles / "owner-300001" / "config.json"
+    config.write_text(json.dumps({"root": {"path": str(root / deferred)}})
+                      if bundle == "live" else "{not json", encoding="utf-8")
+    monkeypatch.setenv("TINYASSETS_BOX_BUNDLE_ROOT", str(bundles))
+    removed = prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root)
+    # An owner left serving through a deploy keeps its image until it sleeps;
+    # an unknowable live set removes no image at all.
+    assert set(removed) == ({stale} if bundle == "live" else set())
+    assert (root / deferred).is_dir()
