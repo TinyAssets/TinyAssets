@@ -243,3 +243,17 @@ def test_deploy_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')
+
+
+def test_a_refused_sleep_intent_is_withdrawn_while_the_owner_is_still_busy(rolling):
+    uid = rolling.wake("a")
+    activity = rolling.states[uid]
+    with activity.enter():
+        # What an earlier deploy's refused drain left behind.
+        rolling.routing.volumes.volume("a", "sleep")
+        assert rolling.routing.volumes.volume("a", "pending")["work"]["kind"] == "snapshot"
+        record = drive(rolling.routing.volumes.recover("a"))
+        # The box never slept: no snapshot is owed and readiness waits on nothing.
+        assert record["work"] == {"kind": "running"}
+        assert rolling.runtime.stops == [] and rolling.runtime.live == {uid}
+        assert drive(rolling.routing.readiness())["ready"] is True

@@ -223,6 +223,7 @@ def dispatch(identities, document):
               "restored": {"snapshot_id"}, "pending": set(),
               "snapshots": set(), "forget": {"snapshot_id"},
               "wake": set(), "evict": set(), "evicted": set(), "erase": set(),
+              "sleep_refused": set(),
               "image_absent": set()}
     if action == "restore":
         if (not isinstance(arguments, dict) or "snapshot_id" not in arguments
@@ -292,6 +293,12 @@ def dispatch(identities, document):
                 work = None
             else:
                 work = {"kind": "create"}
+        elif action == "sleep_refused":
+            # The box is reported awake and not idle: the sleep never happened,
+            # so no snapshot is owed. A restore's pre-snapshot is never withdrawn.
+            if (work and work.get("kind") == "snapshot"
+                    and not work.get("restore_snapshot_id")):
+                work = {"kind": "running"}
         elif action == "sleep":
             if work in (None, {"kind": "running"}):
                 work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex}

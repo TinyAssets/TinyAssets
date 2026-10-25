@@ -59,6 +59,14 @@ class VolumeLifecycle:
             await self.host(owner, "evict")
             return self.volume(owner, "evicted")
         if work["kind"] == "snapshot":
+            if not work.get("restore_snapshot_id"):
+                status = await self.host(owner, "status")
+                active = status.get("active")
+                if status["awake"] and (active is None or (type(active) is int and active > 0)):
+                    # Still awake with work, or not answering: a refused sleep left
+                    # this intent. Withdraw it rather than hold readiness forever;
+                    # the box sleeps later through its ordinary idle path.
+                    return self.volume(owner, "sleep_refused")
             return await self.sleep(owner)
         if work["kind"] == "restore":
             if await self.host(owner, "sleep") != {"stopped": True}:
