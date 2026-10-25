@@ -121,7 +121,10 @@ window.AppRecovery=(()=>{
   async function logout(){
     if(leaving) return;
     leaving=true;
+    // Before any wait: a native sign-in queued behind the renewal lock re-reads
+    // these and stands down instead of minting a new session.
     try{localStorage.setItem("ta_logout_pending","1");}catch(_e){}
+    try{sessionStorage.removeItem("ta_pkce");localStorage.removeItem("ta_pkce");}catch(_e){}
     let ok=false;
     const end=async()=>{
       try{
@@ -144,8 +147,6 @@ window.AppRecovery=(()=>{
     try{
       sessionStorage.removeItem("ta_access_token");sessionStorage.removeItem("ta_access_exp");
       sessionStorage.removeItem(key);sessionStorage.removeItem(draftKey);
-      // A half-finished sign-in must not complete into the account that left.
-      sessionStorage.removeItem("ta_pkce");localStorage.removeItem("ta_pkce");
       if(ok){localStorage.removeItem("ta_sref");localStorage.removeItem("ta_logout_pending");}
     }catch(_e){}
     // Bounded: a plugin or service worker that never answers must not strand
