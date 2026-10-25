@@ -431,7 +431,8 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         Path("/var/lib/boxhostd/mounts"), os.environ["BACKUP_DEST"])
     daemons = OwnerDaemons(
         runtime, admission, volumes, relays, RUNTIME,
-        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(1024**3))))
+        # 2 GiB: headroom for the agent plus one subscription CLI run.
+        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(2 * 1024**3))))
     daemons.images = Images(rootfs.parent, state / "images.json", rootfs)
     service = HostService(admission, volumes, relays, daemons)
     stop = threading.Event()
