@@ -143,9 +143,9 @@ async def ensure_connection(http, origin: str, call) -> str:
         payload_json=json.dumps(
             {
                 "destination": CONNECTION,
-                # The signing service takes no credential; this door requires one.
-                "secret": "canary-unused",
-                "auth_scheme": "bearer",
+                # The signing service takes no credential. A credential would go
+                # through the secure browser form, never through this call.
+                "auth_scheme": "none",
                 "allowed_endpoints": [
                     {"host": host, "path_template": SERVICE_PATH, "methods": ["POST"]}
                 ],
