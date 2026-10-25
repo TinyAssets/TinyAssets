@@ -182,11 +182,16 @@ def finish(pending: Path, link: str, origin: str = ORIGIN) -> str:
             "return_secret": return_secret,
         },
     )
-    pending.unlink()
     handle = str(body.get("session_ref", "")) if status == 200 else ""
-    if not handle:
+    sealed = seal(handle) if handle else ""
+    # The flow is spent either way; failing to tidy it must not lose the seed.
+    try:
+        pending.unlink()
+    except OSError:
+        pass
+    if not sealed:
         raise CanarySessionError("sign_in_exchange_failed: " + str(body.get("error", status))[:64])
-    return seal(handle)
+    return sealed
 
 
 def main(argv: list[str] | None = None) -> int:
