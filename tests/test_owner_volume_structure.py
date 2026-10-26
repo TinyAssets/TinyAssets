@@ -28,6 +28,8 @@ READS = {"open", "read_text", "read_bytes", "stat", "lstat", "exists", "is_file"
          "is_dir", "is_symlink", "walk", "scandir", "listdir", "iterdir", "glob",
          "rglob", "resolve"}
 OPAQUE_COMMANDS = {"mount", "umount", "xfs_growfs"}
+# One-shot migrations the requirement names; each is deleted when it has run.
+ONE_SHOT = {"tinyassets/boxes/authority_import.py"}  # N10: until no owner is import-pending
 
 
 def violations(source, *, roots=ROOT_NAMES):
@@ -128,8 +130,11 @@ def test_shared_code_never_reads_volume_mounts():
     failures = {str(path.relative_to(ROOT)): violations(
         path.read_text(encoding="utf-8"), roots=ROOT_NAMES | (
             {"owner_store", "_owner_tree"} if path.name in LIFECYCLE else set()))
-                for path in sorted(files)}
+                for path in sorted(files)
+                if str(path.relative_to(ROOT)) not in ONE_SHOT}
     assert not {path: found for path, found in failures.items() if found}
+    # A one-shot exception that no longer exists is removed from the list.
+    assert all((ROOT / path).is_file() for path in ONE_SHOT)
 
 
 @pytest.mark.parametrize("body", [

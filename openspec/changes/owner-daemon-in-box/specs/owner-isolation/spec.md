@@ -80,8 +80,11 @@ owner-content path. Lifecycle code SHALL handle owner data only as whole volumes
 identified by owner UID: create, attach, detach, snapshot, restore and delete. It
 SHALL NOT open, list, stat or walk a path inside a volume. A running box's volume
 SHALL be exposed only to that owner's sandbox. Each owner SHALL have one
-lifecycle operation at a time. The one-shot cutover migration is the only
-exception to these rules, and it SHALL be deleted after cutover.
+lifecycle operation at a time. Two one-shot migrations are the only
+exceptions to these rules, and each SHALL be deleted once it has run: the
+cutover migration, and the N10 authority import, in which boxhostd lifts an
+owner's old action-policy and consent files out of the stopped volume before
+the box starts, refusing links and oversized files, and deletes them.
 
 #### Scenario: Destroying an owner deletes the volume without a walk
 - **WHEN** an owner's deletion job reaches the destroy step
