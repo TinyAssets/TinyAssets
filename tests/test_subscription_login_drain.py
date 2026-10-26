@@ -68,14 +68,15 @@ def test_pending_login_cancels_without_blocking_and_page_can_retry(
                                    else {operation: True}))
             assert state["active"] == 0 and state["draining"]
         assert login.cancelled.is_set()
+        drained_at = gate.last
         # Even before the CLI exits, pending sign-in cannot delay shutdown.
         assert login.thread.is_alive() and gate.active == 0
     finally:
         release.set()
         login.thread.join(5)
     assert not login.thread.is_alive() and login.status == "cancelled"
-    # The idle clock held while the sign-in was pending and restarts when it ends.
-    assert not gate.pending_logins and gate.last > idle_since
+    # The idle clock restarts when the sign-in ends, after the drain read it.
+    assert not gate.pending_logins and gate.last > drained_at
     late = Login(runtime).start()
     late.thread.join(5)
     assert late.cancelled.is_set() and late.status == "cancelled"

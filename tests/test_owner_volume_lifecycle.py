@@ -1276,6 +1276,30 @@ def _age(storage, sql, seconds):
         db.execute(sql, (seconds,))
 
 
+def idle_stop(storage, owner="alice"):
+    """The box reports itself idle past the wake lease; the pass stops it."""
+    from tinyassets.broker import volume_lifecycle
+
+    uid = storage.lifecycle.volume(owner)["uid"]
+    execute = storage.lifecycle.execute
+
+    def idle(operation, **fields):
+        if operation == "sleep":
+            storage.runtime.shutdown(uid)
+            storage.volumes.detach(uid)
+        result = execute(operation, **fields)
+        if operation == "status" and result["awake"]:
+            result = {**result, "idle_seconds": volume_lifecycle.WAKE_LEASE}
+        return result
+
+    storage.lifecycle.execute = idle
+    try:
+        drive(storage.lifecycle.tick_owner(owner))
+    finally:
+        storage.lifecycle.execute = execute
+    return storage.lifecycle.volume(owner)
+
+
 
 
 @pytest.mark.verifies(
@@ -1284,11 +1308,11 @@ def test_a_pause_between_turns_is_not_an_offsite_copy(storage, monkeypatch):
     monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
     routing = storage.lifecycle.lifecycle
     start(storage)
-    first = sleep(storage)  # No verified snapshot yet: the first stop is copied at once.
+    first = idle_stop(storage)  # No verified snapshot yet: the first stop is copied at once.
     assert first["work"] is None and _published(storage) == [first["snapshot_id"]]
 
     start(storage)
-    stopped = sleep(storage)
+    stopped = idle_stop(storage)
     work = stopped["work"]
     assert work["kind"] == "snapshot" and "stopped_at" in work
     assert owner_volumes.pending(storage.identities) == []
@@ -1298,7 +1322,7 @@ def test_a_pause_between_turns_is_not_an_offsite_copy(storage, monkeypatch):
 
     start(storage)  # A wake before the quiet period ends supersedes the intent.
     assert storage.lifecycle.volume("alice")["work"] == {"kind": "running"}
-    stopped = sleep(storage)["work"]
+    stopped = idle_stop(storage)["work"]
     assert _published(storage) == [first["snapshot_id"]]
 
     _age(storage, "UPDATE owner_volumes SET work=json_set(work,'$.stopped_at',"
@@ -1314,11 +1338,27 @@ def test_a_pause_between_turns_is_not_an_offsite_copy(storage, monkeypatch):
 def test_a_day_old_snapshot_is_replaced_on_the_next_stop(storage, monkeypatch):
     monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
     start(storage)
-    first = sleep(storage)
+    first = idle_stop(storage)
     _age(storage, "UPDATE owner_snapshots SET published_at=published_at-?", 86401)
     start(storage)
-    second = sleep(storage)
+    second = idle_stop(storage)
     assert second["work"] is None and second["snapshot_id"] != first["snapshot_id"]
+
+
+@pytest.mark.verifies(
+    "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map")
+def test_an_explicit_or_crash_stop_is_copied_at_once(storage, monkeypatch):
+    monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
+    start(storage)
+    first = idle_stop(storage)
+    start(storage)
+    crashed = sleep(storage)  # The box stopped on its own: no idle stop, no deferral.
+    assert crashed["work"] is None and crashed["snapshot_id"] != first["snapshot_id"]
+    start(storage)
+    drive(storage.lifecycle.lifecycle.sleep("alice"))  # Operator or deploy sleep.
+    drive(storage.lifecycle.tick_owner("alice"))
+    explicit = storage.lifecycle.volume("alice")
+    assert explicit["work"] is None and explicit["snapshot_id"] != crashed["snapshot_id"]
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")

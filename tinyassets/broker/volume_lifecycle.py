@@ -141,7 +141,10 @@ class VolumeLifecycle:
             return self.volume(owner, "sleep_refused")
         if result != {"stopped": True}:
             raise RuntimeError("owner sleep remains pending")
-        record = self.volume(owner, "stopped")
+        if idle:
+            # Only an idle stop defers its off-host copy. An explicit, deploy,
+            # deadline or crash stop is copied at once, as every sleep was.
+            record = self.volume(owner, "stopped")
         await self.lifecycle.stopped(owner)
         return record
 

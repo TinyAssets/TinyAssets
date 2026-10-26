@@ -39,10 +39,11 @@ Proposed. Would clarify ADR-019's lifecycle rule and amend ADR-022's interim
 ## Consequences
 
 - `idle_limit` and the flat `awake_cap` are deleted.
-- Stopping a box is not copying it. A stop waits only for the ten-second
-  post-wake lease. The off-host volume snapshot that used to come with
-  every sleep waits until the box has been stopped 15 minutes, or a day has
-  passed since the last one (#5316).
+- Stopping a box is not copying it. An idle stop waits only for the
+  ten-second post-wake lease. Its off-host volume snapshot, which used to
+  come with every sleep, waits until the box has been stopped 15 minutes;
+  it is taken at once when the owner has no snapshot or the last is a day
+  old. Explicit, deploy and crash stops still copy at once (#5316).
 - Hosting capacity scales with simultaneous work, not with users.
 - More box hosts are added behind ADR-012's cell seams when receipts show
   the need.

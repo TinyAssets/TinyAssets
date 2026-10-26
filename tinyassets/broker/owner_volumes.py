@@ -88,13 +88,13 @@ def binding(identities, owner):
 
 
 def deferred(work, last_published, now):
-    """A confirmed stop whose offsite copy is not owed yet (ADR-026).
+    """A confirmed idle stop whose offsite copy is not owed yet (ADR-026).
 
     A box stops as soon as no work runs, so pauses between turns are frequent.
-    Its full image is copied offsite only after it stays stopped for
-    SNAPSHOT_QUIET, or at once when its newest copy is a day old or it has
+    An idle stop's full image is copied offsite only after it stays stopped
+    for SNAPSHOT_QUIET, or at once when its newest copy is a day old or it has
     none. A wake before then replaces the intent, and the local image is the
-    volume, the same as for an awake box.
+    volume, the same as for an awake box. Only idle stops are dated.
     """
     return (isinstance(work, dict) and work.get("kind") == "snapshot"
             and "stopped_at" in work and not work.get("restore_snapshot_id")

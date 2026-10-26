@@ -122,10 +122,10 @@ SHALL be recoverable independently of owner volumes, and a historical map SHALL
 NOT authorize reassigning an existing owner's UID or volume. A snapshot SHALL be
 taken only after work admission closes, the box flushes, every filesystem
 reference is released, XFS is unmounted without a lazy unmount and loop
-detachment completes. A completed sleep SHALL be snapshotted once the box stays
-stopped for fifteen minutes, or at once when the owner has no verified snapshot
-or its newest is a day old; a wake before then supersedes it. Failures SHALL be
-retried. A snapshot reference SHALL be published only after
+detachment completes. A completed sleep SHALL be snapshotted at once, except an
+idle stop, which SHALL be snapshotted once the box stays stopped for fifteen
+minutes, or at once when the owner has no verified snapshot or its newest is a
+day old; a wake before then supersedes it. Failures SHALL be retried. A snapshot reference SHALL be published only after
 the bytes read back from off-host storage are verified. Restoring an owner SHALL
 replace only that owner's volume and SHALL commit its new volume generation
 before the box starts. It SHALL NOT modify identity, credentials, admission
@@ -142,9 +142,10 @@ state, billing or custody.
 - **AND** the snapshot stays pending and is retried without waking the owner's agent
 
 #### Scenario: A pause between turns is not an off-host copy
-- **WHEN** a box stops and wakes again within fifteen minutes, and its newest verified snapshot is under a day old
+- **WHEN** a box stops because it is idle and wakes again within fifteen minutes, and its newest verified snapshot is under a day old
 - **THEN** no snapshot is copied, and the stop leaves deploy readiness nothing to wait on
 - **AND** a box that stays stopped for fifteen minutes is snapshotted on the next lifecycle pass
+- **AND** an explicit, deploy, deadline or crash stop is snapshotted at once
 
 #### Scenario: An interrupted restore never starts a mismatched box
 - **WHEN** a restore is interrupted between installing the image and committing the generation
