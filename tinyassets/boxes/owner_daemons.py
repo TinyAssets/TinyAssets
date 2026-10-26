@@ -44,7 +44,7 @@ class OwnerDaemons:
         # A wake retries a silent box's status for answer_probe seconds. It is
         # replaced only once nothing has answered for answer_silence seconds,
         # counted from the last good status (routine broker checks refresh it), so
-        # a turn that stalls the app for a while is never killed for it.
+        # a turn that stalls the app for less than that is never killed for it.
         self.answer_probe, self.answer_silence = answer_probe, answer_silence
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
@@ -230,6 +230,9 @@ class OwnerDaemons:
             raise BoxAuthError("broker launch authorization is missing")
         record = launch
         uid = record["uid"]
+        # One budget for the whole wake, a replacement's stop included, so it stays
+        # inside the router's 70 s wake socket.
+        deadline = time.monotonic() + self.startup_timeout
         with self.volumes.operation(uid, shared=True):
             with self.condition:
                 box = self.boxes.get(uid)
@@ -276,7 +279,7 @@ class OwnerDaemons:
                 box.awake = False
                 self._failed(box, BoxError("owner daemon crashed"))
             try:
-                self._start(box, time.monotonic() + self.startup_timeout, launch=record)
+                self._start(box, deadline, launch=record)
                 return uid
             except Exception as exc:
                 self._failed(box, exc)
