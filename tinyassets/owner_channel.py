@@ -46,11 +46,11 @@ def connect(sock, center):
         raise PermissionError("owner broker channel refused")
 
 
-def request(center, document):
+def request(center, document, *, timeout=30):
     import socket
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(30)
+        sock.settimeout(timeout)
         connect(sock, center)
         sock.sendall(rf.control(rf.CONNECTION, document))
         answer = rf.read_frame_blocking(sock)

@@ -356,7 +356,8 @@ def test_disconnect_removes_declared_state_and_owner_install_only(connected, tmp
     from tinyassets.onboarding.subscription_connect import connected_sources, disconnect
     from tinyassets.providers.subscription_runtime import SubscriptionRuntime
 
-    assert connected_sources() == {"sources": [{"id": "fake-cli", "name": "Fixture"}]}
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": True}]}
     image = tmp_path / "shared-image" / "fake-cli"
     image.mkdir(parents=True)
     binary = image / "binary"
@@ -372,6 +373,54 @@ def test_disconnect_removes_declared_state_and_owner_install_only(connected, tmp
     assert binary.read_bytes() == installed
     assert other.read_text() == "keep"
     assert connected_sources() == {"sources": []}
+    assert disconnect("fake-cli")["status"] == "disconnected"
+
+
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+def test_disconnect_removes_the_candidate_the_account_can_no_longer_serve(connected):
+    from tinyassets.onboarding.subscription_connect import disconnect
+    from tinyassets.providers.definition import list_definitions, register_definition
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    root = connected.home
+    kept = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="fake-cli")
+    # A candidate registered and never assigned has no assignment row at all; its
+    # definition still has to go, or the account keeps a broken source forever.
+    assert connected_sources(root, root / "center", "owner") == frozenset(
+        {"subscription_cli:" + kept.id})
+    assert disconnect("fake-cli")["status"] == "disconnected"
+    assert list_definitions("center") == []
+    assert connected_sources(root, root / "center", "owner") == frozenset()
+
+
+@pytest.mark.verifies("box-subscription-sources:Disconnect connected sources")
+def test_disconnect_retracts_the_broker_descriptor_for_this_owner_only(connected, box):  # noqa: F811
+    from tinyassets.broker.owner_sources import publish, read
+    from tinyassets.onboarding.subscription_connect import disconnect
+    from tinyassets.providers.definition import (
+        ProviderDefinition,
+        _definition_id,
+        register_definition,
+    )
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    mine = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="fake-cli")
+    fields = dict(universe_id="center", owner_user_id="other", access_method="subscription_cli",
+                  protocol="cli_json", ref="fake-cli", model="default")
+    theirs = ProviderDefinition(id=_definition_id(**fields), **fields, visibility="private",
+                                created_at="2026-10-24T00:00:00+00:00")
+    other = ConnectionLedger(box.ledger._db_path, data_root=box.shared,
+                             verify_authenticated_principal=lambda: "other")
+    publish(other, "other", "other", theirs.as_dict())
+    assert [item["id"] for item in read(box.ledger, "ignored")] == [mine.id]
+
+    assert disconnect("fake-cli")["status"] == "disconnected"
+    assert read(box.ledger, "ignored") == []
+    # The same source id under another principal was never this owner's to withdraw.
+    assert [item["id"] for item in read(other, "other")] == [theirs.id]
+    # Idempotent: a repeated disconnect finds nothing left to withdraw.
     assert disconnect("fake-cli")["status"] == "disconnected"
 
 
@@ -396,3 +445,64 @@ pytestmark = [
         'box-subscription-sources:Broker custody and one-run native leases',
     ),
 ]
+
+
+@pytest.mark.verifies("box-subscription-sources:Generic invocation and selection")
+def test_readiness_does_not_wait_behind_a_running_invocation(connected):
+    import threading
+    import time
+
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.provider_resolver import provider_for_definition
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    root = connected.home
+    definition = register_definition(universe_id="center", owner_user_id="owner",
+        access_method="subscription_cli", protocol="cli_json", model="default", ref="fake-cli")
+    held, release = threading.Event(), threading.Event()
+
+    def running_turn():
+        # An invocation holds the source lock for its whole CLI run.
+        with connected.lock():
+            held.set()
+            release.wait(30)
+
+    turn = threading.Thread(target=running_turn)
+    turn.start()
+    try:
+        assert held.wait(10)
+        started = time.monotonic()
+        sources = connected_sources(root, root / "center", "owner")
+        assert time.monotonic() - started < 5
+        assert provider_for_definition(definition).name in sources
+    finally:
+        release.set()
+        turn.join(10)
+
+
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
+def test_a_listed_source_without_a_saved_sign_in_reads_as_needing_reconnect(connected):
+    from tinyassets.onboarding.subscription_connect import connected_sources
+
+    # The connection marker stays while the saved sign-in is gone: the list must
+    # say what a turn would say, not "connected".
+    entry = custody(connected, "read")
+    if entry["revision"] is not None:
+        custody(connected, "delete", revision=entry["revision"])
+    (connected.home / ".fake-login").unlink(missing_ok=True)
+    assert (connected.directory / "connection").is_file()
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": False}]}
+
+
+@pytest.mark.verifies("box-subscription-sources:Definition-generated connect controls")
+def test_a_slow_store_reads_as_unknown_not_expired(connected, monkeypatch):
+    from tinyassets import owner_channel
+    from tinyassets.onboarding.subscription_connect import connected_sources
+
+    def slow(*args, **kwargs):
+        raise TimeoutError("custody read timed out")
+
+    monkeypatch.setattr(owner_channel, "request", slow)
+    assert connected_sources() == {
+        "sources": [{"id": "fake-cli", "name": "Fixture", "signed_in": None}]}

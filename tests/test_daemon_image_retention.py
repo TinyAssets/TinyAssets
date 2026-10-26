@@ -525,3 +525,75 @@ def test_production_harness_root_clears_legacy_snapshots(tmp_path: Path, monkeyp
     assert "cutover/bundle/host/root/release-old" in removed
     assert not paths["current"].exists()
     assert not paths["release-20260928.0"].exists()
+
+
+def _two_images():
+    return [
+        {"Id": IMAGE, "RepoDigests": [REF], "RepoTags": [REF],
+         "Created": "2026-10-02T00:00:00+00:00"},
+        {"Id": OTHER, "RepoDigests": [OTHER_REF], "RepoTags": [OTHER_REF],
+         "Created": "2026-10-01T00:00:00+00:00"},
+    ]
+
+
+def test_an_already_absent_rollback_digest_does_not_block_retention(capsys):
+    gone = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "9f" * 32
+    choices, protected = candidates(
+        _two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, REF, {"rollback_target": gone},
+    )
+    assert IMAGE in protected
+    assert [item["image_id"] for item in choices] == [OTHER]
+    assert "rollback_target_absent" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("receipt,configured,slot", [
+    ({"rollback_target": "ghcr.io/tinyassets/tinyassets-daemon:previous"}, REF,
+     "rollback_target"),
+    ({"rollback_target": REF},
+     "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "ef" * 32, "configured"),
+])
+def test_a_missing_tag_or_configured_image_still_refuses_by_name(receipt, configured, slot):
+    with pytest.raises(Refusal, match="protected_reference_unmapped:" + slot):
+        candidates(_two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, configured, receipt)
+
+
+@pytest.mark.parametrize("bundle", ["live", "unreadable"])
+def test_prune_keeps_the_image_a_running_owner_still_reads(tmp_path: Path, monkeypatch, bundle):
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current, deferred, stale = _name(IMAGE), "harness-" + "56" * 32, "harness-" + "78" * 32
+    for name in (current, deferred, stale):
+        _seal(root / name)
+    (root / "harness-current").symlink_to(current)
+    bundles = tmp_path / "bundles"
+    (bundles / "owner-300001").mkdir(parents=True)
+    config = bundles / "owner-300001" / "config.json"
+    config.write_text(json.dumps({"root": {"path": str(root / deferred)}})
+                      if bundle == "live" else "{not json", encoding="utf-8")
+    monkeypatch.setenv("TINYASSETS_BOX_BUNDLE_ROOT", str(bundles))
+    removed = prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root)
+    # An owner left serving through a deploy keeps its image until it sleeps;
+    # an unknowable live set removes no image at all.
+    assert set(removed) == ({stale} if bundle == "live" else set())
+    assert (root / deferred).is_dir()
+
+
+def test_prune_removes_no_image_while_a_launch_holds_the_harness_lease(tmp_path: Path,
+                                                                     monkeypatch):
+    from scripts import daemon_image_retention as retention
+    from tinyassets.boxes.images import harness_lease
+
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current, stale = _name(IMAGE), "harness-" + "78" * 32
+    for name in (current, stale):
+        _seal(root / name)
+    (root / "harness-current").symlink_to(current)
+    monkeypatch.setenv("TINYASSETS_HARNESS_LOCK_SECONDS", "0.2")
+    # A launch between image selection and its bundle holds the lease shared:
+    # pruning waits, then removes nothing rather than race it.
+    with harness_lease(root):
+        assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root) == []
+        assert (root / stale).is_dir()
+    assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root) == [stale]
+    del retention

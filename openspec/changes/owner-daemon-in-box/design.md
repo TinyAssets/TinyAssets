@@ -703,8 +703,12 @@ draining again; it is never a per-box operation.
 - Deployment drain closes the box's existing work-admission gate atomically with
   request and background-turn admission, lets already-admitted work finish, then
   takes the normal flush, detach and snapshot sleep path.
+- An owner whose status reports work in progress is never drained: it is
+  reported as busy, keeps serving, and starts the published image at its next
+  ordinary sleep and wake. A busy owner never blocks a deploy (2026-10-25: every
+  deploy failed while one, then three, owners were mid-turn).
 - A timeout or unknown activity state never authorizes killing a turn; it is
-  reported as an incomplete drain.
+  reported as an incomplete drain, which still fails acceptance.
 - Concurrent requests wait or get a retryable response; they are never replayed
   after ambiguous execution.
 - Draining doesn't eagerly restart ordinary owners.
@@ -730,6 +734,13 @@ ordinary public router before publishing. Its one root-authenticated broker
 permanent volume bindings. Awake owners use the existing `VolumeLifecycle.sleep`
 under the broker owner lock. A busy or unknown drain stays pending on that same
 volume state machine and reports `incomplete`; no ordinary owner is restarted.
+An owner confirmed mid-turn by its status is not drained at all and is reported
+as `busy` (deferred to its next wake); it does not block acceptance. An awake owner whose own
+status does not answer is reported as `unresponsive`: it is never drained on a
+guess (no sleep intent), it is reported loudly, and it does not block the fleet's
+deploy either. Only an error from status or sleep stays `incomplete` and fails. Image retention keeps every
+harness a running sandbox's bundle names, and removes no harness while that set
+is unknowable, so a deferred owner never loses its rootfs mid-turn.
 Only a complete drain proceeds to public canary acceptance, which wakes the canary
 on `images.current`, checks its baked revision and completes a model turn.
 Rollback repeats publication and drain with the previous compatible image.
@@ -1305,8 +1316,9 @@ are described in the 3c-2 as-built contract above.
   explicit. `--host-uds=all` allows opening the bound relay and creating the
   exported socket. No host credential environment is inherited.
 - **Defaults.** Idle threshold 900 seconds (`TINYASSETS_BOX_IDLE_SECONDS`),
-  awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`), memory 1 GiB per box
-  (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB).
+  awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`; 2 GiB is a ceiling, and MemoryMax bounds the fleet), memory 2 GiB per box
+  (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB; raised
+  2026-10-25 for the agent plus one subscription CLI run).
   The service's aggregate MemoryMax is 7G. Interactive wakes evict the least
   recently used idle box; scheduled wakes wait without eviction and behind
   interactive tickets. Wakes have a 60-second capacity/readiness deadline.
@@ -1921,9 +1933,22 @@ repair removes only missing definitions or missing HTTP grant rows, preserves
 subscription members, repoints a missing root to a survivor, and rebuilds the
 assignment/work-binding digests and agent pointer atomically. No survivors means
 an unassigned setup. Config projections are refreshed on rerun; reports contain
-IDs only. Delete this command with the cutover migration:
+IDs only. A definition row naming another owner or another center is not this
+owner's: the report counts it by reason code (`definition_center_mismatch`,
+`definition_owner_mismatch`), membership pointing at it is removed as a missing
+definition, the foreign row itself is never rewritten, and the rest of that
+owner's repair still runs. A tampered content address still refuses.
+Delete this command with the cutover migration:
 
-`python -m tinyassets.cutover_assignment_repair --owner-root <mounted-owner-volume> --ledger <broker-outbound.db> --stopped`
+`python -m tinyassets.cutover_assignment_repair --owner-root <mounted-owner-volume> --ledger <broker-outbound.db> --stopped [--dry-run]`
+
+`--dry-run` computes the same plan through the same code and prints the same
+summary without writing a byte: both databases are read through
+`sqlite_readonly.readonly_db`, because `mode=ro` still writes a WAL index beside
+a WAL source, and the schema helpers prepare the copy rather than the volume, so
+the preview accepts exactly the inputs the repair run accepts. The stopped
+broker's ledger is read that way in both modes. The repair run then refuses if
+the root it anchors differs from the root it planned.
 
 Run once per owner volume with both services stopped. A transient probe failure
 is never evidence for this repair. Saved-default fallback requires the source to

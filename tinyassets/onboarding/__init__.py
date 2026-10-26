@@ -580,6 +580,14 @@ async def _handle_token(request: Any) -> Any:
     if handle:
         body["session_ref"] = handle
     response = JSONResponse(body, headers={"Cache-Control": "no-store"})
+    if grant == "refresh_token":
+        from tinyassets.onboarding.owner_sessions import COOKIE as OWNER_COOKIE
+        from tinyassets.onboarding.owner_sessions import extend
+
+        owner_cookie = str(request.cookies.get(OWNER_COOKIE, ""))
+        if owner_cookie and await run_in_threadpool(extend, owner_cookie, identity.user_id):
+            response.set_cookie(OWNER_COOKIE, owner_cookie, max_age=28800, secure=True,
+                                httponly=True, samesite="lax")
     if refresh_token and len(refresh_token) <= 4096:
         response.set_cookie(
             _REFRESH_COOKIE,
@@ -1992,7 +2000,7 @@ def onboarding_routes() -> list[Any]:
     from starlette.routing import Route
 
     from tinyassets.app_object import handle_apps
-    from tinyassets.onboarding import approval_handoff, canary_sign_in, native_sign_in
+    from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.api_keys import handle as handle_api_keys
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.app_play import (
@@ -2038,9 +2046,6 @@ def onboarding_routes() -> list[Any]:
         Route("/app/native-sign-in", native_sign_in.begin, methods=["POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
-        # The dedicated deploy canary's own sign-in. 404 unless the host pins
-        # that one account (tinyassets/onboarding/canary_sign_in.py).
-        Route("/app/canary-sign-in", canary_sign_in.handle, methods=["POST"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
         Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),

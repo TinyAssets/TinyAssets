@@ -600,6 +600,31 @@ def test_only_files_needs_a_marker(tmp_path):
         ])
 
 
+def test_oracle_sets_protected_regular_before_the_container(tmp_path, monkeypatch):
+    from scripts import linux_oracle
+
+    knob = tmp_path / "protected_regular"
+    knob.write_text("0\n")
+    monkeypatch.setattr(linux_oracle.os, "geteuid", lambda: 0)
+    linux_oracle._ensure_protected_regular(knob)
+    assert knob.read_text().strip() == "2"
+    linux_oracle._ensure_protected_regular(knob)
+    assert knob.read_text().strip() == "2"
+
+    delegated = tmp_path / "delegated"
+    delegated.write_text("0\n")
+    monkeypatch.setattr(linux_oracle.os, "geteuid", lambda: 1001)
+
+    def fake_run(command, input, check, stdout):  # noqa: A002
+        assert command == ["sudo", "-n", "tee", str(delegated)]
+        assert check is True
+        delegated.write_bytes(input)
+
+    monkeypatch.setattr(linux_oracle.subprocess, "run", fake_run)
+    linux_oracle._ensure_protected_regular(delegated)
+    assert delegated.read_text().strip() == "2"
+
+
 pytestmark = pytest.mark.verifies(
     'ci-linux-proof-venue:'
     'Jail-backed tests execute in the Linux oracle, never skip',

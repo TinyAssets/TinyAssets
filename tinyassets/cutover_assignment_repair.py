@@ -1,7 +1,8 @@
 """One-shot stopped-cutover repair. Delete with box_layout_migration after cutover.
 
 Reads one mounted owner volume and the stopped broker's grant ledger. No catalogue,
-credential probe, or runtime caller; absence alone removes membership.
+credential probe, or runtime caller; absence alone removes membership. ``--dry-run``
+computes the same plan from verified disposable copies and writes nothing.
 """
 from __future__ import annotations
 
@@ -16,6 +17,14 @@ from tinyassets.boxes.bootstrap import RUNTIME
 
 BROKER_SOCKET = RUNTIME / "broker/broker.sock"
 PROC_ROOT = Path("/proc")
+
+# A row in this owner's center store that names another center or another owner is
+# not this owner's definition. It is reported by reason code and count -- never by
+# id or content -- and membership pointing at it is removed as a missing
+# definition. The foreign row itself is never rewritten, and one such row never
+# aborts the rest of this owner's repair.
+FOREIGN_CENTER = "definition_center_mismatch"
+FOREIGN_OWNER = "definition_owner_mismatch"
 
 
 def require_stopped(owner_root):
@@ -51,61 +60,135 @@ def require_stopped(owner_root):
             raise RuntimeError("owner volume is attached in another process namespace")
 
 
-def repair(owner_root: Path, ledger: Path):
+def _center_ids(conn):
+    ids = []
+    for row in conn.execute("SELECT universe_id FROM provider_assignments").fetchall():
+        uid = row[0]
+        if not uid or Path(uid).name != uid or uid in {".", ".."}:
+            raise ValueError("invalid center id")
+        ids.append(uid)
+    return ids
+
+
+def _owned_definitions(owner_root: Path, uid: str, owner_user_id: str):
+    """This owner's definitions in this center, and foreign-row counts by reason.
+
+    A tampered row -- one whose id is not the content address of its own fields --
+    still raises: that is corruption of this owner's store, not another owner's row.
+    """
+    from tinyassets.providers.definition import _verified_definition
+
+    path = owner_root / uid / "provider_definitions.json"
+    documents = json.loads(path.read_text("utf-8")) if path.exists() else []
+    definitions, foreign = {}, {}
+    for document in documents:
+        definition = _verified_definition(document)
+        reason = (FOREIGN_CENTER if definition.universe_id != uid else
+                  FOREIGN_OWNER if definition.owner_user_id != owner_user_id else None)
+        if reason is not None:
+            foreign[reason] = foreign.get(reason, 0) + 1
+            continue
+        definitions[definition.id] = definition
+    return definitions, foreign
+
+
+def _survives(member, definitions, owner_user_id, grant_ids):
+    method, ident = member.provider.split(":", 1)
+    definition = definitions.get(ident)
+    if definition is None:
+        return False
+    if definition.access_method != method:
+        raise ValueError("assignment definition identity mismatch")
+    return method != "api_key_http" or (owner_user_id, definition.ref) in grant_ids
+
+
+def _root_after(assignment, kept):
+    """The root ``remove_members`` anchors on: the current root when it survives,
+    else the first survivor; no survivor leaves the center unassigned."""
+    if not kept:
+        return None
+    return next((m.provider for m in kept if m.provider == assignment.provider),
+                kept[0].provider)
+
+
+def _plan(conn, owner_root: Path, centers, grant_ids):
+    """Read only. The dry run prints this plan; the real run applies exactly it."""
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+
+    planned = []
+    for uid in centers:
+        assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+        if not assignment.candidates:
+            continue
+        definitions, foreign = _owned_definitions(owner_root, uid, assignment.owner_user_id)
+        kept = tuple(m for m in assignment.candidates
+                     if _survives(m, definitions, assignment.owner_user_id, grant_ids))
+        if kept == assignment.candidates and not foreign:
+            continue
+        change = {"universe_id": uid,
+                  "removed": [m.provider for m in assignment.candidates if m not in kept],
+                  "old_root": assignment.provider,
+                  "root": _root_after(assignment, kept)}
+        if foreign:
+            change["foreign_definitions"] = dict(sorted(foreign.items()))
+        planned.append((assignment, kept, change))
+    return planned
+
+
+def _preview(owner_db: Path, owner_root: Path, grant_ids):
+    """The real run's plan, read through a verified disposable copy.
+
+    mode=ro is not enough: on a WAL store SQLite still writes the -wal/-shm index
+    beside the source, and production owner storage is WAL. readonly_db copies the
+    database and its WAL and opens only the copy, which also lets the schema
+    helpers prepare exactly the tables and indexes the repair run would create --
+    on the copy -- so the preview accepts every input the repair run accepts. A
+    missing or misspelled path still refuses rather than reading an empty store.
+    """
+    from tinyassets.sqlite_readonly import readonly_db
+
+    with readonly_db(owner_db) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        return [c for _, _, c in _plan(conn, owner_root, _center_ids(conn), grant_ids)]
+
+
+def repair(owner_root: Path, ledger: Path, *, dry_run: bool = False):
     from tinyassets.provider_assignment import load_provider_assignment_in_transaction
     from tinyassets.provider_assignment_departure import remove_members
-    from tinyassets.providers.definition import _verified_definition
-    from tinyassets.storage import db_path
+    from tinyassets.sqlite_readonly import readonly_db
+    from tinyassets.storage import DB_FILENAME, db_path
 
     require_stopped(owner_root)
     changes = []
-    # mode=rw/ro refuses a misspelled path rather than inventing an empty ledger.
-    with sqlite3.connect(ledger.resolve().as_uri() + "?mode=ro", uri=True) as grants:
+    # The stopped broker's ledger is not ours to touch in either mode, and mode=ro
+    # would leave a WAL index beside it: read a verified copy instead.
+    with readonly_db(ledger) as grants:
         grant_ids = set(grants.execute(
             "SELECT owner_user_id,grant_id FROM outbound_connection_grants"))
+    # db_path promotes a legacy filename by renaming it, which is a write: a dry run
+    # reads the canonical name instead.
+    if dry_run:
+        return _preview(owner_root / DB_FILENAME, owner_root, grant_ids)
     with sqlite3.connect(db_path(owner_root).resolve().as_uri() + "?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
-        centers = conn.execute("SELECT universe_id FROM provider_assignments").fetchall()
-        for row in centers:
-            uid = row[0]
-            if not uid or Path(uid).name != uid or uid in {".", ".."}:
-                raise ValueError("invalid center id")
-            assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
-            if not assignment.candidates:
-                continue
-            path = owner_root / uid / "provider_definitions.json"
-            documents = json.loads(path.read_text("utf-8")) if path.exists() else []
-            definitions = {d.id: d for d in (
-                _verified_definition(doc, expect_universe=uid) for doc in documents)}
-
-            def exists(member):
-                method, ident = member.provider.split(":", 1)
-                definition = definitions.get(ident)
-                if definition is None:
-                    return False
-                if (definition.owner_user_id != assignment.owner_user_id
-                        or definition.access_method != method):
-                    raise ValueError("assignment definition identity mismatch")
-                return method != "api_key_http" or (
-                    assignment.owner_user_id, definition.ref) in grant_ids
-
-            kept = tuple(m for m in assignment.candidates if exists(m))
+        centers = _center_ids(conn)
+        for assignment, kept, change in _plan(conn, owner_root, centers, grant_ids):
+            changes.append(change)
             if kept == assignment.candidates:
-                continue
-            removed = [m.provider for m in assignment.candidates if m not in kept]
+                continue  # Foreign rows only: reported, nothing of this owner's to change.
             updated = remove_members(conn, assignment, kept)
-            changes.append({"universe_id": uid, "removed": removed,
-                            "old_root": assignment.provider,
-                            "root": updated.provider if kept else None})
+            if (updated.provider if kept else None) != change["root"]:
+                raise RuntimeError("repaired root differs from the planned root")
         conn.commit()
         # Projections are non-authorizing files. Refresh on every invocation so
         # rerunning after interruption between the DB commit and file write repairs them too.
         from tinyassets.config import write_provider_assignment_projection
 
-        for row in centers:
-            assignment = load_provider_assignment_in_transaction(conn, universe_id=row[0])
-            write_provider_assignment_projection(owner_root / row[0], state=assignment.state,
+        for uid in centers:
+            assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+            write_provider_assignment_projection(owner_root / uid, state=assignment.state,
                 generation=assignment.generation, provider=assignment.provider,
                 binding={"binding_id": assignment.binding_id,
                          "generation": assignment.binding_generation,
@@ -121,8 +204,10 @@ def main():
     parser.add_argument("--owner-root", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--stopped", action="store_true", required=True)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="plan read-only and print the same summary without writing")
     args = parser.parse_args()
-    print(json.dumps(repair(args.owner_root, args.ledger), sort_keys=True))
+    print(json.dumps(repair(args.owner_root, args.ledger, dry_run=args.dry_run), sort_keys=True))
 
 
 if __name__ == "__main__":

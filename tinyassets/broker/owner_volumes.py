@@ -86,11 +86,18 @@ def binding(identities, owner):
 
 
 def pending(identities, *, include_running=True):
+    """Recoverable volume work, excess snapshots, or a cold local image.
+
+    ``{"kind": "create"}`` is not recoverable. VolumeLifecycle.recover leaves
+    it alone and the volume is formatted on first wake, so counting it made
+    deploy readiness wait for a wake that the readiness window never issues.
+    """
     with closing(identities._connect(write=False)) as db:
         candidates = [row[0] for row in db.execute(
             "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
             "ON i.principal=v.principal AND i.machine_id=v.uid "
             "WHERE ((v.work IS NOT NULL AND "
+            "json_extract(v.work,'$.kind') IS NOT 'create' AND "
             "(? OR json_extract(v.work,'$.kind')!='running')) OR "
             "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7 OR "
             "(v.local=1 AND v.asleep_at<? AND v.snapshot_id IS NOT NULL))",
@@ -99,6 +106,95 @@ def pending(identities, *, include_running=True):
 
         return [owner for owner in candidates
                 if admission(db, owner).state in {"admitted", "suspended"}]
+
+
+def pending_counts(identities, *, include_running=False):
+    """Counts for the same rows as pending(). Principals stay in the database."""
+    counts = {}
+    cold_before = time.time() - COLD_AFTER
+    with closing(identities._connect(write=False)) as db:
+        rows = db.execute(
+            "SELECT v.principal, v.work, v.local, v.asleep_at, v.snapshot_id, "
+            "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal) "
+            "FROM owner_volumes v JOIN owner_identities i "
+            "ON i.principal=v.principal AND i.machine_id=v.uid").fetchall()
+        from tinyassets.broker.admission import admission
+
+        for principal, work, local, asleep_at, snapshot_id, snapshots in rows:
+            if admission(db, principal).state not in {"admitted", "suspended"}:
+                continue
+            kind = json.loads(work).get("kind") if work else None
+            if work and kind != "create" and (include_running or kind != "running"):
+                key = kind if isinstance(kind, str) else "work"
+                counts[key] = counts.get(key, 0) + 1
+            if snapshots > 7:
+                counts["excess_snapshots"] = counts.get("excess_snapshots", 0) + 1
+            if local and asleep_at is not None and asleep_at < cold_before and snapshot_id:
+                counts["cold"] = counts.get("cold", 0) + 1
+    return counts
+
+
+def _pin_set(pinned):
+    if not isinstance(pinned, list):
+        raise ValueError("pinned snapshot report is not a list")
+    pins = set()
+    for item in pinned:
+        if (not isinstance(item, (list, tuple)) or len(item) != 2
+                or type(item[0]) is not int
+                or not isinstance(item[1], str)
+                or not re.fullmatch(r"[a-f0-9]{32}", item[1])):
+            raise ValueError("pinned snapshot report is malformed")
+        pins.add((item[0], item[1]))
+    return pins
+
+
+def actionable_excess(identities, pinned):
+    """Owners whose prune can still delete a snapshot.
+
+    The retained set matches VolumeLifecycle.prune: the current snapshot,
+    then the newest rows until seven, plus an in-flight restore or
+    pre-snapshot. A row outside that set that a platform backup pins cannot
+    be deleted, so it is not unfinished deploy work. pending() still returns
+    the owner, and the tick still prunes.
+    """
+    pins = _pin_set(pinned)
+    count = 0
+    with closing(identities._connect(write=False)) as db:
+        rows = db.execute(
+            "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
+            "ON i.principal=v.principal AND i.machine_id=v.uid "
+            "WHERE (SELECT COUNT(*) FROM owner_snapshots s "
+            "WHERE s.principal=v.principal)>7").fetchall()
+        from tinyassets.broker.admission import admission
+
+        for (owner,) in rows:
+            if admission(db, owner).state not in {"admitted", "suspended"}:
+                continue
+            if _has_deletable_excess(db, owner, pins):
+                count += 1
+    return count
+
+
+def _has_deletable_excess(db, owner, pins):
+    row = db.execute(
+        "SELECT v.uid,v.snapshot_id,v.work FROM owner_volumes v "
+        "JOIN owner_identities i ON i.principal=v.principal AND i.machine_id=v.uid "
+        "WHERE v.principal=?", (owner,)).fetchone()
+    if row is None:
+        return False
+    uid, snapshot_id, work_json = row
+    work = json.loads(work_json) if work_json else {}
+    retained = {snapshot_id}
+    snapshots = [item[0] for item in db.execute(
+        "SELECT snapshot_id FROM owner_snapshots WHERE principal=? "
+        "ORDER BY sequence DESC", (owner,))]
+    for snap in snapshots:
+        if len(retained) < 7:
+            retained.add(snap)
+    for key in ("restore_snapshot_id", "pre_snapshot_id"):
+        if work.get(key):
+            retained.add(work[key])
+    return any(snap not in retained and (uid, snap) not in pins for snap in snapshots)
 
 
 def awake_owners(identities, *, stopping=False):
@@ -126,7 +222,9 @@ def dispatch(identities, document):
               "restore": {"snapshot_id"}, "continue_restore": set(),
               "restored": {"snapshot_id"}, "pending": set(),
               "snapshots": set(), "forget": {"snapshot_id"},
-              "wake": set(), "evict": set(), "evicted": set(), "erase": set()}
+              "wake": set(), "evict": set(), "evicted": set(), "erase": set(),
+              "sleep_refused": set(),
+              "image_absent": set()}
     if action == "restore":
         if (not isinstance(arguments, dict) or "snapshot_id" not in arguments
                 or set(arguments) - {"expected_generation"} != {"snapshot_id"}):
@@ -182,6 +280,25 @@ def dispatch(identities, document):
             if work != {"kind": "create"}:
                 raise PermissionError("volume creation is not pending")
             work = None
+        elif action == "image_absent":
+            # The copy cannot be taken: the local file is already gone. A
+            # published snapshot remains the volume. With no snapshot at all,
+            # the next wake formats, which is the create path.
+            if (not work or work.get("kind") != "snapshot"
+                    or work.get("restore_snapshot_id")):
+                raise PermissionError("snapshot is not blocked on a missing image")
+            if record["snapshot_id"]:
+                db.execute("UPDATE owner_volumes SET local=0 WHERE principal=?", (owner,))
+                record["local"] = False
+                work = None
+            else:
+                work = {"kind": "create"}
+        elif action == "sleep_refused":
+            # The box is reported awake and not idle: the sleep never happened,
+            # so no snapshot is owed. A restore's pre-snapshot is never withdrawn.
+            if (work and work.get("kind") == "snapshot"
+                    and not work.get("restore_snapshot_id")):
+                work = {"kind": "running"}
         elif action == "sleep":
             if work in (None, {"kind": "running"}):
                 work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import re
@@ -9,6 +10,26 @@ import threading
 from pathlib import Path
 
 from tinyassets.boxes.provider import BoxError
+
+#: Shared with deploy/deploy_fail_safe.sh and scripts/daemon_image_retention.py.
+HARNESS_LOCK = ".harness.lock"
+
+
+@contextlib.contextmanager
+def harness_lease(directory: Path):
+    """Hold a harness from image selection until the sandbox bundle names it.
+
+    Pruning takes this lock exclusively from its bundle scan through deletion, so
+    a launch that chose an image is either visible in a bundle or not yet started.
+    """
+    import fcntl
+
+    fd = os.open(Path(directory) / HARNESS_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(fd)
 
 
 class Images:

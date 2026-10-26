@@ -653,7 +653,8 @@ def test_deploy_completes_after_sleep_without_copy(authority, monkeypatch):
         return a.host(operation, owner, **fields)
     lifecycle.execute = host
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
-    assert asyncio.run(routing.deploy("image")) == {"slept": 1, "asleep": 1, "incomplete": 0}
+    assert asyncio.run(routing.deploy("image")) == {
+        "slept": 1, "asleep": 1, "busy": 0, "unresponsive": 0, "incomplete": 0}
     assert calls == ["select_image", "status", "sleep", "status"]
     assert lifecycle.volume("alice")["work"]["kind"] == "snapshot"
 
@@ -730,6 +731,7 @@ def test_readiness_distinguishes_awake_boxes_from_pending_snapshots(authority):
         await routing.wake("bob")
         assert await routing.readiness() == {"ready": True}
         await routing.sleep("alice")
-        assert await routing.readiness() == {"ready": False}
+        blocked = await routing.readiness()
+        assert blocked["ready"] is False and blocked["pending"].get("snapshot") == 1
 
     asyncio.run(exercise())

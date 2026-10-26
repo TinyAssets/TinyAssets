@@ -85,6 +85,9 @@ class GvisorRuntime:
             raise BoxError("the harness rootfs is unavailable or a link")
         config["root"] = {"path": str(rootfs), "readonly": True}
         config["process"].update(
+            # Under fleet memory pressure the kernel kills a sandbox, never the
+            # boxhostd supervisor every owner depends on (OOMScoreAdjust=-500).
+            oomScoreAdj=500,
             args=["/bin/sleep", "infinity"], terminal=False, cwd="/home/owner",
             user={"uid": uid, "gid": gid},
             noNewPrivileges=True,

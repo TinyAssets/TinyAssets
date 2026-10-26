@@ -143,19 +143,13 @@ def revoke_account(root: Path, owner: str):
 
 
 def _revoke_account(root: Path, owner: str, keys):
-    from tinyassets.onboarding import (
-        approval_handoff,
-        canary_sign_in,
-        owner_sessions,
-        session_store,
-    )
+    from tinyassets.onboarding import approval_handoff, owner_sessions, session_store
     from tinyassets.router_account_deletion import revoke_local_tokens
 
     revoke_local_tokens(root, owner, deleted=True)
     # This process's data_dir is the router root, never the requesting box.
     owner_sessions.revoke_owner(owner)
     session_store.revoke_owner(owner)
-    canary_sign_in.revoke_owner(owner)
     with approval_handoff.flows() as db:
         db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
     for key in keys.list(owner, authority=None)["keys"]:

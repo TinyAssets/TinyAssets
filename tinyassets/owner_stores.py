@@ -50,6 +50,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/owner_volumes.py",
     # Offline C3 recovery writes shared staging with services stopped.
     "tinyassets/restore_recovery.py",
+    # One-shot operator restore of the shared credential ledger, broker stopped.
+    "tinyassets/restore_credentials.py",
     # C1/T4 one-shot cutover verifies old-layout databases inside its attachments.
     "tinyassets/cutover_sqlite.py",
 })
@@ -126,8 +128,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/onboarding/approval_handoff.py",
     "tinyassets/onboarding/owner_sessions.py",
     "tinyassets/onboarding/native_sign_in.py",
-    # Its own attempt budget, in the owner-sessions store the two above share.
-    "tinyassets/onboarding/canary_sign_in.py",
     "tinyassets/outcomes/schema.py",
     "tinyassets/provider_assignment.py",
     "tinyassets/provider_assignment_departure.py",

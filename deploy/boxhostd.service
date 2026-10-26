@@ -23,6 +23,8 @@ RuntimeDirectoryMode=0755
 # Containers bind this directory inode, including across stop/start deploys.
 RuntimeDirectoryPreserve=yes
 MemoryMax=7G
+# Fleet memory pressure kills a sandbox (oomScoreAdj=500), never this supervisor.
+OOMScoreAdjust=-500
 CPUQuota=300%
 TasksMax=5120
 

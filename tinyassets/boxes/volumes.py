@@ -123,7 +123,15 @@ class OwnerVolumes:
                 if (uid, snapshot_id) in pins and snapshot_id not in released:
                     deleted = False
                     continue
-                self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
+                try:
+                    self._run("rclone", "deletefile",
+                              f"{self.remote}/{uid}/{snapshot_id}.img.gz")
+                except subprocess.CalledProcessError as exc:
+                    # rclone 3 is directory not found and 4 is file not found.
+                    # The object is already gone, so the broker may forget the
+                    # row. Any other failure stays raised and the row remains.
+                    if exc.returncode not in {3, 4}:
+                        raise
             return deleted
 
     @staticmethod

@@ -191,7 +191,8 @@ broker and waker get no new business logic.
       committed per-record lockfiles (T4; no per-owner installs).
 - [ ] 8.5 Deploy `conv/source-records` (with #5210, `conv/source-custody` and the
       lanes below) after one review scoped to the router, broker and waker. Assert
-      the deployed sha, run the 8.3 repair, then empty the hotfix ledger
+      the deployed sha, run the 8.3 repair (`--dry-run` per owner first, then the
+      write run), then empty the hotfix ledger
       (`/var/lib/tinyassets-deploy/hotfixes/`): every live hotfix is in the
       deployed sha or deleted. Live-only diagnostics are deleted, not folded.
 - [ ] 8.6 The deploy carries its own config: the broker's outbound-HTTP flag, the

@@ -1,6 +1,7 @@
 """C1/C2 lifecycle metadata and interruption proofs; real mounts have a separate oracle."""
 
 import hashlib
+import json
 import sqlite3
 import threading
 import time
@@ -167,6 +168,122 @@ def sleep(storage, owner="alice"):
     except (OSError, RuntimeError, PermissionError):
         pass  # Explicit retry tests inspect retained work and the prior reference.
     return storage.lifecycle.volume(owner)
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_lazy_create_does_not_block_readiness_and_live_snapshot_waits(storage):
+    routing = storage.lifecycle.lifecycle
+    assert storage.lifecycle.volume("alice")["work"] == {"kind": "create"}
+    assert storage.lifecycle.volume("bob")["work"] == {"kind": "create"}
+    assert owner_volumes.pending(storage.identities, include_running=False) == []
+    assert drive(routing.readiness()) == {"ready": True}
+
+    record, _mount = start(storage)
+    uid = record["uid"]
+    intent = storage.lifecycle.volume("alice", "sleep")
+    work = intent["work"]
+    assert work["kind"] == "snapshot"
+    assert uid in storage.live
+    assert owner_volumes.pending(storage.identities, include_running=False) == ["alice"]
+    blocked = drive(routing.readiness())
+    assert blocked["ready"] is False and blocked["pending"] == {"snapshot": 1}
+
+    pending = drive(storage.lifecycle._publish_snapshot("alice", work))
+    assert pending["work"] == work
+    assert storage.volumes.remote == {}
+    assert not any(event == "snapshot" for event, _ in storage.volumes.events)
+
+    drive(storage.lifecycle.tick_owner("alice"))
+    published = storage.lifecycle.volume("alice")
+    assert published["work"] is None
+    assert published["snapshot_id"] == work["snapshot_id"]
+    assert storage.volumes.remote[uid, work["snapshot_id"]] == b"initial"
+    assert storage.lifecycle.volume("bob")["work"] == {"kind": "create"}
+    assert drive(routing.readiness()) == {"ready": True}
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_missing_local_image_releases_the_published_snapshot(storage):
+    record, _mount = start(storage)
+    uid = record["uid"]
+    published = sleep(storage)
+    assert published["work"] is None and published["snapshot_id"]
+    storage.volumes.images.pop(uid)
+    intent = storage.lifecycle.volume("alice", "sleep")
+    assert intent["work"]["kind"] == "snapshot"
+    drive(storage.lifecycle.tick_owner("alice"))
+    cleared = storage.lifecycle.volume("alice")
+    assert cleared["work"] is None
+    assert cleared["local"] is False
+    assert cleared["snapshot_id"] == published["snapshot_id"]
+    assert owner_volumes.pending(storage.identities, include_running=False) == []
+    assert drive(storage.lifecycle.lifecycle.readiness()) == {"ready": True}
+
+
+def _seed_snapshots(storage, owner, snapshot_ids, *, current, work=None):
+    sha = "b" * 64
+    with sqlite3.connect(storage.identities.path) as db:
+        db.execute(
+            "UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=?,work=?,local=0 "
+            "WHERE principal=?",
+            (current, sha, json.dumps(work) if work else None, owner))
+        for snapshot_id in snapshot_ids:
+            db.execute(
+                "INSERT INTO owner_snapshots "
+                "(principal,snapshot_id,snapshot_sha256,volume_generation,published_at) "
+                "VALUES (?,?,?,?,?)",
+                (owner, snapshot_id, sha, 1, time.time()))
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_platform_pins_are_not_unfinished_snapshot_work(storage):
+    """Prune cannot delete a backup pin, so the deploy gate must not wait on it."""
+    alice = storage.lifecycle.volume("alice")["uid"]
+    bob = storage.lifecycle.volume("bob")["uid"]
+    alice_ids = [f"{i:032x}" for i in range(9)]
+    bob_ids = [f"{i:032x}" for i in range(100, 109)]
+    _seed_snapshots(storage, "alice", alice_ids, current=alice_ids[-1])
+    _seed_snapshots(storage, "bob", bob_ids, current=bob_ids[-1])
+    pins = [[alice, alice_ids[0]], [alice, alice_ids[1]],
+            [bob, bob_ids[0]], [bob, bob_ids[1]]]
+    assert owner_volumes.pending_counts(storage.identities)["excess_snapshots"] == 2
+    assert "alice" in owner_volumes.pending(storage.identities, include_running=False)
+    assert owner_volumes.actionable_excess(storage.identities, pins) == 0
+    assert owner_volumes.actionable_excess(
+        storage.identities, [[alice, alice_ids[0]], [bob, bob_ids[0]], [bob, bob_ids[1]]]) == 1
+    _seed_snapshots(storage, "alice", [], current=alice_ids[-1], work={
+        "restore_snapshot_id": alice_ids[0], "pre_snapshot_id": alice_ids[1]})
+    assert owner_volumes.actionable_excess(storage.identities, [
+        [bob, bob_ids[0]], [bob, bob_ids[1]]]) == 0
+    with sqlite3.connect(storage.identities.path) as db:
+        db.execute("UPDATE owner_volumes SET work=NULL WHERE principal='alice'")
+    with pytest.raises(ValueError):
+        owner_volumes.actionable_excess(storage.identities, [[str(alice), alice_ids[0]]])
+
+    seen = []
+    original = storage.lifecycle.execute
+
+    def execute(operation, **fields):
+        seen.append(operation)
+        if operation == "pins":
+            return {"pinned": pins}
+        return original(operation, **fields)
+
+    storage.lifecycle.execute = execute
+    assert drive(storage.lifecycle.lifecycle.readiness()) == {"ready": True}
+    assert seen == ["pins"]
+
+    storage.lifecycle.execute = lambda operation, **fields: {
+        "pinned": [[bob, bob_ids[0]], [bob, bob_ids[1]]]}
+    blocked = drive(storage.lifecycle.lifecycle.readiness())
+    assert blocked == {"ready": False, "tasks": 0, "pending": {"excess_snapshots": 1}}
+
+    def broken(operation, **fields):
+        raise RuntimeError("catalog unreadable")
+
+    storage.lifecycle.execute = broken
+    held = drive(storage.lifecycle.lifecycle.readiness())
+    assert held["ready"] is False and held["pending"]["excess_snapshots"] == 2
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C1')

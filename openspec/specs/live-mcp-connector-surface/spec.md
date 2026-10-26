@@ -546,9 +546,8 @@ The bearer `TINYASSETS_WIKI_CANARY_TOKEN` SHALL resolve to the service
 principal `canary`, which holds no capabilities. Before dispatch, every item
 of a single or batch JSON-RPC body under that bearer SHALL be one of:
 `initialize`, `notifications/initialized`, `tools/list`, `tools/call
-get_status` with no arguments, `tools/call read_graph` with exactly
-`{"target": "status"}`, and the reserved wiki canary's exact `write_page` /
-`read_page` shapes. Anything else, and any use of the bearer off `POST /mcp`,
+get_status` with no arguments, and `tools/call read_graph` with exactly
+`{"target": "status"}`. Anything else, and any use of the bearer off `POST /mcp`,
 except exact `GET /mcp/pulse`, SHALL be refused with HTTP 403 before dispatch. The bearer SHALL NOT be
 downgraded to any other identity.
 

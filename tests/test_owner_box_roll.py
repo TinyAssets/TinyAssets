@@ -36,7 +36,7 @@ def test_deploy_sleeps_awake_owners_without_eager_restart(rolling):
     uid = rolling.wake("a")
     before = len(rolling.runtime.starts)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 1, "asleep": 2, "incomplete": 0}
+        "slept": 1, "asleep": 2, "busy": 0, "unresponsive": 0, "incomplete": 0}
     assert rolling.runtime.live == set()
     assert rolling.runtime.stops == [uid]
     assert len(rolling.runtime.starts) == before
@@ -49,7 +49,7 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
     drive(rolling.routing.sleep("a"))
     before = len(rolling.runtime.starts), len(rolling.runtime.stops)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 0, "asleep": 3, "incomplete": 0}
+        "slept": 0, "asleep": 3, "busy": 0, "unresponsive": 0, "incomplete": 0}
     assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == before
     recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
     assert recovered.current == rolling.new
@@ -60,22 +60,28 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
 
 
 @pytest.mark.parametrize("keep_awake", [True, False])
-def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(rolling, keep_awake):
+def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(rolling,
+                                                                          keep_awake):
     uid = rolling.wake("a")
     activity = rolling.states[uid]
     with activity.enter(keep_awake=keep_awake):
         result = drive(rolling.routing.deploy(rolling.new))
-        assert result == {"slept": 0, "asleep": 2, "incomplete": 1}
-        assert activity.draining and activity.active == 1
+        assert result == {"slept": 0, "asleep": 2, "busy": 1, "unresponsive": 0,
+                          "incomplete": 0}
+        # Never drained: its turn and new turns keep running on this image.
+        assert not activity.draining and activity.active == 1
         assert rolling.runtime.live == {uid} and rolling.runtime.stops == []
-        refused = []
-        thread = threading.Thread(target=_other_turn, args=(activity, refused))
+        admitted = []
+        thread = threading.Thread(target=_other_turn, args=(activity, admitted))
         thread.start()
         thread.join()
-        assert isinstance(refused[0], RuntimeError)
-        assert "draining" in str(refused[0])
-    rolling.tick()
-    assert rolling.runtime.live == set() and rolling.runtime.stops == [uid]
+        assert admitted == ["admitted"]
+        # Still on its own image while it serves; the next wake already gets the new one.
+        assert rolling.manager.boxes[uid].image == rolling.old
+        assert rolling.manager.images.current == rolling.new
+    # Its own ordinary sleep later, then the next wake starts the new image.
+    drive(rolling.routing.sleep("a"))
+    assert rolling.runtime.stops == [uid]
     assert len(rolling.runtime.starts) == 1
     rolling.wake("a")
     assert rolling.manager.boxes[uid].image == rolling.new
@@ -86,7 +92,8 @@ def test_unknown_activity_is_incomplete_and_never_stops_a_turn(rolling, monkeypa
     original = rolling.manager._rpc
     monkeypatch.setattr(rolling.manager, "_rpc", lambda *a, **k: (_ for _ in ()).throw(
         OSError("unknown activity")))
-    assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
+    # Not answering its own status: left untouched, never drained on a guess.
+    assert drive(rolling.routing.deploy(rolling.new))["unresponsive"] == 1
     assert rolling.runtime.live == {uid} and not rolling.runtime.stops
     monkeypatch.setattr(rolling.manager, "_rpc", original)
     assert drive(rolling.routing.deploy(rolling.new))["slept"] == 1
@@ -230,9 +237,109 @@ def test_deploy_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
     uid = rolling.wake("a")
     with rolling.states[uid].enter():
         rolling.states[uid].status(deleting=True)
-    assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
+    result = drive(rolling.routing.deploy(rolling.new))
+    # The refused stop is this owner's own sleep. The fleet is not failed,
+    # and the snapshot intent that sleep recorded is withdrawn.
+    assert result["incomplete"] == 0 and result["unresponsive"] == 1
+    assert result["asleep"] == 2 and result["slept"] == 0
+    assert result["incomplete_causes"] == {"sleep:BoxError": 1}
+    assert "volume" not in json.dumps(result)
     assert not rolling.runtime.stops and rolling.runtime.live == {uid}
     assert rolling.manager.boxes[uid].image == rolling.old
+    assert rolling.routing.volumes.volume("a", "pending")["work"] == {"kind": "running"}
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C12')
+
+
+def _sleep_raises_for(rolling, owner, secret):
+    real = rolling.routing.volumes.sleep
+
+    async def sleep(principal):
+        if principal == owner:
+            rolling.routing.volumes.volume(principal, "sleep")
+            raise TimeoutError(secret)
+        return await real(principal)
+
+    rolling.routing.volumes.sleep = sleep
+
+
+def test_one_owner_sleep_failure_defers_and_the_others_still_drain(rolling, caplog):
+    import logging
+
+    from tinyassets.broker.owner_volumes import pending
+
+    caplog.set_level(logging.WARNING, logger="tinyassets.broker.routing")
+    secret = "secret /tmp/owner-a"
+    uid_a, uid_b = rolling.wake("a"), rolling.wake("b")
+    _sleep_raises_for(rolling, "a", secret)
+    result = drive(rolling.routing.deploy(rolling.new))
+    assert result == {
+        "slept": 1, "asleep": 1, "busy": 0, "unresponsive": 1, "incomplete": 0,
+        "incomplete_causes": {"sleep:TimeoutError": 1}}
+    assert rolling.runtime.stops == [uid_b] and uid_a in rolling.runtime.live
+    assert rolling.routing.volumes.volume("a", "pending")["work"] == {"kind": "running"}
+    waiting = pending(rolling.identities, include_running=False)
+    assert "a" not in waiting and "b" in waiting
+    assert secret not in json.dumps(result) and secret not in caplog.text
+    assert "owner drain sleep:TimeoutError" in caplog.text
+
+
+def test_canary_owner_sleep_failure_stays_incomplete_and_others_still_drain(rolling, caplog):
+    import logging
+
+    from tinyassets.broker.owner_volumes import pending
+
+    caplog.set_level(logging.WARNING, logger="tinyassets.broker.routing")
+    secret = "secret /tmp/canary-owner"
+    uid_a, uid_b = rolling.wake("a"), rolling.wake("b")
+    _sleep_raises_for(rolling, "a", secret)
+    result = drive(rolling.routing.deploy(rolling.new, canary="a"))
+    assert result["slept"] == 1 and result["asleep"] == 1
+    assert result["incomplete"] == 1 and result["unresponsive"] == 0
+    assert result["canary_incomplete"] == 1
+    assert result["incomplete_causes"] == {"sleep:TimeoutError": 1}
+    assert rolling.runtime.stops == [uid_b] and uid_a in rolling.runtime.live
+    assert rolling.routing.volumes.volume("a", "pending")["work"] == {"kind": "running"}
+    assert "a" not in pending(rolling.identities, include_running=False)
+    assert secret not in json.dumps(result) and "a" not in json.dumps(result["incomplete_causes"])
+    assert secret not in caplog.text
+    assert "owner drain sleep:TimeoutError" in caplog.text
+
+
+def test_status_failure_defers_without_writing_a_sleep_intent(rolling, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="tinyassets.broker.routing")
+    secret = "status secret /tmp/owner-a"
+    uid = rolling.wake("a")
+    real = rolling.routing.volumes.host
+
+    async def host(owner, operation, **arguments):
+        if owner == "a" and operation == "status":
+            raise TimeoutError(secret)
+        return await real(owner, operation, **arguments)
+
+    rolling.routing.volumes.host = host
+    result = drive(rolling.routing.deploy(rolling.new))
+    assert result["incomplete"] == 0 and result["unresponsive"] == 1
+    assert result["slept"] == 0 and result["asleep"] == 2
+    assert result["incomplete_causes"] == {"status:TimeoutError": 1}
+    assert rolling.runtime.live == {uid} and not rolling.runtime.stops
+    assert rolling.routing.volumes.volume("a", "pending")["work"] == {"kind": "running"}
+    assert secret not in json.dumps(result) and secret not in caplog.text
+    assert "owner drain status:TimeoutError" in caplog.text
+
+
+def test_a_refused_sleep_intent_is_withdrawn_while_the_owner_is_still_busy(rolling):
+    uid = rolling.wake("a")
+    activity = rolling.states[uid]
+    with activity.enter():
+        # What an earlier deploy's refused drain left behind.
+        rolling.routing.volumes.volume("a", "sleep")
+        assert rolling.routing.volumes.volume("a", "pending")["work"]["kind"] == "snapshot"
+        record = drive(rolling.routing.volumes.recover("a"))
+        # The box never slept: no snapshot is owed and readiness waits on nothing.
+        assert record["work"] == {"kind": "running"}
+        assert rolling.runtime.stops == [] and rolling.runtime.live == {uid}
+        assert drive(rolling.routing.readiness())["ready"] is True

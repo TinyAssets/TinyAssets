@@ -204,6 +204,16 @@ class BrokerServer:
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         self._loop = asyncio.get_running_loop()
+        try:
+            # A count only: saved sign-ins that vanish across a restart or deploy
+            # show up as a drop between two starts.
+            from tinyassets.broker.subscription_custody import FILENAME
+
+            saved = sum(1 for _ in (Path(self._data_root) / ".broker" / "accounts").glob(
+                "*/credentials/" + FILENAME))
+            _LOG.warning("subscription custody at start: %d saved", saved)
+        except OSError:
+            _LOG.warning("subscription custody at start: unreadable")
         return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
 
     async def _connection(self, reader: asyncio.StreamReader,
@@ -510,7 +520,16 @@ class _Connection:
                     result = await asyncio.to_thread(
                         operation, self._server._data_root, self._box_owner, doc["document"])
                     answer = {"op": "BOX_RESULT", "result": result}
-                except Exception:  # credentials must never enter an error payload
+                except Exception as exc:  # credentials must never enter an error payload
+                    # A refused save strands a sign-in, so name it in the log:
+                    # the action and the error class only, never the message.
+                    document = doc.get("document")
+                    action = document.get("action") if isinstance(document, dict) else None
+                    if not (isinstance(action, str)
+                            and action in {"read", "begin", "save", "delete"}):
+                        action = "invalid"
+                    _LOG.warning("subscription custody %s refused: %s",
+                                 action, type(exc).__name__)
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
@@ -788,16 +807,22 @@ class _Connection:
             return {"op": "OWNER_ADMIT_IS", "machine": identity.uid}
 
     def _model_source(self, doc):
-        from tinyassets.broker.owner_sources import publish
+        from tinyassets.broker.owner_sources import publish, retract
 
+        fixed = {"op", "principal", "generation", "token"}
         try:
-            if set(doc) != {"op", "principal", "generation", "token",
-                            "definition"}:
+            # One op, two directions: a descriptor is published with the
+            # definition that registered it and withdrawn by the ref the owner
+            # disconnected. Either way the principal is the channel's bind.
+            if set(doc) not in ({*fixed, "definition"}, {*fixed, "retract"}):
                 raise ValueError("unsupported source fields")
             _owner(doc["principal"])
             with self._server._fence.send(doc["generation"], doc["token"]):
-                result = publish(self._server._ledger_for(doc["principal"]),
-                                 doc["principal"], doc["principal"], doc["definition"])
+                ledger = self._server._ledger_for(doc["principal"])
+                result = (retract(ledger, doc["principal"], doc["retract"])
+                          if "retract" in doc else
+                          publish(ledger, doc["principal"], doc["principal"],
+                                  doc["definition"]))
             return {"op": "BOX_RESULT", "result": result}
         except Exception:
             return {"op": "BOX_REFUSED"}

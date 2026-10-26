@@ -68,6 +68,7 @@ from tinyassets.storage.schema import (
     _AUTHOR_SERVER_INIT_LOCK,
     _AUTHOR_SERVER_INITIALIZED,
     APPEND_HISTORY,
+    HISTORICAL_DEFAULTS,
     INDEXES,
     TABLES,
 )
@@ -311,7 +312,8 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
         )
         for name, ddl in TABLES.items():
             ensure_table(conn, ddl, kind="durable",
-                         append_history=APPEND_HISTORY.get(name, ()))
+                         append_history=APPEND_HISTORY.get(name, ()),
+                         historical_defaults=HISTORICAL_DEFAULTS.get(name, {}))
         for ddl in INDEXES:
             conn.execute(ddl)
     ensure_default_author(base_path)

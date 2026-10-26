@@ -96,17 +96,12 @@ Every validated auto-ship attempt SHALL be recorded as one row in a per-universe
 
 ### Requirement: Loop Health Is Watched By Read-Only Monitors
 
-The community patch loop SHALL be observed by read-only monitors that never mutate repository or loop state. `scripts/community_loop_watch.py` SHALL query public GitHub state and report per-stage health — observation-canary freshness, open P0-outage issues, tier-3 clone smoke, production deploy, and website deploy — exiting non-zero only when a retained uptime or deploy stage is red. The revert-loop canary SHALL classify the recent rate of REVERT commits into OK, WARN, and CRITICAL bands. As-built limitation: the historical cheat-loop intake/writer/checker machinery has been removed from the codebase (retired 2026-06-25), so "auto-fix disabled" denotes the absence of that machinery rather than a runtime toggle — there is no `AUTO_FIX_DISABLED` code gate.
+The community patch loop SHALL be observed by read-only monitors that never mutate repository or loop state. `scripts/community_loop_watch.py` SHALL query public GitHub state and report per-stage health — observation-canary freshness, open P0-outage issues, tier-3 clone smoke, production deploy, and website deploy — exiting non-zero only when a retained uptime or deploy stage is red. As-built limitation: the historical cheat-loop intake/writer/checker machinery has been removed from the codebase (retired 2026-06-25), so "auto-fix disabled" denotes the absence of that machinery rather than a runtime toggle — there is no `AUTO_FIX_DISABLED` code gate.
 
 #### Scenario: A red retained stage fails the watch
 
 - **WHEN** `community_loop_watch` observes a retained uptime or deploy stage that is red
 - **THEN** the overall status is `red` and the process exit code is non-zero
-
-#### Scenario: Revert-rate classification bands
-
-- **WHEN** the revert-loop canary evaluates an activity-log tail of REVERT commits
-- **THEN** it returns OK below the warn thresholds and escalates to WARN or CRITICAL as the revert count-and-window thresholds are crossed
 
 #### Scenario: Stale observation warns before paging
 

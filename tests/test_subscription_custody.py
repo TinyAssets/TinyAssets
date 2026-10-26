@@ -23,7 +23,7 @@ def decoded(runtime):
     return {name: base64.b64decode(value) for name, value in state.items()}
 
 
-def test_broker_bounds_owner_custody(connected, monkeypatch):
+def test_broker_bounds_owner_custody(connected, monkeypatch, caplog):
     from tinyassets.broker import subscription_custody as store
     from tinyassets.owner_channel import request
 
@@ -32,12 +32,20 @@ def test_broker_bounds_owner_custody(connected, monkeypatch):
             "document": {"action": action, "source": source, **fields}})
 
     entries = [call("begin", f"source-{i}") for i in range(16)]
-    with pytest.raises(PermissionError):
-        call("begin", "source-overflow")
+    with caplog.at_level("WARNING", logger="tinyassets.broker.server"):
+        with pytest.raises(PermissionError):
+            call("begin", "source-overflow")
+    # A refusal names its action and error class, never the source or message.
+    assert "subscription custody begin refused: ValueError" in caplog.text
+    assert "source-overflow" not in caplog.text
     initial_size = len(json.dumps({f"source-{i}": entry for i, entry in enumerate(entries)}))
     monkeypatch.setattr(store, "MAX_OWNER_BYTES", initial_size + 100)
     state = {"token": base64.b64encode(b"x" * 40).decode()}
-    saved = call("save", "source-0", revision=entries[0]["revision"], state=state)
+    with caplog.at_level("WARNING", logger="tinyassets.broker.subscription_custody"):
+        saved = call("save", "source-0", revision=entries[0]["revision"], state=state)
+    # Every change is logged by action and outcome, never by owner-chosen name.
+    assert "subscription custody save: source=custom state=saved remaining=16" in caplog.text
+    assert "source-0" not in caplog.text
     with pytest.raises(PermissionError):
         call("save", "source-1", revision=entries[1]["revision"], state=state)
     assert call("read", "source-0") == saved
@@ -66,6 +74,38 @@ def test_connection_upgrade_accepts_record_before_lock_digest(connected):
     marker.write_text(json.dumps({"source": digest(old), "incarnation": "preserved"}))
     with pytest.raises(PermissionError):
         connected.require_accepted()
+
+
+@pytest.mark.verifies("box-subscription-sources:Record-bound acceptance")
+def test_interrupted_upgrade_leaves_a_marker_the_next_tap_accepts(connected, monkeypatch):
+    import os
+
+    from tinyassets.providers.source_record import SourceRecord
+    from tinyassets.providers.subscription_source import digest
+
+    old = connected.source.document()
+    old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)
+    current = connected.source.document()
+    current["sign_in"]["cli_login"]["install"]["lock_sha256"] = "a" * 64
+    connected.source = SourceRecord.parse(current)
+    marker = connected.directory / "connection"
+    legacy = json.dumps({"source": digest(old), "incarnation": "preserved"})
+    marker.write_text(legacy)
+
+    def interrupted(*args, **kwargs):
+        raise OSError("interrupted before the upgraded marker became the name")
+
+    monkeypatch.setattr(os, "replace", interrupted)
+    with pytest.raises(PermissionError, match="reconnect required"):
+        connected.require_accepted()
+    monkeypatch.undo()
+    # Truncated JSON would leave this source unreconnectable; the whole legacy
+    # marker survives, so the retry upgrades it and one tap is enough.
+    assert marker.read_text() == legacy
+    connected.require_accepted()
+    assert json.loads(marker.read_text()) == {
+        "source": digest(connected.source), "incarnation": "preserved"}
+    assert sorted(p.name for p in connected.directory.glob(".connection*")) == []
 
 
 @pytest.mark.parametrize("record", [None, "{broken"])
@@ -354,3 +394,28 @@ def test_cancelled_login_cannot_recreate_custody_after_disconnect(connected):
             pytest.fail("cancelled login acquired custody")
     assert custody(connected, "read") == {"revision": None, "state": {}}
     assert not connected.directory.exists()
+
+
+STALLING_CLI = '''#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+state = Path(os.environ['HOME']) / '.fake-login'
+if sys.argv[1] == 'status':
+    sys.exit(0 if state.is_file() else 1)
+print(json.dumps({'type': 'turn.started'}), flush=True)
+print(json.dumps({'type': 'private_customer_name'}), flush=True)
+time.sleep(60)
+'''
+
+
+def test_a_stalled_run_fails_visibly_and_names_where_it_stopped(connected, caplog):
+    from tinyassets.providers.subscription_runtime import SubscriptionError
+
+    connected.binary.write_text(STALLING_CLI)
+    with caplog.at_level("WARNING", logger="tinyassets.providers.subscription_runtime"):
+        with pytest.raises(SubscriptionError, match="did not finish"):
+            connected.invoke("private prompt words", timeout=2)
+    assert "subscription run ended: source=custom" in caplog.text
+    assert "events=turn.started,other" in caplog.text
+    assert "private_customer_name" not in caplog.text
+    assert "private prompt words" not in caplog.text

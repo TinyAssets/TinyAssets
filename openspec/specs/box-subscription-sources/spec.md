@@ -81,11 +81,15 @@ The system SHALL include connected subscription sources in ordinary automatic mo
 - **THEN** it remains unranked rather than receiving an invented vendor quality score
 
 ### Requirement: Disconnect connected sources
-The connect dialog SHALL list connected sources first and offer Disconnect. HTTP sources SHALL use the existing connections disconnect endpoint. Subscription disconnect SHALL remove the record's declared owner-local state paths, connection marker and owner-local install directory (`home/.ta-cli/<id>`), when present. The shared read-only image installation SHALL never be touched.
+The connect dialog SHALL list connected sources first and offer Disconnect. HTTP sources SHALL use the existing connections disconnect endpoint. Subscription disconnect SHALL remove the record's declared owner-local state paths, connection marker and owner-local install directory (`home/.ta-cli/<id>`), when present. It SHALL also remove the owner's `subscription_cli` provider definitions for that source in every active command center, and withdraw the broker-held source descriptors they published, so no unservable source survives. Removal SHALL be scoped to the disconnecting owner. The shared read-only image installation SHALL never be touched.
 
 #### Scenario: Disconnect removes owner-local installation
 - **WHEN** an owner disconnects a subscription source
 - **THEN** its login, connection and owner-local installation are removed while the shared image installation remains available
+
+#### Scenario: Disconnect leaves no definition or descriptor
+- **WHEN** an owner disconnects a subscription source they had registered as a provider definition
+- **THEN** that definition and its broker-held descriptor are gone, the source is no longer a connected source, and another owner's definition and descriptor for the same source id remain
 
 ### Requirement: Record-bound acceptance
 A connected subscription marker SHALL bind the full source record fingerprint. A changed or legacy unbound record SHALL require reconnection before discovery, selection or invocation runs its CLI. A malformed record file SHALL not prevent other records loading; malformed overrides SHALL not reactivate a bundled record. Image builds SHALL fail on malformed shipped records.

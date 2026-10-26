@@ -48,6 +48,17 @@ class VolumeLifecycle:
             self.lifecycle.facts[owner] = status
             if status["awake"]:
                 self.lifecycle.awake.add(owner)
+                active = status.get("active", 0)
+                # The 24-hour snapshot deadline still drains a busy box (admission
+                # closes, the turn finishes, then it sleeps); only an unanswering
+                # box, which cannot be drained, is never given a sleep intent.
+                if active is None or (type(active) is int and active > 0
+                                      and status["uptime"] < 86400):
+                    # Busy or not answering (boxhostd reports None; an older host
+                    # without the field reads as idle, as before): no sleep intent
+                    # while a stop would be refused anyway; the next pass after
+                    # its turns end sleeps it.
+                    return record
                 idle = status["idle_seconds"]
                 if not status.get("draining") and (idle is None or (
                         idle < self.lifecycle.config.idle_limit and status["uptime"] < 86400)):
@@ -59,6 +70,15 @@ class VolumeLifecycle:
             await self.host(owner, "evict")
             return self.volume(owner, "evicted")
         if work["kind"] == "snapshot":
+            if not work.get("restore_snapshot_id"):
+                status = await self.host(owner, "status")
+                active = status.get("active", 0)
+                if status["awake"] and (active is None or (
+                        type(active) is int and active > 0 and status["uptime"] < 86400)):
+                    # Still awake with work, or not answering: a refused sleep left
+                    # this intent. Withdraw it rather than hold readiness forever;
+                    # the box sleeps later through its ordinary idle path.
+                    return self.volume(owner, "sleep_refused")
             return await self.sleep(owner)
         if work["kind"] == "restore":
             if await self.host(owner, "sleep") != {"stopped": True}:
@@ -131,9 +151,25 @@ class VolumeLifecycle:
         try:
             result = await self.host(owner, "snapshot", snapshot_id=work["snapshot_id"])
         except (RuntimeError, ValueError) as exc:
-            if "local image is absent" not in str(exc):
+            message = str(exc)
+            if "local image is absent" in message:
+                current = self.volume(owner, "pending")["work"] or {}
+                if not current.get("restore_snapshot_id"):
+                    # Leaving this intent made deploy readiness wait forever:
+                    # recover retries a copy that can never be taken.
+                    if locked:
+                        return self.volume(owner, "image_absent")
+                    async with owner_lock(self.identities.path, owner):
+                        return self.volume(owner, "image_absent")
+                result = None
+            elif ("volume operation requires a stopped box" in message
+                    or "volume must be fully detached" in message):
+                # C15: the copy does not stop or detach a live box, and a
+                # concurrent wake may own it. Leave the recorded intent; the
+                # next recover sleeps before retrying.
+                return self.volume(owner, "pending")
+            else:
                 raise
-            result = None
 
         def commit():
             current = self.volume(owner, "pending")["work"]

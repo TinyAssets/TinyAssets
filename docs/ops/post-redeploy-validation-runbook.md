@@ -114,7 +114,7 @@ validation after that runbook clears.
 
 ## §2 — Canonical surface probes
 
-All three probes run from your local machine. Each takes <30s. Export the
+Both probes run from your local machine. Each takes <30s. Export the
 `TINYASSETS_WIKI_CANARY_TOKEN` service-principal credential first; every probe
 fails closed with exit 2 when it is absent.
 
@@ -125,27 +125,6 @@ python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
 ```
 
 **Green:** exit 0, "GREEN" log entry appended to `.agents/uptime.log`.
-
-### §2.2 Wiki gate + read canary (PROBE-003)
-
-```bash
-python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
-```
-
-Reworked 2026-09-03 for the no-anonymous boundary. The probe first asserts that
-a tokenless `initialize` receives the OAuth 401 challenge, then initializes as
-the named `canary` principal and performs the exact reserved write/read
-roundtrip at `drafts/notes/uptime-probe.md`.
-
-**Green:** exit 0, verbose output shows the authenticated handshake, reserved
-write confirmation, and matching authenticated read.
-
-**Red:** exit 6 (tokenless initialize was admitted or the scoped write failed),
-exit 7 (read failed or draft content mismatch), exit 2 (credential missing or
-handshake broken).
-
-**Scope:** production and dev modes both require a named principal. There is no
-anonymous probe or dev-mode write fallback.
 
 ### §2.3 MCP tool-invocation canary (PROBE-004)
 
@@ -197,11 +176,9 @@ commits; this is a confidence check, not a re-verification.
 
 ```bash
 python -m ruff check
-python -m pytest tests/test_wiki_canary.py tests/test_patch_branch_readback.py \
-                 tests/test_bug_investigation_wiring.py -q
 ```
 
-**Green:** ruff clean, three test files pass.
+**Green:** ruff clean.
 
 If you want a deeper sanity, run the full suite — but expect ~5 min wall
 clock; it's optional.
@@ -251,7 +228,7 @@ echo "Manual step: file the bug above via Claude.ai chat. Note the BUG-NNN id."
 
 **Red:**
 - `file_bug` returns `error` or `Unexpected keyword argument` → wiki
-  surface broken in the deployed image. Re-check §2.2.
+  surface broken in the deployed image. Re-check §2.3.
 - New page slug has uppercase characters or BUG-028 warning is logged →
   alias logic regressed.
 - No dispatcher request enqueued → bug_investigation auto-trigger broken.
@@ -361,8 +338,7 @@ updates (BUG-002/003/007/014A/015/016/018/020 status fields + tier-1 page
 closing paragraph + BUG-003 dup cleanup). All edits go via live `wiki
 action=write`, which depends on the wiki write surface being healthy.
 
-**Pre-flight:** §2.2 wiki canary must be green. If §2.2 is green, the
-write surface is good and the migration can proceed.
+**Pre-flight:** §2.3 tool-invocation canary must be green.
 
 **Validate (after performing one migration write as a smoke):**
 
@@ -590,7 +566,7 @@ Triage hierarchy if anything goes RED:
    `docs/ops/cloud-daemon-restart.md` → roll back if needed via
    `.github/workflows/deploy-prod.yml` rollback step.
 2. **§2 RED but §1 GREEN** → tool surface broken; tunnel + handshake OK.
-   Triage which tool: §2.1 RED = MCP itself, §2.2 RED = wiki write/read,
+   Triage which tool: §2.1 RED = MCP itself,
    §2.3 RED = tool registration. File a fresh BUG via §5.1 (if §5.1 still
    works) or via Claude.ai chat directly.
 3. **§5 RED in one fix-validation but rest green** → that specific fix

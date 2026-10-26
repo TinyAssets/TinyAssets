@@ -30,13 +30,7 @@ from tinyassets.auth.provider import (
     action_scope_for,
     create_provider,
 )
-from tinyassets.auth.wiki_canary import (
-    canary_request_allowed,
-    is_exact_wiki_canary_request,
-    reset_wiki_canary_authority,
-    set_wiki_canary_authority,
-    wiki_canary_token_matches,
-)
+from tinyassets.auth.wiki_canary import canary_request_allowed, wiki_canary_token_matches
 
 logger = logging.getLogger("universe_server.auth")
 
@@ -712,14 +706,6 @@ def _auth_challenge_path(path: str) -> bool:
 
         if is_callback_path(path):
             return False  # Shell only; authenticated exchange remains challenged.
-    if path == "/app/canary-sign-in":
-        # The deploy canary's own sign-in: it runs BEFORE any bearer exists,
-        # exactly like /app/token, because obtaining one is its whole job. It
-        # answers 404 unless the host pins the one synthetic account, and its
-        # own proof (a server-held key plus that account's WorkOS password) is
-        # stricter than the bearer this carve-out skips. Exactly one path, by
-        # equality (tinyassets/onboarding/canary_sign_in.py).
-        return False
     if path in {"/app", "/app/token", "/app/owner-sign-in", "/app/native-sign-in"}:
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
         # load before sign-in, and /app/token is its same-origin PKCE
@@ -1235,7 +1221,6 @@ class AuthContextMiddleware:
         previous: Token[Identity | None] = _current_identity.set(None)
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
         previous_boundary: Token[str | None] = _current_request_boundary_id.set(None)
-        previous_canary = set_wiki_canary_authority(False)
         previous_router = router_authentication.set(self.router)
         try:
             trusted = scope.get("tinyassets_router_identity")
@@ -1309,13 +1294,12 @@ class AuthContextMiddleware:
                     if disconnected or not canary_request_allowed(body):
                         await _send_forbidden_403(
                             send, "the canary bearer may only initialize, list tools, "
-                            "read status, and write its own probe page"
+                            "and read status"
                         )
                         return
                     receive = _replay_receive(messages, receive)
                     _current_identity.set(CANARY)
                     _current_bearer_present.set(True)
-                    set_wiki_canary_authority(is_exact_wiki_canary_request(body))
                     canary_authorized = True
             # The inbound webhook receiver's sole boundary is its unguessable URL
             # token + owner-bound handler; a generic channel may POST with its OWN
@@ -1381,7 +1365,11 @@ class AuthContextMiddleware:
                     await self.app(scope, receive, send)
                     return
                 linking_body = None
-                if not self.router and method == "POST" and path in ("/mcp", "/mcp/"):
+                # The owner router does not change this door. An anonymous
+                # tools/call has no owner to forward to, and a hosted connector
+                # that cached the catalog must get the linking result rather
+                # than a transport 401. Initialize stays on the 401 path.
+                if method == "POST" and path in ("/mcp", "/mcp/"):
                     request_body, _, disconnected, oversized = await _buffer_request_body(receive)
                     if oversized:
                         await _send_payload_too_large_413(send)
@@ -1424,7 +1412,6 @@ class AuthContextMiddleware:
                 observe_identity(_current_identity.get())
             except Exception:
                 logger.exception("session trail identity snapshot failed")
-            reset_wiki_canary_authority(previous_canary)
             router_authentication.reset(previous_router)
             _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)

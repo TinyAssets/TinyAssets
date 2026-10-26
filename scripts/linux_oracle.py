@@ -259,6 +259,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_protected_regular(path: Path | None = None) -> None:
+    """Root cutover proofs require fs.protected_regular=2, as production hosts do.
+
+    ubuntu-26.04 GitHub runner images leave the sysctl at 0. The oracle
+    container sees the host value, so set it before Docker starts.
+    """
+    path = path or Path("/proc/sys/fs/protected_regular")
+    if not path.is_file() or path.read_text().strip() == "2":
+        return
+    if os.geteuid() == 0:
+        path.write_text("2\n")
+    else:
+        subprocess.run(["sudo", "-n", "tee", str(path)], input=b"2\n",
+                       check=True, stdout=subprocess.DEVNULL)
+    if path.read_text().strip() != "2":
+        raise SystemExit("[oracle] fs.protected_regular is not 2")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -279,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             "[oracle] no Linux Docker engine. Start Docker Desktop and retry; "
             f"docker info said: {(probe.stderr or probe.stdout).strip()[:200]}"
         )
+    _ensure_protected_regular()
 
     root = _repo_root()
     tag = _image_tag(root)

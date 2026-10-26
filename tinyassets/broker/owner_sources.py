@@ -42,6 +42,32 @@ def publish(ledger, owner, owner_scope, document):
     return {"id": definition.id}
 
 
+def retract(ledger, owner, ref):
+    """Withdraw this owner's subscription descriptors for one disconnected source.
+
+    The descriptor outlives the owner's login unless it is withdrawn here, and
+    disconnect leaves nothing. ``owner`` is the channel bind, exactly as for
+    ``publish``, so a ``ref`` only ever selects rows the asking owner published:
+    another owner's descriptor for the same source id is untouched.
+    """
+    from tinyassets.providers.definition import _REF_RE
+
+    if not isinstance(ref, str) or not _REF_RE.match(ref):
+        raise ValueError("invalid source reference")
+    with ledger._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='box_model_sources'").fetchone() is None:
+            return {"retracted": 0}
+        # Only native descriptors: an http descriptor is withdrawn by revoking
+        # its grant, and its ref is a grant id this flow never speaks for.
+        return {"retracted": conn.execute(
+            "DELETE FROM box_model_sources WHERE owner=? "
+            "AND json_extract(definition,'$.ref')=? "
+            "AND json_extract(definition,'$.access_method')='subscription_cli'",
+            (owner, ref)).rowcount}
+
+
 def read(ledger, owner_scope):
     owner_scope = ledger.require_authenticated_principal_id()
     with closing(sqlite3.connect(ledger._db_path)) as conn:

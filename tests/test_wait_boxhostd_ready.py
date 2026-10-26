@@ -2,9 +2,32 @@
 
 import pytest
 
-from scripts.wait_boxhostd_ready import wait_ready
+from scripts.wait_boxhostd_ready import (
+    PUBLISH_TRANSFERS, SNAPSHOT_TRANSFER_S, WAIT_TIMEOUT_S, wait_ready)
 
 pytestmark = pytest.mark.verifies("owner-daemon-in-box:D11")
+
+
+def test_cap_outlasts_a_snapshot_upload_and_readback():
+    assert PUBLISH_TRANSFERS == 2
+    assert WAIT_TIMEOUT_S >= PUBLISH_TRANSFERS * SNAPSHOT_TRANSFER_S
+
+
+def test_only_the_exact_ready_document_counts():
+    """Host and broker success is {"ready": True} and nothing else."""
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    assert not wait_ready(
+        lambda operation: {"ready": True, "background_active": 0},
+        broker_probe=lambda operation: {"ready": True},
+        timeout=2, interval=1, clock=lambda: clock[0], sleep=sleep)
+    assert not wait_ready(
+        lambda operation: {"ready": True},
+        broker_probe=lambda operation: {"ready": False, "pending": {"snapshot": 1}},
+        timeout=2, interval=1, clock=lambda: clock[0], sleep=sleep)
 
 
 def test_waits_for_two_idle_signals_after_busy_lifecycle():
