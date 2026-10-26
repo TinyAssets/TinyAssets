@@ -59,9 +59,9 @@ class VolumeLifecycle:
                     # while a stop would be refused anyway; the next pass after
                     # its turns end sleeps it.
                     return record
-                idle = status["idle_seconds"]
-                if not status.get("draining") and (idle is None or (
-                        idle < self.lifecycle.config.idle_limit and status["uptime"] < 86400)):
+                # ADR-026: no idle tail. A box with no running work sleeps on
+                # this pass; unknown activity never authorizes a sleep.
+                if not status.get("draining") and status["idle_seconds"] is None:
                     return record
             return await self.sleep(owner)
         if not work or work["kind"] == "create":

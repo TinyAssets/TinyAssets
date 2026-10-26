@@ -378,7 +378,7 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
         if operation == "status":
             return {"awake": awake[bound], "awake_count": sum(awake.values()),
                     "awake_cap": 1, "wake_timeout": 10, "active": 0,
-                    "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
+                    "idle_seconds": 0, "uptime": 0,
                     "volume_size": 1024**3}
         if operation == "sleep":
             entered.set()
