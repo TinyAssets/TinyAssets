@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted (founder, 2026-10-26). Amends ADR-019 (where the loop runs) and
-ADR-022 (its P3 row: "loop in the box").
+Proposed. Would amend ADR-019 (where the loop runs) and ADR-022 (its P3 row:
+"loop in the box"). Deferred (founder, 2026-10-26): moving serving out means relocating about
+113 owner stores and about 66,000 lines of serving, and one shared trusted
+server would make owner isolation an app check again (Direction 5). Revisit
+with metering receipts (N12) at real user counts.
 
 ## Date
 
@@ -39,8 +42,8 @@ ADR-022 (its P3 row: "loop in the box").
   through the broker.
 - **How it reaches the box:** a tool door served by the box for the four
   tools and declared extension points, with an operation id and handle
-  generation on each call. This reverses C6's "no execution forwarding"
-  stance (founder decision, 2026-10-26).
+  generation on each call. This would reverse C6's "no execution
+  forwarding" stance (shape approved by the founder, 2026-10-26).
 - **Where it runs:** its own deploy unit (`loop-worker`) under its own OS
   user, unprivileged. The turn journal, leases and fences move from the
   owner mount to a trusted per-owner area, because a lock inside gVisor
@@ -59,12 +62,12 @@ ADR-022 (its P3 row: "loop in the box").
 
 ## Consequences
 
-- ADR-022's P3 loop move, which C6 carried out, is reversed: the loop
-  leaves the box for the loop-worker pool, never for the shared daemon.
-  The loop worker is built after owner serving leaves the box (ADR-030),
-  since while the converse handler runs in the box the box stays awake
-  through every model call wherever the loop runs. P3's other duties land
-  elsewhere:
+- If accepted, ADR-022's P3 loop move, which C6 carried out, is reversed:
+  the loop leaves the box for the loop-worker pool, never for the shared
+  daemon. The loop worker would be built after owner serving leaves the box
+  (ADR-030), since while the converse handler runs in the box the box stays
+  awake through every model call wherever the loop runs. P3's other duties
+  land elsewhere:
   - **Owner-session minting in broker custody** (ADR-019's P1 residual, the
     daemon-writable owner-session table) stays owed as its own step, unchanged
     in scope, under S8.

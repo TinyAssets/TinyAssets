@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted (founder, 2026-10-26). Amends ADR-019 and ADR-022 on what a box
-runs.
+Proposed. Would amend ADR-019 and ADR-022 on what a box runs. Deferred (founder, 2026-10-26): moving serving out means relocating about
+113 owner stores and about 66,000 lines of serving, and one shared trusted
+server would make owner isolation an app check again (Direction 5). Revisit
+with metering receipts (N12) at real user counts.
 
 ## Date
 
