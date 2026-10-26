@@ -869,7 +869,7 @@ def _subscription_runs(run=None) -> dict:
 # kept only in a closed shape, so no owner data or path reaches the report.
 _HOLDER_COMMANDS = frozenset({
     "rclone", "cp", "dd", "gzip", "zstd", "tar", "rsync", "e2fsck", "resize2fs",
-    "mkfs.ext4", "fsfreeze", "mount", "umount", "losetup", "sqlite3", "runsc",
+    "fsfreeze", "mount", "umount", "losetup", "sqlite3", "runsc",
     "runsc-sandbox", "runsc-gofer", "python3", "node",
 })
 _BOX_ERROR = re.compile(r"owner daemon uid=\d{1,9} failures=(\d{1,6}): (.{1,300})\Z")
