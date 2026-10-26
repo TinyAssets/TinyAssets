@@ -3350,6 +3350,11 @@ def _assignment_world(tmp_path, *, overrides=None):
                 "(connection_id, capability_kind) VALUES (?, 'model_use')",
                 (connection_id,),
             )
+        db.executemany(
+            "INSERT INTO box_model_sources VALUES (?, ?, ?)",
+            [(item["owner_user_id"], item["id"], json.dumps(item))
+             for item in definitions if item["access_method"] == "api_key_http"],
+        )
     db.close()
     identities = live / ".broker" / "state" / "owner-identities.db"
     identities.parent.mkdir(parents=True, exist_ok=True)
@@ -3443,6 +3448,10 @@ def test_removed_member_returns_with_its_access_and_root(tmp_path):
         "skipped_no_definition": 0,
         "refused_mismatch": 0,
         "centers_changed": 0,
+        "volumes_unmounted": 0,
+        "reseat_owners": 1,
+        "reseat_centers": 1,
+        "reseat_members": 2,
     }
     assert _tree_bytes(world["volume"]) == again_before
     assert _sqlite_dump(world["ledger"]) == ledger_before
