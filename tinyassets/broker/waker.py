@@ -13,7 +13,7 @@ POLL_SECONDS = 30
 class Waker:
     def __init__(self, index, plans, *, wake, clock=time.time,
                  poll_seconds=POLL_SECONDS, lifecycle_tick=None, config=None,
-                 routing=None):
+                 routing=None, events=None):
         from tinyassets.broker.lifecycle_config import LifecycleConfig
 
         self.config = config or LifecycleConfig()
@@ -23,6 +23,7 @@ class Waker:
         self.clock, self.poll_seconds = clock, poll_seconds
         self.lifecycle_tick = lifecycle_tick
         self._routing = routing
+        self.events = events
         self.pending = {}
         self.attempted = {}
 
@@ -39,6 +40,9 @@ class Waker:
             await self.lifecycle_tick()
             if not self.index.identities.work_ready:
                 return
+        if self.events is not None:
+            # MCP event deliveries and their retries ride this clock, never a box's.
+            self.events.kick()
         for owner, task in list(self.pending.items()):
             if task.done():
                 del self.pending[owner]

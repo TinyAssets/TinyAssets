@@ -19,6 +19,9 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse
 
+from tinyassets.mcp_events_http import door as events_door
+from tinyassets.mcp_events_http import routed as events_routed
+
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity",
@@ -175,8 +178,56 @@ class OwnerRouter:
             return await _unavailable()(scope, receive, send)
         if box_owner != identity.user_id:
             await forward(scope, receive, send, identity, route, box_owner=box_owner)
+        elif events_routed(scope):
+            async def ask_box(document):
+                return await box_result(scope, identity, route, document)
+
+            await events_door(scope, receive, send, identity, ask_box)
         else:
             await forward(scope, receive, send, identity, route)
+
+
+async def box_result(scope, identity, route: BoxRoute, document):
+    """One JSON-RPC request the router composes, forwarded to the box; its result.
+
+    A JSON-RPC error from the box is raised as the same ``EventError``; anything
+    else that is not a 200 with a result fails loudly.
+    """
+    from tinyassets.mcp_event_webhooks import EventError
+
+    body = json.dumps(document, separators=(",", ":")).encode()
+    headers = [(name, value) for name, value in scope["headers"]
+               if name.lower() != b"content-length"]
+    headers.append((b"content-length", str(len(body)).encode("ascii")))
+    status, chunks, delivered = 0, [], False
+
+    async def replay():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await anyio.sleep_forever()  # forward() cancels this watcher when the reply ends
+
+    async def capture(message):
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = message["status"]
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+
+    await forward(dict(scope, headers=headers), replay, capture, identity, route)
+    try:
+        reply = json.loads(b"".join(chunks))
+    except ValueError:
+        reply = None
+    error = reply.get("error") if isinstance(reply, dict) else None
+    if isinstance(error, dict) and type(error.get("code")) is int:
+        data = error.get("data")
+        raise EventError(error["code"], str(error.get("message", "")),
+                         **(data if isinstance(data, dict) else {}))
+    if status != 200 or not isinstance(reply, dict) or not isinstance(reply.get("result"), dict):
+        raise RuntimeError(f"owner box answered {status}")
+    return reply["result"]
 
 
 def _inbound_query(scope, token: str) -> bytes:

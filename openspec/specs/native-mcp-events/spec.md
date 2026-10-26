@@ -37,10 +37,13 @@ currently differs). Events and tools share the existing bearer and Origin bounda
   the storage workflow's successful-save receipt when subscribing.
 - Identity is canonical JSON of principal, callback URL, event name and arguments.
   Subscribe is idempotent; unsubscribe stops that identity idempotently.
-- Persist encrypted callback configuration and signing keys under `.runtime`, with
-  owner/subscription-bound authenticated encryption derived from the existing
-  durable app-session seal key. Refuse subscriptions if that key is ephemeral.
-- Validate HTTPS URLs, resolve all addresses on every connection, reject any
+- Persist subscriptions, callback configuration and signing keys in the broker's
+  private `mcp-events.db`, which no box or daemon opens (ADR-025). They are
+  broker-held records like every other broker credential; S28's key hierarchy
+  seals them with the rest. A box never sees a callback URL or signing key.
+- Send every challenge and delivery from the broker through the subscriber's
+  owner egress policy (`broker/egress.py:destination`, N5); a box has no network.
+  Validate HTTPS URLs, resolve all addresses on every connection, reject any
   nonpublic address, pin the connected IP with original-host TLS verification,
   reject redirects, and bound time and response size. Verify a signed random
   single-use challenge before activating; cache verified owner+URL+key briefly.
@@ -48,8 +51,25 @@ currently differs). Events and tools share the existing bearer and Origin bounda
   60-second window in durable storage; enforce before network I/O across restarts.
 - Default/max lifetime is one day; honor shorter positive `ttlMs`. `null` is granted
   a finite lifetime. Refresh rotates keys with a short dual-signature window.
-- Recheck owner/resource and saved outside-client authority at capture and delivery.
+- Recheck owner/resource and saved outside-client authority in the box at subscribe
+  and at capture; a refused recheck revokes the subscription. Delivery sends only
+  identifiers, and every read they lead to rechecks authority at the door.
   Revocation and expiry stop delivery and erase encrypted callback credentials.
+
+## Where each step runs (ADR-025, ADR-030)
+
+- The router answers `events/subscribe` and `events/unsubscribe` from the caller's
+  verified identity; the request body never names the owner. A subscribe first
+  asks the owner's box, with the delivery block removed, whether that caller may
+  follow the workflow, then subscribes in the broker. Unsubscribe never wakes a box.
+- The box answers `events/list`, `server/discover` and the authorization question.
+  An `events/unsubscribe` that reaches a box is a routing fault and is refused.
+- After a run completes, the box reports identifiers only to its bound broker
+  channel. The broker names the live subscriptions for that scope; the box
+  rechecks each and applies the input and output filters; the broker queues only
+  the ones the box named, and only inside the owner and scope it bound.
+- Deliveries and retries run on the broker's shared clock (each waker tick) and
+  are kicked at once on capture. No box timer delivers, and no retry needs a box.
 
 ## Durability and acceptance
 

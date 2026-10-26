@@ -50,7 +50,8 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
 
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
-        "reports and the 24-hour floor; the broker reserves wake capacity",
+        "reports and the 24-hour floor; the broker reserves wake capacity; each tick kicks "
+        "one bounded MCP event delivery pass, so retries never need a box awake",
     ),
     "tinyassets/broker/routing.py::BrokerLifecycle._wake": (
         CALL_SCOPED, "one broker wake waits for capacity notifications until its fixed deadline",
@@ -68,10 +69,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "keeps one broker-held accounting lease alive until the caller closes it",
     ),
     # -- always-on duties of the execution owner ------------------------------
-    "tinyassets/mcp_events_http.py::delivery_lifespan.run": (
-        CONTROL_PLANE,
-        "deliver durable owner-authorized webhook receipts; no model or agent execution",
-    ),
     "tinyassets/control_plane/tick.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
         "the admitted owner daemon's tick pumps its local schedules under the owner "

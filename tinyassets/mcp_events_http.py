@@ -2,26 +2,30 @@
 
 The modern tool transport is the same FastMCP server in stateless JSON mode.
 Only protocol envelopes are adapted; tool dispatch and auth are never bypassed.
+
+``events/subscribe`` and ``events/unsubscribe`` are answered by the router
+(:func:`door`): subscriptions live in the broker (ADR-025). The box answers only
+whether the verified caller may follow the workflow, which needs owner files.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
-from contextlib import asynccontextmanager
 
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from tinyassets.mcp_event_webhooks import EventError
-from tinyassets.mcp_events import DEFINITION, EventStore
+from tinyassets.mcp_events import DEFINITION, NAME, arguments, authorize
 
 VERSION = "2026-07-28"
 LEGACY = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 FORWARDED = {"tools/list", "tools/call", "prompts/list", "prompts/get", "ping"}
+SUBSCRIPTIONS = {"events/subscribe", "events/unsubscribe"}
 logger = logging.getLogger(__name__)
 
 
@@ -44,19 +48,137 @@ def _decoded(value):
     return value
 
 
+class Envelope(EventError):
+    """A refusal before dispatch, carrying the request ID once it is known."""
+
+    def __init__(self, ident, error):
+        super().__init__(error.code, str(error), **error.data)
+        self.ident = ident
+
+
+def parse(headers: Headers, version, body):
+    """``(document, params)`` for one modern request, validated before any dispatch."""
+    ident = None
+    try:
+        document = json.loads(body, object_pairs_hook=_object, parse_constant=_invalid_constant)
+        if (
+            not isinstance(document, dict)
+            or document.get("jsonrpc") != "2.0"
+            or type(document.get("id")) not in (str, int)
+            or not isinstance(document.get("method"), str)
+        ):
+            raise EventError(-32600, "Invalid JSON-RPC request")
+        ident = document["id"]
+        if version != VERSION:
+            raise EventError(
+                -32022,
+                "Unsupported protocol version",
+                requested=version,
+                supported=[VERSION, *LEGACY],
+            )
+        params = document.get("params", {})
+        if not isinstance(params, dict):
+            raise EventError(-32602, "Invalid params")
+        method = document["method"]
+        meta = params.get("_meta", {})
+        if not isinstance(meta, dict):
+            raise EventError(-32602, "Invalid metadata")
+        if (
+            len(headers.getlist("mcp-protocol-version")) != 1
+            or len(headers.getlist("mcp-method")) != 1
+            or headers.get("mcp-method") != method
+            or meta.get("io.modelcontextprotocol/protocolVersion") != version
+        ):
+            raise EventError(-32020, "MCP header mismatch")
+        if method in {"tools/call", "prompts/get"} and (
+            len(headers.getlist("mcp-name")) != 1
+            or _decoded(headers.get("mcp-name", "")) != params.get("name")
+        ):
+            raise EventError(-32020, "MCP name header mismatch")
+    except EventError as exc:
+        raise Envelope(ident, exc) from None
+    except (ValueError, TypeError):
+        raise Envelope(ident, EventError(-32602, "Invalid request")) from None
+    return document, params
+
+
+def answer(ident, result):
+    result["resultType"] = "complete"
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": ident, "result": result},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def refusal(ident, exc):
+    """The one mapping from a refusal to a bounded JSON-RPC error (S23: never silent)."""
+    if isinstance(exc, EventError):
+        error, status = {"code": exc.code, "message": str(exc), "data": exc.data}, (
+            404 if exc.code == -32601 else 403 if exc.code == -32024 else 400)
+    elif isinstance(exc, (PermissionError, KeyError)):
+        error, status = {"code": -32024, "message": "Event access unavailable"}, 403
+    elif isinstance(exc, (ValueError, TypeError)):
+        error, status = {"code": -32602, "message": "Invalid request"}, 400
+    else:
+        # Avoid traceback locals and callback URLs/secrets in errors or logs.
+        logger.error("MCP event request failed")
+        error, status = {"code": -32603, "message": "Event service unavailable"}, 503
+    return JSONResponse({"jsonrpc": "2.0", "id": ident, "error": error}, status_code=status)
+
+
+def routed(scope):
+    """Whether the router answers this request itself instead of forwarding it."""
+    if scope.get("method") != "POST" or scope.get("path") not in {"/mcp", "/mcp/"}:
+        return False
+    headers = Headers(scope=scope)
+    return (headers.get("mcp-protocol-version") == VERSION
+            and headers.get("mcp-method") in SUBSCRIPTIONS)
+
+
+async def door(scope, receive, send, identity, ask_box):
+    """Subscribe or unsubscribe on the trusted side, from the verified identity.
+
+    ``ask_box(document)`` forwards one request to the owner's box and returns its
+    JSON-RPC result. A subscribe asks the box only whether this caller may follow
+    the workflow: the callback URL and signing key never enter the box.
+    """
+    from tinyassets.auth.middleware import _buffer_request_body
+    from tinyassets.broker.mcp_events import request as broker
+    from tinyassets.storage import data_dir
+
+    ident = None
+    try:
+        body, _, disconnected, oversized = await _buffer_request_body(receive)
+        if oversized:
+            return await Response(status_code=413)(scope, receive, send)
+        if disconnected:
+            return
+        headers = Headers(scope=scope)
+        document, params = parse(headers, headers.get("mcp-protocol-version"), body)
+        ident = document["id"]
+        action = document["method"].removeprefix("events/")
+        if action == "subscribe":
+            granted = await ask_box({**document, "params": {
+                key: params[key] for key in ("_meta", "name", "arguments") if key in params}})
+            if granted != {"authorized": True, "resultType": "complete"}:
+                raise RuntimeError("box authorization answer is malformed")
+        result = await run_in_threadpool(broker, data_dir(), {
+            "action": action, "principal": identity.user_id,
+            "authority": identity.metadata.get("outside_origin"), "params": params})
+        response = answer(ident, result)
+    except Envelope as exc:
+        response = refusal(exc.ident, exc)
+    except Exception as exc:
+        response = refusal(ident, exc)
+    await response(scope, receive, send)
+
+
 class MCPEventsMiddleware:
-    def __init__(self, app, modern_tools, *, store_factory=None):
+    def __init__(self, app, modern_tools):
         self.app, self.modern_tools = app, modern_tools
-        self.store_factory = store_factory or self._store
 
     def __getattr__(self, name):
         return getattr(self.app, name)
-
-    @staticmethod
-    def _store():
-        from tinyassets.storage import data_dir
-
-        return EventStore(data_dir())
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("path") not in {"/mcp", "/mcp/"}:
@@ -80,41 +202,8 @@ class MCPEventsMiddleware:
                 return await Response(status_code=413)(scope, receive, send)
             if disconnected:
                 return
-            document = json.loads(body, object_pairs_hook=_object, parse_constant=_invalid_constant)
-            if (
-                not isinstance(document, dict)
-                or document.get("jsonrpc") != "2.0"
-                or type(document.get("id")) not in (str, int)
-                or not isinstance(document.get("method"), str)
-            ):
-                raise EventError(-32600, "Invalid JSON-RPC request")
-            ident = document["id"]
-            if version != VERSION:
-                raise EventError(
-                    -32022,
-                    "Unsupported protocol version",
-                    requested=version,
-                    supported=[VERSION, *LEGACY],
-                )
-            params = document.get("params", {})
-            if not isinstance(params, dict):
-                raise EventError(-32602, "Invalid params")
-            method = document["method"]
-            meta = params.get("_meta", {})
-            if not isinstance(meta, dict):
-                raise EventError(-32602, "Invalid metadata")
-            if (
-                len(request.headers.getlist("mcp-protocol-version")) != 1
-                or len(request.headers.getlist("mcp-method")) != 1
-                or request.headers.get("mcp-method") != method
-                or meta.get("io.modelcontextprotocol/protocolVersion") != version
-            ):
-                raise EventError(-32020, "MCP header mismatch")
-            if method in {"tools/call", "prompts/get"} and (
-                len(request.headers.getlist("mcp-name")) != 1
-                or _decoded(request.headers.get("mcp-name", "")) != params.get("name")
-            ):
-                raise EventError(-32020, "MCP name header mismatch")
+            document, params = parse(request.headers, version, body)
+            ident, method = document["id"], document["method"]
             identity = current_identity()
             if method in FORWARDED:
                 # Fresh stateless request, with the ORIGINAL Authorization header and
@@ -139,7 +228,7 @@ class MCPEventsMiddleware:
                 await self.modern_tools(forwarded, _replay_receive(messages, receive), capture)
                 raw_answer = b"".join(chunks)
                 try:
-                    answer = json.loads(raw_answer)
+                    forwarded_answer = json.loads(raw_answer)
                 except ValueError:
                     if response_status >= 400:
                         return await Response(
@@ -147,12 +236,13 @@ class MCPEventsMiddleware:
                             headers={"Cache-Control": "no-store"},
                         )(scope, receive, send)
                     raise
-                if "result" in answer:
-                    answer["result"]["resultType"] = "complete"
+                if "result" in forwarded_answer:
+                    forwarded_answer["result"]["resultType"] = "complete"
                     if method.endswith("/list"):
-                        answer["result"].update(ttlMs=0, cacheScope="private")
+                        forwarded_answer["result"].update(ttlMs=0, cacheScope="private")
                 return await JSONResponse(
-                    answer, status_code=response_status, headers={"Cache-Control": "no-store"}
+                    forwarded_answer, status_code=response_status,
+                    headers={"Cache-Control": "no-store"},
                 )(scope, receive, send)
             if method == "server/discover":
                 result = {
@@ -171,84 +261,23 @@ class MCPEventsMiddleware:
                     raise EventError(-32602, "Invalid catalog cursor")
                 # No owner-specific identifiers or resource inventory in the catalog.
                 result = {"events": [DEFINITION], "ttlMs": 0, "cacheScope": "private"}
-            elif method in {"events/subscribe", "events/unsubscribe"}:
-                store = self.store_factory()
-                if method == "events/subscribe":
-                    result = await run_in_threadpool(
-                        store.subscribe,
-                        identity.user_id,
-                        params,
-                        authority=identity.metadata.get("outside_origin"),
-                    )
-                else:
-                    result = await run_in_threadpool(store.unsubscribe, identity.user_id, params)
+            elif method == "events/subscribe":
+                # The router asks this before it subscribes in the broker; it
+                # never sends the delivery block here (see door()).
+                if params.get("name") != NAME or "delivery" in params:
+                    raise EventError(-32602, "Unknown event")
+                from tinyassets.storage import data_dir
+
+                await run_in_threadpool(
+                    authorize, data_dir(), identity.user_id, arguments(params.get("arguments")),
+                    identity.metadata.get("outside_origin"))
+                result = {"authorized": True}
             else:
+                # events/unsubscribe is the router's alone; reaching a box is a routing fault.
                 raise EventError(-32601, "Method not found")
-            result["resultType"] = "complete"
-            response = JSONResponse(
-                {"jsonrpc": "2.0", "id": ident, "result": result},
-                headers={"Cache-Control": "no-store"},
-            )
-        except EventError as exc:
-            response = JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": ident,
-                    "error": {"code": exc.code, "message": str(exc), "data": exc.data},
-                },
-                status_code=404 if exc.code == -32601 else 400,
-            )
-        except (PermissionError, KeyError):
-            response = JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": ident,
-                    "error": {"code": -32024, "message": "Event access unavailable"},
-                },
-                status_code=403,
-            )
-        except (ValueError, TypeError):
-            response = JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": ident,
-                    "error": {"code": -32602, "message": "Invalid request"},
-                },
-                status_code=400,
-            )
-        except Exception:
-            # Avoid traceback locals and callback URLs/secrets in errors or logs.
-            logger.error("MCP event request failed")
-            response = JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": ident,
-                    "error": {"code": -32603, "message": "Event service unavailable"},
-                },
-                status_code=503,
-            )
+            response = answer(ident, result)
+        except Envelope as exc:
+            response = refusal(exc.ident, exc)
+        except Exception as exc:
+            response = refusal(ident, exc)
         await response(scope, receive, send)
-
-
-@asynccontextmanager
-async def delivery_lifespan(base):
-    stop = asyncio.Event()
-
-    async def run():
-        while not stop.is_set():
-            try:
-                # Join at most one bounded network attempt during serving shutdown.
-                await run_in_threadpool(EventStore(base).pump, limit=1)
-            except Exception:
-                logger.error("MCP event delivery pass failed")
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=2)
-            except TimeoutError:
-                pass
-
-    task = asyncio.create_task(run())
-    try:
-        yield
-    finally:
-        stop.set()
-        await task
