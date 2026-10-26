@@ -3023,9 +3023,9 @@ def _clean_env(stage):
 
 
 def _run_staged(stage, args, cwd):
-    """The script, as root, with only the stage on the path and no site-packages."""
+    """The script with only the stage on the path and no site-packages."""
     return subprocess.run(
-        ["sudo", "-n", "env", "-i",
+        ["env", "-i",
          "PATH=" + os.environ.get("PATH", "/usr/bin"),
          "PYTHONPATH=" + str(stage),
          "PYTHONDONTWRITEBYTECODE=1",

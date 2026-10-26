@@ -2826,8 +2826,6 @@ def _main_inspect_legacy(args):
 
 
 def main(argv=None):
-    if os.geteuid() != 0:
-        raise SystemExit("diagnostic refused: not_root")
     parser = argparse.ArgumentParser(description="restore broker credentials")
     parser.add_argument("--mode", default="inspect")
     parser.add_argument("--source", default="auto")
@@ -2848,6 +2846,10 @@ def main(argv=None):
             "mode": args.mode, "error": "package_unavailable",
         }) + "\n")
         raise SystemExit(2)
+    # The shell discovers the docker volume and apply writes it. Both need
+    # root. A named root on inspect or dry-run only reads that tree.
+    if os.geteuid() != 0 and (args.root is None or args.mode == "apply"):
+        raise SystemExit("diagnostic refused: not_root")
     if args.mode == "inspect-legacy":
         return _main_inspect_legacy(args)
     root = args.root
