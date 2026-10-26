@@ -3228,12 +3228,33 @@ def test_undecodable_grant_owner_refuses_that_center(tmp_path):
     _assert_unreadable_owner_wrote_nothing(plan, live, source)
 
 
+def _sqlite_dump(path):
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return "\n".join(conn.iterdump())
+    finally:
+        conn.close()
+
+
 def _tree_bytes(root):
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and not path.is_symlink()
-    }
+    """Logical rows for each database, and bytes for every other file.
+
+    ``-wal`` and ``-shm`` are SQLite's index. A read can create or remove them
+    without changing a committed row, so this snapshot leaves them out. The
+    keys are the file list with those indexes excluded.
+    """
+    found = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.name.endswith(("-wal", "-shm", "-journal")):
+            continue
+        rel = path.relative_to(root).as_posix()
+        if path.name.endswith(".db"):
+            found[rel] = _sqlite_dump(path)
+        else:
+            found[rel] = path.read_bytes()
+    return found
 
 
 def _checkpoint_db(path):
@@ -3374,7 +3395,7 @@ def test_removed_member_returns_with_its_access_and_root(tmp_path):
 
     world = _assignment_world(tmp_path)
     before = _tree_bytes(world["volume"])
-    ledger_before = world["ledger"].read_bytes()
+    ledger_before = _sqlite_dump(world["ledger"])
     planned = _restore(world, write=False)
     assert planned["members_readded"] == 1
     assert planned["centers_changed"] == 1
@@ -3382,7 +3403,7 @@ def test_removed_member_returns_with_its_access_and_root(tmp_path):
     assert planned["skipped_no_definition"] == 0
     assert planned["refused_mismatch"] == 0
     assert _tree_bytes(world["volume"]) == before
-    assert world["ledger"].read_bytes() == ledger_before
+    assert _sqlite_dump(world["ledger"]) == ledger_before
     applied = _restore(world, write=True)
     assert applied["members_readded"] == 1
     assert applied["centers_changed"] == 1
@@ -3424,7 +3445,7 @@ def test_removed_member_returns_with_its_access_and_root(tmp_path):
         "centers_changed": 0,
     }
     assert _tree_bytes(world["volume"]) == again_before
-    assert world["ledger"].read_bytes() == ledger_before
+    assert _sqlite_dump(world["ledger"]) == ledger_before
 
 
 def test_missing_grant_is_skipped_and_access_is_not_broadened(tmp_path):
