@@ -3226,3 +3226,431 @@ def test_undecodable_grant_owner_refuses_that_center(tmp_path):
         )
     plan = rc.merge(live, source)
     _assert_unreadable_owner_wrote_nothing(plan, live, source)
+
+
+def _sqlite_dump(path):
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return "\n".join(conn.iterdump())
+    finally:
+        conn.close()
+
+
+def _tree_bytes(root):
+    """Logical rows for each database, and bytes for every other file.
+
+    ``-wal`` and ``-shm`` are SQLite's index. A read can create or remove them
+    without changing a committed row, so this snapshot leaves them out. The
+    keys are the file list with those indexes excluded.
+    """
+    found = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.name.endswith(("-wal", "-shm", "-journal")):
+            continue
+        rel = path.relative_to(root).as_posix()
+        if path.name.endswith(".db"):
+            found[rel] = _sqlite_dump(path)
+        else:
+            found[rel] = path.read_bytes()
+    return found
+
+
+def _checkpoint_db(path):
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+
+
+def _assignment_world(tmp_path, *, overrides=None):
+    """Pre-cutover acceptance in the snapshot; the repair has removed it live.
+
+    The subscription member stays in the snapshot and is dropped from the live
+    assignment, with no subscription credential on disk.
+    """
+    from dataclasses import replace
+
+    from tests.test_cutover_assignment_repair import _accepted, _owner_volume
+    from tinyassets.cutover_assignment_repair import repair
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.provider_assignment_departure import remove_members
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.storage import db_path
+
+    definitions, members, bindings = _accepted(overrides)
+    access = ModelAccess("explicit", ("gpt-test",), None)
+    if overrides is None:
+        members[0] = replace(members[0], access=access)
+    built = tmp_path / "built"
+    built.mkdir()
+    _owner_volume(
+        built, members, bindings, stored=definitions,
+        grants=["grant-0", "grant-2"],
+    )
+    parent = tmp_path / "data"
+    parent.mkdir()
+    live = parent / "live"
+    (live / ".broker").mkdir(parents=True)
+    mounts = tmp_path / "mounts"
+    volume = mounts / "300001"
+    shutil.copytree(built, volume)
+    source = parent / ".tinyassets-restore-old.Ab12"
+    shutil.copytree(built, source)
+    source_ledger = source / ".broker" / "outbound.db"
+    source_ledger.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(source_ledger) as db:
+        db.executescript(SCHEMA)
+    db.close()
+    repair_ledger = tmp_path / "repair-ledger.db"
+    with sqlite3.connect(repair_ledger) as conn:
+        conn.execute(
+            "CREATE TABLE outbound_connection_grants(owner_user_id, grant_id)"
+        )
+        conn.execute(
+            "INSERT INTO outbound_connection_grants VALUES ('owner', 'grant-2')"
+        )
+    conn.close()
+    repair(volume, repair_ledger)
+    owner_db = db_path(volume)
+    conn = sqlite3.connect(owner_db)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        current = load_provider_assignment_in_transaction(conn, universe_id="center")
+        kept = tuple(
+            member for member in current.candidates
+            if member.provider.startswith("api_key_http:")
+        )
+        remove_members(conn, current, kept)
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    ledger = live / ".broker" / "outbound.db"
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+        for grant_id, connection_id in (("grant-0", "c-0"), ("grant-2", "c-2")):
+            db.execute(
+                "INSERT INTO outbound_connections "
+                "(connection_id, owner_user_id, revoked_at, label) "
+                "VALUES (?, 'owner', NULL, 'ok')",
+                (connection_id,),
+            )
+            db.execute(
+                "INSERT INTO outbound_connection_grants "
+                "(grant_id, connection_id, owner_user_id, revoked_at) "
+                "VALUES (?, ?, 'owner', NULL)",
+                (grant_id, connection_id),
+            )
+            db.execute(
+                "INSERT INTO connection_capabilities "
+                "(connection_id, capability_kind) VALUES (?, 'model_use')",
+                (connection_id,),
+            )
+    db.close()
+    identities = live / ".broker" / "state" / "owner-identities.db"
+    identities.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(identities) as db:
+        db.execute("CREATE TABLE owner_volumes (uid INTEGER, principal TEXT)")
+        db.execute("INSERT INTO owner_volumes VALUES (300001, 'owner')")
+    db.close()
+    _checkpoint_db(owner_db)
+    return {
+        "live": live,
+        "source": source,
+        "mounts": mounts,
+        "volume": volume,
+        "ledger": ledger,
+        "root": members[0].provider,
+        "access": access.document(),
+        "held": members[1].provider,
+    }
+
+
+def _restored_assignment(volume):
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.storage import db_path
+
+    conn = sqlite3.connect(db_path(volume))
+    try:
+        conn.row_factory = sqlite3.Row
+        return load_provider_assignment_in_transaction(conn, universe_id="center")
+    finally:
+        conn.close()
+
+
+def _restore(world, *, write):
+    return rc.restore_assignments(
+        world["live"], world["source"], world["mounts"], world["ledger"],
+        write=write,
+    )
+
+
+def test_removed_member_returns_with_its_access_and_root(tmp_path):
+    from tinyassets.storage import db_path
+    from tinyassets.storage.provider_work_authority import _record
+
+    world = _assignment_world(tmp_path)
+    before = _tree_bytes(world["volume"])
+    ledger_before = _sqlite_dump(world["ledger"])
+    planned = _restore(world, write=False)
+    assert planned["members_readded"] == 1
+    assert planned["centers_changed"] == 1
+    assert planned["skipped_no_grant"] == 0
+    assert planned["skipped_no_definition"] == 0
+    assert planned["refused_mismatch"] == 0
+    assert _tree_bytes(world["volume"]) == before
+    assert _sqlite_dump(world["ledger"]) == ledger_before
+    applied = _restore(world, write=True)
+    assert applied["members_readded"] == 1
+    assert applied["centers_changed"] == 1
+    restored = _restored_assignment(world["volume"])
+    assert restored.state == "ready"
+    assert restored.provider == world["root"]
+    seated = next(
+        member for member in restored.candidates if member.provider == world["root"]
+    )
+    assert seated.access.document() == world["access"]
+    assert seated.access.document()["model_ids"] == ["gpt-test"]
+    assert world["held"] not in {member.provider for member in restored.candidates}
+    conn = sqlite3.connect(db_path(world["volume"]))
+    try:
+        conn.row_factory = sqlite3.Row
+        binding = _record(conn.execute(
+            "SELECT * FROM provider_work_bindings WHERE binding_id=?",
+            (seated.binding_id,),
+        ).fetchone())
+        pointer = json.loads(conn.execute(
+            "SELECT configuration_json FROM agent_bindings"
+        ).fetchone()[0])
+    finally:
+        conn.close()
+    assert binding.state == "active"
+    assert binding.revocation_generation == 0
+    assert pointer == {"provider_ref": seated.binding_id, "name": "My agent"}
+    rendered = rc.safe_json({"mode": "dry-run", "plan": {"assignments": applied}})
+    assert "gpt-test" not in rendered
+    assert "grant-0" not in rendered
+    assert "provdef_" not in rendered
+    again_before = _tree_bytes(world["volume"])
+    again = _restore(world, write=True)
+    assert again == {
+        "members_readded": 0,
+        "skipped_no_grant": 0,
+        "skipped_no_definition": 0,
+        "refused_mismatch": 0,
+        "centers_changed": 0,
+    }
+    assert _tree_bytes(world["volume"]) == again_before
+    assert _sqlite_dump(world["ledger"]) == ledger_before
+
+
+def test_missing_grant_is_skipped_and_access_is_not_broadened(tmp_path):
+    from dataclasses import replace
+
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.provider_assignment_departure import add_members
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.storage import db_path
+
+    world = _assignment_world(tmp_path)
+    with sqlite3.connect(world["ledger"]) as db:
+        db.execute(
+            "DELETE FROM outbound_connection_grants WHERE grant_id='grant-0'"
+        )
+    db.close()
+    before = _tree_bytes(world["volume"])
+    planned = _restore(world, write=False)
+    assert planned["members_readded"] == 0
+    assert planned["skipped_no_grant"] == 1
+    assert planned["centers_changed"] == 0
+    assert planned["refused_mismatch"] == 0
+    assert _tree_bytes(world["volume"]) == before
+    restored = _restored_assignment(world["volume"])
+    assert world["root"] not in {member.provider for member in restored.candidates}
+    applied = _restore(world, write=True)
+    assert applied["centers_changed"] == 0
+    assert _tree_bytes(world["volume"]) == before
+
+    broad_root = tmp_path / "broad"
+    broad_root.mkdir()
+    broad = _assignment_world(broad_root)
+    snap = sqlite3.connect(broad["source"] / ".tinyassets.db")
+    try:
+        snap.row_factory = sqlite3.Row
+        snapshot = load_provider_assignment_in_transaction(
+            snap, universe_id="center",
+        )
+    finally:
+        snap.close()
+    narrowed = replace(
+        next(member for member in snapshot.candidates
+             if member.provider == broad["root"]),
+        access=ModelAccess(),
+    )
+    conn = sqlite3.connect(db_path(broad["volume"]))
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        live = load_provider_assignment_in_transaction(conn, universe_id="center")
+        members = tuple(
+            member for member in live.candidates
+            if member.provider != narrowed.provider
+        ) + (narrowed,)
+        add_members(conn, live, members, root=narrowed.provider)
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    before = _tree_bytes(broad["volume"])
+    planned = _restore(broad, write=False)
+    assert planned["members_readded"] == 0
+    assert planned["refused_mismatch"] >= 1
+    assert planned["centers_changed"] == 0
+    assert _tree_bytes(broad["volume"]) == before
+    _restore(broad, write=True)
+    restored = _restored_assignment(broad["volume"])
+    seated = next(
+        member for member in restored.candidates if member.provider == broad["root"]
+    )
+    assert seated.access.document()["model_scope"] == "legacy"
+    assert seated.access.document()["model_ids"] == []
+    assert _tree_bytes(broad["volume"]) == before
+
+
+def test_other_owner_or_center_is_refused(tmp_path):
+    from dataclasses import replace
+
+    from tinyassets.provider_assignment import (
+        load_provider_assignment_in_transaction,
+        provider_assignment_digest,
+        store_provider_assignment_in_transaction,
+    )
+    from tinyassets.storage import db_path
+
+    world = _assignment_world(tmp_path)
+    conn = sqlite3.connect(db_path(world["volume"]))
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        live = load_provider_assignment_in_transaction(conn, universe_id="center")
+        updated = replace(live, owner_user_id="other-owner")
+        updated = replace(updated, assignment_digest=provider_assignment_digest(
+            owner_user_id=updated.owner_user_id,
+            universe_id=updated.universe_id,
+            provider=updated.provider,
+            generation=updated.generation,
+            binding_id=updated.binding_id,
+            credential_reference_id=updated.credential_reference_id,
+            credential_reference_generation=updated.credential_reference_generation,
+            credential_reference_digest=updated.credential_reference_digest,
+            manifest_digest=updated.manifest_digest,
+        ))
+        store_provider_assignment_in_transaction(conn, updated)
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    before = _tree_bytes(world["volume"])
+    planned = _restore(world, write=True)
+    assert planned["refused_mismatch"] >= 1
+    assert planned["members_readded"] == 0
+    assert planned["centers_changed"] == 0
+    assert _tree_bytes(world["volume"]) == before
+
+    foreign_root = tmp_path / "foreign"
+    foreign_root.mkdir()
+    foreign = _assignment_world(
+        foreign_root, overrides={0: {"universe_id": "elsewhere"}},
+    )
+    definitions = (foreign["volume"] / "center" / "provider_definitions.json").read_bytes()
+    before = _tree_bytes(foreign["volume"])
+    planned = _restore(foreign, write=True)
+    assert planned["refused_mismatch"] >= 1
+    assert planned["members_readded"] == 0
+    assert planned["centers_changed"] == 0
+    assert planned["skipped_no_definition"] == 0
+    restored = _restored_assignment(foreign["volume"])
+    assert foreign["root"] not in {member.provider for member in restored.candidates}
+    assert (foreign["volume"] / "center" / "provider_definitions.json").read_bytes() == definitions
+    assert _tree_bytes(foreign["volume"]) == before
+
+    tamper_root = tmp_path / "tamper"
+    tamper_root.mkdir()
+    tamper = _assignment_world(tamper_root)
+    path = tamper["volume"] / "center" / "provider_definitions.json"
+    documents = json.loads(path.read_text(encoding="utf-8"))
+    documents[0]["universe_id"] = "elsewhere"
+    path.write_text(json.dumps(documents), encoding="utf-8")
+    before = _tree_bytes(tamper["volume"])
+    planned = _restore(tamper, write=True)
+    assert planned["refused_mismatch"] >= 1
+    assert planned["members_readded"] == 0
+    assert planned["skipped_no_definition"] == 0
+    assert planned["centers_changed"] == 0
+    assert _tree_bytes(tamper["volume"]) == before
+
+
+def test_missing_definition_is_skipped(tmp_path):
+    world = _assignment_world(tmp_path)
+    path = world["volume"] / "center" / "provider_definitions.json"
+    ident = world["root"].split(":", 1)[1]
+    documents = [
+        document for document in json.loads(path.read_text(encoding="utf-8"))
+        if document.get("id") != ident
+    ]
+    path.write_text(json.dumps(documents), encoding="utf-8")
+    before = _tree_bytes(world["volume"])
+    planned = _restore(world, write=True)
+    assert planned["skipped_no_definition"] == 1
+    assert planned["members_readded"] == 0
+    assert planned["centers_changed"] == 0
+    assert planned["refused_mismatch"] == 0
+    restored = _restored_assignment(world["volume"])
+    assert world["root"] not in {member.provider for member in restored.candidates}
+    assert _tree_bytes(world["volume"]) == before
+
+
+def test_staged_dry_run_reports_assignment_counts_only(tmp_path):
+    world = _assignment_world(tmp_path)
+    before = _tree_bytes(world["volume"])
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    shutil.copyfile(
+        ROOT / "deploy/restore-credentials.sh", stage / "restore-credentials.sh",
+    )
+    shutil.copyfile(
+        ROOT / "tinyassets/restore_credentials.py", stage / "restore_credentials.py",
+    )
+    _package_tar(stage / "restore-package.tar")
+    assert not (stage / "tinyassets").exists()
+    unpacked = subprocess.run(
+        ["bash", str(stage / "restore-credentials.sh"), "inspect", "auto"],
+        cwd=stage, env=_clean_env(stage), capture_output=True, text=True, timeout=90,
+    )
+    assert (stage / "tinyassets/provider_assignment_departure.py").is_file()
+    assert "package_unavailable" not in unpacked.stdout
+    snaps = tmp_path / "snaps"
+    snaps.mkdir()
+    log = tmp_path / "backup.log"
+    log.write_text("", encoding="utf-8")
+    direct = _run_staged(stage, [
+        "--mode", "dry-run", "--source", ".tinyassets-restore-old.Ab12",
+        "--root", str(world["live"]), "--backup-log", str(log),
+        "--snapshot-dir", str(snaps), "--mounts", str(world["mounts"]),
+    ], tmp_path)
+    assert direct.returncode == 0, direct.stderr
+    report = json.loads(direct.stdout)
+    assert "error" not in report
+    assignments = report["plan"]["assignments"]
+    assert assignments["members_readded"] == 1
+    assert assignments["centers_changed"] == 1
+    text = direct.stdout + direct.stderr
+    for secret in ("gpt-test", "grant-0", "provdef_", "other-owner"):
+        assert secret not in text
+    assert '"owner"' not in direct.stdout
+    rc.safe_json(report)
+    assert _tree_bytes(world["volume"]) == before
