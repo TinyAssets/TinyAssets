@@ -169,12 +169,20 @@ class OwnerRelays:
         for server in servers:
             server.close()
 
+    async def _shutdown(self, servers):
+        await self._stop(servers)
+        streams = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for stream in streams:
+            stream.cancel()
+        await asyncio.gather(*streams, return_exceptions=True)
+
     def close(self):
         with self._lock:
             servers = list(self._servers.values())
             self._servers.clear()
             self._bindings.clear()
-            asyncio.run_coroutine_threadsafe(self._stop(servers), self._loop).result(5)
+            # Streams end on the loop, each releasing its slot, before it stops.
+            asyncio.run_coroutine_threadsafe(self._shutdown(servers), self._loop).result(35)
             self._loop.call_soon_threadsafe(self._loop.stop)
 
     def retire(self, uid):
