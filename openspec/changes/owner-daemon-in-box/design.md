@@ -1315,7 +1315,9 @@ are described in the 3c-2 as-built contract above.
   sets, static PATH/HOME/browser environment, null network and cgroup limits are
   explicit. `--host-uds=all` allows opening the bound relay and creating the
   exported socket. No host credential environment is inherited.
-- **Defaults.** No idle threshold: a box sleeps on the first lifecycle pass with no running work (ADR-026),
+- **Defaults.** No idle threshold (ADR-026): a box stops on the first lifecycle pass with no
+  running work and no pending sign-in, ten seconds after its last request (the wake lease); its
+  off-host snapshot waits until it stays stopped for 900 seconds, or a day since the last one,
   awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`; 2 GiB is a ceiling, and MemoryMax bounds the fleet), memory 2 GiB per box
   (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB; raised
   2026-10-25 for the agent plus one subscription CLI run).

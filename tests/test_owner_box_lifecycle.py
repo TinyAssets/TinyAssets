@@ -113,6 +113,9 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_control, "request", control)
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
     routing = BrokerLifecycle(server)
+    monkeypatch.setattr("tinyassets.broker.volume_lifecycle.WAKE_LEASE", 1)
+    # These tests cover publication itself; deferral has its own tests.
+    monkeypatch.setattr("tinyassets.broker.owner_volumes.SNAPSHOT_QUIET", 0)
     routing.config.awake_cap = 2
     routing.config.wake_timeout = 2
     routing.publish = lambda **kwargs: None
@@ -378,35 +381,34 @@ def test_crashed_process_never_restarts_without_a_broker_wake(fleet):
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
-def test_idle_boxes_sleep_on_the_next_pass_and_free_capacity_for_a_waiting_wake(fleet):
+def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
     a = fleet.wake("a")
     b = fleet.wake("b")
-    fleet.tick()  # ADR-026: no idle tail; a box with no running work sleeps now.
-    assert not fleet.runtime.live
+    fleet.wake("a")  # b is now least recently used.
+    fleet.tick()  # recover supplies victim facts; wake makes no candidate RPCs.
+    fleet.wake("c")
+    assert b not in fleet.runtime.live and a in fleet.runtime.live
+    c = fleet.admission.owner("c")["uid"]
+    drive(fleet.routing.sleep("c"))
     fleet.routing.config.awake_cap = 1
     fleet.routing.config.wake_timeout = 5
-    assert fleet.wake("a") == a
     result = []
 
     def scheduled():
         result.append(fleet.wake("b", scheduled=True))
 
-    with fleet.states[a].enter():
-        thread = threading.Thread(target=scheduled)
-        thread.start()
-        deadline = time.monotonic() + 2
-        while not fleet.routing._capacity._waiters and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert fleet.routing._capacity._waiters and not result
-        # Passes are driven without the fixture's close(), which would await
-        # b's own lifecycle task behind the owner lock its waiting wake holds.
-        drive(fleet.routing.tick())
-        time.sleep(.2)
-        assert a in fleet.runtime.live and not result  # A running turn keeps it awake.
-    drive(fleet.routing.tick())  # The turn ended: a sleeps, and b's wake takes the slot.
+    thread = threading.Thread(target=scheduled)
+    thread.start()
+    deadline = time.monotonic() + 2
+    while not fleet.routing._capacity._waiters and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert fleet.routing._capacity._waiters and not result
+    # Interactive callers bypass the older scheduled ticket and can evict.
+    fleet.wake("c")
+    assert fleet.runtime.live == {c} and not result
+    drive(fleet.routing.sleep("c"))
     thread.join(5)
     assert result == [b] and not thread.is_alive()
-    assert fleet.runtime.live == {b}
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')

@@ -30,7 +30,11 @@ class Activity:
 
     @contextmanager
     def pending_login(self, cancelled):
-        """Admit sign-in without keeping the box awake or delaying a drain."""
+        """Hold the idle clock while sign-in waits; a drain still cancels it.
+
+        A box sleeps as soon as no work runs (ADR-026), so a pending sign-in
+        reads as active until it ends; the login's own timeout bounds it.
+        """
         with self.lock:
             if self.draining:
                 cancelled.set()
@@ -88,6 +92,8 @@ class Activity:
 
     def status(self, *, drain=False, idle=0.0, revoke=False, deleting=False, snapshot=False):
         with self.lock:
+            if self.pending_logins and not self.draining:
+                self.last = time.monotonic()
             age = time.monotonic() - self.last
             if revoke:
                 self.revoked = self.draining = True

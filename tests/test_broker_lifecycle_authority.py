@@ -33,6 +33,8 @@ class Remote:
 
 @pytest.fixture
 def authority(tmp_path, monkeypatch):
+    # These tests cover publication itself; deferral has its own tests.
+    monkeypatch.setattr("tinyassets.broker.owner_volumes.SNAPSHOT_QUIET", 0)
     root = tmp_path / ".broker"
     root.mkdir(mode=0o700)
     identities = OwnerIdentities(root / "identities.db", initialize=True)
@@ -378,7 +380,7 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
         if operation == "status":
             return {"awake": awake[bound], "awake_count": sum(awake.values()),
                     "awake_cap": 1, "wake_timeout": 10, "active": 0,
-                    "idle_seconds": 0, "uptime": 0,
+                    "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
                     "volume_size": 1024**3}
         if operation == "sleep":
             entered.set()

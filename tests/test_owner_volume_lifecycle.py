@@ -106,7 +106,9 @@ class Admission:
 
 
 @pytest.fixture
-def storage(tmp_path):
+def storage(tmp_path, monkeypatch):
+    # These tests cover publication itself; deferral has its own tests.
+    monkeypatch.setattr("tinyassets.broker.owner_volumes.SNAPSHOT_QUIET", 0)
     tmp_path.chmod(0o700)
     broker = tmp_path / ".broker"
     broker.mkdir(mode=0o700)
@@ -1263,3 +1265,99 @@ def test_rewind_launch_flag_is_only_owner_undo(storage, tmp_path, monkeypatch):
     assert "TINYASSETS_VOLUME_REWIND=1" in rewound["process"]["env"]
     assert "TINYASSETS_VOLUME_REWIND=1" not in plain["process"]["env"]
     assert os.environ["UNIVERSE_SERVER_URL"] == "http://localhost"
+
+
+def _published(storage, owner="alice"):
+    return [row["snapshot_id"] for row in storage.lifecycle.volume(owner, "snapshots")]
+
+
+def _age(storage, sql, seconds):
+    with sqlite3.connect(storage.identities.path) as db:
+        db.execute(sql, (seconds,))
+
+
+_DURABILITY = "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map"
+_SLEEP = "owner-daemon-in-box:Boxes sleep and wake without a person"
+
+
+@pytest.mark.verifies(_DURABILITY)
+def test_a_pause_between_turns_is_not_an_offsite_copy(storage, monkeypatch):
+    monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
+    routing = storage.lifecycle.lifecycle
+    start(storage)
+    first = sleep(storage)  # No verified snapshot yet: the first stop is copied at once.
+    assert first["work"] is None and _published(storage) == [first["snapshot_id"]]
+
+    start(storage)
+    stopped = sleep(storage)
+    work = stopped["work"]
+    assert work["kind"] == "snapshot" and "stopped_at" in work
+    assert owner_volumes.pending(storage.identities) == []
+    assert drive(routing.readiness()) == {"ready": True}
+    drive(storage.lifecycle.tick_owner("alice"))
+    assert storage.lifecycle.volume("alice")["work"] == work
+
+    start(storage)  # A wake before the quiet period ends supersedes the intent.
+    assert storage.lifecycle.volume("alice")["work"] == {"kind": "running"}
+    stopped = sleep(storage)["work"]
+    assert _published(storage) == [first["snapshot_id"]]
+
+    _age(storage, "UPDATE owner_volumes SET work=json_set(work,'$.stopped_at',"
+         "json_extract(work,'$.stopped_at')-?)", 901)
+    assert owner_volumes.pending(storage.identities) == ["alice"]
+    drive(storage.lifecycle.tick_owner("alice"))
+    assert storage.lifecycle.volume("alice")["work"] is None
+    assert _published(storage) == [stopped["snapshot_id"], first["snapshot_id"]]  # Newest first.
+
+
+@pytest.mark.verifies(_DURABILITY)
+def test_a_day_old_snapshot_is_replaced_on_the_next_stop(storage, monkeypatch):
+    monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
+    start(storage)
+    first = sleep(storage)
+    _age(storage, "UPDATE owner_snapshots SET published_at=published_at-?", 86401)
+    start(storage)
+    second = sleep(storage)
+    assert second["work"] is None and second["snapshot_id"] != first["snapshot_id"]
+
+
+@pytest.mark.verifies(_SLEEP)
+def test_a_woken_box_is_not_stopped_inside_its_wake_lease(storage):
+    from tinyassets.broker import volume_lifecycle
+
+    record, _mount = start(storage)
+    uid = record["uid"]
+    execute, idle, calls = storage.lifecycle.execute, {"seconds": 0}, []
+
+    def observed(operation, **fields):
+        calls.append(operation)
+        if operation == "sleep":
+            storage.runtime.shutdown(uid)
+            storage.volumes.detach(uid)
+        result = execute(operation, **fields)
+        if operation == "status" and result["awake"]:
+            result = {**result, "idle_seconds": idle["seconds"]}
+        return result
+
+    storage.lifecycle.execute = observed
+    drive(storage.lifecycle.tick_owner("alice"))
+    assert "sleep" not in calls and uid in storage.live
+    assert storage.lifecycle.volume("alice")["work"] == {"kind": "running"}
+    idle["seconds"] = volume_lifecycle.WAKE_LEASE
+    drive(storage.lifecycle.tick_owner("alice"))
+    assert "sleep" in calls and uid not in storage.live
+    assert storage.lifecycle.volume("alice")["work"] is None  # The first stop is copied.
+
+
+@pytest.mark.verifies(_SLEEP)
+def test_a_pending_sign_in_holds_the_idle_clock_but_never_a_drain():
+    from tinyassets.owner_activity import Activity
+
+    activity = Activity()
+    activity.last -= 60
+    cancelled = threading.Event()
+    with activity.pending_login(cancelled):
+        assert activity.status()["idle_seconds"] < 1
+        assert not cancelled.is_set()
+        assert activity.status(drain=True, idle=0)["draining"]
+        assert cancelled.is_set()

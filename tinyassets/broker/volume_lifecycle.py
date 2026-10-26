@@ -16,6 +16,9 @@ REMOTE_CAP = 250 * _GIB
 LOCAL_CAP = 100 * _GIB
 FULL_IMAGE = 5 * _GIB
 LOCAL_STAGING = 20 * _GIB
+# ADR-026 has no idle timer. This is the owner-isolation post-wake lease: a
+# woken box is forwarded within ten seconds, so a pass never stops it first.
+WAKE_LEASE = 10
 
 
 class VolumeBudgetRefused(PermissionError):
@@ -59,9 +62,11 @@ class VolumeLifecycle:
                     # while a stop would be refused anyway; the next pass after
                     # its turns end sleeps it.
                     return record
-                # ADR-026: no idle tail. A box with no running work sleeps on
-                # this pass; unknown activity never authorizes a sleep.
-                if not status.get("draining") and status["idle_seconds"] is None:
+                # ADR-026: no idle tail past the wake lease; unknown activity
+                # never authorizes a sleep. A pending sign-in reads as active.
+                idle = status["idle_seconds"]
+                if not status.get("draining") and (idle is None or (
+                        idle < WAKE_LEASE and status["uptime"] < 86400)):
                     return record
             return await self.sleep(owner)
         if not work or work["kind"] == "create":
@@ -70,6 +75,8 @@ class VolumeLifecycle:
             await self.host(owner, "evict")
             return self.volume(owner, "evicted")
         if work["kind"] == "snapshot":
+            if "stopped_at" in work and not work.get("restore_snapshot_id"):
+                return record  # Stopped; tick_owner publishes when it is owed.
             if not work.get("restore_snapshot_id"):
                 status = await self.host(owner, "status")
                 active = status.get("active", 0)
@@ -123,6 +130,7 @@ class VolumeLifecycle:
         record = self.volume(owner, "sleep")
         if await self.host(owner, "sleep") != {"stopped": True}:
             raise RuntimeError("owner sleep remains pending")
+        record = self.volume(owner, "stopped")
         await self.lifecycle.stopped(owner)
         return record
 
@@ -253,7 +261,8 @@ class VolumeLifecycle:
                 return
             record = await self.recover(owner)
         work = record["work"]
-        if work and work["kind"] == "snapshot":
+        if (work and work["kind"] == "snapshot"
+                and not owner_volumes.snapshot_deferred(self.identities, owner)):
             # C15: copying owns only boxhostd's UID execution lock. A wake may
             # replace this intent; only its matching completed sleep can publish.
             await self._publish_snapshot(owner, work)
