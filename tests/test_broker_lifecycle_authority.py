@@ -14,6 +14,7 @@ from tests.support.admission import drive, projection
 from tinyassets.boxes.daemon_control import REQUEST_DRIVEN
 from tinyassets.broker import admission, box_admission, owner_volumes
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs
+from tinyassets.broker.lifecycle_config import THIN_BYTES
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.routing import BrokerLifecycle
 
@@ -369,7 +370,7 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
     lifecycle = a.server.routing.volumes
     lifecycle.volume("alice", "created")
     lifecycle.volume("alice", "sleep")
-    a.server.routing.config.awake_cap = 1
+    a.server.routing.config.memory_budget = THIN_BYTES
     a.server.routing.awake.add("alice")
     awake = {"alice": True, "bob": False}
     owners = {a.identities.owner_machine(owner): owner for owner in awake}

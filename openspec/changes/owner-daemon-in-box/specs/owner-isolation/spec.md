@@ -800,7 +800,7 @@ reported next-wake time.
 - **WHEN** a wanted daemon crashes
 - **THEN** boxhostd restarts it with exponential backoff capped at 60 seconds and rotates its secret
 - **AND** five consecutive failures produce a loud status while automatic retries continue
-- **WHEN** the awake cap (six by default) is reached
+- **WHEN** a wake's thin reservation (256 MiB) would take the awake and reserved boxes past the memory budget (6 GiB by default), each charged its last reported cgroup memory and never less than thin (ADR-026)
 - **THEN** an interactive wake may evict the least recently used idle box
 - **AND** scheduled wakes queue without eviction and behind interactive wakes
 

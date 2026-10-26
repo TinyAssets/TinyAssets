@@ -12,6 +12,7 @@ from contextlib import closing
 from pathlib import Path
 
 from tinyassets.broker.admission import owner_call, owner_lock, read, thread_work
+from tinyassets.broker.lifecycle_config import THIN_BYTES
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ class BrokerLifecycle:
             deadline = asyncio.get_running_loop().time() + self.config.wake_timeout
             async with self._capacity:
                 while owner not in self.awake:
-                    if len(self.awake | self._reservations.keys()) < self.config.awake_cap:
+                    if self._charged() + THIN_BYTES <= self.config.memory_budget:
                         self._reservations[owner] = None
                         break
                     if not scheduled:
@@ -183,6 +184,11 @@ class BrokerLifecycle:
                 async with self._capacity:
                     self._reservations.pop(owner, None)
                     self._capacity.notify_all()
+
+    def _charged(self):
+        """Memory held by awake and reserved boxes, each at least the thin class."""
+        return sum(max(THIN_BYTES, self.facts.get(owner, {}).get("memory_bytes") or 0)
+                   for owner in self.awake | self._reservations.keys())
 
     async def stopped(self, owner):
         # Only called after a completed sleep/stop or recover's stopped fact.

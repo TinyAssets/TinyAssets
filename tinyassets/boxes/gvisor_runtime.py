@@ -49,6 +49,10 @@ class GvisorRuntime:
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
+    def memory(self, uid: int) -> int:
+        """What the box's cgroup holds now; the broker admits wakes against it."""
+        return int((self.cgroup_parent / self.box_id(uid) / "memory.current").read_text())
+
     @staticmethod
     def box_id(uid: int) -> str:
         if type(uid) is not int or not 300001 <= uid <= 399999:

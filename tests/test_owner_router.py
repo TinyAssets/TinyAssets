@@ -22,6 +22,7 @@ from tests.support.admission import drive, projection, retire_local, suspend
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.provider import Identity
 from tinyassets.broker.admission import local_mutate
+from tinyassets.broker.lifecycle_config import THIN_BYTES
 from tinyassets.broker.owner_identities import OwnerIdentities
 
 
@@ -1023,7 +1024,7 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
     a, b = (admitted.owner_machine(owner) for owner in ("alice", "bob"))
     with manager.condition:
         manager._stop(manager.boxes[b])
-    broker.server.routing.config.awake_cap = 1
+    broker.server.routing.config.memory_budget = THIN_BYTES
     broker.server.routing.config.wake_timeout = 10
     route = resolve_box("alice")
     result = []

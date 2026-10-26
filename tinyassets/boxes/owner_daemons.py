@@ -337,6 +337,7 @@ class OwnerDaemons:
                     "active": activity["active"] if activity else None,
                     "draining": activity["draining"] if activity else None,
                     "uptime": time.monotonic() - box.started if awake else 0,
+                    "memory_bytes": self.runtime.memory(uid) if awake else None,
                     "volume_size": self.volumes.size(uid) if awake else None}
 
     def maintain(self):

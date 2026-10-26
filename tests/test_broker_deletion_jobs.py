@@ -24,6 +24,7 @@ from tinyassets.auth.provider import Identity
 from tinyassets.broker.admission import digest, read
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs, load_unfinished_jobs, request
 from tinyassets.broker.deletion_records import RemoteRecords
+from tinyassets.broker.lifecycle_config import THIN_BYTES
 
 
 class Remote:
@@ -799,7 +800,7 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
     alice = admitted.owner_machine("alice")
     with manager.condition:
         manager._stop(manager.boxes[alice])
-    jobs.server.routing.config.awake_cap = 1
+    jobs.server.routing.config.memory_budget = THIN_BYTES
     jobs.server.routing.config.wake_timeout = .2
     monkeypatch.setattr(manager, "_sleep", lambda *a, **kw: False)
     errors, results = [], []

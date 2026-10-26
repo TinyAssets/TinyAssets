@@ -15,6 +15,7 @@ from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.host_service import HostService
 from tinyassets.boxes.owner_daemons import OwnerDaemons
 from tinyassets.boxes.provider import BoxError
+from tinyassets.broker.lifecycle_config import THIN_BYTES
 from tinyassets.owner_activity import Activity
 
 
@@ -39,6 +40,7 @@ def fleet(tmp_path, monkeypatch):
 
         def __init__(self):
             self.live = set()
+            self.measured = {}
             self.starts = []
             self.stops = []
 
@@ -50,6 +52,9 @@ def fleet(tmp_path, monkeypatch):
 
         def alive(self, uid):
             return uid in self.live
+
+        def memory(self, uid):
+            return self.measured.get(uid)  # Unmeasured: the broker charges thin.
 
         def stop(self, uid):
             self.stops.append(uid)
@@ -116,7 +121,7 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr("tinyassets.broker.volume_lifecycle.WAKE_LEASE", 1)
     # These tests cover publication itself; deferral has its own tests.
     monkeypatch.setattr("tinyassets.broker.owner_volumes.SNAPSHOT_QUIET", 0)
-    routing.config.awake_cap = 2
+    routing.config.memory_budget = 2 * THIN_BYTES
     routing.config.wake_timeout = 2
     routing.publish = lambda **kwargs: None
     server.routing = routing
@@ -285,7 +290,7 @@ def test_preexisting_running_record_with_draining_box_recovers(fleet, recover_by
 def test_broker_admission_failure_refuses_wake_without_host_callback(fleet, monkeypatch, failure):
     from tinyassets.broker import box_admission
     manager = fleet.manager
-    fleet.routing.config.awake_cap = 3
+    fleet.routing.config.memory_budget = 3 * THIN_BYTES
     a, b, c = [fleet.wake(owner) for owner in "abc"]
     original = box_admission.owner_record
     def admission(identities, owner, **kwargs):
@@ -390,7 +395,7 @@ def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
     assert b not in fleet.runtime.live and a in fleet.runtime.live
     c = fleet.admission.owner("c")["uid"]
     drive(fleet.routing.sleep("c"))
-    fleet.routing.config.awake_cap = 1
+    fleet.routing.config.memory_budget = THIN_BYTES
     fleet.routing.config.wake_timeout = 5
     result = []
 
@@ -685,3 +690,28 @@ def test_one_slow_answer_never_replaces_a_running_box(fleet, monkeypatch):
     manager.boxes[uid].answered -= manager.answer_silence  # Even long after an answer.
     assert fleet.wake("a") == uid
     assert fleet.runtime.stops == [] and len(fleet.runtime.starts) == 1
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_the_default_budget_admits_far_more_thin_boxes_than_the_old_cap():
+    from tinyassets.broker.lifecycle_config import LifecycleConfig
+
+    assert LifecycleConfig().memory_budget // THIN_BYTES >= 4 * 6
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_a_box_is_charged_its_measured_memory_once_a_pass_reports_it(fleet):
+    from tinyassets.boxes.provider import BoxBusy
+
+    fleet.routing.config.memory_budget = 3 * THIN_BYTES
+    fleet.routing.config.wake_timeout = .5
+    a = fleet.wake("a")
+    fleet.runtime.measured[a] = 2 * THIN_BYTES  # A CLI started inside the box.
+    assert fleet.routing._charged() == THIN_BYTES  # Not yet reported.
+    with fleet.states[a].enter():
+        drive(fleet.routing.tick())  # The pass records the box's memory.
+        assert fleet.routing._charged() == 2 * THIN_BYTES
+        b = fleet.wake("b")  # Exactly fills the budget.
+        with fleet.states[b].enter(), pytest.raises(BoxBusy, match="capacity"):
+            fleet.wake("c", scheduled=True)
+        assert fleet.runtime.live == {a, b}
