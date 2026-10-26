@@ -1,6 +1,7 @@
 ## Why
 
-ADR-023 to ADR-031 set the device-first architecture. Checking each slice
+ADR-024 to ADR-029 and ADR-031 set the device-first architecture; ADR-023
+and ADR-030 are deferred. Checking each slice
 against the code (2026-10-26) showed three things the plan had missed:
 
 - **Serving and the loop run in the box.** Since C6, each owner's box runs

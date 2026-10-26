@@ -33,7 +33,6 @@ ADR-012 already lists conversation stores as platform state outside boxes.
 - **Who can record what:**
   - The router records the owner's and outside agents' messages and
     receipts from their verified identity.
-  - The loop worker records its native agents' messages.
   - The box can post only as `native`, flagged as coming from the box.
 - **Caps are owner policy (N10),** written only from a protected owner
   session.

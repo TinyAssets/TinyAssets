@@ -3,10 +3,10 @@
 ## Status
 
 Proposed. Would amend ADR-019 (where the loop runs) and ADR-022 (its P3 row:
-"loop in the box"). Deferred (founder, 2026-10-26): moving serving out means relocating about
-113 owner stores and about 66,000 lines of serving, and one shared trusted
-server would make owner isolation an app check again (Direction 5). Revisit
-with metering receipts (N12) at real user counts.
+"loop in the box"). Deferred (founder, 2026-10-26): moving serving out means
+relocating about 113 owner stores and about 66,000 lines of serving, and
+one shared trusted server would make owner isolation an app check again
+(Direction 5). Revisit with metering receipts (N12) at real user counts.
 
 ## Date
 
@@ -14,7 +14,7 @@ with metering receipts (N12) at real user counts.
 
 ## Context
 
-- **Today (corrected before acceptance):** the loop already runs inside
+- **Today (corrected 2026-10-26):** the loop already runs inside
   each owner's gVisor box. Since the C6 cutover (#5171, #5182, #5227) the
   box starts `tinyassets.owner_daemon`, which builds the whole app server;
   the converse and workflow handlers run there, `ExecutionOwner` is a
@@ -43,7 +43,7 @@ with metering receipts (N12) at real user counts.
 - **How it reaches the box:** a tool door served by the box for the four
   tools and declared extension points, with an operation id and handle
   generation on each call. This would reverse C6's "no execution
-  forwarding" stance (shape approved by the founder, 2026-10-26).
+  forwarding" stance.
 - **Where it runs:** its own deploy unit (`loop-worker`) under its own OS
   user, unprivileged. The turn journal, leases and fences move from the
   owner mount to a trusted per-owner area, because a lock inside gVisor

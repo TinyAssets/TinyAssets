@@ -48,7 +48,7 @@ currently differs). Events and tools share the existing bearer and Origin bounda
 ### Requirement: The router subscribes; a box never sees the callback
 
 The router answers `events/subscribe` and `events/unsubscribe` from the caller's
-verified identity; the request body never names the owner (ADR-025, ADR-030). A
+verified identity; the request body never names the owner (ADR-025). A
 subscribe first asks the owner's box, with the delivery block removed, whether
 that caller may follow the workflow, then subscribes in the broker. Unsubscribe
 never wakes a box. The box answers `events/list`, `server/discover` and that
