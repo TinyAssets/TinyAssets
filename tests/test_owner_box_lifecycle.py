@@ -709,7 +709,7 @@ def test_a_box_is_charged_its_measured_memory_once_a_pass_reports_it(fleet):
     fleet.runtime.measured[a] = 2 * THIN_BYTES  # A CLI started inside the box.
     assert fleet.routing._charged() == THIN_BYTES  # Not yet reported.
     with fleet.states[a].enter():
-        drive(fleet.routing.tick())  # The pass records the box's memory.
+        fleet.tick()  # The pass (and its owner task) records the box's memory.
         assert fleet.routing._charged() == 2 * THIN_BYTES
         b = fleet.wake("b")  # Exactly fills the budget.
         with fleet.states[b].enter(), pytest.raises(BoxBusy, match="capacity"):
