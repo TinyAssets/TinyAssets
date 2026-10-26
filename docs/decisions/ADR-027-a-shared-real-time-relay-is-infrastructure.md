@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Would amend ADR-009.
+Accepted (founder, 2026-10-26). Amends ADR-009.
 
 ## Date
 
@@ -42,3 +42,4 @@ about $0.007 per 8-player match-hour.
   owned as a thin component rather than a hosted platform, given Hathora's
   and hosted PartyKit's shutdowns.
 - Relay traffic is metered in bytes (proposed row N12, metering).
+- Build order: `openspec/changes/device-first-build/`.

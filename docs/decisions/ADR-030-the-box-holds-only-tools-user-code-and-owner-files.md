@@ -2,8 +2,11 @@
 
 ## Status
 
-Proposed: founder-directed (2026-10-26), awaiting acceptance. Would amend ADR-019 and ADR-022 on
-what a box runs.
+Proposed. Would amend ADR-019 and ADR-022 on what a box runs.
+Deferred (founder, 2026-10-26): moving serving out means
+relocating about 113 owner stores and about 66,000 lines of serving, and
+one shared trusted server would make owner isolation an app check again
+(Direction 5). Revisit with metering receipts (N12) at real user counts.
 
 ## Date
 
@@ -40,3 +43,4 @@ that is reading and writing owner files.
   wake a box.
 - The proposed S35 row's guard also checks that the box imports no server
   modules.
+- Build order: `openspec/changes/device-first-build/`.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed: founder-directed (2026-10-26), awaiting acceptance. Would amend the rule in
+Accepted (founder, 2026-10-26). Amends the rule in
 `tinyassets/auth/middleware.py` that an API key "is a REST credential only";
 consistent with ADR-016.
 
@@ -36,3 +36,4 @@ agents.
   OAuth.
 - This is a credential and authority change, so it needs a floor review
   (ADR-015).
+- Build order: `openspec/changes/device-first-build/`.

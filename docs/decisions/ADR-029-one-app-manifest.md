@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed: founder-directed (option 1, 2026-10-26), awaiting acceptance.
+Accepted (founder, option 1, 2026-10-26).
 
 ## Date
 
@@ -43,3 +43,4 @@ a second source.
   N11's guard names `app.json` as the one manifest.
 - A game's type doesn't decide how hard it is to serve; its declared
   requirements do.
+- Build order: `openspec/changes/device-first-build/`.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Amended by ADR-027 (a shared real-time relay is infrastructure).
 
 ## Date
 

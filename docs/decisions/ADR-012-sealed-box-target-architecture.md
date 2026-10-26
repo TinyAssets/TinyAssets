@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted; amended by ADR-019 (one box per owner, the loop in the box, gVisor driver)
+Accepted; amended by ADR-019 (one box per owner, the loop in the box, gVisor
+driver) and ADR-031 (D5 for consumer subscriptions)
 
 ## Date
 
