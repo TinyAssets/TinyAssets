@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -241,6 +243,44 @@ def test_an_oversized_shared_database_still_reaches_the_assignment_pass(tmp_path
     dest = rc.extract_needed(archive, tmp_path / "out")
     assert (dest / ".tinyassets.db").read_bytes() == b"x" * 64
     assert not (dest / "center" / "provider_definitions.json").exists()
+    measured = rc.extract_needed(archive, tmp_path / "measured", assignments=False)
+    assert not (measured / ".tinyassets.db").exists()
+
+
+def _one_member_archive(tmp_path, arcname, data):
+    archive = tmp_path / "tinyassets-snapshot-2026-10-22T04-41-03Z.tar.gz"
+    member = tmp_path / "member"
+    member.write_bytes(data)
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(member, arcname=arcname)
+    return archive
+
+
+def test_an_uncapped_store_must_fit_its_bound_and_the_disk(tmp_path, monkeypatch):
+    archive = _one_member_archive(tmp_path, "_data/.broker/outbound.db", b"z" * 64)
+    monkeypatch.setattr(rc, "UNCAPPED_CAP", 16)
+    with pytest.raises(rc.SourceRefused) as refused:
+        rc.extract_needed(archive, tmp_path / "big")
+    assert refused.value.code == "member_too_large"
+    monkeypatch.setattr(rc, "UNCAPPED_CAP", 1024)
+    monkeypatch.setattr(rc.shutil, "disk_usage", lambda _path: SimpleNamespace(free=10))
+    with pytest.raises(rc.SourceRefused) as refused:
+        rc.extract_needed(archive, tmp_path / "full")
+    assert refused.value.code == "disk_full"
+    assert not (tmp_path / "full" / ".broker" / "outbound.db").exists()
+    rc.safe_json({"error": refused.value.code})
+
+
+def test_a_damaged_archive_is_unreadable_not_a_traceback(tmp_path):
+    archive = _one_member_archive(tmp_path, "_data/.broker/outbound.db", os.urandom(4096))
+    whole = archive.read_bytes()
+    archive.write_bytes(whole[: len(whole) // 2])
+    with pytest.raises(rc.SourceRefused) as refused:
+        rc.extract_needed(archive, tmp_path / "out")
+    assert refused.value.code == "unreadable"
+    with pytest.raises(rc.SourceRefused) as refused:
+        rc.measure_archive(archive)
+    assert refused.value.code == "unreadable"
 
 
 def test_an_assignment_pass_that_cannot_read_its_inputs_says_why(tmp_path):
@@ -250,10 +290,97 @@ def test_an_assignment_pass_that_cannot_read_its_inputs_says_why(tmp_path):
         "skipped_reason": "source_missing"}
     (source / ".tinyassets.db").write_bytes(b"")
     assert rc.restore_assignments(tmp_path, source, mounts, ledger, write=False) == {
-        "skipped_reason": "mounts_missing"}
-    mounts.mkdir()
-    assert rc.restore_assignments(tmp_path, source, mounts, ledger, write=False) == {
         "skipped_reason": "ledger_missing"}
+    sqlite3.connect(ledger).close()
+    missing = rc.restore_assignments(tmp_path, source, mounts, ledger, write=False)
+    assert missing.pop("skipped_reason") == "mounts_missing"
+    assert set(missing.values()) == {0}
+    (source / ".tinyassets.db").write_bytes(b"not a database" * 64)
+    mounts.mkdir()
+    for write in (False, True):
+        unreadable = rc.restore_assignments(tmp_path, source, mounts, ledger, write=write)
+        assert unreadable["skipped_reason"] == "unreadable"
+    (source / ".tinyassets.db-journal").write_bytes(b"")
+    unreadable = rc.restore_assignments(tmp_path, source, mounts, ledger, write=True)
+    assert unreadable["skipped_reason"] == "unreadable"
+    rc.safe_json({"plan": {"assignments": unreadable}})
+
+
+def test_scale_is_measured_without_owner_volumes_and_nothing_is_written(tmp_path):
+    from tests.test_restore_legacy_credentials import _assignment_world, _tree_bytes
+
+    world = _assignment_world(tmp_path)
+    before = _tree_bytes(world["volume"])
+    empty = tmp_path / "host-mounts"
+    (empty / "300001").mkdir(parents=True)
+    for mounts in (None, tmp_path / "absent", empty):
+        for write in (False, True):
+            report = rc.restore_assignments(
+                world["live"], world["source"], mounts, world["ledger"], write=write,
+            )
+            assert report["skipped_reason"] == "mounts_missing"
+            assert report["reseat_owners"] == 1
+            assert report["reseat_centers"] == 1
+            assert report["reseat_members"] == 2
+            assert report["members_readded"] == 0
+            assert report["centers_changed"] == 0
+            assert report["skipped_no_definition"] == 0
+            rc.safe_json({"mode": "dry-run", "plan": {"assignments": report}})
+    assert list((empty / "300001").iterdir()) == []
+    assert _tree_bytes(world["volume"]) == before
+
+    with sqlite3.connect(world["ledger"]) as db:
+        db.execute("UPDATE outbound_connection_grants SET revoked_at='x' "
+                   "WHERE grant_id='grant-0'")
+    db.close()
+    report = rc.restore_assignments(
+        world["live"], world["source"], empty, world["ledger"], write=False,
+    )
+    assert report["reseat_members"] == 1
+
+
+def test_an_unmounted_volume_is_not_a_missing_definition(tmp_path):
+    from tests.test_restore_legacy_credentials import _assignment_world
+
+    world = _assignment_world(tmp_path)
+    mounts = tmp_path / "other-mounts"
+    other = mounts / "300002"
+    other.mkdir(parents=True)
+    sqlite3.connect(other / ".tinyassets.db").close()
+    (mounts / "300001").mkdir()
+    report = rc.restore_assignments(
+        world["live"], world["source"], mounts, world["ledger"], write=True,
+    )
+    assert "skipped_reason" not in report
+    assert report["volumes_unmounted"] == 1
+    assert report["skipped_no_definition"] == 0
+    assert report["members_readded"] == 0
+    assert report["reseat_members"] == 2
+    assert list((mounts / "300001").iterdir()) == []
+
+
+def test_re_seat_writes_take_the_owner_of_their_directory(tmp_path, monkeypatch):
+    from tests.test_restore_legacy_credentials import _assignment_world, _restore
+    from tinyassets.provider_authority import record_path
+
+    world = _assignment_world(tmp_path)
+    calls = {}
+
+    def chown(path, uid, gid, *, follow_symlinks=True):
+        assert follow_symlinks is False
+        calls[Path(path)] = (uid, gid)
+
+    monkeypatch.setattr(rc.os, "chown", chown)
+    assert _restore(world, write=False)["members_readded"] == 1
+    assert calls == {}
+    assert _restore(world, write=True)["members_readded"] == 1
+    center = world["volume"] / "center"
+    written = [world["volume"] / ".tinyassets.db", record_path(center), center / "config.yaml"]
+    for path in written:
+        assert path.is_file()
+        parent = path.parent.stat()
+        assert calls[path] == (parent.st_uid, parent.st_gid)
+    assert all(world["volume"] in path.parents for path in calls)
 
 
 def test_dry_run_does_not_change_the_live_ledger(tmp_path):

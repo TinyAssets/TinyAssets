@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -79,6 +80,7 @@ _FIXED_STRINGS = frozenset({
     "inspect", "inspect-legacy", "dry-run", "apply", "auto", "archive", "retained",
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
     "ledger_missing", "source_missing", "mounts_missing", "broker_stop_failed",
+    "member_too_large", "disk_full",
     "broker_start_failed", "package_unavailable",
     *_STAGE_TOKENS, *_EXCEPTION_TOKENS, *_FUNCTION_TOKENS,
 })
@@ -106,7 +108,8 @@ _KEYS = frozenset({
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
     "assignments", "members_readded", "skipped_no_grant", "skipped_no_definition",
-    "refused_mismatch", "centers_changed", "skipped_reason",
+    "refused_mismatch", "centers_changed", "skipped_reason", "volumes_unmounted",
+    "reseat_owners", "reseat_centers", "reseat_members",
     "stage", "exception", "function",
 })
 
@@ -727,35 +730,56 @@ def _wanted(parts):
 #: Members larger than this are skipped, except the stores the restore must read whole:
 #: the ledger and the shared database that holds the snapshot's provider assignments.
 EXTRACT_CAP = 8 * 1024 * 1024
-UNCAPPED = {(".broker", "outbound.db"), (".tinyassets.db",), (".tinyassets.db-wal",)}
+#: The shared database is read only by the assignment pass, never by measuring.
+SHARED_DB = frozenset({(".tinyassets.db",), (".tinyassets.db-wal",)})
+UNCAPPED = frozenset({(".broker", "outbound.db"), *SHARED_DB})
+#: An uncapped store larger than this refuses the source rather than fill the disk.
+UNCAPPED_CAP = 4 * 1024 * 1024 * 1024
+DISK_MARGIN = 256 * 1024 * 1024
 
 
-def extract_needed(archive, dest):
-    """Copy only credential members, streamed. Rejects links and paths that escape."""
+def _copy_allowed(relative, size, directory):
+    """False skips an oversized ordinary member. An uncapped store must fit or refuse."""
+    if relative not in UNCAPPED:
+        return size <= EXTRACT_CAP
+    if size > UNCAPPED_CAP:
+        raise SourceRefused("member_too_large")
+    if shutil.disk_usage(directory).free < size + DISK_MARGIN:
+        raise SourceRefused("disk_full")
+    return True
+
+
+def extract_needed(archive, dest, *, assignments=True):
+    """Copy only credential members, streamed. Rejects links and paths that escape.
+
+    ``assignments=False`` leaves out the shared database, which only the
+    assignment pass reads. A damaged or truncated archive, or a full disk, is
+    ``unreadable``.
+    """
     try:
-        handle = tarfile.open(archive, "r:gz")
-    except (OSError, tarfile.TarError) as error:
+        dest.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "r:gz") as handle:
+            for member in handle.getmembers():
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or not path.parts or ".." in path.parts:
+                    continue
+                parts = path.parts[1:] if path.parts[0] == "_data" else path.parts
+                relative = _wanted(parts)
+                if relative is None or (not assignments and relative in SHARED_DB):
+                    continue
+                if member.issym() or member.islnk() or not member.isfile():
+                    raise SourceRefused("unsafe_member")
+                if not _copy_allowed(relative, member.size, dest):
+                    continue
+                stream = handle.extractfile(member)
+                if stream is None:
+                    continue
+                target = dest.joinpath(*relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with stream, target.open("wb") as out:
+                    shutil.copyfileobj(stream, out)
+    except (OSError, EOFError, zlib.error, tarfile.TarError) as error:
         raise SourceRefused("unreadable") from error
-    with handle:
-        for member in handle.getmembers():
-            path = PurePosixPath(member.name)
-            if path.is_absolute() or not path.parts or ".." in path.parts:
-                continue
-            parts = path.parts[1:] if path.parts[0] == "_data" else path.parts
-            relative = _wanted(parts)
-            if relative is None:
-                continue
-            if member.issym() or member.islnk() or not member.isfile():
-                raise SourceRefused("unsafe_member")
-            if relative not in UNCAPPED and member.size > EXTRACT_CAP:
-                continue
-            stream = handle.extractfile(member)
-            if stream is None:
-                continue
-            target = dest.joinpath(*relative)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with stream, target.open("wb") as out:
-                shutil.copyfileobj(stream, out)
     return dest
 
 
@@ -1914,7 +1938,7 @@ def measure_archive(path, expected=None, *, require_digest=False):
     elif require_digest:
         raise SourceRefused("digest_unknown")
     with tempfile.TemporaryDirectory(prefix="ta-cred-read-") as directory:
-        root = extract_needed(path, Path(directory))
+        root = extract_needed(path, Path(directory), assignments=False)
         return measure_root(root)
 
 
@@ -2688,6 +2712,10 @@ def _assignment_counts():
         "skipped_no_definition": 0,
         "refused_mismatch": 0,
         "centers_changed": 0,
+        "volumes_unmounted": 0,
+        "reseat_owners": 0,
+        "reseat_centers": 0,
+        "reseat_members": 0,
     }
 
 
@@ -2886,112 +2914,212 @@ def _write_assignment(db_path, center, decision):
         conn.close()
 
 
+def _own_like_parent(paths):
+    """Give each written path its directory's owner, as ``_copy_missing`` does.
+
+    The pass runs as root and the box reads these files as the owner uid. A
+    directory comes before the files in it, so each takes its parent's owner.
+    """
+    for path in paths:
+        if path.is_symlink() or not path.exists():
+            continue
+        try:
+            parent = path.parent.stat()
+            os.chown(path, parent.st_uid, parent.st_gid, follow_symlinks=False)
+        except PermissionError:
+            pass
+
+
+def _snapshot_assignments(source, counts):
+    """``(center, assignment)`` for each snapshot center that holds members."""
+    if not _table_exists(source, "provider_assignments"):
+        return []
+    found = []
+    centers = [
+        row[0] for row in source.execute("SELECT universe_id FROM provider_assignments")
+    ]
+    for center in centers:
+        if not isinstance(center, str) or not _CENTER_RE.fullmatch(center):
+            counts["refused_mismatch"] += 1
+            continue
+        snapshot = _load_assignment(source, center)
+        if snapshot == "refused":
+            counts["refused_mismatch"] += 1
+            continue
+        if snapshot is not None and snapshot.candidates:
+            found.append((center, snapshot))
+    return found
+
+
+def _reseat_scale(assignments, grants, counts):
+    """Snapshot http members whose definition and grant are live in the ledger.
+
+    Reads no owner volume, so a member the live assignment still holds is
+    counted too: an upper bound on what a re-seat would add.
+    """
+    live_defs = {
+        (owner, ident): raw for owner, ident, raw in _source_definition_rows(grants)
+    }
+    owners, centers = set(), set()
+    for center, snapshot in assignments:
+        owner = snapshot.owner_user_id
+        for member in snapshot.candidates:
+            method, _, ident = member.provider.partition(":")
+            raw = live_defs.get((owner, ident))
+            if method != "api_key_http" or raw is None:
+                continue
+            document = _json_object(raw)
+            ref = document.get("ref") if document else None
+            if (not isinstance(ref, str) or document.get("universe_id") != center
+                    or _verified_definition(owner, ident, raw, {ref}) is None
+                    or not _grant_live(grants, owner, ref)):
+                continue
+            counts["reseat_members"] += 1
+            owners.add(owner)
+            centers.add((owner, center))
+    counts["reseat_owners"] = len(owners)
+    counts["reseat_centers"] = len(centers)
+
+
+def _owner_volume_mounted(mounts):
+    """True when an owner database is reachable under ``mounts``.
+
+    On the host the directory is empty: boxhostd mounts owner volumes only in
+    its private namespace, and only while the box is awake.
+    """
+    if mounts is None or mounts.is_symlink() or not mounts.is_dir():
+        return False
+    try:
+        for volume in mounts.iterdir():
+            database = volume / ".tinyassets.db"
+            if (_UID_RE.fullmatch(volume.name) and not volume.is_symlink()
+                    and volume.is_dir() and not database.is_symlink()
+                    and database.is_file()):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def restore_assignments(live_root, source_root, mounts, ledger, *, write):
     """Re-seat snapshot members whose definition and grant now exist.
 
     Dry-run applies the same writer to disposable copies of the owner databases.
-    Counts only. A pass that cannot read its inputs names why in ``skipped_reason``.
+    Counts only. The ``reseat_*`` scale comes from the snapshot and the ledger
+    alone. A pass that cannot read its inputs names why in ``skipped_reason``,
+    and with no owner volume mounted it writes nothing.
     """
-    from tinyassets.sqlite_readonly import readonly_db
-
     source_db = Path(source_root) / ".tinyassets.db"
     mounts = Path(mounts) if mounts else None
     if source_db.is_symlink() or not source_db.is_file():
         return {"skipped_reason": "source_missing"}
-    if mounts is None or mounts.is_symlink() or not mounts.is_dir():
-        return {"skipped_reason": "mounts_missing"}
     if ledger is None or Path(ledger).is_symlink() or not Path(ledger).is_file():
         return {"skipped_reason": "ledger_missing"}
+    from tinyassets.sqlite_readonly import readonly_db
+
     counts = _assignment_counts()
-    disposable = None
-    write_mounts = mounts
-    if not write:
-        disposable = tempfile.TemporaryDirectory(prefix="ta-assign-")
-        write_mounts = Path(disposable.name)
     try:
         with readonly_db(source_db) as source, readonly_db(Path(ledger)) as grants:
             source.row_factory = sqlite3.Row
             grants.row_factory = sqlite3.Row
             source.execute("BEGIN")
-            centers = [
-                row[0] for row in source.execute(
-                    "SELECT universe_id FROM provider_assignments",
+            assignments = _snapshot_assignments(source, counts)
+            _reseat_scale(assignments, grants, counts)
+            if not _owner_volume_mounted(mounts):
+                counts["skipped_reason"] = "mounts_missing"
+                return counts
+            with tempfile.TemporaryDirectory(prefix="ta-assign-") as disposable:
+                _reseat_volumes(
+                    live_root, source_root, mounts, mounts if write else Path(disposable),
+                    assignments, grants, counts, write=write,
                 )
-            ]
-            for center in centers:
-                if not isinstance(center, str) or not _CENTER_RE.fullmatch(center):
-                    counts["refused_mismatch"] += 1
-                    continue
-                snapshot = _load_assignment(source, center)
-                if snapshot == "refused" or snapshot is None or not snapshot.candidates:
-                    if snapshot == "refused":
-                        counts["refused_mismatch"] += 1
-                    continue
-                uid = next(
-                    (item for item, owner in _uids(live_root)
-                     if owner == snapshot.owner_user_id),
-                    None,
+    except (sqlite3.Error, RuntimeError, OSError):
+        counts["skipped_reason"] = "unreadable"
+    return counts
+
+
+def _reseat_volumes(live_root, source_root, mounts, write_mounts, assignments, grants,
+                    counts, *, write):
+    from tinyassets.provider_authority import record_path
+    from tinyassets.sqlite_readonly import readonly_db
+
+    unmounted = set()
+    for center, snapshot in assignments:
+        uid = next(
+            (item for item, owner in _uids(live_root)
+             if owner == snapshot.owner_user_id),
+            None,
+        )
+        if uid is None or not _UID_RE.fullmatch(str(uid)):
+            counts["skipped_no_definition"] += len(snapshot.candidates)
+            continue
+        read_volume = mounts / str(uid)
+        write_volume = write_mounts / str(uid)
+        db_path = read_volume / ".tinyassets.db"
+        if (read_volume.is_symlink() or not read_volume.is_dir()
+                or db_path.is_symlink() or not db_path.is_file()):
+            unmounted.add(uid)
+            continue
+        snap_defs = _verified_definitions(
+            Path(source_root) / center / "provider_definitions.json",
+            center, snapshot.owner_user_id,
+        )
+        live_defs = _verified_definitions(
+            read_volume / center / "provider_definitions.json",
+            center, snapshot.owner_user_id,
+        )
+        with readonly_db(db_path) as owner:
+            owner.row_factory = sqlite3.Row
+            owner.execute("BEGIN")
+            live = _load_assignment(owner, center)
+        if live == "refused":
+            counts["refused_mismatch"] += len(snapshot.candidates)
+            continue
+        decision = _seat_members(
+            snapshot, live, snap_defs, live_defs, grants, live_root, counts,
+        )
+        if decision is None:
+            continue
+        if not write:
+            write_volume.mkdir(parents=True, exist_ok=True)
+            target_db = write_volume / ".tinyassets.db"
+            dst = sqlite3.connect(target_db)
+            try:
+                with readonly_db(db_path) as src:
+                    src.backup(dst)
+            finally:
+                dst.close()
+        else:
+            target_db = db_path
+        try:
+            updated = _write_assignment(target_db, center, decision)
+        except (sqlite3.Error, ValueError, RuntimeError, OSError):
+            counts["refused_mismatch"] += decision["added"] or 1
+            continue
+        finally:
+            if write:
+                _own_like_parent(
+                    target_db.with_name(target_db.name + suffix)
+                    for suffix in ("", "-wal", "-shm", "-journal")
                 )
-                if uid is None or not _UID_RE.fullmatch(str(uid)):
-                    counts["skipped_no_definition"] += len(snapshot.candidates)
-                    continue
-                read_volume = mounts / str(uid)
-                write_volume = write_mounts / str(uid)
-                db_path = read_volume / ".tinyassets.db"
-                if (read_volume.is_symlink() or not read_volume.is_dir()
-                        or db_path.is_symlink() or not db_path.is_file()):
-                    counts["skipped_no_definition"] += len(snapshot.candidates)
-                    continue
-                snap_defs = _verified_definitions(
-                    Path(source_root) / center / "provider_definitions.json",
-                    center, snapshot.owner_user_id,
-                )
-                live_defs = _verified_definitions(
-                    read_volume / center / "provider_definitions.json",
-                    center, snapshot.owner_user_id,
-                )
-                with readonly_db(db_path) as owner:
-                    owner.row_factory = sqlite3.Row
-                    owner.execute("BEGIN")
-                    live = _load_assignment(owner, center)
-                if live == "refused":
-                    counts["refused_mismatch"] += len(snapshot.candidates)
-                    continue
-                decision = _seat_members(
-                    snapshot, live, snap_defs, live_defs, grants, live_root, counts,
-                )
-                if decision is None:
-                    continue
-                if not write:
-                    write_volume.mkdir(parents=True, exist_ok=True)
-                    target_db = write_volume / ".tinyassets.db"
-                    dst = sqlite3.connect(target_db)
-                    try:
-                        with readonly_db(db_path) as src:
-                            src.backup(dst)
-                    finally:
-                        dst.close()
-                else:
-                    target_db = db_path
-                try:
-                    updated = _write_assignment(target_db, center, decision)
-                except (sqlite3.Error, ValueError, RuntimeError, OSError):
-                    counts["refused_mismatch"] += decision["added"] or 1
-                    continue
-                if updated is None:
-                    continue
-                center_dir = write_volume / center
-                center_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    _project_assignment(center_dir, updated)
-                except (OSError, ValueError, RuntimeError):
-                    pass
-                counts["members_readded"] += decision["added"]
-                counts["centers_changed"] += 1
-        return counts
-    finally:
-        if disposable is not None:
-            disposable.cleanup()
+        if updated is None:
+            continue
+        center_dir = write_volume / center
+        authority_dir = record_path(center_dir).parent
+        created = [path for path in (center_dir, authority_dir) if not path.exists()]
+        center_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            _project_assignment(center_dir, updated)
+        except (OSError, ValueError, RuntimeError):
+            pass
+        finally:
+            if write:
+                _own_like_parent([
+                    *created, record_path(center_dir), center_dir / "config.yaml",
+                ])
+        counts["members_readded"] += decision["added"]
+        counts["centers_changed"] += 1
+    counts["volumes_unmounted"] = len(unmounted)
 
 
 def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
@@ -3494,8 +3622,8 @@ def _copy_wanted(source, dest):
             size = path.stat().st_size
         except OSError:
             continue
-        if (relative[-1] not in {"outbound.db", ".tinyassets.db", ".tinyassets.db-wal"}
-                and size > 8 * 1024 * 1024):
+        dest.mkdir(parents=True, exist_ok=True)
+        if not _copy_allowed(relative, size, dest):
             continue
         target = dest.joinpath(*relative)
         target.parent.mkdir(parents=True, exist_ok=True)
