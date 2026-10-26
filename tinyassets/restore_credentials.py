@@ -54,12 +54,32 @@ _SLOTS = ("insert", "kept_live", "conflict", "skipped")
 _STAGE_TOKENS = frozenset({
     "snapshot", "ledger", "definitions", "groups", "bind", "convert", "merge",
 })
+# A swallowed failure may name one of these. The message is never kept.
+_EXCEPTION_TOKENS = frozenset({
+    "OperationalError", "IntegrityError", "DatabaseError", "ProgrammingError",
+    "DataError", "InterfaceError", "NotSupportedError", "Error", "Warning",
+    "KeyError", "AttributeError", "RuntimeError", "TypeError", "ValueError",
+    "OSError", "UnicodeError", "UnicodeEncodeError", "UnicodeDecodeError",
+    "RecursionError", "LookupError", "IndexError", "OverflowError",
+    "MemoryError", "JSONDecodeError", "error",
+})
+_FUNCTION_TOKENS = frozenset({
+    "caller", "_convert_snapshot", "_keep_vault_backed", "_restrict_ledger",
+    "delete_except", "_restrict_definitions", "_connection_refs",
+    "_resolve_outcome", "_served_destinations", "_source_definition_rows",
+    "_rewrite_source_definitions", "_verified_definition", "_definition_id",
+    "_load_vault_records", "_write_private_json", "_open_source", "_open_ro",
+    "legacy_center_owners", "convert_legacy_vaults", "_groups", "_rows",
+    "_merge_snapshot", "merge", "_ensure_snapshot", "_copy_definitions",
+    "_insert_missing", "_bind_rows", "_vault_resolver", "_record_destination",
+    "_http_record_key", "_json_object", "prepare_legacy",
+})
 _FIXED_STRINGS = frozenset({
     "inspect", "inspect-legacy", "dry-run", "apply", "auto", "archive", "retained",
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
     "ledger_missing", "source_missing", "broker_stop_failed",
     "broker_start_failed",
-    *_STAGE_TOKENS,
+    *_STAGE_TOKENS, *_EXCEPTION_TOKENS, *_FUNCTION_TOKENS,
 })
 _KEYS = frozenset({
     "mode", "source_requested", "selected", "catalog_readable", "live",
@@ -84,7 +104,7 @@ _KEYS = frozenset({
     "centers_zero_owners", "centers_several_owners", "centers_ledger_one_owner",
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
-    "stage",
+    "stage", "exception", "function",
 })
 
 
@@ -205,17 +225,36 @@ def _source_closed(path):
     return path is not None and _source_key(path) in _CLOSED_SOURCES
 
 
+def _decode_text(raw):
+    """Text stays text. One undecodable cell is empty, not a refusal of every center.
+
+    The default factory raises, and its message includes the cell bytes.
+    """
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, (bytes, bytearray)):
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeError:
+        return None
+
+
 def _open_ro(path):
     if _source_closed(path):
         raise sqlite3.OperationalError("source closed")
-    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db.text_factory = _decode_text
+    return db
 
 
 def _open_source(path):
     """Writable open of a source database. A closed file is not opened."""
     if _source_closed(path):
         raise sqlite3.OperationalError("source closed")
-    return sqlite3.connect(path)
+    db = sqlite3.connect(path)
+    db.text_factory = _decode_text
+    return db
 
 
 class _SourceSnapshot:
@@ -224,6 +263,8 @@ class _SourceSnapshot:
     def __init__(self):
         self.failed = False
         self.stage = ""
+        self.exception = ""
+        self.function = ""
         self.holds = 0
         self.written = []
         self.skipped_owners = set()
@@ -260,9 +301,10 @@ def _ensure_snapshot(source_root):
             with _open_ro(origin) as src, sqlite3.connect(dest) as dst:
                 src.backup(dst)
             snap.paths[name] = dest
-    except Exception:
+    except Exception as exc:
         snap.failed = True
         snap.stage = "snapshot"
+        _note_failure(snap, exc)
         snap.paths.clear()
         for origin in origins:
             if _linked_inside(source_root, origin):
@@ -334,6 +376,30 @@ def _remember_stage(source_root, stage):
         snap.stage = stage
 
 
+def _failure_tokens(exc):
+    """Class and function from fixed lists. The message is never kept."""
+    kind = "error"
+    for base in type(exc).__mro__:
+        name = base.__name__
+        if name in _EXCEPTION_TOKENS and name != "error":
+            kind = name
+            break
+    function = "caller"
+    frame = exc.__traceback__
+    while frame is not None:
+        name = frame.tb_frame.f_code.co_name
+        if name in _FUNCTION_TOKENS and name != "caller":
+            function = name
+        frame = frame.tb_next
+    return kind, function
+
+
+def _note_failure(snap, exc):
+    if snap is None or snap.exception in _EXCEPTION_TOKENS:
+        return
+    snap.exception, snap.function = _failure_tokens(exc)
+
+
 def _refusal_stage(source_root):
     snap = _SNAPSHOTS.get(_source_key(source_root))
     stage = snap.stage if snap is not None else ""
@@ -344,6 +410,12 @@ def _refused_legacy(source_root):
     """The all-centers refusal, plus the fixed token for the step that failed."""
     legacy = _refused_center_stats(source_root)
     legacy["stage"] = _refusal_stage(source_root)
+    snap = _SNAPSHOTS.get(_source_key(source_root))
+    kind = snap.exception if snap is not None else ""
+    function = snap.function if snap is not None else ""
+    if kind in _EXCEPTION_TOKENS and function in _FUNCTION_TOKENS:
+        legacy["exception"] = kind
+        legacy["function"] = function
     return legacy
 
 
@@ -866,7 +938,10 @@ def _definition_id(document):
     ))
     if any(not isinstance(part, str) for part in parts):
         return None
-    material = "\0".join(f"{len(part)}:{part}" for part in parts).encode()
+    try:
+        material = "\0".join(f"{len(part)}:{part}" for part in parts).encode()
+    except UnicodeError:
+        return None
     return "provdef_" + hashlib.sha256(material).hexdigest()[:32]
 
 
@@ -889,7 +964,7 @@ def _connection_refs(db, owner):
     if db is None or not _table_exists(db, "outbound_connections"):
         return live, revoked
     columns = set(_columns(db, "outbound_connections"))
-    if "credential_ref" not in columns or "owner_user_id" not in columns:
+    if not {"connection_id", "credential_ref", "owner_user_id"} <= columns:
         return live, revoked
     revoked_expr = "revoked_at" if "revoked_at" in columns else "NULL"
     query = (
@@ -1250,6 +1325,8 @@ def _keep_vault_backed(db, source_root, kept_ids, skipped=()):
     """Keep a connection when its destination is already in that owner's vault."""
     if db is None or not _table_exists(db, "outbound_connections"):
         return
+    if "owner_user_id" not in set(_columns(db, "outbound_connections")):
+        return
     skipped = set(skipped)
     owners = [
         row[0] for row in db.execute(
@@ -1282,6 +1359,10 @@ def _restrict_ledger(source_root, kept_ids):
         def delete_except(table, extra=""):
             if not _table_exists(db, table):
                 return
+            # An older capabilities table has no connection_id. Leaving the
+            # rows is safe: the binder drops any row it cannot tie to one.
+            if "connection_id" not in set(_columns(db, table)):
+                return
             if not ids:
                 db.execute(f"DELETE FROM {_quote(table)}")
                 return
@@ -1310,10 +1391,12 @@ def _verified_definition(owner, definition_id, raw, grants):
     if not set(_DEFINITION_FIELDS) <= set(document):
         return None
     document = {key: document[key] for key in _DEFINITION_FIELDS}
+    ref = document.get("ref")
     if (document.get("access_method") != "api_key_http"
             or document.get("owner_user_id") != owner
             or document.get("id") != definition_id
-            or document.get("ref") not in grants):
+            or not isinstance(ref, str)
+            or ref not in grants):
         return None
     if _definition_id(document) != definition_id:
         return None
@@ -1468,10 +1551,11 @@ def convert_legacy_vaults(source_root):
         if snap.failed:
             return _refused_center_stats(source_root)
         return _convert_snapshot(source_root, snap)
-    except Exception:
+    except Exception as exc:
         if snap is not None:
             _unlink_written(snap)
             snap.failed = True
+            _note_failure(snap, exc)
             if snap.stage not in _STAGE_TOKENS:
                 snap.stage = "convert"
         _close_source_databases(source_root)
@@ -1760,10 +1844,11 @@ def _groups(root):
                 for table in TABLES:
                     loaded[table] = _rows(db, table)
             rows = loaded
-        except Exception:
+        except Exception as exc:
             if snap is not None:
                 snap.failed = True
                 snap.stage = "groups"
+                _note_failure(snap, exc)
             _close_source_databases(root)
             return {}
     grouped = {}
@@ -2086,10 +2171,11 @@ def merge(live_root, source_root):
         return _merge_snapshot(live_root, source_root, snap)
     except SourceRefused:
         raise
-    except Exception:
+    except Exception as exc:
         if snap is not None:
             _unlink_written(snap)
             snap.failed = True
+            _note_failure(snap, exc)
             if snap.stage not in _STAGE_TOKENS:
                 snap.stage = "merge"
         _close_source_databases(source_root)
