@@ -11,16 +11,21 @@ if TYPE_CHECKING:
     from tinyassets.providers.router import ProviderRouter
 
 def provider_for_definition(definition: ProviderDefinition) -> BaseProvider:
-    """Return the HTTP or owner-box CLI executor for a registered definition."""
+    """Return the HTTP or owner-box CLI executor for a registered definition.
+
+    Dispatch re-checks the planned placement: the executor reached must be one
+    the source's record allows (W1).
+    """
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+    from tinyassets.providers.placement import execution_for, require_dispatch
+    from tinyassets.providers.subscription_provider import SubscriptionProvider
 
-    if definition.access_method == "subscription_cli":
-        from tinyassets.providers.subscription_provider import SubscriptionProvider
-
-        return SubscriptionProvider(definition)
-    if definition.access_method != "api_key_http":
+    executors = {"subscription_cli": SubscriptionProvider, "api_key_http": ApiKeyHttpProvider}
+    executor = executors.get(definition.access_method)
+    if executor is None:
         raise ValueError("unsupported source access method")
-    return ApiKeyHttpProvider(definition)
+    require_dispatch(execution_for(definition), definition.access_method)
+    return executor(definition)
 
 
 def register_universe_open_providers(
@@ -44,13 +49,14 @@ def register_universe_open_providers(
     Returns the registered provider names.
     """
     from tinyassets.providers.definition import list_definitions
+    from tinyassets.providers.subscription_runtime import SubscriptionError
 
     names: list[str] = []
     for definition in list_definitions(universe_id):
         try:
             provider = provider_for_definition(definition)
-        except (ValueError, KeyError):
-            continue
+        except (ValueError, KeyError, PermissionError, SubscriptionError):
+            continue  # Planning already left it out and named why.
         router.register(provider)
         names.append(provider.name)
     return names

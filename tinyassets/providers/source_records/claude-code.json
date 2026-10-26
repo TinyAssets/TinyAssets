@@ -58,7 +58,15 @@
     "https://claude.com"
   ],
   "suggested": false,
-  "free": false,
+  "execution": {
+    "placement": [
+      "hosted_box"
+    ],
+    "billing": [
+      "plan"
+    ],
+    "serves": "owner_only"
+  },
   "sign_in": {
     "cli_login": {
       "install": {

@@ -127,7 +127,8 @@ def sources(home: Path | None = None):
 
 
 def digest(doc):
-    encoded = json.dumps(doc, sort_keys=True, default=lambda value: value.document()).encode()
+    encoded = json.dumps(doc, sort_keys=True,
+                         default=lambda value: value.digest_document()).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 

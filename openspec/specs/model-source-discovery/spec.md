@@ -16,7 +16,7 @@ without a separate "Connect any OpenAI-compatible endpoint" prompt.
 - **THEN** discovery can find its model catalogue on the common API paths
 
 ### Requirement: One source record
-Every source SHALL be a SourceRecord with a JSON schema: identity and origin, exact address aliases, data-only suggested/free flags, one sign-in mechanism, one invocation mechanism, exact egress hosts, and credential state location. HTTP credentials SHALL remain in the broker; CLI login state SHALL remain in the owner volume. Consumers SHALL select behavior by mechanism, never provider identity.
+Every source SHALL be a SourceRecord with a JSON schema: identity and origin, exact address aliases, a data-only suggested flag, an execution block, one sign-in mechanism, one invocation mechanism, exact egress hosts, and credential state location. HTTP credentials SHALL remain in the broker; CLI login state SHALL remain in the owner volume. Consumers SHALL select behavior by mechanism, never provider identity.
 
 #### Scenario: Declared address
 - **WHEN** the owner types an exact address alias from an installed or owner-authored record
@@ -26,6 +26,36 @@ Every source SHALL be a SourceRecord with a JSON schema: identity and origin, ex
 - **WHEN** an owner or their agent adds a valid record in `.ta-cli/sources/<id>.json`
 - **THEN** that owner's address resolver uses the same validation and connection mechanisms
 - **AND** no other owner acquires that declaration or its credentials
+
+### Requirement: Placement is source data
+Every declared source record SHALL carry an `execution` block naming where its work may
+run (`placement`: `vendor`, `thin_loop`, `device`, `hosted_box`), how it bills (`billing`:
+`plan`, `free`, `metered`) and whom it may serve (`serves`: `owner_only`,
+`may_serve_others`). Every shipped record SHALL declare it. A record without the block,
+detected or written before placement, SHALL take the placement its mechanism had: a CLI
+source `hosted_box` on its `plan`, an HTTP source `thin_loop` and `metered` (or `free` from
+its old flag), both `owner_only`. A CLI source SHALL run only in `hosted_box` or on a `device`, and a `device`
+or `plan` source SHALL serve only its owner. One resolver SHALL choose the placement at
+model-plan time from the record and what is available now, and dispatch SHALL reach only
+an executor the record allows. No placement SHALL change silently. The block SHALL NOT
+change a connected CLI source's connection digest.
+
+#### Scenario: No allowed placement is available
+- **WHEN** every placement a source allows is unavailable, including one not built yet such as `device`
+- **THEN** the source is left out of the plan and the held-source notice names the source, each placement tried and why
+
+#### Scenario: Dispatch outside the record
+- **WHEN** a definition would reach an executor whose placement its record does not allow
+- **THEN** dispatch refuses before the executor runs
+
+#### Scenario: An owner-only source serves only its owner
+- **WHEN** a caller other than the owner would use an `owner_only` source
+- **THEN** it is refused
+
+#### Scenario: A connected CLI source keeps its connection
+- **WHEN** the shipped records gain their execution blocks
+- **THEN** a connected CLI source's digest is unchanged, so the owner is not asked to reconnect
+- **AND** an owner's own record written before placement is read with the placement its mechanism had
 
 ### Requirement: Address-based model connection
 The connect dialog SHALL contain one address field and one Connect button, initially filled from the sole suggested free source. It SHALL show no source list, categories, or alternate-source sections. Sign-in SHALL open directly in the same web tab or the native external browser surface. Native HTTP authorization SHALL use an owner-bound, browser-bound return and one-shot broker exchange. CLI login SHALL resume the owner-bound flow after returning to the page.

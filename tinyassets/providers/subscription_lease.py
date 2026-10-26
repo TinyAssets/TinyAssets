@@ -263,7 +263,7 @@ def upgrade_connection(runtime, marker):
     """Preserve acceptance across the custody move and added dependency digest."""
     from tinyassets.providers.subscription_source import digest
 
-    old = runtime.source.document()
+    old = runtime.source.digest_document()  # The shape the old markers were digested over.
     old["state"]["location"] = "owner_box"
     accepted = {digest(old)}
     old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)

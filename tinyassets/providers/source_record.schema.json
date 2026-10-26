@@ -42,9 +42,48 @@
       "type": "boolean",
       "default": false
     },
-    "free": {
-      "type": "boolean",
-      "default": false
+    "execution": {
+      "type": "object",
+      "description": "Where the source's work may run, how it bills and whom it may serve (W1).",
+      "additionalProperties": false,
+      "required": [
+        "placement",
+        "billing",
+        "serves"
+      ],
+      "properties": {
+        "placement": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "vendor",
+              "thin_loop",
+              "device",
+              "hosted_box"
+            ]
+          }
+        },
+        "billing": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "plan",
+              "free",
+              "metered"
+            ]
+          }
+        },
+        "serves": {
+          "enum": [
+            "owner_only",
+            "may_serve_others"
+          ]
+        }
+      }
     },
     "models": {
       "type": "array",
@@ -274,6 +313,75 @@
             "properties": {
               "location": {
                 "const": "broker"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "sign_in": {
+            "required": [
+              "cli_login"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "properties": {
+              "placement": {
+                "items": {
+                  "enum": [
+                    "hosted_box",
+                    "device"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "execution"
+        ],
+        "properties": {
+          "execution": {
+            "anyOf": [
+              {
+                "properties": {
+                  "placement": {
+                    "contains": {
+                      "const": "device"
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "billing": {
+                    "contains": {
+                      "const": "plan"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "properties": {
+              "serves": {
+                "const": "owner_only"
               }
             }
           }

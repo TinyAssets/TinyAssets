@@ -265,6 +265,11 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/credential_vault.py", ""), ("tinyassets/broker/browser_vault.py", "")),
         ceiling=2,
     ),
+    "S29": Shape(  # placement is source data; access_method branching only falls
+        ("tinyassets/providers/placement.py",),
+        (("tinyassets/**/*.py", r"access_method\s*(?:==|!=|in)\s"),),
+        ceiling=25,
+    ),
     "N1": Shape(("tinyassets/owner_door/**", "tinyassets/onboarding/**")),  # inbound-door
     "N2": Shape(("tinyassets/control_plane/**",)),  # notify-path
     "N3": Shape(  # call-sites, opt-in-flags
@@ -302,6 +307,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
     "S15": r"\bclass\s+(?:HostPool\w*|HeartbeatLoop|BidPoller)\b",
     "S22": r"\b(?:class|def)\s+\w*Universe\w*\b",
     "N11": r"\bdef\s+app_manifest\b",
+    "S29": r"\bdef\s+resolve_placement\b",
 }
 # Genuinely old file probes also have a line ratchet: growing an existing file
 # cannot hide behind an unchanged file count.

@@ -7,7 +7,15 @@
     "https://generativelanguage.googleapis.com"
   ],
   "suggested": false,
-  "free": true,
+  "execution": {
+    "placement": [
+      "thin_loop"
+    ],
+    "billing": [
+      "free"
+    ],
+    "serves": "owner_only"
+  },
   "sign_in": {
     "api_key": {
       "header_style": "bearer",
