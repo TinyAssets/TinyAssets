@@ -61,7 +61,8 @@ _EXCEPTION_TOKENS = frozenset({
     "KeyError", "AttributeError", "RuntimeError", "TypeError", "ValueError",
     "OSError", "UnicodeError", "UnicodeEncodeError", "UnicodeDecodeError",
     "RecursionError", "LookupError", "IndexError", "OverflowError",
-    "MemoryError", "JSONDecodeError", "error",
+    "MemoryError", "JSONDecodeError", "ImportError", "ModuleNotFoundError",
+    "error",
 })
 _FUNCTION_TOKENS = frozenset({
     "caller", "_convert_snapshot", "_keep_vault_backed", "_restrict_ledger",
@@ -78,7 +79,7 @@ _FIXED_STRINGS = frozenset({
     "inspect", "inspect-legacy", "dry-run", "apply", "auto", "archive", "retained",
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
     "ledger_missing", "source_missing", "broker_stop_failed",
-    "broker_start_failed",
+    "broker_start_failed", "package_unavailable",
     *_STAGE_TOKENS, *_EXCEPTION_TOKENS, *_FUNCTION_TOKENS,
 })
 _KEYS = frozenset({
@@ -106,6 +107,36 @@ _KEYS = frozenset({
     "unmatched", "revoked", "definitions", "secret_missing",
     "stage", "exception", "function",
 })
+
+
+# What a host-side run imports, including the modules those imports load.
+# A clean interpreter with only these files resolves one http secret.
+PACKAGE_FILES = (
+    "tinyassets/__init__.py",
+    "tinyassets/ttl_memo.py",
+    "tinyassets/credential_vault.py",
+    "tinyassets/owner_activity.py",
+    "tinyassets/owner_runtime.py",
+    "tinyassets/rpc_frames.py",
+    "tinyassets/storage/__init__.py",
+    "tinyassets/storage/outbound_connections.py",
+    "tinyassets/storage/workspace_authority.py",
+)
+
+
+def _package_available():
+    """True when the vault resolver can be imported. The message is not kept."""
+    try:
+        from tinyassets.credential_vault import load_credential_vault
+        from tinyassets.owner_runtime import current
+        from tinyassets.storage.outbound_connections import (
+            _GeneralVaultCredentialResolver,
+        )
+    except ImportError:
+        return False
+    return all(callable(item) for item in (
+        load_credential_vault, current, _GeneralVaultCredentialResolver,
+    ))
 
 
 class SourceRefused(RuntimeError):
@@ -2811,6 +2842,12 @@ def main(argv=None):
         ARCHIVE_RE.fullmatch(args.source) or RETAINED_RE.fullmatch(args.source)
     ):
         raise SystemExit("diagnostic refused: bad_source")
+    if not _package_available():
+        # Before any root, log, archive, or ledger is opened.
+        sys.stdout.write(safe_json({
+            "mode": args.mode, "error": "package_unavailable",
+        }) + "\n")
+        raise SystemExit(2)
     if args.mode == "inspect-legacy":
         return _main_inspect_legacy(args)
     root = args.root
