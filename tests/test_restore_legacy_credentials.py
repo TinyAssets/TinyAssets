@@ -2810,8 +2810,12 @@ def test_refusal_names_the_failing_stage(tmp_path, monkeypatch):
     plan = rc.merge(live, source)
     assert plan["error"] == "unreadable"
     assert plan["legacy"]["stage"] == "snapshot"
+    assert plan["legacy"]["exception"] == "DatabaseError"
+    assert plan["legacy"]["function"] == "_ensure_snapshot"
     assert plan["legacy"]["centers_several_owners"] == 1
     assert plan["accounts"] == 0
+    assert "not a database" not in json.dumps(plan)
+    rc.safe_json(plan)
 
     grouped = tmp_path / "grouped"
     beta = grouped / "beta"
@@ -2833,5 +2837,259 @@ def test_refusal_names_the_failing_stage(tmp_path, monkeypatch):
     refused = rc.merge(live, grouped)
     assert refused["error"] == "unreadable"
     assert refused["legacy"]["stage"] == "definitions"
+    assert refused["legacy"]["exception"] == "OperationalError"
+    assert refused["legacy"]["function"] == "_restrict_definitions"
     assert refused["legacy"]["centers_several_owners"] == 1
     assert refused["accounts"] == 0
+    assert "definition columns" not in json.dumps(refused)
+    rc.safe_json(refused)
+
+
+# The ledger shape from the commit before the C6 cutover. ``CREATE TABLE IF NOT
+# EXISTS`` never rebuilds a table, so a later open leaves these columns in place.
+_PRE_C6 = """
+CREATE TABLE outbound_connections (
+    connection_id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    connection_class TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    credential_ref TEXT NOT NULL,
+    revoked_at REAL,
+    connection_type TEXT NOT NULL DEFAULT '',
+    auth_scheme TEXT NOT NULL DEFAULT '',
+    allowed_endpoints_json TEXT NOT NULL DEFAULT '[]',
+    access_mode TEXT NOT NULL DEFAULT 'exact',
+    git_host TEXT NOT NULL DEFAULT '',
+    incarnation TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE outbound_connection_grants (
+    grant_id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES outbound_connections(connection_id),
+    owner_user_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    granted_at REAL NOT NULL,
+    revoked_at REAL,
+    unprompted_action_cap_json TEXT
+);
+CREATE TABLE connection_capabilities (
+    connection_id TEXT NOT NULL
+        REFERENCES outbound_connections(connection_id) ON DELETE CASCADE,
+    capability_kind TEXT NOT NULL,
+    descriptor_json TEXT NOT NULL,
+    configured_at REAL NOT NULL,
+    PRIMARY KEY (connection_id, capability_kind)
+);
+CREATE TABLE box_model_sources (
+    center TEXT NOT NULL,
+    id TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    PRIMARY KEY (center, id)
+);
+"""
+
+
+def _pre_c6_source(tmp_path, *, capabilities="connection_id", bad_owner=False):
+    """Three centers, ten http records, two subscriptions, the pre-cutover ledger."""
+    owners = (OWNER_A, OWNER_B, "owner-c")
+    centers = ("alpha", "beta", "gamma")
+    dests = [f"dest-{index}.example" for index in range(10)]
+    center_dests = {"alpha": dests[:4], "beta": dests[4:7], "gamma": dests[7:]}
+    source = tmp_path / "source"
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    db = sqlite3.connect(ledger)
+    db.executescript(_PRE_C6)
+    connections = []
+    for center, owner in zip(centers, owners, strict=True):
+        for dest in center_dests[center][:2]:
+            connections.append((owner, dest, center, False))
+        connections.append((owner, center_dests[center][0], center, True))
+    while len(connections) < 14:
+        connections.append(("owner-extra", "other.example", "no-center", False))
+    for index, (owner, dest, center, revoked) in enumerate(connections, start=1):
+        db.execute(
+            "INSERT INTO outbound_connections ("
+            "connection_id, owner_user_id, connection_class, scopes_json, provider, "
+            "destination, credential_ref, revoked_at, connection_type, auth_scheme, "
+            "incarnation) VALUES (?, ?, 'http', '[\"GET\"]', 'openai', ?, ?, ?, "
+            "'http', 'bearer', ?)",
+            (f"c-{index}", owner, dest, f"vault://http/{dest}",
+             1.0 if revoked else None, f"inc-{index}"),
+        )
+    for index in range(1, 13):
+        owner, _dest, center, revoked = connections[index - 1]
+        db.execute(
+            "INSERT INTO outbound_connection_grants ("
+            "grant_id, connection_id, owner_user_id, universe_id, granted_at, "
+            "revoked_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"g-{index}", f"c-{index}", owner, center, 1.0, 2.0 if revoked else None),
+        )
+    for index in range(1, 4):
+        db.execute(
+            "INSERT INTO connection_capabilities ("
+            "connection_id, capability_kind, descriptor_json, configured_at) "
+            "VALUES (?, 'model_use', '{}', 1.0)",
+            (f"c-{index}",),
+        )
+    if capabilities != "connection_id":
+        db.execute("ALTER TABLE connection_capabilities RENAME TO capabilities_old")
+        db.execute(
+            "CREATE TABLE connection_capabilities ("
+            "capability_kind TEXT NOT NULL, descriptor_json TEXT NOT NULL, "
+            "configured_at REAL NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO connection_capabilities "
+            "(capability_kind, descriptor_json, configured_at) "
+            "SELECT capability_kind, descriptor_json, configured_at FROM capabilities_old"
+        )
+        db.execute("DROP TABLE capabilities_old")
+    if bad_owner:
+        # A connection with no grant. The owner scan never fetches this cell.
+        db.execute(
+            "UPDATE outbound_connections SET owner_user_id = CAST(X'6F776EFF' AS TEXT) "
+            "WHERE connection_id = 'c-14'"
+        )
+    for center, owner in zip(centers, owners, strict=True):
+        ref = next(
+            f"g-{index}" for index, (row_owner, _dest, row_center, revoked)
+            in enumerate(connections, start=1)
+            if row_owner == owner and row_center == center and not revoked
+        )
+        document = _owned_definition(owner, center, ref)
+        db.execute(
+            "INSERT INTO box_model_sources (center, id, definition) VALUES (?, ?, ?)",
+            (center, document["id"], json.dumps(document)),
+        )
+        directory = source / center
+        directory.mkdir(parents=True)
+        records = [_http(dest, f"tok-{dest}") for dest in center_dests[center]]
+        if center in {"alpha", "gamma"}:
+            records.append({"credential_type": "llm_subscription", "service": "cli"})
+        (directory / ".credential-vault.json").write_bytes(_vault_bytes(records))
+    db.commit()
+    db.close()
+    return source
+
+
+def _assert_legacy_dry_run_keeps_http(tmp_path, source):
+    inspected = rc.inspect_legacy_tree(source)
+    assert inspected["center_vault_files"] == 3
+    assert inspected["http"] == 10
+    assert inspected["llm_subscription"] == 2
+    assert inspected["centers_one_owner"] == 3
+    assert inspected["centers_ledger_one_owner"] == 3
+    assert inspected["centers_several_owners"] == 0
+    assert inspected["custody_db"] is False
+    plan = rc._plan_only(_live(tmp_path), source)
+    assert plan.get("error") is None
+    assert "stage" not in plan["legacy"]
+    assert "exception" not in plan["legacy"]
+    assert plan["legacy"]["centers_one_owner"] == 3
+    assert plan["legacy"]["centers_several_owners"] == 0
+    assert plan["legacy"]["http_kept"] > 0
+    rc.safe_json(plan)
+    return plan
+
+
+def test_capabilities_without_connection_id_do_not_refuse(tmp_path):
+    source = _pre_c6_source(tmp_path, capabilities="kind-only")
+    measured = rc.measure_root(source)
+    assert measured["outbound_connections"] == 14
+    assert measured["outbound_connection_grants"] == 12
+    assert measured["connection_capabilities"] == 3
+    _assert_legacy_dry_run_keeps_http(tmp_path, source)
+
+
+def test_undecodable_owner_outside_the_grant_join_does_not_refuse(tmp_path):
+    source = _pre_c6_source(tmp_path, bad_owner=True)
+    _assert_legacy_dry_run_keeps_http(tmp_path, source)
+
+
+def _alpha_ledger_source(tmp_path):
+    """One center the ledger would file under owner-a if custody agreed."""
+    source = tmp_path / "source"
+    live = _live(tmp_path)
+    ledger = source / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(
+        _vault_bytes([_http(DEST_OK, TOKEN_OK)])
+    )
+    return source, live
+
+
+def _assert_unreadable_owner_wrote_nothing(plan, live, source):
+    assert plan.get("error") is None
+    assert plan["legacy"]["centers_several_owners"] == 1
+    assert plan["legacy"]["centers_one_owner"] == 0
+    assert plan["legacy"]["http_kept"] == 0
+    assert _ids(live) == set()
+    assert not _owner_vault(live, OWNER_A).exists()
+    assert not _owner_vault(source, OWNER_A).exists()
+    text = json.dumps(plan)
+    assert TOKEN_OK not in text
+    assert "6f776eff" not in text.lower()
+    rc.safe_json(plan)
+
+
+def test_custody_owner_beside_an_undecodable_owner_refuses_the_center(tmp_path):
+    source, live = _alpha_ledger_source(tmp_path)
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners VALUES ('alpha', ?)",
+            (OWNER_A,),
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners (universe_id, owner_user_id) "
+            "VALUES ('alpha', CAST(X'6F776EFF' AS TEXT))"
+        )
+    plan = rc.merge(live, source)
+    _assert_unreadable_owner_wrote_nothing(plan, live, source)
+
+
+def test_sole_undecodable_custody_owner_does_not_receive_the_ledger_secret(tmp_path):
+    source, live = _alpha_ledger_source(tmp_path)
+    custody = source / ".broker" / "credential-custody.db"
+    with sqlite3.connect(custody) as db:
+        db.execute(
+            "CREATE TABLE llm_credential_deposit_owners "
+            "(universe_id TEXT, owner_user_id TEXT)"
+        )
+        db.execute(
+            "INSERT INTO llm_credential_deposit_owners (universe_id, owner_user_id) "
+            "VALUES ('alpha', CAST(X'6F776EFF' AS TEXT))"
+        )
+    plan = rc.merge(live, source)
+    _assert_unreadable_owner_wrote_nothing(plan, live, source)
+
+
+def test_undecodable_grant_owner_refuses_that_center(tmp_path):
+    source, live = _alpha_ledger_source(tmp_path)
+    with sqlite3.connect(source / ".broker" / "outbound.db") as db:
+        db.execute(
+            "INSERT INTO outbound_connections (connection_id, owner_user_id, "
+            "revoked_at, credential_ref, destination, label) "
+            "VALUES ('c-bad', CAST(X'6F776EFF' AS TEXT), NULL, ?, ?, 'ok')",
+            (f"vault://http/{DEST_OK}", DEST_OK),
+        )
+        db.execute(
+            "INSERT INTO outbound_connection_grants (grant_id, connection_id, "
+            "owner_user_id, universe_id, revoked_at, granted_at) "
+            "VALUES ('g-bad', 'c-bad', CAST(X'6F776EFF' AS TEXT), 'alpha', NULL, "
+            "'2026-10-22T04:41:03+00:00')"
+        )
+    plan = rc.merge(live, source)
+    _assert_unreadable_owner_wrote_nothing(plan, live, source)

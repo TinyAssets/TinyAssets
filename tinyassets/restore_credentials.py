@@ -54,12 +54,32 @@ _SLOTS = ("insert", "kept_live", "conflict", "skipped")
 _STAGE_TOKENS = frozenset({
     "snapshot", "ledger", "definitions", "groups", "bind", "convert", "merge",
 })
+# A swallowed failure may name one of these. The message is never kept.
+_EXCEPTION_TOKENS = frozenset({
+    "OperationalError", "IntegrityError", "DatabaseError", "ProgrammingError",
+    "DataError", "InterfaceError", "NotSupportedError", "Error", "Warning",
+    "KeyError", "AttributeError", "RuntimeError", "TypeError", "ValueError",
+    "OSError", "UnicodeError", "UnicodeEncodeError", "UnicodeDecodeError",
+    "RecursionError", "LookupError", "IndexError", "OverflowError",
+    "MemoryError", "JSONDecodeError", "error",
+})
+_FUNCTION_TOKENS = frozenset({
+    "caller", "_convert_snapshot", "_keep_vault_backed", "_restrict_ledger",
+    "delete_except", "_restrict_definitions", "_connection_refs",
+    "_resolve_outcome", "_served_destinations", "_source_definition_rows",
+    "_rewrite_source_definitions", "_verified_definition", "_definition_id",
+    "_load_vault_records", "_write_private_json", "_open_source", "_open_ro",
+    "legacy_center_owners", "convert_legacy_vaults", "_groups", "_rows",
+    "_merge_snapshot", "merge", "_ensure_snapshot", "_copy_definitions",
+    "_insert_missing", "_bind_rows", "_vault_resolver", "_record_destination",
+    "_http_record_key", "_json_object", "prepare_legacy",
+})
 _FIXED_STRINGS = frozenset({
     "inspect", "inspect-legacy", "dry-run", "apply", "auto", "archive", "retained",
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
     "ledger_missing", "source_missing", "broker_stop_failed",
     "broker_start_failed",
-    *_STAGE_TOKENS,
+    *_STAGE_TOKENS, *_EXCEPTION_TOKENS, *_FUNCTION_TOKENS,
 })
 _KEYS = frozenset({
     "mode", "source_requested", "selected", "catalog_readable", "live",
@@ -84,7 +104,7 @@ _KEYS = frozenset({
     "centers_zero_owners", "centers_several_owners", "centers_ledger_one_owner",
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
-    "stage",
+    "stage", "exception", "function",
 })
 
 
@@ -205,17 +225,63 @@ def _source_closed(path):
     return path is not None and _source_key(path) in _CLOSED_SOURCES
 
 
+# An owner cell that will not decode. It is not the same as SQL NULL: NULL
+# names nobody, and these bytes may name someone we cannot read.
+_UNREADABLE = object()
+
+
+def _decode_text(raw):
+    """Text stays text. One undecodable cell is empty.
+
+    Only for cells a caller skips: definitions, capabilities, and convert
+    reads such as ``_keep_vault_backed``. Owner columns that choose a center's
+    owner are read as blobs and decoded by ``_owner_identity`` instead. The
+    default factory raises, and its message includes the cell bytes.
+    """
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, (bytes, bytearray)):
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeError:
+        return None
+
+
+def _owner_identity(raw):
+    """Owner text from a blob. Undecodable bytes are not an absent owner."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            return raw.decode("utf-8")
+        except UnicodeError:
+            return _UNREADABLE
+    return _UNREADABLE
+
+
+def _refuse_center(owners):
+    """Two sentinels: the center matches neither one owner nor none."""
+    owners.update(("\0unreadable-a", "\0unreadable-b"))
+
+
 def _open_ro(path):
     if _source_closed(path):
         raise sqlite3.OperationalError("source closed")
-    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db.text_factory = _decode_text
+    return db
 
 
 def _open_source(path):
     """Writable open of a source database. A closed file is not opened."""
     if _source_closed(path):
         raise sqlite3.OperationalError("source closed")
-    return sqlite3.connect(path)
+    db = sqlite3.connect(path)
+    db.text_factory = _decode_text
+    return db
 
 
 class _SourceSnapshot:
@@ -224,6 +290,8 @@ class _SourceSnapshot:
     def __init__(self):
         self.failed = False
         self.stage = ""
+        self.exception = ""
+        self.function = ""
         self.holds = 0
         self.written = []
         self.skipped_owners = set()
@@ -260,9 +328,10 @@ def _ensure_snapshot(source_root):
             with _open_ro(origin) as src, sqlite3.connect(dest) as dst:
                 src.backup(dst)
             snap.paths[name] = dest
-    except Exception:
+    except Exception as exc:
         snap.failed = True
         snap.stage = "snapshot"
+        _note_failure(snap, exc)
         snap.paths.clear()
         for origin in origins:
             if _linked_inside(source_root, origin):
@@ -334,6 +403,30 @@ def _remember_stage(source_root, stage):
         snap.stage = stage
 
 
+def _failure_tokens(exc):
+    """Class and function from fixed lists. The message is never kept."""
+    kind = "error"
+    for base in type(exc).__mro__:
+        name = base.__name__
+        if name in _EXCEPTION_TOKENS and name != "error":
+            kind = name
+            break
+    function = "caller"
+    frame = exc.__traceback__
+    while frame is not None:
+        name = frame.tb_frame.f_code.co_name
+        if name in _FUNCTION_TOKENS and name != "caller":
+            function = name
+        frame = frame.tb_next
+    return kind, function
+
+
+def _note_failure(snap, exc):
+    if snap is None or snap.exception in _EXCEPTION_TOKENS:
+        return
+    snap.exception, snap.function = _failure_tokens(exc)
+
+
 def _refusal_stage(source_root):
     snap = _SNAPSHOTS.get(_source_key(source_root))
     stage = snap.stage if snap is not None else ""
@@ -344,6 +437,12 @@ def _refused_legacy(source_root):
     """The all-centers refusal, plus the fixed token for the step that failed."""
     legacy = _refused_center_stats(source_root)
     legacy["stage"] = _refusal_stage(source_root)
+    snap = _SNAPSHOTS.get(_source_key(source_root))
+    kind = snap.exception if snap is not None else ""
+    function = snap.function if snap is not None else ""
+    if kind in _EXCEPTION_TOKENS and function in _FUNCTION_TOKENS:
+        legacy["exception"] = kind
+        legacy["function"] = function
     return legacy
 
 
@@ -672,13 +771,18 @@ def _owner_groups(db_path, centers):
             if center_col is None or owner_col is None:
                 return groups, False
             query = (
-                f"SELECT {_quote(center_col)}, {_quote(owner_col)} "
+                f"SELECT {_quote(center_col)}, CAST({_quote(owner_col)} AS BLOB) "
                 f"FROM {_quote('llm_credential_deposit_owners')}"
             )
-            for center, owner in db.execute(query):
+            for center, owner_raw in db.execute(query):
                 if not isinstance(center, str) or not _CENTER_RE.fullmatch(center):
                     continue
                 slot = groups.setdefault(center, set())
+                owner = _owner_identity(owner_raw)
+                # A second owner we cannot read must not leave the readable one.
+                if owner is _UNREADABLE:
+                    _refuse_center(slot)
+                    continue
                 if isinstance(owner, str) and owner and not owner.startswith("\0"):
                     slot.add(owner)
     except Exception:
@@ -866,7 +970,10 @@ def _definition_id(document):
     ))
     if any(not isinstance(part, str) for part in parts):
         return None
-    material = "\0".join(f"{len(part)}:{part}" for part in parts).encode()
+    try:
+        material = "\0".join(f"{len(part)}:{part}" for part in parts).encode()
+    except UnicodeError:
+        return None
     return "provdef_" + hashlib.sha256(material).hexdigest()[:32]
 
 
@@ -889,7 +996,7 @@ def _connection_refs(db, owner):
     if db is None or not _table_exists(db, "outbound_connections"):
         return live, revoked
     columns = set(_columns(db, "outbound_connections"))
-    if "credential_ref" not in columns or "owner_user_id" not in columns:
+    if not {"connection_id", "credential_ref", "owner_user_id"} <= columns:
         return live, revoked
     revoked_expr = "revoked_at" if "revoked_at" in columns else "NULL"
     query = (
@@ -1046,7 +1153,8 @@ def _confirmed_definition_owner(db, center, document, dests):
     universe_sql = "g.universe_id" if "universe_id" in grant_cols else "NULL"
     dest_sql = "c.destination" if "destination" in conn_cols else "NULL"
     rows = list(db.execute(
-        "SELECT g.owner_user_id, c.owner_user_id, c.credential_ref, "
+        "SELECT CAST(g.owner_user_id AS BLOB), CAST(c.owner_user_id AS BLOB), "
+        "c.credential_ref, "
         f"{universe_sql}, {dest_sql} "
         "FROM outbound_connection_grants g "
         "JOIN outbound_connections c ON c.connection_id = g.connection_id "
@@ -1056,6 +1164,10 @@ def _confirmed_definition_owner(db, center, document, dests):
     if len(rows) != 1:
         return None
     grant_owner, conn_owner, ref_value, grant_universe, stored_dest = rows[0]
+    grant_owner = _owner_identity(grant_owner)
+    conn_owner = _owner_identity(conn_owner)
+    if grant_owner is _UNREADABLE or conn_owner is _UNREADABLE:
+        return _UNREADABLE
     if grant_owner != owner or conn_owner != owner:
         return None
     if "universe_id" in grant_cols and grant_universe != center:
@@ -1082,13 +1194,19 @@ def _add_grant_owners(db, groups, center_dests, evidence):
         return
     dest_sql = "c.destination" if "destination" in conn_cols else "NULL"
     query = (
-        "SELECT g.universe_id, g.owner_user_id, c.owner_user_id, "
+        "SELECT g.universe_id, CAST(g.owner_user_id AS BLOB), "
+        "CAST(c.owner_user_id AS BLOB), "
         f"c.credential_ref, {dest_sql} "
         "FROM outbound_connection_grants g "
         "JOIN outbound_connections c ON c.connection_id = g.connection_id"
     )
-    for universe_id, grant_owner, conn_owner, ref, stored_dest in db.execute(query):
+    for universe_id, grant_raw, conn_raw, ref, stored_dest in db.execute(query):
         if not isinstance(universe_id, str) or universe_id not in center_dests:
+            continue
+        grant_owner = _owner_identity(grant_raw)
+        conn_owner = _owner_identity(conn_raw)
+        if grant_owner is _UNREADABLE or conn_owner is _UNREADABLE:
+            _refuse_center(groups[universe_id])
             continue
         if (not isinstance(grant_owner, str) or not grant_owner
                 or grant_owner != conn_owner):
@@ -1111,6 +1229,9 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
         confirmed = _confirmed_definition_owner(
             db, center, document, center_dests.get(center, set()),
         )
+        if confirmed is _UNREADABLE:
+            _refuse_center(groups[center])
+            continue
         if confirmed is not None:
             owner, dest = confirmed
             groups[center].add(owner)
@@ -1120,7 +1241,8 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
     columns = set(_columns(db, "box_model_sources"))
     if not {"owner", "definition"} <= columns:
         return
-    for row_owner, raw in db.execute("SELECT owner, definition FROM box_model_sources"):
+    for row_raw, raw in db.execute(
+            "SELECT CAST(owner AS BLOB), definition FROM box_model_sources"):
         try:
             document = json.loads(raw) if isinstance(raw, str) else None
         except (ValueError, UnicodeError):
@@ -1130,6 +1252,10 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
         center = document.get("universe_id")
         if not isinstance(center, str) or center not in groups:
             continue
+        row_owner = _owner_identity(row_raw)
+        if row_owner is _UNREADABLE:
+            _refuse_center(groups[center])
+            continue
         doc_owner = document.get("owner_user_id")
         if (isinstance(row_owner, str) and isinstance(doc_owner, str)
                 and row_owner and doc_owner and row_owner != doc_owner):
@@ -1138,6 +1264,9 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
         confirmed = _confirmed_definition_owner(
             db, center, document, center_dests.get(center, set()),
         )
+        if confirmed is _UNREADABLE:
+            _refuse_center(groups[center])
+            continue
         if confirmed is not None:
             owner, dest = confirmed
             groups[center].add(owner)
@@ -1250,6 +1379,8 @@ def _keep_vault_backed(db, source_root, kept_ids, skipped=()):
     """Keep a connection when its destination is already in that owner's vault."""
     if db is None or not _table_exists(db, "outbound_connections"):
         return
+    if "owner_user_id" not in set(_columns(db, "outbound_connections")):
+        return
     skipped = set(skipped)
     owners = [
         row[0] for row in db.execute(
@@ -1282,6 +1413,10 @@ def _restrict_ledger(source_root, kept_ids):
         def delete_except(table, extra=""):
             if not _table_exists(db, table):
                 return
+            # An older capabilities table has no connection_id. Leaving the
+            # rows is safe: the binder drops any row it cannot tie to one.
+            if "connection_id" not in set(_columns(db, table)):
+                return
             if not ids:
                 db.execute(f"DELETE FROM {_quote(table)}")
                 return
@@ -1310,10 +1445,12 @@ def _verified_definition(owner, definition_id, raw, grants):
     if not set(_DEFINITION_FIELDS) <= set(document):
         return None
     document = {key: document[key] for key in _DEFINITION_FIELDS}
+    ref = document.get("ref")
     if (document.get("access_method") != "api_key_http"
             or document.get("owner_user_id") != owner
             or document.get("id") != definition_id
-            or document.get("ref") not in grants):
+            or not isinstance(ref, str)
+            or ref not in grants):
         return None
     if _definition_id(document) != definition_id:
         return None
@@ -1468,10 +1605,11 @@ def convert_legacy_vaults(source_root):
         if snap.failed:
             return _refused_center_stats(source_root)
         return _convert_snapshot(source_root, snap)
-    except Exception:
+    except Exception as exc:
         if snap is not None:
             _unlink_written(snap)
             snap.failed = True
+            _note_failure(snap, exc)
             if snap.stage not in _STAGE_TOKENS:
                 snap.stage = "convert"
         _close_source_databases(source_root)
@@ -1760,10 +1898,11 @@ def _groups(root):
                 for table in TABLES:
                     loaded[table] = _rows(db, table)
             rows = loaded
-        except Exception:
+        except Exception as exc:
             if snap is not None:
                 snap.failed = True
                 snap.stage = "groups"
+                _note_failure(snap, exc)
             _close_source_databases(root)
             return {}
     grouped = {}
@@ -2086,10 +2225,11 @@ def merge(live_root, source_root):
         return _merge_snapshot(live_root, source_root, snap)
     except SourceRefused:
         raise
-    except Exception:
+    except Exception as exc:
         if snap is not None:
             _unlink_written(snap)
             snap.failed = True
+            _note_failure(snap, exc)
             if snap.stage not in _STAGE_TOKENS:
                 snap.stage = "merge"
         _close_source_databases(source_root)
