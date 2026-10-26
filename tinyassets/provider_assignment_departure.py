@@ -2,7 +2,6 @@
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 
-
 _ANCHOR = (
     "provider", "binding_id", "binding_generation", "binding_digest",
     "credential_reference_id", "credential_reference_generation",

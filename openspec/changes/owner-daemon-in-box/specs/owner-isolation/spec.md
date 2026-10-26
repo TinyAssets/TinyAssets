@@ -726,6 +726,11 @@ outbound connections at its socket seam.
 - **AND** an unknown connection retains its existing fail-closed metering default
 - **AND** an unregistered grant without model capabilities remains ordinary regardless of its destination name
 
+#### Scenario: The relay carries many streams and one owner cannot take them all
+- **WHEN** owners hold many concurrent relay streams, such as one per model call
+- **THEN** boxhostd serves them on one event loop rather than a thread each, admitting at least 128 per owner and 2,048 in total
+- **AND** a stream beyond its owner's bound is refused while other owners' streams are still admitted
+
 #### Scenario: Missing channel and direct egress fail
 - **WHEN** a model call has no broker channel, or an SDK or raw HTTP call attempts direct outbound access
 - **THEN** it fails without a direct provider or credential-store fallback

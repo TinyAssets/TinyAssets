@@ -3950,7 +3950,7 @@ def create_streamable_http_app() -> Starlette:
     canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
     modern_tools = mcp.http_app(path="/mcp", transport="streamable-http",
                                stateless_http=True, json_response=True)
-    from tinyassets.mcp_events_http import MCPEventsMiddleware, delivery_lifespan
+    from tinyassets.mcp_events_http import MCPEventsMiddleware
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
@@ -4047,7 +4047,6 @@ def create_streamable_http_app() -> Starlette:
                     canonical_app.router.lifespan_context(canonical_app),
                 )
                 await stack.enter_async_context(modern_tools.router.lifespan_context(modern_tools))
-                await stack.enter_async_context(delivery_lifespan(data_dir()))
                 emit_startup()
                 yield
         except Exception as exc:

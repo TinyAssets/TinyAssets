@@ -7,7 +7,15 @@
     "https://openrouter.ai"
   ],
   "suggested": true,
-  "free": true,
+  "execution": {
+    "placement": [
+      "thin_loop"
+    ],
+    "billing": [
+      "free"
+    ],
+    "serves": "owner_only"
+  },
   "sign_in": {
     "oauth": {
       "issuer": "https://openrouter.ai",

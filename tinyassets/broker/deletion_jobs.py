@@ -256,6 +256,7 @@ class DeletionJobs:
         result = local_erase(self.server._ledger_for(owner), principal=owner,
                              command_center=ACCOUNT_SCOPE)
         self.server._policy_store.erase(owner)
+        self.server.mcp_events.store.erase_owner(owner)
         return result
 
     def _billing(self, job):

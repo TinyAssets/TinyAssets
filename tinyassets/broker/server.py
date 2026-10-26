@@ -175,6 +175,7 @@ class BrokerServer:
         self._streams_lock = threading.Lock()
         self._ops.recover()
         self._next_wakes = None
+        self._mcp_events = None
         self._deletion_jobs = None
         self._routing = None
 
@@ -201,6 +202,16 @@ class BrokerServer:
 
             self._next_wakes = NextWakeIndex(self._owner_identities)
         return self._next_wakes
+
+    @property
+    def mcp_events(self):
+        if self._mcp_events is None:
+            from tinyassets.broker.mcp_events import EventDeliveries, EventStore, egress_sender
+
+            self._mcp_events = EventDeliveries(EventStore(
+                self._owner_identities.path.parent / "mcp-events.db",
+                sender=egress_sender(self.egress_binding)))
+        return self._mcp_events
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         self._loop = asyncio.get_running_loop()
@@ -547,6 +558,20 @@ class _Connection:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
+            if op == "MCP_EVENTS":
+                from tinyassets.broker.mcp_events import box_operation
+
+                deliveries = self._server.mcp_events
+                try:
+                    result = await asyncio.to_thread(
+                        box_operation, deliveries.store, self._box_owner, doc)
+                    answer = {"op": "BOX_RESULT", "result": result}
+                    if doc.get("action") == "capture" and result["queued"]:
+                        deliveries.kick()
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
                           "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")
@@ -572,6 +597,18 @@ class _Connection:
                 answer = {"op": "INBOUND_VERIFY_IS", "result": result}
             except Exception:
                 answer = {"op": "INBOUND_VERIFY_UNAVAILABLE"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "MCP_EVENTS":
+            # The router's verified caller; the box channel never reaches here.
+            from tinyassets.broker.mcp_events import error_answer, router_operation
+
+            try:
+                result = await asyncio.to_thread(
+                    router_operation, self._server.mcp_events.store,
+                    self._server._owner_identities, doc)
+                answer = {"op": "MCP_EVENTS_IS", "result": result}
+            except Exception as exc:
+                answer = {"op": "MCP_EVENTS_ERROR", "error": error_answer(exc)}
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "DELETION_JOB":
             from tinyassets.broker.deletion_jobs import WithdrawalPending

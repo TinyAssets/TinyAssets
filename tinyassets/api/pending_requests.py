@@ -1979,7 +1979,8 @@ def _first_power_preset() -> dict[str, object] | None:
     from tinyassets.providers.source_record import records
 
     try:
-        record = next(r for r in records().values() if r.suggested and r.free)
+        record = next(r for r in records().values()
+                      if r.suggested and "free" in r.execution["billing"])
         preset = load_preset(record.id)
         manual = record.sign_in["oauth"].get("manual_key_entry") is True
     except (OSError, ValueError, StopIteration, HostedAuthError, KeyError, TypeError):

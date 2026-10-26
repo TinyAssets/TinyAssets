@@ -23,6 +23,16 @@ The package check-in runner SHALL read current files, suppress unchanged checks 
 - **WHEN** goals are unchanged, or this is the first observation
 - **THEN** no notification is emitted.
 
+#### Scenario: Invalid watch observation
+- **WHEN** any active, requested watch has a missing or non-boolean matched value,
+  or an observation timestamp that is missing, invalid, naive, in the future or
+  older than one hour, including a nonmatch or an already-notified change
+- **THEN** the check fails before notifying or acknowledging any changes.
+
+#### Scenario: Fresh nonmatch preserves notification history
+- **WHEN** a fresh watch observation does not match
+- **THEN** it emits no notification and preserves the last notified change ID.
+
 #### Scenario: Owner muted an update
 - **WHEN** notify returns a settled owner decision
 - **THEN** the helper acknowledges the transition without reporting delivery or retrying it.

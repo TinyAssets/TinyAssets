@@ -59,36 +59,34 @@ def _recover_stale_default(plan, catalogues, connected, owner, universe):
 
 
 def connected_sources(base: str | Path, universe: str | Path, owner: str,
-                      *, conn=None) -> frozenset[str]:
+                      *, conn=None, refused: list | None = None) -> frozenset[str]:
     """Return this owner's live model sources for one command center.
 
     The set is rebuilt from custody and broker grants on each launch. A saved
     serving preference or another owner's definition never grants membership.
+    Each source runs only at a placement its record allows (W1); one with no
+    available placement is left out, and ``refused`` collects why, by name.
     """
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.ledger_queries import HAS_MODEL_SOURCE, query_ledger
     from tinyassets.providers.definition import list_definitions
+    from tinyassets.providers.placement import PlacementRefused, execution_for, resolve_placement
     from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
 
     base, universe = Path(base), Path(universe)
     if (universe.resolve(strict=False) != (base.resolve(strict=False) / universe.name)
             or not owner):
         raise PermissionError("invalid connected-source scope")
-    sources: set[str] = set()
-    for definition in list_definitions(universe.name):
-        if definition.owner_user_id != owner:
-            continue
-        if definition.access_method == "subscription_cli":
-            from tinyassets.providers.subscription_catalog import context
+    def hosted_box(definition):
+        from tinyassets.providers.subscription_catalog import context
 
-            try:
-                context(definition, owner, universe.name)
-                sources.add("subscription_cli:" + definition.id)
-            except (PermissionError, OSError, ValueError):
-                pass
-            continue
-        if definition.access_method != "api_key_http":
-            continue
+        try:
+            context(definition, owner, universe.name)
+        except (PermissionError, OSError, ValueError):
+            return "its owner box or sign-in is unavailable"
+        return None
+
+    def thin_loop(definition):
         try:
             facts = query_ledger(
                 base, query=HAS_MODEL_SOURCE, principal=owner,
@@ -96,9 +94,30 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
             )
         except (GrantResolutionError, BrokerRefused, ProxyRequestError, ValueError, OSError):
             # One unavailable grant cannot withhold another connected HTTP source.
+            return "its model grant is unavailable"
+        return None if facts.get("model_source") is True else "its grant is not a model source"
+
+    # Each executor proves only the placement it serves; the record decides the rest.
+    probes = {"subscription_cli": ("hosted_box", hosted_box),
+              "api_key_http": ("thin_loop", thin_loop)}
+    sources: set[str] = set()
+    for definition in list_definitions(universe.name):
+        if definition.owner_user_id != owner or definition.access_method not in probes:
             continue
-        if facts.get("model_source") is True:
-            sources.add("api_key_http:" + definition.id)
+        name = f"{definition.access_method}:{definition.id}"
+        placement, probe = probes[definition.access_method]
+        try:
+            execution = execution_for(definition)
+            resolve_placement(name, execution, {placement: probe(definition)})
+        except PlacementRefused as exc:
+            if refused is not None:
+                refused.append(exc)
+            continue
+        except PermissionError as exc:  # No owner box, or no declared record.
+            if refused is not None:
+                refused.append(PlacementRefused(name, {placement: str(exc)}))
+            continue
+        sources.add(name)
     return frozenset(sources)
 
 
@@ -337,8 +356,13 @@ def prepare_owned_model_plan(
             assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
             from types import SimpleNamespace
 
-            chains, rejected = [], []
-            connected = connected_sources(base, universe, owner, conn=conn)
+            chains, rejected, unplaced = [], [], []
+            connected = connected_sources(base, universe, owner, conn=conn, refused=unplaced)
+            rejected.extend(Ineligible(ModelRef(exc.source, ""), "placement_unavailable",
+                                       component="; ".join(f"{p}: {why}"
+                                                           for p, why in exc.tried.items()),
+                                       scope="source")
+                            for exc in unplaced)
             for provider in sorted(connected):
                 try:
                     custody = current_connected_source_custody(
@@ -429,7 +453,8 @@ def prepare_owned_model_plan(
         # whose accepted sources exist but cannot run (live 2026-09-28).
         held = [
             f"{item.ref.connection_id.removeprefix('api_key_http:')} "
-            f"({item.reason.replace('_', ' ')})"
+            f"({item.reason.replace('_', ' ')}"
+            f"{': ' + item.component if item.reason == 'placement_unavailable' else ''})"
             for item in rejected if item.scope == "source"
         ]
         pin_detail = ""

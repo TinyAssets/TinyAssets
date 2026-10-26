@@ -28,12 +28,23 @@ class SourceRecord(Mapping):
     egress: dict
     state: dict
     suggested: bool = False
-    free: bool = False
+    execution: dict | None = None
     models: list = field(default_factory=list)
     ranking: dict | None = None
 
     def document(self):
         return asdict(self)
+
+    def digest_document(self):
+        """The pre-placement shape that live CLI connection markers were digested over.
+
+        ``execution`` replaced a ``free`` flag; a changed digest would make every
+        connected CLI source ask its owner to reconnect.
+        """
+        document = self.document()
+        execution = document.pop("execution")
+        document["free"] = "free" in execution["billing"]
+        return document
 
     @property
     def acquisition_document(self):
@@ -96,13 +107,25 @@ class SourceRecord(Mapping):
     @classmethod
     def parse(cls, doc):
         from tinyassets.connection_oauth.transport import validate_https_url
+        from tinyassets.providers.placement import validate
 
+        doc = dict(doc)
+        free = doc.pop("free", False)  # The pre-placement flag, read once.
+        if doc.get("execution") is None:
+            # A record without the block runs where its mechanism always ran:
+            # a CLI in the owner's box on its plan, HTTP on the thin loop.
+            cli = "cli_login" in doc.get("sign_in", {})
+            doc["execution"] = {"placement": ["hosted_box" if cli else "thin_loop"],
+                                "billing": ["free" if free is True
+                                            else "plan" if cli else "metered"],
+                                "serves": "owner_only"}
         record = cls(**doc)
         if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,63}", record.id)
                 or not record.display_name.strip() or record.origin not in {"declared", "detected"}
-                or type(record.suggested) is not bool or type(record.free) is not bool
+                or type(record.suggested) is not bool
                 or not isinstance(record.addresses, list) or not record.addresses):
             raise ValueError("invalid source identity")
+        validate(record.execution, cli="cli" in record.invoke)
         for address in record.addresses:
             validate_https_url(address)
         if len(record.sign_in) != 1 or len(record.invoke) != 1:
@@ -201,7 +224,7 @@ def resolve(address, home=None):
 
 
 def suggested_address():
-    choices = [r for r in records().values() if r.suggested and r.free]
+    choices = [r for r in records().values() if r.suggested and "free" in r.execution["billing"]]
     if len(choices) != 1:
         raise ValueError("one suggested free source required")
     return choices[0].addresses[0]
