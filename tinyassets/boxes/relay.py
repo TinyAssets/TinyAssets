@@ -171,7 +171,9 @@ class OwnerRelays:
         try:
             server = await asyncio.wrap_future(started)
         except BaseException:
-            listener.close()  # The server never started.
+            # The server never finished starting; drop any reader it registered.
+            self._loop.remove_reader(listener.fileno())
+            listener.close()
         else:
             server.close()
 
