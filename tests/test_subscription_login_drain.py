@@ -1,4 +1,4 @@
-"""Pending native sign-in cannot hold a box awake or strand its page."""
+"""Pending native sign-in never delays a drain or strands its page."""
 import asyncio
 import base64
 import json
@@ -68,13 +68,15 @@ def test_pending_login_cancels_without_blocking_and_page_can_retry(
                                    else {operation: True}))
             assert state["active"] == 0 and state["draining"]
         assert login.cancelled.is_set()
+        drained_at = gate.last
         # Even before the CLI exits, pending sign-in cannot delay shutdown.
         assert login.thread.is_alive() and gate.active == 0
     finally:
         release.set()
         login.thread.join(5)
     assert not login.thread.is_alive() and login.status == "cancelled"
-    assert not gate.pending_logins and gate.last == idle_since
+    # The idle clock restarts when the sign-in ends, after the drain read it.
+    assert not gate.pending_logins and gate.last > drained_at
     late = Login(runtime).start()
     late.thread.join(5)
     assert late.cancelled.is_set() and late.status == "cancelled"

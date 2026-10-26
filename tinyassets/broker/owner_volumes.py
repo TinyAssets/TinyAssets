@@ -14,6 +14,8 @@ import uuid
 from contextlib import closing, contextmanager
 
 COLD_AFTER = 7 * 86400
+SNAPSHOT_QUIET = 900
+SNAPSHOT_DEADLINE = 86400
 
 
 def _add_column(db, table, column, ddl):
@@ -85,53 +87,75 @@ def binding(identities, owner):
         return record
 
 
-def pending(identities, *, include_running=True):
-    """Recoverable volume work, excess snapshots, or a cold local image.
+def deferred(work, last_published, now):
+    """A confirmed idle stop whose offsite copy is not owed yet (ADR-026).
+
+    A box stops as soon as no work runs, so pauses between turns are frequent.
+    An idle stop's full image is copied offsite only after it stays stopped
+    for SNAPSHOT_QUIET, or at once when its newest copy is a day old or it has
+    none. A wake before then replaces the intent, and the local image is the
+    volume, the same as for an awake box. Only idle stops are dated.
+    """
+    return (isinstance(work, dict) and work.get("kind") == "snapshot"
+            and "stopped_at" in work and not work.get("restore_snapshot_id")
+            and now - work["stopped_at"] < SNAPSHOT_QUIET
+            and last_published is not None and now - last_published < SNAPSHOT_DEADLINE)
+
+
+def _owed(db, *, include_running, now):
+    """(principal, reasons): recoverable work, excess snapshots, or a cold image.
 
     ``{"kind": "create"}`` is not recoverable. VolumeLifecycle.recover leaves
     it alone and the volume is formatted on first wake, so counting it made
     deploy readiness wait for a wake that the readiness window never issues.
+    A deferred stop is not owed until its quiet period ends.
     """
-    with closing(identities._connect(write=False)) as db:
-        candidates = [row[0] for row in db.execute(
-            "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
-            "ON i.principal=v.principal AND i.machine_id=v.uid "
-            "WHERE ((v.work IS NOT NULL AND "
-            "json_extract(v.work,'$.kind') IS NOT 'create' AND "
-            "(? OR json_extract(v.work,'$.kind')!='running')) OR "
-            "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7 OR "
-            "(v.local=1 AND v.asleep_at<? AND v.snapshot_id IS NOT NULL))",
-            (include_running, time.time() - COLD_AFTER,))]
-        from tinyassets.broker.admission import admission
+    from tinyassets.broker.admission import admission
 
-        return [owner for owner in candidates
-                if admission(db, owner).state in {"admitted", "suspended"}]
+    rows = db.execute(
+        "SELECT v.principal, v.work, v.local, v.asleep_at, v.snapshot_id, "
+        "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal), "
+        "(SELECT MAX(published_at) FROM owner_snapshots s WHERE s.principal=v.principal) "
+        "FROM owner_volumes v JOIN owner_identities i "
+        "ON i.principal=v.principal AND i.machine_id=v.uid").fetchall()
+    for principal, work, local, asleep_at, snapshot_id, snapshots, published in rows:
+        work = json.loads(work) if work else None
+        kind = work.get("kind") if work else None
+        reasons = []
+        if (work and kind != "create" and (include_running or kind != "running")
+                and not deferred(work, published, now)):
+            reasons.append(kind if isinstance(kind, str) else "work")
+        if snapshots > 7:
+            reasons.append("excess_snapshots")
+        if local and asleep_at is not None and asleep_at < now - COLD_AFTER and snapshot_id:
+            reasons.append("cold")
+        if reasons and admission(db, principal).state in {"admitted", "suspended"}:
+            yield principal, reasons
+
+
+def pending(identities, *, include_running=True):
+    with closing(identities._connect(write=False)) as db:
+        return [owner for owner, _ in _owed(
+            db, include_running=include_running, now=time.time())]
 
 
 def pending_counts(identities, *, include_running=False):
     """Counts for the same rows as pending(). Principals stay in the database."""
     counts = {}
-    cold_before = time.time() - COLD_AFTER
     with closing(identities._connect(write=False)) as db:
-        rows = db.execute(
-            "SELECT v.principal, v.work, v.local, v.asleep_at, v.snapshot_id, "
-            "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal) "
-            "FROM owner_volumes v JOIN owner_identities i "
-            "ON i.principal=v.principal AND i.machine_id=v.uid").fetchall()
-        from tinyassets.broker.admission import admission
-
-        for principal, work, local, asleep_at, snapshot_id, snapshots in rows:
-            if admission(db, principal).state not in {"admitted", "suspended"}:
-                continue
-            kind = json.loads(work).get("kind") if work else None
-            if work and kind != "create" and (include_running or kind != "running"):
-                key = kind if isinstance(kind, str) else "work"
+        for _, reasons in _owed(db, include_running=include_running, now=time.time()):
+            for key in reasons:
                 counts[key] = counts.get(key, 0) + 1
-            if snapshots > 7:
-                counts["excess_snapshots"] = counts.get("excess_snapshots", 0) + 1
-            if local and asleep_at is not None and asleep_at < cold_before and snapshot_id:
-                counts["cold"] = counts.get("cold", 0) + 1
     return counts
+
+
+def snapshot_deferred(identities, owner):
+    with closing(identities._connect(write=False)) as db:
+        work, published = db.execute(
+            "SELECT work, (SELECT MAX(published_at) FROM owner_snapshots s "
+            "WHERE s.principal=v.principal) FROM owner_volumes v WHERE principal=?",
+            (owner,)).fetchone()
+    return deferred(json.loads(work) if work else None, published, time.time())
 
 
 def _pin_set(pinned):
@@ -198,11 +222,17 @@ def _has_deletable_excess(db, owner, pins):
 
 
 def awake_owners(identities, *, stopping=False):
-    """Explicit running owners, not the pending-work queue (C15)."""
+    """Explicit running owners, not the pending-work queue (C15).
+
+    ``stopping`` adds intents whose stop is not confirmed. A dated stop is
+    confirmed: a restarted broker that counted it would hold a phantom slot.
+    """
     with closing(identities._connect(write=False)) as db:
         return [row[0] for row in db.execute(
             "SELECT principal FROM owner_volumes WHERE json_extract(work,'$.kind')='running' "
-            "OR (? AND json_extract(work,'$.kind') IN ('snapshot','restore'))", (stopping,))]
+            "OR (? AND json_extract(work,'$.kind') IN ('snapshot','restore') AND NOT ("
+            "json_extract(work,'$.stopped_at') IS NOT NULL AND "
+            "json_extract(work,'$.restore_snapshot_id') IS NULL))", (stopping,))]
 
 
 def reference(snapshot_id, sha256):
@@ -217,7 +247,7 @@ def dispatch(identities, document):
         raise ValueError("invalid volume lifecycle request")
     owner, action, arguments = (document["principal"], document["action"],
                                 document["arguments"])
-    fields = {"binding": set(), "created": set(), "sleep": set(),
+    fields = {"binding": set(), "created": set(), "sleep": set(), "stopped": set(),
               "publish": {"snapshot_id", "sha256"},
               "restore": {"snapshot_id"}, "continue_restore": set(),
               "restored": {"snapshot_id"}, "pending": set(),
@@ -304,6 +334,14 @@ def dispatch(identities, document):
                 work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex}
             elif work["kind"] != "snapshot":
                 raise PermissionError("restore must complete before sleep")
+            else:
+                # An explicit sleep owes its copy now, even over a deferred idle stop.
+                work = {key: value for key, value in work.items() if key != "stopped_at"}
+        elif action == "stopped":
+            # The host confirmed the stop. The first confirmation dates it.
+            if not work or work["kind"] != "snapshot":
+                raise PermissionError("no sleep awaiting its stop")
+            work = {"stopped_at": time.time(), **work}
         elif action == "publish":
             reference(arguments["snapshot_id"], arguments["sha256"])
             if (not work or work["kind"] != "snapshot"

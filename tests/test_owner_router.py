@@ -1053,7 +1053,7 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
                       Identity(user_id="alice", username="alice", capabilities=["read"]), route)
         assert messages[0]["status"] == 200
         # The existing tick observes the completed turn and selects idle sleep.
-        broker.server.routing.config.idle_limit = 0
+        monkeypatch.setattr("tinyassets.broker.volume_lifecycle.WAKE_LEASE", 0)
         await asyncio.to_thread(drive, broker.server.routing.tick())
         await asyncio.to_thread(drive, broker.server.routing.close())
 

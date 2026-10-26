@@ -113,7 +113,9 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_control, "request", control)
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
     routing = BrokerLifecycle(server)
-    routing.config.idle_limit = 1
+    monkeypatch.setattr("tinyassets.broker.volume_lifecycle.WAKE_LEASE", 1)
+    # These tests cover publication itself; deferral has its own tests.
+    monkeypatch.setattr("tinyassets.broker.owner_volumes.SNAPSHOT_QUIET", 0)
     routing.config.awake_cap = 2
     routing.config.wake_timeout = 2
     routing.publish = lambda **kwargs: None
@@ -683,3 +685,62 @@ def test_one_slow_answer_never_replaces_a_running_box(fleet, monkeypatch):
     manager.boxes[uid].answered -= manager.answer_silence  # Even long after an answer.
     assert fleet.wake("a") == uid
     assert fleet.runtime.stops == [] and len(fleet.runtime.starts) == 1
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_a_request_after_the_idle_read_keeps_the_box_serving(fleet):
+    uid = fleet.wake("a")
+    activity = fleet.states[uid]
+    activity.last -= 10
+    fleet.manager.boxes[uid].last -= 10
+    host = fleet.routing.volumes.host
+
+    async def request_arrives_first(owner, operation, **arguments):
+        if operation == "sleep":
+            with activity.lock:  # The next message lands after the status read.
+                activity.active += 1
+                activity.last = time.monotonic()
+        return await host(owner, operation, **arguments)
+
+    fleet.routing.volumes.host = request_arrives_first
+    try:
+        fleet.tick()
+        assert uid in fleet.runtime.live and not activity.draining
+        assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+    finally:
+        activity.active -= 1
+        fleet.routing.volumes.host = host
+
+
+@pytest.mark.verifies(
+    "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map")
+def test_a_restarted_broker_counts_no_deferred_stop_as_awake(fleet, monkeypatch):
+    from tinyassets.broker import owner_volumes
+    from tinyassets.broker.routing import BrokerLifecycle
+
+    monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
+    for _ in range(2):  # The first stop is copied at once; the second waits.
+        uid = fleet.wake("a")
+        fleet.states[uid].last -= 10
+        fleet.manager.boxes[uid].last -= 10
+        fleet.tick()
+    assert "stopped_at" in fleet.admission.volume("a")["work"]
+    assert uid not in fleet.runtime.live and "a" not in fleet.routing.awake
+    restarted = BrokerLifecycle(fleet.routing.server)
+    assert "a" not in restarted.awake
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_an_idle_box_that_drains_but_does_not_stop_is_not_read_as_busy(fleet, monkeypatch):
+    uid = fleet.wake("a")
+    fleet.states[uid].last -= 10
+    fleet.manager.boxes[uid].last -= 10
+
+    def stuck(uid):
+        raise OSError("shutdown deadline")
+
+    monkeypatch.setattr(fleet.runtime, "shutdown", stuck)
+    fleet.tick()
+    assert fleet.manager.boxes[uid].failures == 1
+    work = fleet.admission.volume("a")["work"]
+    assert work["kind"] == "snapshot" and "stopped_at" not in work  # Owed, not withdrawn.

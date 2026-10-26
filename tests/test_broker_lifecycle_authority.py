@@ -33,6 +33,8 @@ class Remote:
 
 @pytest.fixture
 def authority(tmp_path, monkeypatch):
+    # These tests cover publication itself; deferral has its own tests.
+    monkeypatch.setattr("tinyassets.broker.owner_volumes.SNAPSHOT_QUIET", 0)
     root = tmp_path / ".broker"
     root.mkdir(mode=0o700)
     identities = OwnerIdentities(root / "identities.db", initialize=True)
