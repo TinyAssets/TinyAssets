@@ -9,6 +9,8 @@ from pathlib import Path
 
 from starlette.responses import JSONResponse
 
+from tinyassets.asgi_scope import refuse_non_http
+
 BUILD_SHA_FILE = Path("/etc/tinyassets-build-sha")
 
 
@@ -137,15 +139,3 @@ class OwnerIngress:
         finally:
             gate.__exit__(None, None, None)
 
-
-#: RFC 6455 policy violation. No door forwards a websocket (ADR-027): the
-#: real-time relay is the only socket path, and it never reaches a box.
-WEBSOCKET_REFUSED = 1008
-
-
-async def refuse_non_http(scope, send):
-    """Close a websocket before any handler runs; fail loudly on other types."""
-    if scope["type"] == "websocket":
-        await send({"type": "websocket.close", "code": WEBSOCKET_REFUSED})
-        return
-    raise RuntimeError(f"unsupported ASGI scope type: {scope['type']!r}")

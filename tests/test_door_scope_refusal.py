@@ -5,7 +5,8 @@ import asyncio
 
 import pytest
 
-from tinyassets.owner_ingress import WEBSOCKET_REFUSED, OwnerIngress
+from tinyassets.asgi_scope import WEBSOCKET_REFUSED
+from tinyassets.owner_ingress import OwnerIngress
 from tinyassets.owner_router import OwnerRouter
 
 

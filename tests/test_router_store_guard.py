@@ -88,7 +88,7 @@ _ROUTER_IMPORTS = {
     "tinyassets.broker.owner_identities",
     "tinyassets.broker.inbound_verification",  # Router asks the broker to verify; no profile.
     "tinyassets.inbound_routing",  # Router-owned per-installation breaker, not an owner store.
-    "tinyassets.owner_ingress",  # refuse_non_http only: stdlib and starlette, opens no store.
+    "tinyassets.asgi_scope",  # The non-HTTP refusal both doors share; imports nothing.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
     "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.

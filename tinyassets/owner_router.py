@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse
 
-from tinyassets.owner_ingress import refuse_non_http
+from tinyassets.asgi_scope import refuse_non_http
 
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
