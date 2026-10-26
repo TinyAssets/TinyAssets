@@ -105,6 +105,8 @@ _KEYS = frozenset({
     "centers_zero_owners", "centers_several_owners", "centers_ledger_one_owner",
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
+    "assignments", "members_readded", "skipped_no_grant", "skipped_no_definition",
+    "refused_mismatch", "centers_changed",
     "stage", "exception", "function",
 })
 
@@ -113,29 +115,53 @@ _KEYS = frozenset({
 # A clean interpreter with only these files resolves one http secret.
 PACKAGE_FILES = (
     "tinyassets/__init__.py",
-    "tinyassets/ttl_memo.py",
+    "tinyassets/config.py",
     "tinyassets/credential_vault.py",
+    "tinyassets/exceptions.py",
+    "tinyassets/execution_subject.py",
     "tinyassets/owner_activity.py",
     "tinyassets/owner_runtime.py",
+    "tinyassets/provider_assignment.py",
+    "tinyassets/provider_assignment_departure.py",
+    "tinyassets/provider_assignment_manifest.py",
+    "tinyassets/provider_authority.py",
+    "tinyassets/provider_work_authority.py",
+    "tinyassets/providers/__init__.py",
+    "tinyassets/providers/owner_binding.py",
     "tinyassets/rpc_frames.py",
+    "tinyassets/sqlite_readonly.py",
     "tinyassets/storage/__init__.py",
     "tinyassets/storage/outbound_connections.py",
+    "tinyassets/storage/provider_work_authority.py",
     "tinyassets/storage/workspace_authority.py",
+    "tinyassets/ttl_memo.py",
+    "tinyassets/universe_files.py",
+    "tinyassets/workspace_fs.py",
 )
 
 
 def _package_available():
     """True when the vault resolver can be imported. The message is not kept."""
     try:
+        from tinyassets.config import write_provider_assignment_projection
         from tinyassets.credential_vault import load_credential_vault
         from tinyassets.owner_runtime import current
+        from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+        from tinyassets.provider_assignment_departure import add_members
+        from tinyassets.provider_authority import write_record
+        from tinyassets.sqlite_readonly import readonly_db
         from tinyassets.storage.outbound_connections import (
             _GeneralVaultCredentialResolver,
         )
+        from tinyassets.storage.provider_work_authority import _record
+        from tinyassets.universe_files import read_universe_text
     except ImportError:
         return False
     return all(callable(item) for item in (
         load_credential_vault, current, _GeneralVaultCredentialResolver,
+        load_provider_assignment_in_transaction, add_members, write_record,
+        readonly_db, write_provider_assignment_projection, _record,
+        read_universe_text,
     ))
 
 
@@ -692,6 +718,8 @@ def _wanted(parts):
         return parts
     if (len(parts) == 2 and parts[1] == "provider_definitions.json"
             and _CENTER_RE.fullmatch(parts[0])):
+        return parts
+    if parts in {(".tinyassets.db",), (".tinyassets.db-wal",)}:
         return parts
     return None
 
@@ -2647,6 +2675,317 @@ def _safe_refusal_plan(source_root):
         }
 
 
+def _assignment_counts():
+    return {
+        "members_readded": 0,
+        "skipped_no_grant": 0,
+        "skipped_no_definition": 0,
+        "refused_mismatch": 0,
+        "centers_changed": 0,
+    }
+
+
+def _verified_definitions(path, center, owner):
+    """Owned definitions, plus ids that name another owner or center.
+
+    A tampered id refuses the file (None). A missing file is an empty store.
+    """
+    if path is None or path.is_symlink() or not path.is_file():
+        return {}, set()
+    try:
+        documents = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, set()
+    if not isinstance(documents, list):
+        return None, set()
+    found, foreign = {}, set()
+    for document in documents:
+        if not isinstance(document, dict):
+            return None, set()
+        ident = _definition_id(document)
+        if ident is None or document.get("id") != ident:
+            return None, set()
+        if document.get("universe_id") != center or document.get("owner_user_id") != owner:
+            foreign.add(ident)
+            continue
+        found[ident] = document
+    return found, foreign
+
+
+def _definitions_agree(left, right, method, owner, center):
+    keys = ("id", "universe_id", "owner_user_id", "access_method", "ref")
+    return (
+        all(left.get(key) == right.get(key) for key in keys)
+        and left.get("access_method") == method
+        and left.get("owner_user_id") == owner
+        and left.get("universe_id") == center
+    )
+
+
+def _subscription_credential(root, owner, ref):
+    if not isinstance(ref, str) or not ref:
+        return False
+    digest = hashlib.sha256(owner.encode()).hexdigest()
+    path = (
+        Path(root) / ".broker" / "accounts" / digest / "credentials"
+        / FILES["subscription_state"]
+    )
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(document, dict) and ref in document
+
+
+def _project_assignment(center_dir, assignment):
+    """Publish the non-authorizing projection. The authority record does not need PyYAML."""
+    from tinyassets.config import write_provider_assignment_projection
+    from tinyassets.provider_authority import write_record
+
+    ready = assignment.state == "ready" and bool(assignment.candidates)
+    members = {member.provider: member for member in assignment.candidates} if ready else {}
+    allowed = sorted(members)
+    record = {
+        "allowed_providers": allowed if ready else [],
+        "engine_assignment_generation": assignment.generation,
+        "engine_assignment_state": assignment.state,
+        "provider_authority_bindings": {
+            name: {
+                "binding_id": members[name].binding_id,
+                "generation": members[name].binding_generation,
+                "binding_digest": members[name].binding_digest,
+                "assignment_digest": assignment.assignment_digest,
+            }
+            for name in allowed
+        },
+    }
+    try:
+        write_provider_assignment_projection(
+            center_dir, state=assignment.state, generation=assignment.generation,
+            provider=assignment.provider,
+            binding={
+                "binding_id": assignment.binding_id,
+                "generation": assignment.binding_generation,
+                "binding_digest": assignment.binding_digest,
+                "assignment_digest": assignment.assignment_digest,
+            },
+            assignment_candidates=assignment.candidates if ready else None,
+        )
+    except ImportError:
+        write_record(center_dir, record)
+
+
+def _seat_members(snapshot, live, snap_defs, live_defs, grants, live_root, counts):
+    """Members to seat, or None when this center must not be written."""
+    if live is None or live.owner_user_id != snapshot.owner_user_id:
+        counts["refused_mismatch"] += max(1, len(snapshot.candidates))
+        return None
+    snap_defs, snap_foreign = snap_defs
+    live_defs, live_foreign = live_defs
+    if snap_defs is None or live_defs is None:
+        counts["refused_mismatch"] += max(1, len(snapshot.candidates))
+        return None
+    chosen = []
+    seen = set()
+    if live.manifest_digest:
+        for member in live.candidates:
+            chosen.append(member)
+            seen.add(member.provider)
+    owner = snapshot.owner_user_id
+    center = snapshot.universe_id
+    for member in snapshot.candidates:
+        if member.provider in seen:
+            current = next(
+                (item for item in live.candidates if item.provider == member.provider), None,
+            )
+            if current is not None and current.access.document() != member.access.document():
+                counts["refused_mismatch"] += 1
+            continue
+        method, _, ident = member.provider.partition(":")
+        if method not in {"api_key_http", "subscription_cli"} or not ident:
+            counts["refused_mismatch"] += 1
+            continue
+        if ident in snap_foreign or ident in live_foreign:
+            counts["refused_mismatch"] += 1
+            continue
+        snap_def = snap_defs.get(ident)
+        live_def = live_defs.get(ident)
+        if snap_def is None or live_def is None:
+            counts["skipped_no_definition"] += 1
+            continue
+        if not _definitions_agree(snap_def, live_def, method, owner, center):
+            counts["refused_mismatch"] += 1
+            continue
+        if method == "subscription_cli":
+            if _subscription_credential(live_root, owner, live_def.get("ref")):
+                chosen.append(member)
+                seen.add(member.provider)
+            continue
+        if method != "api_key_http":
+            counts["refused_mismatch"] += 1
+            continue
+        if not _grant_live(grants, owner, live_def.get("ref")):
+            counts["skipped_no_grant"] += 1
+            continue
+        chosen.append(member)
+        seen.add(member.provider)
+    providers = {member.provider for member in chosen}
+    root = snapshot.provider if snapshot.provider in providers else None
+    if root is None and live.state == "ready" and live.provider in providers:
+        root = live.provider
+    if root is None:
+        return None
+    already = (
+        live.state == "ready" and live.provider == root
+        and {member.provider: member.access.document() for member in live.candidates}
+        == {member.provider: member.access.document() for member in chosen}
+    )
+    if already:
+        return None
+    added = [
+        member.provider for member in chosen
+        if member.provider not in {item.provider for item in live.candidates}
+    ]
+    return {"members": tuple(chosen), "root": root, "added": len(added)}
+
+
+def _load_assignment(conn, center):
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+
+    try:
+        return load_provider_assignment_in_transaction(conn, universe_id=center)
+    except (RuntimeError, ValueError, sqlite3.Error):
+        return "refused"
+
+
+def _write_assignment(db_path, center, decision):
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.provider_assignment_departure import add_members
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        live = load_provider_assignment_in_transaction(conn, universe_id=center)
+        updated = add_members(conn, live, decision["members"], root=decision["root"])
+        if updated.generation == live.generation:
+            conn.rollback()
+            return None
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return updated
+    finally:
+        conn.close()
+
+
+def restore_assignments(live_root, source_root, mounts, ledger, *, write):
+    """Re-seat snapshot members whose definition and grant now exist.
+
+    Dry-run applies the same writer to disposable copies of the owner databases.
+    Returns None when the snapshot has no assignment database. Counts only.
+    """
+    from tinyassets.sqlite_readonly import readonly_db
+
+    source_db = Path(source_root) / ".tinyassets.db"
+    mounts = Path(mounts) if mounts else None
+    if (source_db.is_symlink() or not source_db.is_file()
+            or mounts is None or mounts.is_symlink() or not mounts.is_dir()
+            or ledger is None or Path(ledger).is_symlink() or not Path(ledger).is_file()):
+        return None
+    counts = _assignment_counts()
+    disposable = None
+    write_mounts = mounts
+    if not write:
+        disposable = tempfile.TemporaryDirectory(prefix="ta-assign-")
+        write_mounts = Path(disposable.name)
+    try:
+        with readonly_db(source_db) as source, readonly_db(Path(ledger)) as grants:
+            source.row_factory = sqlite3.Row
+            grants.row_factory = sqlite3.Row
+            source.execute("BEGIN")
+            centers = [
+                row[0] for row in source.execute(
+                    "SELECT universe_id FROM provider_assignments",
+                )
+            ]
+            for center in centers:
+                if not isinstance(center, str) or not _CENTER_RE.fullmatch(center):
+                    counts["refused_mismatch"] += 1
+                    continue
+                snapshot = _load_assignment(source, center)
+                if snapshot == "refused" or snapshot is None or not snapshot.candidates:
+                    if snapshot == "refused":
+                        counts["refused_mismatch"] += 1
+                    continue
+                uid = next(
+                    (item for item, owner in _uids(live_root)
+                     if owner == snapshot.owner_user_id),
+                    None,
+                )
+                if uid is None or not _UID_RE.fullmatch(str(uid)):
+                    counts["skipped_no_definition"] += len(snapshot.candidates)
+                    continue
+                read_volume = mounts / str(uid)
+                write_volume = write_mounts / str(uid)
+                db_path = read_volume / ".tinyassets.db"
+                if (read_volume.is_symlink() or not read_volume.is_dir()
+                        or db_path.is_symlink() or not db_path.is_file()):
+                    counts["skipped_no_definition"] += len(snapshot.candidates)
+                    continue
+                snap_defs = _verified_definitions(
+                    Path(source_root) / center / "provider_definitions.json",
+                    center, snapshot.owner_user_id,
+                )
+                live_defs = _verified_definitions(
+                    read_volume / center / "provider_definitions.json",
+                    center, snapshot.owner_user_id,
+                )
+                with readonly_db(db_path) as owner:
+                    owner.row_factory = sqlite3.Row
+                    owner.execute("BEGIN")
+                    live = _load_assignment(owner, center)
+                if live == "refused":
+                    counts["refused_mismatch"] += len(snapshot.candidates)
+                    continue
+                decision = _seat_members(
+                    snapshot, live, snap_defs, live_defs, grants, live_root, counts,
+                )
+                if decision is None:
+                    continue
+                if not write:
+                    write_volume.mkdir(parents=True, exist_ok=True)
+                    target_db = write_volume / ".tinyassets.db"
+                    dst = sqlite3.connect(target_db)
+                    try:
+                        with readonly_db(db_path) as src:
+                            src.backup(dst)
+                    finally:
+                        dst.close()
+                else:
+                    target_db = db_path
+                try:
+                    updated = _write_assignment(target_db, center, decision)
+                except (sqlite3.Error, ValueError, RuntimeError, OSError):
+                    counts["refused_mismatch"] += decision["added"] or 1
+                    continue
+                if updated is None:
+                    continue
+                center_dir = write_volume / center
+                center_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    _project_assignment(center_dir, updated)
+                except (OSError, ValueError, RuntimeError):
+                    pass
+                counts["members_readded"] += decision["added"]
+                counts["centers_changed"] += 1
+        return counts
+    finally:
+        if disposable is not None:
+            disposable.cleanup()
+
+
 def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
     """Stop the broker, keep a verified copy, merge, start the broker again.
 
@@ -2667,6 +3006,13 @@ def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
     try:
         kept = take_rollback(live_root, rollback_dir)
         plan = merge(live_root, source_root)
+        if isinstance(plan, dict) and not plan.get("error"):
+            assignments = restore_assignments(
+                live_root, source_root, mounts,
+                live_root / ".broker" / "outbound.db", write=True,
+            )
+            if assignments is not None:
+                plan["assignments"] = assignments
         if isinstance(plan, dict) and plan.get("error"):
             merge_error = plan["error"]
         restored = restore_markers(mounts, source_root)
@@ -3015,7 +3361,7 @@ def main(argv=None):
                     destination=destination, digests=digests,
                 )
                 if args.mode == "dry-run":
-                    plan = _plan_only(root, source_root)
+                    plan = _plan_only(root, source_root, args.mounts)
                     if error is None and isinstance(plan, dict) and plan.get("error"):
                         error = plan["error"]
                     would, uids = marker_plan(args.mounts, source_root)
@@ -3054,7 +3400,7 @@ def main(argv=None):
     return 0
 
 
-def _plan_only(live_root, source_root):
+def _plan_only(live_root, source_root, mounts=None):
     """Count the merge against a sqlite snapshot so the live file is unchanged."""
     with tempfile.TemporaryDirectory(prefix="ta-cred-plan-") as directory:
         staging = Path(directory) / "live"
@@ -3070,7 +3416,15 @@ def _plan_only(live_root, source_root):
                 target = broker_dir / "accounts" / digest / "credentials" / FILES[kind]
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
-        return merge(staging, source_root)
+        plan = merge(staging, source_root)
+        if isinstance(plan, dict) and not plan.get("error"):
+            assignments = restore_assignments(
+                live_root, source_root, mounts,
+                staging / ".broker" / "outbound.db", write=False,
+            )
+            if assignments is not None:
+                plan["assignments"] = assignments
+        return plan
 
 
 def _stage_archive(directory, snapshot_dir, chosen, destination, digests):
@@ -3136,7 +3490,8 @@ def _copy_wanted(source, dest):
             size = path.stat().st_size
         except OSError:
             continue
-        if relative[-1] != "outbound.db" and size > 8 * 1024 * 1024:
+        if (relative[-1] not in {"outbound.db", ".tinyassets.db", ".tinyassets.db-wal"}
+                and size > 8 * 1024 * 1024):
             continue
         target = dest.joinpath(*relative)
         target.parent.mkdir(parents=True, exist_ok=True)

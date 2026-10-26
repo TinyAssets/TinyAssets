@@ -386,6 +386,38 @@ def test_inspect_counts_accounts_and_hides_private_values(tmp_path, monkeypatch,
     assert report["sources"][0]["outbound_connections"] == 1
 
 
+def test_assignment_restore_reports_counts_and_writes_only_on_apply(tmp_path):
+    from tests.test_restore_legacy_credentials import (
+        _assignment_world,
+        _restored_assignment,
+        _restore,
+        _tree_bytes,
+    )
+
+    world = _assignment_world(tmp_path)
+    before = _tree_bytes(world["volume"])
+    planned = _restore(world, write=False)
+    assert planned["members_readded"] == 1
+    assert planned["centers_changed"] == 1
+    assert _tree_bytes(world["volume"]) == before
+    rc.safe_json({"mode": "dry-run", "plan": {"assignments": planned}})
+    applied = _restore(world, write=True)
+    assert applied == planned
+    restored = _restored_assignment(world["volume"])
+    assert restored.provider == world["root"]
+    seated = next(
+        member for member in restored.candidates if member.provider == world["root"]
+    )
+    assert seated.access.document() == world["access"]
+    assert world["held"] not in {member.provider for member in restored.candidates}
+    again = _restore(world, write=True)
+    assert again["members_readded"] == 0
+    assert again["centers_changed"] == 0
+    rendered = rc.safe_json({"mode": "dry-run", "plan": {"assignments": again}})
+    assert "gpt-test" not in rendered
+    assert "provdef_" not in rendered
+
+
 def test_banned_operations_and_workflow_posture():
     module = (ROOT / "tinyassets/restore_credentials.py").read_text(encoding="utf-8")
     shell = (ROOT / "deploy/restore-credentials.sh").read_text(encoding="utf-8")
