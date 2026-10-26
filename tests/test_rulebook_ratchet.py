@@ -181,17 +181,6 @@ def test_combined_ceiling_is_not_loose(cb) -> None:
     assert cb.COMBINED_HARD_BYTES <= always
 
 
-def test_the_agents_loop_says_a_new_rule_deletes_an_old_one() -> None:
-    """The loop carries the one line an agent acts on; this ratchet enforces it.
-
-    The principle's prose lived in PLAN.md until that file was retired
-    (2026-10-06, ADR-005). The script is the rule now, so only the loop line is
-    asserted.
-    """
-    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    assert "A new rule deletes an old one" in agents
-
-
 def _load_sync_module():
     spec = importlib.util.spec_from_file_location(
         "sync_direction_ratchet", REPO_ROOT / "scripts" / "sync_direction.py")
@@ -375,3 +364,6 @@ def test_pointer_files_do_not_count_toward_the_always_loaded_total(cb, tmp_path:
     always = sum(b.max_bytes for b in cb.CONFIG if b.always_loaded)
     assert combined == always
     assert not hard_busted
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

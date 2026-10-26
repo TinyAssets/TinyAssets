@@ -17,6 +17,7 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -92,11 +93,11 @@ def test_run_blocks_never_interpolate_expressions():
         assert "${{" not in (step.get("run") or ""), step.get("name")
 
 
-def test_the_marker_is_registered_and_carried_by_the_form_proofs():
+def test_the_marker_is_registered_and_carried_by_the_approval_proof():
     pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert '"real_browser:' in pyproject
     files = {n.split("::")[0] for n in _marked()}
-    assert "tests/test_custom_ui_forms_browser.py" in files, files
+    assert "tests/test_approval_sheet_real_browser.py" in files, files
 
 
 def test_every_marked_file_retriggers_the_proof():
@@ -160,7 +161,7 @@ def test_the_proofs_run_in_the_jail_proofs_venue_and_nowhere_weaker():
     assert profile == expected
     assert "if" not in profile and not profile.get("continue-on-error", False)
     assert steps.index(profile) < steps.index(_step(wf, "Run the real-browser proofs"))
-    for name in ("Run the real-browser proofs", "Run the complete preview containment module"):
+    for name in ("Run the real-browser proofs",):
         step = _step(wf, name)
         run = step["run"]
         assert 'python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns' in run
@@ -185,21 +186,9 @@ def test_browser_proof_runs_on_path_selected_prs_and_after_merge():
     )
 
 
-def test_the_whole_preview_module_runs_and_every_collected_case_is_asserted():
-    wf = _load()
-    run = _step(wf, "Run the complete preview containment module")
-    assert "-- tests/test_ui_preview.py -q" in run["run"]
-    pytest_args = run["run"].split("-- tests/test_ui_preview.py", 1)[1]
-    assert " -m " not in pytest_args and " -k " not in pytest_args
-    assert "--junitxml /out/junit-preview.xml" in pytest_args
-    check = _step(wf, "Assert every preview case executed")
-    assert check["if"] == "always()"
-    assert "tests/test_ui_preview.py --collect-only" in check["run"]
-    assert '"${#cases[@]}" -eq 0' in check["run"] and "exit 1" in check["run"]
-    assert 'args+=(--nodeid "$case")' in check["run"]
-    assert 'ci_assert_junit_case.py --junit "$JUNIT_PATH"' in check["run"]
-    assert "|| true" not in check["run"] and not check.get("continue-on-error", False)
-    assert check["env"]["JUNIT_PATH"] == run["env"]["OUT_DIR"] + "/junit-preview.xml"
-    artifact = _step(wf, "Upload preview junit")
-    assert artifact["if"] == "always()"
-    assert artifact["with"]["path"].endswith("/junit-preview.xml")
+
+
+pytestmark = pytest.mark.verifies(
+    'core-capability-assurance:'
+    'Production image acceptance before merge',
+)

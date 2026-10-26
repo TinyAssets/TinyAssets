@@ -201,6 +201,9 @@ class _ForegroundRunProviderSession:
         self._branch_version_id = ""
         self._branch_digest = ""
         self._branch_snapshot: dict[str, Any] | None = None
+        self._activity_binding = None
+        self._activity_record: dict[str, Any] | None = None
+        self._activity_subject: ExecutionSubject | None = None
         self._provider = ""
         self._receipt: ProviderUniverseWorkReceipt | None = None
         self._claim: ProviderWorkExecutionClaim | None = None
@@ -275,6 +278,11 @@ class _ForegroundRunProviderSession:
         )
         if not all(exact):
             raise PermissionError("foreground run state or immutable subject changed")
+        if self._activity_binding is not None:
+            if (record.get("owner_user_id") != self._principal_id
+                    or record.get("queue_universe_id") != self._universe_id):
+                raise PermissionError("activity run ownership changed")
+            self._activity_binding.check()
 
     @property
     def bound_run_id(self) -> str:
@@ -337,6 +345,41 @@ class _ForegroundRunProviderSession:
             raise
         except Exception as exc:
             raise _held_authority_error(exc) from exc
+
+    def prepare_activity(self, *, run_id: str, activity_id: str, generation: int) -> dict:
+        """Bind a committed activity generation, without a stored workflow."""
+        from tinyassets import agent_activities
+        from tinyassets.activity_runner import ActivityRunBinding
+
+        if self._run_id:
+            raise PermissionError("this provider session is already bound to a run")
+        record = agent_activities.get(self._universe_dir, activity_id)
+        if (record is None or record["owner_principal"] != self._principal_id
+                or record["runner_generation"] != generation or record["runner_token"] != run_id):
+            raise PermissionError("activity admission identity changed")
+        binding = ActivityRunBinding(self._universe_dir, activity_id, generation, run_id)
+        binding.check()
+        self._validate_founder_home()
+        self._run_id = run_id
+        # This is an admission plan, not an executable graph or a branch row.
+        self._branch_snapshot = {
+            "author": self._principal_id,
+            "activity": {key: record[key] for key in (
+                "activity_id", "agent_id", "runner_generation", "title", "brief")},
+            "node_defs": [{"node_id": "agent", "model_hint": "writer",
+                           "prompt_template": record["brief"] or record["title"],
+                           "tools_allowed": ["agent"]}],
+        }
+        self._branch_digest = _content_digest(self._branch_snapshot)
+        self._activity_binding = binding
+        self._activity_record = record
+        self._activity_subject = ExecutionSubject(
+            kind=ExecutionSubjectKind.AGENT_ACTIVITY,
+            ref=f"{activity_id}:{generation}:{run_id}", digest=self._branch_digest,
+        )
+        self._validate_run(allowed_statuses={"running"})
+        self._request_budget.link("run", run_id)
+        return record
 
     def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -438,8 +481,9 @@ class _ForegroundRunProviderSession:
                 work_item_id=self._run_id, binding_id=None, binding_generation=None,
                 binding_digest=None, binding_revocation_generation=None,
                 principal_id=self._principal_id, actor_id=f"universe:{self._universe_id}",
-                universe_id=self._universe_id, branch_def_id=self._branch_def_id,
-                branch_version_id=subject_ref, provider=None,
+                universe_id=self._universe_id,
+                branch_def_id=None if self._activity_subject else self._branch_def_id,
+                branch_version_id=None if self._activity_subject else subject_ref, provider=None,
                 credential_reference_digest=None, assignment_generation=1,
                 assignment_digest=digest, executor_class=_admitted_cloud_class(),
                 allowed_operations=(RUN_GRAPH_OPERATION,), allowed_roles=roles,
@@ -448,7 +492,7 @@ class _ForegroundRunProviderSession:
                 expires_at=(datetime.now(timezone.utc) + timedelta(hours=1))
                 .isoformat().replace("+00:00", "Z"),
                 created_at=store.timestamp(),
-                execution_subject=ExecutionSubject(
+                execution_subject=self._activity_subject or ExecutionSubject(
                     kind=ExecutionSubjectKind.BRANCH_VERSION, ref=subject_ref,
                     digest=self._branch_digest,
                 ),
@@ -482,40 +526,8 @@ class _ForegroundRunProviderSession:
             return
         with self._lock:
             if self._receipt is None:
-                self._refresh_sign_ins()
                 self._admit()
 
-    def _refresh_sign_ins(self) -> None:
-        """Bring the owner's stored sign-ins current before the receipt pins them.
-
-        The receipt `_admit` mints pins the assignment generation and credential
-        digest for the whole run, and a refresh renews the accepted source,
-        which moves both. So this runs once, before that mint, and never after
-        it. Only for a run `_admit` would accept on these grounds -- the
-        principal's own home, a Branch they authored, a run still running;
-        anything else is refused by `_admit` with its own words and refreshes
-        nothing on the way (Codex refute-review on #4082: another user's public
-        Branch refreshed the requester's sign-in and then failed).
-        """
-        if self._sign_ins_refreshed:
-            return
-        self._sign_ins_refreshed = True
-        try:
-            self._validate_founder_home()
-            author = str((self._branch_snapshot or {}).get("author") or "").strip()
-            if author != self._principal_id:
-                return
-            self._validate_run(allowed_statuses={"running"})
-        except PermissionError:
-            return
-        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
-
-        refresh_deposited_subscriptions(
-            base_path=self._base_path,
-            universe_dir=self._universe_dir,
-            owner_user_id=self._principal_id,
-            universe_id=self._universe_id,
-        )
 
     def _validate_receipt_scope(self) -> None:
         receipt = self._receipt
@@ -525,7 +537,8 @@ class _ForegroundRunProviderSession:
             receipt.actor_id == f"universe:{self._universe_id}",
             receipt.universe_id == self._universe_id,
             receipt.work_item_id == self._run_id,
-            receipt.branch_def_id == self._branch_def_id,
+            receipt.branch_def_id == (None if self._activity_subject else self._branch_def_id),
+            self._activity_subject is None or receipt.execution_subject == self._activity_subject,
             receipt.execution_subject is not None,
             receipt.execution_subject is not None
             and receipt.execution_subject.digest == self._branch_digest,
@@ -612,18 +625,12 @@ class _ForegroundRunProviderSession:
         self, *, role: str, prompt: str, system: str,
         policy: dict[str, Any] | None,
     ) -> Iterator[tuple[ProviderInvocationCarrier, Path | None, str]]:
-        from tinyassets.credential_vault import (
-            cleanup_llm_credential_snapshot,
-            snapshot_llm_subscription_credential,
-        )
         from tinyassets.exceptions import ProviderAuthorityHeldError
-        from tinyassets.provider_serving_binding import _is_open_provider
         from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
         from tinyassets.shared_self import shared_self_requested
         from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
         _admitted_cloud_class()
-        snapshot = None
         carrier = None
         try:
             if self._closed or self._receipt is None or self._claim is None:
@@ -666,7 +673,7 @@ class _ForegroundRunProviderSession:
                 try:
                     from tinyassets.storage.provider_work_authority import _current_connected_member
 
-                    custody = _current_connected_member(
+                    _current_connected_member(
                         conn, self._base_path, self._receipt, selection,
                     )
                     shares = len(_prompt_nodes(self._branch_snapshot))
@@ -679,24 +686,18 @@ class _ForegroundRunProviderSession:
                         selection=selection, model_snapshot=model_snapshot,
                         needs_tools=shared_self_requested(self._branch_snapshot),
                     )
-                    if not _is_open_provider(provider):
-                        snapshot = snapshot_llm_subscription_credential(
-                            universe_dir=self._universe_dir, custody=custody,
-                        )
                     self._validate_run(allowed_statuses={"running"})
                     conn.commit()
                 except Exception:
                     conn.rollback()
                     raise
-            yield carrier, snapshot.directory if snapshot is not None else None, provider
+            yield carrier, provider
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
             if carrier is not None:
                 raise
             raise _held_authority_error(exc) from exc
-        finally:
-            cleanup_llm_credential_snapshot(snapshot)
 
     def _call(
         self,
@@ -739,8 +740,7 @@ class _ForegroundRunProviderSession:
             config = replace(config, request_budget=self._request_budget,
                              request_purpose="helper")
 
-        # Enforcement site (C), foreground half, at the call boundary — the
-        # mirror of the served lane's gate in `background_served_provider._call`.
+        # Enforcement site (C), at the call boundary.
         # `_admit()` alone is not enough here, for two independent reasons:
         #
         #  * the injected-stub branch immediately below dispatches to the
@@ -775,20 +775,9 @@ class _ForegroundRunProviderSession:
             node_key=getattr(config, "agent_node_key", ""),
         )
         if node is not None:
-            from tinyassets import activity_runner
-
-            # A run of the universe's Activities branch continues the activity
-            # whose record names this run -- found by run id, never from inputs
-            # -- and an unlinked one is refused here, before the agent acts.
-            activity = (
-                activity_runner.linked_activity(
-                    self._base_path, self._universe_id, self._run_id)
-                if activity_runner.is_activities_branch(
-                    self._branch_snapshot, self._universe_id)
-                else None
-            )
             from tinyassets.control_plane import session
 
+            activity = self._activity_record
             response_observer = kwargs.pop("response_observer", None)
             metadata_observer = kwargs.pop("_metadata_observer", None)
             if role != "writer" or kwargs:
@@ -825,9 +814,7 @@ class _ForegroundRunProviderSession:
 
         The decision is the platform's single capacity policy, not a second one:
         `free_sibling_retry` answers whether an unknown window buys a sibling,
-        the same call and the same bound the conversation path uses. Engine
-        inference only -- a native executor runs on ONE subscription, so a limit
-        there is a fact about that account rather than a model within it.
+        the same call and the same bound the conversation path uses for HTTP inference.
 
         Returns the exhaustion to record and whether it rests on a guess.
         """
@@ -1020,8 +1007,6 @@ class _ForegroundRunProviderSession:
                     kind = router.selected_agent_execution_kind(selected) if router else None
                     boundary = capacity_boundary(
                         selected, exc.attempts, execution_kind=kind,
-                        native_evidence=(getattr(exc, "native_evidence", ())
-                                         if kind == "native_agent" else ()),
                     )
                     if boundary is None:
                         raise _held_attempt_error(role, selected, exc) from exc
@@ -1065,7 +1050,7 @@ class _ForegroundRunProviderSession:
             prompt=prompt,
             system=system,
             policy=policy,
-        ) as (carrier, snapshot_dir, provider):
+        ) as (carrier, provider):
             from tinyassets.config import load_universe_config
             from tinyassets.providers.base import UniverseContext
 
@@ -1078,7 +1063,6 @@ class _ForegroundRunProviderSession:
             # durable allocation at the last boundary before transport.
             call_config = replace(
                 call_config, request_budget=self._request_budget,
-                credential_snapshot_dir=snapshot_dir or call_config.credential_snapshot_dir,
                 workflow_node=True,
                 model_launch_parent=("run", self._run_id,
                                      carrier.work_receipt_id, None)

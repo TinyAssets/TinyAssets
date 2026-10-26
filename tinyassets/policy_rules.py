@@ -1,4 +1,4 @@
-"""Read-only rule projection; every decision comes from the broker policy."""
+"""Read-only rule projection; owner action decisions stay inside the box."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from tinyassets.broker.client import owner_policy_operation
-from tinyassets.broker.owner_identities import admitted_owner
+from tinyassets.action_policy import owner_policy_operation
 from tinyassets.broker.policy import BEHAVIOURS
+from tinyassets.owner_centers import admitted_owner
 
 DO, DO_IF_PREAPPROVED, ASK_FIRST, HAND_OFF = BEHAVIOURS
 MAIN_AGENT = "main"
@@ -39,13 +39,13 @@ class Decision:
 def projection(home: Path) -> dict:
     home = Path(home)
     owner = admitted_owner(home.parent, center=home.name)
-    return owner_policy_operation(home.parent, owner, "read")
+    return owner_policy_operation(home.parent, owner, "read", center=home.name)
 
 
 def entries(home: Path, table: str) -> list[dict]:
     document = projection(home)["policy"]
     return [entry for entry in document["entries"]
-            if entry["table"] == table and entry["scope"] in ("account", Path(home).name)]
+            if entry["table"] == table and entry["scope"] == "account"]
 
 
 def standing_grants(home: Path, agent: str = MAIN_AGENT) -> list[dict]:
@@ -72,7 +72,12 @@ def decide(home: Path, action_class: str, *, connection: str = "",
            request_id: str = "") -> Decision:
     home = Path(home)
     owner = admitted_owner(home.parent, center=home.name)
-    result = owner_policy_operation(home.parent, owner, "decide", request={
+    operation_fn = owner_policy_operation
+    if action_class in {"spend", "money.move"}:
+        from tinyassets.broker.client import owner_policy_operation as spending_policy
+
+        operation_fn = spending_policy
+    result = operation_fn(home.parent, owner, "decide", center=home.name, request={
         "center": home.name, "action_class": action_class, "connection": connection,
         "operation": operation, "destination": destination, "amount": amount,
         "source": source, "agent": agent, "request_id": request_id})

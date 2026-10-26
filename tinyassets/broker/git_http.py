@@ -14,23 +14,22 @@ from tinyassets.storage import outbound_connections as oc
 from tinyassets.storage.workspace_authority import connection_git_host, require_git_scope
 
 
-def target(resource, verb, request):
-    kind, repo = require_git_scope(verb)
-    if verb not in resource.scopes or resource.connection_type != "http":
-        raise PermissionError("git scope unavailable")
-    if not isinstance(request, dict) or set(request) != {
-            "host", "method", "target", "agent", "incarnation", "upload"}:
-        raise PermissionError("invalid git request")
+def credential_endpoints(resource):
+    """Express repository rights in the same credential endpoint rule as HTTP."""
     host = connection_git_host(resource)
-    if not host or request["host"] != host or not request["agent"]:
-        raise PermissionError("git host or agent mismatch")
-    service = "git-upload-pack" if kind == "git_read" else "git-receive-pack"
-    discovery = f"/{repo}.git/info/refs?service={service}"
-    rpc = f"/{repo}.git/{service}"
-    if (request["method"], request["target"], request["upload"]) not in (
-            ("GET", discovery, False), ("POST", rpc, True)):
-        raise PermissionError("git method or repository mismatch")
-    return f"https://{host}{request['target']}", service
+    endpoints = []
+    for scope in resource.scopes:
+        if not scope.startswith(("git_read:", "git_write:")):
+            continue
+        kind, repo = require_git_scope(scope)
+        service = "git-upload-pack" if kind == "git_read" else "git-receive-pack"
+        endpoints.extend((
+            oc.OutboundEndpoint(host, f"/{repo}.git/info/refs", ("GET",),
+                                allowed_query=("service",), required_query=("service",),
+                                query_patterns=(("service", service),)),
+            oc.OutboundEndpoint(host, f"/{repo}.git/{service}", ("POST",)),
+        ))
+    return tuple(endpoints)
 
 
 class CheckedStream:
@@ -57,7 +56,15 @@ def dispatch(broker, grant_id, verb, request, *, body=None, guard=None,
     if initial is None:
         raise oc.GrantResolutionError("git grant unavailable")
     resource, stamp = initial
-    url, service = target(resource, verb, request)
+    kind, _ = require_git_scope(verb)
+    if not isinstance(request, dict) or set(request) != {
+            "host", "method", "target", "agent", "incarnation", "upload"}:
+        raise PermissionError("invalid git request")
+    service = "git-upload-pack" if kind == "git_read" else "git-receive-pack"
+    url = f"https://{request['host']}{request['target']}"
+    canonical = oc._parse_canonical_https_url(url, allowed_ports=frozenset({443}))
+    endpoint = oc._credential_endpoint(canonical, request["method"],
+                                       credential_endpoints(resource))
     with broker._ledger._connect() as conn:
         row = conn.execute("SELECT incarnation FROM outbound_connections WHERE connection_id=?",
                            (resource.connection_id,)).fetchone()
@@ -79,9 +86,10 @@ def dispatch(broker, grant_id, verb, request, *, body=None, guard=None,
         body.check_authority = authority
     check()
     oc._validate_connection_credential_scheme(resource.connection_type, resource.credential_ref)
-    credential = broker._resolve_credential(resource.credential_ref, resource.connection_type)
+    credential = (broker._resolve_credential(resource.credential_ref, resource.connection_type)
+                  if endpoint is not None else "")
     held = (credential,)
-    scheme = resource.auth_scheme
+    scheme = resource.auth_scheme if credential else "none"
     if scheme == "oauth2":
         from tinyassets.connection_oauth.tokens import decode
 
@@ -89,7 +97,7 @@ def dispatch(broker, grant_id, verb, request, *, body=None, guard=None,
         bundle = broker._oauth_bundle(resource, grant_id, verb, credential)
         held = (*original.secret_values(), *bundle.secret_values())
         credential, scheme = bundle.access_token, "bearer"
-    if scheme not in {"bearer", "basic"}:
+    if scheme not in {"bearer", "basic", "none"}:
         raise PermissionError("git requires bearer, basic or oauth2 authentication")
     bundle = oc._build_http_secret_bundle(scheme, credential)
     headers = oc._ssrf_auth_headers(scheme, bundle, method=request["method"], url=url)
@@ -97,10 +105,9 @@ def dispatch(broker, grant_id, verb, request, *, body=None, guard=None,
     headers["Accept"] = f"application/x-{service}-{'result' if body else 'advertisement'}"
     if body is not None:
         headers["Content-Type"] = f"application/x-{service}-request"
-    canonical = oc._parse_canonical_https_url(url, allowed_ports=frozenset({443}))
-    addresses = oc._resolve_pinned_addresses(canonical.hostname, 443,
-                                            resolver=oc._make_default_resolver(10),
-                                            validator=oc._classify_global_address)
+    from tinyassets.broker.egress import destination, identity
+
+    addresses = destination(identity.get(), canonical.hostname, canonical.port)
     check()
     with guard() if guard else contextlib.nullcontext():
         check()

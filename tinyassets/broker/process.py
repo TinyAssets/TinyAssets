@@ -12,8 +12,6 @@ Configuration is the command line, never the environment a caller could set:
   ``<data-root>/.broker/outbound.db``; nothing else may open it;
 * ``--owner-uid``: the uid served as the owner channel (the daemon's);
 * ``--proof-sha256``: the hash of the owner lease proof for the acquired generation;
-* ``--mapper-channel``/``--mapper-pid``: DA2's inherited read-only mapper pair
-  and its one authenticated peer (bounded bootstrap only).
 
 The lease: until the owner lease (S8a) holds a hashed proof per acquisition,
 the daemon mints a proof at start and hands its hash to the launcher.
@@ -36,7 +34,7 @@ from typing import Any
 
 from tinyassets.broker.fence import Fence
 from tinyassets.broker.ops import OpStore
-from tinyassets.broker.server import OWNER, BrokerServer
+from tinyassets.broker.server import BOX_HOST, OWNER, BrokerServer
 
 
 def lease_verifier(proof_sha256: str):
@@ -75,7 +73,7 @@ class _Dispatchers:
             dispatch = self._cache.get(key)
             if dispatch is None:
                 config = self.ledger_for(principal).broker_dispatch_config(
-                    grant_id=grant_id, universe_id=command_center,
+                    grant_id=grant_id,
                     provider=resource.provider, destination=resource.destination,
                     owner_user_id=resource.owner_user_id,
                     connection_type=resource.connection_type,
@@ -83,6 +81,22 @@ class _Dispatchers:
                 dispatch = _build_credential_broker_dispatch(config)
                 self._cache[key] = dispatch
         return dispatch
+
+
+def supplementary_groups() -> list[int]:
+    """Groups beyond the primary gid. Docker always lists a named user's own
+    primary group among the supplementary ones; it grants nothing the primary
+    gid does not already grant."""
+    return sorted(set(os.getgroups()) - {os.getgid()})
+
+
+def role_identity_retired(fields: dict[str, str]) -> bool:
+    return (os.getresuid() == (1002, 1002, 1002)
+            and os.getresgid() == (1002, 1002, 1002)
+            and supplementary_groups() == [1102]
+            and all(int(fields[key], 16) == 0 for key in
+                    ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+            and int(fields["NoNewPrivs"]) == 1)
 
 
 async def serve(args: argparse.Namespace) -> None:
@@ -93,11 +107,7 @@ async def serve(args: argparse.Namespace) -> None:
     _sanitize_child_environment()  # no TLS key logging, no ambient proxies
     fields = dict(line.split(":", 1) for line in Path(
         "/proc/self/status").read_text().splitlines())
-    if (os.getresuid() != (1002, 1002, 1002)
-            or os.getresgid() != (1002, 1002, 1002) or os.getgroups() != [1102]
-            or any(int(fields[key], 16) != 0 for key in
-                   ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
-            or int(fields["NoNewPrivs"]) != 1):
+    if not role_identity_retired(fields):
         raise RuntimeError("broker role identity is not retired")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:
@@ -110,30 +120,50 @@ async def serve(args: argparse.Namespace) -> None:
     # Initialization belongs to the privileged, fenced volume migration. A
     # missing map must never silently restart allocation at the first UID.
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
 
     identity_path = state / "owner-identities.db"
-    identities = OwnerIdentities(identity_path) if identity_path.exists() else None
+    plans = Plans(Path(args.data_root))
+    identities = (OwnerIdentities(identity_path, plans=plans)
+                  if identity_path.exists() else None)
     policy_store = PolicyStore(Path(args.data_root), identities)
     policy_store.bootstrap()
-    if getattr(args, "mapper_channel", None) is not None:
-        # DA2: only the bounded bootstrap passes this inherited descriptor.
-        from tinyassets.broker import mapper_channel
+    registration = None
+    if getattr(args, "box_host", False):
+        import json
+        import secrets
 
-        if args.mapper_pid is None:
-            raise RuntimeError("mapper channel requires the bootstrap's mapper pid")
-        mapper_channel.start(args.mapper_channel, args.mapper_pid, identities)
+        from tinyassets.boxes.bootstrap import BrokerRegistration
+
+        marker = json.loads((Path(args.data_root) / ".layout.json").read_text())
+        if (marker.get("state") not in {"stable", "recovering"}
+                or marker.get("box_layout") != "owner-box"):
+            raise RuntimeError("owner-box broker requires committed migration")
+        identities.work_ready = marker["state"] == "stable"
+        if args.proof_sha256:
+            raise RuntimeError("owner-box broker cannot adopt legacy bootstrap")
+        proof = secrets.token_urlsafe(48)
+        registration = BrokerRegistration(proof)
+        args.proof_sha256 = hashlib.sha256(proof.encode()).hexdigest()
+        del proof
+    from tinyassets.broker.box_admission import provision
+
     server = BrokerServer(
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
         fence=Fence(state / "fence.json",
                     verify_lease_proof=lease_verifier(args.proof_sha256),
                     lease_sha256=args.proof_sha256),
-        roles={int(args.owner_uid): OWNER},
+        roles={int(args.owner_uid): OWNER, **({0: BOX_HOST} if registration else {})},
         owner_identities=identities,
         policy_store=policy_store,
+        provision_box=(lambda owner: provision(
+            identities, Path(args.data_root), owner)) if registration else None,
+        data_root=Path(args.data_root),
     )
     socket_path = Path(args.socket)
+    routing = server.routing if registration else None
     socket_path.unlink(missing_ok=True)
     old_umask = os.umask(0o117)  # 0660 in the role-split IPC directory
     try:
@@ -145,7 +175,28 @@ async def serve(args: argparse.Namespace) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
     async with listener:
-        await stop.wait()
+        if registration:
+            await asyncio.to_thread(registration.ready)
+        registration_task = (asyncio.create_task(registration.maintain(stop))
+                             if registration else None)
+        waker_task = None
+        if registration:
+            from tinyassets.broker.waker import Waker
+
+            plans.initialize()
+            waker_task = asyncio.create_task(Waker(
+                server.next_wakes, plans, wake=routing.wake, config=routing.config,
+                poll_seconds=args.wake_poll_seconds, lifecycle_tick=routing.tick,
+                routing=routing).run(stop))
+        try:
+            await stop.wait()
+        finally:
+            stop.set()
+            if waker_task is not None:
+                await waker_task
+                await routing.close()
+            if registration_task is not None:
+                await registration_task
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -154,12 +205,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", required=True)
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--owner-uid", required=True, type=int)
-    parser.add_argument("--proof-sha256", required=True)
+    parser.add_argument("--proof-sha256")
+    parser.add_argument("--box-host", action="store_true")
+    parser.add_argument("--wake-poll-seconds", type=float, default=30)
     parser.add_argument("--allow-test-fixtures", action="store_true")
-    parser.add_argument("--mapper-channel", type=int)
-    parser.add_argument("--mapper-pid", type=int)
     args = parser.parse_args(argv)
-    asyncio.run(serve(args))
+    if not args.box_host and not args.proof_sha256:
+        parser.error("legacy bootstrap requires --proof-sha256")
+    if args.box_host:
+        from tinyassets.boxes.layout import hold
+
+        with hold(Path(args.data_root)):
+            asyncio.run(serve(args))
+    else:
+        asyncio.run(serve(args))
     return 0
 
 

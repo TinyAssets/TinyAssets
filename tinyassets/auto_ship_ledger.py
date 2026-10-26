@@ -184,19 +184,16 @@ def _lock_path(universe_path: Path) -> Path:
     return Path(universe_path) / LOCK_FILENAME
 
 
-# ── File lock (mirrors tinyassets.branch_tasks._file_lock) ──────────────────
+# ── File lock ──────────────────
 
 
 @contextlib.contextmanager
 def _file_lock(universe_path: Path) -> Iterator[None]:
     """Cross-platform exclusive lock on a sidecar ``.lock`` file.
 
-    Same primitive as ``tinyassets.branch_tasks._file_lock`` — kept as a
-    private mirror rather than importing it because the lock is
-    namespaced to ``.auto_ship_attempts.jsonl.lock``, not to the queue
-    file. Two concurrent ledger writes serialize; ledger writes do
-    NOT serialize against branch_tasks writes (they touch different
-    files anyway). Opened link-free through ``universe_files.open_lock_file``.
+    Two concurrent ledger writes serialize on the dedicated
+    ``.auto_ship_attempts.jsonl.lock`` file. Opened link-free through
+    ``universe_files.open_lock_file``.
     """
     from tinyassets.universe_files import open_lock_file
 

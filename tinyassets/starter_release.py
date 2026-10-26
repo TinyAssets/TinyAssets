@@ -17,7 +17,7 @@ LEGACY_AGENTS_HASHES = (
 
 
 def starter_manifest() -> SeedManifest:
-    return SeedManifest("starter-agent-v1", "2-wake-when", tuple(
+    return SeedManifest("starter-agent-v1", "3-broker-connections", tuple(
         SeedFile(path, text.encode("utf-8"),
                  LEGACY_AGENTS_HASHES if path == "AGENTS.md" else (),
                  historically_seeded=path == "AGENTS.md")
@@ -128,7 +128,7 @@ def abandon_new_provision(root: Path, *, owner_id: str) -> None:
     """
     import uuid
 
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
     from tinyassets.starter_seeds import seed_boundary
     from tinyassets.universe_owner import owner_of
 

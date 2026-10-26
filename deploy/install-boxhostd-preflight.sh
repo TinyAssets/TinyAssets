@@ -33,6 +33,15 @@ source_dir="$(cd "$(dirname "$0")" && pwd)"
 # Sibling files read from source_dir are the production ship list.
 # scripts/boxhostd_install_files.py derives it; workflows copy that
 # list and do not keep a second one.
+# Render before installing code or restarting the service. A normal deploy
+# reaches this installer inside deploy_fail_safe.sh. Env-only changes also
+# need a restart so the running process receives the new public origin.
+previous_box_env="$(sha256sum /etc/tinyassets/boxhostd.env 2>/dev/null || true)"
+bash "${source_dir}/install-tinyassets-env.sh" render-daemon-env
+grep -q '^UNIVERSE_SERVER_URL=https\?://' /etc/tinyassets/boxhostd.env || {
+    echo 'WORKOS_MCP_RESOURCE is required before starting boxhostd' >&2; exit 1;
+}
+rendered_box_env="$(sha256sum /etc/tinyassets/boxhostd.env)"
 mkdir -p "$root"
 # G4 and the store require XFS userspace tools.
 if ! command -v mkfs.xfs >/dev/null || ! command -v xfs_quota >/dev/null; then
@@ -118,13 +127,13 @@ a0dde4d5e75d4f8e4287bc2e631b96536e83c80f574fb4ff62c58d472d4f58c5  ${target}/gvis
 EOF
 "${target}/runsc" --version | grep -F "$release" >/dev/null
 changed=0
-for name in boxhostd_idle.py box_preflight.py box_store_durability.py box-store-device.sh box-store-device-stop.sh box-store-check.sh; do
-    if ! cmp -s "${source_dir}/${name}" "${root}/${name}"; then
-        install -m 0755 "${source_dir}/${name}" "${root}/${name}"
-        changed=1
-    fi
-done
-for name in boxhostd.service var-lib-boxhostd-owners.mount; do
+[[ "$previous_box_env" == "$rendered_box_env" ]] || changed=1
+source_root="$(dirname "$source_dir")"
+bundle_changes="$(python3 "$source_root/scripts/host_service_bundle.py" --root "$source_root" \
+    --install-to "$root" --flat-scripts --boxhostd-probes \
+    boxhostd.service box-store-device.service box-store-grow.service)"
+[[ -z "$bundle_changes" ]] || changed=1
+for name in boxhostd.service var-lib-boxhostd-owners.mount box-store-grow.service box-store-grow.timer; do
     if ! cmp -s "${source_dir}/${name}" "/etc/systemd/system/${name}"; then
         install -m 0644 "${source_dir}/${name}" "/etc/systemd/system/${name}"
         changed=1
@@ -148,9 +157,11 @@ if [[ "$changed" -eq 1 ]]; then
 fi
 systemctl enable --now var-lib-boxhostd-owners.mount
 systemctl is-active --quiet var-lib-boxhostd-owners.mount
+bash "${root}/box-store-check.sh" /var/lib/boxhostd/owners --initialize
 if [[ "$changed" -eq 1 ]]; then
     systemctl restart boxhostd.service
 fi
 systemctl enable --now boxhostd.service
 systemctl is-active --quiet boxhostd.service
+systemctl enable --now box-store-grow.timer
 echo "boxhostd idle; runsc ${release} installed"

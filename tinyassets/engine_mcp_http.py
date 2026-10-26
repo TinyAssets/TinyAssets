@@ -224,7 +224,6 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
 
     from tinyassets.principals import has_named_principal
     from tinyassets.storage import db_path
-    from tinyassets.storage.current_home import CurrentHomeChanged, check_principal_not_deleted
 
     try:
         conn = sqlite3.connect(db_path(base).as_uri() + "?mode=ro", uri=True)
@@ -255,10 +254,6 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
                     "AND actor_id = ? AND permission = 'admin'", (uid, owner),
                 ).fetchone() is None:
                     continue
-                try:
-                    check_principal_not_deleted(conn, owner)
-                except CurrentHomeChanged:
-                    continue
                 owners.append((uid, owner))
             return owners
         finally:
@@ -267,6 +262,10 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
         # Never log raw DB errors or authority records from this credential rail.
         logger.warning("engine http: current serving authority unavailable")
         return []
+
+
+#: Name used by the deferred per-call box backend's engine URL projection.
+BOX_ENGINE_HOST = "engine.tinyassets.box"
 
 
 class _EngineServer:
@@ -353,7 +352,8 @@ def _desired_owners(root: Path) -> dict[str, str]:
     return {universe: next(iter(found)) for universe, found in owners.items() if len(found) == 1}
 
 
-def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
+def start_engine_mcp_http_servers(base: str | Path | None = None, *,
+                                  stop_event=None, stopped_event=None) -> list:
     """Start one auth'd loopback engine server per admitted serving universe
     and a daemon supervisor that respawns crashes + reconciles serving intent.
 
@@ -363,15 +363,12 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
     if not _engine_mcp_enabled():
         return []
 
-    from tinyassets.broker.supervisor import _protect_daemon
     from tinyassets.storage import data_dir
 
     root = Path(data_dir() if base is None else base)
     if not root.is_absolute():
         raise ValueError("engine MCP data root must be absolute")
     data_dir_env = str(root)
-    # Serving begins only after the daemon has retired its bootstrap authority.
-    _protect_daemon()
 
     servers: dict[str, _EngineServer] = {}
     used_ports: set[int] = set()
@@ -402,6 +399,13 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
         while True:
             wake.wait(_SUPERVISOR_INTERVAL_S)
             wake.clear()
+            if stop_event is not None and stop_event.is_set():
+                for uid in list(servers):
+                    _retire(uid)
+                _SUPERVISOR_WAKE_EVENTS.pop(root.resolve(), None)
+                if stopped_event is not None:
+                    stopped_event.set()
+                return
             try:
                 current = _desired_owners(root)
                 changed = False

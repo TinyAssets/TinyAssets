@@ -15,12 +15,13 @@ HAS_PRICED_SOURCE = "HAS_PRICED_SOURCE"
 GRANTED_RESOURCE = "GRANTED_RESOURCE"
 AUTHORIZED_CONNECTION = "AUTHORIZED_CONNECTION"
 CONNECTION_GRANTS = "CONNECTION_GRANTS"
+GIT_GRANTS = "GIT_GRANTS"
 BOOTSTRAP_RECOVERY = "BOOTSTRAP_RECOVERY"
 OWNER_CONNECTION_VIEW = "OWNER_CONNECTION_VIEW"
 OWNER_CONNECTION_NAMES = "OWNER_CONNECTION_NAMES"
 HAS_MODEL_SOURCE = "HAS_MODEL_SOURCE"
 QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
-                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, BOOTSTRAP_RECOVERY,
+                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, GIT_GRANTS, BOOTSTRAP_RECOVERY,
                      OWNER_CONNECTION_VIEW, OWNER_CONNECTION_NAMES, HAS_MODEL_SOURCE})
 
 
@@ -69,8 +70,8 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
                 "LEFT JOIN connection_capabilities p ON p.connection_id=c.connection_id "
                 "AND p.capability_kind='model_discovery' "
                 "WHERE g.grant_id=? AND g.owner_user_id=? AND c.owner_user_id=? "
-                "AND g.universe_id=? AND (?='' OR c.connection_id=?)",
-                (grant_id, principal, principal, command_center, connection_id, connection_id),
+                "AND (?='' OR c.connection_id=?)",
+                (grant_id, principal, principal, connection_id, connection_id),
             ).fetchone()
             return {"recovery": None if row is None else {
                 "destination": row[0], "descriptor": json.loads(row[1]) if row[1] else None}}
@@ -78,12 +79,32 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
             rows = conn.execute(
                 "SELECT g.grant_id FROM outbound_connection_grants g "
                 "JOIN outbound_connections c ON c.connection_id=g.connection_id "
-                "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
+                "WHERE g.owner_user_id=? AND c.owner_user_id=? "
                 "AND g.connection_id=? AND g.revoked_at IS NULL AND c.revoked_at IS NULL "
                 "ORDER BY g.grant_id LIMIT 1001",
-                (principal, principal, command_center, connection_id),
+                (principal, principal, connection_id),
             ).fetchall()
             return {"grant_ids": [row[0] for row in rows]}
+        if query == GIT_GRANTS:
+            from tinyassets.storage.workspace_authority import parse_git_scope
+
+            rows = conn.execute(
+                "SELECT g.grant_id, c.connection_id, c.scopes_json "
+                "FROM outbound_connection_grants g JOIN outbound_connections c "
+                "ON c.connection_id=g.connection_id "
+                "WHERE g.owner_user_id=? AND c.owner_user_id=? "
+                "AND g.revoked_at IS NULL AND c.revoked_at IS NULL "
+                "ORDER BY g.grant_id LIMIT 1001",
+                (principal, principal),
+            ).fetchall()
+            if len(rows) > 1000:
+                raise ValueError("too many command center grants")
+            selected = [(row["grant_id"], row["connection_id"])
+                        for row in rows if any(parse_git_scope(scope) is not None
+                                               for scope in json.loads(row["scopes_json"]))]
+            if len(selected) > 32:
+                raise ValueError("too many selected git grants")
+            return {"selected": selected}
         if query == HAS_PRICED_SOURCE:
             # Connect asks run before a first deposit/grant. An actually absent
             # pair has no priced source; an existing, revoked or foreign row
@@ -101,8 +122,8 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         grant = conn.execute(
             "SELECT connection_id, granted_at, unprompted_action_cap_json "
             "FROM outbound_connection_grants "
-            "WHERE grant_id = ? AND owner_user_id = ? AND universe_id = ? "
-            "AND revoked_at IS NULL", (grant_id, principal, command_center),
+            "WHERE grant_id = ? AND owner_user_id = ? "
+            "AND revoked_at IS NULL", (grant_id, principal),
         ).fetchone()
         if grant is None or (connection_id and grant["connection_id"] != connection_id):
             raise GrantResolutionError("outbound connection grant identity mismatch")
@@ -124,14 +145,14 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
                   "provider", "destination", "credential_ref", "revoked_at",
                   "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
-                  "git_host", "incarnation")
+                  "git_host", "incarnation", "request_ref", "committed_via")
         resource = {key: row[key] for key in fields}
         if query == GRANTED_RESOURCE:
             return {"resource": resource}
         if query == AUTHORIZED_CONNECTION:
             return {"resource": resource, "grant": {
                 "grant_id": grant_id, "connection_id": grant["connection_id"],
-                "owner_user_id": principal, "universe_id": command_center,
+                "owner_user_id": principal,
                 "granted_at": grant["granted_at"], "revoked_at": None,
                 "unprompted_action_cap": json.loads(grant["unprompted_action_cap_json"])
                 if grant["unprompted_action_cap_json"] else None,
@@ -222,10 +243,35 @@ def authorized_connection(data_root: Path, *, principal: str, command_center: st
         if not all((grant.grant_id == grant_id,
                     grant.connection_id == resource.connection_id == connection_id,
                     grant.owner_user_id == resource.owner_user_id == principal,
-                    grant.universe_id == command_center,
                     grant.revoked_at is None, resource.revoked_at is None,
                     isinstance(row.get("incarnation"), str))):
             raise ValueError("invalid authority projection")
         return grant, resource, row["incarnation"]
     except (LookupError, TypeError, ValueError):
         raise ProxyRequestError("invalid credential broker authority projection") from None
+
+
+def selected_git_connections(data_root: Path, *, principal: str, command_center: str):
+    """Owner-granted git scopes for one center, rechecked at each CLI launch."""
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+    from tinyassets.storage.workspace_authority import connection_git_host, parse_git_scope
+
+    facts = query_ledger(data_root, query=GIT_GRANTS, principal=principal,
+                         command_center=command_center, grant_id="git-grants")
+    selected = facts.get("selected")
+    if not isinstance(selected, list) or len(selected) > 32:
+        raise ProxyRequestError("invalid selected git grants")
+    result = []
+    for pair in selected:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or any(not isinstance(value, str) or not value for value in pair)):
+            raise ProxyRequestError("invalid selected git grants")
+        grant, resource, incarnation = authorized_connection(
+            data_root, principal=principal, command_center=command_center,
+            grant_id=pair[0], connection_id=pair[1],
+        )
+        if not connection_git_host(resource) or not any(
+                parse_git_scope(scope) is not None for scope in resource.scopes):
+            raise ProxyRequestError("selected git grant lost its route")
+        result.append((grant, resource.to_view(), incarnation))
+    return tuple(result)

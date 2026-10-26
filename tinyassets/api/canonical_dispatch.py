@@ -18,7 +18,7 @@ with leaderboard-driven canonical selection. Every Goal can opt into
   3. The (possibly updated) canonical is then dispatched.
 
 This module owns the resolution logic. The MCP dispatch wrapper
-(``_action_goal_run_canonical`` in ``tinyassets/api/market.py``) calls into
+(``_action_goal_run_canonical`` in ``tinyassets/api/goals.py``) calls into
 it. (The bug-investigation enqueue path that also did was deleted under
 Hard Rule 15.)
 

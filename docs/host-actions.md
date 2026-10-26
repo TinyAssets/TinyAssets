@@ -12,6 +12,11 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+| Item | Lead-only deploy action |
+|---|---|
+| N1 shared Slack app | Register one TinyAssets Slack app with Events API request URL `https://tinyassets.io/hooks/inbound/slack`, OAuth redirect and required scopes. Deposit its signing secret in broker platform custody as the named `http` credential destination `inbound-slack-signing`; keep its client secret and installation-scoped outbound tokens in broker custody. Publish the platform-owned HMAC profile for binding `slack` only after the app registration is verified. No app registration, token, or production change is performed in the N1 implementation PR. |
+| a2b: 25 GiB box store | In the lead's root shell on the droplet, with authenticated `doctl`: `set -eu; region=$(curl -fsS http://169.254.169.254/metadata/v1/region); droplet=$(curl -fsS http://169.254.169.254/metadata/v1/id); volume=$(doctl compute volume create tinyassets-box-store --region "$region" --size 25GiB --format ID --no-header); doctl compute volume-action attach "$volume" "$droplet" --wait; udevadm settle; device=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store; mkfs.xfs -m reflink=1 "$device"; install -d -m 0700 /etc/tinyassets; install -o root -g root -m 0600 /root/box-store-resize.token /etc/tinyassets/box-store.token; (umask 077; printf 'BOX_STORE_DEVICE=%s\nBOX_STORE_VOLUME_ID=%s\nBOX_STORE_REGION=%s\nBOX_STORE_DROPLET_ID=%s\nBOX_STORE_TOKEN_FILE=/etc/tinyassets/box-store.token\nBOX_STORE_MAX_GIB=100\n' "$device" "$volume" "$region" "$droplet" > /etc/tinyassets/box-store.conf)`. Supply `/root/box-store-resize.token` with only [block_storage_action:create and its required read scopes](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/). The normal deploy installs/enables the growth timer. Do not run the create/format commands against an existing store. |
+
 ## Production secrets move into a main-only GitHub Environment (2026-10-13)
 
 **Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `tests/test_workflow_production_environment.py`); the environment itself must exist and own the secrets, which only the repo admin can do.
@@ -24,7 +29,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
-| Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup opens a canary-not-provisioned warning/issue; it never blocks or rolls back a deploy. |
+| Canary is an ordinary account (2026-10-24) | The canary signs in like any phone-app user and renews like one (`scripts/canary_session.py`); the canary-only door, its key and its pinned id are deleted. One-time, once per chain: run `python scripts/canary_session.py begin --pending flow.json`, open the printed link in the canary's browser, sign in as usual, copy the "Open TinyAssets" link, then run `finish --pending flow.json --link <link> --set-secret TINYASSETS_CANARY_SESSION_SEED_DEPLOY`; repeat with `TINYASSETS_CANARY_SESSION_SEED_UPTIME`. Needs production secret `TINYASSETS_CANARY_SESSION_KEY` (32 random bytes, urlsafe base64) first. Repeat a chain's sign-in only if its probe reports `canary_signed_out`. Then delete the retired secrets `TINYASSETS_CANARY_EMAIL`, `TINYASSETS_CANARY_PASSWORD` and `TINYASSETS_CANARY_DOOR_KEY`. `TINYASSETS_CANARY_HMAC_KEY` and the variables `TINYASSETS_CANARY_UNIVERSE_ID` and `TINYASSETS_CANARY_USER_ID` stay: they only check the probe reached its own account. |
 
 ## Isolation production refusal acceptance (2026-10-10)
 
@@ -90,16 +95,6 @@ to Checkout, Subscriptions and webhook reads. The daemon must still hold a Strip
 
 ---
 
-## Creator revenue share: decide F1–F14 and get counsel on the token questions (2026-10-01)
-
-**Why:** `openspec/changes/creator-revenue-share/` designs paying creators a share of
-paid subscriptions in TINY. Phase A (attribution, shadow dollar ledger, metrics, no
-money) waits only on your approval and the parameter answers in design §10. Mainnet
-payout waits on counsel's answers to design §9: securities and token-promotion optics,
-money transmission, creator tax reporting, Stripe, Google Play and Apple policy,
-jurisdictions, privacy, unclaimed balances. Nothing pays out until you sign each
-monthly batch yourself.
-
 ## Decide: do pre-#4287 automations get grandfathered, or does every recurring job hold? (2026-10-03)
 
 Talking to a custom agent works, but its turns still pick up **main's** rules,
@@ -147,7 +142,7 @@ The platform has to be TOLD which intake to offer: it is your universe's node, o
 you like any user's, so there is no id in the code. It needs a `receiver_id`, and
 production has none yet (`/data/.runs.db` `graph_receivers`: 0 rows, read 2026-09-30).
 
-Your two intakes exist today only as inbound `/mcp/hooks/<token>` webhooks. Those are
+Your two intakes exist today only as inbound `/hooks/inbound/<token>` webhooks. Those are
 anonymous — whatever arrives is attached to nobody's universe, and the sender has to hold
 a secret. Native delivery carries the sender's identity and needs no secret at all, which
 is why the seeded request has nothing to paste.
@@ -730,8 +725,9 @@ the customer would get nothing for their money.
 
 ### Decide who may sign up — the platform is single-tenant by construction
 
-*2026-08-28, from a cross-family multi-user review. Full finding:
-`docs/concerns/2026-08-28-user-code-runs-in-process.md`.*
+*2026-08-28, from a cross-family multi-user review. The in-process finding
+closed when owner execution moved into the owner box (ADR-019; S8 in
+docs/architecture.md). The notes below record that day's decision.*
 
 Stripe is live and provisioned. Four second-user blockers were found and fixed
 (#2627 session fixation and world-readable tokens, #2629 source-approval gate, #2630
@@ -938,12 +934,6 @@ Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** w
 *Depends on:* exact-head dual-family review; POSIX/production Codex integration.
 *Owner artifacts:* `openspec/changes/archive/2026-10-06-byo-llm-connect-flow/`,
 `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
-
-### Activate hosted-preview publication
-
-`activate-hosted-preview-publication` — a no-prod account plus a fixed Worker; inert host
-alias/version; Access anon-deny and reviewer-load proof; then a restricted GitHub environment.
-*Where:* Cloudflare + GitHub environment.
 
 ---
 

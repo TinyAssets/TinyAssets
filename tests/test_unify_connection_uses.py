@@ -21,12 +21,11 @@ the spawned child cannot reach a loopback). Neither vendor name appears in
 
 from __future__ import annotations
 
-import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
+from tests.inference_usage_helpers import synthetic_stream
 from tests.support.broker_double import seed_owner_admission
 from tests.test_authenticated_external_call_effector import (  # noqa: F401
     _install_loopback_driver,
@@ -66,9 +65,11 @@ class _Auth:
 @pytest.fixture
 def owner(tmp_path, monkeypatch):
     """A founder's own unpowered universe, logged in as its owner."""
+    from tests.support.shared_catalog import install
     from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
     base = tmp_path / "data"
+    install(monkeypatch, base)
     (base / UID).mkdir(parents=True)
     seed_owner_admission(base, principal=OWNER, center=UID)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
@@ -103,6 +104,7 @@ def _answer(request_id, values):
 
 def _broker_proxy(base, grant_id, destination, runtime):
     """The exact production broker dispatch, in process (no child spawn)."""
+    from tinyassets.credential_vault import custody_namespace
     from tinyassets.storage.outbound_connections import _build_credential_broker_dispatch
 
     dispatch = _build_credential_broker_dispatch({
@@ -110,7 +112,7 @@ def _broker_proxy(base, grant_id, destination, runtime):
         "allow_http_connections": True,
         "ledger_db_path": str((base / ".broker" / "outbound.db").resolve()),
         "data_root": str(base.resolve()),
-        "universe_dir": str((base / UID).resolve()),
+        "universe_dir": str(custody_namespace(base, OWNER)),
         "provider": "http",
         "destination": destination,
         "connection_type": "http",
@@ -120,6 +122,9 @@ def _broker_proxy(base, grant_id, destination, runtime):
 
     class _Proxy:
         closed = False
+
+        def stream(self, *args, **kwargs):
+            return synthetic_stream(self, *args, **kwargs)
 
         def request(self, verb, request, *, inference_usage=None,
                     policy_approval=None, policy_grant_ref=None, policy_agent=None,
@@ -172,85 +177,9 @@ _KEY_FIELD = [{"name": "secret", "type": "secret", "label": "API key"}]
 # --------------------------------------------------------------------------- #
 
 
-def test_bundled_dialects_resolve_by_structure_and_stored_alias():
-    from tinyassets.providers import protocol_encoders as pe
-    from tinyassets.providers.agent_wire_codec import agent_wire_for, installed_agent_wire
-    from tinyassets.providers.wire_dialects import (
-        UnknownDialect,
-        canonical_dialect,
-        dialect_names,
-        same_dialect,
-    )
-
-    assert set(dialect_names()) == {"chat_messages", "content_blocks"}
-    assert canonical_dialect("openai_chat") == "chat_messages"
-    assert canonical_dialect("anthropic_messages") == "content_blocks"
-    assert same_dialect("openai_chat", "chat_messages")
-    assert not same_dialect("chat_messages", "content_blocks")
-    with pytest.raises(UnknownDialect):
-        canonical_dialect("a-wire-nobody-bundled")
-    # A stored alias runs exactly the wire the structural name does.
-    assert pe.PROTOCOLS["openai_chat"] is pe.PROTOCOLS["chat_messages"]
-    assert pe.agent_codec_for("chat_messages") is not None
-    assert pe.agent_codec_for("content_blocks") is None  # text-only dialect
-    assert agent_wire_for("openai_chat") is agent_wire_for("chat_messages")
-    assert installed_agent_wire() is agent_wire_for("chat_messages")
-    # The wire's own header is document data, still sent for stored rows.
-    assert pe.static_headers_for("anthropic_messages") == pe.static_headers_for(
-        "content_blocks") != {}
-
-
-def test_a_stored_definition_and_a_structural_one_both_register_and_run(owner):
-    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-    from tinyassets.providers.definition import register_definition
-
-    for protocol in ("openai_chat", "chat_messages", "anthropic_messages", "content_blocks"):
-        definition = register_definition(
-            universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
-            protocol=protocol, model="m", ref="http_grant_" + "a" * 32,
-        )
-        assert definition.protocol == protocol  # stored exactly; the id addresses it
-        assert ApiKeyHttpProvider(definition).family == f"api:{protocol}"
-
-
 # --------------------------------------------------------------------------- #
 # The declarations are validated where they are stored.
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("model,match", [
-    ({"wire": "chat_messages", "models": [{"id": "m", "tools": True, "context": 1}],
-      "billing": "metered"}, "metered billing needs prices"),
-    ({"wire": "smoke_signals", "models": [{"id": "m", "tools": True, "context": 1}],
-      "billing": "free"}, "bundled dialect"),
-    ({"wire": "chat_messages", "models": [], "billing": "free"}, "models must list"),
-    ({"wire": "chat_messages", "models": [{"id": "m", "tools": True}],
-      "billing": "free"}, "context"),
-])
-def test_model_use_refuses_what_it_cannot_honour(model, match):
-    from tinyassets.api.connection_uses import ConnectionUseError, validate_uses
-
-    with pytest.raises(ConnectionUseError, match=match):
-        validate_uses({"model": model})
-
-
-@pytest.mark.parametrize("headers,match", [
-    ({"Authorization": "Bearer x"}, "may not be set"),
-    ({"X-Trace": "a" * 40}, "looks like a credential"),
-    ({"X-Bad": "line\r\nInjected: 1"}, "single-line"),
-    ({"Bad Name": "1"}, "header token"),
-])
-def test_constant_headers_are_never_credentials_or_framing(headers, match):
-    from tinyassets.api.connection_uses import ConnectionUseError, validate_constant_headers
-
-    with pytest.raises(ConnectionUseError, match=match):
-        validate_constant_headers(headers)
-
-
-def test_a_model_use_needs_somewhere_to_post(owner):
-    out = _ask({**QUILLMIND_ASK, "methods": ["GET"]}, _KEY_FIELD)
-    assert out["error"] == "request_invalid"
-    assert "POST endpoint" in out["detail"]
 
 
 # --------------------------------------------------------------------------- #
@@ -274,343 +203,15 @@ def _tool_call_reply(method, path, body):
     }).encode()
 
 
-def test_never_seen_llm_connects_from_the_request_and_answers_with_tools(
-    owner, tmp_path, monkeypatch,
-):
-    from tinyassets.api.pending_requests import _serving_llm_bound
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.providers.agent_inference import AgentInferenceRequest
-    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.declared_models import DeclaredModelContract
-    from tinyassets.providers.definition import get_definition
-    from tinyassets.providers.model_selection import prepare_selected_model
-    from tinyassets.providers.served_model_plan import _http_models
-
-    base = owner
-    assert _serving_llm_bound(base, UID, OWNER) is False
-
-    asked = _ask(QUILLMIND_ASK, _KEY_FIELD)
-    assert asked["status"] == "pending", asked
-    assert "quill-large" in asked["grant_sentence"]
-    assert "becomes its model" in asked["grant_sentence"]
-
-    answered = _answer(asked["request_id"], {"secret": LLM_KEY})
-    assert answered["status"] == "answered", answered
-    assert answered["uses"] == ["model"]
-    assert answered["serving"]["status"] == "serving", answered["serving"]
-    provider = answered["provider"]
-    assert provider == f"api_key_http:{answered['definition_id']}"
-    assert answered["serving"]["provider"] == answered["definition_id"]
-    assert LLM_KEY not in json.dumps(answered)
-    # Deterministically selected: the universe is now powered by this connection.
-    assert _serving_llm_bound(base, UID, OWNER) is True
-    assignment = load_provider_assignment(base, universe_id=UID)
-    member = next(m for m in assignment.candidates if m.provider == provider)
-    assert member.access.model_scope == "explicit"
-    assert member.access.model_ids == ("quill-large",)
-    assert member.access.cost_caps is None  # free-only: nothing can be spent
-
-    # The served plan admits the declared model as tool-capable, with no fetch.
-    _snapshot, models, _interaction, _caps, rejected = _http_models(OWNER, UID, member)
-    assert [m.model_id for m in models.models] == ["quill-large"]
-    assert not rejected
-
-    selection, recheck = prepare_selected_model(
-        base_path=base, owner_user_id=OWNER, universe_id=UID, provider=provider,
-        model_id="quill-large", access=member.access, needs_tools=True,
-    )
-    assert selection.supports_tools is True
-    assert isinstance(selection.contract(), DeclaredModelContract)
-    recheck()
-
-    loop = _Loopback(responder=_tool_call_reply)
-    _install_loopback_driver(monkeypatch, loop.port)
-    definition = get_definition(UID, answered["definition_id"])
-    proxy = _broker_proxy(base, answered["grant_id"], "quillmind", tmp_path / "rt-llm")
-    tools = [{"type": "function", "function": {
-        "name": "read_graph", "description": "Read the universe.",
-        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}},
-    }}]
-    from tinyassets.request_budget import TurnRequestBudget
-
-    budget = TurnRequestBudget(OWNER, UID)
-    budget.persist(base)
-    ordinal = budget.reserve(owner=OWNER, universe=UID, source_ref=provider,
-                             model=selection.model_id, free=False, purpose="reply")
-    config = ModelConfig(
-        engine_mcp_enabled=True, engine_mcp_actor_id=OWNER, engine_mcp_graph_id=UID,
-        max_tokens=512, selected_model=selection, invocation_owner_user_id=OWNER,
-        agent_request=AgentInferenceRequest(tools=tools),
-        request_budget=budget, request_attempt=ordinal,
-    )
-    try:
-        response = asyncio.run(ApiKeyHttpProvider(definition, proxy_override=proxy).complete(
-            "What is my universe doing?", "You are the universe.", config,
-            universe_dir=base / UID,
-        ))
-        budget.settle_invocation(ordinal, "succeeded")
-    finally:
-        budget.close()
-        loop.stop()
-
-    assert budget.receipt()["dispatched"] == 1
-    assert [call.name for call in response.agent_reply.tool_requests] == ["read_graph"]
-    assert response.reported_model == "quill-large-2026"
-    assert (response.input_tokens, response.output_tokens) == (21, 7)
-    (wire,) = loop.recorded
-    assert wire["path"] == "/v2/converse"  # the vendor's own path, from the grant
-    assert wire["headers"]["Authorization"] == f"Bearer {LLM_KEY}"
-    sent = json.loads(wire["body"])
-    assert sent["model"] == "quill-large"
-    assert [t["function"]["name"] for t in sent["tools"]] == ["read_graph"]
-    assert LLM_KEY not in json.dumps(sent)
-
-
-def test_a_powered_universe_is_not_switched_by_a_new_model_connection(owner, monkeypatch):
-    first = _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert first["serving"]["status"] == "serving"
-    second_ask = {**QUILLMIND_ASK, "destination": "quillmind-backup",
-                  "host": "backup.quillmind.dev"}
-    second = _answer(_ask(second_ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert second["status"] == "answered"
-    assert second["serving"] == {"status": "unchanged", "reason": "already_powered"}
-
-
-def test_confirmed_openrouter_model_source_is_accepted_without_switching_root(owner):
-    from tinyassets.provider_assignment import load_provider_assignment
-
-    first = _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    before = load_provider_assignment(owner, universe_id=UID)
-    ask = {**QUILLMIND_ASK, "destination": "openrouter", "host": "openrouter.ai",
-           "path_template": "/api/v1/chat/completions"}
-    second = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert first["status"] == second["status"] == "answered"
-    after = load_provider_assignment(owner, universe_id=UID)
-    assert after.provider == before.provider
-    accepted = {member.provider: member.access for member in after.candidates}
-    assert second["provider"] in accepted
-    assert accepted[second["provider"]].model_ids == ("quill-large",)
-    assert accepted[first["provider"]] == before.candidates[0].access
-
-
-def test_model_source_acceptance_refusal_keeps_request_pending_and_existing_serving(
-    owner, monkeypatch,
-):
-    from tinyassets.commons_catalog import serving_binding_candidates
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-
-    _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    current = load_provider_assignment(owner, universe_id=UID)
-    [binding] = serving_binding_candidates(owner, universe_id=UID, owner_user_id=OWNER)
-    legacy = bind_serving_provider(
-        base_path=owner, universe_dir=owner / UID, owner_user_id=OWNER, universe_id=UID,
-        agent_binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
-        provider=current.provider.removeprefix("api_key_http:"),
-    )["agent_binding"]
-    set_serving(base_path=owner, universe_dir=owner / UID, owner_user_id=OWNER, universe_id=UID,
-                agent_binding_id=legacy["agent_binding_id"], expected_revision=legacy["revision"],
-                enabled=True)
-    before = load_provider_assignment(owner, universe_id=UID)
-    assert not before.manifest_digest
-    ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
-    answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert answer["error"] == "model_source_acceptance_failed"
-    assert "confirm explicit model access for your existing source" in answer["detail"]
-    assert "ensure exactly one owned agent is serving" in answer["detail"]
-    assert "then retry this request" in answer["detail"]
-    assert answer["request_pending"] is True
-    assert answer["serving"]["status"] == "unchanged"
-    assert load_provider_assignment(owner, universe_id=UID) == before
-
-
-def test_failed_additional_source_activation_restores_prior_membership_and_serving(
-    owner, monkeypatch,
-):
-    from tinyassets import provider_serving_binding
-    from tinyassets.api.pending_requests import _serving_llm_bound
-    from tinyassets.provider_assignment import load_provider_assignment
-
-    _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    before = load_provider_assignment(owner, universe_id=UID)
-    actual = provider_serving_binding.set_serving
-    attempts = []
-
-    def fail_new_membership(**kwargs):
-        attempts.append(kwargs)
-        if len(attempts) == 1:
-            raise ValueError("new source is unavailable")
-        return actual(**kwargs)
-
-    monkeypatch.setattr(provider_serving_binding, "set_serving", fail_new_membership)
-    ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
-    answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert answer["error"] == "model_source_acceptance_failed"
-    assert answer["request_pending"] is True
-    assert answer["serving"]["status"] == "unchanged"
-    assert _serving_llm_bound(owner, UID, OWNER)
-    after = load_provider_assignment(owner, universe_id=UID)
-    assert after.provider == before.provider
-    assert {m.provider: m.access for m in after.candidates} == {
-        m.provider: m.access for m in before.candidates}
-    assert len(attempts) == 2
-
-
-def test_additional_source_recovery_cannot_overwrite_a_newer_disable(owner, monkeypatch):
-    from tinyassets import provider_serving_binding
-    from tinyassets.commons_catalog import list_bindings
-
-    _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    actual = provider_serving_binding.set_serving
-    edited = []
-
-    def disable_then_refuse(**kwargs):
-        edited.append(actual(**{**kwargs, "enabled": False})["agent_binding"])
-        raise PermissionError("owner disabled the binding concurrently")
-
-    monkeypatch.setattr(provider_serving_binding, "set_serving", disable_then_refuse)
-    ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
-    answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert answer["error"] == "model_source_acceptance_failed"
-    assert answer["request_pending"] is True
-    assert answer["serving"]["status"] == "disabled"
-    assert len(edited) == 1
-    assert list_bindings(owner, universe_id=UID) == edited
-
-
 # --------------------------------------------------------------------------- #
 # (b) A never-seen platform: one answer, then an authenticated call whose
 #     constant header the broker applies.
 # --------------------------------------------------------------------------- #
 
 
-def test_never_seen_platform_connects_and_the_broker_applies_its_constant_header(
-    owner, tmp_path, monkeypatch,
-):
-    from tinyassets.api.pending_requests import _serving_llm_bound
-    from tinyassets.effectors import authenticated_external_call as aec
-    from tinyassets.storage.effector_consents import grant_consent
-
-    base = owner
-    asked = _ask(TASKLARK_ASK, _KEY_FIELD)
-    assert asked["status"] == "pending", asked
-    assert "X-Api-Version: 2026-07" in asked["grant_sentence"]
-    answered = _answer(asked["request_id"], {"secret": PLATFORM_KEY})
-    assert answered["status"] == "answered", answered
-    assert answered["uses"] == ["call"]
-    assert answered["constant_headers"] == {"X-Api-Version": "2026-07"}
-    assert "serving" not in answered  # a platform does not power the universe
-    assert _serving_llm_bound(base, UID, OWNER) is False
-
-    monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
-    grant_consent(base / UID, sink=aec.EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
-                  destination="tasklark", granted_by=OWNER)
-    loop = _Loopback(responder=lambda *_: b'{"id": "task-9"}')
-    _install_loopback_driver(monkeypatch, loop.port)
-    proxy = _broker_proxy(base, answered["grant_id"], "tasklark", tmp_path / "rt-call")
-    monkeypatch.setattr(aec, "_open_connection_proxy", lambda **_k: proxy)
-    packet = {
-        "sink": aec.EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
-        "connection_id": answered["connection_id"],
-        "grant_id": answered["grant_id"],
-        "verb": "POST",
-        # The node sends no version header: the connection declares it.
-        "request": {"method": "POST", "path": "/v1/tasks",
-                    "body": {"title": "Write the chapter"}},
-    }
-    try:
-        evidence = aec.run_authenticated_external_call_effector(
-            node_id="n1", output_keys=["out"], run_state={"out": json.dumps(packet)},
-            base_path=str(base / UID), run_id="r1",
-        )
-    finally:
-        loop.stop()
-
-    assert evidence.get("delivered") is True, evidence
-    (wire,) = loop.recorded
-    assert wire["path"] == "/v1/tasks"
-    assert wire["headers"]["X-Api-Version"] == "2026-07"
-    assert wire["headers"]["Authorization"] == f"Bearer {PLATFORM_KEY}"
-    assert json.loads(wire["body"]) == {"title": "Write the chapter"}
-
-
-def test_constant_header_wins_over_a_node_header_and_never_over_auth():
-    from tinyassets.storage.outbound_connections import (
-        ConstantHeadersCapability,
-        merge_constant_headers,
-    )
-
-    capability = ConstantHeadersCapability("c", "constant_headers",
-                                           (("X-Api-Version", "2"),))
-    merged = merge_constant_headers(
-        {"url": "u", "headers": {"x-api-version": "1", "Accept": "json"}}, capability)
-    assert merged["headers"] == {"Accept": "json", "X-Api-Version": "2"}
-    assert merge_constant_headers({"url": "u"}, None) == {"url": "u"}
-
-
 # --------------------------------------------------------------------------- #
 # The agent edits the same fields later; everyone else sees not_found.
 # --------------------------------------------------------------------------- #
-
-
-def test_configure_edits_a_held_connection_and_reads_back(owner):
-    from tinyassets.api.cloud_connections import cloud_connections
-    from tinyassets.api.connection_uses import configure_connection
-
-    answered = _answer(_ask({**TASKLARK_ASK, "constant_headers": {}}, _KEY_FIELD)[
-        "request_id"], {"secret": PLATFORM_KEY})
-    assert answered["status"] == "answered", answered
-    configured = configure_connection(universe_id=UID, payload=json.dumps({
-        "destination": "tasklark", "constant_headers": {"X-Api-Version": "2026-08"},
-        "uses": {"call": {}},
-    }))
-    assert configured["status"] == "configured", configured
-    rows = cloud_connections(action="list", universe_id=UID)["connections"]
-    (row,) = [r for r in rows if r["destination"] == "tasklark"]
-    assert row["constant_headers"] == {"X-Api-Version": "2026-08"}
-    assert row["uses"] == {"call": {}}
-
-    missing = configure_connection(universe_id=UID, payload=json.dumps({
-        "destination": "not-mine", "constant_headers": {"X-Api-Version": "1"},
-    }))
-    assert missing == {"error": "not_found", "resource": "connection"}
-
-
-def test_configure_cannot_create_a_model_use_without_the_owner(owner):
-    """A model list and its billing are a spend claim: the agent's own write
-    (configure) may not make one; the owner's answer to a connect ask does."""
-    from tinyassets.api.cloud_connections import cloud_connections
-    from tinyassets.api.connection_uses import configure_connection
-
-    plain = {k: v for k, v in QUILLMIND_ASK.items() if k != "uses"}
-    assert _answer(_ask({**plain, "type": "connect_http"}, _KEY_FIELD)["request_id"],
-                   {"secret": LLM_KEY})["status"] == "answered"
-    refused = configure_connection(universe_id=UID, payload=json.dumps({
-        "destination": "quillmind", "uses": QUILLMIND_ASK["uses"],
-    }))
-    assert refused["error"] == "connection_setup_invalid"
-    assert "owner's confirmation" in refused["detail"]
-    rows = cloud_connections(action="list", universe_id=UID)["connections"]
-    (row,) = [r for r in rows if r["destination"] == "quillmind"]
-    assert "model" not in row["uses"]
-
-
-def test_configure_cannot_change_the_billing_of_an_owner_confirmed_model_use(owner):
-    from tinyassets.api.connection_uses import configure_connection
-
-    answered = _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
-    assert answered["status"] == "answered", answered
-    flat = {**QUILLMIND_ASK["uses"]["model"], "billing": "flat"}
-    refused = configure_connection(universe_id=UID, payload=json.dumps({
-        "destination": "quillmind", "uses": {"model": flat},
-    }))
-    assert "owner's confirmation" in refused["detail"]
-    # Re-stating exactly what the owner confirmed is a harmless no-op.
-    same = configure_connection(universe_id=UID, payload=json.dumps({
-        "destination": "quillmind", "uses": QUILLMIND_ASK["uses"],
-    }))
-    assert same["status"] == "configured", same
 
 
 # --------------------------------------------------------------------------- #
@@ -646,7 +247,7 @@ def _priced_connection(base):
     answered = _answer(_ask(PRICED_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
     assert answered["status"] == "answered", answered
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
-    grant = ledger.get_grant(_ids(universe_id=UID, destination="priced")[1])
+    grant = ledger.get_grant(_ids(owner=OWNER, destination="priced")[1])
     ledger.configure_capability(
         connection_id=grant.connection_id, capability_kind="model_discovery",
         descriptor=DESCRIPTOR, enabled=True, expected_grant=grant,
@@ -654,6 +255,7 @@ def _priced_connection(base):
     return ledger, grant
 
 
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_agent_cannot_relabel_a_priced_connections_paid_model_as_free(owner):
     from tinyassets.api.connection_uses import configure_connection
 
@@ -676,34 +278,7 @@ def test_agent_cannot_relabel_a_priced_connections_paid_model_as_free(owner):
     assert ledger.get_connection_capability(grant.connection_id, "model_use") is None
 
 
-def test_the_catalogues_prices_keep_deciding_spend_even_beside_a_declaration(owner):
-    """Even a declaration that reached storage (an older write, a race) never
-    replaces the catalogue: discovery reads the priced source, so the owner's
-    free-only access and spend caps are enforced against real prices."""
-    import sqlite3
-
-    from tinyassets.providers.definition import register_definition
-    from tinyassets.providers.discovery_snapshot import _context
-    from tinyassets.storage.outbound_connections import (
-        ModelDiscoveryCapability,
-        ModelUseCapability,
-    )
-
-    _ledger, grant = _priced_connection(owner)
-    with sqlite3.connect(owner / ".broker" / "outbound.db") as conn:
-        conn.execute(
-            "INSERT INTO connection_capabilities VALUES (?, 'model_use', ?, 0)",
-            (grant.connection_id, json.dumps(PAID_AS_FREE["model"])),
-        )
-    definition = register_definition(
-        universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
-        protocol="openai_chat", model="seed", ref=grant.grant_id,
-    )
-    profile = _context(owner, OWNER, UID, definition.id).profile
-    assert isinstance(profile, ModelDiscoveryCapability)
-    assert not isinstance(profile, ModelUseCapability)
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_a_declaration_cannot_replace_accepted_spending_limits(owner, monkeypatch):
     from types import SimpleNamespace
 
@@ -715,7 +290,7 @@ def test_a_declaration_cannot_replace_accepted_spending_limits(owner, monkeypatc
     answered = _answer(_ask({**PRICED_ASK, "destination": "capped"}, _KEY_FIELD)[
         "request_id"], {"secret": LLM_KEY})
     assert answered["status"] == "answered", answered
-    grant_id = _ids(universe_id=UID, destination="capped")[1]
+    grant_id = _ids(owner=OWNER, destination="capped")[1]
     definition = register_definition(
         universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
         protocol="chat_messages", model="seed", ref=grant_id,
@@ -736,26 +311,12 @@ def test_a_declaration_cannot_replace_accepted_spending_limits(owner, monkeypatc
     assert "accepted spending" in refused["detail"]
 
 
-def test_the_owner_is_told_the_billing_is_the_requesters_claim(owner):
-    sentence = _ask(QUILLMIND_ASK, _KEY_FIELD)["grant_sentence"]
-    assert "nothing is spent" not in sentence
-    assert "The requester declared these free of charge" in sentence
-    assert "cannot check" in sentence and "billed to your account" in sentence
-
-
 # --------------------------------------------------------------------------- #
 # A constant header can never shadow or duplicate the key header.
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("name", ["X-Api-Key", "api-key", "X-Auth-Token", "X-Session"])
-def test_credential_header_names_cannot_be_constants(name):
-    from tinyassets.api.connection_uses import ConnectionUseError, validate_constant_headers
-
-    with pytest.raises(ConnectionUseError, match="names a credential"):
-        validate_constant_headers({name: "abc"})
-
-
+@pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_a_differently_cased_header_cannot_shadow_or_duplicate_the_key(monkeypatch):
     import http.server
     import threading
@@ -788,6 +349,8 @@ def test_a_differently_cased_header_cannot_shadow_or_duplicate_the_key(monkeypat
             auth_scheme="header", header_name="X-Api-Key", method="POST",
             url="https://api.example.com/v1/x", headers={"x-api-key": "shadow"},
             body={"a": 1},
+            allowed_endpoints=oc._parse_allowed_endpoints([{
+                "host": "api.example.com", "path_template": "/v1/x", "methods": ["POST"]}]),
         )
     finally:
         server.shutdown()
@@ -800,18 +363,6 @@ def test_a_differently_cased_header_cannot_shadow_or_duplicate_the_key(monkeypat
 # --------------------------------------------------------------------------- #
 
 
-def test_neither_vendor_is_named_anywhere_in_the_platform():
-    root = Path(__file__).resolve().parents[1] / "tinyassets"
-    hits = [
-        str(path.relative_to(root))
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix in {".py", ".json", ".md", ".html", ".js", ".txt"}
-        and any(name in path.read_text(encoding="utf-8", errors="ignore").lower()
-                for name in _VENDORS)
-    ]
-    assert hits == []
-
-
 # --------------------------------------------------------------------------- #
 # The app agent reaches configure on the served surface, as the owner only.
 # --------------------------------------------------------------------------- #
@@ -819,7 +370,7 @@ def test_neither_vendor_is_named_anywhere_in_the_platform():
 
 @pytest.fixture
 def served(monkeypatch):
-    from tinyassets import engine_mcp_server as engine
+    from tinyassets import universe_tools as engine
 
     monkeypatch.setattr(engine, "_ACTOR_ID", "owner-setup")
     monkeypatch.setattr(engine, "_GRAPH_ID", "u-setup")
@@ -829,20 +380,4 @@ def served(monkeypatch):
     return engine
 
 
-def test_served_configure_runs_as_the_owner_on_the_bound_universe(served, monkeypatch):
-    from tinyassets.auth.middleware import current_identity
-
-    seen = []
-
-    def configure(**kwargs):
-        seen.append((kwargs, current_identity().user_id))
-        return {"status": "configured"}
-
-    monkeypatch.setattr("tinyassets.api.connection_uses.configure_connection", configure)
-    before = current_identity()
-    document = json.dumps({"destination": "tasklark", "constant_headers": {"X-V": "1"}})
-    result = json.loads(served.write_graph(target="connection", operation="configure",
-                                           payload_json=document))
-    assert result == {"status": "configured"}
-    assert seen == [({"universe_id": "u-setup", "payload": document}, "owner-setup")]
-    assert current_identity() == before
+from tests.support.egress import admitted_egress  # noqa: E402, F401

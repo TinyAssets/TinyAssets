@@ -87,16 +87,6 @@ class ProviderUnavailableError(ProviderError):
     """
 
 
-class ExternalAgentUnavailable(ProviderUnavailableError):
-    """A selected native agent could not run; another source cannot replace it."""
-
-    failure_class = "external_agent_unavailable"
-
-    def __init__(self, agent: str, model: str, reason: str):
-        self.agent = agent
-        self.model = model
-        self.reason = reason
-        super().__init__(f"{agent} {model or 'default'} unavailable: {reason}")
 
 
 class SelectedModelCapacityError(ProviderUnavailableError):
@@ -330,7 +320,6 @@ class AllProvidersExhaustedError(ProviderError):
         failure_class=None,
         retry_after=None,
         capacity_scope=None,
-        native_evidence=(),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -348,7 +337,6 @@ class AllProvidersExhaustedError(ProviderError):
         self.capacity_scope = capacity_scope
         # Private local executor evidence aligned with attempts; not a public
         # provider diagnostic field, credential, or instruction to retry.
-        self.native_evidence = native_evidence
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +383,18 @@ class StorageCapExceeded(FantasyAuthorError):
     either handle the raise (e.g. rotate older artifacts first) or
     propagate it to operator paging.
     """
+
+
+class ProviderConfinementError(ProviderAuthorityHeldError):
+    """A provider launch was refused before anything ran: no admitted owner box.
+
+    Raised BEFORE any process exists, so it is never evidence about the
+    provider or its credential: the router re-raises it without a cooldown and
+    releases what it reserved. A subclass of :class:`ProviderAuthorityHeldError`
+    because that is the contract every caller already honours for "this call
+    may not run here": it is never folded into a fallback response.
+    """
+
+    failure_class = "provider_confinement_unavailable"
+    #: Every raise starts with this, so a stored error string stays classifiable.
+    MESSAGE = "provider launch refused: it cannot be confined to its owner box"

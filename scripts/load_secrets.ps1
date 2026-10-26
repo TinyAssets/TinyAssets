@@ -13,6 +13,9 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $KeysFile = Join-Path $RepoRoot "scripts\secrets_keys.txt"
+if ($env:TINYASSETS_SECRETS_PROFILE -eq "canary") {
+    $KeysFile = Join-Path $RepoRoot "scripts\canary_secret_keys.txt"
+}
 $PlaintextPath = if ($env:TINYASSETS_SECRETS_PLAINTEXT_PATH) {
     $env:TINYASSETS_SECRETS_PLAINTEXT_PATH
 } else {

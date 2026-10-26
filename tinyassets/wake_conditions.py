@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 
 
 def _run(home, owner, run_id):
@@ -66,7 +65,7 @@ def validate(home, owner, agent, condition):
     elif kind == "probe":
         if not isinstance(condition.get("command"), str) or not condition["command"].strip():
             raise ValueError("probe requires a command")
-        from tinyassets.agent_wakes import _positive
+        from tinyassets.control_plane.agent_wakes import _positive
 
         _positive(condition.get("timeout_seconds", 60), "timeout_seconds")
         if condition.get("timeout_seconds", 60) > 600:
@@ -109,20 +108,15 @@ def matches(home, row, condition, *, probe=None):
 
 
 def run_probe(home, row, condition):
-    from tinyassets import universe_egress, universe_tools
-    from tinyassets.api.permissions import owner_run_identity
+    from tinyassets.boxes.provider import BoxError
+    from tinyassets.owner_runtime import require
 
-    # The production four-tool path: owner tool cell, nested jail, storage
-    # accounting and the owner's checking egress proxy. Never a daemon shell.
-    with owner_run_identity(home.parent, home.name, row["owner"]) as authorized:
-        if not authorized:
-            raise PermissionError("wake probe owner unavailable")
-        argv = [universe_tools._system_binary("bash"), "-c", condition["command"]]
-        socket = universe_tools._egress_socket(home)
-        python = shutil.which("python3", path="/usr/bin:/bin")
-        if socket is not None and python:
-            argv = universe_egress.forwarder_argv(python, argv)
-        outcome = universe_tools.run_jailed(
-            home, argv, agent_id=row["agent"], egress_socket=socket,
-            wall_seconds=condition.get("timeout_seconds", 60))
-    return outcome.exit_code == 0 and not outcome.killed
+    runtime = require(home, row["owner"])
+    try:
+        outcome = runtime.tools.run(
+            ["/bin/bash", "-c", condition["command"]], cwd=home,
+            wall_seconds=float(condition.get("timeout_seconds", 60)), output_bytes=64 * 1024,
+        )
+    except BoxError:
+        return False
+    return outcome.returncode == 0

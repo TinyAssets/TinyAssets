@@ -5,19 +5,18 @@ notifications, and metrics for the tray and optional web dashboard.
 
 Phase H additions
 -----------------
-``DispatcherPane``, ``QueuePane``, and ``EarningsPane`` are data panes
+``DispatcherPane`` and ``QueuePane`` are data panes
 populated from a ``daemon_overview`` response.  Each pane wraps its
 ``refresh()`` method in exception isolation so a malformed payload
 cannot crash the UI thread (preflight §4.3 invariant 2 / R3).
 
-``DashboardHandler.refresh_from_overview(data)`` fans out to all three
+``DashboardHandler.refresh_from_overview(data)`` fans out to both
 panes, also under per-pane exception isolation.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -206,58 +205,6 @@ class QueuePane:
         }
 
 
-class EarningsPane:
-    """Settlements + bid earnings pane.
-
-    Active only when ``TINYASSETS_PAID_MARKET=on``.  Refreshed from the
-    ``daemon_overview`` response body.
-    Exception-isolated per preflight §4.3 invariant 2.
-    """
-
-    _PAID_MARKET_ENV: str = "TINYASSETS_PAID_MARKET"
-
-    def __init__(self) -> None:
-        flag = os.environ.get(self._PAID_MARKET_ENV, "off").lower()
-        self.enabled: bool = flag in ("1", "on", "true")
-        self.settlements_total: int = 0
-        self.settlements_unsettled: int = 0
-        self.open_bids_count: int = 0
-        self.recent_settlements: list[dict[str, Any]] = []
-        self.last_error: str | None = None
-
-    def refresh(self, overview_data: dict[str, Any]) -> None:
-        """Update from a ``daemon_overview`` response dict.
-
-        No-op when the paid-market flag is off so the pane stays hidden.
-        """
-        if not self.enabled:
-            return
-        try:
-            settlements = overview_data.get("settlements", {})
-            bids = overview_data.get("bids", {})
-            self.settlements_total = int(settlements.get("count_total", 0))
-            self.settlements_unsettled = int(settlements.get("count_unsettled", 0))
-            self.open_bids_count = int(bids.get("open_count", 0))
-            self.recent_settlements = list(settlements.get("recent", []))
-            self.last_error = None
-        except Exception as exc:
-            logger.warning("EarningsPane.refresh failed: %s", exc)
-            self.last_error = str(exc)
-
-    def summary(self) -> dict[str, Any]:
-        """Snapshot of earnings state for tray / dashboard display."""
-        if not self.enabled:
-            return {"enabled": False}
-        return {
-            "enabled": True,
-            "settlements_total": self.settlements_total,
-            "settlements_unsettled": self.settlements_unsettled,
-            "open_bids_count": self.open_bids_count,
-            "recent_count": len(self.recent_settlements),
-            "last_error": self.last_error,
-        }
-
-
 class DashboardHandler:
     """Processes graph stream events and updates tray/metrics.
 
@@ -279,10 +226,9 @@ class DashboardHandler:
         self._tray = tray
         self._log_callback = log_callback
         self.metrics = DashboardMetrics()
-        # Phase H: dispatcher-economy panes
+        # Phase H: dispatcher and queue panes
         self.dispatcher_pane = DispatcherPane()
         self.queue_pane = QueuePane()
-        self.earnings_pane = EarningsPane()
 
     def handle_event(self, event: dict[str, Any]) -> None:
         """Dispatch a custom stream event from the graph."""
@@ -408,7 +354,7 @@ class DashboardHandler:
         payload in one pane cannot crash the others or the UI thread
         (preflight §4.3 invariant 2 / R3).
         """
-        for pane in (self.dispatcher_pane, self.queue_pane, self.earnings_pane):
+        for pane in (self.dispatcher_pane, self.queue_pane):
             try:
                 pane.refresh(overview_data)
             except Exception as exc:
@@ -436,5 +382,4 @@ class DashboardHandler:
             "words_per_hour": round(m.words_per_hour, 1),
             "dispatcher": self.dispatcher_pane.summary(),
             "queue": self.queue_pane.summary(),
-            "earnings": self.earnings_pane.summary(),
         }

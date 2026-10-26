@@ -14,7 +14,7 @@ Design principles:
     - MCP prompts deliver behavioral instructions so any connecting AI
       knows how to act as a control station
     - Auth-ready: OAuth 2.1 scaffold for production, authless for dev
-    - Extensible: users can register their own LangGraph nodes
+    - Extensible: users install activated packages and author workflow nodes
 
 Transport: Streamable HTTP (current MCP standard for remote servers)
 
@@ -32,13 +32,11 @@ import contextlib
 import json
 import logging
 import math
-import os
 import re
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
-from contextvars import ContextVar, copy_context
+from contextvars import copy_context
 from functools import wraps
 from typing import Annotated, Any, Literal
 
@@ -53,24 +51,16 @@ from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.branches import _branch_design_guide_prompt
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.commons_catalog import commons_catalog as _commons_catalog_impl
-from tinyassets.api.extensions import _extensions_impl
-from tinyassets.api.market import goals as _goals_impl
+from tinyassets.api.goals import goals as _goals_impl
 from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT  # noqa: F401
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import (
     _universe_impl,
     admit_request_v2,
 )
-from tinyassets.api.wiki import _write_reserved_wiki_canary
 from tinyassets.api.wiki import wiki as _wiki_impl
+from tinyassets.api.workflow_actions import _extensions_impl
 from tinyassets.auth.middleware import write_gate_rejection
-from tinyassets.auth.wiki_canary import (
-    current_wiki_canary_authority,
-    is_exact_wiki_canary_arguments,
-    reset_wiki_canary_authority,
-    set_wiki_canary_authority,
-    wiki_canary_token_matches,
-)
 from tinyassets.capability_health import observed
 from tinyassets.command_center_names import (
     CommandCenterNames,
@@ -78,6 +68,7 @@ from tinyassets.command_center_names import (
     public_response,
     verbatim,
 )
+from tinyassets.control_plane.registration import install_profile_tool
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 from tinyassets.mcp_tool_annotations import annotations_for
@@ -93,36 +84,6 @@ _CONVERSE_PROGRESS_INTERVAL_S = 20
 _CONVERSE_WORKERS = 8
 _CONVERSE_EXECUTOR = ThreadPoolExecutor(max_workers=_CONVERSE_WORKERS,
                                         thread_name_prefix="converse")
-_CONVERSE_SLOTS = threading.BoundedSemaphore(_CONVERSE_WORKERS)
-_CONVERSE_BUSY: ContextVar[bool] = ContextVar("converse_busy", default=False)
-
-
-class _ConverseBusy(RuntimeError):
-    pass
-
-
-def _run_converse_worker(tool, args, kwargs):
-    try:
-        return tool(*args, **kwargs)
-    finally:
-        _CONVERSE_SLOTS.release()
-
-
-def _run_busy_converse(tool, args, kwargs):
-    token = _CONVERSE_BUSY.set(True)
-    try:
-        return tool(*args, **kwargs)
-    finally:
-        _CONVERSE_BUSY.reset(token)
-
-
-def _busy_failure_record():
-    from tinyassets.conversation_failure import turn_failure
-
-    return turn_failure("platform_busy", stage="before_send", effects="none",
-                        ref=uuid.uuid4().hex[:16])
-
-
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
 #: Seconds uvicorn keeps waiting on connections and tracked request tasks after
@@ -469,18 +430,8 @@ def _register_structured_tool(fn, *, tags, name=None):
         async def _owned_tool(*args, **kwargs):
             # The admitted turn belongs to the server, not the HTTP/SSE task.
             # A disconnected client stops waiting but must not stop its worker.
-            if _CONVERSE_SLOTS.acquire(blocking=False):
-                try:
-                    future = asyncio.get_running_loop().run_in_executor(
-                        _CONVERSE_EXECUTOR, copy_context().run,
-                        _run_converse_worker, _tool, args, kwargs)
-                except BaseException:
-                    _CONVERSE_SLOTS.release()
-                    raise
-            else:
-                # This short path still authenticates and admits the message, then
-                # records a terminal before it can dispatch any model work.
-                future = asyncio.to_thread(_run_busy_converse, _tool, args, kwargs)
+            future = asyncio.get_running_loop().run_in_executor(
+                _CONVERSE_EXECUTOR, copy_context().run, lambda: _tool(*args, **kwargs))
             worker = asyncio.ensure_future(future)
             def finished(task):
                 if not task.cancelled() and task.exception() is not None:
@@ -521,7 +472,7 @@ def _register_structured_tool(fn, *, tags, name=None):
         meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
     )
-    mcp.add_tool(tool)
+    install_profile_tool(mcp, tool)
     return tool
 
 
@@ -594,7 +545,7 @@ _LANDING_HTML = """<!doctype html>
 
 <p>This is the public surface of a local-first platform for building
 custom multi-step AI workflows &mdash; typed state, registered nodes,
-evaluation hooks, iteration loops, paid-market bid/claim mechanics.
+evaluation hooks and iteration loops.
 The engine is domain-agnostic.</p>
 
 <p>If you arrived here looking for an MCP connector, the live endpoint
@@ -694,7 +645,6 @@ Each registered node declares:
 - `phase`: where in the workflow it fits (orient, plan, draft, commit,
   learn, reflect, enrich, or "custom")
 - `source_code`: the Python source (executed in sandbox)
-- `dependencies`: pip packages it needs (validated against allowlist)
 
 ### How It Works
 
@@ -715,8 +665,8 @@ Each registered node declares:
 - Registered nodes run in isolation (subprocess sandbox).
 - They receive only the state fields they declared as inputs.
 - Their output is validated against declared output keys.
-- Nodes that crash or timeout are auto-disabled with a note.
-- Host can review, approve, disable, or remove any node.
+- The owner edits or removes nodes through the Branch definition.
+- Standalone registration, approval and enable/disable actions are retired.
 
 ### Example
 
@@ -742,7 +692,10 @@ def extension_guide() -> str:
     tags={"branches", "extensions", "graph", "customization"},
 )
 def branch_design_guide() -> str:
-    """Design, inspect, patch, and run graph branches through canonical handles."""
+    """Design, inspect, patch, and run graph branches through canonical handles.
+
+    The same text is read_page page="branch_design_guide".
+    """
     return _branch_design_guide_prompt()
 
 
@@ -825,7 +778,10 @@ def read_graph(
             branch, automations, automation, connections, compute, agents (your own
             agents: main and every agents/<name>/ directory), catalog (the commons
             catalogue of published systems and packages), agent, agent_bindings,
-            agent_binding, app_ui (your own UI library and choice),
+            agent_binding, app_ui (your own UI library and choice: no query is
+            the index, ids and sizes only; query=ui_selection is the choice
+            alone, never the library; query=<ui_id> is one UI, and field_name
+            plus output_offset reads one field in chunks),
             command_center_packages (working public packages to try in your own command center),
             command_center_preview (public visual bytes only; no copy or consent),
             command_center_updates (your copy provenance and explicit replacement choices),
@@ -850,7 +806,12 @@ def read_graph(
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
-            branch's full graph + node configs). Falls back to graph_id.
+            branch's graph + node configs). Falls back to graph_id. A branch
+            that fits comes back whole. One that does not pages node_defs:
+            pass output_offset=<the next_offset the page returned> until
+            next_offset is null. Each page repeats the rest of the branch.
+            For complete source, field_name=@definition returns lossless JSON
+            chunks: concatenate, verify the stable sha256 and lengths, then decode.
         automation_id: Identifier of one of this command center's automations, for
             target=automation. The server assigns it on create and returns it
             in the response; use that value for later reads and controls.
@@ -869,12 +830,16 @@ def read_graph(
         field_name: Output field for target=run_output, or a retained turn id for
             target=conversation. For agent, an exact component key or @definition.
             Omit for a metadata/component catalog (no UI bodies).
+            For branch, @definition selects the complete definition as JSON chunks.
         output_offset: Unicode code-point offset within a selected output field or
             conversation message, or field index when reading the catalog (for a
             conversation catalogue, the returned before-message-id key). Continue
             using next_offset. For catalog, a filtered definition index; for an agent
             catalog, a component index; for a selected component, Unicode JSON
-            character offset. Concatenate chunks until next_offset is null.
+            character offset. For branch @definition, a JSON character offset;
+            otherwise for target=branch, the node_defs index a previous
+            page returned as next_offset (0 is the first page). Concatenate
+            chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
         file_id: For target=run_file, an owned opaque reference bound to run_id.
@@ -960,6 +925,35 @@ def read_graph(
             field_name=field_name, offset=output_offset,
             max_chars=output_max_chars, max_rows=limit,
         ), default=str)
+    if normalized == "branch":
+        # The domain read is the whole branch. This door pages node_defs under
+        # the ceiling instead of letting the ceiling cut the JSON (and its
+        # cursor) in half. A branch that fits is the original text.
+        from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_branch
+        from tinyassets.engine_result_bounds import resolve_ceiling
+
+        if type(output_offset) is not int or output_offset < 0:
+            return json.dumps({"error": "output_offset must be a non-negative integer"})
+        return project_branch(
+            _domain_read_graph(**arguments),
+            offset=output_offset,
+            budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+            render_text=lambda text: text,
+            branch_id=branch_id or graph_id,
+            scope=_continuation_scope(graph_id),
+            field_name=field_name, max_chars=output_max_chars,
+        )
+    if normalized == "app_ui":
+        # The same index the engine serves. An empty query used to be the whole
+        # library, which the ceiling then cut. The owner's app reads the whole
+        # row through the owner door, not here.
+        from tinyassets.api.app_ui import INDEX, read_app_ui
+
+        return json.dumps(read_app_ui(
+            universe_id=graph_id, ui_id=(query or "").strip() or INDEX,
+            field_name=field_name, output_offset=output_offset,
+            output_max_chars=output_max_chars,
+        ))
     raw = _domain_read_graph(**arguments)
     if isinstance(raw, str) and raw.startswith('{"error": "unknown_target"'):
         # The domain names its own targets; this door adds its one synonym.
@@ -1143,7 +1137,10 @@ def write_graph(
             input_keys with tools_allowed ["read_run_file"], reading by keyword call
             invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
             count=524288) which returns bytes_base64, next_offset and eof (loop until
-            eof). Full example: the branch_design_guide "File input contracts" section.
+            eof). Full example: read_page page="branch_design_guide", section
+            "File input contracts". That same page documents the workspace
+            effect packet and the source_code read/write/edit/bash calls.
+            An app UI's add_ui payload is read_page page="app_ui".
             Unbound references expire after one hour; bound files remain until release
             or owner erasure. operation=release takes {file_id}, refuses active run
             bindings and revokes only that file. Export via read_graph target=run_file
@@ -1174,19 +1171,16 @@ def write_graph(
             one of YOUR OWN branches by branch_id, public or private; one that an
             automation, webhook, schedule, goal binding, invoking branch or a
             command center loop still depends on is refused with the dependents named.
-            With target=connection, connect_llm deposits the authenticated
-            owner's own Claude/Codex subscription into this command center's private
-            vault (owner-only; see payload_json). Also with target=connection,
-            connect_http provisions a generic outbound http connection to ANY
-            HTTPS API the command center can then act on via the
+
+            With target=connection, connect_http provisions a generic outbound
+            http connection to any HTTPS API the command center can then act on via the
             authenticated_external_call effect — the channel-agnostic way an
             owner builds an outbound channel (chat webhook, ticketing API, etc.)
             without any service-specific code (owner-only; see payload_json). Also
             with target=connection, connect_compute registers an open COMPUTE
-            provider (any Kimi/OpenRouter/OpenAI-compatible endpoint, or a CLI
-            subscription) the command center's automations can run on — registration
+            HTTP provider the command center's automations can run on — registration
             only, no secret (the credential is deposited out of band via the
-            secure browser form / connect_http); owner-only, see payload_json.
+            secure shared-door browser form); owner-only, see payload_json.
             Also with target=connection, remove_http TAKES BACK a deposited http
             connection: it deletes the secret from the vault and the connection
             and its grants from the ledger, and the destination name is free to
@@ -1194,10 +1188,11 @@ def write_graph(
             the owner asks you to remove a credential, or when a key was pasted
             against a destination they did not intend (owner-only).
             Also with target=connection, configure_provider_capability declares or
-            revokes non-secret connection metadata. realtime_voice uses the
-            CURRENT serving provider; model_discovery uses an owned definition
-            and works unpowered. The server derives the live connection and
-            grant; metadata never widens endpoint scope or selects a model.
+            revokes non-secret connection metadata. model_discovery uses an owned
+            definition and works unpowered. The server derives the live connection
+            and grant; metadata never widens endpoint scope or selects a model.
+            Realtime audio and video are a streaming mode of the owner session,
+            not a connection capability.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -1248,21 +1243,16 @@ def write_graph(
             {"expected_generation": <integer>, "policy": {...}} preference
             document. The authenticated actor's current home is required;
             saving preferences never grants model or spending access.
-            For target=connection operation=connect_llm, pass
-            {"service": "claude"|"codex", "auth_material_b64": "<base64>"} to
-            deposit YOUR OWN subscription into this command center's private vault so
-            the command center can serve on it. Owner-only. base64 is transport: for
-            claude it decodes to your OAuth token; for codex it is the base64 of
-            your auth.json. The secret is stored in the command center's vault and is
-            never echoed back. After a successful deposit, re-point serving with
-            target=agent_binding operation=bind_serving_provider then set_serving.
             For target=connection operation=connect_http, pass
-            {"destination": "<stable key, e.g. webhook:acme>", "secret":
-            "<bearer token>", "allowed_endpoints": [{"host": "api.example.com",
-            "path_template": "/v1/messages", "methods": ["POST"]}]} to provision a
-            generic http connection (auth_scheme bearer). Owner-only; the secret is
-            vaulted and never echoed. Then grant effector consent for the
-            destination and build a node whose effect is authenticated_external_call.
+            {"destination": "<stable key, e.g. webhook:acme>", "auth_scheme":
+            "bearer", "allowed_endpoints": [{"host": "api.example.com",
+            "path_template": "/v1/messages", "methods": ["POST"]}]}.
+            This action takes no credential. For a secret or sign-in, return the
+            connect_url to the owner. It carries request, center and connection;
+            the request completes when its grant arrives through the broker ledger.
+            auth_scheme "none" connects through the box channel with no key.
+            Then grant effector consent for the destination and build a node
+            whose effect is authenticated_external_call.
             To WRITE A FILE through an API that takes base64 (a contents API),
             NEVER generate base64 and NEVER re-type the file - both corrupt it.
             Build two nodes in one branch, both with that effect: `fetch` (a GET
@@ -1276,23 +1266,10 @@ def write_graph(
             {"access_method": "api_key_http", "protocol": "openai_chat"|
             "anthropic_messages", "model": "<model>", "ref": "<grant_id of an http
             connection already granted to this command center>"} to register an open compute
-            provider (Kimi/OpenRouter/any OpenAI-compatible endpoint). For a CLI
-            subscription pass {"access_method": "subscription_cli", "protocol":
-            "cli:codex"|"cli:claude-code", "model": "<model>", "ref": "codex"|
-            "claude-code"}. Owner-only, registration ONLY — NO secret here (deposit the
-            api key out of band via the secure browser form / connect_http first).
+            provider. Registration takes no secret; deposit the key through the
+            secure browser connection form first.
             For target=connection operation=configure_provider_capability, pass
-            {"capability_kind": "realtime_voice", "enabled": true,
-            "descriptor": {"protocol": "tinyassets.voice.v1", "session_url":
-            "https://provider.example/realtime/session", "service_name":
-            "Provider Voice", "privacy_url": "https://provider.example/privacy"}}
-            to declare Voice on the current user-owned HTTP provider. The optional
-            privacy_url must also be HTTPS. The session URL must already be in the
-            connection's exact POST allowlist. Pass enabled=false without a
-            descriptor to revoke. Owner plus home command center admin authority is
-            required; subscription-only providers are refused rather than given a
-            second credential path.
-            For model-discovery metadata, instead pass {"capability_kind":
+            {"capability_kind":
             "model_discovery", "definition_id": "<owned compute definition>",
             "enabled": true, "descriptor": {"protocol": "openrouter_user_models_v1",
             "catalogue_url": "https://<granted-host>/api/v1/models/user?output_modalities=all",
@@ -1555,20 +1532,7 @@ def write_graph(
             )
         )
     if normalized == "connection":
-        # LLM subscription deposit is an owner-scoped operation under the pinned
-        # write_graph handle (byo-llm-deposit-surface). It routes to its own
-        # owner-scoped handler; cloud_connections only lists. Adds no
-        # advertised handle — the live tool catalog stays pinned.
         connection_operation = (operation or "").strip().lower()
-        if connection_operation == "connect_llm":
-            from tinyassets.api.llm_deposit import connect_llm
-
-            return json.dumps(
-                connect_llm(
-                    universe_id=graph_id,
-                    payload=payload_json,
-                )
-            )
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
             # universe can act on a channel (Slack, any HTTPS API). Its own
@@ -1661,7 +1625,7 @@ def write_graph(
             )
         if connection_operation == "connect_compute":
             # Owner-scoped registration of an open COMPUTE provider (any Kimi/
-            # OpenRouter/OpenAI-compatible endpoint or a CLI subscription). Its own
+            # HTTP endpoint). Its own
             # owner-scoped handler; registration ONLY (no secret — the credential is
             # deposited out of band per the custody boundary). Adds no advertised handle.
             from tinyassets.api.compute_connection import connect_compute
@@ -1801,88 +1765,36 @@ _mcp_write_graph = _register_structured_tool(
 )
 
 
-def _inbound_event_run_fn(
-    branch_def_id: str,
-    actor: str,
-    inputs: dict,
-    run_name: str,
-    *,
-    principal_id: str = "",
-) -> None:
-    """Scheduler run_fn for inbound (Source-node) events. Fires the
-    bound branch as the command center carried by the row's owner_actor. FAILS CLOSED on a
-    non-universe actor so a trigger can never run a branch under an ambient/host
-    identity. Links the in-flight reservation (reserved atomically in handle_hook) to
-    the run, so it is released on run completion; releases it if the run cannot be
-    created (Codex round-2 #5).
-
-    ``principal_id`` is the owner the run acts for: a Source EVENT passes the
-    hook owner stamped on the event. The event thread has no request identity,
-    and there is no synthetic one, so an empty principal refuses
-    (authenticated-owner boundary D2)."""
-    from tinyassets.storage import data_dir, webhook_hooks
-    from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
-
-    inputs = dict(inputs or {})
-    reservation_id = inputs.pop(RESERVATION_INPUT_KEY, "") or ""
-    base = data_dir()
-
-    def _release() -> None:
-        if reservation_id:
-            try:
-                webhook_hooks.release_dispatch(base, reservation_id=reservation_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("event bus: reservation release failed")
-
-    if not actor.startswith("universe:"):
-        logger.error("event bus: refusing to fire branch as non-universe actor %r", actor)
-        _release()
-        return
-    if not (principal_id or "").strip():
-        logger.error(
-            "event bus: refusing to fire branch %s for %s with no owner principal",
-            branch_def_id, actor,
-        )
-        _release()
-        return
-    uid = actor[len("universe:"):].strip()
-    if not uid:
-        logger.error("event bus: empty command center in actor %r", actor)
-        _release()
-        return
+def _scheduler_run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
+    """Non-inbound automation dispatch; inbound events use durable session admission."""
     from tinyassets.api.runs import enqueue_universe_branch_run
+    from tinyassets.storage import data_dir
 
-    try:
-        run_id = enqueue_universe_branch_run(
-            base,
-            universe_id=uid,
-            branch_def_id=branch_def_id,
-            inputs=inputs,
-            run_name=run_name,
-            principal_id=principal_id,
-        )
-        if reservation_id:
-            webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
-    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
-        logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
-        _release()
+    if not actor.startswith("universe:") or not principal_id:
+        raise PermissionError("automation requires an owner and command center")
+    return enqueue_universe_branch_run(
+        data_dir(), universe_id=actor[len("universe:"):], branch_def_id=branch_def_id,
+        inputs=inputs, run_name=run_name, principal_id=principal_id)
 
 
 def start_scheduler_for_serving() -> bool:
-    """Start the process scheduler because the daemon is now serving.
+    """Start the event source while the execution owner is enabled.
 
-    UNCONDITIONAL — it does not consult ``TINYASSETS_INBOUND_ENABLED``. That flag
-    gates the inbound HTTP surface (the ``/hooks/*`` route and publishing Source
-    events onto the bus), not whether the event loop runs.
+    ``TINYASSETS_INBOUND_ENABLED`` gates the inbound HTTP surface; the event
+    source also needs a running owner tick to dispatch anything it accepts.
 
     Returns whether the scheduler is running afterwards. A scheduler fault must not
     block boot, so a failure is logged and reported, never raised.
     """
-    from tinyassets.scheduler import get_or_create_scheduler
+    from tinyassets.control_plane.events import get_or_create_scheduler
+    from tinyassets.control_plane.tick import assigned_queue_consumer_enabled
     from tinyassets.storage import data_dir
 
+    if not assigned_queue_consumer_enabled():
+        logger.info("scheduler not started: execution owner disabled")
+        return False
     try:
-        get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
+        get_or_create_scheduler(data_dir(), _scheduler_run_fn)
     except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
         logger.exception("scheduler failed to start")
         return False
@@ -1892,7 +1804,7 @@ def start_scheduler_for_serving() -> bool:
 
 def stop_scheduler_for_serving() -> None:
     """Stop the process scheduler on daemon teardown. Never masks a teardown error."""
-    from tinyassets.scheduler import shutdown_scheduler
+    from tinyassets.control_plane.events import shutdown_scheduler
 
     try:
         shutdown_scheduler()
@@ -1958,6 +1870,7 @@ def run_graph(
     operation: str = "run",
     run_id: str = "",
     branch_version_id: str = "",
+    agent_ref: str = "",
 ) -> str:
     """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
     inbound triggers that let an external channel run a branch.
@@ -1977,6 +1890,7 @@ def run_graph(
     operation=emit_event takes inputs_json {"name", "data"} under your own home
     graph_id and wakes only YOUR automations subscribed to that name
     (event_type app_event). Returns how many wakes it stored.
+    viewer.account_id is the signed-in account, not data.
 
     File inputs: a file the user attached in the app is ALREADY a run-file
     reference, arriving inside their message as a delimited JSON attachment
@@ -1984,7 +1898,7 @@ def run_graph(
     {version,file_id,size_bytes,sha256,filename,media_type}. No capture, bind
     step, public URL or re-upload is needed. Run a branch whose io_manifest
     declares a file or file_bundle input
-    (write_graph, and the branch_design_guide "File input contracts" section)
+    (write_graph, and read_page page="branch_design_guide", "File input contracts")
     and pass each reference VERBATIM, unchanged, under that input name in
     inputs_json, e.g. {"files": [<reference>, ...]}. Admission binds the exact
     same-owner references before anything executes; a retyped, edited or
@@ -2007,12 +1921,12 @@ def run_graph(
         goal_id: Optional Goal whose current caller-scoped canonical should run.
             The caller's personal binding is preferred before the Goal default.
         webhook_op: Manage a per-branch inbound webhook URL for YOUR OWN command center:
-            ``mint`` (needs branch_def_id) returns a stable
-            ``https://<domain>/hooks/<token>`` URL any channel can POST to run the
-            branch; ``revoke`` (needs token) disables one; ``list`` shows active ones.
+            ``mint`` (needs branch_def_id and agent_ref) returns a stable
+            ``https://<domain>/hooks/inbound/<token>`` URL a channel can POST to start the named
+            agent; ``revoke`` (needs token) disables one; ``list`` shows active ones.
         source_op: Manage a Source (a live inbound source = a webhook + an
-            event-trigger) for YOUR OWN command center: ``create`` (needs branch_def_id),
-            ``revoke`` (needs source_id), ``list``.
+            agent binding) for YOUR OWN command center: ``create`` (needs
+            branch_def_id and agent_ref), ``revoke`` (needs source_id), ``list``.
         token: The webhook token to revoke (with ``webhook_op="revoke"``).
         source_id: The source to revoke (with ``source_op="revoke"``).
         operation: "run" (default), or "cancel" to request cancellation of an
@@ -2073,6 +1987,7 @@ def run_graph(
             action=action,
             branch_def_id=branch_def_id,
             token=token,
+            agent_ref=agent_ref,
             universe_id=graph_id,
         )
     if source_op:
@@ -2087,6 +2002,7 @@ def run_graph(
             action=action,
             branch_def_id=branch_def_id,
             source_id=source_id,
+            agent_ref=agent_ref,
             universe_id=graph_id,
         )
     if goal_id:
@@ -2141,6 +2057,11 @@ def read_page(
 
     Args:
         page: Optional wiki page slug or path. Empty searches by query.
+            read_page page="branch_design_guide" and read_page page="app_ui"
+            return those authoring documents (not wiki pages): the branch
+            guide includes the workspace effect packet and source_code
+            read/write/edit/bash calls; the app_ui page is the add_ui
+            payload, whose version must be 1.
         query: Optional search text or ambient relevance terms.
         category: Optional wiki category filter for searches.
         changed_since: Optional ISO timestamp for feed freshness filtering.
@@ -2150,7 +2071,17 @@ def read_page(
         command_center_id: Optional target command center page substrate.
     """
     universe_id = command_center_id  # internal name until C3
+    from tinyassets.app_access import private_tool_refusal
+
+    refused = private_tool_refusal()
+    if refused:
+        return refused
     if page:
+        from tinyassets.api.authoring_pages import authoring_page_json
+
+        authored = authoring_page_json(page)
+        if authored:
+            return authored
         return _wiki_impl(
             action="read",
             page=page,
@@ -2244,6 +2175,11 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     universe_id = command_center_id  # internal name until C3
+    from tinyassets.app_access import private_tool_refusal
+
+    refused = private_tool_refusal()
+    if refused:
+        return refused
     # Exact match only: ``scope`` is validated verbatim below (" COMMONS " is refused).
     if scope == "command_center" or "universe" in scope:
         scope = str(internal_value(scope))
@@ -2254,41 +2190,10 @@ def write_page(
     is_patch_preview = (
         not normalized_kind and bool(old_text or new_text) and dry_run
     )
-    is_canary_write = (
-        current_wiki_canary_authority()
-        and not any((
-            page,
-            log_entry,
-            old_text,
-            new_text,
-            expected_sha256,
-            title,
-            normalized_kind,
-            component,
-            severity,
-            repro,
-            observed,
-            expected,
-            workaround,
-            tags,
-            reporter_context,
-            universe_id,
-            scope,
-        ))
-        and force_new is False
-        and is_exact_wiki_canary_arguments({
-            "category": category,
-            "filename": filename,
-            "content": content,
-            "dry_run": dry_run,
-        })
-    )
     if not is_patch_preview:
         rejection = write_gate_rejection("write_page")
-        if rejection and not is_canary_write:
+        if rejection:
             return rejection
-    if is_canary_write:
-        return _write_reserved_wiki_canary(content)
     if scope not in {"", "commons", "universe"}:
         return json.dumps({
             "error": "scope must be one of: commons, command_center",
@@ -2478,12 +2383,9 @@ _AUTH_EVIDENCE_TELLS = (
     "login required",
     "please log in",
     "please login",
-    "codex login",
-    "claude login",
     "reauthenticat",
     "re-authenticat",
     "no_credentials",
-    "auth.json",
     # Codex 0.146: "Your access token could not be refreshed. Please log out
     # and sign in again." Claude: "Not logged in · Please run /login".
     "could not be refreshed",
@@ -2721,34 +2623,6 @@ def _record_served_failure(universe_id: str, exc: BaseException, ref: str = "") 
         logger.warning("served turn failed universe=%s (diagnostics unavailable)", universe_id)
 
 
-_NATIVE_AUTH_CLUE = re.compile(
-    r"[a-zA-Z0-9_. -]{1,48} terminal result was not success "
-    r"\(subtype=(?:success|non_success), is_error=true, "
-    r"last_assistant_error=authentication_failed\)"
-)
-
-
-def _has_native_auth_clue(exc: BaseException) -> bool:
-    """Read only the last failed attempt's closed native diagnostic rendering.
-
-    This is a provider-reported clue, never a new failure class, evidence of
-    safe replay, or authority to change credentials. Adapter progress
-    supersedes prior assistant errors before constructing this rendering.
-    """
-    attempts = getattr(exc, "attempts", None)
-    if not isinstance(attempts, (list, tuple)):
-        return False
-    for attempt in reversed(attempts):
-        if getattr(attempt, "status", None) == "failed":
-            detail = getattr(attempt, "detail", "")
-            return (
-                getattr(attempt, "skip_class", None) == "provider_error"
-                and isinstance(detail, str)
-                and _NATIVE_AUTH_CLUE.fullmatch(detail) is not None
-            )
-    return False
-
-
 def _context_overflow(exc: BaseException) -> bool:
     """True when this turn, or anything it wraps, is our own context refusal."""
     seen: set[int] = set()
@@ -2767,11 +2641,11 @@ def _served_failure_code(exc: BaseException) -> str:
     from tinyassets.conversation_failure import FAILURE_CODES
     from tinyassets.exceptions import (
         ProviderAuthorityHeldError,
+        ProviderConfinementError,
         SelectedModelUnavailableError,
         WorkModelExhaustedError,
     )
     from tinyassets.providers.model_pins import ModelPinError
-    from tinyassets.providers.provider_jail import ProviderConfinementError
     from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
@@ -2799,8 +2673,6 @@ def _served_failure_code(exc: BaseException) -> str:
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
-        if _has_native_auth_clue(exc):
-            return "native_auth_clue"
     except Exception:  # Malformed diagnostic attributes are not another failure.
         pass
     return "unknown"
@@ -3193,11 +3065,18 @@ def converse(
 
             home_failure = founder_home_failure()
     except Exception:
+        # An unreadable store is not a classified birth failure. Labeling it
+        # "incomplete" returned home_unavailable, which tells the client the
+        # home is missing rather than that this read could not authorize the
+        # turn. The ACL check below already uses auth_scope_required for the
+        # same defect; this read is one call earlier.
         logger.warning(
             "converse: could not resolve the command center for %r", graph_id, exc_info=True
         )
-        uid = ""
-        home_failure = "incomplete"
+        return json.dumps({
+            "error": "Your home command center could not be created or loaded.",
+            "auth_scope_required": True,
+        })
     if not uid:
         # A missing create scope is an auth problem. Admission, a deleted
         # account, or a birth that did not finish is not: calling it
@@ -3278,18 +3157,59 @@ def converse(
             "universe_id": uid,
         })
 
-    if addressed is None:
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.conversation_store import owner_send_options
+    from tinyassets.owner_door.send import deliver_owner_send
+
+    # Selection negotiation is read-only. Actual execution always crosses intake.
+    stored_options = owner_send_options(_universe_dir(uid), memory_session, client_send_id)
+    if stored_options is not None:
+        # A design installed after admission cannot retarget a saved message.
+        # Also repair a client that already negotiated a new selection on replay.
+        consumer_request = stored_options.get('consumer_request')
+    if stored_options is None and addressed is None and consumer_request is None:
         from tinyassets.consumer_runtime import converse_turn
 
-        custom = converse_turn(
+        selection = converse_turn(
             _base_path(), owner=current_actor_id(), universe=uid, message=message,
-            input_method=input_method, model_choice=model_choice, request=consumer_request,
+            input_method=input_method, model_choice=model_choice, request=None,
         )
-        if custom is not None:
-            return json.dumps(custom)
-    elif consumer_request is not None:
-        # A conversation design answers the main thread only.
+        if selection is not None:
+            return json.dumps(selection)
+    elif addressed is not None and consumer_request is not None:
         return json.dumps({"error": "invalid_consumer_request", "universe_id": uid})
+    client_send_id = client_send_id or uuid.uuid4().hex
+
+    def dispatch(founder_turn):
+        if consumer_request is not None:
+            from tinyassets.consumer_runtime import converse_turn
+
+            return converse_turn(
+                _base_path(), owner=current_actor_id(), universe=uid, message=message,
+                input_method=input_method, model_choice=model_choice, request=consumer_request,
+                founder_turn=founder_turn,
+            )
+        return json.loads(_dispatch_owner_send(
+            message, uid, input_method, model_choice, addressed, addressed_id,
+            memory_session, client_send_id, founder_turn, turn,
+        ))
+
+    try:
+        return json.dumps(deliver_owner_send(
+            _universe_dir(uid), memory_session, client_send_id, message,
+            {"input_method": input_method, "model_choice": model_choice,
+             "consumer_request": consumer_request}, dispatch,
+            publish=lambda: _announce_owner_message(_universe_dir(uid)),
+        ))
+    except Exception:
+        logger.exception("owner send receipt unavailable")
+        return json.dumps({"error": "Send receipt unavailable; retry this same send identity.",
+                           "history_saved": False, "client_send_id": client_send_id})
+
+
+def _dispatch_owner_send(message, uid, input_method, model_choice, addressed, addressed_id,
+                         memory_session, client_send_id, founder_turn, turn):
+    from tinyassets.api import interlocutor
 
     # Cross-turn memory (founder goal 2026-08-22: a conversation that persists).
     # One continuous session per founder per universe, keyed on the VERIFIED
@@ -3299,13 +3219,15 @@ def converse(
     # History only rides into GRANTED (founder) turns — enforced again inside
     # converse — and it is memory, never consent.
     from tinyassets.api.helpers import _universe_dir as _memory_universe_dir
+    from tinyassets.api.permissions import current_actor_id
     from tinyassets.control_plane import session
 
     memory_universe_dir = _memory_universe_dir(uid)
     try:
-        from tinyassets.conversation_store import load_recent
+        from tinyassets.conversation_store import load_send_history
 
-        conversation_history = load_recent(memory_universe_dir, memory_session)
+        conversation_history = load_send_history(memory_universe_dir, memory_session,
+                                                  current_send_id=client_send_id)
     except Exception:  # noqa: BLE001 - no memory this turn, never a failed turn
         conversation_history = []
     if addressed is None:
@@ -3348,7 +3270,6 @@ def converse(
     typed = message
     live_id = ""
     live_turn = None
-    founder_turn = None
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
@@ -3371,34 +3292,9 @@ def converse(
                               base_path=memory_universe_dir.parent) as live_turn:
             live_turn.check()
             live_id = live_turn.live_id
-            # This commit is admission, not optional memory. No model or tool may run
-            # until the original request survives process death. Carryover is context,
-            # never a replacement for the owner's verbatim message in the transcript.
-            from tinyassets.conversation_store import record_turn
+            from tinyassets.conversation_store import bind_send_execution
 
-            founder_turn = record_turn(
-                memory_universe_dir, memory_session, "founder", typed,
-                client_send_id=client_send_id, ext_id=f"turn:{live_turn.live_id}",
-            )
-            if not founder_turn:
-                from tinyassets.conversation_store import stored_owner_send
-
-                try:
-                    original = stored_owner_send(memory_universe_dir, memory_session,
-                                                 client_send_id)
-                except Exception:  # noqa: BLE001 - unreadable admission must refuse dispatch
-                    original = None
-                if original is not None:
-                    if original != typed:
-                        return json.dumps({"error": "client_send_id_conflict",
-                                           "universe_id": uid})
-                    return json.dumps({"already_received": True, "history_saved": True,
-                                       "universe_id": uid})
-                return json.dumps({"error": "Your message could not be saved, so nothing was sent.",
-                                   "history_saved": False, "universe_id": uid})
-            if _CONVERSE_BUSY.get():
-                raise _ConverseBusy("Interactive turns are busy; try again shortly.")
-            _announce_owner_message(memory_universe_dir)
+            bind_send_execution(memory_universe_dir, memory_session, founder_turn, live_id)
             # A reconnect must not consume context owed to the next new turn.
             message = _with_carryover(memory_universe_dir, memory_session, message)
             if addressed is None and turn.interlocutor.tier == interlocutor.FOUNDER:
@@ -3413,6 +3309,7 @@ def converse(
                 base_path=memory_universe_dir.parent, universe_id=uid,
                 owner=current_actor_id(), tier=turn.interlocutor.tier,
                 session_key=f"thread:{memory_session}",
+                execution_id=f"send:{memory_session}:{client_send_id or live_id}",
                 conversation_history=conversation_history, input_method=input_method,
                 model_choice=model_choice, response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,
@@ -3446,8 +3343,20 @@ def converse(
         from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 
-        record = (_busy_failure_record() if isinstance(exc, _ConverseBusy)
-                  else _served_failure_record(exc, held=held is not None))
+        record = _served_failure_record(exc, held=held is not None)
+        if held is not None and record.effects == "none":
+            from tinyassets.api.pending_requests import _model_connect_request
+
+            try:
+                held["needs_connection"] = _model_connect_request()
+            except Exception:
+                logger.warning("connection request unavailable; send remains retryable",
+                               exc_info=True)
+                held["error"] = "Connection setup is unavailable; retry this same message."
+            return json.dumps(_with_unsettled_steering(
+                {**held, "retryable_setup": True, "history_saved": True},
+                memory_universe_dir, memory_session, live_id,
+            ))
         try:
             saved = record_failure(
                 memory_universe_dir, memory_session, typed, record, client_send_id=client_send_id,
@@ -3469,16 +3378,6 @@ def converse(
             "failure_notice": failure_notice(record),
             "history_saved": saved,
         }
-        if held is not None:
-            from tinyassets.api.pending_requests import _connect_llm_request
-
-            try:
-                held["needs_connection"] = _connect_llm_request()
-            except Exception:
-                logger.warning("converse: connect request unavailable", exc_info=True)
-            return json.dumps(_with_unsettled_steering(
-                {**held, **history}, memory_universe_dir, memory_session, live_id,
-            ))
         try:
             _record_served_failure(uid, exc, ref=record.ref)
         except Exception:
@@ -3764,46 +3663,6 @@ _mcp_get_status = _register_structured_tool(
 )
 
 
-class _WikiCanaryExecutionAuthority(Middleware):
-    """Re-establish exact canary authority in FastMCP's tool task."""
-
-    async def on_call_tool(self, context, call_next):
-        from fastmcp.server.dependencies import get_http_request
-
-        authorized = False
-        try:
-            request = get_http_request()
-            auth_headers = request.headers.getlist("authorization")
-            scheme, separator, credential = (
-                auth_headers[0].partition(" ")
-                if len(auth_headers) == 1
-                else ("", "", "")
-            )
-            arguments = getattr(context.message, "arguments", None)
-            authorized = (
-                request.method.upper() == "POST"
-                and request.url.path in {"/mcp", "/mcp/"}
-                and scheme.lower() == "bearer"
-                and bool(separator)
-                and bool(credential.strip())
-                and wiki_canary_token_matches(credential.strip())
-                and getattr(context.message, "name", "") == "write_page"
-                and isinstance(arguments, dict)
-                and is_exact_wiki_canary_arguments(arguments)
-            )
-        except RuntimeError:
-            # Non-HTTP transports and missing request context are never eligible.
-            authorized = False
-
-        previous = set_wiki_canary_authority(authorized)
-        try:
-            return await call_next(context)
-        finally:
-            reset_wiki_canary_authority(previous)
-
-
-
-
 class _ProviderRequestAuthority(Middleware):
     """Mint an inert, exact-message reserve before FastMCP selects a worker."""
 
@@ -3850,7 +3709,6 @@ class _ProviderRequestAuthority(Middleware):
             reset_provider_request_reserve(token)
 
 
-mcp.add_middleware(_WikiCanaryExecutionAuthority())
 mcp.add_middleware(_ProviderRequestAuthority())
 # Innermost: the rename's public edge (retired names refused, current names out).
 mcp.add_middleware(CommandCenterNames(frozenset({
@@ -3862,7 +3720,6 @@ mcp.add_middleware(CommandCenterNames(frozenset({
 # ---------------------------------------------------------------------------
 # Server Entry Point
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------
@@ -4085,8 +3942,11 @@ class _MCPDiscoveryMiddleware:
 PLATFORM_NOT_CLOUD_EXIT_CODE = 78
 
 
-def create_streamable_http_app(*, ingress=None) -> Starlette:
+def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
+    from tinyassets.owner_runtime import current as owner_runtime
+
+    owner_mode = owner_runtime() is not None
     canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
     modern_tools = mcp.http_app(path="/mcp", transport="streamable-http",
                                stateless_http=True, json_response=True)
@@ -4122,6 +3982,16 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
         from tinyassets.observability import emit_crash, emit_startup, install_serving
 
         install_serving()
+
+        if not owner_mode:
+            # The router has no owner stores, tick, sweepers or MCP sessions.
+            from tinyassets.router_credentials import serving as serve_credentials
+            from tinyassets.storage import data_dir
+
+            async with serve_credentials(data_dir()):
+                emit_startup()
+                yield
+            return
 
         from tinyassets.scoped_reset import prepare_service_writer_barrier
         from tinyassets.storage import data_dir
@@ -4164,12 +4034,15 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
-            # the entire inbound HTTP path (Codex #2): it keeps the `/hooks/*` route
-            # unmounted below, and `_emit_source_event` refuses when the bus is down.
-            # DARK by default there; tests drive the Scheduler + handle_hook directly.
+            # the entire inbound HTTP path: it keeps the `/hooks/inbound` route
+            # unmounted below. Accepted events enter only through receipt-keyed
+            # session start.
             start_scheduler_for_serving()
             run_visibility_startup_gate()
             async with AsyncExitStack() as stack:
+                from tinyassets.owner_runtime import serving as owner_serving
+
+                stack.enter_context(owner_serving())
                 await stack.enter_async_context(
                     canonical_app.router.lifespan_context(canonical_app),
                 )
@@ -4188,13 +4061,6 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
     # match before any MCP catch-all route. In WorkOS mode the Protected
     # Resource Metadata advertises AuthKit as the authorization server.
-    # Universal inbound webhook (channel-agnostic inbound, Floor 1): a per-branch
-    # `POST /hooks/<token>` lets ANY channel trigger a branch with zero per-channel
-    # platform code. The token alone authorizes + selects (universe, branch); the run
-    # is enqueued as that universe. The route is mounted ONLY when the master flag
-    # ``TINYASSETS_INBOUND_ENABLED`` is set (Codex #2 — dark means the path is absent,
-    # not merely un-tunneled); handle_hook re-checks the flag as defense in depth. Going
-    # live additionally requires the Cloudflare tunnel to route `/hooks/*` (today `/mcp`).
     from starlette.responses import JSONResponse as _HookJSON
     from starlette.routing import Route as _HookRoute
 
@@ -4204,36 +4070,36 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
 
     async def _hooks_endpoint(request):
-        from tinyassets.webhook_inbound import MAX_BODY_BYTES, handle_hook
+        from starlette.concurrency import run_in_threadpool
 
-        # Enforce the size cap BEFORE buffering the whole body (Codex #2): reject an
-        # oversized declared Content-Length up front, then stream-count and abort the
-        # moment the actual bytes exceed the cap (chunked requests omit Content-Length).
-        clen = request.headers.get("content-length")
-        if clen is not None:
-            try:
-                if int(clen) > MAX_BODY_BYTES:
-                    return _HookJSON({"error": "too_large"}, status_code=413)
-            except ValueError:
-                return _HookJSON({"error": "bad_request"}, status_code=400)
-        chunks: list[bytes] = []
-        total = 0
+        from tinyassets.auth.middleware import current_identity_or_none
+        from tinyassets.owner_runtime import admitted
+        from tinyassets.webhook_inbound import MAX_BODY_BYTES, handle_challenge, handle_verified
+
+        runtime = admitted()
+        identity = current_identity_or_none()
+        proof = identity.metadata.get("inbound") if identity is not None else None
+        if not isinstance(proof, dict) or proof.get("binding") != request.path_params["binding"]:
+            return _HookJSON({"error": "not_found"}, status_code=404)
+        if request.method == "GET":
+            status, payload = await run_in_threadpool(
+                handle_challenge, proof=proof, query=request.url.query,
+                base=runtime.root, owner=runtime.principal)
+            return _HookJSON(payload, status_code=status)
+        body = bytearray()
         async for chunk in request.stream():
-            total += len(chunk)
-            if total > MAX_BODY_BYTES:
+            body.extend(chunk)
+            if len(body) > MAX_BODY_BYTES:
                 return _HookJSON({"error": "too_large"}, status_code=413)
-            chunks.append(chunk)
-        status, payload = handle_hook(
-            token=str(request.path_params.get("token", "")),
-            body=b"".join(chunks),
-            headers=dict(request.headers),
-        )
-        return _HookJSON(payload, status_code=status)
+        status, payload = await run_in_threadpool(
+            handle_verified, proof=proof, body=bytes(body), headers=dict(request.headers),
+            base=runtime.root, owner=runtime.principal)
+        return _HookJSON(payload, status_code=status,
+                         headers={"Retry-After": "5"} if status in {429, 503} else {})
 
     _inbound_routes = (
-        [_HookRoute("/mcp/hooks/{token}", _hooks_endpoint, methods=["POST"])]
-        if _inbound_enabled()
-        else []
+        [_HookRoute("/hooks/inbound/{binding}", _hooks_endpoint, methods=["GET", "POST"])]
+        if owner_mode and _inbound_enabled() else []
     )
 
     # GET /mcp/pulse: release facts for the authenticated canary principal.
@@ -4300,6 +4166,13 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
         return _PulseJSON(payload)
 
     from tinyassets.observability import client_error
+    from tinyassets.owner_router import OwnerRouter, forwarded_path
+
+    app_routes = onboarding_routes()
+    if owner_mode:
+        app_routes = [route for route in app_routes if route.path != "/app/account/delete"]
+    else:
+        app_routes = [route for route in app_routes if not forwarded_path(route.path)]
 
     app = Starlette(
         routes=[
@@ -4312,11 +4185,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             # Onboarding SPA at /app — same-origin to /mcp, dark-flagged
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
             # before the MCP transport so the exact path resolves first.
-            *onboarding_routes(),
+            *app_routes,
             # REST door for programmatic clients (API keys only; see the
             # auth middleware's `_serve_rest_api`).
-            *rest_api_routes(),
-            *canonical_app.routes,
+            *(rest_api_routes() if owner_mode else []),
+            *(canonical_app.routes if owner_mode else []),
         ],
         lifespan=lifespan,
     )
@@ -4325,14 +4198,16 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
     # browser-style GETs on /mcp; pass MCP transport requests through unchanged.
     from tinyassets.auth.middleware import AuthContextMiddleware
-    from tinyassets.ingress import AppIngressMiddleware
     from tinyassets.observability import RequestLogMiddleware, StashExceptionMiddleware
 
     # Inside Starlette's server-error wrapper, outside the exception middleware,
     # so a route exception is stashed before it becomes an HTTP 500.
     app.add_middleware(StashExceptionMiddleware)
-    app = AuthContextMiddleware(AppIngressMiddleware(
-        MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools), ingress))
+    if owner_mode:
+        app = MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools)
+    else:
+        app = _MCPDiscoveryMiddleware(OwnerRouter(app))
+    app = AuthContextMiddleware(app, router=not owner_mode)
     # Browser clients preflight OPTIONS /mcp with no bearer, and they can
     # read WWW-Authenticate and Mcp-Session-Id only when the response names
     # their origin. This sits outside auth so the preflight is not a 401,
@@ -4345,7 +4220,7 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # The session trail records every admitted request. It sits directly
     # inside admission so no request body is buffered before the origin is
     # admitted; a refused origin leaves no event.
-    app = RequestLogMiddleware(app)
+    app = RequestLogMiddleware(app, inspect_body=owner_mode)
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no
@@ -4358,29 +4233,6 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
 
     app = PlatformOriginAdmission(app)
     return app
-
-
-def _serve_configs(app, host: str, port: int, socket_path: str):
-    """Keep TCP defaults; only the additional socket bypasses lifespan."""
-    import uvicorn
-
-    from tinyassets.owner_socket import OwnerSocketMiddleware
-
-    return (
-        uvicorn.Config(app, host=host, port=port,
-                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
-        uvicorn.Config(OwnerSocketMiddleware(app), uds=socket_path, lifespan="off",
-                       proxy_headers=False,
-                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
-    )
-
-
-async def _serve_owner_listeners(configs):
-    import asyncio
-
-    import uvicorn
-
-    await asyncio.gather(*(uvicorn.Server(config).serve() for config in configs))
 
 
 def main(
@@ -4428,19 +4280,11 @@ def main(
     )
 
     # Serving admission (openspec change cloud-only-runtime-admission,
-    # enforcement site C). The serving process refuses to boot unless it is an
-    # admitted cloud runtime: NOT_CLOUD, an unobserved process and a failed or
-    # unreachable resolution are all refusals, and there is no degraded local
-    # mode to fall back to. Foreground and served provider execution never reach
-    # the queue, so startup plus the last provider-authority boundary is the only
-    # pair of gates that covers them.
+    # enforcement site C). Every transport refuses to boot unless this is an
+    # admitted cloud runtime. No maintenance, worker, or listener runs first.
     #
-    # Placed exactly here on purpose. After the session-seal arm, which stays the
-    # first statement in this function (anything spawned before it inherits the
-    # seal key), and before every other thing boot does: no maintenance, thread,
-    # queue worker, provider child, engine-MCP child, listener or storage writer
-    # runs ahead of it, and it is outside every database transaction, so the one
-    # bounded link-local read can never happen under the SQLite write lock.
+    # Placed after the session-seal arm and outside every database transaction,
+    # so the bounded metadata read never holds a SQLite write lock.
     #
     # Resolves at most once per process; the logged shape is sanitized (verdict +
     # reason token + booleans, never an id, address or secret). A cached refusal
@@ -4453,8 +4297,6 @@ def main(
     try:
         _provenance = require_process_cloud_admission(surface="platform serving startup")
     except PermissionError as exc:
-        # Loud, sanitized, non-zero. Not swallowed: an admission failure that
-        # let boot continue would be the opt-out this gate exists to remove.
         logger.error("refusing to serve: %s", exc)
         raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
     except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
@@ -4462,261 +4304,22 @@ def main(
             "refusing to serve: platform runtime provenance could not be resolved"
         )
         raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
-
     logger.info(
         "platform runtime provenance (serving admitted): %s",
         sanitized_observation_fields(_provenance),
     )
 
-    # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
-    # boot reconcile + the lease reconciler were streamable-http-only, so sse/
-    # stdio startup skipped the promised orphan cleanup). Boot reconciliation
-    # settles reservations orphaned by a crashed/killed prior process (at boot
-    # nothing is in-flight, so any open row is dead and safe to release); the
-    # periodic reconciler then settles per-call-lease-expired holds mid-run so a
-    # crashed turn's hold never bricks serving until the next reboot. Cheap +
-    # idempotent + a no-op when there are no reservations.
-    try:
-        import threading as _threading
-
-        from tinyassets.provider_assignment import (
-            reconcile_orphaned_reservations_on_boot,
-            reconcile_served_budget_leases,
-        )
-        from tinyassets.storage import data_dir as _sb_data_dir
-
-        _reclaimed = reconcile_orphaned_reservations_on_boot(_sb_data_dir())
-        # Delivery intent survives queued-run startup interruption. Reconcile
-        # ordinary runs first, then let the fenced receiver worker distinguish
-        # proven unstarted attempts from possibly executed work.
-        from tinyassets.api.runs import _ensure_runs_recovery
-        from tinyassets.delivery_runtime import reconcile_deliveries
-        from tinyassets.run_file_retention import reconcile_run_files
-        from tinyassets.run_input_origins import reconcile_admitted_runs
-
-        _admitted_run_cursor = ""
-        _file_retention_cursor = ""
-        try:
-            _file_retention_cursor = reconcile_run_files(_sb_data_dir())
-        except Exception:  # noqa: BLE001 - file debt must not disable other maintenance
-            logger.exception("run files: boot retention failed")
-        try:
-            _ensure_runs_recovery()
-            reconcile_deliveries(_sb_data_dir())
-        except Exception:  # noqa: BLE001 - delivery must not disable budget recovery
-            logger.exception("delivery: boot reconciliation failed")
-        try:
-            from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-            initialize_consumer(_sb_data_dir())
-            _admitted_run_cursor = reconcile_admitted_runs(_sb_data_dir())
-        except Exception:  # noqa: BLE001 - held admissions must not disable maintenance
-            logger.exception("admitted runs: boot reconciliation failed")
-        if _reclaimed:
-            logger.info(
-                "served budget: released %d orphaned reservation(s) at boot",
-                _reclaimed,
-            )
-
-        def _served_budget_lease_loop() -> None:
-            import time as _time
-
-            nonlocal _admitted_run_cursor, _file_retention_cursor
-            while True:
-                _time.sleep(300.0)
-                try:
-                    from tinyassets.command_center_update_maintenance import tick as update_centers
-
-                    update_centers(_sb_data_dir())
-                except Exception:  # noqa: BLE001 - keep unrelated maintenance running
-                    logger.exception("command center updates: maintenance unavailable")
-                try:
-                    _file_retention_cursor = reconcile_run_files(
-                        _sb_data_dir(), after_operation_id=_file_retention_cursor,
-                    )
-                except Exception:  # noqa: BLE001 - retain debt and continue other maintenance
-                    logger.exception("run files: retention tick failed")
-                try:
-                    _admitted_run_cursor = reconcile_admitted_runs(
-                        _sb_data_dir(), after_run_id=_admitted_run_cursor,
-                    )
-                except Exception:  # noqa: BLE001 - independent bounded origin nomination
-                    logger.exception("admitted runs: reconciliation tick failed")
-                try:
-                    reconcile_deliveries(_sb_data_dir())
-                except Exception:  # noqa: BLE001 - do not starve budget settlement
-                    logger.exception("delivery: reconciliation tick failed")
-                try:
-                    _n = reconcile_served_budget_leases(_sb_data_dir())
-                    if _n:
-                        logger.info(
-                            "served budget: lease-reconciled %d stale "
-                            "reservation(s)",
-                            _n,
-                        )
-                except Exception:  # noqa: BLE001 - loop must never die
-                    logger.exception(
-                        "served budget: lease reconciliation tick failed"
-                    )
-
-        _threading.Thread(
-            target=_served_budget_lease_loop,
-            name="served-budget-lease-reconciler",
-            daemon=True,
-        ).start()
-        from tinyassets.command_center_update_maintenance import scheduled as updates_scheduled
-
-        updates_scheduled(_sb_data_dir())
-    except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
-        logger.exception("served budget: maintenance not started")
-        try:
-            from tinyassets.command_center_update_maintenance import (
-                unavailable as updates_unavailable,
-            )
-            from tinyassets.storage import data_dir as update_data_dir
-
-            updates_unavailable(update_data_dir())
-        except Exception:  # noqa: BLE001 - the original startup failure stays authoritative
-            logger.exception("command center updates: availability could not be recorded")
-
-    # Take the run-recovery lock and interrupt what the previous process left in
-    # flight BEFORE starting anything that runs: the engine MCP children serve
-    # run tools too, and whichever process sweeps must be the one whose runs
-    # are not in the table yet. A deploy-killed run is announced as interrupted
-    # here, which is what lets an owner's run_completed loop survive a deploy.
-    # The maintenance block above also calls it, but inside a try that an
-    # earlier failure skips; this call is the one boot can rely on (once-only).
-    from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
-
-    # This process is the execution owner. Its tree exists, and is advertised in
-    # the environment, BEFORE anything is spawned: engine children and workers
-    # started below inherit it and join it, so the owner's death proof covers
-    # them (change execution-owner-lease D2). Every transport, not only HTTP.
-    from tinyassets.owner_lease import start_owner_tree
-    from tinyassets.storage import data_dir as _owner_data_dir
-
-    start_owner_tree(_owner_data_dir())
-    _ensure_runs_recovery()
-    def _resume_request_loop(base):
-        import time
-
-        from tinyassets.request_continuations import tick
-        # Bound at boot: this process serves one root, and a re-resolved root
-        # would sweep (and take owner control of) homes this server never served.
-        while True:
-            try:
-                tick(base)
-            except Exception:
-                logger.exception("request continuation sweep failed")
-            time.sleep(5)
-    import threading
-    threading.Thread(target=_resume_request_loop, args=(_owner_data_dir(),),
-                     name="request-continuations", daemon=True).start()
-    # And keep recovering: an engine child that dies mid-run while this server
-    # lives is found within one tick, by proof that it died.
-    start_run_owner_watcher()
-
-    # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
-    # idempotent). For sse/stdio transports there is no Starlette lifespan, so
-    # run it here too — a strict-code boot must not serve undeclared universes.
-    if transport == "streamable-http":
-        # The PID1 bootstrap adopted the credential broker before retiring;
-        # nothing outbound may run without it, so refuse to serve instead.
-        from tinyassets.broker.supervisor import BrokerUidSplitRequired, get_supervisor
-        from tinyassets.storage import data_dir
-
-        if get_supervisor(data_dir()) is None:
-            raise BrokerUidSplitRequired("serve through the PID1 bootstrap")
-        # Founder-scoped engine MCP over HTTP: start one loopback server per
-        # serving universe so the universe agent's `run_graph`/`read_graph`
-        # tools are available on EVERY served turn after a clean boot — no
-        # manual step, surviving container recreate. No-op when the engine-MCP
-        # flag is off. Held alive by this (daemon) process for its lifetime.
-        from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
-
-        _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
-        app = create_streamable_http_app()
-        assigned_consumer = None
-        from tinyassets.runtime.assigned_queue_consumer import (
-            AssignedQueueConsumer,
-            assigned_queue_consumer_enabled,
-        )
-        from tinyassets.storage import data_dir as assigned_data_dir
-
-        if assigned_queue_consumer_enabled():
-            # The lifespan has not run yet. Its storage initialization must also
-            # precede this polling worker; best-effort boot maintenance may fail.
-            from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-            initialize_consumer(assigned_data_dir())
-            assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
-            assigned_consumer.start()
-        try:
-            socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
-            if socket_path:
-                import asyncio
-
-                asyncio.run(_serve_owner_listeners(
-                    _serve_configs(app, host, port, socket_path)
-                ))
-            else:
-                uvicorn.run(
-                    app, host=host, port=port,
-                    timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-                )
-        finally:
-            if assigned_consumer is not None:
-                assigned_consumer.stop()
-        return
-
-    from tinyassets.api.visibility import run_visibility_startup_gate
-    from tinyassets.scoped_reset import prepare_service_writer_barrier
+    # The public process is only a router. Every owner runtime starts via
+    # owner_daemon, including its engine endpoints, tick and recovery work.
+    if transport != "streamable-http":
+        raise ValueError("the router serves only authenticated streamable-http")
+    from tinyassets.broker.supervisor import BrokerUidSplitRequired, get_supervisor
     from tinyassets.storage import data_dir
 
-    writer_barrier = prepare_service_writer_barrier(data_dir())
-    assigned_consumer = None
-    from tinyassets.runtime.assigned_queue_consumer import (
-        AssignedQueueConsumer,
-        assigned_queue_consumer_enabled,
-    )
-
-    try:
-        from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-        # Do not rely on best-effort boot maintenance: storage must be ready
-        # before the assigned consumer can open the same database.
-        initialize_consumer(data_dir())
-        if assigned_queue_consumer_enabled():
-            assigned_consumer = AssignedQueueConsumer(data_dir())
-            assigned_consumer.start()
-        run_visibility_startup_gate()
-        start_staging_sweeper_for_serving(data_dir())
-        if transport in ("sse", "stdio"):
-            # Neither transport carries a bearer, and neither runs behind the
-            # auth middleware, so the principal is the local operator, bound
-            # once for the process (fail-closed principal boundary). The ContextVar set
-            # here is copied into every task anyio starts under mcp.run().
-            # Without it these two surfaces served every call as nobody --
-            # which, now that current_identity() raises, is a refusal rather
-            # than a silent stand-in, and a refusal is not a working server
-            # (Codex code review round 3, P1).
-            from tinyassets.auth.middleware import bind_local_operator_identity
-
-            bound = bind_local_operator_identity()
-            logger.info(
-                "%s transport: principal is local operator %r", transport, bound.user_id
-            )
-        if transport == "sse":
-            mcp.run(transport="sse", host=host, port=port)
-        elif transport == "stdio":
-            mcp.run()
-        else:
-            raise ValueError(f"Unknown transport: {transport}")
-    finally:
-        if assigned_consumer is not None:
-            assigned_consumer.stop()
-        stop_workspace_sweepers_for_serving()
-        writer_barrier.release()
+    if get_supervisor(data_dir()) is None:
+        raise BrokerUidSplitRequired("serve through the PID1 bootstrap")
+    uvicorn.run(create_streamable_http_app(), host=host, port=port,
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
 
 
 if __name__ == "__main__":

@@ -126,13 +126,10 @@ def authorize(conn, *, author, bundle_id):
 
 
 def next_version(base_path, bundle_id):
-    from tinyassets.commons_catalog import _agent_connect
 
-    with _agent_connect(base_path) as conn:
-        return conn.execute(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM commons_bundle_versions WHERE bundle_id=?",
-            (bundle_id,),
-        ).fetchone()[0]
+    from tinyassets.broker.owner_reads import remote
+
+    return remote("bundle_version", bundle_id=bundle_id)
 
 
 def append(conn, *, author, bundle_id, definition_id):

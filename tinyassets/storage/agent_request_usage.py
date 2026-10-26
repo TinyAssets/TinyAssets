@@ -1,19 +1,17 @@
-"""Owner-scoped inference usage, independent of chat delivery and effect receipts.
+"""Owner inference usage, independent of chat delivery and effect receipts.
 
-The daemon creates roots and dispatch references. Broker processes only consume
-references against the same database. A reservation is accounting permission,
-never provider authority: the existing grant, fence and cancellation checks
-still govern each send. Nothing here proves upstream receipt or billing.
+The daemon creates roots and dispatch references over its bound channel.
+The broker owns the accounting database and consumes those references.
+A reservation is accounting permission. Provider grants, fences and cancellation
+checks still govern each send. Nothing here proves upstream receipt or billing.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import secrets
 import sqlite3
-import threading
 import time
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
@@ -23,75 +21,42 @@ from pathlib import Path
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.storage import DB_FILENAME
 
-_SCOPE = "owner = ? AND universe = ? AND usage_id = ?"
+_SCOPE = "owner = ? AND usage_id = ?"
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS agent_request_usage (
-      owner TEXT NOT NULL, universe TEXT NOT NULL, usage_id TEXT NOT NULL,
+      owner TEXT NOT NULL, usage_id TEXT NOT NULL,
       policy_json TEXT NOT NULL, failures_json TEXT NOT NULL,
       owner_token TEXT NOT NULL, parent_token TEXT NOT NULL, closed INTEGER NOT NULL,
-      created_at TEXT NOT NULL, PRIMARY KEY(owner, universe, usage_id))""",
+      created_at TEXT NOT NULL, PRIMARY KEY(owner, usage_id))""",
     """CREATE TABLE IF NOT EXISTS agent_request_attempts (
-      owner TEXT NOT NULL, universe TEXT NOT NULL, usage_id TEXT NOT NULL,
+      owner TEXT NOT NULL, usage_id TEXT NOT NULL,
       ordinal INTEGER NOT NULL, attempt_json TEXT NOT NULL, dispatched_at TEXT,
       source_ref TEXT NOT NULL, state TEXT NOT NULL,
-      PRIMARY KEY(owner, universe, usage_id, ordinal))""",
+      PRIMARY KEY(owner, usage_id, ordinal))""",
     """CREATE INDEX IF NOT EXISTS agent_request_attempt_day
       ON agent_request_attempts(owner, source_ref, dispatched_at)""",
     """CREATE TABLE IF NOT EXISTS agent_request_usage_links (
-      owner TEXT NOT NULL, universe TEXT NOT NULL, usage_id TEXT NOT NULL,
+      owner TEXT NOT NULL, usage_id TEXT NOT NULL,
       kind TEXT NOT NULL, subject_id TEXT NOT NULL,
-      PRIMARY KEY(owner, universe, kind, subject_id, usage_id))""",
+      PRIMARY KEY(owner, kind, subject_id, usage_id))""",
     """CREATE TABLE IF NOT EXISTS agent_request_dispatches (
-      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, universe TEXT NOT NULL,
+      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL,
       usage_id TEXT NOT NULL, first_ordinal INTEGER NOT NULL, last_ordinal INTEGER NOT NULL,
       grant_id TEXT NOT NULL, connection_id TEXT NOT NULL, request_digest TEXT NOT NULL,
       operation_id TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
-      UNIQUE(owner, universe, usage_id, first_ordinal))""",
+      UNIQUE(owner, usage_id, first_ordinal))""",
     """CREATE TABLE IF NOT EXISTS agent_model_launches (
-      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, universe TEXT NOT NULL,
+      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL,
       usage_id TEXT NOT NULL, authority_kind TEXT NOT NULL, authority_id TEXT NOT NULL,
       agent_binding_id TEXT NOT NULL, binding_revision INTEGER,
       active INTEGER NOT NULL DEFAULT 1)""",
 )
 
 
-# Each parent owns a kernel lock independently of the daemon process. Releasing
-# it fences future work even if SQLite cannot commit the close. Fork children
-# close inherited descriptors without unlocking the parent's open-file lock.
-_PARENT_LEASES = {}
-_PARENT_LEASES_LOCK = threading.RLock()
-
-
-def _after_fork():
-    global _PARENT_LEASES_LOCK
-    for held in _PARENT_LEASES.values():
-        if held.fd is not None:
-            os.close(held.fd)
-    _PARENT_LEASES.clear()
-    _PARENT_LEASES_LOCK = threading.RLock()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_after_fork)
-
-
-class ParentUsageLease:
-    def __init__(self, base, token, *, broker_readable=False):
-        from tinyassets.process_liveness import hold_liveness
-
-        self.token = token
-        with _PARENT_LEASES_LOCK:
-            _PARENT_LEASES[token] = (hold_liveness(base, token, broker_readable=True)
-                                     if broker_readable else hold_liveness(base, token))
-
-    def close(self):
-        from tinyassets.singleton_lock import release_singleton_lock
-
-        with _PARENT_LEASES_LOCK:
-            held = _PARENT_LEASES.pop(self.token, None)
-            if held is not None:
-                release_singleton_lock(held)
+def _key(scope):
+    """C11: shared accounting is selected by owner and opaque usage handle."""
+    return scope[0], scope[2]
 
 
 def request_digest(grant_id, connection_id, verb, request):
@@ -171,33 +136,12 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
     relocated = (db_path is not None and
                  Path(db_path).resolve() == Path(base).resolve() / ".broker" / "outbound.db")
     store = UsageStore(base, broker_ledger=ledger if relocated else None)
-    root = (store.base / universe).resolve()
-    if root.parent != store.base:
-        raise ProviderAuthorityHeldError("inference accounting command center changed")
     if envelope is None:
         if resource.connection_type != "http" or str(verb).upper() != "POST":
             return None
-        # Both installed capabilities and registered compute descriptors identify
-        # inference sources; a request cannot evade this by omitting model/body.
-        is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None
-                       for kind in ("model_use", "model_discovery"))
-        from tinyassets.broker.provider_metadata import read_definitions
-        from tinyassets.providers.definition import _verified_definition
-
-        try:
-            definitions = read_definitions(store.base, universe)
-        except FileNotFoundError:
-            definitions = ()
-        except (OSError, ValueError, TypeError) as exc:
-            raise ProviderAuthorityHeldError(
-                "inference source definitions are unavailable",
-            ) from exc
-        is_model = is_model or any(
-            (definition := _verified_definition(row, expect_universe=universe)).ref == grant_id
-            and definition.owner_user_id == owner and definition.access_method == "api_key_http"
-            for row in definitions
-        )
-        if is_model:
+        # Metering is broker-held grant state. Published source descriptors are
+        # latched when accepted; withdrawing them cannot disable this requirement.
+        if ledger.grant_requires_inference_usage(grant_id):
             raise InferenceUsageRequired()
         return None
     ref = InferenceUsageReference.from_document(envelope)
@@ -245,8 +189,12 @@ class UsageStore:
                 if conn.in_transaction:
                     conn.commit()
 
+    def _lease(self, center, usage_id):
+        from tinyassets.owner_channel import UsageLease
+
+        return UsageLease(center, usage_id)
+
     def create(self, budget):
-        from tinyassets.process_liveness import owner_token
 
         usage_id = secrets.token_hex(16)
         policy = {name: getattr(budget, name) for name in (
@@ -254,16 +202,12 @@ class UsageStore:
             "deadline", "max_tokens", "max_cost_microunits",
         )}
         scope = (budget.owner, budget.universe, usage_id)
-        token = owner_token(self.base, broker_readable=self._remote)
-        parent_token = "request_" + usage_id
-        lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
+        lease = self._lease(budget.universe, usage_id)
+        token, parent_token = lease.owner_token, lease.token
         try:
-            if self._remote:
-                self._rpc(scope, "create", policy=policy, failures=budget._failures,
-                          attempts=[asdict(a) for a in budget._attempts], closed=budget._closed,
-                          owner_token=token, parent_token=parent_token)
-            else:
-                self._insert(scope, budget, token, parent_token)
+            self._rpc(scope, "create", policy=policy, failures=budget._failures,
+                      attempts=[asdict(a) for a in budget._attempts], closed=budget._closed,
+                      owner_token=token, parent_token=parent_token)
         except BaseException:
             lease.close()
             raise
@@ -277,8 +221,8 @@ class UsageStore:
             "deadline", "max_tokens", "max_cost_microunits",
         )}
         with self._connection(write=True) as conn:
-            conn.execute("INSERT INTO agent_request_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                         (*scope, json.dumps(policy), json.dumps(budget._failures),
+            conn.execute("INSERT INTO agent_request_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (*_key(scope), json.dumps(policy), json.dumps(budget._failures),
                           token, parent_token, int(budget._closed),
                           budget.wall_clock().astimezone(timezone.utc).isoformat()))
             self._save(conn, scope, budget)
@@ -287,7 +231,8 @@ class UsageStore:
         from tinyassets.process_liveness import ALIVE, owner_state
         from tinyassets.request_budget import RequestAttempt, _RequestLedger
 
-        row = conn.execute(f"SELECT * FROM agent_request_usage WHERE {_SCOPE}", scope).fetchone()
+        row = conn.execute(
+            f"SELECT * FROM agent_request_usage WHERE {_SCOPE}", _key(scope)).fetchone()
         if row is None:
             raise ProviderAuthorityHeldError("inference usage scope is unavailable")
         budget = _RequestLedger(scope[0], scope[1], clock=clock, wall_clock=wall_clock,
@@ -296,7 +241,7 @@ class UsageStore:
         budget._failures = json.loads(row["failures_json"])
         budget._attempts = [RequestAttempt(**json.loads(a[0])) for a in conn.execute(
             f"SELECT attempt_json FROM agent_request_attempts WHERE {_SCOPE} ORDER BY ordinal",
-            scope,
+            _key(scope),
         )]
         # Monotonic deadlines are used only while the original process is
         # provably alive. A reboot/dead/unknown parent can never renew them.
@@ -313,14 +258,14 @@ class UsageStore:
     @staticmethod
     def _save(conn, scope, budget):
         conn.execute(f"UPDATE agent_request_usage SET closed = ?, failures_json = ? WHERE {_SCOPE}",
-                     (int(budget._closed), json.dumps(budget._failures), *scope))
+                     (int(budget._closed), json.dumps(budget._failures), *_key(scope)))
         for a in budget._attempts:
             conn.execute(
-                "INSERT INTO agent_request_attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(owner, universe, usage_id, ordinal) DO UPDATE SET "
+                "INSERT INTO agent_request_attempts VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(owner, usage_id, ordinal) DO UPDATE SET "
                 "attempt_json=excluded.attempt_json, dispatched_at=excluded.dispatched_at, "
                 "state=excluded.state",
-                (*scope, a.ordinal, json.dumps(asdict(a), separators=(",", ":")),
+                (*_key(scope), a.ordinal, json.dumps(asdict(a), separators=(",", ":")),
                  a.dispatched_at, a.source_ref, a.state),
             )
 
@@ -344,7 +289,8 @@ class UsageStore:
                 error, result = exc, None
             self._save(conn, scope, budget)
             if budget._closed:
-                conn.execute(f"UPDATE agent_model_launches SET active=0 WHERE {_SCOPE}", scope)
+                conn.execute(f"UPDATE agent_model_launches SET active=0 WHERE {_SCOPE}",
+                             _key(scope))
         if error is not None:
             error.request_receipt["usage_id"] = scope[2]
             raise error
@@ -367,8 +313,8 @@ class UsageStore:
         with self._connection(write=True) as conn:
             budget = self._load(conn, scope)
             self._save(conn, scope, budget)
-            conn.execute("INSERT OR IGNORE INTO agent_request_usage_links VALUES (?, ?, ?, ?, ?)",
-                         (*scope, kind, subject_id))
+            conn.execute("INSERT OR IGNORE INTO agent_request_usage_links VALUES (?, ?, ?, ?)",
+                         (*_key(scope), kind, subject_id))
 
     def issue_launch_reference(self, scope, *, authority_kind, authority_id,
                                agent_binding_id, binding_revision=None):
@@ -391,13 +337,13 @@ class UsageStore:
                 raise ModelLaunchEnded()
             linked = conn.execute(
                 f"SELECT 1 FROM agent_request_usage_links WHERE {_SCOPE} "
-                "AND kind=? AND subject_id=?", (*scope, authority_kind, authority_id),
+                "AND kind=? AND subject_id=?", (*_key(scope), authority_kind, authority_id),
             ).fetchone()
             if linked is None:
                 raise ProviderAuthorityHeldError("model launch parent is not linked to allocation")
             conn.execute(
-                "INSERT INTO agent_model_launches VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                (_reference_hash(reference), *scope, authority_kind, authority_id,
+                "INSERT INTO agent_model_launches VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+                (_reference_hash(reference), *_key(scope), authority_kind, authority_id,
                  agent_binding_id, binding_revision),
             )
         return reference
@@ -413,7 +359,7 @@ class UsageStore:
                 "SELECT * FROM agent_model_launches WHERE reference_hash=?",
                 (_reference_hash(reference),),
             ).fetchone()
-            if (row is None or row["owner"] != owner or row["universe"] != universe
+            if (row is None or row["owner"] != owner
                     or not row["active"]):
                 raise ModelLaunchEnded()
             scope = (owner, universe, row["usage_id"])
@@ -426,7 +372,7 @@ class UsageStore:
                 linked = conn.execute(
                     f"SELECT 1 FROM agent_request_usage_links WHERE {_SCOPE} "
                     "AND kind=? AND subject_id=?",
-                    (*scope, row["authority_kind"], row["authority_id"]),
+                    (*_key(scope), row["authority_kind"], row["authority_id"]),
                 ).fetchone()
                 if linked is None:
                     raise ProviderAuthorityHeldError("model launch parent is unavailable")
@@ -444,8 +390,8 @@ class UsageStore:
         with self._connection() as conn:
             ids = [row[0] for row in conn.execute(
                 "SELECT usage_id FROM agent_request_usage_links "
-                "WHERE owner=? AND universe=? AND kind=? AND subject_id=?",
-                (owner, universe, kind, subject_id),
+                "WHERE owner=? AND kind=? AND subject_id=?",
+                (owner, kind, subject_id),
             )]
         return [self.receipt((owner, universe, uid)) for uid in ids]
 
@@ -456,19 +402,21 @@ class UsageStore:
         discovery can select a model other than the descriptor's default; the
         wire model must be the model the router actually reserved.
         """
+        from tinyassets.broker.owner_identities import validate_principal
+        from tinyassets.broker.owner_sources import read
         from tinyassets.providers.definition import _verified_definition
 
         try:
-            root = (self.base / scope[1]).resolve()
-            if (root.parent != self.base or not attempt.source_ref.startswith("api_key_http:")
+            validate_principal(scope[0])
+            if (not attempt.source_ref.startswith("api_key_http:")
                     or verb != "POST" or not isinstance(request, dict)
                     or not isinstance(request.get("body"), dict)
                     or request["body"].get("model") != attempt.model):
                 raise ValueError("source or model mismatch")
-            from tinyassets.broker.provider_metadata import read_definitions
-
-            rows = read_definitions(self.base, scope[1])
-            definition = next(_verified_definition(row, expect_universe=scope[1])
+            # This runs in the broker; owner daemons request it through IPC.
+            # Liveness token spelling never selects an owner-file read.
+            rows = read(self._ledger, scope[1])
+            definition = next(_verified_definition(row)
                               for row in rows
                               if row.get("id") == attempt.source_ref.removeprefix("api_key_http:"))
             if (definition.owner_user_id != scope[0] or definition.ref != grant_id
@@ -523,8 +471,9 @@ class UsageStore:
                                       grant_id, connection_id, verb, request)
                 conn.execute(
                     "INSERT INTO agent_request_dispatches "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
-                    (_reference_hash(reference), *scope, ordinal, ordinal, grant_id, connection_id,
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
+                    (_reference_hash(reference), *_key(scope), ordinal, ordinal,
+                     grant_id, connection_id,
                      request_digest(grant_id, connection_id, verb, request), operation_id),
                 )
             except ProviderAuthorityHeldError as exc:
@@ -546,7 +495,7 @@ class UsageStore:
             row = conn.execute("SELECT * FROM agent_request_dispatches WHERE reference_hash=?",
                                (key,)).fetchone()
             if row is None or not all((
-                row["owner"] == owner, row["universe"] == universe,
+                row["owner"] == owner,
                 row["usage_id"] == usage_id,
                 row["grant_id"] == grant_id, row["connection_id"] == connection_id,
                 row["request_digest"] == request_digest(grant_id, connection_id, verb, request),
@@ -577,7 +526,7 @@ class UsageStore:
             budget = self._load(conn, scope)
             row = conn.execute(
                 f"SELECT * FROM agent_request_dispatches WHERE {_SCOPE} AND first_ordinal=?",
-                (*scope, ordinal),
+                (*_key(scope), ordinal),
             ).fetchone()
             ordinals = [ordinal]
             if row is not None:
@@ -611,7 +560,7 @@ class UsageDispatch:
             row = conn.execute("SELECT * FROM agent_request_dispatches WHERE reference_hash=?",
                                (self.key,)).fetchone()
             if (row is None
-                    or tuple(row[n] for n in ("owner", "universe", "usage_id")) != self.scope
+                    or tuple(row[n] for n in ("owner", "usage_id")) != _key(self.scope)
                     or row["operation_id"] != self.operation_id):
                 raise ProviderAuthorityHeldError("inference usage operation changed")
             budget = self.store._load(conn, self.scope)

@@ -21,12 +21,15 @@ final class ReviewVideoTests: XCTestCase {
         try Data(contentsOf: sample).write(to: documents.appendingPathComponent(sample.lastPathComponent))
     }
 
+    private func poll(timeout: TimeInterval, _ condition: @escaping () -> Bool) -> Bool {
+        let predicate = NSPredicate { _, _ in condition() }
+        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)],
+                              timeout: timeout) == .completed
+    }
+
     private func wait(_ description: String, timeout: TimeInterval = 120,
                       _ condition: @escaping () -> Bool) {
-        let predicate = NSPredicate { _, _ in condition() }
-        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)],
-                                   timeout: timeout)
-        XCTAssertTrue(result == .completed, "\(step): \(description)")
+        XCTAssertTrue(poll(timeout: timeout, condition), "\(step): \(description)")
     }
 
     private func shot(_ name: String) {
@@ -86,12 +89,73 @@ final class ReviewVideoTests: XCTestCase {
         return last
     }
 
+    /// Taps Sign in and returns the system browser showing the email form.
+    /// iOS 26: SpringBoard asks "“App” Wants to Use “<site>” to Sign In" only
+    /// after the app has fetched its sign-in URL, which can take longer than a
+    /// fixed alert wait. Accept exactly that consent whenever it appears, and
+    /// find the form in SafariViewService, which hosts ASWebAuthenticationSession.
+    private func openSystemSignIn(_ signIn: XCUIElement) -> XCUIApplication {
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
+        signIn.tap()
+        var auth = safari
+        let found = poll(timeout: 120) {
+            for host in [self.springboard, self.app] {
+                let consent = host.alerts.matching(NSPredicate(
+                    format: "label CONTAINS %@ AND label CONTAINS[c] %@", "Wants to Use", "Sign In")).firstMatch
+                if consent.exists, consent.buttons["Continue"].exists { consent.buttons["Continue"].tap() }
+            }
+            for candidate in [safari, self.app] {
+                if candidate.webViews.textFields.firstMatch.exists { auth = candidate; return true }
+            }
+            return false
+        }
+        if !found {
+            XCTFail("\(step): system-browser email form. Hierarchy: \(hierarchy([springboard, app, safari]))")
+        }
+        return auth
+    }
+
+    /// One-line accessibility tree for a failure message (the harness exports
+    /// only assertion lines). Element values are omitted, so typed text never
+    /// appears, and every string in `secrets` is replaced as well.
+    private func hierarchy(_ hosts: [XCUIApplication], redacting secrets: [String] = []) -> String {
+        var lines: [String] = []
+        for host in hosts {
+            let state = host.state
+            guard state == .runningForeground || state == .runningBackground else { continue }
+            for line in host.debugDescription.components(separatedBy: "\n") {
+                if let cut = line.range(of: ", value: ") {
+                    lines.append(String(line[..<cut.lowerBound]) + ", value: [omitted]")
+                } else {
+                    lines.append(line)
+                }
+            }
+        }
+        var flat = lines.joined(separator: " | ")
+        // Whole secrets first, then their pieces: a keyboard suggestion bar can
+        // show an email's local part or domain on its own.
+        let pieces = secrets.flatMap { $0.components(separatedBy: CharacterSet(charactersIn: "@.+")) }
+            .filter { $0.count >= 4 }
+        for secret in secrets + pieces where !secret.isEmpty {
+            flat = flat.replacingOccurrences(of: secret, with: "[REDACTED]", options: .caseInsensitive)
+            let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+            if let encoded = secret.addingPercentEncoding(withAllowedCharacters: unreserved) {
+                flat = flat.replacingOccurrences(of: encoded, with: "[REDACTED]", options: .caseInsensitive)
+            }
+        }
+        return flat
+    }
+
     func testSignedOutLaunch() {
         app.terminate()
         XCTAssertTrue(app.state == .notRunning)
         app.launch()
-        XCTAssertTrue(app.buttons["Sign in"].waitForExistence(timeout: 120))
+        let signIn = app.buttons["Sign in"]
+        XCTAssertTrue(signIn.waitForExistence(timeout: 120))
         shot("01-signed-out")
+        // Credential-free: prove the system sign-in sheet opens; type nothing.
+        step = "02-sign-in"
+        _ = openSystemSignIn(signIn)
     }
 
     func testGuideline21Journey() throws {
@@ -111,37 +175,44 @@ final class ReviewVideoTests: XCTestCase {
         shot("01-signed-out")
 
         step = "02-sign-in"
-        signIn.tap()
-        // ASWebAuthenticationSession's consent is owned by SpringBoard on some
-        // iOS versions and by the app on others. Do not auto-accept other alerts.
-        for host in [springboard, app] {
-            let consent = host.alerts.firstMatch
-            if consent.waitForExistence(timeout: 5),
-               consent.staticTexts.allElementsBoundByIndex.contains(where: {
-                   $0.label.localizedCaseInsensitiveContains("sign in")
-               }), consent.buttons["Continue"].exists {
-                consent.buttons["Continue"].tap()
-                break
-            }
-        }
+        let auth = openSystemSignIn(signIn)
         let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
-        var auth = app
-        wait("system-browser email form") {
-            for candidate in [self.app, safari, self.springboard] {
-                if candidate.webViews.textFields.firstMatch.exists { auth = candidate; return true }
-            }
-            return false
-        }
         let email = auth.webViews.textFields.firstMatch
-        email.tap()
-        email.typeText(username)
         let secure = auth.webViews.secureTextFields.firstMatch
-        if !secure.exists {
-            let next = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Continue", "Next", "Sign in"])).firstMatch
+        // AuthKit labels its email step "Continue with email". On iOS 26 the
+        // sheet lives in the app's own tree, beside the app's disabled
+        // "Sign in" button, so only enabled buttons count.
+        let next = auth.buttons.matching(NSPredicate(format: "label IN %@ AND enabled == true",
+            ["Continue with email", "Continue", "Next", "Sign in"])).firstMatch
+        let go = auth.keyboards.buttons.matching(NSPredicate(format: "label IN %@",
+            ["Go", "go", "Continue", "continue", "Return", "return", "Done", "done"])).firstMatch
+        // The page can re-render after the first keystrokes and drop them, and
+        // a submit can land on the keyboard accessory instead. While the email
+        // page is up, make the field hold exactly the username (compared here,
+        // never reported), then submit with the button and then the Go key.
+        for _ in 0..<4 where !secure.exists {
+            var typed = email.value as? String ?? ""
+            if typed == email.placeholderValue { typed = "" }
+            if typed.caseInsensitiveCompare(username) != .orderedSame {
+                // Tap the right edge so the cursor sits after any existing text.
+                email.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+                if !typed.isEmpty {
+                    email.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: typed.count))
+                }
+                email.typeText(username)
+            }
             XCTAssertTrue(next.waitForExistence(timeout: 30), "email continuation missing")
             next.tap()
+            if poll(timeout: 15, { secure.exists }) { break }
+            if go.exists { go.tap() }
+            if poll(timeout: 10, { secure.exists }) { break }
         }
-        XCTAssertTrue(secure.waitForExistence(timeout: 60), "masked password field required")
+        if !secure.waitForExistence(timeout: 60) {
+            // The username is typed, the password is not. Values are omitted
+            // and the username is redacted; the harness redacts it again.
+            XCTFail("\(step): masked password field required. Hierarchy: "
+                + hierarchy([auth, springboard], redacting: [username]))
+        }
         XCTAssertTrue(secure.elementType == .secureTextField, "never type password in a plain field")
         secure.tap()
         // Per-key typing can expose the last character in iOS password fields.
@@ -162,14 +233,24 @@ final class ReviewVideoTests: XCTestCase {
             return value.count == password.count && value.allSatisfy { $0 == "•" || $0 == "●" }
         }
         UIPasteboard.general.items = []
-        let submit = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Sign in", "Continue", "Log in"])).firstMatch
+        let submit = auth.buttons.matching(NSPredicate(format: "label IN %@ AND enabled == true",
+            ["Sign in", "Continue", "Log in"])).firstMatch
         XCTAssertTrue(submit.waitForExistence(timeout: 30), "password submit missing")
         submit.tap()
-        wait("tinyassets callback returned to signed-in app", timeout: 180) {
+        // A tap swallowed by the keyboard accessory leaves the password page
+        // up: submit with the Go key instead.
+        if !poll(timeout: 15, { !secure.exists }), go.exists { go.tap() }
+        let signedIn = poll(timeout: 180) {
             self.app.state == .runningForeground && (
                 self.app.buttons["Command center menu"].exists ||
                 self.app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open the chat with your agent")).firstMatch.exists
             )
+        }
+        if !signedIn {
+            // A page after the password (code, consent) or the app's sign-in
+            // notice. Values are omitted; both credentials are redacted.
+            XCTFail("\(step): tinyassets callback returned to signed-in app. Hierarchy: "
+                + hierarchy([app, auth, springboard], redacting: [username, password]))
         }
         shot("02-signed-in")
 

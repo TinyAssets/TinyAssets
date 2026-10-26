@@ -97,7 +97,7 @@ _DEFAULT_RESERVE = 1
 #: owner reads; the old `_MB` variables were set nowhere.
 _FREE_STORAGE_VAR = "TINYASSETS_FREE_STORAGE_GIB"
 _PAID_STORAGE_VAR = "TINYASSETS_PAID_STORAGE_GIB"
-_DEFAULT_FREE_STORAGE_GIB = 2.0
+_DEFAULT_FREE_STORAGE_GIB = 5.0
 _DEFAULT_PAID_STORAGE_GIB = 20.0
 
 #: Where an owner goes to buy more of either number.

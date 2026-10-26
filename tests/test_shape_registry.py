@@ -26,6 +26,16 @@ def test_shape_registry():
     assert not (problems := check_shapes.check()), "\n".join(problems)
 
 
+def test_s2_retains_executor_measure_and_s3_tracks_duplicate(tmp_path):
+    root = tmp_path / 'tinyassets'
+    root.mkdir()
+    (root / 'second.py').write_text(
+        '_call_writer()\nmake_interactive_agent_turn()\n'
+        'class WorkflowAgentTurn(AgentTurnCoordinator): pass\n')
+    assert check_shapes.old_count(check_shapes.SHAPES['S2'], tmp_path) >= 2
+    assert check_shapes.old_count(check_shapes.SHAPES['S3'], tmp_path) >= 1
+
+
 def test_registry_parity_catches_added_row():
     rows = check_shapes.registry_rows(
         "| S1 | one | path | old | drifted | guard | C3 |\n"
@@ -41,6 +51,52 @@ def test_old_count_is_a_ceiling(tmp_path: Path):
     (path / "old.py").write_text("call_provider(x)\ncall_provider(y)\n", encoding="utf-8")
     shape = check_shapes.Shape((), (("tinyassets/**/*.py", r"call_provider\("),), ceiling=1)
     assert check_shapes.old_count(shape, tmp_path) == 2
+
+
+def test_c3_owner_helpers_are_not_platform_calls(tmp_path):
+    owner = tmp_path / "tinyassets/memory"
+    owner.mkdir(parents=True)
+    (owner / "manager.py").write_text("from tinyassets.memory.reflexion import ReflexionEngine\n")
+    shape = check_shapes.SHAPES["S13"]
+    assert check_shapes.old_count(shape, tmp_path) == 0
+    shared = tmp_path / "tinyassets/broker"
+    shared.mkdir()
+    (shared / "worker.py").write_text("from tinyassets.memory.reflexion import ReflexionEngine\n")
+    assert check_shapes.old_count(shape, tmp_path) == 1
+    for bypass in ("from tinyassets.providers.router import ProviderRouter",
+                   "router.call_sync(prompt)", "provider.complete(prompt)",
+                   "call_provider(prompt)",
+                   "from tinyassets.providers import call as bridge; "
+                   "bridge.get_provider_router().call(prompt)"):
+        assert any(re.search(pattern, bypass) for pattern in shape.forbid)
+
+
+def test_s13_ceiling_counts_async_router_bridge(tmp_path):
+    path = tmp_path / "tinyassets" / "shared.py"
+    path.parent.mkdir()
+    path.write_text("await bridge.get_provider_router().call('writer')\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S13"], tmp_path) == 1
+
+
+def test_c3_sampling_and_mock_fallbacks_cannot_return(tmp_path):
+    path = tmp_path / "tinyassets"
+    path.mkdir()
+    (path / "review.py").write_text("session.create_message(prompt)\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S1"], tmp_path) == 1
+    for mock in ("_force_mock = True", "return '[MOCK] success'"):
+        assert any(re.search(pattern, mock) for pattern in check_shapes.SHAPES["S23"].forbid)
+
+
+def test_s8_public_forwarder_belongs_only_to_the_owner_daemon(tmp_path):
+    root = tmp_path / "tinyassets"
+    root.mkdir()
+    (root / "owner_public_egress.py").write_text("class OwnerPublicForwarder: pass\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S8"], tmp_path) == 0
+    (root / "daemon_server.py").write_text("from tinyassets.owner_public_egress import PROXY_ENV\n")
+    (root / "owner_router.py").write_text("OwnerPublicForwarder(relay)\n")
+    (root / "router").mkdir()
+    (root / "router" / "worker.py").write_text("JAIL_PROXY_URL = 'second path'\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S8"], tmp_path) == 3
 
 
 def test_recursive_file_probe_works_on_python_311(tmp_path: Path):
@@ -67,7 +123,9 @@ def test_c5_host_domain_and_spawn_guards(tmp_path: Path):
     assert check_shapes.dead_entry_problems(tmp_path) == []
     host = tmp_path / "tinyassets" / "host_pool"
     host.mkdir(parents=True)
+    (host / "__init__.py").write_text("", encoding="utf-8")
     assert "host-paths: tinyassets/host_pool" in check_shapes.dead_entry_problems(tmp_path)
+    (host / "__init__.py").unlink()
     host.rmdir()
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
@@ -114,8 +172,8 @@ def test_c5_retired_prototype_compose_and_local_mcp_guards(tmp_path: Path):
 
     runner = tmp_path / "fantasy_daemon/__main__.py"
     runner.parent.mkdir()
-    runner.write_text('if "--mcp" in argv:\n    pass\n', encoding="utf-8")
-    assert "spawn-entry: local MCP runner returned" in check_shapes.dead_entry_problems(tmp_path)
+    runner.write_text("pass\n", encoding="utf-8")
+    assert "host-paths: fantasy_daemon" in check_shapes.dead_entry_problems(tmp_path)
 
 
 def test_public_route_and_opt_in_flag_on_existing_file():
@@ -144,8 +202,8 @@ def test_public_route_and_opt_in_flag_on_existing_file():
         {"tinyassets/onboarding/__init__.py": 'Route("/other", handler)'}
     ) == ["public-routes: tinyassets/onboarding/__init__.py mounts /other"]
     assert check_shapes.added_line_problems(
-        {"tinyassets/api/extensions.py": 'Route("/.well-knownness/evil", handler)'}
-    ) == ["public-routes: tinyassets/api/extensions.py mounts /.well-knownness/evil"]
+        {"tinyassets/api/workflow_actions.py": 'Route("/.well-knownness/evil", handler)'}
+    ) == ["public-routes: tinyassets/api/workflow_actions.py mounts /.well-knownness/evil"]
 
 
 def test_new_model_call_entry_symbol_is_detected_outside_registered_path():
@@ -155,6 +213,28 @@ def test_new_model_call_entry_symbol_is_detected_outside_registered_path():
     assert check_shapes.registered_path(
         "tinyassets/control_plane/sub/worker.py", "tinyassets/control_plane/**"
     )
+
+
+def test_owner_tick_and_account_limit_guards(tmp_path: Path):
+    code = tmp_path / "tinyassets" / "legacy.py"
+    code.parent.mkdir()
+    code.write_text(
+        'TINYASSETS_ASSIGNED_QUEUE_CONSUMER = "on"\nRUN_WRITE_LIMIT = 10\n',
+        encoding="utf-8",
+    )
+    assert check_shapes.control_plane_policy_problems(tmp_path) == [
+        "opt-in-flags: tinyassets/legacy.py gates the owner tick",
+        "limit-names: tinyassets/legacy.py contains a retired account meter",
+    ]
+    for rel in check_shapes.CONSUMER_DISABLE_SITES:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('TINYASSETS_ASSIGNED_QUEUE_CONSUMER = "off"\n', encoding="utf-8")
+        assert check_shapes.added_line_problems({rel: path.read_text()}) == []
+    assert check_shapes.control_plane_policy_problems(tmp_path) == [
+        "opt-in-flags: tinyassets/legacy.py gates the owner tick",
+        "limit-names: tinyassets/legacy.py contains a retired account meter",
+    ]
 
 
 def test_base_pin_parser_records_ceiling_and_probes():
@@ -449,3 +529,6 @@ def test_git_added_uses_the_pr_diff_not_untracked_files():
         patch.object(check_shapes.subprocess, "run", side_effect=git_diff_only),
     ):
         assert check_shapes.git_added() == {"tinyassets/new.py"}
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

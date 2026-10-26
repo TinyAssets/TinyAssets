@@ -1,7 +1,7 @@
 """Idempotency helpers for code-node side effects.
 
 Code nodes that perform side effects (wiki writes, external HTTP calls,
-paid-market escrow claims) must key those effects by ``(run_id, step_id)``
+durable tool effects) must key those effects by ``(run_id, step_id)``
 so retry on resume is safe. This module provides the ``@idempotent_by_step``
 decorator and the low-level ``IdempotencyStore`` it uses.
 

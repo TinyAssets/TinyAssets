@@ -2,13 +2,12 @@
 
 import sqlite3
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from types import SimpleNamespace
 
 from tinyassets.api import permissions
 from tinyassets.api.helpers import _base_path
 from tinyassets.commons_catalog import serving_binding_candidates
-from tinyassets.credential_vault import current_llm_subscription_custody
 from tinyassets.exceptions import ProviderError
 from tinyassets.provider_assignment import (
     accepted_connected_model_access,
@@ -17,8 +16,6 @@ from tinyassets.provider_assignment import (
 )
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import (
-    _PROVIDER_SERVICE,
-    ServingProviderHeld,
     _canonical_universe,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
@@ -36,12 +33,10 @@ from tinyassets.providers.model_policy import (
     ModelRef,
 )
 from tinyassets.providers.model_preferences import capture_preference_policy
-from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 from tinyassets.providers.served_model_plan import (
     ModelSourceUnavailable,
     _assert_plan_snapshot,
     _http_models,
-    _native_models,
     connected_sources,
     prepare_owned_model_plan,
 )
@@ -62,68 +57,6 @@ def _scope(conn, base, owner, uid):
         raise PermissionError("model catalogue scope unavailable")
 
 
-def _granted_only(connection):
-    """The connection with LEARNED candidates removed.
-
-    `_native_models` returns everything a client may SEE, which now includes ids
-    the platform verified on another universe of the same source kind. Those are
-    offers to grant; an admitted plan must contain only what this owner granted.
-    """
-    from dataclasses import replace as _replace
-
-    from tinyassets.providers.served_model_plan import _CANDIDATE_ONLY_BASES
-
-    return _replace(connection, models=tuple(
-        model for model in connection.models
-        if model.availability_basis not in _CANDIDATE_ONLY_BASES
-    ))
-
-
-def _native_inventory(conn, universe, owner):
-    exists = conn.execute(
-        "SELECT 1 FROM sqlite_master "
-        "WHERE type = 'table' AND name = 'llm_credential_deposit_owners'",
-    ).fetchone()
-    if exists is None:
-        return {}
-    aliases = {service: provider for provider, service in _PROVIDER_SERVICE.items()}
-    rows = conn.execute(
-        "SELECT service FROM llm_credential_deposit_owners "
-        "WHERE universe_id = ? AND owner_user_id = ?",
-        (universe.name, owner),
-    ).fetchall()
-    return {
-        aliases[row[0]]: current_llm_subscription_custody(
-            conn, universe_dir=universe, owner_user_id=owner,
-            universe_id=universe.name, service=row[0],
-        ) for row in rows if row[0] in aliases
-    }
-
-
-def _native_enumeration(provider):
-    """Installed metadata support, not proof this account has a model list.
-
-    The bound executor decides. A package name alone does not: a stand-in
-    registered under a shipped package's name has not installed that catalogue.
-    """
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-    from tinyassets.providers.base import BaseProvider
-    from tinyassets.providers.call import get_provider_router
-
-    router = get_provider_router()
-    executor = None if router is None else router._providers.get(provider)
-    if executor is None:
-        return "unavailable"
-    method = getattr(executor, "enumerate_models", None)
-    supported = (
-        isinstance(executor, ExternalAgentProvider)
-        or getattr(executor, "native_discovery_protocol", None) is not None
-        or callable(method)
-        and getattr(method, "__func__", method) is not BaseProvider.enumerate_models
-    )
-    return "supported" if supported else "unknown"
-
-
 def _collect(base, owner, uid):
     universe = _canonical_universe(base, base / uid, uid)
     store = SQLiteProviderWorkAuthorityStore(base)
@@ -137,7 +70,6 @@ def _collect(base, owner, uid):
             assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
             if assignment is not None and assignment.owner_user_id != owner:
                 raise PermissionError("model catalogue assignment unavailable")
-            native = _native_inventory(conn, universe, owner)
             live_sources = connected_sources(base, universe, owner, conn=conn)
             legacy_provider = None
             if agent is not None and assignment is not None and not assignment.manifest_digest:
@@ -182,12 +114,46 @@ def _collect(base, owner, uid):
     sources = {}
     definitions = [item for item in list_definitions(uid) if item.owner_user_id == owner]
     for item in definitions:
-        if item.access_method != "api_key_http":
+        if item.access_method not in {"api_key_http", "subscription_cli"}:
             continue
-        provider = "api_key_http:" + item.id
+        provider = item.access_method + ":" + item.id
         sources[provider] = {"provider_ref": provider, "bind_key": item.id,
-                             "access_method": "api_key_http",
-                             "accepted": provider in runnable, "reasons": []}
+                             "access_method": item.access_method,
+                             "accepted": provider in runnable, "reasons": [],
+                             "display_name": "Connected source"}
+        if item.access_method == "subscription_cli":
+            from tinyassets.providers.subscription_source import sources as native_sources
+
+            source = native_sources(base).get(item.ref)
+            if source is not None:
+                sources[provider]["display_name"] = source["display_name"]
+        else:
+            # A connection is named by what it connects: a sign-in preset by its
+            # display name, anything else by its host. Never by an internal id.
+            try:
+                from urllib.parse import urlsplit
+
+                from tinyassets.broker.ledger_queries import granted_resource_row
+
+                resource = granted_resource_row(
+                    base, principal=owner, command_center=uid, grant_id=item.ref,
+                )
+                destination = str(resource["destination"] or "")
+                if destination.startswith("model:"):
+                    from tinyassets.onboarding.hosted_model_auth import load_preset
+
+                    name = load_preset(destination.removeprefix("model:")).display_name
+                else:
+                    import json
+
+                    endpoints = json.loads(resource["allowed_endpoints_json"])
+                    name = next((ep["host"] for ep in endpoints if ep.get("host")), "")
+                    if not name and "://" in destination:
+                        name = urlsplit(destination).hostname or ""
+                if name:
+                    sources[provider]["display_name"] = name
+            except Exception:  # noqa: BLE001 - a name is display only
+                pass
         if provider in planned_sources:
             continue
         try:
@@ -207,60 +173,13 @@ def _collect(base, owner, uid):
         except (ProviderError, ValueError, OSError, RuntimeError):
             rejected.append(Ineligible(ModelRef(provider, ""), "discovery_unavailable",
                                        scope="source"))
-    for provider, custody in native.items():
-        sources[provider] = {"provider_ref": provider, "bind_key": provider,
-                             "access_method": "subscription_cli",
-                             "enumeration": _native_enumeration(provider),
-                             "accepted": provider in runnable, "reasons": []}
-        if provider in planned_sources:
-            continue
-        try:
-            model = _native_models(base, universe, owner, SimpleNamespace(
-                provider=provider, access=ModelAccess("explicit", ("",)),
-            ))
-            if custody is None:
-                # Deposited but not adopted is not evidence of revocation or
-                # fresh execution authority. Keep the default visible as unknown.
-                models.append(replace(model, freshness="unknown"))
-                rejected.append(Ineligible(ModelRef(provider, ""),
-                                          "source_not_accepted" if provider not in runnable
-                                          else "source_revoked", scope="source"))
-                continue
-            models.append(model)
-            if legacy_provider == provider and (
-                preferences.policy is None or preferences.policy.mode == "automatic"
-            ):
-                # The LEGACY plan gets only what the owner actually granted. A
-                # learned id is a candidate to grant, never an admitted one, and
-                # Codex found this second caller still admitting them after the
-                # served_model_plan branch was fixed (#4028 round 2) -- one reader
-                # of _native_models was corrected and this one was not.
-                admitted = _granted_only(model)
-                plan = replace(plan, catalog=Catalog(owner, uid, (admitted,)))
-                # Withheld is not enough: each excluded row needs the REASON, or the
-                # picker cannot file it under "needs access" and the owner sees an
-                # unexplained inert row. Codex on #4028 found this path filtering
-                # correctly and reporting nothing (`reasons: []`).
-                for excluded in model.models:
-                    if excluded.model_id not in {m.model_id for m in admitted.models}:
-                        rejected.append(Ineligible(
-                            ModelRef(provider, excluded.model_id),
-                            "model_access_optin_required"))
-            else:
-                rejected.append(Ineligible(ModelRef(provider, ""),
-                                          "source_not_accepted" if provider not in runnable
-                                          else binding_state, scope="source"))
-        except (ModelSourceUnavailable, ServingProviderHeld) as exc:
-            rejected.append(Ineligible(ModelRef(provider, ""), exc.reason, scope="source"))
-        except (PermissionError, ValueError, ProviderError, OSError):
-            rejected.append(Ineligible(ModelRef(provider, ""), "source_unavailable",
-                                       scope="source"))
     # Accepted sources missing from registration remain visible as unavailable.
     for provider in accepted:
         sources.setdefault(provider, {"provider_ref": provider,
                                       "access_method": None,
-                                      "bind_key": provider.removeprefix("api_key_http:"),
-                                      "accepted": provider in runnable, "reasons": []})
+                                      "bind_key": provider.split(":", 1)[-1],
+                                      "accepted": provider in runnable, "reasons": [],
+                             "display_name": "Connected source"})
     failed = {}
     with provider_assignment_admission().shared(universe):
         current_bindings = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
@@ -284,10 +203,6 @@ def _collect(base, owner, uid):
             if (legacy_provider is not None and legacy_provider not in
                     connected_sources(base, universe, owner, conn=conn)):
                 failed[legacy_provider] = "source_revoked"
-            current_native = _native_inventory(conn, universe, owner)
-            for provider, custody in native.items():
-                if provider not in current_native or current_native[provider] != custody:
-                    failed[provider] = "source_revoked"
             for provider, snapshot in snapshots.items():
                 try:
                     _assert_plan_snapshot(
@@ -295,9 +210,6 @@ def _collect(base, owner, uid):
                         display_only=(prepared is not None and prepared.display_only
                                       and provider in dict(prepared.chains)),
                     )
-                    if (type(snapshot) is NativeDiscoverySnapshot
-                            and current_native.get(provider) != snapshot.custody):
-                        failed[provider] = "source_revoked"
                 except ModelDiscoveryUnavailable as exc:
                     failed[provider] = exc.reason
                 except ProviderError:
@@ -320,31 +232,17 @@ def _collect(base, owner, uid):
                 "observed_at": snapshot.observed_at.isoformat(),
                 "completed_at": snapshot.completed_at.isoformat(),
                 "expires_at": (snapshot.observed_at + timedelta(minutes=5)).isoformat(),
-                "warnings": ([] if type(snapshot) is NativeDiscoverySnapshot
-                             else list(snapshot.warnings)),
+                "warnings": list(snapshot.warnings),
             })
-    from tinyassets.external_agents import receipts as agent_receipts
-    from tinyassets.external_agents.registry import PACKAGES
 
-    for provider in native:
-        if provider in PACKAGES and provider in sources:
-            source = sources[provider]
-            if provider in snapshots and provider not in failed:
-                age = (datetime.now(timezone.utc)
-                       - snapshots[provider].observed_at).total_seconds()
-                source["catalogue_status"] = (
-                    "fresh" if 0 <= age <= agent_receipts.FRESH_SECONDS else "stale")
-            else:
-                source["catalogue_status"] = agent_receipts.status(
-                    base, owner=owner, universe_id=uid, agent=provider)
     legacy_source = None
     if legacy_provider is not None and legacy_provider not in failed:
         provider = legacy_provider
         source = sources.get(provider)
         configured_model = ""
-        if provider.startswith("api_key_http:"):
+        if provider.startswith(("api_key_http:", "subscription_cli:")):
             registered = next((item for item in definitions
-                               if "api_key_http:" + item.id == provider), None)
+                               if item.access_method + ":" + item.id == provider), None)
             if registered is not None:
                 configured_model = registered.model
             else:
@@ -363,7 +261,7 @@ def _collect(base, owner, uid):
         "choice_authority": ("accepted_manifest" if assignment and assignment.manifest_digest
                              else "legacy_single_provider"
                              if legacy_provider and legacy_provider not in failed else "none"),
-        "accepted_model_access": {provider.removeprefix("api_key_http:"): access.document()
+        "accepted_model_access": {provider.split(":", 1)[-1]: access.document()
                                   for provider, access in accepted.items()},
         "sources": list(sources.values()),
         **model_options_document(Catalog(owner, uid, models), plan, tuple(rejected)),

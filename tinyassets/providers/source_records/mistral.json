@@ -1,0 +1,51 @@
+{
+  "id": "mistral",
+  "display_name": "Mistral",
+  "origin": "declared",
+  "addresses": [
+    "https://api.mistral.ai/v1",
+    "https://api.mistral.ai"
+  ],
+  "suggested": false,
+  "free": true,
+  "sign_in": {
+    "api_key": {
+      "header_style": "bearer",
+      "help_url": "https://console.mistral.ai/api-keys"
+    }
+  },
+  "invoke": {
+    "http": {
+      "wire": "chat_completions",
+      "base_url": "https://api.mistral.ai/v1",
+      "models_url": "https://api.mistral.ai/v1/models",
+      "inference_url": "https://api.mistral.ai/v1/chat/completions",
+      "card": {
+        "help_url": "https://console.mistral.ai/api-keys",
+        "billing_url": "https://admin.mistral.ai/organization/billing",
+        "offer": "Free mode includes limited monthly usage, with no credit card required. Current model limits appear in your account.",
+        "wire": "openai_chat",
+        "daily_cap": {
+          "requests_per_day": null,
+          "tokens_per_minute": null,
+          "reset_timezone": null,
+          "source_url": "https://docs.mistral.ai/admin/billing-usage/usage-limits"
+        }
+      }
+    }
+  },
+  "egress": {
+    "provider": [
+      "api.mistral.ai"
+    ]
+  },
+  "state": {
+    "location": "broker"
+  },
+  "models": [
+    {
+      "id": "mistral-small-latest",
+      "context": 32768
+    }
+  ]
+}

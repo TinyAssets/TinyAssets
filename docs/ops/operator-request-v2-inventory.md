@@ -152,10 +152,8 @@ idempotent.
 Current focused evidence:
 
 ```text
-python -m pytest -q tests/test_request_admission_store.py
 22 passed in 1.68s
 
-python -m pytest -q tests/test_dispatcher_queue.py tests/test_submit_request_wiring.py tests/test_patch_request_incentives.py tests/test_request_admission_store.py
 101 passed in 11.59s
 
 python -m pytest -q tests/test_multi_tenant_isolation.py tests/test_storage_db_filename_migration.py tests/test_canonical_bindings_migration.py tests/test_node_registry_migration.py tests/test_runs_schema_migration.py tests/test_daemon_registry.py tests/test_storage_phase7_backend.py

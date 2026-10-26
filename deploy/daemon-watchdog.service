@@ -5,6 +5,7 @@ Requires=docker.service
 After=docker.service tinyassets-daemon.service
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets-host-uptime/current
 Type=oneshot
 User=root
 Group=root

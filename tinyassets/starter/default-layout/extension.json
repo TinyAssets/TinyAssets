@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "name": "default-layout",
+  "description": "The default command center layout",
+  "cards": [
+    {
+      "name": "layout",
+      "description": "Blank command center",
+      "asset": "layout.json"
+    }
+  ]
+}

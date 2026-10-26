@@ -8,7 +8,12 @@ existing event path's (``automation_events.emit``): the verified request
 principal, their own subscriptions, their own current home.
 
 What the caller learns is how many wakes were stored, never which: a UI cannot
-map an owner's subscriptions beyond "something listens to this name".
+map an owner's subscriptions beyond "something listens to this name". A repeat
+of an event that already has a wake stores nothing: ``woke`` is 0, and the
+subscription's last reason is ``deduplicated:<id>`` of that wake.
+
+The wake's ``event.viewer.account_id`` is the authenticated account. It is not
+taken from ``data``, so a screen cannot claim to be another account.
 """
 
 from __future__ import annotations

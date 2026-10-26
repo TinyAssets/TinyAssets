@@ -179,21 +179,20 @@ def _machine(universe_dir: Path) -> int | None:
     directory (a test root, Windows, a local install)."""
     if os.name != "posix":
         return None
-    from tinyassets import role_center_admission as admission
     from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
     from tinyassets.workspace_fs import open_dir_nofollow
 
     fd = open_dir_nofollow(universe_dir)
     try:
         gid = os.fstat(fd).st_gid
-        if not OWNER_ID_FIRST <= gid <= OWNER_ID_LAST:
-            return None
-        if admission.read_label(fd) != admission.canonical_label(gid):
-            raise PermissionError(f"{universe_dir.name}: owner content root has a "
-                                  "noncanonical label")
-        return gid
     finally:
         os.close(fd)
+    if OWNER_ID_FIRST <= gid <= OWNER_ID_LAST:
+        # Owner-split content roots were moved into owner boxes by the one-shot
+        # cutover; agent files migrate before that window, never after it.
+        raise PermissionError(f"{universe_dir.name}: owner-labelled content root; "
+                              "agent files migrate before the owner-box cutover")
+    return None
 
 
 class _Writer:
@@ -213,12 +212,8 @@ class _Writer:
         self.directories.append(universe_dir / agent.directory)
         for relpath, data in agent.files:
             self.files.append((universe_dir, relpath))
-            if machine is None:
-                write_universe_file(universe_dir, relpath, data, mode="exclusive")
-            else:
-                from tinyassets.role_content import publish_as_root
-
-                publish_as_root(universe_dir, relpath.split("/"), data, machine=machine)
+            assert machine is None
+            write_universe_file(universe_dir, relpath, data, mode="exclusive")
 
     def undo(self) -> None:
         """Best effort, on a path that is already failing: the snapshot is the backstop."""
@@ -331,20 +326,35 @@ def _keep_sidecars_readable(base: Path) -> None:
             os.chown(side, owner.st_uid, owner.st_gid)
 
 
-def pending(base_path: str | Path) -> int:
-    """How many bindings ``apply`` would move. Read-only; opens no schema."""
+def inspect_bindings(base_path: str | Path) -> dict[str, object]:
+    """What ``check`` looked at. ``pending`` is the addressable count ``apply`` moves.
+
+    A catalogue that was never created is a real zero. An unreadable catalogue
+    raises, so a caller cannot confuse "could not look" with "nothing to move".
+    """
     from tinyassets.commons_catalog import _binding_from_row
 
     base = Path(base_path)
     if not _catalogue_exists(base):
-        return 0
+        return {"pending": 0, "catalogue": False, "bindings": 0, "addressable": 0}
     conn = sqlite3.connect(db_path(base), timeout=30.0)
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM agent_bindings").fetchall()
     finally:
         conn.close()
-    return sum(1 for row in rows if _is_agent(_binding_from_row(row)))
+    addressable = sum(1 for row in rows if _is_agent(_binding_from_row(row)))
+    return {
+        "pending": addressable,
+        "catalogue": True,
+        "bindings": len(rows),
+        "addressable": addressable,
+    }
+
+
+def pending(base_path: str | Path) -> int:
+    """How many bindings ``apply`` would move. Read-only; opens no schema."""
+    return int(inspect_bindings(base_path)["pending"])
 
 
 def _post_commit_warning(step: str, error: Exception) -> None:
@@ -434,9 +444,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="the fresh full-volume snapshot this run restores to")
     args = parser.parse_args(argv)
     if args.command == "check":
-        count = pending(args.base)
-        print(json.dumps({"pending": count}))
-        return PENDING if count else 0
+        report = inspect_bindings(args.base)
+        print(json.dumps(report, sort_keys=True))
+        return PENDING if report["pending"] else 0
     print(json.dumps(apply(args.base, backup=args.backup), sort_keys=True))
     return 0
 

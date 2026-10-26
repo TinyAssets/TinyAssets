@@ -13,7 +13,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from tinyassets import storage_accounting as sa
+from tinyassets.box_layout_migration import RETIRED_STORES
 
 SOURCE = Path(sa.__file__).resolve().parent
 
@@ -38,7 +41,12 @@ def _names_in_source() -> dict[str, str]:
 
 
 def test_every_on_disk_name_is_classified():
-    classified = set(sa.ROOT_ENTRIES) | sa.UNIVERSE_ENTRIES | sa.ELSEWHERE_ENTRIES
+    live = set(sa.ROOT_ENTRIES) | sa.UNIVERSE_ENTRIES | sa.ELSEWHERE_ENTRIES
+    retired = {database for database, _ in RETIRED_STORES}
+    # A cutover input explicitly dropped by the one retirement inventory is
+    # accounted for without reintroducing it into runtime quota readers.
+    assert not live & retired
+    classified = live | retired
     missing = {
         name: where for name, where in _names_in_source().items()
         if name not in classified
@@ -49,6 +57,14 @@ def test_every_on_disk_name_is_classified():
         "'platform: <why>'), UNIVERSE_ENTRIES, or ELSEWHERE_ENTRIES: "
         f"{missing}"
     )
+
+
+def test_retired_inputs_have_no_runtime_readers():
+    for database, table in RETIRED_STORES:
+        readers = [path.relative_to(SOURCE).as_posix() for path in SOURCE.rglob("*.py")
+                   if path.name != "box_layout_migration.py"
+                   and any(name in path.read_text(encoding="utf-8") for name in (database, table))]
+        assert readers == [], readers
 
 
 def test_every_root_entry_names_a_real_store_or_the_platform():
@@ -74,3 +90,6 @@ def test_the_production_root_listing_is_classified():
         ".universe-tool-slots", ".active_universe", ".scoped-reset.barrier",
     }
     assert production <= set(sa.ROOT_ENTRIES), production - set(sa.ROOT_ENTRIES)
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T2')

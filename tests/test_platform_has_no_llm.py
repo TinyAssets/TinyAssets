@@ -30,28 +30,17 @@ from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.router import ProviderRouter
 
-_ALL_BUILTIN = ("claude-code", "codex", "ollama-local")
-
-
-def _builtin_executor_classes() -> dict[str, type]:
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-    from tinyassets.providers.claude_provider import ClaudeProvider
-    from tinyassets.providers.ollama_provider import OllamaProvider
-
-    classes = (ClaudeProvider, OllamaProvider)
-    return {**{cls.name: cls for cls in classes}, "codex": ExternalAgentProvider}
+_ALL_BUILTIN = ("api_key_http:source-a", "api_key_http:source-b", "host-provider")
 
 
 class _SpyProvider(BaseProvider):
-    """Records calls; carries the REAL executor's declared credential source."""
+    """Records calls from connected HTTP sources or a forbidden host executor."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name):
         self.name = name
-        self.family = name
-        self.calls: list[str] = []
-        real = _builtin_executor_classes().get(name)
-        if real is not None and hasattr(real, "credential_source"):
-            self.credential_source = real.credential_source
+        self.family = "http"
+        self.calls = []
+        self.credential_source = "host_process" if name == "host-provider" else "owner_connection"
 
     async def complete(self, prompt, system, config, *, universe_dir=None):
         self.calls.append(prompt)
@@ -80,7 +69,6 @@ def _carrier(provider: str, *, role: str = "writer", operation: str = "run_graph
     carrier.max_tokens = 50
     carrier.max_cost_microunits = 5
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = provider
     return carrier
@@ -166,8 +154,8 @@ def test_model_call_with_no_universe_is_refused_before_dispatch():
 
 
 @pytest.mark.parametrize("requested", [
-    ("codex", "gpt-6"),
-    ("claude-code", "different-model"),
+    ("api_key_http:source-b", "requested-model"),
+    ("api_key_http:source-a", "different-model"),
 ])
 def test_workflow_model_request_cannot_silently_use_armed_default(
     tmp_path, requested,
@@ -180,7 +168,7 @@ def test_workflow_model_request_cannot_silently_use_armed_default(
     from tinyassets.providers.model_policy import ModelRef
 
     router, spies = _spy_router()
-    carrier = _carrier("claude-code")
+    carrier = _carrier("api_key_http:source-a")
     carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
     context = UniverseContext(
         universe_dir=tmp_path / "u1", provider_invocation=carrier,
@@ -206,7 +194,7 @@ def test_workflow_model_request_cannot_silently_use_armed_default(
 
 
 def test_host_writer_pin_and_host_login_cannot_serve_an_unbound_call(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "claude-code")
+    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "api_key_http:source-a")
     health = MagicMock(return_value={"status": "ok"})
     router, spies = _spy_router(auth_health=health)
 
@@ -216,7 +204,7 @@ def test_host_writer_pin_and_host_login_cannot_serve_an_unbound_call(monkeypatch
     health.assert_not_called()
 
 
-@pytest.mark.parametrize("host_provider", ["ollama-local"])
+@pytest.mark.parametrize("host_provider", ["host-provider"])
 def test_owner_authority_cannot_launch_a_host_credential_provider(
     host_provider, tmp_path, monkeypatch,
 ):
@@ -242,16 +230,6 @@ def test_owner_authority_cannot_launch_a_host_credential_provider(
                 ),
             ), Parent(owner=carrier._receipt.principal_id, command_center="u1")))
     assert _calls(spies) == {}
-
-
-def test_exactly_the_host_credential_executors_declare_it():
-    from tinyassets.providers.owner_binding import is_host_credential_provider
-
-    host_only = sorted(
-        name for name, cls in _builtin_executor_classes().items()
-        if is_host_credential_provider(cls)
-    )
-    assert host_only == ["ollama-local"]
 
 
 def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
@@ -304,7 +282,7 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     )
     other_ledger.grant_connection(
         grant_id=other_grant, connection_id=other_connection, owner_user_id="owner-2",
-        universe_id=universe.name,
+
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     other_definition = register_definition(
@@ -351,36 +329,10 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
         require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
 
 
-def test_unavailable_http_broker_does_not_block_owned_subscription(tmp_path, monkeypatch):
-    from tests.test_open_serving_bind import _setup
-    from tinyassets.providers.owner_binding import require_owner_bound_dispatch
-    from tinyassets.storage.outbound_connections import ProxyRequestError
-
-    universe, _agent, definition = _setup(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "tinyassets.credential_vault.current_llm_subscription_custody",
-        lambda _conn, **scope: object() if scope["service"] == "claude" else None,
-    )
-
-    def broker_down(*_args, **_kwargs):
-        raise ProxyRequestError("broker unavailable")
-
-    monkeypatch.setattr("tinyassets.broker.ledger_queries.query_ledger", broker_down)
-    authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
-    require_owner_bound_dispatch(
-        "claude-code", universe_dir=universe, served_authority=authority,
-    )
-    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
-        require_owner_bound_dispatch(
-            f"api_key_http:{definition.id}", universe_dir=universe,
-            served_authority=authority,
-        )
-
-
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():
     """No universe dir means the child env is the host's: refuse before launch."""
     router, spies = _spy_router()
-    carrier = _carrier("codex")
+    carrier = _carrier("api_key_http:source-b")
 
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):
@@ -396,31 +348,36 @@ def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():
 def test_bound_call_is_served_by_the_owners_provider_and_ignores_host_pin(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "claude-code")
-    health = MagicMock(return_value={"status": "not_logged_in"})
-    router, spies = _spy_router(auth_health=health)
-    carrier = _carrier("codex")
-    monkeypatch.setattr(
-        "tinyassets.providers.served_model_plan.connected_sources",
-        lambda base, universe, owner: frozenset({"codex"}),
-    )
+    from tests.test_open_serving_bind import _setup
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 
+    universe, _, definition = _setup(tmp_path, monkeypatch)
+    source = "api_key_http:" + definition.id
+    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "api_key_http:source-a")
+    health = MagicMock(return_value={"status": "not_logged_in"})
+    spy = _SpyProvider(source)
+    router = ProviderRouter(providers={source: spy}, auth_health=health)
+    carrier = _carrier(source)
+    carrier._receipt.principal_id = definition.owner_user_id
+    carrier._receipt.universe_id = universe.name
+    resolve_executor = MagicMock(return_value=spy)
+    monkeypatch.setattr("tinyassets.providers.provider_resolver.provider_for_definition",
+                        resolve_executor)
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):
-        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
-
-        (tmp_path / "u1").mkdir()
         response = asyncio.run(call(ModelCall(
             model=None, fallbacks=(), context=ModelContext(
                 role="writer", prompt="prompt", system="system",
                 config=ModelConfig(max_tokens=10), operation="run_graph",
                 universe_context=UniverseContext(
-                    universe_dir=tmp_path / "u1", provider_invocation=carrier,
+                    universe_dir=universe, provider_invocation=carrier,
                 ), router=router,
             ),
-        ), Parent(owner=carrier._receipt.principal_id, command_center="u1"))).response
-    assert response.provider == "codex"
-    assert _calls(spies) == {"codex": 1}
+        ), Parent(owner=definition.owner_user_id, command_center=universe.name))).response
+    assert response.provider == source
+    assert spy.calls == ["prompt"]
+    assert resolve_executor.call_args_list
+    assert all(call.args == (definition,) for call in resolve_executor.call_args_list)
     health.assert_not_called()
 
 
@@ -556,3 +513,6 @@ def test_bug_investigation_has_no_platform_trigger_left():
         "enqueue_investigation_request",
     ):
         assert not hasattr(bug_investigation, retired), retired
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

@@ -44,34 +44,6 @@ def home_is_complete(base: Path, universe_id: str) -> bool:
     return universe_dir is not None and (universe_dir / "soul.md").is_file()
 
 
-def principal_is_deleted(base: Path, founder: str) -> bool:
-    """Whether this principal deleted their account (account-deletion tombstone).
-
-    Read-only and fail-open on a missing table so a pre-migration database still
-    serves. The tombstone is keyed by a one-way digest of the principal, never
-    the principal itself, and is written before the deletion touches anything.
-    """
-    import sqlite3
-
-    from tinyassets.account_deletion import principal_digest
-    from tinyassets.daemon_server import _connect, initialize_author_server
-    from tinyassets.principals import named_principal
-
-    subject = named_principal(founder)
-    if not subject:
-        return False
-    try:
-        initialize_author_server(base)
-        with _connect(base) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM deleted_principals WHERE founder_sub = ?",
-                (principal_digest(subject),),
-            ).fetchone()
-        return row is not None
-    except sqlite3.OperationalError:
-        return False
-
-
 def ensure_founder_home(base: Path, founder: str) -> str:
     """Resolve or atomically create the authenticated founder's home universe.
 
@@ -89,18 +61,6 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     home = get_founder_home(base, founder)
     if home_is_complete(base, home):
         return home
-
-    # A deleted account does not come back on the next request. The principal's
-    # already-issued token stays valid here until it expires and until the
-    # identity provider removes the user, so a second device would otherwise be
-    # handed a brand-new universe seconds after the person deleted their
-    # account. Fail closed and loudly rather than silently re-founding them.
-    if principal_is_deleted(base, founder):
-        logger.warning(
-            "first-contact refused: principal %s is tombstoned by account deletion",
-            founder,
-        )
-        return _no_home("deleted")
 
     from tinyassets.auth.middleware import require_action_scope
 
@@ -172,9 +132,9 @@ def ensure_founder_home(base: Path, founder: str) -> str:
                 founder,
                 exc_info=True,
             )
-            from tinyassets.role_center_admission import AdmissionRefused
+            from tinyassets.boxes.provider import BoxAuthError
 
-            refused = isinstance(exc, AdmissionRefused)
+            refused = isinstance(exc, BoxAuthError)
         if not home_is_complete(base, winner):
             return _no_home("admission" if refused else "incomplete")
     return winner

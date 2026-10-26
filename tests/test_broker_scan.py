@@ -94,3 +94,6 @@ def test_the_hold_back_covers_the_longest_value_and_a_pending_sequence():
 def test_whole_documents_are_checked_keys_and_values(document):
     assert contains_sensitive(document, ["sk-live-1"])
     assert not contains_sensitive(document, ["other"])
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

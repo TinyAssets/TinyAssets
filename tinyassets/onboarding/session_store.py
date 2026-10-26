@@ -6,9 +6,9 @@ refresh token here.
 **Sealed at rest.** Every record is AES-GCM ciphertext under a process key. The
 AAD binds both the handle and the record kind, so a record copied onto another
 handle's filename does not decrypt and a record's kind cannot be flipped by an
-editor of the JSON. Nothing outside the ciphertext identifies a session: not the
-token, and — this was the round-2 blocker — not the successor handle a rotation
-points at either. A tombstone that named its successor in plaintext would have
+editor of the JSON. Authenticated public owner metadata supports revocation.
+No credential is outside the ciphertext: neither the token nor the successor
+handle a rotation points at. A tombstone naming its successor in plaintext would have
 handed a data-dir reader a *directly usable bearer handle*, which is the original
 cross-user disclosure wearing a different hat.
 
@@ -16,9 +16,8 @@ cross-user disclosure wearing a different hat.
 dir* that is not this process: a stray backup, a detached volume, a container
 sidecar, a mounted-in tool, a restored snapshot. It is **not** a boundary against
 code executing inside this process — that reader can call ``read()`` itself. That
-is a separate, already-filed finding
-(``docs/concerns/2026-08-28-user-code-runs-in-process.md``) whose fix is a process
-split, and encryption must not be sold as a substitute for it. Likewise the
+is the owner-box process split (ADR-019; S8 in docs/architecture.md), and
+encryption must not be sold as a substitute for it. Likewise the
 compose ``worker*`` fleet services mount ``/data`` and copy the environment; they
 are being retired under ``openspec/changes/user-owned-automations`` and are
 deliberately out of scope here.
@@ -34,6 +33,12 @@ branch of the provider child env copy ``os.environ`` wholesale.
 the scrub precedes the app build, the reconciler threads and uvicorn — the
 onboarding route being dark (``TINYASSETS_ONBOARDING_APP`` off) must not leave the
 key sitting in the environment.
+
+Inside an admitted owner box the key instead lives in that owner's durable
+volume, loaded before the app serves, without entering the environment. The
+box is the isolation boundary: a backup of the entire owner volume includes
+its key as well as ciphertext, so encryption does not protect against a reader
+of that whole volume. Shared authentication continues to use the router key.
 
 **Handles rotate.** A refresh mints a NEW handle and replaces the old record with
 a sealed tombstone naming the successor, expiring after a short grace. So a
@@ -95,7 +100,7 @@ _B64_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}=?$")
 _HEX_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 _MAX_TOKEN = 4096
-_RECORD_VERSION = 1
+_RECORD_VERSION = 2
 _KIND_SESSION = "session"
 _KIND_TOMBSTONE = "tombstone"
 
@@ -153,6 +158,27 @@ def _load_key() -> bytes:
     # without the key. Popping BEFORE the parse means even a rejected value
     # does not survive in the environment.
     raw = os.environ.pop(SEAL_KEY_ENV, "")
+    from tinyassets.owner_runtime import current
+
+    runtime = current()
+    if runtime is not None:
+        from tinyassets.boxes.session_key import load
+
+        key = load(runtime.root)
+        _durable_key = True
+        return key
+
+    from tinyassets.boxes.layout import BROKER_UID
+    from tinyassets.storage import data_dir
+    from tinyassets.universe_files import read_data_path
+
+    # The broker holds no sessions and is barred from the router's .runtime;
+    # importing this module there must not read it (2026-10-22: that read
+    # refused every model sign-in exchange).
+    restored_key = None if os.geteuid() == BROKER_UID else read_data_path(
+        data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
+    if restored_key is not None:
+        raw = restored_key.decode("ascii").strip()
     if raw.strip():
         key = _decode_key(raw)
         if key is None:
@@ -224,6 +250,9 @@ def store_dir() -> Path:
     Raises ``SessionStoreUnavailable`` if the legacy plaintext store is present
     and cannot be removed.
     """
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("refresh_sessions")
     from tinyassets.storage import data_dir
 
     root = data_dir()
@@ -332,11 +361,15 @@ def _read_json(path: Path) -> dict | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _unlink(path: Path) -> None:
+def _unlink(path: Path, *, strict: bool = False) -> None:
+    """Best-effort unless ``strict``: then only an absent file is tolerated."""
     try:
         path.unlink()
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError:
+        if strict:
+            raise
 
 
 def _write_record(handle: str, record: dict) -> None:
@@ -375,17 +408,17 @@ def _int(value: object) -> int | None:
     return value
 
 
-def _aad(handle: str, kind: str) -> bytes:
-    """Authenticated-but-public context: the handle AND the record kind.
+def _aad(handle: str, kind: str, owner: str) -> bytes:
+    """Authenticate the handle, record kind and revocation owner.
 
     The handle stops a record being moved to another handle's filename. The kind
-    stops the one plaintext field that remains (``kind``) being edited to make a
-    tombstone read as a session, or the reverse.
+    stops a tombstone being relabelled as a session. The owner prevents a record
+    being relabelled to escape account revocation.
     """
-    return f"{kind}\x00{handle}".encode("utf-8")
+    return f"{kind}\x00{handle}\x00{owner}".encode("utf-8")
 
 
-def _seal(handle: str, kind: str, payload: dict, ttl: int) -> dict:
+def _seal(handle: str, kind: str, payload: dict, ttl: int, *, owner: str) -> dict:
     """Seal ``payload`` (a JSON object) with its deadline INSIDE the ciphertext.
 
     The authenticated deadline is ``until``, sealed with the payload; the outer
@@ -400,11 +433,12 @@ def _seal(handle: str, kind: str, payload: dict, ttl: int) -> dict:
     body["until"] = until
     nonce = secrets.token_bytes(12)
     ciphertext = AESGCM(seal_key()).encrypt(
-        nonce, json.dumps(body).encode("utf-8"), _aad(handle, kind)
+        nonce, json.dumps(body).encode("utf-8"), _aad(handle, kind, owner)
     )
     return {
         "v": _RECORD_VERSION,
         "kind": kind,
+        "owner": owner,
         "nonce": _b64(nonce),
         "ct": _b64(ciphertext),
         "exp": until,
@@ -417,6 +451,9 @@ def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
     if _int(record.get("v")) != _RECORD_VERSION:
         return None
     kind = record.get("kind")
+    owner = record.get("owner")
+    if not isinstance(owner, str) or not owner:
+        return None
     if kind not in (_KIND_SESSION, _KIND_TOMBSTONE):
         return None
     nonce = _unb64(record.get("nonce"))
@@ -424,7 +461,7 @@ def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
     if nonce is None or ciphertext is None or len(nonce) != 12:
         return None
     try:
-        plaintext = AESGCM(seal_key()).decrypt(nonce, ciphertext, _aad(handle, kind))
+        plaintext = AESGCM(seal_key()).decrypt(nonce, ciphertext, _aad(handle, kind, owner))
     except (InvalidTag, ValueError):
         return None
     try:
@@ -436,7 +473,9 @@ def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
     until = _int(decoded.get("until"))
     if until is None or (now is not None and until < now):
         return None
-    return decoded
+    from tinyassets.router_credentials import active_owner
+
+    return decoded if active_owner(owner) else None
 
 
 def _open_token(handle: str, record: dict, now: int) -> str:
@@ -469,15 +508,29 @@ def valid_handle(handle: str) -> bool:
     return bool(_HANDLE_RE.match(handle or ""))
 
 
-def mint(refresh_token: str) -> str:
+def mint(refresh_token: str, *, owner: str) -> str:
     """A fresh handle sealing ``refresh_token``, or "" if there is nothing to seal."""
     if not refresh_token or len(refresh_token) > _MAX_TOKEN:
         return ""
+    if not isinstance(owner, str) or not owner:
+        raise ValueError("refresh session requires a verified owner")
+    from tinyassets.router_credentials import active_owner
+    from tinyassets.routing_snapshot import snapshot
+    from tinyassets.storage import data_dir
+
+    if not active_owner(owner):
+        raise PermissionError("Account deleted.")
     handle = secrets.token_urlsafe(32)
     _write_record(
         handle,
-        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL),
+        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL, owner=owner),
     )
+    try:
+        if snapshot(data_dir()).record(owner) is None:
+            raise PermissionError("Account deleted.")
+    except Exception:
+        _unlink(_record_path(handle), strict=True)
+        raise
     return handle
 
 
@@ -550,17 +603,30 @@ def rotate(current_handle: str, new_refresh_token: str) -> str:
     live credential in plaintext, and the tombstone expires at the end of grace
     instead of lingering for the session's full TTL.
     """
-    new_handle = mint(new_refresh_token)
-    if not new_handle or not valid_handle(current_handle):
-        return new_handle
+    if not valid_handle(current_handle):
+        return ""
     path = _record_path(current_handle)
-    if _read_json(path) is None:
-        return new_handle  # nothing there to supersede
+    record = _read_json(path)
+    if record is None or _open(current_handle, record, int(time.time())) is None:
+        return ""
+    owner = record["owner"]
+    new_handle = mint(new_refresh_token, owner=owner)
+    if not new_handle:
+        return ""
     _write_record(
         current_handle,
-        _seal(current_handle, _KIND_TOMBSTONE, {"succ": new_handle}, GRACE_SECONDS),
+        _seal(current_handle, _KIND_TOMBSTONE, {"succ": new_handle}, GRACE_SECONDS, owner=owner),
     )
     return new_handle
+
+
+def revoke_owner(owner: str) -> None:
+    """Remove every device and rotation-grace record for this verified owner."""
+    for path in store_dir().glob("*.json"):
+        record = _read_json(path)  # An unreadable record cannot renew either.
+        if record is not None and record.get("owner") == owner:
+            # Revocation must fail loudly if a credential cannot be removed.
+            _unlink(path, strict=True)
 
 
 def drop(handle: str) -> None:

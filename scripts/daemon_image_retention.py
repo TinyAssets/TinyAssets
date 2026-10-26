@@ -6,8 +6,8 @@ Two modes, selected by ``TINYASSETS_DAEMON_IMAGE_RETENTION_MODE``:
     The keep set is a rule, not a pressure response. Every pass removes each
     registry-verified daemon image outside the keep set, whatever the disk
     percentage: the running image, every image any container (running or
-    stopped) references, the configured ``TINYASSETS_IMAGE``, the release
-    receipt's ``rollback_target``, and one rollback image. Explicit mutable tags
+    stopped) references,     the configured ``TINYASSETS_IMAGE``, and the release
+    receipt's ``rollback_target``. Explicit mutable tags
     pin images, including the cutover rollback.
     Pressure at or above the trigger still grades the pass, so disk the rule
     cannot relieve stays loud (``pressure_unmet``, exit 1).
@@ -28,6 +28,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -37,20 +38,26 @@ from pathlib import Path
 
 REPOSITORY = "ghcr.io/tinyassets/tinyassets-daemon"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+BOX_HARNESS_ROOT = Path("/opt/tinyassets/boxhostd")
+HARNESS_TREE = re.compile(r"^harness-[0-9a-f]{64}$")
+HARNESS_STAGE = re.compile(r"^\.harness-stage\..+$")
 FENCE_LOCK = Path("/run/lock/tinyassets-deploy-fence.lock")
 MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
 FENCE_STATE = Path("/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json")
 MAX_OUTPUT = 4 * 1024 * 1024
 MODES = ("count", "threshold")
-# The newest older image bridges the swap-to-receipt canary window.
-KEEP_OLDER = 1
+# Current, every container image, the configured image, the receipt rollback
+# target, and explicit mutable tag pins are already in the keep set.
+KEEP_OLDER = 0
 MAX_REMOVALS = 32
 # Registry proof per pass is bounded so one unrecoverable image cannot starve
 # the rest, and so the locked phase always keeps its 60-second budget.
 MAX_VERIFY_ATTEMPTS = 64
 LOCKED_BUDGET = 60
 RECEIPT_MAX_BYTES = 16 * 1024 * 1024  # includes the full Git containment inventory
-PULL_FREE_BYTES = 10 * 1024**3  # ~4.3 GiB image plus extraction and runtime reserve
+# The extracted harness-current rootfs (~2.5 GiB) already sits on the ~46.8 GiB
+# post-C6 root, so a 10 GiB reserve refused pulls that still had room.
+PULL_FREE_BYTES = 5 * 1024**3
 
 
 class Refusal(Exception):
@@ -184,7 +191,8 @@ def storage_path(info, configured=""):
 
 def read_receipt(docker, containers):
     active = [row for row in containers if row.get("Name") == "/tinyassets-daemon"]
-    if len(active) != 1 or not active[0].get("State", {}).get("Running"):
+    state = active[0].get("State", {}) if len(active) == 1 else {}
+    if len(active) != 1 or not (state.get("Running") or state.get("Restarting")):
         raise Refusal("current_daemon_unavailable")
     daemon = active[0]
     if any(
@@ -242,12 +250,23 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
         if identity not in by_id:
             raise Refusal("container_image_unmapped")
         protected.add(identity)
-    for ref in (configured, receipt.get("rollback_target")):
+    rollback = receipt.get("rollback_target")
+    for slot, ref in (("configured", configured), ("rollback_target", rollback)):
         if ref == "" and ref == receipt.get("rollback_target"):
             continue
-        if not isinstance(ref, str) or not ref or ref not in refs:
-            raise Refusal("protected_reference_unmapped")
-        protected.add(refs[ref])
+        if isinstance(ref, str) and ref and ref in refs:
+            protected.add(refs[ref])
+            continue
+        # An immutable rollback digest that no local image carries is already
+        # gone: there is nothing left to protect, and refusing would block
+        # every later deploy. A mutable tag may still name a present image
+        # under another reference, so it keeps refusing.
+        if slot == "rollback_target" and immutable(ref) and not any(
+                digest.endswith("@" + ref.rsplit("@", 1)[1])
+                for row in by_id.values() for digest in row.get("RepoDigests") or []):
+            print("rollback_target_absent", file=sys.stderr)
+            continue
+        raise Refusal("protected_reference_unmapped:" + slot)
     if not configured:
         raise Refusal("configured_image_missing")
     older = []
@@ -272,8 +291,19 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
     ], sorted(protected)
 
 
-def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage, image_ref=""):
-    """Check root and Docker's actual image filesystem, after retention."""
+def check_pull_headroom(
+    docker=None, environ=None, disk_fn=shutil.disk_usage, image_ref="", *,
+    repair_host_root: Path | None = None,
+):
+    """Check root and Docker's actual image filesystem, after retention.
+
+    ``repair_host_root`` is the fixture root for tests. Production repairs the
+    real host only when this process is root, which is the deploy prune step.
+    """
+    if repair_host_root is not None:
+        repair_host_symlink_modes(host_root=Path(repair_host_root))
+    elif hasattr(os, "geteuid") and os.geteuid() == 0:
+        repair_host_symlink_modes()
     docker = docker or Docker(time.monotonic() + 30)
     env = os.environ if environ is None else environ
     if image_ref:
@@ -287,8 +317,490 @@ def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage, im
     for path in sorted({"/", store}):
         usage = disk_fn(path)
         pct = pressure(path, disk_fn=lambda _: usage)
-        if pct >= 80 or usage.free < PULL_FREE_BYTES:
+        if pct >= 90 or usage.free < PULL_FREE_BYTES:
             raise Refusal("deploy_disk_headroom_insufficient")
+
+
+def image_refs(images):
+    """Map every repo digest and tag onto its image id."""
+    refs = {}
+    seen = set()
+    for row in images:
+        if not isinstance(row, dict):
+            raise Refusal("ambiguous_image_inventory")
+        identity = row.get("Id")
+        if not isinstance(identity, str) or not DIGEST.fullmatch(identity) or identity in seen:
+            raise Refusal("ambiguous_image_inventory")
+        seen.add(identity)
+        for ref in (row.get("RepoDigests") or []) + (row.get("RepoTags") or []):
+            if ref in refs and refs[ref] != identity:
+                raise Refusal("ambiguous_image_reference")
+            refs[ref] = identity
+    return refs
+
+
+def _grant_harness_write(entry):
+    """Make real directories writable so unlink can remove their children.
+
+    ``os.walk`` lists symlinks in ``dirnames`` and ``filenames``. ``os.chmod``
+    follows them, so a loop (``usr/bin/X11 -> .``) raises ``ELOOP`` and an
+    absolute link would change a host file. Unlink needs write on the
+    directory, not on the file or symlink.
+    """
+    def _chmod_dir(path):
+        if os.path.islink(path):
+            return
+        try:
+            os.chmod(path, 0o700)
+        except FileNotFoundError:
+            return
+
+    if os.path.islink(entry):
+        return
+    try:
+        os.chmod(entry, 0o700)
+    except FileNotFoundError:
+        return
+    for dirpath, dirnames, _filenames in os.walk(entry, topdown=True, followlinks=False):
+        for dirname in dirnames:
+            _chmod_dir(os.path.join(dirpath, dirname))
+
+
+# Host paths a harness symlink must never reopen. The old walk chmod'd through
+# absolute links; these trees stay at whatever mode the operator set.
+_REPAIR_PROTECTED = (
+    "/etc/tinyassets",
+    "/etc/ssh",
+    "/etc/ssl/private",
+    "/root",
+    "/home",
+    "/var/lib/docker",
+    "/var/lib/tinyassets-deploy",
+)
+_REPAIR_DEVICES = (
+    "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
+    "/dev/urandom", "/dev/tty", "/dev/ptmx",
+)
+_REPAIR_STICKY = ("/run/lock", "/tmp", "/var/tmp")
+_REPAIR_SYSTEM_DIRS = (
+    "/run", "/etc", "/etc/ssl", "/etc/ssl/certs", "/etc/alternatives",
+    "/var", "/var/lib", "/var/spool", "/opt", "/usr",
+)
+_REPAIR_WALK = (
+    "/usr/bin", "/usr/sbin", "/usr/libexec", "/usr/local/bin",
+    "/usr/local/sbin", "/usr/local/libexec", "/usr/lib", "/usr/share",
+    "/etc/alternatives", "/etc/ssl/certs",
+)
+_REPAIR_DIR_ROOTS = ("/usr", "/etc/ssl/certs", "/etc/alternatives")
+_REPAIR_LINK_EXEC = (
+    "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/", "/usr/libexec/",
+    "/usr/local/bin/", "/usr/local/sbin/", "/usr/local/libexec/", "/opt/",
+)
+_REPAIR_DIRECT_EXEC = (
+    "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+    "/usr/local/bin/", "/usr/local/sbin/",
+)
+_REPAIR_DIRECT_ROOTS = (
+    "/usr/bin", "/usr/sbin", "/usr/libexec", "/usr/local/bin",
+    "/usr/local/sbin", "/usr/local/libexec", "/usr/lib", "/usr/share",
+    "/etc/ssl/certs",
+)
+_REPAIR_DIRECT_FILES = ("/etc/environment", "/etc/machine-id", "/etc/ssl/openssl.cnf")
+
+
+def _repair_real_host(host_root: Path) -> bool:
+    return os.path.realpath(host_root) == "/"
+
+
+def _repair_fs(host_root: Path, logical: str) -> str:
+    if _repair_real_host(host_root):
+        return logical
+    return os.path.join(str(host_root), logical.lstrip("/"))
+
+
+def _repair_logical(host_root: Path, fs_path: str) -> str:
+    if _repair_real_host(host_root):
+        return fs_path
+    relative = os.path.relpath(fs_path, host_root)
+    return "/" if relative == "." else "/" + relative
+
+
+def _repair_protected(logical: str) -> bool:
+    path = os.path.normpath(logical)
+    for prefix in _REPAIR_PROTECTED:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _repair_under(logical: str, roots: tuple[str, ...]) -> bool:
+    path = os.path.normpath(logical)
+    for root in roots:
+        base = root.rstrip("/") or "/"
+        if path == base or path.startswith(base + "/"):
+            return True
+    return False
+
+
+def _repair_resolve(host_root: Path, target: str) -> str | None:
+    """Resolve an absolute symlink target. Fixture roots stay inside host_root."""
+    if not target.startswith("/"):
+        return None
+    if _repair_real_host(host_root):
+        try:
+            resolved = os.path.realpath(target)
+        except OSError:
+            return None
+        return resolved if os.path.exists(resolved) else None
+    logical = os.path.normpath(target)
+    seen: set[str] = set()
+    while len(seen) < 32:
+        if logical in seen:
+            return None
+        seen.add(logical)
+        fs_path = _repair_fs(host_root, logical)
+        try:
+            if os.path.islink(fs_path):
+                nxt = os.readlink(fs_path)
+                if nxt.startswith("/"):
+                    logical = os.path.normpath(nxt)
+                else:
+                    logical = os.path.normpath(os.path.join(os.path.dirname(logical), nxt))
+                continue
+            if os.path.lexists(fs_path):
+                return logical
+        except OSError:
+            return None
+        return None
+    return None
+
+
+def _repair_file_mode(logical: str, fs_path: str, *, direct: bool) -> int:
+    prefixes = _REPAIR_DIRECT_EXEC if direct else _REPAIR_LINK_EXEC
+    if any(os.path.normpath(logical).startswith(prefix) for prefix in prefixes):
+        return 0o755
+    try:
+        with open(fs_path, "rb") as handle:
+            magic = handle.read(4)
+    except OSError:
+        return 0o644
+    if magic.startswith(b"\x7fELF") or magic.startswith(b"#!"):
+        return 0o755
+    return 0o644
+
+
+def repair_host_symlink_modes(
+    harness_root: Path = BOX_HARNESS_ROOT, *, host_root: Path = Path("/"),
+) -> list[str]:
+    """Undo host modes changed through absolute symlinks in a harness rootfs.
+
+    ``os.chmod`` follows links. An earlier prune ran as root inside
+    ``harness-*`` and set host targets of absolute links to ``0o600`` (files
+    and devices) or ``0o700`` (directories). ``/usr/bin/awk`` then failed with
+    EACCES even for root. ``host_root`` is ``/`` on the droplet and a temp
+    tree in tests, so the repair never resolves a fixture link against the
+    machine running the test.
+    """
+    host_root = Path(host_root)
+    harness_root = Path(harness_root)
+    repaired: list[str] = []
+
+    def _chmod(logical: str, fs_path: str, mode: int) -> None:
+        try:
+            os.chmod(fs_path, mode)
+        except OSError:
+            return
+        repaired.append(logical)
+
+    def _restore_named_dir(logical: str, mode: int, allowed: tuple[int, ...]) -> None:
+        fs_path = _repair_fs(host_root, logical)
+        if os.path.islink(fs_path):
+            return
+        try:
+            st = os.lstat(fs_path)
+        except OSError:
+            return
+        if stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) in allowed:
+            _chmod(logical, fs_path, mode)
+
+    for logical in _REPAIR_DEVICES:
+        fs_path = _repair_fs(host_root, logical)
+        try:
+            st = os.stat(fs_path)
+        except OSError:
+            continue
+        if stat.S_ISCHR(st.st_mode) and stat.S_IMODE(st.st_mode) != 0o666:
+            _chmod(logical, fs_path, 0o666)
+    for logical in _REPAIR_STICKY:
+        _restore_named_dir(logical, 0o1777, (0o700, 0o600))
+    for logical in _REPAIR_SYSTEM_DIRS:
+        _restore_named_dir(logical, 0o755, (0o700, 0o600))
+
+    def _restore_regular(logical: str, fs_path: str) -> None:
+        if _repair_protected(logical):
+            return
+        if not (
+            _repair_under(logical, _REPAIR_DIRECT_ROOTS) or logical in _REPAIR_DIRECT_FILES
+        ):
+            return
+        try:
+            st = os.lstat(fs_path)
+        except OSError:
+            return
+        imode = stat.S_IMODE(st.st_mode)
+        if not stat.S_ISREG(st.st_mode) or imode not in (0o600, 0o700):
+            return
+        mode = _repair_file_mode(logical, fs_path, direct=True)
+        # A symlink listed as a directory was chmod'd to 0o700. Only an
+        # executable is restored from that mode; a data file stays put.
+        if imode == 0o700 and mode != 0o755:
+            return
+        _chmod(logical, fs_path, mode)
+
+    def _restore_link(fs_path: str) -> None:
+        try:
+            target = os.readlink(fs_path)
+        except OSError:
+            return
+        if not target.startswith("/"):
+            return
+        logical = _repair_resolve(host_root, target)
+        if logical is None or _repair_protected(logical):
+            return
+        resolved = logical if _repair_real_host(host_root) else _repair_fs(host_root, logical)
+        try:
+            st = os.lstat(resolved)
+        except OSError:
+            return
+        imode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISCHR(st.st_mode) and logical.startswith("/dev/") and imode == 0o600:
+            _chmod(logical, resolved, 0o666)
+        elif stat.S_ISDIR(st.st_mode) and imode in (0o700, 0o600):
+            _chmod(
+                logical, resolved,
+                0o1777 if logical in _REPAIR_STICKY else 0o755,
+            )
+        elif stat.S_ISREG(st.st_mode) and imode in (0o600, 0o700):
+            mode = _repair_file_mode(logical, resolved, direct=False)
+            if imode == 0o700 and mode != 0o755:
+                return
+            _chmod(logical, resolved, mode)
+
+    def _restore_walk_dir(logical: str, fs_path: str) -> None:
+        if _repair_protected(logical) or os.path.islink(fs_path):
+            return
+        if not _repair_under(logical, _REPAIR_DIR_ROOTS):
+            return
+        try:
+            st = os.lstat(fs_path)
+        except OSError:
+            return
+        if stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) in (0o700, 0o600):
+            _chmod(logical, fs_path, 0o755)
+
+    for logical in _REPAIR_DIRECT_FILES:
+        _restore_regular(logical, _repair_fs(host_root, logical))
+
+    walk_roots = [_repair_fs(host_root, logical) for logical in _REPAIR_WALK]
+    if harness_root.is_dir():
+        for entry in sorted(harness_root.iterdir(), key=lambda item: item.name):
+            if (
+                entry.name.startswith("harness-")
+                and entry.is_dir()
+                and not entry.is_symlink()
+            ):
+                walk_roots.append(str(entry))
+    for walk_root in walk_roots:
+        if not os.path.isdir(walk_root) or os.path.islink(walk_root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(walk_root, followlinks=False):
+            logical_dir = _repair_logical(host_root, dirpath)
+            _restore_walk_dir(logical_dir, dirpath)
+            for name in dirnames:
+                path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    _restore_link(path)
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    _restore_link(path)
+                else:
+                    _restore_regular(_repair_logical(host_root, path), path)
+    return repaired
+
+
+def _legacy_snapshot_dirs(host_root: Path) -> list[Path]:
+    """Directory copies of gVisor trees left in pre-#5258 deploy snapshots.
+
+    ``current`` is a symlink to ``release-*`` and ``cp -a`` snapshots the link.
+    Older snapshots stored the binaries as real directories at
+    ``bundle-snapshots/*/host/root/{current,release-*}`` and
+    ``cutover/bundle/host/root/{current,release-*}``.
+    """
+    base = Path(host_root) / "var/lib/tinyassets-deploy"
+    try:
+        base_real = base.resolve(strict=True)
+    except OSError:
+        return []
+    parents: list[Path] = []
+    snapshots = base / "bundle-snapshots"
+    if snapshots.is_dir() and not snapshots.is_symlink():
+        try:
+            snaps = sorted(snapshots.iterdir(), key=lambda item: item.name)
+        except OSError:
+            snaps = []
+        for snap in snaps:
+            if snap.is_symlink() or not snap.is_dir():
+                continue
+            parents.append(snap / "host" / "root")
+    parents.append(base / "cutover" / "bundle" / "host" / "root")
+    found = []
+    for parent in parents:
+        if parent.is_symlink() or not parent.is_dir():
+            continue
+        try:
+            parent.resolve(strict=True).relative_to(base_real)
+            entries = sorted(parent.iterdir(), key=lambda item: item.name)
+        except (OSError, ValueError):
+            continue
+        for entry in entries:
+            name = entry.name
+            if name != "current" and not name.startswith("release-"):
+                continue
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            try:
+                entry.resolve(strict=True).relative_to(base_real)
+            except (OSError, ValueError):
+                continue
+            found.append(entry)
+    return found
+
+
+def _remove_legacy_snapshot_dirs(host_root: Path) -> list[str]:
+    base = Path(host_root) / "var/lib/tinyassets-deploy"
+    removed = []
+    for entry in _legacy_snapshot_dirs(host_root):
+        _grant_harness_write(entry)
+        shutil.rmtree(entry)
+        removed.append(entry.relative_to(base).as_posix())
+    return removed
+
+
+def _live_box_harnesses(bundles, root):
+    """Harness names a running owner sandbox reads, or None when unknowable.
+
+    boxhostd writes each sandbox's rootfs into its bundle's config.json and
+    removes that file when the sandbox stops.
+    """
+    if not bundles.exists():
+        return set()
+    names = set()
+    try:
+        for config in bundles.glob("owner-*/config.json"):
+            if config.is_symlink():
+                return None
+            path = Path(json.loads(config.read_text(encoding="utf-8"))["root"]["path"])
+            if path.parent == root and HARNESS_TREE.fullmatch(path.name):
+                names.add(path.name)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return names
+
+
+def prune_box_harnesses(
+    daemon, configured, refs, root=None, *, repair_host=False, host_root=None,
+):
+    """Remove unreferenced box rootfs copies and abandoned extract stages.
+
+    ``harness-current``, the running daemon image, and the configured image
+    stay. Every other ``harness-<64 hex>`` directory and ``.harness-stage.*``
+    directory is a full unshared ``tar -x`` and is removed.
+
+    On the real host (or when a test passes ``repair_host=True``), restore
+    host modes that an earlier chmod followed out of these trees. That runs
+    before the trees are deleted, so their absolute symlinks are still evidence.
+    The same pass removes legacy gVisor directory copies under deploy snapshots.
+    """
+    if root is None:
+        root = Path(os.environ.get("TINYASSETS_BOX_HARNESS_ROOT", str(BOX_HARNESS_ROOT)))
+    else:
+        root = Path(root)
+    legacy: list[str] = []
+    if repair_host or root == BOX_HARNESS_ROOT:
+        host = Path("/") if host_root is None else Path(host_root)
+        repair_host_symlink_modes(root, host_root=host)
+        legacy = _remove_legacy_snapshot_dirs(host)
+    if not root.is_dir():
+        return legacy
+    keep = {"harness-current"}
+    current = root / "harness-current"
+    # readlink does not follow. resolve() walks the target and raises ELOOP
+    # when harness-current or a path it names is a symlink loop.
+    if current.is_symlink():
+        try:
+            keep.add(Path(os.readlink(current)).name)
+        except OSError:
+            pass
+    image = daemon.get("Image", "") if isinstance(daemon, dict) else ""
+    if isinstance(image, str) and image:
+        keep.add("harness-" + image.removeprefix("sha256:"))
+    if isinstance(configured, str) and isinstance(refs, dict) and configured in refs:
+        identity = refs[configured]
+        if isinstance(identity, str):
+            keep.add("harness-" + identity.removeprefix("sha256:"))
+    removed = []
+    # Launches hold this lock shared from image selection until their bundle names
+    # the image (tinyassets/boxes/images.py harness_lease); hold it exclusively from
+    # the bundle scan through deletion. Busy launches: leave every image this time.
+    lock = _harness_lock(root)
+    if lock is None:
+        return legacy
+    try:
+        # An owner left serving through a deploy still runs its previous image
+        # until its own sleep; its sandbox reads that directory directly.
+        live = _live_box_harnesses(Path(os.environ.get(
+            "TINYASSETS_BOX_BUNDLE_ROOT", "/var/lib/boxhostd/state/bundles")), root)
+        if live is None:
+            return legacy  # Unknown live set: remove no box image at all.
+        keep |= live
+        removed = _remove_harnesses(root, keep)
+    finally:
+        os.close(lock)
+    return removed + legacy
+
+
+def _harness_lock(root, timeout=None):
+    import fcntl
+
+    if timeout is None:
+        timeout = float(os.environ.get("TINYASSETS_HARNESS_LOCK_SECONDS", "120"))
+
+    fd = os.open(root / ".harness.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.5)
+
+
+def _remove_harnesses(root, keep):
+    removed = []
+    for entry in root.iterdir():
+        name = entry.name
+        if name in keep or not (HARNESS_TREE.fullmatch(name) or HARNESS_STAGE.fullmatch(name)):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        _grant_harness_write(entry)
+        shutil.rmtree(entry)
+        removed.append(name)
+    return removed
 
 
 def prune_dangling(docker):
@@ -454,8 +966,8 @@ def locks(paths=(FENCE_LOCK, MUTATION_LOCK), state=FENCE_STATE):
 def retain(
     *,
     dry_run=True,
-    high=85,
-    low=75,
+    high=90,
+    low=80,
     mode="count",
     environ=None,
     docker=None,
@@ -550,6 +1062,11 @@ def retain(
         with locker():
             docker.deadline = min(deadline, clock() + LOCKED_BUDGET)
             report["dangling_removed"] = prune_dangling(docker)
+            images, containers = docker.inventory()
+            daemon, _receipt = receipt_reader(docker, containers)
+            report["harnesses_removed"] = prune_box_harnesses(
+                daemon, config_reader(), image_refs(images),
+            )
         images, containers = docker.inventory()
         daemon, receipt = receipt_reader(docker, containers)
         remaining, _ = candidates(images, containers, daemon, config_reader(), receipt)
@@ -581,6 +1098,12 @@ def main(argv=None):
     parser.add_argument("--image-ref", default="")
     options = parser.parse_args(argv)
     try:
+        # Repair before retain(). A stopped daemon raises
+        # current_daemon_unavailable inside retain and would otherwise skip
+        # the host-mode repair on --apply --prepare-pull.
+        if ((options.apply or options.prepare_pull or options.check_headroom)
+                and hasattr(os, "geteuid") and os.geteuid() == 0):
+            repair_host_symlink_modes()
         if options.check_headroom:
             check_pull_headroom(image_ref=options.image_ref)
             print(json.dumps(dict(status="pull_headroom_ok")))
@@ -595,15 +1118,15 @@ def main(argv=None):
             dry_run=not options.apply
             or activation != "1"
             or os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
-            high=float(os.environ.get("DISK_AUTOPRUNE_PCT", "85")),
-            low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "75")),
+            high=float(os.environ.get("DISK_AUTOPRUNE_PCT", "90")),
+            low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "80")),
             mode=mode,
         )
         if options.prepare_pull:
             if report["status"] not in ("retained", "pressure_relieved"):
                 raise Refusal("pre_pull_retention_incomplete")
             check_pull_headroom(image_ref=options.image_ref)
-    except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
+    except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         reason = str(exc) if isinstance(exc, Refusal) else "evidence_unavailable"
         print(json.dumps(dict(status="refused", reason=reason)))
         return 2

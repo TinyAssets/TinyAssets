@@ -33,8 +33,7 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
     _parse_activity_line                : activity-log line parser (single-caller helper)
     _action_*                           : 27 universe-tool handlers
     _list_output_tree, _trim_overview_for_bytes, _overview_limits,
-    _tail_file_lines, _query_world_db, _normalize_escaped_text,
-    _goal_pool_not_available, _paid_market_not_available :
+    _tail_file_lines, _query_world_db, _normalize_escaped_text :
                                           handler-scoped helpers
 
 Cross-module note: ``_current_actor``, ``_truncate``, ``_append_ledger``,
@@ -72,7 +71,6 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, read_canon_bytes, safe_canon_path
-from tinyassets.role_center_admission import ensure_center_dir as _ensure_center_dir
 from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_files import (
@@ -86,9 +84,7 @@ from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
     SOUL_FILENAME,
     has_soul,
-    legacy_premise_path,
     premise_from_soul,
-    read_legacy_premise,
     read_universe_soul,
     write_universe_soul,
 )
@@ -97,8 +93,6 @@ logger = logging.getLogger("universe_server.universe")
 
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
-ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
-LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
 
 
 def _env_actor_grants() -> tuple[str, ...]:
@@ -224,7 +218,6 @@ def _extract_set_premise(
         _truncate(text),
         {
             "bytes": len(text.encode("utf-8")),
-            "legacy_program_mirror": "PROGRAM.md",
         },
     )
 
@@ -356,29 +349,12 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
 def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
     soul = read_universe_soul(udir)
     if soul is None:
-        if not read_legacy_premise(udir).strip():
-            return NO_LOOP_DECLARED, {
-                "source": "no_soul_no_loop_declared",
-                "has_soul": False,
-                "branch_def_id": "",
-                "error": "universe_loop_not_declared",
-                "note": (
-                    "This command center has no soul.md and no legacy PROGRAM.md; "
-                    "declare a Loop branch in soul.md before queuing work."
-                ),
-            }
-        return LEGACY_FANTASY_LOOP_BRANCH_DEF_ID, {
-            "source": "legacy_program_fantasy_compat",
+        return NO_LOOP_DECLARED, {
+            "source": "no_soul_no_loop_declared",
             "has_soul": False,
-            "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
-            "caveat": (
-                "Legacy command center has PROGRAM.md but no soul.md; keeping the "
-                "fantasy loop as an explicit compatibility path only until "
-                "the command center is migrated to a soul-declared loop. Scheduled "
-                "for removal once PROGRAM.md-only command centers are migrated; "
-                "tracked under the de-fantasy audit "
-                "docs/architecture.md."
-            ),
+            "branch_def_id": "",
+            "error": "universe_loop_not_declared",
+            "note": "Declare a Loop branch in soul.md before queuing work.",
         }
     branch_def_id = soul.loop_branch_def_id.strip()
     if not branch_def_id:
@@ -410,58 +386,6 @@ def _extract_queue_cancel(
         str(kwargs.get("branch_task_id", "")),
         _truncate(f"cancel {kwargs.get('branch_task_id', '')}"),
         {"status": result.get("status", "")},
-    )
-
-
-def _extract_subscribe_goal(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    g = str(kwargs.get("goal_id", ""))
-    return (g, _truncate(f"subscribe {g}"), {"status": result.get("status", "")})
-
-
-def _extract_unsubscribe_goal(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    g = str(kwargs.get("goal_id", ""))
-    return (g, _truncate(f"unsubscribe {g}"), {"status": result.get("status", "")})
-
-
-def _extract_post_to_goal_pool(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    g = str(kwargs.get("goal_id", ""))
-    bd = str(kwargs.get("branch_def_id", ""))
-    return (
-        str(result.get("path", f"goal_pool/{g}")),
-        _truncate(f"post {bd} to {g}"),
-        {
-            "goal_id": g,
-            "branch_def_id": bd,
-            "status": result.get("status", ""),
-        },
-    )
-
-
-def _extract_submit_node_bid(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    nb = str(result.get("node_bid_id", ""))
-    nd = str(kwargs.get("node_def_id", ""))
-    bid = kwargs.get("bid", 0.0)
-    return (
-        str(result.get("path", f"bids/{nb}.yaml")),
-        _truncate(f"bid {bid} for node {nd}"),
-        {
-            "node_bid_id": nb,
-            "node_def_id": nd,
-            "bid": bid,
-            "status": result.get("status", ""),
-        },
     )
 
 
@@ -656,27 +580,6 @@ def _extract_soul_edit(
     )
 
 
-def _extract_set_engine(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    """Ledger extractor for set_engine. Reads only redacted fields from the
-    handler result — never the raw api_key (which lives in kwargs.inputs_json
-    and must not reach the public ledger)."""
-    from tinyassets.api.engine_helpers import _truncate
-    source = str(result.get("engine_source", ""))
-    writer = str(result.get("preferred_writer", ""))
-    return (
-        str(result.get("universe_id", "")),
-        _truncate(f"engine assigned: source={source} writer={writer}"),
-        {
-            "engine_source": source,
-            "service": str(result.get("service", "")),
-            "preferred_writer": writer,
-            "status": result.get("status", ""),
-        },
-    )
-
-
 WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
@@ -684,16 +587,11 @@ WRITE_ACTIONS: dict[str, Any] = {
     "set_visibility": (_extract_set_visibility, None),
     "soul.edit": (_extract_soul_edit, None),
     "declare_universe_loop": (_extract_declare_universe_loop, None),
-    "set_engine": (_extract_set_engine, None),
     "add_canon": (_extract_add_canon, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
     "switch_universe": (_extract_switch_universe, None),
     "create_universe": (_extract_create_universe, None),
     "queue_cancel": (_extract_queue_cancel, None),
-    "subscribe_goal": (_extract_subscribe_goal, None),
-    "unsubscribe_goal": (_extract_unsubscribe_goal, None),
-    "post_to_goal_pool": (_extract_post_to_goal_pool, None),
-    "submit_node_bid": (_extract_submit_node_bid, None),
     "set_tier_config": (_extract_set_tier_config, None),
     "daemon_create": (_extract_daemon_create, None),
     "daemon_summon": (_extract_daemon_summon, None),
@@ -836,14 +734,14 @@ def _dispatch_with_ledger(
 # is not a heartbeat — it only moves when a phase transitions. For liveness
 # we also consult `activity.log`, which is appended to on every node entry,
 # `.runtime_status.json`, which is refreshed while the graph process is alive,
-# and PROGRAM.md + work_targets.json to disambiguate "no premise" vs
+# and soul.md + work_targets.json to disambiguate "no premise" vs
 # "starved for work" vs "actually running".
 #
 # The fleet daemon loop that wrote those three files was retired on
 # 2026-08-29 (`user-owned-automations`); real activity since then comes
 # from automation runs (`tinyassets.automations` /
-# `tinyassets.runtime.assigned_queue_consumer`) and schedule runs
-# (`tinyassets.scheduler`), both recorded in the runs ledger
+# `tinyassets.control_plane.tick`) and schedule runs
+# (`tinyassets.control_plane.events`), both recorded in the runs ledger
 # (`tinyassets.runs`) as rows scoped to this universe via
 # ``queue_universe_id``. `_last_activity_at` takes the newest across the
 # file-based signals AND actually-started runs in the ledger so a universe
@@ -1196,9 +1094,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     same interpreted fields, so legibility fixes in one place land
     everywhere at once.
     """
-    has_premise = bool(
-        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
-    )
+    has_premise = bool(premise_from_soul(udir).strip())
     targets = _read_json(udir / "work_targets.json")
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
@@ -1620,7 +1516,7 @@ def _epoch2_operational_read(
         Epoch2BranchTaskAdapter,
         Epoch2OperationalRead,
     )
-    from tinyassets.dispatcher import (
+    from tinyassets.control_plane.queue_policy import (
         load_dispatcher_config,
         prefers_request_type,
     )
@@ -1666,7 +1562,7 @@ def _epoch2_operational_read(
         return bool(workers)
 
     try:
-        from tinyassets.runtime.assigned_queue_consumer import (
+        from tinyassets.control_plane.tick import (
             assigned_queue_refusal_freshness_seconds,
         )
         from tinyassets.storage.assigned_queue_refusals import (
@@ -1951,16 +1847,11 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         result["has_soul"] = True
         result["soul"] = soul.summary()
 
-    # Premise remains the public compatibility field. The durable source is
-    # now soul.md when PROGRAM.md is absent or empty.
-    program = _normalize_escaped_text(read_legacy_premise(udir))
-    premise = program.strip() or (soul.purpose if soul is not None else "")
+    premise = _normalize_escaped_text(soul.purpose).strip() if soul is not None else ""
     result["has_premise"] = bool(premise)
     if premise:
         result["premise"] = premise[:500] + ("..." if len(premise) > 500 else "")
-        result["premise_source"] = (
-            "PROGRAM.md" if program.strip() else SOUL_FILENAME
-        )
+        result["premise_source"] = SOUL_FILENAME
 
     # Notes summary
     notes = _read_json(udir / "notes.json")
@@ -2097,261 +1988,12 @@ def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -
     })
 
 
-def _lookup_operator_request_replay(
-    store: Any,
-    *,
-    universe_id: str,
-    idempotency_key_hash: str,
-    body_digest: str,
-    body_digest_version: str,
-) -> dict[str, Any] | None:
-    """Reauthorize ordinary access before consulting idempotency state."""
-
-    verdict = permissions.operator_request_replay_verdict(universe_id)
-    if not verdict.allowed:
-        # Reveal no stored identifier, digest, receipt, replay status, or
-        # key-existence evidence.
-        return {"error": "universe_access_denied"}
-    access_check, _priority_check = (
-        permissions.operator_request_transaction_checks(verdict)
-    )
-    return store.lookup_replay(
-        tenant_id=verdict.tenant_id,
-        actor_id=verdict.actor_id,
-        universe_id=verdict.universe_id,
-        idempotency_key_hash=idempotency_key_hash,
-        body_digest=body_digest,
-        body_digest_version=body_digest_version,
-        access_check=access_check,
-    )
-
-
-_REQUEST_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
-_REQUEST_BODY_DIGEST_VERSION = "rfc8785-v1"
-_REQUEST_BODY_SCHEMA_VERSION = "request-admission-v2"
-_REQUEST_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
-_REQUEST_TYPES = frozenset({
-    "scene_direction",
-    "revision",
-    "canon_change",
-    "branch_proposal",
-    "general",
-})
-
-
-def _request_validation_error() -> str:
-    return json.dumps({"error": "request_validation_error"})
-
-
-def _request_idempotency_key_hash(raw_key: str) -> str:
-    # `_REQUEST_IDEMPOTENCY_KEY_RE` already restricts the key to ASCII, so
-    # delegating to the shared minter is byte-identical to the old
-    # ascii-encoded HMAC.
-    from tinyassets.storage.request_admissions import (
-        mint_idempotency_key_hash,
-    )
-
-    return mint_idempotency_key_hash(raw_key)
-
-
-def _request_body_digest(
-    *,
-    universe_id: str,
-    text: str,
-    request_type: str,
-    branch_id: str,
-    pickup_incentive: str,
-    directed_daemon_id: str,
-    directed_daemon_instruction: str,
-    priority_weight: int | float,
-) -> str:
-    import rfc8785
-
-    canonical = rfc8785.dumps({
-        "branch_id": branch_id,
-        "directed_daemon_id": directed_daemon_id,
-        "directed_daemon_instruction": directed_daemon_instruction,
-        "pickup_incentive": pickup_incentive,
-        "priority_weight": priority_weight,
-        "request_type": request_type,
-        "schema_version": _REQUEST_BODY_SCHEMA_VERSION,
-        "text": text,
-        "universe_id": universe_id,
+def _action_refuse_request(**_kwargs: Any) -> str:
+    """Refuse requests while no worker claims the persisted v2 queue."""
+    return json.dumps({
+        "error": "request_execution_unavailable",
+        "message": "Request submission is unavailable: no worker starts admitted requests.",
     })
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
-
-
-def _action_admit_request_v2(
-    *,
-    idempotency_key: str,
-    graph_id: str = "",
-    text: str = "",
-    request_type: str = "general",
-    branch_id: str = "",
-    pickup_incentive: str = "",
-    directed_daemon_id: str = "",
-    directed_daemon_instruction: str = "",
-    priority_weight: int | float = 0.0,
-) -> str:
-    """Validate and atomically admit one canonical protocol-v2 request."""
-
-    string_fields = (
-        idempotency_key,
-        graph_id,
-        text,
-        request_type,
-        branch_id,
-        pickup_incentive,
-        directed_daemon_id,
-        directed_daemon_instruction,
-    )
-    if (
-        not all(isinstance(value, str) for value in string_fields)
-        or _REQUEST_IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key) is None
-        or isinstance(priority_weight, bool)
-        or not isinstance(priority_weight, (int, float))
-        or not 0 <= priority_weight <= 100
-        or request_type not in _REQUEST_TYPES
-    ):
-        return _request_validation_error()
-    try:
-        encoded_fields = tuple(value.encode("utf-8") for value in string_fields)
-    except UnicodeEncodeError:
-        return _request_validation_error()
-    if len(encoded_fields[2]) > _SUBMIT_REQUEST_MAX_BYTES:
-        return _request_validation_error()
-
-    uid = _request_universe(graph_id)
-    try:
-        idempotency_key_hash = _request_idempotency_key_hash(
-            idempotency_key
-        )
-    except RuntimeError:
-        logger.error("request admission HMAC key is not configured")
-        return json.dumps({"error": "request_admission_unavailable"})
-    body_digest = _request_body_digest(
-        universe_id=uid,
-        text=text,
-        request_type=request_type,
-        branch_id=branch_id,
-        pickup_incentive=pickup_incentive,
-        directed_daemon_id=directed_daemon_id,
-        directed_daemon_instruction=directed_daemon_instruction,
-        priority_weight=priority_weight,
-    )
-
-    from tinyassets.storage.request_admissions import (
-        IdempotencyKeyBodyConflict,
-        RequestAdmissionStore,
-    )
-
-    store = RequestAdmissionStore(_base_path())
-    try:
-        replay = _lookup_operator_request_replay(
-            store,
-            universe_id=uid,
-            idempotency_key_hash=idempotency_key_hash,
-            body_digest=body_digest,
-            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
-        )
-    except IdempotencyKeyBodyConflict:
-        return json.dumps({"error": "idempotency_key_body_conflict"})
-    except PermissionError:
-        return json.dumps({"error": "universe_access_denied"})
-    if replay is not None:
-        return json.dumps(replay, default=str)
-
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": "universe_not_found"})
-    loop_branch_def_id, _loop_dispatch = _universe_loop_dispatch(udir)
-    if not loop_branch_def_id:
-        return json.dumps({
-            "error": "universe_loop_not_declared",
-            "universe_id": uid,
-        })
-
-    verdict = permissions.operator_request_admission_verdict(
-        uid,
-        requested_priority_weight=float(priority_weight),
-        directed=bool(directed_daemon_id),
-    )
-    if not verdict.allowed:
-        return json.dumps({"error": verdict.error_code})
-
-    directed_receipt: dict[str, Any] = {}
-    if directed_daemon_id:
-        from tinyassets.daemon_registry import (
-            build_requester_directed_daemon_assignment,
-        )
-
-        assignment = build_requester_directed_daemon_assignment(
-            _base_path(),
-            daemon_id=directed_daemon_id,
-            requester_id=verdict.actor_id,
-            patch_request_id="pending-request-admission",
-            instruction=directed_daemon_instruction,
-        )
-        if assignment.get("effect") == "refused":
-            return json.dumps({"error": "directed_daemon_not_authorized"})
-        directed_receipt = {
-            "daemon_id": str(assignment.get("daemon_id") or ""),
-            "daemon_soul_hash": str(
-                assignment.get("daemon_soul_hash") or ""
-            ),
-            "authority_scope": str(
-                assignment.get("authority_scope") or ""
-            ),
-        }
-
-    access_check, priority_check = (
-        permissions.operator_request_transaction_checks(verdict)
-    )
-    receipt = {
-        "authority": "request-local",
-        "grant_generation": int(verdict.grant_generation or 0),
-        "priority_policy_version": verdict.priority_policy_version,
-        "directed_assignment": directed_receipt,
-    }
-    try:
-        result = store.commit_admission(
-            tenant_id=verdict.tenant_id,
-            actor_id=verdict.actor_id,
-            universe_id=uid,
-            idempotency_key_hash=idempotency_key_hash,
-            body_digest=body_digest,
-            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
-            request_type=request_type,
-            text=text,
-            branch_id=branch_id,
-            branch_def_id=loop_branch_def_id,
-            trigger_source=verdict.trigger_source,
-            accepted_priority_weight=verdict.accepted_priority_weight,
-            policy_version=verdict.priority_policy_version,
-            grant_generation=int(verdict.grant_generation or 0),
-            receipt=receipt,
-            directed_daemon_id=directed_daemon_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            pickup_incentive=pickup_incentive,
-            directed_daemon_instruction=directed_daemon_instruction,
-            access_check=access_check,
-            authority_check=priority_check,
-        )
-    except IdempotencyKeyBodyConflict:
-        return json.dumps({"error": "idempotency_key_body_conflict"})
-    except PermissionError:
-        return json.dumps({"error": "universe_access_denied"})
-    except Exception as exc:
-        from tinyassets.storage.accounts import (
-            CapabilityGrantAuthorizationError,
-        )
-
-        if isinstance(exc, CapabilityGrantAuthorizationError):
-            return json.dumps({"error": "priority_authorization_required"})
-        logger.exception("request admission transaction failed")
-        return json.dumps({"error": "request_admission_failed"})
-    return json.dumps(result, default=str)
-
 
 def admit_request_v2(
     *,
@@ -2365,7 +2007,7 @@ def admit_request_v2(
     directed_daemon_instruction: str = "",
     priority_weight: int | float = 0.0,
 ) -> str:
-    """Public request writer with one mutation-ledger entry per commit."""
+    """Refuse a request until an execution path can claim it."""
 
     kwargs = {
         "idempotency_key": idempotency_key,
@@ -2380,229 +2022,10 @@ def admit_request_v2(
     }
     return _dispatch_with_ledger(
         "submit_request",
-        _action_admit_request_v2,
+        _action_refuse_request,
         kwargs,
         scope_response=False,
     )
-
-
-_SUBMIT_REQUEST_MAX_BYTES = 8192
-
-
-def _action_submit_request(
-    universe_id: str = "",
-    text: str = "",
-    request_type: str = "scene_direction",
-    branch_id: str = "",
-    priority_weight: float = 0.0,
-    pickup_incentive: str = "",
-    directed_daemon_id: str = "",
-    directed_daemon_instruction: str = "",
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.api.market import (
-        PATCH_REQUEST_AUTHORITY_BOUNDARY,
-        classify_patch_request,
-        normalize_patch_request_incentive,
-    )
-    from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
-    from tinyassets.work_targets import REQUESTS_FILENAME
-
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-
-    loop_branch_def_id, loop_dispatch = _universe_loop_dispatch(udir)
-    if not loop_branch_def_id:
-        return json.dumps({
-            "error": "universe_loop_not_declared",
-            "universe_id": uid,
-            "loop_dispatch": loop_dispatch,
-        })
-
-    # 8 KiB cap keeps requests.json bounded and discourages pasting
-    # entire drafts into the request channel (add_canon is the right
-    # tool for that). UTF-8 byte length, not char count.
-    text_bytes = len(text.encode("utf-8"))
-    if text_bytes > _SUBMIT_REQUEST_MAX_BYTES:
-        return json.dumps({
-            "error": (
-                f"Request text exceeds {_SUBMIT_REQUEST_MAX_BYTES} bytes "
-                f"({text_bytes} submitted). Summarize or split into "
-                "multiple requests. For private long-form material, relay it "
-                "to the command center through converse instead."
-            ),
-        })
-
-    valid_types = {
-        "scene_direction", "revision", "canon_change",
-        "branch_proposal", "general",
-    }
-    if request_type not in valid_types:
-        request_type = "general"
-
-    # The canonical public surface adds exact JSON-number and [0, 100]
-    # validation in its own lane. This legacy writer still rejects negatives,
-    # then delegates all identity/ACL/elevation decisions to one request-local
-    # verdict. It must never silently demote positive priority.
-    try:
-        pw = float(priority_weight)
-    except (TypeError, ValueError):
-        pw = 0.0
-    if pw < 0:
-        return json.dumps({
-            "error": "priority_weight must be >= 0.",
-        })
-    admission_verdict = permissions.operator_request_admission_verdict(
-        uid,
-        requested_priority_weight=pw,
-        directed=bool(directed_daemon_id.strip()),
-    )
-    if not admission_verdict.allowed:
-        return json.dumps({
-            "error": admission_verdict.error_code,
-            "universe_id": uid,
-        })
-    if pw > 0:
-        # Positive priority is valid only through the not-yet-enabled epoch-2
-        # transactional writer. The legacy split writer cannot safely persist
-        # it, so fail without mutation instead of stranding or demoting work.
-        return json.dumps({
-            "error": "operator_priority_unavailable",
-            "universe_id": uid,
-        })
-    source = admission_verdict.actor_id
-
-    request_id = f"req_{int(time.time())}_{os.urandom(4).hex()}"
-    incentive = normalize_patch_request_incentive(
-        str(pickup_incentive or ""),
-        requester_id=source,
-    )
-    authority_boundary = dict(PATCH_REQUEST_AUTHORITY_BOUNDARY)
-    requester_directed_daemon: dict[str, Any] | None = None
-    if directed_daemon_id.strip():
-        from tinyassets.daemon_registry import (
-            build_requester_directed_daemon_assignment,
-        )
-
-        requester_directed_daemon = build_requester_directed_daemon_assignment(
-            _base_path(),
-            daemon_id=directed_daemon_id.strip(),
-            requester_id=source,
-            patch_request_id=request_id,
-            instruction=directed_daemon_instruction or text,
-        )
-        if requester_directed_daemon.get("effect") == "refused":
-            return json.dumps({
-                "error": "directed_daemon_not_authorized",
-                "requester_directed_daemon": requester_directed_daemon,
-            })
-    request_classification = classify_patch_request(
-        text=text,
-        request_type=request_type,
-        requester_id=source,
-        priority_authorized=False,
-        directed_daemon=requester_directed_daemon is not None,
-    )
-    request_obj = {
-        "id": request_id,
-        "type": request_type,
-        "text": text,
-        "branch_id": branch_id or None,
-        "status": "pending",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "source": source,
-        "pickup_incentive": incentive,
-        "authority_boundary": authority_boundary,
-        "request_classification": request_classification,
-        "loop_dispatch": loop_dispatch,
-    }
-    if requester_directed_daemon is not None:
-        request_obj["requester_directed_daemon"] = requester_directed_daemon
-
-    requests_path = udir / REQUESTS_FILENAME
-    existing = _read_json(requests_path)
-    if not isinstance(existing, list):
-        existing = []
-    existing.append(request_obj)
-
-    try:
-        _ensure_center_dir(udir)
-        write_data_path(requests_path, json.dumps(existing, indent=2, default=str))
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to write request: {exc}"})
-
-    # Phase E: also queue a BranchTask so the dispatcher can score +
-    # schedule. host submissions land as host_request tier; anyone
-    # else lands as user_request. The WorkTarget still gets
-    # materialized by UserRequestProducer from requests.json on the
-    # next producer cycle — BranchTask wraps the execution intent.
-    branch_task_id = ""
-    try:
-        task = BranchTask(
-            branch_task_id=new_task_id(),
-            branch_def_id=loop_branch_def_id,
-            universe_id=uid,
-            inputs={
-                "work_target_ref": None,
-                "request_id": request_id,
-                "request_type": request_type,
-                "branch_id": branch_id or "",
-                "pickup_incentive": incentive,
-                "authority_boundary": authority_boundary,
-                "request_classification": request_classification,
-                "requester_directed_daemon": requester_directed_daemon,
-                "loop_dispatch": loop_dispatch,
-            },
-            trigger_source=(
-                "owner_queued"
-                if requester_directed_daemon is not None
-                else admission_verdict.trigger_source
-            ),
-            priority_weight=admission_verdict.accepted_priority_weight,
-            pickup_signal_weight=float(incentive.get("pickup_signal_weight") or 0.0),
-            directed_daemon_id=(
-                str(requester_directed_daemon.get("daemon_id", ""))
-                if requester_directed_daemon is not None else ""
-            ),
-        )
-        append_task(udir, task)
-        branch_task_id = task.branch_task_id
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to queue BranchTask for %s: %s", request_id, exc)
-
-    pending_count = sum(
-        1 for r in existing
-        if isinstance(r, dict) and r.get("status") == "pending"
-    )
-    ahead = max(0, pending_count - 1)
-    if ahead == 0:
-        position_note = "yours is next in the daemon's queue"
-    elif ahead == 1:
-        position_note = "1 other request is ahead of yours"
-    else:
-        position_note = f"{ahead} other requests are ahead of yours"
-
-    return json.dumps({
-        "universe_id": uid,
-        "request_id": request_id,
-        "branch_task_id": branch_task_id,
-        "status": "pending",
-        "priority_weight": pw,
-        "pickup_incentive": incentive,
-        "authority_boundary": authority_boundary,
-        "request_classification": request_classification,
-        "requester_directed_daemon": requester_directed_daemon,
-        "loop_dispatch": loop_dispatch,
-        "queue_position": pending_count,
-        "ahead_of_yours": ahead,
-        "what_happens_next": (
-            f"The daemon will see your request on its next review cycle; "
-            f'{position_note}. Use `read_graph target="graph" graph_id="{uid}"` '
-            "to watch the queue or check whether your request is now active work."
-        ),
-    })
 
 
 def _safe_epoch2_queue_row(
@@ -2626,51 +2049,21 @@ def _safe_epoch2_queue_row(
     }
 
 
-def _action_queue_list(
-    universe_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Read ``branch_tasks.json`` fresh (no in-memory cache) and
-    return sorted+scored queue. Includes ``tier_status`` per R11.
-    """
-    from tinyassets.branch_tasks import read_queue
-    from tinyassets.dispatcher import (
-        load_dispatcher_config,
-        score_task,
-    )
+def _action_queue_list(universe_id: str = "", **_kwargs: Any) -> str:
+    """Read the transactional queue with one bounded operational snapshot."""
+    from tinyassets.control_plane.queue_policy import load_dispatcher_config, score_task
 
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Command center '{uid}' not found."})
 
-    v1_error = ""
-    try:
-        queue = read_queue(udir)
-    except Exception as exc:  # noqa: BLE001
-        queue = []
-        v1_error = str(exc)
-    non_public_goal_ids = _non_public_goal_ids()
-    queue = [
-        task for task in queue
-        if not task.goal_id or task.goal_id not in non_public_goal_ids
-    ]
-
     cfg = load_dispatcher_config(udir)
     now_iso = datetime.now(timezone.utc).isoformat()
+    read = _epoch2_operational_read(udir, dispatcher_config=cfg)
+    epoch2 = read.summary
     rows: list[dict[str, Any]] = []
-    epoch2_read = _epoch2_operational_read(
-        udir,
-        dispatcher_config=cfg,
-    )
-    epoch2 = epoch2_read.summary
-    for task in queue:
-        row = task.to_dict()
-        row.setdefault("queue_epoch", 1)
-        row["score"] = score_task(task, now_iso=now_iso, config=cfg)
-        row["tier_enabled"] = cfg.tier_enabled(task.trigger_source)
-        rows.append(row)
-    for task in epoch2_read.candidates:
+    for task in read.candidates:
         score = score_task(task, now_iso=now_iso, config=cfg)
         rows.append(_safe_epoch2_queue_row(
             task,
@@ -2687,28 +2080,7 @@ def _action_queue_list(
         ),
     )
 
-    epoch1_lifecycle = {
-        "depth": len(queue),
-        "lifecycle": {
-            status: sum(
-                1 for task in queue if task.status == status
-            )
-            for status in (
-                "pending",
-                "running",
-                "cancel_requested",
-                "cancelled",
-                "succeeded",
-                "failed",
-            )
-        },
-    }
     epoch_counts: dict[str, Any] = {
-        "1": (
-            {"available": False, "error": v1_error}
-            if v1_error
-            else {"available": True, **epoch1_lifecycle}
-        ),
         "2": (
             {
                 "available": True,
@@ -2723,8 +2095,6 @@ def _action_queue_list(
             }
         ),
     }
-    v1_pending = epoch1_lifecycle["lifecycle"]["pending"]
-    v1_running = epoch1_lifecycle["lifecycle"]["running"]
     v2_lifecycle = epoch2.get("lifecycle_counts") or {}
     operational_counts_authoritative = bool(
         epoch2.get("operational_counts_authoritative", False)
@@ -2732,11 +2102,10 @@ def _action_queue_list(
     return json.dumps({
         "universe_id": uid,
         "queue": rows,
-        "pending_count": v1_pending + int(v2_lifecycle.get("pending", 0)),
-        "running_count": v1_running + int(v2_lifecycle.get("running", 0)),
+        "pending_count": int(v2_lifecycle.get("pending", 0)),
+        "running_count": int(v2_lifecycle.get("running", 0)),
         "counts_complete": (
-            not v1_error
-            and epoch2["available"]
+            epoch2["available"]
             and operational_counts_authoritative
         ),
         "epoch_counts": epoch_counts,
@@ -3438,22 +2807,6 @@ def _action_daemon_memory_status(
     return json.dumps(result, default=str)
 
 
-def _action_treasury_status(
-    universe_id: str = "",
-    limit: Any = 10,
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.treasury import treasury_status
-
-    uid = _request_universe(universe_id)
-    try:
-        result = treasury_status(_base_path(), limit=int(limit))
-    except (ValueError, TypeError) as exc:
-        return json.dumps({"universe_id": uid, "error": str(exc)})
-    result["universe_id"] = uid
-    return json.dumps(result, default=str)
-
-
 # ---------------------------------------------------------------------------
 # Phase H — daemon_overview + set_tier_config (aggregated MCP surface)
 # ---------------------------------------------------------------------------
@@ -3470,42 +2823,21 @@ def _non_public_goal_ids() -> set[str]:
     return non_public_goal_ids(_base_path())
 
 
-def _public_subscription_refs(
-    goal_refs: list[str],
-    *,
-    non_public_goal_ids: set[str] | None = None,
-) -> list[str]:
-    """Hide known non-public Goals while retaining legacy pool topic names."""
-    blocked = (
-        _non_public_goal_ids()
-        if non_public_goal_ids is None
-        else non_public_goal_ids
-    )
-    # Goal-pool subscriptions predate Shared Goals and may be topic slugs such
-    # as ``maintenance`` rather than Goal record IDs. Unknown refs remain
-    # visible; only known non-public Goal records are filtered.
-    return [goal_ref for goal_ref in goal_refs if goal_ref not in blocked]
-
-
 # Per-caller reasonable limits (R14 response-size). Overridable via `limit`.
 _OVERVIEW_DEFAULT_LIMITS = {
     "queue_top": 20,
-    "bids_top": 20,
-    "settlements_recent": 10,
     "gates_recent": 10,
     "activity_tail": 30,
 }
 # Absolute cap even when `limit=full` — prevents pathological responses.
 _OVERVIEW_ABSOLUTE_CAP = {
     "queue_top": 500,
-    "bids_top": 500,
-    "settlements_recent": 500,
     "gates_recent": 200,
     "activity_tail": 1000,
 }
 
 # R14 serialized-byte cap. Per-field caps above are necessary but not
-# sufficient: a dense queue + long activity_tail + many bids can still
+# sufficient: a dense queue + long activity_tail can still
 # blow past Claude.ai token limits even with each field individually
 # bounded. If the serialized response exceeds this threshold, trim in
 # priority order (see _OVERVIEW_TRIM_ORDER). Gates + dispatcher +
@@ -3516,15 +2848,13 @@ DAEMON_OVERVIEW_MAX_BYTES = 32_768
 # Trim priority when the byte cap fires. Each entry is
 # ``(key, subkey, keep_side)``:
 # - ``key``: top-level response field.
-# - ``subkey``: nested key (e.g. ``response["bids"]["recent"]``) or
+# - ``subkey``: nested key (e.g. ``response["queue"]["top"]``) or
 #   None for top-level lists.
 # - ``keep_side``: "head" keeps the front of the list (sorted
 #   descending — top-N); "tail" keeps the back (chronological —
 #   latest entries).
 _OVERVIEW_TRIM_ORDER = (
     ("activity_tail", None, "tail"),
-    ("settlements", "recent", "head"),
-    ("bids", "recent", "head"),
     ("queue", "top", "head"),
 )
 
@@ -3607,7 +2937,7 @@ def _action_daemon_overview(
 ) -> str:
     """Aggregated read-through per preflight §4.1 #1 (Phase H).
 
-    Composes queue + subscriptions + bids + settlements + gates +
+    Composes queue + gates +
     activity tail + run state into one response. 1s TTL cache keyed
     on (universe_id, limit, integrity-visibility class) keeps hot-path
     cost bounded without replaying admin-only diagnostics to readers.
@@ -3642,17 +2972,14 @@ def _action_daemon_overview(
 
     # Dispatcher config + tier_status_map.
     try:
-        from tinyassets.dispatcher import load_dispatcher_config
+        from tinyassets.control_plane.queue_policy import load_dispatcher_config
         cfg = load_dispatcher_config(udir)
         response["dispatcher"] = {
             "tier_status_map": cfg.tier_status_map(),
             "config": {
                 "accept_external_requests": cfg.accept_external_requests,
                 "accept_goal_pool": cfg.accept_goal_pool,
-                "accept_paid_bids": cfg.accept_paid_bids,
                 "allow_opportunistic": cfg.allow_opportunistic,
-                "bid_coefficient": cfg.bid_coefficient,
-                "bid_term_cap": cfg.bid_term_cap,
             },
         }
     except Exception as exc:  # noqa: BLE001
@@ -3718,116 +3045,6 @@ def _action_daemon_overview(
             "error": str(exc),
         }
 
-    # Subscriptions + drift.
-    try:
-        from tinyassets.producers.goal_pool import (
-            POOL_DIRNAME,
-            goal_pool_enabled,
-            repo_root_path,
-        )
-        from tinyassets.subscriptions import list_subscriptions
-        goals = _public_subscription_refs(list_subscriptions(udir))
-        counts: dict[str, int] = {g: 0 for g in goals}
-        try:
-            repo_root = repo_root_path(udir)
-            pool_root = repo_root / POOL_DIRNAME
-            for g in goals:
-                gdir = pool_root / g
-                if gdir.is_dir():
-                    counts[g] = sum(1 for _ in gdir.glob("*.yaml"))
-        except RuntimeError:
-            pass
-        if cfg.accept_goal_pool and not goals:
-            drift = "pool_enabled_no_subs"
-        elif goals and not cfg.accept_goal_pool:
-            drift = "subs_but_pool_disabled"
-        else:
-            drift = "ok"
-        response["subscriptions"] = {
-            "goals": goals,
-            "drift_flag": drift,
-            "pool_status_per_goal": counts,
-            "pool_flag_enabled": goal_pool_enabled(),
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("daemon_overview: subscriptions read failed: %s", exc)
-        response["subscriptions"] = {"goals": [], "drift_flag": "ok",
-                                     "pool_status_per_goal": {}}
-
-    # Bids + daemon capabilities.
-    try:
-        from tinyassets.bid.node_bid import read_node_bids
-        from tinyassets.producers.goal_pool import repo_root_path
-        from tinyassets.producers.node_bid import paid_market_enabled
-        try:
-            bid_repo_root = repo_root_path(udir)
-            bids = read_node_bids(bid_repo_root)
-        except RuntimeError:
-            bids = []
-        open_bids = [b.to_dict() for b in bids if b.status == "open"]
-        claimed = sum(1 for b in bids if b.status.startswith("claimed:"))
-        response["bids"] = {
-            "open_count": len(open_bids),
-            "claimed_count": claimed,
-            "top_open": open_bids[: limits["bids_top"]],
-            "daemon_capabilities": {
-                "serves_llm_types": sorted(
-                    os.environ.get("FANTASY_DAEMON_LLM_TYPES", "").split(",")
-                    if os.environ.get("FANTASY_DAEMON_LLM_TYPES")
-                    else [],
-                ),
-                "paid_market_enabled": paid_market_enabled(),
-                "bid_coefficient": cfg.bid_coefficient,
-            },
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("daemon_overview: bids read failed: %s", exc)
-        response["bids"] = {"open_count": 0, "claimed_count": 0,
-                            "top_open": []}
-
-    # Settlements.
-    try:
-        import yaml as _yaml  # noqa: F401 - soul settlements need PyYAML
-
-        from tinyassets.bid.settlements import settlements_dir
-        from tinyassets.producers.goal_pool import repo_root_path
-        try:
-            sroot = settlements_dir(repo_root_path(udir))
-        except RuntimeError:
-            sroot = None
-        s_entries: list[dict] = []
-        s_total = 0
-        s_unsettled = 0
-        if sroot and sroot.is_dir():
-            for p in sorted(sroot.glob("*.yaml")):
-                s_total += 1
-                try:
-                    raw = load_untrusted_yaml(
-                        (read_data_path(p, max_bytes=MAX_CONFIG_BYTES) or b"").decode("utf-8")
-                    ) or {}
-                except Exception:  # noqa: BLE001
-                    continue
-                if not isinstance(raw, dict):
-                    continue
-                if not raw.get("settled"):
-                    s_unsettled += 1
-                s_entries.append(raw)
-        s_entries.sort(
-            key=lambda r: str(r.get("completed_at", "")), reverse=True,
-        )
-        response["settlements"] = {
-            "count_total": s_total,
-            "count_unsettled": s_unsettled,
-            "recent": s_entries[: limits["settlements_recent"]],
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "daemon_overview: settlements read failed: %s", exc,
-        )
-        response["settlements"] = {
-            "count_total": 0, "count_unsettled": 0, "recent": [],
-        }
-
     # Unscoped gate-claim enumeration is unsupported; scoped claims remain
     # available through the gates surface.
     response["gates"] = {"total_claims": 0, "recent_claims": []}
@@ -3865,12 +3082,11 @@ def _action_daemon_overview(
 
 
 _VALID_TIER_KEYS = frozenset({
-    "external_requests", "goal_pool", "paid_bids", "opportunistic",
+    "external_requests", "goal_pool", "opportunistic",
 })
 _TIER_KEY_TO_CONFIG_FIELD = {
     "external_requests": "accept_external_requests",
     "goal_pool": "accept_goal_pool",
-    "paid_bids": "accept_paid_bids",
     "opportunistic": "allow_opportunistic",
 }
 
@@ -3922,7 +3138,6 @@ def _action_set_tier_config(
     existing[field_name] = bool(enabled)
 
     try:
-        _ensure_center_dir(udir)
         write_data_path(
             cfg_path,
             _yaml.safe_dump(existing, sort_keys=True, default_flow_style=False),
@@ -3954,20 +3169,8 @@ def _action_queue_cancel(
     branch_task_id: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Cancel a BranchTask.
-
-    Pending: hard-marks ``cancelled`` via ``mark_status``.
-    Running: cooperative cancel — sets ``cancel_requested=True`` so
-    the daemon's stream loop observes the flag at the next
-    inter-node event and finalizes as ``cancelled``. Authorization:
-    the task's ``claimed_by`` daemon (self-cancel) OR host identity.
-    Other actors get ``cancel_not_authorized``.
-    """
-    from tinyassets.branch_tasks import (
-        mark_status,
-        read_queue,
-        request_task_cancel,
-    )
+    """Cancel one transactional queue task within the caller's command center."""
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
@@ -3975,425 +3178,26 @@ def _action_queue_cancel(
         return json.dumps({"error": f"Command center '{uid}' not found."})
     if not branch_task_id:
         return json.dumps({"error": "branch_task_id required."})
-
-    try:
-        queue = read_queue(udir)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to read queue: {exc}"})
-
-    target = next(
-        (t for t in queue if t.branch_task_id == branch_task_id),
-        None,
-    )
-    if target is None:
-        return json.dumps({
-            "universe_id": uid,
-            "status": "not_found",
-            "branch_task_id": branch_task_id,
-        })
-    if target.status == "running":
+    adapter = Epoch2BranchTaskAdapter(udir.parent)
+    task = adapter.get(branch_task_id)
+    if task is None or task.universe_id != uid:
+        return json.dumps({"universe_id": uid, "status": "not_found",
+                           "branch_task_id": branch_task_id})
+    if task.status in {"running", "cancel_requested"}:
         from tinyassets.api.engine_helpers import _current_actor
 
-        source = _current_actor()
-        is_owner = bool(target.claimed_by) and source == target.claimed_by
-        can_cancel = _env_actor_can(
-            ACTION_CANCEL_BRANCH_TASK,
-            universe_id=uid,
-        )
-        if not (can_cancel or is_owner):
-            return json.dumps({
-                "universe_id": uid,
-                "status": "rejected",
-                "error": "cancel_not_authorized",
-                "branch_task_id": branch_task_id,
-                "hint": (
-                    "Running-task cancel requires the claiming daemon "
-                    f"or the {ACTION_CANCEL_BRANCH_TASK!r} capability "
-                    f"in {ENV_CAPABILITIES_VAR}."
-                ),
-            })
-        try:
-            ok = request_task_cancel(udir, branch_task_id)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to request cancel: {exc}"})
-        if not ok:
-            # Race: task reached terminal between read_queue and now.
-            return json.dumps({
-                "universe_id": uid,
-                "status": "rejected",
-                "error": "task_already_terminal",
-                "branch_task_id": branch_task_id,
-            })
-        return json.dumps({
-            "universe_id": uid,
-            "status": "cancel_requested",
-            "branch_task_id": branch_task_id,
-            "note": (
-                "cooperative cancel — observed at next inter-node "
-                "event; daemon finalizes as cancelled"
-            ),
-        })
-    if target.status != "pending":
-        return json.dumps({
-            "universe_id": uid,
-            "status": target.status,
-            "branch_task_id": branch_task_id,
-            "note": "task is already in a terminal state",
-        })
-
+        claimant = bool(task.claimed_by) and _current_actor() == task.claimed_by
+        if not (claimant or _env_actor_can(ACTION_CANCEL_BRANCH_TASK, universe_id=uid)):
+            return json.dumps({"universe_id": uid, "status": "rejected",
+                               "error": "cancel_not_authorized",
+                               "branch_task_id": branch_task_id})
     try:
-        mark_status(udir, branch_task_id, status="cancelled")
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to cancel: {exc}"})
-
-    return json.dumps({
-        "universe_id": uid,
-        "status": "cancelled",
-        "branch_task_id": branch_task_id,
-    })
-
-
-def _goal_pool_not_available() -> str:
-    return json.dumps({
-        "status": "not_available",
-        "hint": "TINYASSETS_GOAL_POOL=on required",
-    })
-
-
-def _action_subscribe_goal(
-    universe_id: str = "",
-    goal_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.producers.goal_pool import goal_pool_enabled
-    from tinyassets.subscriptions import subscribe
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not goal_id:
-        return json.dumps({"error": "goal_id required."})
-    try:
-        goals = subscribe(udir, goal_id)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"subscribe failed: {exc}"})
-    return json.dumps({
-        "universe_id": uid,
-        "goal_id": goal_id,
-        "status": "subscribed",
-        "goals": goals,
-    })
-
-
-def _action_unsubscribe_goal(
-    universe_id: str = "",
-    goal_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.producers.goal_pool import goal_pool_enabled
-    from tinyassets.subscriptions import unsubscribe
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not goal_id:
-        return json.dumps({"error": "goal_id required."})
-    try:
-        goals = unsubscribe(udir, goal_id)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"unsubscribe failed: {exc}"})
-    return json.dumps({
-        "universe_id": uid,
-        "goal_id": goal_id,
-        "status": "unsubscribed",
-        "goals": goals,
-    })
-
-
-def _action_list_subscriptions(
-    universe_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    """List subscriptions + drift detection + per-goal pool counts.
-
-    Preflight §4.1 #4 drift flag values:
-      - "ok"
-      - "pool_enabled_no_subs"  (F on + accept_goal_pool=true + zero subs)
-      - "subs_but_pool_disabled" (subs exist + accept_goal_pool=false)
-    """
-    from tinyassets.dispatcher import load_dispatcher_config
-    from tinyassets.producers.goal_pool import (
-        POOL_DIRNAME,
-        goal_pool_enabled,
-        repo_root_path,
-    )
-    from tinyassets.subscriptions import list_subscriptions as _list
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-
-    try:
-        goals = _public_subscription_refs(_list(udir))
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"list_subscriptions failed: {exc}"})
-
-    # Per-goal pool counts.
-    counts: dict[str, int] = {g: 0 for g in goals}
-    try:
-        repo_root = repo_root_path(udir)
-        pool_root = repo_root / POOL_DIRNAME
-        for g in goals:
-            gdir = pool_root / g
-            if gdir.is_dir():
-                counts[g] = sum(1 for _ in gdir.glob("*.yaml"))
-    except RuntimeError:
-        # repo_root unresolvable — counts stay zero
-        pass
-
-    cfg = load_dispatcher_config(udir)
-    if cfg.accept_goal_pool and not goals:
-        drift = "pool_enabled_no_subs"
-    elif goals and not cfg.accept_goal_pool:
-        drift = "subs_but_pool_disabled"
-    else:
-        drift = "ok"
-
-    return json.dumps({
-        "universe_id": uid,
-        "goals": goals,
-        "pool_status_per_goal": counts,
-        "config_vs_subscriptions_drift": drift,
-    })
-
-
-def _action_post_to_goal_pool(
-    universe_id: str = "",
-    goal_id: str = "",
-    branch_def_id: str = "",
-    inputs_json: str = "",
-    priority_weight: float = 0.0,
-    **_kwargs: Any,
-) -> str:
-    """Write a pool YAML to ``<repo_root>/goal_pool/<goal_id>/<id>.yaml``.
-
-    Response includes a ``next_step`` hint for cross-host visibility
-    (git add/commit/push).
-    """
-    from tinyassets.producers.goal_pool import (
-        goal_pool_enabled,
-        repo_root_path,
-        validate_pool_task_inputs,
-        write_pool_post,
-    )
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not goal_id:
-        return json.dumps({"error": "goal_id required."})
-    if not branch_def_id:
-        return json.dumps({"error": "branch_def_id required."})
-
-    # Parse inputs_json. Empty string → {}.
-    if inputs_json.strip():
-        try:
-            inputs = json.loads(inputs_json)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"inputs_json invalid JSON: {exc}"})
-    else:
-        inputs = {}
-    ok, reason = validate_pool_task_inputs(inputs)
-    if not ok:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"invalid_inputs: {reason}",
-        })
-
-    # priority_weight clamp per Phase E invariant 9 (extended to pool posts).
-    try:
-        pw = float(priority_weight)
-    except (TypeError, ValueError):
-        pw = 0.0
-    if pw < 0:
-        return json.dumps({
-            "status": "rejected",
-            "error": "priority_weight must be >= 0.",
-        })
-    from tinyassets.api.engine_helpers import _current_actor
-
-    source = _current_actor()
-    if not _env_actor_can(ACTION_POST_PRIORITY_GOAL_POOL, universe_id=uid):
-        pw = 0.0
-
-    try:
-        repo_root = repo_root_path(udir)
-    except RuntimeError as exc:
-        return json.dumps({
-            "status": "rejected",
-            "error": "repo_root_not_resolvable",
-            "hint": (
-                "Set TINYASSETS_REPO_ROOT or run the daemon from inside "
-                "a git checkout. Detail: " + str(exc)
-            ),
-        })
-
-    try:
-        out_path = write_pool_post(
-            repo_root,
-            goal_id,
-            branch_def_id=branch_def_id,
-            inputs=inputs,
-            priority_weight=pw,
-            posted_by=source,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"post failed: {exc}"})
-
-    rel_path = out_path.relative_to(repo_root) if out_path.is_relative_to(
-        repo_root,
-    ) else out_path
-    return json.dumps({
-        "universe_id": uid,
-        "status": "posted",
-        "goal_id": goal_id,
-        "branch_def_id": branch_def_id,
-        "path": str(out_path),
-        "priority_weight": pw,
-        "next_step": (
-            f"To make this post visible to cross-host subscribers, run: "
-            f"git add {rel_path} && git commit && git push"
-        ),
-    })
-
-
-def _paid_market_not_available() -> str:
-    return json.dumps({
-        "status": "not_available",
-        "hint": "TINYASSETS_PAID_MARKET=on required",
-    })
-
-
-def _action_submit_node_bid(
-    universe_id: str = "",
-    node_def_id: str = "",
-    required_llm_type: str = "",
-    inputs_json: str = "",
-    bid: float = 0.0,
-    **_kwargs: Any,
-) -> str:
-    """Phase G: write a NodeBid YAML to ``<repo_root>/bids/<id>.yaml``.
-
-    Flag-gated on ``TINYASSETS_PAID_MARKET=on``. Flat-dict inputs only.
-    Response includes a ``next_step`` git push hint, mirroring
-    ``post_to_goal_pool``.
-    """
-    from tinyassets.bid.node_bid import (
-        new_node_bid_id,
-        validate_node_bid_inputs,
-        write_node_bid_post,
-    )
-    from tinyassets.producers.goal_pool import repo_root_path
-    from tinyassets.producers.node_bid import paid_market_enabled
-
-    if not paid_market_enabled():
-        return _paid_market_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not node_def_id:
-        return json.dumps({"error": "node_def_id required."})
-
-    if inputs_json.strip():
-        try:
-            inputs = json.loads(inputs_json)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"inputs_json invalid JSON: {exc}"})
-    else:
-        inputs = {}
-    ok, reason = validate_node_bid_inputs(inputs)
-    if not ok:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"invalid_inputs: {reason}",
-        })
-
-    try:
-        bid_value = float(bid)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": "bid must be numeric",
-        })
-    if bid_value < 0:
-        return json.dumps({
-            "status": "rejected",
-            "error": "bid must be >= 0",
-        })
-
-    try:
-        repo_root = repo_root_path(udir)
-    except RuntimeError as exc:
-        return json.dumps({
-            "status": "rejected",
-            "error": "repo_root_not_resolvable",
-            "hint": (
-                "Set TINYASSETS_REPO_ROOT or run the daemon from inside "
-                "a git checkout. Detail: " + str(exc)
-            ),
-        })
-
-    from tinyassets.api.engine_helpers import _current_actor
-
-    source = _current_actor()
-    node_bid_id = new_node_bid_id()
-    payload = {
-        "node_bid_id": node_bid_id,
-        "node_def_id": node_def_id,
-        "required_llm_type": required_llm_type or "",
-        "inputs": dict(inputs),
-        "bid": bid_value,
-        "submitted_by": source,
-        "status": "open",
-        "evidence_url": "",
-        "submitted_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        out_path = write_node_bid_post(repo_root, payload)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"post failed: {exc}"})
-
-    rel_path = (
-        out_path.relative_to(repo_root)
-        if out_path.is_relative_to(repo_root)
-        else out_path
-    )
-    return json.dumps({
-        "universe_id": uid,
-        "status": "posted",
-        "node_bid_id": node_bid_id,
-        "node_def_id": node_def_id,
-        "path": str(out_path),
-        "bid": bid_value,
-        "required_llm_type": required_llm_type or "",
-        "next_step": (
-            f"To make this bid visible to cross-host daemons, run: "
-            f"git add {rel_path} && git commit && git push"
-        ),
-    })
+        updated = adapter.request_cancel(branch_task_id)
+    except KeyError:
+        return json.dumps({"universe_id": uid, "status": "not_found",
+                           "branch_task_id": branch_task_id})
+    return json.dumps({"universe_id": uid, "status": updated.status,
+                       "branch_task_id": branch_task_id})
 
 
 def _action_give_direction(
@@ -4423,7 +3227,6 @@ def _action_give_direction(
                 return json.dumps({"error": "anchor_json must be a JSON object."})
             anchor = parsed_anchor
 
-        _ensure_center_dir(udir)
         note = _add_note(
             udir,
             source="user",
@@ -4638,14 +3441,9 @@ def _query_world_db(
 def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    content = _normalize_escaped_text(read_legacy_premise(udir))
-    source = "PROGRAM.md"
-    if not content.strip():
-        soul = read_universe_soul(udir)
-        content = soul.purpose if soul is not None else ""
-        source = SOUL_FILENAME
-    else:
-        soul = read_universe_soul(udir)
+    soul = read_universe_soul(udir)
+    content = _normalize_escaped_text(soul.purpose) if soul is not None else ""
+    source = SOUL_FILENAME
 
     if not content.strip():
         return json.dumps({
@@ -4701,11 +3499,9 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": "Premise text cannot be empty."})
     text = _normalize_escaped_text(text)
     try:
-        _ensure_center_dir(udir)
         soul = write_universe_soul(
             udir, purpose=text, lineage="created-from-premise",
         )
-        write_data_path(legacy_premise_path(udir), text)
         return json.dumps({
             "universe_id": uid,
             "status": "updated",
@@ -4759,7 +3555,7 @@ def _action_set_universe_visibility(
 
     Exposing a command center to other users is not an editing operation, so it takes
     the canonical per-universe ownership predicate — ``universe_owner_actor``,
-    the explicit ``admin`` ACL row, the same signal ``connect_llm``,
+    the explicit ``admin`` ACL row, the same signal ``connect_compute``,
     ``source_channel`` and the pending-request rail use. This is a narrowing on
     top of the central gate, not a second copy of it: the ACL check still runs
     first and this only ever refuses more.
@@ -5232,7 +4028,6 @@ def _action_control_daemon(
 
     if action == "pause":
         try:
-            _ensure_center_dir(udir)
             write_data_path(pause_path, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
@@ -5609,7 +4404,7 @@ def _action_create_universe(
     if udir.exists() and (udir / "soul.md").is_file():
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     seed_sidecar_preexisted = (udir.parent / UNIVERSE_SIDECARS_DIR / udir.name).exists()
     founder = ""
@@ -5648,7 +4443,7 @@ def _action_create_universe(
         grant_universe_ownership(base, universe_id=uid, owner_id=founder)
 
         # Reserve, label, publish, log, bind; usable only once bound.
-        from tinyassets.role_center_admission import admit_center
+        from tinyassets.boxes.lifecycle import admit_center
 
         admit_center(base, principal=founder, center=uid)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
@@ -5661,10 +4456,6 @@ def _action_create_universe(
             loop_branch_def_id=loop_branch_def_id,
             owner_id=founder,
         )
-        # Write premise mirror if provided
-        if normalized_text.strip():
-            write_data_path(legacy_premise_path(udir), normalized_text)
-
         result: dict[str, Any] = {
             "universe_id": uid,
             "status": "created",
@@ -5808,69 +4599,11 @@ def _action_create_universe(
 # keep surfacing. Only the first case becomes onboarding.
 # ───────────────────────────────────────────────────────────────────────────
 
-_ENGINE_CREDENTIAL_TYPES = frozenset({"llm_subscription", "llm_api_key"})
-
-# `UniverseConfig.engine_source` defaults to "byo_api_key" for every newborn, so
-# the default value is NOT evidence the founder chose anything. Any OTHER value
-# was written by `universe action=set_engine` and IS an explicit choice.
-_DEFAULT_ENGINE_SOURCE = "byo_api_key"
-
-
 def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
-    """Return True when this command center has an engine of its own by any route.
+    """Whether HTTP model setup exists; unreadable state is a real failure."""
+    from tinyassets.providers.definition import list_definitions
 
-    Two routes count. A vault LLM credential is the fully-wired BYO path. An
-    explicit non-default ``engine_source`` is the other: ``self_hosted_endpoint``
-    / ``host_daemon`` record the founder's choice in config
-    and write NO vault record, so a vault-only test would read them as "never
-    set up" and send a founder who already chose an engine back to onboarding
-    while hiding that their engine is down.
-
-    Fail-safe direction throughout: an unreadable vault or config returns True.
-    We only ever claim "no engine is attached" from state we actually read —
-    otherwise a corrupt file becomes a setup instruction the founder already
-    followed, hiding the real fault (Hard Rule #8).
-    """
-    from tinyassets.credential_vault import load_credential_vault
-
-    try:
-        records = load_credential_vault(universe_dir)
-    except (ValueError, OSError):
-        logger.warning(
-            "credential vault unreadable for %s; not treating as engine-less",
-            universe_dir,
-        )
-        return True
-    if any(
-        record.get("credential_type") in _ENGINE_CREDENTIAL_TYPES
-        for record in records
-    ):
-        return True
-
-    config_file = Path(universe_dir) / "config.yaml"
-    if config_file.exists() and not _config_yaml_is_parseable(config_file):
-        logger.warning(
-            "command center config unreadable for %s; not treating as engine-less",
-            universe_dir,
-        )
-        return True
-
-    from tinyassets.config import load_universe_config
-
-    try:
-        engine_source = load_universe_config(Path(universe_dir)).engine_source
-    except Exception:  # noqa: BLE001 - unreadable config is not proof of absence
-        logger.warning(
-            "command center config unreadable for %s; not treating as engine-less",
-            universe_dir,
-        )
-        return True
-    # `_build_config` (config.py) assigns YAML values to fields without type
-    # coercion, so `engine_source: 7` arrives as an int. Coerce before
-    # comparing — an AttributeError here would escape while we are already
-    # handling the founder's failed turn. A non-string value is also not the
-    # default, so it lands on the fail-safe side. (Codex ADAPT round 2.)
-    return str(engine_source or "").strip() != _DEFAULT_ENGINE_SOURCE
+    return bool(list_definitions(Path(universe_dir).name))
 
 
 def _config_yaml_is_parseable(config_file: Path) -> bool:
@@ -5941,239 +4674,9 @@ def engine_setup_required_payload(
             "one thing it needs from you first. Give it one and it starts "
             "speaking on this very next turn."
         ),
-        "setup_paths": [{
-            "path": "byo_api_key",
-            "how": "Engine assignment is not exposed by the advertised handles.",
-            "inputs_json": {
-                "engine_source": "byo_api_key",
-                "service": "anthropic | openai",
-                "api_key": "<your key>",
-            },
-            "note": (
-                "Your own API key would be stored in this command center's private "
-                "vault and never echoed back. Ask the host to use the internal "
-                "engine-assignment surface."
-            ),
-        }],
+        "setup_paths": [{"path": "/app/connections",
+                         "how": "Connect a model through the secure connection flow."}],
     }
-
-
-def _action_set_engine(
-    universe_id: str = "",
-    inputs_json: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Founder-only: assign the command center's engine (`universe action=set_engine`).
-
-    Deposits a BYO LLM API key into the command center's credential vault and sets the
-    preferred writer, so the command center's own intelligence runs on the founder's
-    engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
-    ``universe:admin`` scope + the command center write ACL. The key is stored in the
-    per-universe vault and injected into the CLI subprocess env at call time; it
-    is never echoed back or written to the ledger.
-
-    ``inputs_json``: ``{"service": "anthropic"|"openai", "api_key": "...",
-    "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
-    service when omitted).
-    """
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-
-    raw = (inputs_json or "").strip()
-    if not raw:
-        return json.dumps({
-            "error": "inputs_json is required.",
-            "expected": {
-                "engine_source": "byo_api_key | self_hosted_endpoint | host_daemon",
-                "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
-                                "preferred_writer": "claude-code|codex (opt)"},
-                "self_hosted_endpoint": {"endpoint": "https://…",
-                                         "preferred_writer": "…"},
-                "host_daemon": {"provider": "claude-code|codex"},
-            },
-        })
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
-    if not isinstance(data, dict):
-        return json.dumps({"error": "inputs_json must decode to a JSON object."})
-
-    engine_source = str(data.get("engine_source", "byo_api_key")).strip().lower()
-    preferred_writer = str(data.get("preferred_writer", "")).strip()
-
-    if engine_source == "byo_api_key":
-        return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
-    if engine_source == "self_hosted_endpoint":
-        return _set_engine_self_hosted(uid, udir, data, preferred_writer)
-    if engine_source == "host_daemon":
-        return _set_engine_host_daemon(uid, udir, data, preferred_writer)
-    if engine_source == "open_provider":
-        return _set_engine_open_provider(uid, udir, data, preferred_writer)
-    return json.dumps({
-        "error": f"unknown engine_source {engine_source!r}.",
-        "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
-                                   "host_daemon", "open_provider"],
-    })
-
-
-def _set_engine_open_provider(uid, udir, data, preferred_writer) -> str:
-    """Open compute provider (compute-agnostic) → set the command center's writer to a
-    registered ProviderDefinition.
-
-    The correct-shape replacement for the fixed-service ``byo_api_key`` path: the
-    provider was registered out of band via ``connect_compute`` (an open descriptor
-    referencing a granted connection / CLI subscription), so this sets NO credential —
-    it only points the command center's ``preferred_writer`` at the definition's resolved
-    executor name (``api_key_http:<def-id>`` / ``codex`` / ``claude-code``). The
-    per-call registration bridge then makes that name routable. No ``allowed_providers``
-    restriction is written, so other roles keep their chains."""
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.providers import definition as pd
-    from tinyassets.providers.provider_resolver import provider_for_definition
-
-    definition_id = str(data.get("definition_id", "")).strip()
-    if not definition_id:
-        return json.dumps({
-            "error": "definition_id is required for open_provider.",
-            "hint": "register the provider first with write_graph "
-                    "target=connection operation=connect_compute.",
-        })
-    definition = pd.get_definition(uid, definition_id)
-    if definition is None:
-        return json.dumps({
-            "error": f"provider definition {definition_id!r} is not registered in "
-                     "this command center.",
-            "hint": "register it with connect_compute first.",
-        })
-    try:
-        provider_name = provider_for_definition(definition).name
-    except (ValueError, KeyError) as exc:
-        return json.dumps({
-            "error": f"definition cannot resolve to an executor: {exc}",
-        })
-    try:
-        write_universe_config_fields(
-            udir, engine_source="open_provider", preferred_writer=provider_name,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-    return json.dumps({
-        "status": "engine_set",
-        "universe_id": uid,
-        "engine_source": "open_provider",
-        "definition_id": definition_id,
-        "preferred_writer": provider_name,
-        "note": "Writer now routes to this registered provider; no credential "
-                "was set here (it lives in the connection the definition references).",
-    })
-
-
-def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
-    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
-        supported_llm_api_key_services,
-        write_credential_vault,
-    )
-
-    service = str(data.get("service", "")).strip().lower()
-    api_key = str(data.get("api_key", "")).strip()
-    _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
-    if not preferred_writer and service in _writer_by_service:
-        preferred_writer = _writer_by_service[service]
-
-    if not api_key:
-        return json.dumps({"error": "api_key is required."})
-    if service not in supported_llm_api_key_services():
-        return json.dumps({
-            "error": f"unsupported service {service!r} — the key would never "
-                     "reach a provider.",
-            "expected_services": sorted(supported_llm_api_key_services()),
-        })
-
-    import base64
-    try:
-        vault_summary = write_credential_vault(udir, [{
-            "credential_type": "llm_api_key",
-            "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
-            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
-        }])
-    except ValueError as exc:
-        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
-
-    fields = {"engine_source": "byo_api_key"}
-    if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-
-    return json.dumps({
-        "status": "engine_set",
-        "universe_id": uid,
-        "engine_source": "byo_api_key",
-        "service": service,
-        "preferred_writer": preferred_writer,
-        "credential_types": vault_summary.get("credential_types", []),
-        "note": "Engine credential stored in the per-universe vault (never "
-                "echoed).",
-    })
-
-
-def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
-    """Self-hosted endpoint → persist the endpoint + writer choice."""
-    from tinyassets.config import write_universe_config_fields
-
-    endpoint = str(data.get("endpoint", "")).strip()
-    if not endpoint:
-        return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
-    fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
-    if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-    return json.dumps({
-        "status": "engine_set", "universe_id": uid,
-        "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
-        "preferred_writer": preferred_writer,
-    })
-
-
-def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
-    """Host-your-own daemon → persist the choice + preferred provider.
-
-    The founder hosts a daemon bound to this command center. Recording the choice is
-    the onboard step; the actual runtime instance is bound via the existing
-    ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
-    worker to consume it.
-    """
-    from tinyassets.config import write_universe_config_fields
-
-    provider = str(data.get("provider", "")).strip() or "claude-code"
-    fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider}
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-    return json.dumps({
-        "status": "engine_set", "universe_id": uid,
-        "engine_source": "host_daemon", "provider": provider,
-        "preferred_writer": fields["preferred_writer"],
-        "next_step": (
-            "Runtime-daemon binding is not exposed by the advertised handles; "
-            "ask the host to use the internal operator surface."
-        ),
-    })
 
 
 def _action_declare_universe_loop(
@@ -6408,13 +4911,12 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "get_activity": _action_get_activity,
     "get_recent_events": _action_get_recent_events,
     "get_ledger": _action_get_ledger,
-    "submit_request": _action_submit_request,
+    "submit_request": _action_refuse_request,
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
     "set_visibility": _action_set_universe_visibility,
     "soul.edit": _action_soul_edit,
-    "set_engine": _action_set_engine,
     "add_canon": _action_add_canon,
     "list_canon": _action_list_canon,
     "read_canon": _action_read_canon,
@@ -6426,11 +4928,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "declare_universe_loop": _action_declare_universe_loop,
     "queue_list": _action_queue_list,
     "queue_cancel": _action_queue_cancel,
-    "subscribe_goal": _action_subscribe_goal,
-    "unsubscribe_goal": _action_unsubscribe_goal,
-    "list_subscriptions": _action_list_subscriptions,
-    "post_to_goal_pool": _action_post_to_goal_pool,
-    "submit_node_bid": _action_submit_node_bid,
     "daemon_overview": _action_daemon_overview,
     "daemon_list": _action_daemon_list,
     "daemon_get": _action_daemon_get,
@@ -6448,7 +4945,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "daemon_memory_review": _action_daemon_memory_review,
     "daemon_memory_promote": _action_daemon_memory_promote,
     "daemon_memory_status": _action_daemon_memory_status,
-    "treasury_status": _action_treasury_status,
     "set_tier_config": _action_set_tier_config,
 }
 
@@ -6511,7 +5007,6 @@ def _universe_impl(
     inputs_json: str = "",
     node_def_id: str = "",
     required_llm_type: str = "",
-    bid: float = 0.0,
     tier: str = "",
     enabled: bool = False,
     tag: str = "",
@@ -6588,7 +5083,6 @@ def _universe_impl(
         "inputs_json": inputs_json,
         "node_def_id": node_def_id,
         "required_llm_type": required_llm_type,
-        "bid": bid,
         "tier": tier,
         "enabled": enabled,
         "tag": tag,

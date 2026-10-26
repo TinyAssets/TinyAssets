@@ -1,0 +1,239 @@
+"""Real async streams through the owner public proxy; no production network."""
+
+import asyncio
+import json
+import sqlite3
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from tests.support.admission import drive, projection
+from tinyassets import rpc_frames as rf
+from tinyassets.broker.owner_identities import OwnerIdentities
+from tinyassets.broker.server import BOX_HOST, BrokerServer
+
+
+def broker_proxy(identities, root):
+    from tinyassets.broker.policy import PolicyStore
+
+    store = PolicyStore(root, identities)
+    store.bootstrap()
+    return BrokerServer(ledger_for=None, dispatch_for=None, policy_store=store,
+                        ops=SimpleNamespace(recover=lambda: None),
+                        fence=None, roles={0: BOX_HOST}, uid_of=lambda _: 0,
+                        owner_identities=identities, data_root=root)
+
+
+@pytest.fixture
+def proxy(tmp_path):
+
+    tmp_path.chmod(0o700)
+    from tests.support.admission import Plans
+
+    path = tmp_path / ".broker/state/owner-identities.db"
+    path.parent.mkdir(parents=True, mode=0o700)
+    path.parent.parent.chmod(0o700)
+    identities = OwnerIdentities(path, initialize=True, plans=Plans(tmp_path))
+    uid = identities.resolve("alice", allocate=True).uid
+    from tinyassets.broker.admission import local_mutate
+
+    drive(local_mutate(identities.path, "alice", "admit", routing=projection(identities.path)))
+    identities.plans.apply("alice", tier="paid", event_created=1)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
+                   "project_id INT, bhard_bytes INT)")
+        db.execute("INSERT INTO box_records VALUES (?,?,?,?)", ("alice", uid, uid, 1048576))
+    return broker_proxy(identities, tmp_path)
+
+
+async def exchange(proxy, request, *, center=None, principal="alice"):
+    async def handler(reader, writer):
+        try:
+            await proxy._connection(reader, writer)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handler, "127.0.0.1", 0, limit=16384)
+    try:
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", server.sockets[0].getsockname()[1])
+        try:
+            document = {"op": "BOX_PUBLIC", "principal": principal}
+            if center is not None:
+                document["center"] = center
+            writer.write(rf.control(rf.CONNECTION, document))
+            await writer.drain()
+            frame = await rf.read_frame(reader)
+            if frame.control()["op"] == "BOX_REFUSED":
+                return b"REFUSED"
+            assert frame.control() == {"op": "BOX_ADMITTED"}
+            writer.write(request)
+            await writer.drain()
+            writer.write_eof()
+            return await asyncio.wait_for(reader.read(), 5)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C7')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["CONNECT", "GET"])
+@pytest.mark.parametrize("target", ["127.0.0.1:80", "169.254.169.254:80", "example.test:25",
+                                    "engine.tinyassets.box:80"])
+async def test_public_proxy_refuses_private_and_unresolvable_destinations(proxy, target, method):
+    url = target if method == "CONNECT" else f"http://{target}/"
+    result = await exchange(proxy, f"{method} {url} HTTP/1.1\r\n\r\n".encode())
+    assert result.startswith(b"HTTP/1.1 403")
+    assert not proxy._public_egress.active
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C7')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allocated", [False, True])
+async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypatch, allocated):
+    def no_upstream(*args):
+        pytest.fail("unadmitted owner reached destination resolution")
+
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", no_upstream)
+    if allocated:
+        proxy._owner_identities.resolve("bob", allocate=True)
+        proxy._owner_identities.plans.apply("bob", tier="paid", event_created=1)
+    assert await exchange(proxy, b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
+                          principal="bob") == b"REFUSED"
+    assert not proxy._public_egress.active
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError, TimeoutError])
+async def test_failed_tunnel_close_leaves_policy_and_generation_unchanged(proxy, failure):
+    from tests.test_owner_policy import _session
+    from tinyassets.broker.server import OWNER, _Connection
+
+    cookie = "protected-owner-cookie-" + "p" * 32
+    _session(proxy._data_root, "alice", cookie)
+    before = proxy._policy_store.read("alice")
+    assert before.document["egress"]["mode"] == "open"
+    proposed = json.loads(json.dumps(before.document))
+    proposed["egress"]["mode"] = "allowlist"
+
+    def boom(_owner):
+        raise failure("public tunnel close failed")
+
+    proxy._public_egress.close_owner = boom
+    peer = _Connection(proxy, None, OWNER)
+    result = await peer._policy_operation({
+        "op": "OWNER_POLICY", "action": "write", "principal": "alice",
+        "cookie": cookie, "expected_generation": before.generation,
+        "policy": proposed})
+    assert result == {"op": "OWNER_POLICY_REFUSED",
+                      "reason": "policy change pending connection closure"}
+    after = proxy._policy_store.read("alice")
+    assert after.generation == before.generation
+    assert after.digest == before.digest
+    assert after.document["egress"]["mode"] == "open"
+    assert after.document == before.document
+
+
+@pytest.mark.verifies('owner-daemon-in-box:T5')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["erased", "close", "policy", "policy_during_open"])
+async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypatch, damage):
+    from tinyassets.broker.admission import read
+
+    upstream_closed = asyncio.Event()
+    handlers = set()
+
+    async def upstream(reader, writer):
+        try:
+            assert await reader.read() == b""
+            upstream_closed.set()
+        finally:
+            writer.close()
+
+    destination = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = destination.sockets[0].getsockname()[1]
+    resolving, proceed = threading.Event(), threading.Event()
+
+    def pin(*args):
+        if damage == "policy_during_open":
+            resolving.set()
+            assert proceed.wait(5)
+        return ["127.0.0.1"]
+
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination", pin)
+
+    async def change_policy():
+        from tests.test_owner_policy import _session
+        from tinyassets.broker.server import OWNER, _Connection
+
+        cookie = "protected-owner-cookie-" + "p" * 32
+        _session(proxy._data_root, "alice", cookie)
+        current = proxy._policy_store.read("alice")
+        current.document["egress"]["mode"] = "allowlist"
+        peer = _Connection(proxy, None, OWNER)
+        result = await peer._policy_operation({
+            "op": "OWNER_POLICY", "action": "write", "principal": "alice",
+            "cookie": cookie, "expected_generation": current.generation,
+            "policy": current.document})
+        assert result["op"] == "OWNER_POLICY_RESULT"
+        assert not proxy._public_egress.channels
+
+    async def handle(reader, writer):
+        task = asyncio.current_task()
+        handlers.add(task)
+        try:
+            await proxy._connection(reader, writer)
+        finally:
+            writer.close()
+            handlers.discard(task)
+
+    listener = await asyncio.start_server(handle, "127.0.0.1", 0)
+    reader, writer = await asyncio.open_connection(
+        "127.0.0.1", listener.sockets[0].getsockname()[1])
+    try:
+        writer.write(rf.control(rf.CONNECTION, {"op": "BOX_PUBLIC", "principal": "alice"}))
+        await writer.drain()
+        assert (await rf.read_frame(reader)).control()["op"] == "BOX_ADMITTED"
+        writer.write(f"CONNECT example.test:{port} HTTP/1.1\r\n\r\n".encode())
+        await writer.drain()
+        pending_change = None
+        if damage == "policy_during_open":
+            assert await asyncio.to_thread(resolving.wait, 5)
+            pending_change = asyncio.create_task(change_policy())
+            done, _ = await asyncio.wait({pending_change}, timeout=.05)
+            assert not done
+            proceed.set()
+        assert b"200" in await reader.readuntil(b"\r\n\r\n")
+        if damage == "erased":
+            from tinyassets.broker.admission import local_mutate, owner_call
+            path = proxy._owner_identities.path
+            await owner_call(path, "alice", local_mutate, path, "alice", "erase",
+                             routing=projection(path))
+            proxy.close_owner("alice")
+            assert read(proxy._owner_identities, "alice").state == "erased"
+        elif damage == "policy":
+            await change_policy()
+        elif pending_change is not None:
+            await pending_change
+        else:
+            proxy.close_owner("alice")
+        async with asyncio.timeout(1.25):
+            assert await reader.read() == b""
+            await upstream_closed.wait()
+            await asyncio.gather(*handlers, return_exceptions=True)
+        assert not proxy._public_egress.active
+    finally:
+        writer.close()
+        listener.close()
+        destination.close()
+        await listener.wait_closed()
+        await destination.wait_closed()
+        await asyncio.gather(*handlers, return_exceptions=True)

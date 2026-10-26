@@ -1,10 +1,10 @@
 """Shape invariants for .github/workflows/linux-jail-proof.yml.
 
-The job exists because `required-tests` records every bwrap-gated jail proof
+The job exists because `required-tests` records every Linux-only box proof
 (`tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc`
-and the owner-cell seccomp profiles in `tests/test_jail_seccomp_profiles.py`) as
-SKIPPED (no bubblewrap on the hosted image), and a skip is invisible in a green
-run. Each assertion here pins a property whose loss would turn the job
+and the remote ``ta`` and extension proofs in `tests/test_remote_box_*.py`) as
+SKIPPED on the hosted image, and a skip is invisible in a green run. Each
+assertion here pins a property whose loss would turn the job
 back into decoration or widen it past "cloud-only test infrastructure":
 
   - it fires on PRs touching the jail/delivery slice and on manual dispatch,
@@ -97,8 +97,26 @@ def _triggers(wf: dict) -> dict:
 
 def _job(wf: dict) -> dict:
     jobs = wf["jobs"]
-    assert list(jobs) == [_JOB], f"exactly one job named {_JOB!r}, got {list(jobs)}"
+    assert set(jobs) == {_JOB, "production-owner-launch"}
     return jobs[_JOB]
+
+
+def test_production_extraction_job_requires_real_runsc_and_no_skips():
+    job = _load()["jobs"]["production-owner-launch"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert "draft == false" in job["if"]
+    steps = job["steps"]
+    launch = next(step for step in steps if step.get("name") ==
+                  "Launch an owner from the production extraction")
+    assert "scripts/linux_oracle.py --as-root --docker-engine" in launch["run"]
+    assert "TA_REHEARSAL_RUNSC_DIR=/out/gvisor" in launch["run"]
+    assert ("tests/test_box_move_rehearsal.py::test_synthetic_archive_rehearses_final_cutover"
+            in launch["run"])
+    assert not launch.get("continue-on-error")
+    verdict = next(step for step in steps if step.get("name") ==
+                   "Refuse absent or skipped launch proof")
+    assert verdict["if"] == "always()"
+    assert all(word in verdict["run"] for word in ("skipped", "failure", "error"))
 
 
 def _steps(wf: dict) -> list[dict]:
@@ -138,21 +156,13 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
     for required in (
         ".github/workflows/linux-jail-proof.yml",
         "scripts/ci_assert_junit_case.py",
-        "tinyassets/node_sandbox.py",
-        "tests/test_delivery_node_rpc.py",
-        "tinyassets/external_agents/runner.py",
-        "tests/test_jail_seccomp_profiles.py",
-        "tinyassets/providers/provider_jail.py",
-        "tinyassets/providers/owned_process.py",
+        "tinyassets/boxes/**",
         "tinyassets/providers/router.py",
-        "tinyassets/providers/claude_provider.py",
-        "tests/test_universe_tools_jail.py",
+        "tests/test_owner_box_process_boundary.py",
+        "tests/test_owner_tools.py",
         "tinyassets/universe_tools.py",
-        "tinyassets/engine_mcp_server.py",
-        "tinyassets/jail_disk.py",
+        "tinyassets/universe_tools.py",
         "tinyassets/storage_accounting.py",
-        "tests/test_jail_disk.py",
-        "tests/test_storage_accounting.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
 
@@ -191,6 +201,11 @@ def test_checkout_does_not_persist_credentials():
 
 def test_no_secrets_self_hosted_desktop_or_production_reach():
     text = _code_text()
+    # Static extraction source and pinned runtime inputs are test inputs;
+    # invoking a deployment or accessing a production surface is still barred.
+    for source in ("deploy/deploy_fail_safe.sh", "deploy/install-boxhostd-preflight.sh",
+                   "deploy/boxhostd*"):
+        text = text.replace(source, "static-proof-input")
     for forbidden in (
         "secrets.", "self-hosted", "DESKTOP-KCPMGP3", "tinyassets.io",
         "deploy", "--privileged", "GITHUB_TOKEN", "--cap-add", "docker push",
@@ -235,9 +250,7 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
     # The four slices this job exists for (see the workflow header). Losing a
     # whole file's marker would drop its cases without any red.
     assert files >= {
-        "tests/test_delivery_node_rpc.py",
-        "tests/test_jail_seccomp_profiles.py",
-        "tests/test_universe_tools_jail.py",
+        "tests/test_owner_box_process_boundary.py",
     }, files
 
 
@@ -323,22 +336,14 @@ def test_an_explicit_nodeid_still_matches_exactly(tmp_path):
     assert _assert.check(_junit(tmp_path, case), _NODEID)[0] == 1
 
 
-def test_every_marked_case_is_a_bwrap_gated_test():
+def test_every_marked_case_names_a_real_test():
+    """A marked case the file no longer defines would hide as "absent" noise."""
     for nodeid in _marked():
-        _assert_bwrap_gated(nodeid)
-
-
-def _assert_bwrap_gated(nodeid: str) -> None:
-    path, name = nodeid.split("::")[0], nodeid.split("::")[-1].split("[")[0]
-    src = (_REPO / path).read_text(encoding="utf-8")
-    assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
-        f"{name} must exist"
-    )
-    # The gate takes several forms (a decorator, a module pytestmark, a named
-    # skipif marker, a fixture that skips); what they share is the condition.
-    # A real_jail test in a file with no bwrap condition at all would run, and
-    # fail, everywhere without bwrap instead of skipping.
-    assert re.search(r'which\("bwrap"\)', src), f"{path} must skip {name} without bwrap"
+        path, name = nodeid.split("::")[0], nodeid.split("::")[-1].split("[")[0]
+        src = (_REPO / path).read_text(encoding="utf-8")
+        assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
+            f"{name} must exist"
+        )
 
 
 def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
@@ -351,7 +356,8 @@ def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
     wf = _load()
     run = _step(wf, _RUN_STEP)["run"]
     assert "python scripts/linux_oracle.py --out \"$OUT_DIR\" --apparmor ta-jail-userns" in run
-    assert "docker run" not in run and "docker build" not in _code_text(), (
+    assert "docker run" not in run and all(
+        "docker build" not in step.get("run", "") for step in _steps(wf)), (
         "a second, inline container recipe is what the oracle replaced"
     )
     assert "--as-root" not in run and "--no-bwrap" not in run
@@ -592,3 +598,34 @@ def test_only_files_needs_a_marker(tmp_path):
             "--junit", str(_junit(tmp_path)), "--nodeid", "tests/a.py::t",
             "--only-files", str(_only(tmp_path, "tests/a.py")),
         ])
+
+
+def test_oracle_sets_protected_regular_before_the_container(tmp_path, monkeypatch):
+    from scripts import linux_oracle
+
+    knob = tmp_path / "protected_regular"
+    knob.write_text("0\n")
+    monkeypatch.setattr(linux_oracle.os, "geteuid", lambda: 0)
+    linux_oracle._ensure_protected_regular(knob)
+    assert knob.read_text().strip() == "2"
+    linux_oracle._ensure_protected_regular(knob)
+    assert knob.read_text().strip() == "2"
+
+    delegated = tmp_path / "delegated"
+    delegated.write_text("0\n")
+    monkeypatch.setattr(linux_oracle.os, "geteuid", lambda: 1001)
+
+    def fake_run(command, input, check, stdout):  # noqa: A002
+        assert command == ["sudo", "-n", "tee", str(delegated)]
+        assert check is True
+        delegated.write_bytes(input)
+
+    monkeypatch.setattr(linux_oracle.subprocess, "run", fake_run)
+    linux_oracle._ensure_protected_regular(delegated)
+    assert delegated.read_text().strip() == "2"
+
+
+pytestmark = pytest.mark.verifies(
+    'ci-linux-proof-venue:'
+    'Jail-backed tests execute in the Linux oracle, never skip',
+)

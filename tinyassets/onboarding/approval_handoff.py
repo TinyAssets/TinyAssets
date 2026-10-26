@@ -10,21 +10,22 @@ from urllib.parse import urlencode
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from tinyassets.onboarding.owner_sessions import COOKIE, HEADERS, hashed, lookup, require, store
+from tinyassets.sqlite_schema import ensure_table
 
 RETURN_COOKIE = "__Host-ta-approval-return"
 PREFIX = "/app/approval-handoff/"
 HANDLE = re.compile(r"[A-Za-z0-9_-]{43}")
 CLIENTS = {"android", "android-debug", "ios", "desktop", "web"}
+MAX_HANDOFFS_PER_OWNER = 20
 
 
 @contextmanager
 def flows():
     with store() as conn:
-        conn.execute(
+        ensure_table(conn,
             "CREATE TABLE IF NOT EXISTS approval_handoffs ("
             "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, request_id TEXT NOT NULL, "
-            "client TEXT NOT NULL, expires REAL NOT NULL)"
-        )
+            "client TEXT NOT NULL, expires REAL NOT NULL)", kind="ephemeral")
         conn.execute("DELETE FROM approval_handoffs WHERE expires<=?", (time.time(),))
         yield conn
 
@@ -78,6 +79,12 @@ async def handle(request):
         # No action, draft, bearer or approval token is persisted in this transport.
         ref = secrets.token_urlsafe(32)
         with flows() as conn:
+            conn.execute(
+                "DELETE FROM approval_handoffs WHERE rowid IN ("
+                "SELECT rowid FROM approval_handoffs WHERE owner=? "
+                "ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+                (owner, MAX_HANDOFFS_PER_OWNER - 1),
+            )
             conn.execute(
                 "INSERT INTO approval_handoffs VALUES (?,?,?,?,?)",
                 (hashed(ref), owner, data["request_id"], data["client"], time.time() + 3600),

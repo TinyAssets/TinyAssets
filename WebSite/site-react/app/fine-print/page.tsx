@@ -41,8 +41,9 @@ export default function FinePrintPage() {
             <h2>Free is the same app and the same security.</h2>
             <p>
               Tiers differ only by simultaneous runs and by storage. The product is not cut down on
-              the free tier, and the security is not cut down either. Paid tiers are not on sale.
-              This page does not name a price.
+              the free tier, and the security is not cut down either. A paid plan is the same command
+              center with room for more simultaneous runs and more stored data. Paid tiers are not on
+              sale. This page does not name a price.
             </p>
           </div>
           <div className="ledger--wrap">
@@ -62,8 +63,8 @@ export default function FinePrintPage() {
                 </tr>
                 <tr>
                   <td>Paid</td>
-                  <td>The same app and the same security. Not on sale, and there is no upgrade control.</td>
-                  <td>Simultaneous runs and storage. No monthly price is stated here.</td>
+                  <td>The same app and the same security. Not on sale. The upgrade entry is in the app.</td>
+                  <td>More simultaneous runs and more storage. No monthly price is stated here.</td>
                 </tr>
               </tbody>
             </table>
@@ -76,8 +77,8 @@ export default function FinePrintPage() {
             Being straight about where this stands. Usage is metered, and the gate that would
             refuse a run or a save is not switched on. Today nobody is cut off for how much they
             run or how much they store. When a cap is enforced, it will be simultaneous runs and
-            storage only, the same on every tier except for the numbers. There is no control in the
-            app to buy a higher tier. Questions:{" "}
+            storage only, the same on every tier except for the numbers. Upgrade per account in the
+            app. <a href={`${SITE.app}?upgrade=1`}>Plans</a>. Questions:{" "}
             <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a>. The platform never
             bills you for a model; your subscription is your own.
           </p>
@@ -106,12 +107,6 @@ export default function FinePrintPage() {
                 <div>
                   <h3>No signed desktop installer, no public Play listing yet</h3>
                   <p>The Android app is in a closed test on Google Play, open to invited accounts; desktop builds are unsigned and come from the repository.</p>
-                </div>
-              </li>
-              <li style={{ gridTemplateColumns: "1fr" }}>
-                <div>
-                  <h3>No paid work market</h3>
-                  <p>Nothing on this site is an offer to sell the token or anything else. The contract address is on the <Link href="/token/">token page</Link>. The app does not move that token for you. The <Link href="/legal/">legal page</Link> carries the disclosures.</p>
                 </div>
               </li>
             </ul>

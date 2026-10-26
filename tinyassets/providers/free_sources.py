@@ -1,4 +1,4 @@
-"""Installed connection-card data; all sources use api_key_http / openai_chat.
+"""Compatibility projections of source records for existing HTTP model connections.
 
 A source with a ``sign_in`` block is connected by OAuth (the generic
 ``connect`` ask), never by a pasted key, so it is not a key card.
@@ -13,36 +13,21 @@ from copy import deepcopy
 from pathlib import Path
 from urllib.parse import urlsplit
 
-# Endpoint, keys, free eligibility and model docs:
-# https://ai.google.dev/gemini-api/docs/openai
-# https://ai.google.dev/gemini-api/docs/api-key
-# https://ai.google.dev/gemini-api/docs/pricing
-# https://console.groq.com/docs/openai
-# https://console.groq.com/docs/quickstart
-# https://console.groq.com/docs/rate-limits
-# https://inference-docs.cerebras.ai/resources/openai
-# https://inference-docs.cerebras.ai/api-reference/models/list-models
-# https://inference-docs.cerebras.ai/support/rate-limits
-# https://docs.mistral.ai/getting-started/quickstarts/studio/activate-and-generate-api-key
-# https://docs.mistral.ai/api/endpoint/models
-# https://docs.mistral.ai/admin/billing-usage/usage-limits
-# https://huggingface.co/docs/hub/oauth (inference-api scope, PKCE, metadata docs)
-# https://huggingface.co/docs/inference-providers/pricing
-_SOURCES = json.loads(Path(__file__).with_name("free_source_presets.json").read_text("utf-8"))
-# What a provider's own free daily limit is, and what its credit buys, keyed by
-# inference host: https://openrouter.ai/docs/api/reference/limits (2026-10-01).
 _DAILY_CAPS = json.loads(Path(__file__).with_name("daily_cap_offers.json").read_text("utf-8"))
+
+
+def _cards():
+    from tinyassets.providers.source_record import records
+
+    return [{**deepcopy(r.invoke["http"]["card"]), "id": r.id, "name": r.display_name,
+             "base_url": r.invoke["http"]["base_url"], "models": [m["id"] for m in r.models]}
+            for r in records().values() if "card" in r.invoke.get("http", {})]
 
 
 def source_cards():
     """Key-paste cards. A source completed by signing in is never one of them."""
-    return deepcopy([row for row in _SOURCES
+    return deepcopy([row for row in _cards()
                      if row.get("available", True) and "sign_in" not in row])
-
-
-def subscription_cards():
-    """Installed display copy for the existing device sign-in offer."""
-    return json.loads(Path(__file__).with_name("subscription_cards.json").read_text("utf-8"))
 
 
 def source_preset(source_id):
@@ -54,11 +39,11 @@ def sign_in_cards():
     return [{"id": row["id"], "name": row["name"], "offer": row["offer"],
              "label": row["sign_in"]["label"], "billing_note": row["billing_note"],
              "daily_cap": deepcopy(row.get("daily_cap"))}
-            for row in _SOURCES if row.get("available", True) and "sign_in" in row]
+            for row in _cards() if row.get("available", True) and "sign_in" in row]
 
 
 def sign_in_preset(source_id):
-    return next((deepcopy(row) for row in _SOURCES
+    return next((deepcopy(row) for row in _cards()
                  if row["id"] == source_id and row.get("available", True)
                  and "sign_in" in row), None)
 
@@ -102,10 +87,13 @@ def daily_cap_offers():
 
 
 def source_for_host(host):
-    source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), None)
+    source = next((row for row in _cards() if urlsplit(row["base_url"]).netloc == host), None)
     if source is not None:
         return deepcopy(source)
-    presets = json.loads(Path(__file__).with_name("acquisition_presets.json").read_text("utf-8"))
+    from tinyassets.providers.source_record import records
+
+    presets = {r.id: r.acquisition_document for r in records().values()
+               if r.sign_in.get("oauth", {}).get("protocol") == "pkce_user_key_v1"}
     return next((row for row in presets.values()
                  if urlsplit(row["inference_url"]).netloc == host), {})
 
@@ -115,7 +103,10 @@ def billing_url_for_host(host):
     source = source_for_host(host)
     if source:
         return source["billing_url"]
-    presets = json.loads(Path(__file__).with_name("acquisition_presets.json").read_text("utf-8"))
+    from tinyassets.providers.source_record import records
+
+    presets = {r.id: r.acquisition_document for r in records().values()
+               if r.sign_in.get("oauth", {}).get("protocol") == "pkce_user_key_v1"}
     return next((row.get("billing_url", row["manage_url"]) for row in presets.values()
                  if urlsplit(row["inference_url"]).netloc == host), "")
 

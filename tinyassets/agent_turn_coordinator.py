@@ -13,6 +13,7 @@ import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
+from tinyassets.agent_loop.execution import off_loop
 from tinyassets.engine_steering import session_of, turn_of
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 from tinyassets.exceptions import (
@@ -20,6 +21,7 @@ from tinyassets.exceptions import (
     ProviderAuthorityHeldError,
     ProviderProtocolError,
     SelectedModelContextError,
+    SelectedModelUnavailableError,
 )
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_capacity_boundary import (
@@ -32,7 +34,6 @@ from tinyassets.providers.model_call import open_allocation
 from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
-from tinyassets.providers.native_agent_input import render_native_input
 from tinyassets.request_budget import (
     FREE_TURN_ATTEMPTS,
     TEXT_TURN_ATTEMPTS,
@@ -42,7 +43,6 @@ from tinyassets.request_budget import (
     pooled_budget,
 )
 from tinyassets.served_tools import granted_tools, model_tools
-from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import load_result
@@ -76,11 +76,6 @@ def turn_effects(turn):
     effects, stage = "none", None
     for position, previous in enumerate(turn.rounds):
         last = position == len(turn.rounds) - 1
-        if type(previous.candidate) is NativeInput:
-            if not (type(previous.reply) is NativeTerminal
-                    and previous.reply.status == "capacity_no_effects"):
-                effects = "some" if effects == "some" else "unknown"
-            continue
         for tool in previous.tools:
             if tool.state == "completed":
                 effects = "some"
@@ -123,7 +118,6 @@ class AgentTurnCoordinator:
         self.retrying_capacity = False
         self.visited = set()
         self.execution_kind = None
-        self.native_input = None
         # Narrowed sibling retries used so far, and the diagnostics of the
         # rounds they replaced -- a turn that tried four models must not report
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
@@ -141,6 +135,7 @@ class AgentTurnCoordinator:
         self._owns_request_budget = self.request_budget is None
         self._free_request = False
         self._budget_skipped = set()
+        self._local_model_failures = []
         self._text_only = (
             type(config.agent_request) is AgentInferenceRequest and config.agent_request.text_only
         )
@@ -188,11 +183,25 @@ class AgentTurnCoordinator:
             raise JournalUnavailable("agent progress changed; action was not replayed")
         self.turn = transition.snapshot
 
+    async def _journal_write(self, method, *args, **kwargs):
+        # Updating the local frontier is part of the drained worker operation:
+        # cancellation after commit cannot leave self.turn at the old generation.
+        def commit():
+            self._accept(getattr(self.journal, method)(*args, **kwargs))
+        await off_loop(commit)
+
+    def _create_turn(self):
+        self.journal = AgentTurnJournal(self.context.universe_dir.parent)
+        self.turn = self.adapter.create_turn(
+            self.journal, owner=self.owner, context=self.context,
+            prompt=self.prompt, system=self.system, plan=self.plan,
+        )
+
     def _begin(self, authority, reservation, config):
         candidate = self.adapter.round_input(
             authority, reservation, config, owner=self.owner, context=self.context,
             prompt=self.prompt, system=self.inference_system,
-            native_input=None, kind="engine_inference",
+            kind="engine_inference",
         )
         self._free_request = metered_free_source(
             self.context, config.selected_model, owner=self.owner,
@@ -219,11 +228,6 @@ class AgentTurnCoordinator:
     def _history(self):
         history = []
         for previous in self.turn.rounds:
-            if type(previous.candidate) is NativeInput:
-                if (type(previous.reply) is NativeTerminal
-                        and previous.reply.status == "capacity_no_effects"):
-                    continue
-                raise JournalUnavailable("native continuation is incomplete")
             if previous.state == "failed":
                 continue
             if (
@@ -250,42 +254,6 @@ class AgentTurnCoordinator:
             )
         return tuple(history)
 
-    def _begin_native(self, authority, reservation, config):
-        candidate = self.adapter.round_input(
-            authority, reservation, config, owner=self.owner, context=self.context,
-            prompt=self.prompt, system=self.system, native_input=self.native_input,
-            kind="native_agent",
-        )
-        self._accept(self.journal.begin_round(
-            self.owner, self.context.universe_dir.name, self.turn.turn_id,
-            expected_generation=self.turn.generation, candidate=candidate,
-            after_failed_inference=self.retrying_capacity,
-        ))
-        self.retrying_capacity = False
-        self._note_round()
-
-    def _finish_native_failure(self, exc):
-        terminal = NativeTerminal("indeterminate")
-        if isinstance(exc, AllProvidersExhaustedError):
-            proofs = getattr(exc, "native_evidence", ())
-            boundary = capacity_boundary(
-                self.context.model_selection, exc.attempts,
-                execution_kind="native_agent", native_evidence=proofs,
-            )
-            # One claimed native intent corresponds to exactly one executed
-            # provider attempt. Never compress several unknown launches to one proof.
-            if boundary is not None and boundary.attempted and len(proofs) == 1:
-                terminal = NativeTerminal(
-                    "capacity_no_effects", evidence=proofs[0],
-                    failure_class=boundary.failure_class,
-                    capacity_scope=boundary.exhaustion.scope,
-                    retry_after_s=boundary.retry_after_s,
-                )
-        self._accept(self.journal.finish_native(
-            self.owner, self.context.universe_dir.name, self.turn.turn_id,
-            expected_generation=self.turn.generation, ordinal=len(self.turn.rounds),
-            terminal=terminal,
-        ))
 
     def _learn_verified_model(self, response):
         """Record a model id that just answered on this owner's source.
@@ -417,8 +385,7 @@ class AgentTurnCoordinator:
             return self.request_budget.receipt()["dispatched"]
         if self.turn is None:
             return 0
-        return sum(1 for previous in self.turn.rounds
-                   if type(previous.candidate) is not NativeInput)
+        return len(self.turn.rounds)
 
     def _completed_tools(self):
         """Names of the tool calls this turn's ledger proves completed, in order."""
@@ -453,7 +420,53 @@ class AgentTurnCoordinator:
                               "the owner stopped this turn before a tool call")
 
     async def run(self):
-        owner = self._check_scope()
+        """One admission, one yield journal, one exhaustion mapping.
+
+        Chat and workflow both enter here. A yield records the unsent planned
+        tool before it leaves; a work adapter may replace exhaustion with its
+        held-effect or order-exhausted error. Evidence is attached first.
+        """
+        from tinyassets.activity_runner import ActivityYielded
+
+        try:
+            return await self._run_body()
+        except ActivityYielded:
+            await self._journal_yielded_plan()
+            raise
+        except AllProvidersExhaustedError as exc:
+            mapper = getattr(self.adapter, "map_exhaustion", None)
+            mapped = mapper(self, exc) if mapper is not None else None
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
+    async def _journal_yielded_plan(self):
+        """A model can batch an ask and a later action in the same reply.
+
+        Preserve the ask's committed result and explicitly mark the next
+        planned call unsent; never dispatch it or request another round.
+        """
+        if self.turn is None or self.turn.state != "tools_pending":
+            return
+        for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
+            if tool.state != "planned":
+                continue
+            uid = self.context.universe_dir.name
+            await self._journal_write(
+                "start_tool", self.owner, uid, self.turn.turn_id,
+                expected_generation=self.turn.generation,
+                ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+            )
+            await self._journal_write(
+                "finish_tool", self.owner, uid, self.turn.turn_id,
+                expected_generation=self.turn.generation,
+                ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+                request=tool.request, failure="not_sent",
+            )
+            break
+
+    async def _run_body(self):
+        owner = await off_loop(self._check_scope)
         if self.request_budget is None:
             self.request_budget = open_allocation(
                 owner, self.context.universe_dir,
@@ -481,13 +494,13 @@ class AgentTurnCoordinator:
                 # A retry starts a fresh root; no returned task owns a ready row.
                 if self.turn is not None and self.turn.state == "ready":
                     try:
-                        self.close_quiescent()
+                        await off_loop(self.close_quiescent)
                     except Exception:  # noqa: BLE001 - preserve the original failure
                         _LOG.exception("could not close settled agent turn progress")
             finally:
-                self._release_turn()
+                await off_loop(self._release_turn)
                 if self._owns_request_budget:
-                    self.request_budget.close()
+                    await off_loop(self.request_budget.close)
 
     def _daily_budget(self):
         """Refresh advisory evidence without manufacturing provider exhaustion.
@@ -503,7 +516,7 @@ class AgentTurnCoordinator:
         )
 
     async def _run(self):
-        self.owner = self._check_scope()
+        self.owner = await off_loop(self._check_scope)
         # Lifecycle hooks belong to the initialized execution, not the release
         # wrapper that must also settle interrupted or recovered turn bodies.
         result = await self._run_turn()
@@ -515,23 +528,19 @@ class AgentTurnCoordinator:
     async def _run_turn(self):
         uid = self.context.universe_dir.name
         if self._has_candidate_order():
-            first = self._next_candidate()
+            first = await off_loop(self._next_candidate)
             if first is None:
                 raise ProviderAuthorityHeldError("no eligible interactive model remains")
             if self.context.model_selection != first:
                 raise ProviderAuthorityHeldError("interactive selection contradicts its plan")
-            self._check_scope()
+            await off_loop(self._check_scope)
         if self.turn is None:
-            self.journal = AgentTurnJournal(self.context.universe_dir.parent)
-            self.turn = self.adapter.create_turn(
-                self.journal, owner=self.owner, context=self.context,
-                prompt=self.prompt, system=self.system, plan=self.plan,
-            )
+            await off_loop(self._create_turn)
         elif self.turn.state != "ready" or self.turn.rounds:
             raise JournalUnavailable("agent turn cannot be replayed")
 
-        self.request_budget.persist(self.context.universe_dir.parent)
-        self.request_budget.link("turn", self.turn.turn_id)
+        await off_loop(self.request_budget.persist, self.context.universe_dir.parent)
+        await off_loop(self.request_budget.link, "turn", self.turn.turn_id)
         from tinyassets.extension_hooks import turn_event
 
         await turn_event(self, "input", {"input": self.prompt})
@@ -551,11 +560,19 @@ class AgentTurnCoordinator:
                     # every settled round and tool result kept as it is.
                     if self.interrupt is not None:
                         self.interrupt.check()
-                    budget = self._daily_budget()
+                    budget = await off_loop(self._daily_budget)
                     # One definition: every executor gets the same instructions,
                     # the budget line included (tests/test_one_agent_definition.py).
                     instructions = self.system + (
                         "\n\n" + budget.prompt_line() if budget is not None else "")
+                    final_reply = await off_loop(self._last_reply_attempt, turn_deadline)
+                    if final_reply:
+                        instructions += (
+                            "\n\nThis is the turn's final request. Tools are disabled. "
+                            "Reply to the user in words: summarize what was completed, "
+                            "the results, and anything left unfinished. Do not claim "
+                            "unfinished work succeeded or promise an automatic continuation."
+                        )
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
@@ -563,34 +580,23 @@ class AgentTurnCoordinator:
                         raise ProviderAuthorityHeldError(
                             "text-only mode requires an admitted text inference route"
                         )
-                    if self.execution_kind == "engine_inference":
-                        if engine is None and not self._text_only:
-                            engine = await stack.enter_async_context(
-                                self._open_tools(timeout),
-                            )
-                        config = replace(
-                            self._remaining(turn_deadline),
-                            agent_request=AgentInferenceRequest(
-                                tools=(
-                                    () if self._text_only else codec.tool_definitions(engine.tools)
-                                ),
-                                history=codec.compact_history(
-                                    self._history(), self.compaction,
-                                ),
-                                tool_choice="none" if self._text_only else "auto",
+                    if engine is None and not self._text_only:
+                        engine = await stack.enter_async_context(
+                            self._open_tools(timeout),
+                        )
+                    config = replace(
+                        self._remaining(turn_deadline),
+                        agent_request=AgentInferenceRequest(
+                            tools=(
+                                () if self._text_only else codec.tool_definitions(engine.tools)
                             ),
-                        )
-                        prompt, system, observer = self.prompt, instructions, self._begin
-                    else:
-                        self.native_input = render_native_input(
-                            self.prompt, instructions, self._history(),
-                        )
-                        prompt, system = self.native_input
-                        config = replace(
-                            self._remaining(turn_deadline), agent_request=None,
-                            selected_model=None,
-                        )
-                        observer = self._begin_native
+                            history=codec.compact_history(
+                                self._history(), self.compaction,
+                            ),
+                            tool_choice="none" if self._text_only or final_reply else "auto",
+                        ),
+                    )
+                    prompt, system, observer = self.prompt, instructions, self._begin
                     config = replace(
                         config, request_budget=self.request_budget,
                         model_launch_parent=(
@@ -603,27 +609,18 @@ class AgentTurnCoordinator:
                         request_purpose="tool_review" if self._completed_tools() else "reply",
                     )
                     self.inference_system = system
+                    before_attempts = self.request_budget.receipt()["reserved"]
                     try:
                         inference = self.adapter.infer(
                             router=self.router, prompt=prompt, system=system, config=config,
                             context=self.context, observer=observer, kind=self.execution_kind,
                         )
-                        if self.interrupt is not None and self.execution_kind == "native_agent":
-                            # A native agent runs until it is done, and only
-                            # cancelling it ends its process family; see
-                            # tinyassets/turn_interrupt.py for why an HTTP round
-                            # is left to return instead.
-                            response = await self.interrupt.run(inference)
-                        else:
-                            response = await inference
+                        response = await inference
                     except BaseException as exc:
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
-                        if self.turn.state == "native_started":
-                            self._finish_native_failure(exc)
-                        elif self.turn.state == "inference_started":
-                            self._accept(
-                                self.journal.finish_inference(
+                        if self.turn.state == "inference_started":
+                            await self._journal_write("finish_inference",
                                     self.owner,
                                     uid,
                                     self.turn.turn_id,
@@ -631,9 +628,9 @@ class AgentTurnCoordinator:
                                     ordinal=len(self.turn.rounds),
                                     reply=None,
                                 )
-                            )
                         if (
-                            self._next_after_request_budget(exc)
+                            self._next_after_local_model_failure(exc, before_attempts)
+                            or self._next_after_request_budget(exc)
                             or self._next_after_capacity(exc)
                             or self._next_after_signin(exc)
                             or self._next_after_refusal(exc)
@@ -644,38 +641,13 @@ class AgentTurnCoordinator:
                             await self._pause_before_retry(turn_deadline)
                             continue
                         raise
-                    if self.execution_kind == "native_agent":
-                        try:
-                            if response.provider != self.context.model_selection.connection_id:
-                                raise ProviderProtocolError("native response source changed")
-                            terminal = NativeTerminal(
-                                "completed", evidence=response.native_evidence,
-                                text=response.text, configured_model=response.model,
-                                reported_model=response.reported_model or None,
-                                input_tokens=response.input_tokens,
-                                output_tokens=response.output_tokens,
-                            )
-                            self._accept(self.journal.finish_native(
-                                self.owner, uid, self.turn.turn_id,
-                                expected_generation=self.turn.generation,
-                                ordinal=len(self.turn.rounds), terminal=terminal,
-                                cost_microusd=response.cost_microunits,
-                            ))
-                        except BaseException as exc:
-                            if self.turn.state == "native_started":
-                                self._finish_native_failure(exc)
-                            raise
-                        # The call SUCCEEDED and the journal has committed it, so
-                        # this model id provably works on this kind of source.
-                        # Learn it for every universe with that kind. After the
-                        # commit and outside the try, so a catalog write can
-                        # neither be mistaken for a turn failure nor rewrite one.
-                        self._learn_verified_model(response)
-                        return self._capacity_notice(response)
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
-                    self._accept(
-                        self.journal.finish_inference(
+                    if final_reply and response.agent_reply.tool_requests:
+                        response = replace(response, agent_reply=replace(
+                            response.agent_reply, stop="completed", tool_requests=(),
+                        ))
+                    await self._journal_write("finish_inference",
                             self.owner,
                             uid,
                             self.turn.turn_id,
@@ -684,7 +656,6 @@ class AgentTurnCoordinator:
                             reply=response.agent_reply,
                             cost_microusd=response.cost_microunits,
                         )
-                    )
                     # The model answered: whatever refused it before does not now.
                     self._forget_refusal()
                     if self.turn.state == "completed":
@@ -695,8 +666,8 @@ class AgentTurnCoordinator:
                         )
                     for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
                         if self._interrupted():
-                            self._stop_before_tool(uid, call_ordinal, tool)
-                        self._check_scope()
+                            await off_loop(self._stop_before_tool, uid, call_ordinal, tool)
+                        await off_loop(self._check_scope)
                         try:
                             self.request_budget.check_available(
                                 source_ref=self.context.model_selection.connection_id,
@@ -707,12 +678,11 @@ class AgentTurnCoordinator:
                                     or self._request_budget_fallback() is None):
                                 # A held tool is never approved or silently resumed.
                                 try:
-                                    self._stop_before_tool(uid, call_ordinal, tool)
+                                    await off_loop(self._stop_before_tool, uid, call_ordinal, tool)
                                 except TurnInterrupted:
                                     pass
                                 raise
-                        self._accept(
-                            self.journal.start_tool(
+                        await self._journal_write("start_tool",
                                 self.owner,
                                 uid,
                                 self.turn.turn_id,
@@ -720,7 +690,6 @@ class AgentTurnCoordinator:
                                 ordinal=len(self.turn.rounds),
                                 call_ordinal=call_ordinal,
                             )
-                        )
                         try:
                             if getattr(engine, "takes_op_id", False):
                                 # The journal position names the operation, so a
@@ -740,8 +709,7 @@ class AgentTurnCoordinator:
                                 if (isinstance(exc, EngineToolError) and exc.outcome == "not_sent")
                                 else "unknown"
                             )
-                            self._accept(
-                                self.journal.finish_tool(
+                            await self._journal_write("finish_tool",
                                     self.owner,
                                     uid,
                                     self.turn.turn_id,
@@ -751,10 +719,8 @@ class AgentTurnCoordinator:
                                     request=tool.request,
                                     failure=failure,
                                 )
-                            )
                             raise
-                        self._accept(
-                            self.journal.finish_tool(
+                        await self._journal_write("finish_tool",
                                 self.owner,
                                 uid,
                                 self.turn.turn_id,
@@ -764,9 +730,93 @@ class AgentTurnCoordinator:
                                 request=tool.request,
                                 result=result,
                             )
-                        )
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
+
+    def _last_reply_attempt(self, turn_deadline=None):
+        """Reserve an answer across the eligible turn, without granting dispatch."""
+        budget = self.request_budget
+        # Leave the configured first-progress window for an answer. Deadline
+        # admission still belongs to the budget; this is a conservative reserve,
+        # not a prediction of how long the provider or a tool will take.
+        answer_window = self.config.stream_timeout_profile().first_progress_s
+        if (budget.deadline is not None
+                and budget.deadline - budget.clock() <= answer_window):
+            return True
+        if turn_deadline is not None and turn_deadline - time.monotonic() <= answer_window:
+            return True
+        active = [a for a in budget.receipt()["attempts"] if a["state"] != "not_sent"]
+        remaining = []
+        if budget.max_requests is not None:
+            remaining.append(budget.max_requests - len(active))
+        free = (candidate_is_metered_free(self.context, self.plan.catalog, owner=self.owner)
+                if self.plan is not None else self._free_request)
+        if free:
+            if budget.free_pool_limit is not None:
+                remaining.append(budget.free_pool_limit - sum(a["free"] for a in active))
+            current = self.context.model_selection
+            sources = {current.connection_id}
+            if self.plan is not None:
+                order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+                for item in order.candidates:
+                    candidate = item.ref
+                    if candidate in self.visited or candidate in self._budget_skipped:
+                        continue
+                    if (self._text_only and self.router.selected_agent_execution_kind(candidate)
+                            != "engine_inference"):
+                        continue
+                    if candidate_is_metered_free(
+                        replace(self.context, model_selection=candidate), self.plan.catalog,
+                        owner=self.owner,
+                    ):
+                        sources.add(candidate.connection_id)
+            slots = 0
+            for source in sources:
+                attempts = [a for a in active if a["free"] and a["source_ref"] == source]
+                limit = budget.source_limits.get(source, budget.free_limit)
+                available = float("inf") if limit is None else limit - len(attempts)
+                if budget.failure_limit is not None:
+                    failures = 0
+                    for attempt in reversed(attempts):
+                        if attempt["state"] == "succeeded":
+                            break
+                        if attempt["state"] in {"failed", "unknown"}:
+                            failures += 1
+                    available = min(available, budget.failure_limit - failures)
+                slots += max(0, available)
+            remaining.append(slots)
+        return bool(remaining) and min(remaining) <= 1
+
+    def _next_after_local_model_failure(self, exc, before_attempts):
+        """A proven unsent model failure excludes that model only, inside the box."""
+        if (self.plan is None or self.execution_kind != "engine_inference"
+                or self.turn.state not in {"ready", "held_transport"}):
+            return False
+        attempts = self.request_budget.receipt()["attempts"][before_attempts:]
+        unsent = (isinstance(exc, AllProvidersExhaustedError) and attempts
+                  and all(a["state"] == "not_sent" for a in attempts)
+                  and all(a.failure_class not in {"provider_refused", "auth_invalid"}
+                          for a in (exc.attempts or ())))
+        if not isinstance(exc, SelectedModelUnavailableError) and not unsent:
+            return False
+        from tinyassets.providers.diagnostics import redacted_failure_detail
+
+        failed = self.context.model_selection
+        detail = "; ".join(a.detail for a in (getattr(exc, "attempts", None) or ()))
+        self._local_model_failures.append(
+            f"{failed.model_id}: {redacted_failure_detail(detail or str(exc))}")
+        self._budget_skipped.add(failed)
+        self.visited.add(failed)
+        candidate = self._request_budget_fallback()
+        if candidate is None:
+            raise ProviderAuthorityHeldError(
+                "No eligible connected model remains. Failed before provider dispatch: "
+                + "; ".join(self._local_model_failures)
+            ) from exc
+        self.spent_attempts += list(getattr(exc, "attempts", None) or ())
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
 
     def _request_budget_fallback(self):
         # Do not manufacture remote Exhaustion records from a local allocation:
@@ -777,6 +827,9 @@ class AgentTurnCoordinator:
             return (fallback(self.owner, self.context.universe_dir.name, self.request_budget)
                     if fallback is not None else None)
         order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+        free_only = self._free_request or candidate_is_metered_free(
+            self.context, self.plan.catalog, owner=self.owner,
+        )
         for item in order.candidates:
             candidate = item.ref
             if (candidate == self.context.model_selection or candidate in self.visited
@@ -789,6 +842,8 @@ class AgentTurnCoordinator:
                 replace(self.context, model_selection=candidate), self.plan.catalog,
                 owner=self.owner,
             )
+            if free_only and not limited:
+                continue
             try:
                 self.request_budget.check_available(
                     source_ref=candidate.connection_id, free=limited,
@@ -1144,7 +1199,7 @@ class AgentTurnCoordinator:
         if (
             not self._has_candidate_order()
             or not isinstance(exc, AllProvidersExhaustedError)
-            or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
+            or self.turn.state not in {"ready", "held_transport"}
         ):
             return False
         attempts = tuple(exc.attempts or ())
@@ -1165,8 +1220,7 @@ class AgentTurnCoordinator:
             self._leave_hot_source(None)
             return False
         self._leave_hot_source(candidate)
-        if self.execution_kind == "engine_inference":
-            self.spent_attempts += list(attempts)
+        self.spent_attempts += list(attempts)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
@@ -1191,13 +1245,11 @@ class AgentTurnCoordinator:
     def _next_after_capacity(self, exc):
         if (
             not self._has_candidate_order() or not isinstance(exc, AllProvidersExhaustedError)
-            or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
+            or self.turn.state not in {"ready", "held_transport"}
         ):
             return False
         boundary = capacity_boundary(
             self.context.model_selection, exc.attempts, execution_kind=self.execution_kind,
-            native_evidence=(getattr(exc, "native_evidence", ())
-                             if self.execution_kind == "native_agent" else ()),
         )
         if boundary is None:
             return False
@@ -1246,8 +1298,7 @@ class AgentTurnCoordinator:
         # positionally with its own ``native_evidence``, and carrying them onto
         # a later exception would leave the two lists mismatched, which
         # ``capacity_boundary`` correctly refuses to read.
-        if self.execution_kind == "engine_inference":
-            self.spent_attempts += list(exc.attempts or ())
+        self.spent_attempts += list(exc.attempts or ())
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
@@ -1276,15 +1327,7 @@ class AgentTurnCoordinator:
         """
         if not self.spent_attempts or not isinstance(exc, AllProvidersExhaustedError):
             return
-        attempts = list(exc.attempts or ())
-        evidence = getattr(exc, "native_evidence", ())
-        # ``native_evidence`` is positional against ``attempts``; a pairing this
-        # hop does not recognize is left alone rather than repaired blind.
-        if type(evidence) is not tuple or len(evidence) != len(attempts):
-            return
-        # Every carried round was engine inference, which has no native proof.
-        exc.attempts = self.spent_attempts + attempts
-        exc.native_evidence = (None,) * len(self.spent_attempts) + evidence
+        exc.attempts = self.spent_attempts + list(exc.attempts or ())
 
     def close_quiescent(self):
         if self.turn is not None and self.turn.state == "ready":
@@ -1296,3 +1339,12 @@ class AgentTurnCoordinator:
                     expected_generation=self.turn.generation,
                 )
             )
+
+
+def start_coordinator(*, adapter, router, prompt, system, universe_context, config,
+                      interrupt=None):
+    """The only production constructor of :class:`AgentTurnCoordinator`."""
+    return AgentTurnCoordinator(
+        adapter=adapter, router=router, prompt=prompt, system=system,
+        universe_context=universe_context, config=config, interrupt=interrupt,
+    )

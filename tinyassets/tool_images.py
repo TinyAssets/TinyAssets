@@ -219,7 +219,7 @@ def _limit_self(memory_bytes: int, cpu_seconds: int) -> None:
 
 def _decode_in_child(data: bytes, mime: str, *, universe_dir=None) -> tuple[dict, bytes] | str:
     """The decode runs in the owner's decoder cell; there is no daemon-uid decode."""
-    from tinyassets.role_decoder import decode
+    from tinyassets.boxes.media import decode_image as decode
 
     try:
         done = decode(data, mime, universe_dir)
@@ -357,3 +357,6 @@ def main() -> int:  # pragma: no cover - exercised through bound_image
     out.flush()
     return 0
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())

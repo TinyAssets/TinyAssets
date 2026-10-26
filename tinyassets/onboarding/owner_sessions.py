@@ -22,6 +22,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets.capability_health import observed
+from tinyassets.sqlite_schema import ensure_table
 
 COOKIE = "__Host-ta-owner"
 FLOW_COOKIE = "__Host-ta-owner-login"
@@ -35,6 +36,9 @@ def hashed(value):
 
 @contextmanager
 def store():
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("owner_sessions")
     from tinyassets.api.helpers import _base_path
 
     path = _base_path() / ".runtime" / "owner-sessions.db"
@@ -50,19 +54,26 @@ def store():
         os.chown(path, -1, 1102)
         os.chmod(path, 0o640)
     conn.row_factory = sqlite3.Row
-    conn.execute(
+    # Ephemeral: a layout change signs everyone out.
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_sessions "
-        "(session_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, expires_at REAL NOT NULL)"
+        "(session_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_login_flows "
         "(state_hash TEXT PRIMARY KEY, cookie_hash TEXT NOT NULL, verifier BLOB NOT NULL, "
-        "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)"
+        "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_login_completions "
         "(handle_hash TEXT PRIMARY KEY, state_hash TEXT UNIQUE NOT NULL, "
-        "payload BLOB NOT NULL, expires_at REAL NOT NULL)"
+        "payload BLOB NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
     conn.execute("DELETE FROM owner_login_completions WHERE expires_at<=?", (time.time() - 600,))
     # Keep expired rows briefly so a late callback can explain expiry and age.
@@ -84,7 +95,30 @@ def lookup(cookie):
             "SELECT * FROM owner_sessions WHERE session_hash=? AND expires_at>?",
             (hashed(cookie), time.time()),
         ).fetchone()
-        return dict(row) if row else None
+        from tinyassets.router_credentials import active_owner
+
+        return (dict(row) if row and active_owner(
+            json.loads(row["identity_json"])["user_id"]) else None)
+
+
+def router_owner_session():
+    """Protected-view proof admitted by the router for this request."""
+    from tinyassets.auth.middleware import current_identity_or_none
+
+    identity = current_identity_or_none()
+    session = identity.metadata.get("router_owner_session") if identity is not None else None
+    if session is not None and session["expires_at"] <= time.time():
+        return None
+    return session
+
+
+@contextmanager
+def decision_session(session):
+    """Approve only against the protected proof forwarded by the router."""
+
+    proof = router_owner_session()
+    yield proof is not None and proof == session
+    return
 
 
 def require(request, *, owner=None, optional=False):
@@ -95,7 +129,12 @@ def require(request, *, owner=None, optional=False):
     origin = urlsplit(app_config()["resource"])
     if request.headers.get("origin") != f"{origin.scheme}://{origin.netloc}":
         raise PermissionError("Exact protected origin required.")
-    session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        session = router_owner_session()
+    else:
+        session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
     if session is None and optional:
         return None
     if session is None:
@@ -103,6 +142,23 @@ def require(request, *, owner=None, optional=False):
     if owner is not None and json.loads(session["identity_json"])["user_id"] != owner:
         raise PermissionError("The signed-in account changed; sign in again.")
     return session
+
+
+def extend(cookie, owner):
+    """Slide a live protected session while its own browser keeps renewing.
+
+    Only the HttpOnly owner cookie this browser already holds is extended, and
+    only for the account the renewal just proved; nothing here mints proof from
+    a bearer or a page-held handle. An owner who keeps using the app is never
+    sent through sign-in again mid-task; one who returns after the window is.
+    """
+    session = lookup(cookie)
+    if session is None or json.loads(session["identity_json"])["user_id"] != owner:
+        return False
+    with store() as conn:
+        conn.execute("UPDATE owner_sessions SET expires_at=? WHERE session_hash=?",
+                     (time.time() + 28800, hashed(cookie)))
+    return True
 
 
 def revoke(cookie):
@@ -200,7 +256,7 @@ async def callback(request, *, completion=False):
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-    from tinyassets.auth.middleware import _get_provider, current_identity_or_none
+    from tinyassets.auth.middleware import current_identity_or_none, resolve_token_result
     from tinyassets.onboarding import _read_small_json, app_config, onboarding_enabled
     from tinyassets.onboarding.session_store import seal_key
 
@@ -240,7 +296,9 @@ async def callback(request, *, completion=False):
             reason, upstream_status, json.dumps(diagnostics, ensure_ascii=True),
             extra={"refusal_reason": reason, "upstream_status": upstream_status, **diagnostics},
         )
-        message = ("This sign-in link expired. Start sign-in again."
+        message = ("Account deleted. This account can no longer sign in."
+                   if reason == "account_deleted" else
+                   "This sign-in link expired. Start sign-in again."
                    if reason == "flow_expired" else
                    "Sign-in could not finish. Start sign-in again.")
         response = (JSONResponse({"error": reason, "message": message},
@@ -332,9 +390,10 @@ async def callback(request, *, completion=False):
             )
         result.raise_for_status()
         tokens = result.json()
-        identity = await run_in_threadpool(_get_provider().resolve_token, tokens["access_token"])
+        identity, reason = await run_in_threadpool(resolve_token_result, tokens["access_token"])
         if identity is None or not identity.user_id:
-            return refused("identity_unresolved")
+            return refused("account_deleted" if reason == "account_deleted"
+                           else "identity_unresolved")
         if completion and identity.user_id != bearer_identity.user_id:
             return refused("identity_mismatch")
         refresh = tokens.get("refresh_token")
@@ -350,11 +409,23 @@ async def callback(request, *, completion=False):
         return refused("invalid_token_response")
     revoke(request.cookies.get(COOKIE, ""))
     session_cookie = secrets.token_urlsafe(32)
+    from tinyassets.router_credentials import active_owner
+    from tinyassets.routing_snapshot import snapshot
+    from tinyassets.storage import data_dir
+
+    if not active_owner(identity.user_id):
+        return refused("account_deleted")
     with store() as conn:
         conn.execute(
             "INSERT INTO owner_sessions VALUES (?,?,?)",
             (hashed(session_cookie), json.dumps(identity.to_dict()), time.time() + 28800),
         )
+    try:
+        if snapshot(data_dir()).record(identity.user_id) is None:
+            raise PermissionError("Account deleted.")
+    except Exception:
+        revoke(session_cookie)
+        return refused("account_deleted")
     # No tokens/codes in callback output or browser scripts. Strip the query.
     from tinyassets.onboarding.inline_model_connect import RETURN_COOKIE, return_path
 

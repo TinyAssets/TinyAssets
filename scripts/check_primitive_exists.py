@@ -79,13 +79,13 @@ def _git(*args: str, repo_root: Path | None = None) -> str:
 _ACTION_MAP_FILES = (
     "tinyassets/api/branches.py",
     "tinyassets/api/runs.py",
-    "tinyassets/api/extensions.py",
+    "tinyassets/api/workflow_actions.py",
     "tinyassets/api/wiki.py",
     "tinyassets/api/goals.py",
     "tinyassets/api/universe.py",
     "tinyassets/api/status.py",
     "tinyassets/api/evaluation.py",
-    "tinyassets/api/market.py",
+    "tinyassets/api/goals.py",
     "tinyassets/api/prompts.py",
 )
 

@@ -1,44 +1,7 @@
-"""Self-service account deletion.
+"""Legacy row inventory helpers for reset and pre-cutover data.
 
-Google Play requires any app that lets people create an account to offer a
-deletion path inside the app AND on a public web page; ``/legal`` promises the
-same erasure. ``delete_account`` is that path.
-
-**The row set is derived from the schema, not from a list.** The first draft
-carried a hand-written table list, which is the "two definitions of one fact"
-failure this repo has paid for repeatedly: ``scoped_reset``'s reviewed inventory
-already names 45 root tables, other modules create ~30 more it has never heard
-of, and any list would rot at the next migration while silently under-deleting.
-So deletion reads the live schema: a table with a ``universe_id`` loses the
-deleted universe's rows, a table with one of :data:`PRINCIPAL_KEYS` loses the
-deleted person's rows, and the only hand-maintained parts are the short,
-reviewable exception sets below — :data:`PRESERVED_TABLES` (commons and ledgers
-that are not personal data), :data:`REDACTED_TABLES` (audit rows that survive
-without the person or the content) and :data:`BLOCKING_TABLES` (money that is
-not ours to discard). A migration that adds a universe- or person-keyed table is
-covered the day it lands; ``tests/test_account_deletion.py`` fails if a new
-column name means a person's rows would be missed.
-
-**What refuses.** The foreign-ownership and active-work analysis is the operator
-path's, reused query for query: another founder bound to the same home, a
-foreign grant or foreign-actor row inside it, a live daemon, an open vote, an
-in-flight request or task. Those refuse loudly rather than destroying someone
-else's rows or racing running work — the platform's one hard invariant is that a
-user's action never reaches another user's data. The deliberate divergence is
-dependent request rows (``request_admissions``, ``request_admission_events``,
-``branch_tasks_v2``): a *reset* preserves them because it keeps the account, a
-*deletion* removes the person's own and blocks only on foreign ones, because a
-user's own admitted request is their data and leaving it would make "we deleted
-your data" false.
-
-**Order.** The home and sidecar are staged as separate children under
-``.deleting/<home>/``; a crash between their renames resumes from that container.
-Then every root-database row in one transaction, then the satellite
-databases, then the directory, then billing, then identity. Each phase is
-isolated: a failure in one never prevents the next, because the phase that must
-not be skipped is the one that stops the money. Anything unfinished is written
-to a durable receipt under ``.account-deletions/`` and logged at ERROR — never
-swallowed (Hard Rule 8).
+Account deletion runs through the broker deletion job and opaque volume
+removal. There is no box-local account deletion or tombstone writer.
 """
 
 from __future__ import annotations
@@ -47,22 +10,18 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import sqlite3
 import stat
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable
+from typing import Any
+
+from tinyassets.router_account_deletion import AccountDeletionError
 
 logger = logging.getLogger(__name__)
 
-_WORKOS_USER_ID = re.compile(r"user_[A-Za-z0-9]+\Z")
-_WORKOS_BASE_URL = "https://api.workos.com"
 _STAGING_DIR = ".deleting"
 _RECEIPT_DIR = ".account-deletions"
 
@@ -247,10 +206,6 @@ _FOREIGN_ROWS_EXPECTED = frozenset({
 FOREIGN_OWNERSHIP_KEYS = PRINCIPAL_KEYS + ("created_by",)
 
 
-class AccountDeletionError(RuntimeError):
-    """Deletion refused. The message never carries a secret."""
-
-
 class AccountDeletionBlocked(AccountDeletionError):
     """Refused because someone else's data, or live work, is in scope."""
 
@@ -311,7 +266,7 @@ def _stage_home(root: Path, home: str) -> Path | None:
     only the remaining sources. No destination lies inside user-owned content.
     Failure leaves both the container and unmoved sources for the receipt.
     """
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     target = _home_dir(root, home)
     sidecar = root / UNIVERSE_SIDECARS_DIR / home
@@ -320,7 +275,8 @@ def _stage_home(root: Path, home: str) -> Path | None:
     sources = ((target, staged / "home"), (sidecar, staged / "sidecar"))
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
-    for path in (sidecar.parent, staging, staged, *(p for pair in sources for p in pair)):
+    for path in (sidecar.parent, staging, staged,
+                 *(p for pair in sources for p in pair)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise AccountDeletionError(f"{path.name} is not a plain directory")
     if not staged.exists() and not any(source.exists() for source, _ in sources):
@@ -667,32 +623,6 @@ def _delete_root_rows(
                 counts[key] = counts.get(key, 0) + int(changed)
 
 
-def write_tombstone(base_path: str | Path, principal: str) -> None:
-    """Record that this principal deleted their account, keyed by digest.
-
-    Written BEFORE anything is staged or deleted. Round 3 reproduced the race
-    the other order leaves open: between staging the home and committing the
-    tombstone, a second device's still-valid token reached first-contact, saw a
-    live binding and no tombstone, and rebuilt a fresh universe that outlived
-    the deletion. Writing the fence first means the worst case is a tombstoned
-    principal whose deletion then failed — refused a new universe until a host
-    clears it, which is the safe direction to fail.
-    """
-    from tinyassets.daemon_server import _connect, initialize_author_server
-    from tinyassets.principals import named_principal
-
-    subject = named_principal(principal)
-    if not subject:
-        return
-    initialize_author_server(base_path)
-    with _connect(base_path) as conn:
-        conn.execute(
-            "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, ?) "
-            "ON CONFLICT(founder_sub) DO UPDATE SET deleted_at = excluded.deleted_at",
-            (principal_digest(subject), time.time()),
-        )
-
-
 def _root_databases(root: Path) -> list[Path]:
     """Every store at the data root except the main database, which
     ``_delete_root_rows`` owns.
@@ -763,13 +693,6 @@ def _delete_satellite_rows(
     universe-keyed and person-keyed rows go, counted before any delete."""
     if not path.is_file():
         return
-    # Physical file custody cannot be erased by generic row ordering. The
-    # account tombstone already prevents new capture/binding/read; settle exact
-    # owned inventory before opening this store's deletion transaction.
-    from tinyassets.runs import runs_db_path
-    if path == runs_db_path(path.parent):
-        from tinyassets.run_file_erasure import erase_owner_files
-        erase_owner_files(path.parent, owner_id=principal)
     conn = sqlite3.connect(str(path), timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
@@ -894,71 +817,6 @@ def _authoring_session_ids(root: Path, principal: str) -> list[str]:
         conn.close()
 
 
-# --------------------------------------------------------------------------- #
-# billing + identity (injectable; defaults talk to Stripe and WorkOS)
-# --------------------------------------------------------------------------- #
-
-
-def cancel_stripe_billing(home: str) -> str:
-    """Cancel the home's subscription NOW. Returns ``cancelled`` / ``none`` /
-    ``not_configured`` / ``unavailable``; raises on a Stripe failure."""
-    from tinyassets.billing import BillingUnavailable
-    from tinyassets.billing.stripe_adapter import (
-        billing_enabled,
-        cancel_subscription,
-        find_active_subscription,
-    )
-
-    if not home or not billing_enabled():
-        return "not_configured"
-    try:
-        subscription_id = find_active_subscription(home)
-    except BillingUnavailable:
-        return "unavailable"
-    if not subscription_id:
-        return "none"
-    cancel_subscription(subscription_id, immediately=True)
-    return "cancelled"
-
-
-def delete_workos_user(
-    user_id: str, *, request: Callable[..., Any] | None = None
-) -> str:
-    """Delete the WorkOS user record — which is also what ends sessions this
-    process cannot enumerate: another device's refresh handle is opaque here, so
-    upstream deletion, not local sweeping, is what stops it renewing. Returns
-    ``deleted`` / ``not_configured`` / ``not_applicable``; raises
-    :class:`AccountDeletionError` (secret-free) on an API failure."""
-    api_key = os.environ.get("WORKOS_API_KEY", "").strip()
-    if not api_key:
-        return "not_configured"
-    if _WORKOS_USER_ID.fullmatch(user_id) is None:
-        return "not_applicable"
-    req = urllib.request.Request(
-        f"{_WORKOS_BASE_URL}/user_management/users/{urllib.parse.quote(user_id, safe='')}",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "User-Agent": "tinyassets-account-deletion/1.0",
-        },
-        method="DELETE",
-    )
-    opener = request or urllib.request.urlopen
-    try:
-        with opener(req, timeout=20) as response:
-            status = int(getattr(response, "status", 200) or 200)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return "deleted"  # already gone — the outcome the caller wanted
-        raise AccountDeletionError(
-            f"WorkOS user deletion failed (HTTP {exc.code})"
-        ) from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise AccountDeletionError("WorkOS user deletion request failed") from None
-    if status in (200, 202, 204):
-        return "deleted"
-    raise AccountDeletionError(f"WorkOS user deletion returned HTTP {status}")
-
 
 # --------------------------------------------------------------------------- #
 # the operation
@@ -996,216 +854,6 @@ def pending_deletions(base_path: str | Path) -> list[dict[str, Any]]:
     return out
 
 
-def delete_account(
-    base_path: str | Path,
-    *,
-    founder_sub: str,
-    cancel_billing: Callable[[str], str] | None = None,
-    delete_identity: Callable[[str], str] | None = None,
-) -> dict[str, Any]:
-    """Delete everything the platform holds for ``founder_sub`` and return a
-    content-free receipt.
-
-    Raises :class:`AccountDeletionError` before changing anything when the
-    principal is empty or the bound home path is unsafe, and
-    :class:`AccountDeletionBlocked` when someone else's data or live work is in
-    scope. After tombstoning, phase failures never stop billing cancellation
-    and anything unfinished lands in a durable receipt. Failed staging keeps
-    the home binding solely so a retry can finish moving the remaining source.
-    """
-    from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
-    from tinyassets.principals import named_principal
-    from tinyassets.role_owner_tree_deletion import delete_center
-
-    principal = named_principal(founder_sub)
-    if not principal:
-        raise AccountDeletionError("no authenticated principal to delete")
-    root = Path(base_path).resolve(strict=False)
-    fingerprint = _fingerprint(principal)
-    counts: dict[str, int] = {}
-
-    initialize_author_server(root)
-    home = get_founder_home(root, principal) or ""
-    if home:
-        _home_dir(root, home)  # refuse an unsafe binding before touching anything
-
-    with _connect(root) as conn:
-        blockers = deletion_blockers(conn, principal=principal, home=home)
-    if blockers:
-        raise AccountDeletionBlocked("; ".join(blockers))
-
-    # Finish any admitted vault persistence before tombstoning. Later writers
-    # check the tombstone inside their transaction under this same admission.
-    # Release BEFORE staging: Windows cannot rename an open admission-lock file.
-    if home and _home_dir(root, home).exists():
-        from tinyassets.provider_assignment import provider_assignment_admission
-
-        with provider_assignment_admission().exclusive(_home_dir(root, home)):
-            write_tombstone(root, principal)
-    else:
-        write_tombstone(root, principal)
-    blob_sessions = _authoring_session_ids(root, principal)
-
-    failures: list[str] = []
-
-    def _phase(name: str, run: Callable[[], Any]) -> Any:
-        try:
-            return run()
-        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
-            failures.append(name)
-            logger.error(
-                "account deletion %s: phase %s failed: %s",
-                fingerprint, name, exc.__class__.__name__,
-            )
-            return None
-
-    def _root_rows() -> None:
-        with _connect(root) as conn:
-            _delete_root_rows(conn, principal=principal, home=home, counts=counts)
-
-    # The home holds owner-identity entries the daemon cannot remove: delete it
-    # in place with D10's two passes while its owner binding and identity still
-    # admit pass one.
-    two_pass = _phase(
-        "owner_tree", lambda: delete_center(root, home, principal=principal)
-    ) if home else None
-    owner_tree_failed = "owner_tree" in failures
-
-    def _broker_rows() -> None:
-        from tinyassets.broker.account_erasure import erase_account
-
-        removed = erase_account(root, principal=principal)
-        counts.update({f"outbound:{table}": n for table, n in removed.items()})
-
-    _phase("broker_egress", _broker_rows)
-
-    # After the two-pass deletion only the sidecar remains to stage.
-    staged = _phase(
-        "home_staging", lambda: _stage_home(root, home)
-    ) if home and not owner_tree_failed else None
-    staging_failed = "home_staging" in failures
-    if owner_tree_failed:
-        # Keep the binding: a retry resumes pass one under the same intent.
-        failures.append("root_rows")
-    elif staging_failed:
-        # Keep the home binding so a retry can finish the deterministic staging
-        # container, even when the home itself has already moved. Billing and
-        # the other independent phases still run and failures get a receipt.
-        failures.append("root_rows")
-    else:
-        _phase("root_rows", _root_rows)
-    # Every store at the data root, not a named few: an account's data is
-    # wherever a store keyed it, and the directory is the only registry that
-    # cannot go stale.
-    for store in _root_databases(root):
-        label = store.stem.lstrip(".") or store.name
-        _phase(
-            f"store:{label}",
-            lambda s=store, la=label: _delete_satellite_rows(
-                s, principal=principal, home=home, counts=counts, label=la
-            ),
-        )
-    if blob_sessions:
-        def _blobs() -> None:
-            removed = _delete_authoring_blobs(root, blob_sessions)
-            if removed:
-                counts["authoring_blobs (directories)"] = removed
-
-        _phase("authoring_blobs", _blobs)
-
-    home_removed = (staged is None and not staging_failed and not owner_tree_failed
-                    or two_pass is not None)
-    staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
-    if staged is not None:
-        def _remove() -> None:
-            nonlocal home_removed
-            _rmtree(staged)
-            home_removed = True
-            _rmdir_if_empty(staged.parent)
-
-        _phase("home_directory", _remove)
-        if "home_directory" in failures:
-            staged_path = str(staged)
-
-    if home:
-        # Session records, Custom Rules and review switches (rules.db) live
-        # beside the universe in .agent-sessions/<home>/, not inside it, so the
-        # home removal above does not take them. Anything but plain directories
-        # all the way down is refused and reported, never followed.
-        from tinyassets.agent_sessions import RECORDS_DIR
-
-        def _session_records() -> None:
-            parent = root / RECORDS_DIR
-            records = parent / _home_dir(root, home).name
-            for path in (parent, records):
-                if not path.exists() and not path.is_symlink():
-                    return
-                if path.is_symlink() or not path.is_dir():
-                    raise AccountDeletionError(f"{path.name} is not a plain directory")
-            # Activities first (harness D2), once the directories are proven
-            # plain: fail each one, supersede its runner and cancel its runs, so
-            # nothing still running can act for the deleted account.
-            from tinyassets.agent_activities import fence_all
-            from tinyassets.runs import request_cancel
-
-            store = records / "agent-activities.db"
-            if store.is_file() and not store.is_symlink():
-                for run_id in fence_all(root / records.name, outcome="failed:account_deleted"):
-                    request_cancel(root, run_id)
-            _rmtree(records)
-
-        _phase("agent_session_records", _session_records)
-
-    billing = "not_configured"
-    if home:
-        billing = _phase(
-            "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
-        ) or "error"
-    # A failed two-pass deletion resumes only under this principal's own
-    # authenticated identity, so the sign-in identity outlives it.
-    identity = "deferred:owner_tree" if owner_tree_failed else _phase(
-        "identity", lambda: (delete_identity or delete_workos_user)(principal)
-    ) or "error"
-    # An outcome that is neither "done" nor "nothing to do" is UNFINISHED, even
-    # though nothing raised: `unavailable` means we could not reach Stripe, so a
-    # subscription may still be charging, and silence there is exactly the harm
-    # (Codex round 3, finding 3). `not_configured` for identity means the WorkOS
-    # user still exists and a host must remove it.
-    if billing not in ("cancelled", "none", "not_configured") and "billing" not in failures:
-        failures.append("billing")
-    if identity not in ("deleted", "not_applicable") and "identity" not in failures:
-        failures.append("identity")
-
-    receipt: dict[str, Any] = {
-        "principal_fingerprint": fingerprint,
-        "home_id": home,
-        "home_removed": home_removed,
-        "home_staged_path": staged_path,
-        "rows_deleted": dict(sorted(counts.items())),
-        "billing": billing,
-        "identity": identity,
-        "unfinished_phases": sorted(failures),
-        "retained": list(RETAINED),
-    }
-    if owner_tree_failed:
-        from tinyassets.role_owner_tree_deletion import pending
-
-        # Pass one may already have removed part of the home; say so. None
-        # means the intent store itself could not be read (also unfinished).
-        try:
-            receipt["home_deletion_pending"] = home in pending(root)
-        except (OSError, RuntimeError):
-            receipt["home_deletion_pending"] = None
-    if failures:
-        receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)
-    logger.info(
-        "account deleted %s: home=%s removed=%s rows=%s billing=%s identity=%s unfinished=%s",
-        fingerprint, bool(home), home_removed, sum(counts.values()),
-        billing, identity, sorted(failures),
-    )
-    return receipt
-
-
 __all__ = [
     "BLOCKING_TABLES",
     "PRESERVED_TABLES",
@@ -1214,10 +862,7 @@ __all__ = [
     "RETAINED",
     "AccountDeletionBlocked",
     "AccountDeletionError",
-    "cancel_stripe_billing",
-    "delete_account",
     "deletion_blockers",
     "deletion_plan",
-    "delete_workos_user",
     "pending_deletions",
 ]

@@ -45,13 +45,40 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 
-# Inode labels and dropping to distinct real UIDs require a root coordinator.
+# Root-only proofs (shared backup and lifecycle authority run as root on the host).
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
-    "tests/test_role_owner_tree_deletion.py",
-    "tests/test_role_reader_identity.py",
-    "tests/test_role_center_admission.py",
-    "tests/test_role_content_repair.py",
+    "tests/test_broker_deletion_jobs.py",
+    "tests/test_cutover_deletion_jobs.py",
+    "tests/test_cutover_shared_metadata.py",
+    "tests/test_backup_owner_box.py",
+    "tests/test_owner_cutover_apply.py",
+    "tests/test_box_admission.py",
+    "tests/test_box_destroy.py",
+    "tests/test_box_layout_migration.py",
+    "tests/test_boxhostd_entrypoint.py",
+    "tests/test_box_public_egress.py",
+    "tests/test_box_restore_authority.py",
+    "tests/test_box_store_backup.py",
+    "tests/test_broker_http_connect.py",
+    "tests/test_broker_credential_custody.py",
+    "tests/test_broker_server.py",
+    "tests/test_cutover_billing_deletion.py",
+    "tests/test_center_admissions.py",
+    "tests/test_cold_owner_deletion.py",
+    "tests/test_deleted_authentication.py",
+    "tests/test_deploy_bundle_transaction.py",
+    "tests/test_model_connect_door_lifecycle.py",
+    "tests/test_owner_box_control.py",
+    "tests/test_owner_box_lifecycle.py",
+    "tests/test_owner_box_roll_process.py",
+    "tests/test_owner_cutover_restore.py",
+    "tests/test_owner_public_egress.py",
+    "tests/test_owner_router.py",
+    "tests/test_owner_volume_lifecycle.py",
+    "tests/test_owner_volumes_proof.py",
+    "tests/test_owner_waker.py",
+    "tests/test_router_store_guard.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,
@@ -61,20 +88,25 @@ ROOT_TEST_FILES = frozenset({
 # tests on the 2026-08-02 baseline (run 30767266528); the floor sits far
 # below natural variance and far above any vacuous run. Ratchet it upward
 # as the suite grows.
-MIN_RAN_FLOOR = 10000
+# After the C6 cutover merge (prune, tag-at-merge and b9) the required suite is
+# about 2,608 cases; 2,200 keeps a cushion and still catches a collapse.
+MIN_RAN_FLOOR = 2200
 
-# A heavy-only job runs ~2,235 tests, so it cannot meet the whole-suite floor --
-# and LOWERING the global floor to fit it would disable the vacuity check for
-# the gate too. Named profiles keep the property that matters: a floor is a
-# reviewed constant here, never a number a caller can pick, and the
-# workflow-shape test pins which profile each job uses.
+# A heavy-only job runs the files in .github/heavy-test-files.txt, so it
+# cannot meet the whole-suite floor -- and LOWERING the global floor to fit
+# it would disable the vacuity check for the gate too. Named profiles keep
+# the property that matters: a floor is a reviewed constant here, never a
+# number a caller can pick, and the workflow-shape test pins which profile
+# each job uses.
+# Founder-authorized shape-only pruning leaves 3,605 collected cases, 3,587
+# required cases and 18 heavy cases. Six deterministic required shards have
+# at least 382 cases. These floors preserve a modest cushion under that census.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
-    "heavy": 2000,           # .github/heavy-test-files.txt only (~2,235 today)
-    # ONE shard of the required gate (~3,600 of ~21,900 at 6 shards). The union
-    # floor is checked again by `--aggregate`, but the union floor alone cannot
-    # see one shard collapsing: 5 of 6 shards still clear it comfortably.
-    "shard": 1000,
+    "heavy": 15,             # 18 retained heavy cases after the shape-only prune
+    # ONE of six required shards. The smallest ran 322 cases in the first merge
+    # queue run after the C6 cutover; the aggregate also checks the union.
+    "shard": 260,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
     # purpose: a selection can honestly be one test or none (a docs-only
     # change), and this run is advisory -- the merge-group shards above carry
@@ -93,9 +125,8 @@ MAX_REQUIRED_SKIPPED = 134
 MAX_TEST_SECONDS = 3000
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
 #: is how a red build gets normalised.
-MAX_QUARANTINE = 17
+MAX_QUARANTINE = 8
 #: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
-#: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
 #: cap only ratchets down unless a reviewed change raises it.
 QUARANTINE_SLACK = 8
 #: Leading `key=value` fields a ledger line may carry, BEFORE the node id; a
@@ -503,7 +534,10 @@ def evaluate(
     # comparison did not explain (collection error, usage error, no tests run).
     # Exit codes: 0 ok, 1 tests failed (already explained above), 2 interrupted,
     # 4 usage error, 5 no tests collected.
-    unexplained = [code for code in pytest_exits if code not in (0, 1)]
+    unexplained = [
+        code for code in pytest_exits
+        if code not in (0, 1) or (code == 1 and not failing)
+    ]
     if unexplained:
         summarise(
             [
@@ -864,7 +898,8 @@ def run_oracle_venues(cmd, *, args, selection, env, junit):
     merged = ET.Element("testsuites")
     seen = set()
     exits = []
-    with tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp:
+    with (tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp,
+          tempfile.TemporaryDirectory(prefix="r-", dir="/tmp") as root_temp):
         directory = Path(temp)
         directory.chmod(0o755)
         user_directory = directory / "user"
@@ -887,7 +922,9 @@ def run_oracle_venues(cmd, *, args, selection, env, junit):
                                  SHELL="/bin/sh", TMPDIR="/tmp/t")
             else:
                 # Never let root's pytest own the unprivileged run's temp tree.
-                command += [f"--basetemp={directory / 'root-tmp'}"]
+                # AF_UNIX paths include pytest's test name and the service's
+                # socket suffix; keep this root-owned tree as short as /tmp/b.
+                command += [f"--basetemp={root_temp}"]
             print(f"[oracle venue={venue}] " + " ".join(command), flush=True)
             proc = subprocess.run(command, cwd=REPO_ROOT, env=child_env, **identity)
             exits.append(proc.returncode)
@@ -1366,10 +1403,29 @@ def main() -> int:
     exits = [proc.returncode]
     if args.affected:
         heading = f"### Affected tests{_shard_label(args)}"
-        # Exit 5 (nothing collected) is honest here: a selected file can hold
-        # only `slow` tests, which `-m "not slow"` deselects.
-        if not args.oracle_venues:
-            exits = [0 if code == 5 else code for code in exits]
+        # Passing testcase elements usually have no children, so their XML
+        # truth value is false. Check existence, not element truthiness.
+        reported_case = next(ET.parse(junit).getroot().iter("testcase"), None) is not None
+        # Exit 5 is honest only when every selected file positively collects
+        # tests without the marker filter and none survives `not slow`.
+        # The oracle may also return 5 when a proof vanished, so never waive
+        # the exit merely because its junit has no cases.
+        if proc.returncode == 5 and not reported_case and selection is not None:
+            _, slow_only = collectible_under_gate(selection)
+            if set(selection) <= set(slow_only):
+                exits = [0]
+                if args.shard:
+                    _write_shard_manifest(manifest, args, selection, pytest_exit=0)
+                summarise([
+                    heading, "",
+                    "All selected tests were deselected by the not-slow marker; nothing to run.",
+                ])
+        if proc.returncode == 0 and selection and not reported_case:
+            summarise([
+                heading, "",
+                "**FAILED - a non-empty selection reported no test cases.**",
+            ])
+            return 1
     elif args.shard:
         heading = f"### Required tests - shard {args.shard[0]}/{args.shard[1]}"
     else:

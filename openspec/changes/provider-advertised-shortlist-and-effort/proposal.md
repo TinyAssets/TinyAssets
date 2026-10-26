@@ -82,9 +82,8 @@ candidates, which remain offers to grant.
 
 - The unjailed metadata spawn. `read_native_catalogue` spawns through plain
   `create_subprocess_exec`; this change adds a protocol declaration to that
-  existing boundary and does not widen it. Tracked in
-  `docs/concerns/2026-10-02-native-model-discovery-runs-unjailed.md`, which
-  arrives on main with PR #4350 — no duplicate filed here.
+  existing boundary and does not widen it. Native source work now runs in the
+  owner box (ADR-019, #5182).
 - The synchronous-discovery delay in
   `docs/concerns/2026-09-16-model-picker-global-discovery-delay.md`. Claude now
   participates in the same per-read refresh Codex already did, which does not

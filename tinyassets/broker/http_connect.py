@@ -4,15 +4,31 @@ from __future__ import annotations
 import hashlib
 import json
 
+from tinyassets.credential_vault import custody_namespace
+
 
 def validate(document):
-    from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS
+    from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS, _MAX_SECRET_CHARS
 
+    if isinstance(document, dict) and document.get("action") in {
+            "oauth_offer", "oauth_exchange", "preset_exchange"}:
+        from tinyassets.broker.model_connect import validate as validate_flow
+
+        return validate_flow(document)
+    if isinstance(document, dict) and document.get("action") in {"inspect_custody", "rotate"}:
+        return _validate_custody(document)
     if isinstance(document, dict) and document.get("action") in {"extend", "full"}:
         return _validate_update(document)
-    if not isinstance(document, dict) or set(document) != {
-            "action", "destination", "policy", "expected"}:
+    if not isinstance(document, dict) or set(document) - {"request_ref"} != {
+            "action", "destination", "policy", "expected", "secret"}:
         raise ValueError("invalid HTTP connect fields")
+    ref = document.get("request_ref", "")
+    if not isinstance(ref, str) or len(ref) > 512 or any(ord(c) < 33 for c in ref):
+        raise ValueError("invalid request reference")
+    if not isinstance(document["secret"], str) or len(document["secret"]) > _MAX_SECRET_CHARS:
+        raise ValueError("invalid HTTP credential")
+    if document["action"] == "prepare" and document["secret"]:
+        raise ValueError("preparation cannot contain a credential")
     policy = document["policy"]
     if (document["action"] not in {"prepare", "commit"}
             or not isinstance(document["destination"], str)
@@ -36,9 +52,14 @@ def validate(document):
 def _validate_update(document):
     from tinyassets.api.http_connection import _DESTINATION_RE
 
+    if not isinstance(document, dict):
+        raise ValueError("invalid HTTP policy update")
+    fields = set(document)
+    approved = document.get("approved_endpoints")
+    if "approved_endpoints" in fields:
+        fields.remove("approved_endpoints")
     expected = document.get("expected")
-    if (set(document) != {"action", "destination", "expected", "endpoints", "scopes",
-                          "git_host"}
+    if (fields != {"action", "destination", "expected", "endpoints", "scopes", "git_host"}
             or not isinstance(document["destination"], str)
             or not _DESTINATION_RE.fullmatch(document["destination"])
             or not isinstance(expected, dict)
@@ -47,16 +68,31 @@ def _validate_update(document):
             or not isinstance(document["git_host"], str)
             or not isinstance(document["endpoints"], list)
             or not isinstance(document["scopes"], list)
-            or any(not isinstance(v, str) for v in document["scopes"])):
+            or any(not isinstance(v, str) for v in document["scopes"])
+            or ("approved_endpoints" in document and not isinstance(approved, list))):
         raise ValueError("invalid HTTP policy update")
-    if document["action"] == "full" and (document["endpoints"] or document["scopes"]):
+    if document["action"] == "full" and (
+            document["endpoints"] or document["scopes"] or approved):
         raise ValueError("full access changes only the mode")
 
 
-def local_operation(ledger, *, principal, command_center, document):
+def local_operation(ledger, *, principal, command_center, document, committed_via):
+    if committed_via not in {"door", "box"}:
+        raise ValueError("invalid commit transport")
+    if committed_via == "box" and "request_ref" in document:
+        raise PermissionError("request references require the door")
+    if document.get("action") in {
+            "oauth_offer", "oauth_exchange", "preset_exchange"}:
+        from tinyassets.broker.model_connect import local_operation as flow_operation
+
+        return flow_operation(ledger, principal=principal, command_center=command_center,
+                              document=document, committed_via=committed_via)
+    if document.get("action") in {"inspect_custody", "rotate"}:
+        return _custody_local(ledger, principal=principal, command_center=command_center,
+                              document=document, committed_via=committed_via)
     if document.get("action") in {"extend", "full"}:
         return _update_local(ledger, principal=principal, command_center=command_center,
-                             document=document)
+                             document=document, committed_via=committed_via)
     from tinyassets.api.http_connection import _connect_plan, _ids, _project
     from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, validate_query
     from tinyassets.storage.outbound_connections import (
@@ -69,7 +105,7 @@ def local_operation(ledger, *, principal, command_center, document):
 
     validate(document)
     destination, policy = document["destination"], document["policy"]
-    connection_id, grant_id = _ids(universe_id=command_center, destination=destination)
+    connection_id, grant_id = _ids(owner=principal, destination=destination)
     validate_query(AUTHORIZED_CONNECTION, principal, command_center, grant_id, connection_id)
     endpoints = _parse_allowed_endpoints(policy["endpoints"])
     access = normalize_access_mode(policy["access_mode"])
@@ -81,6 +117,11 @@ def local_operation(ledger, *, principal, command_center, document):
     validate_git_scopes(policy["scopes"], hosts=[ep.host for ep in endpoints], git_host=host)
     with ledger._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        # Serialize against custody erasure before consulting the sole fence.
+        # A worker already dispatched before close-all cannot recreate rows.
+        from tinyassets.broker.admission import local_read
+
+        local_read(ledger._data_root, principal).require_work()
         row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
                            (connection_id,)).fetchone()
         grow = conn.execute("SELECT * FROM outbound_connection_grants WHERE grant_id=?",
@@ -96,6 +137,12 @@ def local_operation(ledger, *, principal, command_center, document):
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
         grant = ledger.get_grant(grant_id, _transaction=conn)
         raw_policy = (row["allowed_endpoints_json"], row["scopes_json"]) if row else None
+        erased = bool(row and row["custody_erased"] and row["revoked_at"] is not None
+                      and row["owner_user_id"] == principal and grow is None)
+        prior_endpoints = [] if erased or row is None else json.loads(
+            row["allowed_endpoints_json"] or "[]")
+        if erased:
+            resource, raw_policy = None, None
         plan = _connect_plan(
             resource=resource, raw_policy=raw_policy, existing_grant=grant,
             actor=principal, uid=command_center, destination=destination,
@@ -107,7 +154,15 @@ def local_operation(ledger, *, principal, command_center, document):
             return plan
         if document["action"] == "prepare":
             return {"revision": revision}
+        secret = document["secret"]
+        from tinyassets.api.http_connection import _secret_shape_error
+        error = ((_secret_shape_error(scheme, secret) if secret.strip() else "secret is required")
+                 if scheme != "none" else "")
+        if error:
+            return {"error": "connection_setup_invalid", "detail": error}
         scopes = plan["http_scopes"]
+        if erased:
+            conn.execute("DELETE FROM outbound_connections WHERE connection_id=?", (connection_id,))
         if resource is None:
             ledger.create_connection(
                 connection_id=connection_id, owner_user_id=principal, connection_class="http",
@@ -124,7 +179,7 @@ def local_operation(ledger, *, principal, command_center, document):
         if grant is None:
             grant = ledger.grant_connection(
                 grant_id=grant_id, connection_id=connection_id, owner_user_id=principal,
-                universe_id=command_center,
+
                 _transaction=conn)
         if plan["legacy_scope_upgrade"]:
             ledger._upgrade_http_connection_scopes(
@@ -140,17 +195,31 @@ def local_operation(ledger, *, principal, command_center, document):
                     expected_incarnation=current["incarnation"], expected_grant_id=grant_id,
                     git_host=host, _transaction=conn):
                 raise RuntimeError("connection policy changed")
+        if scheme != "none":
+            failure = _deposit(ledger, command_center, principal, destination, secret)
+            if failure:
+                conn.rollback()
+                return failure
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
-        return {"projection": _project(resource, grant)}
+        conn.execute("UPDATE outbound_connections SET request_ref=?, committed_via=? "
+                     "WHERE connection_id=?",
+                     (document.get("request_ref", ""), committed_via, connection_id))
+        _record_egress_scope(conn, connection_id, committed_via, policy["endpoints"],
+                             prior_endpoints=prior_endpoints, git_host=host)
+        return {"projection": {**_project(resource, grant),
+                               "request_ref": document.get("request_ref", "")}}
 
 
 def connect_operation(data_root, *, principal, command_center, destination, policy, action,
-                      expected=""):
+                      expected="", secret="", request_ref=""):
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
-    document = dict(action=action, destination=destination, policy=policy, expected=expected)
+    document = dict(action=action, destination=destination, policy=policy,
+                    expected=expected, secret=secret)
+    if request_ref:
+        document["request_ref"] = request_ref
     validate(document)
     supervisor = get_supervisor(data_root)
     if supervisor is None:
@@ -160,8 +229,8 @@ def connect_operation(data_root, *, principal, command_center, destination, poli
                           verify_peer=supervisor.verify_broker, timeout=30)
     result = client.http_connect(document)
     if "error" in result:
-        if result not in ({"error": "connection_conflict", "resource": "connection"},
-                          {"error": "connection_conflict", "resource": "grant"}):
+        if result.get("error") not in {"connection_conflict", "deposit_failed",
+                "credential_ownership_transfer_unsupported", "connection_setup_invalid"}:
             raise ProxyRequestError("invalid broker connect refusal")
     elif action == "prepare":
         if (set(result) != {"revision"} or not isinstance(result["revision"], str)
@@ -172,14 +241,69 @@ def connect_operation(data_root, *, principal, command_center, destination, poli
     return result
 
 
-def _update_local(ledger, *, principal, command_center, document):
+def _endpoint_port(raw):
+    """The port an endpoint named, or 443 when it named none."""
+    if isinstance(raw, dict) and "port" in raw and raw["port"] is not None:
+        return raw["port"]
+    return 443
+
+
+def _endpoint_body(raw):
+    """Credential identity of an endpoint, without its egress port."""
+    if not isinstance(raw, dict):
+        raise ValueError("invalid destination")
+    return {key: value for key, value in raw.items() if key != "port"}
+
+
+def _record_egress_scope(conn, connection_id, committed_via, submitted, *,
+                         prior_endpoints=(), git_host=""):
+    """Endorse only destinations this door request itself submitted.
+
+    A door extend keeps every previous ``owner_egress_json`` entry and adds
+    destinations from ``submitted`` that were not already on
+    ``prior_endpoints``. The stored connection row is never copied: a box may
+    have widened it, and a later door extend has to repeat those hosts so the
+    credential set stays a superset. ``git_host`` is endorsed only when this
+    deposit names one. The endpoint's own port is kept; 443 is the default
+    only when the endpoint names no port.
+    """
+    from tinyassets.api.http_connection import _canonical_endpoint_set
+    from tinyassets.broker.egress import normalize_destination
+
+    conn.execute("UPDATE outbound_connections SET committed_via=? WHERE connection_id=?",
+                 (committed_via, connection_id))
+    if committed_via != "door":
+        return
+    row = conn.execute("SELECT owner_egress_json FROM outbound_connections "
+                       "WHERE connection_id=?", (connection_id,)).fetchone()
+    previous = json.loads(row[0] or "[]")
+    if not isinstance(previous, list) or any(not isinstance(item, dict) for item in previous):
+        raise ValueError("owner egress scope is unreadable")
+    targets = list(previous)
+    already = _canonical_endpoint_set([_endpoint_body(item) for item in prior_endpoints])
+    for raw in submitted:
+        body = _endpoint_body(raw)
+        if _canonical_endpoint_set([body]) <= already:
+            continue
+        target = normalize_destination(body.get("host"), _endpoint_port(raw))
+        if target not in targets:
+            targets.append(target)
+    if git_host:
+        target = normalize_destination(git_host, 443)
+        if target not in targets:
+            targets.append(target)
+    conn.execute("UPDATE outbound_connections SET owner_egress_json=? "
+                 "WHERE connection_id=?", (json.dumps(targets), connection_id))
+
+
+def _update_local(ledger, *, principal, command_center, document, committed_via):
     """Apply an owner-approved extension against its exact broker snapshot."""
     from tinyassets.api.http_connection import _canonical_endpoint_set, _ids
     from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, validate_query
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     validate(document)
-    connection_id, grant_id = _ids(universe_id=command_center, destination=document["destination"])
+    connection_id, grant_id = _ids(owner=principal, destination=document["destination"])
     validate_query(AUTHORIZED_CONNECTION, principal, command_center, grant_id, connection_id)
     expected = document["expected"]
     with ledger._connect() as conn:
@@ -187,9 +311,9 @@ def _update_local(ledger, *, principal, command_center, document):
         row = conn.execute(
             "SELECT c.* FROM outbound_connections c JOIN outbound_connection_grants g "
             "ON g.connection_id=c.connection_id WHERE c.connection_id=? AND g.grant_id=? "
-            "AND c.owner_user_id=? AND g.owner_user_id=? AND g.universe_id=? "
+            "AND c.owner_user_id=? AND g.owner_user_id=? "
             "AND c.revoked_at IS NULL AND g.revoked_at IS NULL",
-            (connection_id, grant_id, principal, principal, command_center)).fetchone()
+            (connection_id, grant_id, principal, principal)).fetchone()
         if (row is None or row["connection_type"] != "http" or row["provider"] != "http"
                 or row["connection_class"] != "http"
                 or row["destination"] != document["destination"]
@@ -200,6 +324,7 @@ def _update_local(ledger, *, principal, command_center, document):
                   "incarnation": row["incarnation"]}
         if expected != actual or document["git_host"] != row["git_host"]:
             return {"updated": False}
+        prior_endpoints = json.loads(row["allowed_endpoints_json"] or "[]")
         if document["action"] == "full":
             updated = ledger.set_access_mode(
                 connection_id=connection_id, access_mode="full",
@@ -220,17 +345,30 @@ def _update_local(ledger, *, principal, command_center, document):
                 expected_access_mode=expected["access_mode"],
                 expected_incarnation=expected["incarnation"], expected_grant_id=grant_id,
                 _transaction=conn)
+        if updated:
+            # ``approved_endpoints`` is the ask's own list. The credential
+            # ``endpoints`` superset may repeat box-widened hosts and must not
+            # endorse them. Without that list, only hosts this request adds
+            # beyond the pre-update row are new.
+            if "approved_endpoints" in document:
+                explicit, prior = document["approved_endpoints"], []
+            else:
+                explicit, prior = document["endpoints"], prior_endpoints
+            _record_egress_scope(conn, connection_id, committed_via, explicit,
+                                 prior_endpoints=prior)
         return {"updated": updated}
 
 
 def update_operation(data_root, *, principal, command_center, destination, expected,
-                     action, endpoints=(), scopes=(), git_host=""):
+                     action, endpoints=(), scopes=(), git_host="", approved_endpoints=None):
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
     document = dict(action=action, destination=destination, expected=expected,
                     endpoints=list(endpoints), scopes=list(scopes), git_host=git_host)
+    if approved_endpoints is not None:
+        document["approved_endpoints"] = list(approved_endpoints)
     validate(document)
     supervisor = get_supervisor(data_root)
     if supervisor is None:
@@ -242,3 +380,95 @@ def update_operation(data_root, *, principal, command_center, destination, expec
     if set(result) != {"updated"} or type(result["updated"]) is not bool:
         raise ProxyRequestError("invalid broker policy response")
     return result["updated"]
+
+
+def _deposit(ledger, center, principal, destination, secret):
+    from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import http_credential_record
+
+    try:
+        write_credential_vault(custody_namespace(ledger._data_root, principal),
+            [http_credential_record(destination=destination, token=secret)],
+            owner_user_id=principal, universe_id=center)
+    except PermissionError:
+        return {"error": "credential_ownership_transfer_unsupported",
+                "detail": "this destination's credential is owned by another principal"}
+    except Exception:
+        return {"error": "deposit_failed", "resource": "connection"}
+    return None
+
+
+def _validate_custody(document):
+    ref = document.get("request_ref", "")
+    if not isinstance(ref, str) or len(ref) > 512 or any(ord(c) < 33 for c in ref):
+        raise ValueError("invalid request reference")
+    from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_SECRET_CHARS
+
+    if (set(document) - {"request_ref"} != {"action", "destination", "incarnation", "secret"}
+            or not isinstance(document["destination"], str)
+            or not _DESTINATION_RE.fullmatch(document["destination"])
+            or not isinstance(document["incarnation"], str)
+            or not isinstance(document["secret"], str)
+            or len(document["secret"]) > _MAX_SECRET_CHARS
+            or (document["action"] == "inspect_custody" and document["secret"])
+            or (document["action"] == "rotate" and not document["secret"].strip())):
+        raise ValueError("invalid custody operation")
+
+
+def _custody_local(ledger, *, principal, command_center, document, committed_via):
+    from tinyassets.api.http_connection import _ids, _secret_shape_error, _unpasteable_scheme
+    from tinyassets.credential_vault import http_deposit_refusal
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    validate(document)
+    connection, grant = _ids(owner=principal, destination=document["destination"])
+    with ledger._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT c.* FROM outbound_connections c "
+            "JOIN outbound_connection_grants g ON g.connection_id=c.connection_id "
+            "WHERE c.connection_id=? AND g.grant_id=? AND c.owner_user_id=? "
+            "AND g.owner_user_id=? AND c.revoked_at IS NULL "
+            "AND g.revoked_at IS NULL", (connection, grant, principal, principal)).fetchone()
+        if (row is None or row["connection_type"] != "http"
+                or row["connection_class"] != "http" or row["provider"] != "http"
+                or row["destination"] != document["destination"]
+                or row["credential_ref"] != "vault://http/" + document["destination"]):
+            raise GrantResolutionError("connection unavailable")
+        refusal = http_deposit_refusal(custody_namespace(ledger._data_root, principal),
+            destination=document["destination"], owner_user_id=principal)
+        if document["action"] == "inspect_custody":
+            return {"refusal": refusal}
+        if row["incarnation"] != document["incarnation"]:
+            return {"error": "connection_changed", "resource": "connection"}
+        error = _unpasteable_scheme(row["auth_scheme"])
+        if error:
+            return error
+        error = _secret_shape_error(row["auth_scheme"], document["secret"])
+        if error:
+            return {"error": "connection_setup_invalid", "detail": error}
+        failure = _deposit(ledger, command_center, principal, document["destination"],
+                           document["secret"])
+        if failure:
+            return failure
+        conn.execute("UPDATE outbound_connections SET request_ref=?, committed_via=? "
+                     "WHERE connection_id=?",
+                     (document.get("request_ref", ""), committed_via, connection))
+        return {"rotated": True}
+
+
+def custody_operation(data_root, *, principal, command_center, destination,
+                      incarnation="", secret="", action="inspect_custody", request_ref=""):
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
+    document = dict(action=action, destination=destination, incarnation=incarnation, secret=secret)
+    if request_ref:
+        document["request_ref"] = request_ref
+    validate(document)
+    return BrokerClient(supervisor.socket_path, principal=principal,
+        command_center=command_center, fence=supervisor.fence,
+        verify_peer=supervisor.verify_broker, timeout=30).http_connect(document)

@@ -8,7 +8,10 @@ from tests.test_broker_server import broker  # noqa: F401 - real Unix server fix
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.owner_identities import OwnerIdentities
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix identity broker")
+pytestmark = [
+    pytest.mark.skipif(os.name != "posix", reason="Unix identity broker"),
+    pytest.mark.verifies('owner-daemon-in-box:T3'),
+]
 
 
 def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argument
@@ -22,6 +25,7 @@ def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argum
 
 
 def test_real_ipc_allocation_replay_and_missing_store(broker, tmp_path):  # noqa: F811
+    broker.server._owner_identities = None
     assert request(broker) == {"op": "OWNER_IDENTITY_REFUSED"}
     tmp_path.chmod(0o700)
     identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)

@@ -69,7 +69,7 @@ the separately tracked daemon/engine UID and procfs isolation work.
 | `TINYASSETS_DATA_DIR` | Canonical root for all on-disk state (SQLite checkpoint, LanceDB indexes, per-universe output dirs). Absolute path. | Platform default — Windows: `%APPDATA%\TinyAssets`; Linux/macOS/container: `~/.workflow`. |
 | `TINYASSETS_UNIVERSE` | Per-universe override — specific universe dir for the stdio MCP shim (`workflow.mcp_server`). | `$TINYASSETS_DATA_DIR/default-universe`. |
 | `UNIVERSE_SERVER_DEFAULT_UNIVERSE` | Which universe ID is active when none explicit. | First subdir of `$TINYASSETS_DATA_DIR`. |
-| `TINYASSETS_REPO_ROOT` | Path to the local git checkout for `workflow.producers.goal_pool` + git-backed catalog writes. When unset, resolved via `Path(__file__).resolve().parent.parent`. | Derived from module path. |
+| `TINYASSETS_REPO_ROOT` | Shared community-pool directory on the data volume. Deploy sets `/data/community-pool`. Nothing in the process reads it after the goal-pool producer was removed. | `/data/community-pool` in the daemon container. |
 | `TINYASSETS_WIKI_PATH` | Canonical root for the cross-project knowledge wiki the `wiki` tool reads/writes. Resolved via `workflow.storage.wiki_path()`; inherits `data_dir()` platform handling when unset. | `$TINYASSETS_DATA_DIR/wiki` (platform default). |
 
 ## Account storage quota
@@ -137,8 +137,8 @@ user. Getting the id is a founder step: `docs/host-actions.md`.
 
 PR #4267 classifies deployment credentials by their actual readers (2026-10-04).
 Compose injects `daemon.env` (rendered from `tinyassets-env.template`),
-`request-idempotency.env`, `agent-interchange.env`, and `app-ingress.env`.
-The latter three use their matching `*-env.template` files. Optional credentials
+`request-idempotency.env`, and `agent-interchange.env`.
+The latter two use their matching `*-env.template` files. Optional credentials
 from this catalog are also declared as commented assignments in the shared
 template, so the Compose-derived inventory test covers them even when unset.
 The daemon's explicit Compose `environment` block contains configuration only.
@@ -151,7 +151,6 @@ The daemon's explicit Compose `environment` block contains configuration only.
 | `WORKOS_API_KEY` | shared env | Removed; `account_deletion.py`, daemon account deletion. |
 | `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` | request-idempotency.env | Removed; `storage/request_admissions.py:mint_idempotency_key_hash`, called by `api/universe.py` admission, plus the interchange fallback below. Engine `run_graph` admission uses `engine_admissions`, not this minter. |
 | `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` | agent-interchange.env | Removed; no Python reader remains under `tinyassets/` since C8 deleted `agent_interchange.py` (agents are files). The deploy template, compose env file and workflow validator still provision it; a deploy lane retires them. |
-| `TINYASSETS_APP_INGRESS_HMAC_KEY` | app-ingress.env | Removed; template reserves it for daemon ingress and the slack-agent caller. No Python reader remains under `tinyassets/` at this head, including the engine. Compose still injects it. |
 | `TINYASSETS_WIKI_CANARY_TOKEN` | shared env | Removed; `auth/wiki_canary.py` verifies the daemon's canary principal, and external health probes send it. Engine HTTP uses a fresh per-engine bearer and binds its owner directly. |
 | `TINYASSETS_SESSION_SEAL_KEY` | shared env | Removed even before `session_store.arm()` pops it; `onboarding/session_store.py` seals daemon app refresh sessions. |
 | `TINYASSETS_IDENTITY_FINGERPRINT_KEY` | shared env | Retained with an explicit reason: engine `get_status` delegates to `api/status.py`, which computes the principal fingerprint; `engine_read_views.py` preserves identity evidence. |
@@ -189,9 +188,7 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `TINYASSETS_DISPATCHER_ENABLED` | Master switch for the dispatcher. Off = every request runs inline; on = dispatch goes through the claim/bid surface. | `on`. |
-| `TINYASSETS_PAID_MARKET` | Enables the paid-market bid/claim surface. `TINYASSETS_DISPATCHER_ENABLED` must also be on. Phase-G flag. | `off`. |
-| `TINYASSETS_GOAL_POOL` | Enables the goal-pool producer in `workflow.producers.goal_pool` — cross-branch goal aggregation. | `off`. |
+| `TINYASSETS_DISPATCHER_ENABLED` | Master switch for the dispatcher. Off = every request runs inline; on = dispatch goes through the claim surface. | `on`. |
 | `TINYASSETS_PRODUCER_INTERFACE` | Enables the producer-interface surface — multi-producer concurrency for branches. | `on`. |
 | `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` | Master transport gate for credential-blind outbound HTTP through user-owned connection grants, including compatible realtime Voice bridges. This gate never grants provider authority, selects a provider, or authorizes platform-funded usage; each call still requires its exact owner, universe, grant, method, endpoint, credential, and capability checks. | `off`. |
 | `TINYASSETS_CREDENTIAL_BROKER` | `process` starts the credential broker process (S6, change `broker-streaming-contract`) under the daemon and routes every http connection's `proxy.request` through its socket instead of a spawned worker per proxy. Selected but not running is a loud refusal, never a fall back. Until the per-role uid split (daemon / engine children / broker) the daemon refuses to start with it selected. Temporary rollout switch: removed once the broker is the only path. | unset (per-proxy worker). |
@@ -216,7 +213,7 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `ANTHROPIC_BASE_URL` | Alternate Anthropic endpoint (e.g. self-hosted relay). Presence also flips `llm_endpoint_bound` to truthy. | Unset. |
 | `TINYASSETS_PIN_WRITER` | Pin a specific writer provider by name (e.g. `"claude-code"`, `"codex"`). Overrides the provider router's fallback chain. | Unset. |
 | `TINYASSETS_CODEX_MODEL` | Explicit operator-global CLI model override across universes using this adapter. Not a connection-local user selection. Keep unset in production so the connected CLI chooses its native model; a rejected explicit override is not silently replaced. | Unset/blank: no model flag; outcome label `provider-default` because JSONL does not expose the resolved name. |
-| Model credentials (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `TINYASSETS_CODEX_AUTH_JSON_B64`, `TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64`, `TINYASSETS_ALLOW_API_KEY_PROVIDERS`) | **Retired 2026-09-24 -- the platform has no LLM (AGENTS.md Hard Rule 15).** None is set on the platform; `deploy/docker-entrypoint.sh` strips each one unconditionally, and `deploy/retire_platform_llm_logins.sh` removes them from the host after a green deploy. A universe's provider child gets its own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` from that universe's credentials. `tests/test_no_platform_llm_credentials.py` guards the absence. | Never set. |
+| Model credentials (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `TINYASSETS_CODEX_AUTH_JSON_B64`, `TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64`, `TINYASSETS_ALLOW_API_KEY_PROVIDERS`) | **Retired 2026-09-24 -- the platform has no LLM (AGENTS.md Hard Rule 15).** None is set on the platform; `deploy/docker-entrypoint.sh` strips each one unconditionally, and `deploy/retire_platform_llm_logins.sh` removes them from the host after a green deploy. A universe's provider child gets its own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` from that universe's credentials. `tests/test_engine_secret_inventory.py` guards credential placement. | Never set. |
 | `TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY` | Deprecated no-op placeholder retained in `deploy/compose.yml` and `deploy/tinyassets-env.template`. No code path reads this flag. | Unset (no-op). |
 | `TINYASSETS_HUGGINGFACE_OAUTH_CLIENT_ID` | Public OAuth client id of a Hugging Face app registered for the connect screen's "Sign in with Hugging Face" source (redirect URI `<public origin>/app/model-callback/connect`, no secret). Unset: the client id is this deployment's Client ID Metadata Document, `<public origin>/app/oauth/client-metadata.json` (`tinyassets/onboarding/source_connect.py`). | Unset. |
 | `FANTASY_DAEMON_LLM_TYPES` | Comma-separated list of LLM types the fantasy daemon prefers (e.g. `"claude,codex"`). Filters provider selection. | Unset. |
@@ -308,10 +305,9 @@ A request reaches its owner's registered devices as a notification. Each channel
 
 Installation is disabled by default even when the credential pair is present.
 Before setting `TINYASSETS_OAUTH_CREDENTIALS_INSTALL=true`, verify deployment of
-#4441 and resolve `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md` with
-its Linux isolation proof. Environment filtering alone does not prevent a
-same-UID engine from recovering daemon/PID1 secrets. Until those prerequisites
-are proven, unrelated deploys continue with OAuth disabled. Disabled mode does
+#4441. Engine endpoints run in the owner box without platform credentials
+(ADR-019, #5182); environment filtering is not that isolation boundary. Until
+that deployment is verified, unrelated deploys continue with OAuth disabled. Disabled mode does
 not consume or validate the credential pair and selects removal of retained
 keys; setting the variable false is the deactivation path on the next deploy.
 No activation or production proof is claimed by this change.

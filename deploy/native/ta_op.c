@@ -257,7 +257,7 @@ static int is_env_name(const char *s) {
 /* The four operational flag families `droplet.py env` has always summarised.
  * Compiled in; matched against the NAME only, never the value, and never a
  * shell pipeline over the whole environment. */
-static const char *SUMMARY_PATTERNS[] = {"AUTO_SHIP", "OLLAMA", "PIN_WRITER", "GOAL_POOL"};
+static const char *SUMMARY_PATTERNS[] = {"AUTO_SHIP", "OLLAMA", "PIN_WRITER"};
 
 static int name_matches_summary(const char *entry, size_t name_len) {
     for (size_t i = 0; i < sizeof(SUMMARY_PATTERNS) / sizeof(SUMMARY_PATTERNS[0]); ++i) {

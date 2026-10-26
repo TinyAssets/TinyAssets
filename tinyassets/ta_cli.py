@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
 import uuid
-from pathlib import Path
 
 SOCKET = "/tmp/ta.sock"
 MAX_MESSAGE = 8 * 1024 * 1024
-NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
 def remote(message):
@@ -51,72 +48,6 @@ def _staged(path):
     return os.path.join(root, path[len(mount):])
 
 
-def extensions(roots):
-    """Manifests are untrusted workspace files, read only by this jailed process."""
-    found = {}
-    for scope, directory in roots.items():
-        root = Path(directory)
-        if not root.is_dir():
-            continue
-        for package in sorted(root.iterdir()):
-            if not NAME.fullmatch(package.name) or not package.is_dir():
-                continue
-            manifest = package / "extension.json"
-            if not manifest.is_file():
-                continue
-            try:
-                with manifest.open("rb") as source:
-                    raw = source.read(256 * 1024 + 1)
-                if len(raw) > 256 * 1024:
-                    raise ValueError("manifest too large")
-                spec = json.loads(raw, object_pairs_hook=_unique_keys)
-                # v2 requires revision-bound activation and lifecycle dispatch.
-                # Until those exist, never execute it as a legacy tool package:
-                # ignoring its version would bypass the activation contract.
-                if not isinstance(spec, dict):
-                    raise ValueError("manifest must be an object")
-                version = spec.get("schema_version", 1)
-                if type(version) is not int or version != 1:
-                    raise ValueError("unsupported extension schema_version; activation unavailable")
-                if {"hooks", "commands", "cards"} & spec.keys():
-                    raise ValueError("lifecycle contributions require activated schema_version 2")
-                executable = (package / spec["executable"]).resolve()
-                if not executable.is_relative_to(package.resolve()):
-                    raise ValueError("executable leaves package")
-                if not isinstance(spec["tools"], list):
-                    raise ValueError("tools must be a list")
-                pending = {}
-                for tool in spec["tools"]:
-                    if (not NAME.fullmatch(tool["name"])
-                            or not isinstance(tool["description"], str)
-                            or not isinstance(tool["arguments"], dict)):
-                        raise ValueError("invalid tool definition")
-                    name = f"ext:{scope}:{package.name}:{tool['name']}"
-                    if name in found or name in pending:
-                        raise ValueError("duplicate extension tool")
-                    pending[name] = {
-                        "name": name, "description": tool["description"],
-                        "arguments": tool["arguments"],
-                        "executable": str(executable), "tool": tool["name"],
-                    }
-            except (ValueError, KeyError, TypeError, OSError, RecursionError) as exc:
-                # stderr keeps search/call stdout valid JSON. Do not partially
-                # register a package whose later entry is invalid or duplicate.
-                print(f"ta: skipped extension {manifest}: {str(exc)[:300]}", file=sys.stderr)
-                continue
-            found.update(pending)
-    return found
-
-
-def _unique_keys(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate manifest key")
-        result[key] = value
-    return result
-
-
 def main(argv=None, *, dispatch=None, load_extensions=True):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -131,13 +62,11 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
     catalog = invoke({"op": "catalog"})
     if "error" in catalog:
         return catalog
-    local = extensions(catalog["extension_roots"]) if load_extensions else {}
     capabilities = {item["name"]: item for item in catalog["capabilities"]}
     capabilities.update({item["name"]: item
                          for item in catalog.get("extension_capabilities", [])})
     if catalog.get("extension_error"):
         print(f"ta: extensions unavailable: {catalog['extension_error']}", file=sys.stderr)
-    capabilities.update(local)
     if argv[0] == "search":
         words = [word.lower() for word in argv[1:]]
         return [
@@ -170,13 +99,6 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
                 if isinstance(value, dict) and (value.get("error") or value.get("error_kind")):
                     return {"error": "extension_hook_failed", "results": results}
         return {"event": arguments["event"], "results": results}
-    if name in local:
-        item = local[name]
-        result = subprocess.run(
-            [item["executable"], item["tool"], json.dumps(arguments)],
-            stdout=subprocess.PIPE, check=True,
-        )
-        return json.loads(result.stdout)
     if name not in capabilities:
         raise ValueError(f"unknown capability: {name}")
     response = invoke({"op": "call", "name": name, "arguments": arguments})

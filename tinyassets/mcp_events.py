@@ -29,6 +29,7 @@ from tinyassets.mcp_event_webhooks import (
     signing_key,
     verify,
 )
+from tinyassets.owner_activity import owner_work
 
 NAME = "workflow.succeeded"
 MAX_TTL = 86400
@@ -398,6 +399,7 @@ class EventStore:
                     (row["id"], json.loads(body)["eventId"], body, occurred, now),
                 )
 
+    @owner_work
     def pump(self, limit=32):
         """Claim before I/O; recover abandoned claims with stable IDs after restart."""
         if not self.path.exists():

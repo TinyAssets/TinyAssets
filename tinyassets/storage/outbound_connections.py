@@ -23,7 +23,8 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -152,11 +153,10 @@ class ConnectionResource:
     #: How the child applies the credential (design.md D5): "bearer" | "basic" |
     #: "header" | "none". Empty for legacy connections.
     auth_scheme: str = ""
-    #: The per-connection egress allowlist (design.md D3). Empty ⇒ no call.
+    #: Authorized credential endpoints (C7). Empty means public access without auth.
     allowed_endpoints: tuple[OutboundEndpoint, ...] = ()
-    #: ``exact`` | ``full`` (full-channel-access D2). Read by the egress
-    #: allowlist, the git-scope check and the workspace consents; never by the
-    #: SSRF safety checks, which run for both modes.
+    #: ``exact`` | ``full`` credential service scope and workspace consent.
+    #: Public-address validation runs for both modes.
     access_mode: str = ACCESS_EXACT
     #: The host git operations use, when the owner declared one at connect time
     #: (a forge whose git transport is not its API host). Empty: the connection's
@@ -252,32 +252,9 @@ class ConnectionGrant:
     grant_id: str
     connection_id: str
     owner_user_id: str
-    universe_id: str
     granted_at: float
     revoked_at: float | None
     unprompted_action_cap: ActionCap | None
-
-
-@dataclass(frozen=True, slots=True)
-class ConnectionCapability:
-    """Bounded, credential-free metadata attached to one connection."""
-
-    connection_id: str
-    capability_kind: str
-    protocol: str
-    session_url: str
-    service_name: str
-    privacy_url: str
-
-    def descriptor(self) -> dict[str, str]:
-        result = {
-            "protocol": self.protocol,
-            "session_url": self.session_url,
-            "service_name": self.service_name,
-        }
-        if self.privacy_url:
-            result["privacy_url"] = self.privacy_url
-        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,7 +536,7 @@ _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
 
 #: The capability-URL scheme: the credential is a PATH SEGMENT, not a header.
 #: A Slack/Discord/Zapier incoming webhook and this platform's own
-#: ``/mcp/hooks/<token>`` all carry their secret in the URL, which is the most
+#: ``/hooks/inbound/<token>`` all carry their secret in the URL, which is the most
 #: common way an agent posts a message anywhere -- and the one place every other
 #: scheme had nothing to say. Live 2026-09-30 a universe handed a webhook link
 #: asked for a bearer token that does not exist, then hardcoded the secret into
@@ -577,7 +554,7 @@ _SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
 )
 
 #: The reserved path placeholder a capability URL's secret fills. ``{secret}`` is
-#: exactly one segment (``/mcp/hooks/{secret}``, Discord's token); ``{secret+}``
+#: exactly one segment (``/hooks/inbound/{secret}``, Discord's token); ``{secret+}``
 #: is the final tail of one or more (Slack's secret is ``T…/B…/token``, three
 #: segments). RESERVED: the name may not be used as an ordinary ``{param}``, and
 #: its value pattern is the platform's, never the caller's (see
@@ -731,7 +708,7 @@ def validate_url_secret_binding(
         #
         # Every real capability URL is a FIXED path plus a secret -- Slack's
         # `/services/{secret+}`, Discord's `/api/webhooks/{secret+}`, Zapier's
-        # `/hooks/catch/{secret+}`, this platform's `/mcp/hooks/{secret}`. So
+        # `/hooks/catch/{secret+}`, this platform's `/hooks/inbound/{secret}`. So
         # this costs nothing real, and it buys two things:
         #
         # 1. It removes the shape astra's round-1 FINDING 3 attacked. There can
@@ -827,17 +804,17 @@ class _BrokerChannel:
     fresh ``op_id``. Holds no credential.
     """
 
-    __slots__ = ("_client", "_closed", "_connection_id", "_grant_id")
+    __slots__ = ("_client", "_closed", "_connection_id", "_grant_id", "_stream_factory")
 
-    def __init__(self, client: Any, *, grant_id: str, connection_id: str) -> None:
+    def __init__(self, client: Any, *, grant_id: str, connection_id: str,
+                 stream_factory=None) -> None:
+        self._stream_factory = stream_factory
         self._client = client
         self._grant_id = grant_id
         self._connection_id = connection_id
         self._closed = False
 
-    def request(self, verb: str, request: object, *, inference_usage=None,
-                policy_approval=None, policy_grant_ref=None, policy_agent=None,
-                policy_task_id=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         from tinyassets.broker.ops import new_op_id
 
         if self._closed:
@@ -848,14 +825,23 @@ class _BrokerChannel:
                                     verb=verb, request=request,
                                     op_id=(inference_usage.operation_id
                                            if inference_usage is not None else new_op_id()),
-                                    **({"policy_approval": policy_approval}
-                                       if policy_approval is not None else {}),
-                                    **({"policy_grant_ref": policy_grant_ref,
-                                        "policy_agent": policy_agent,
-                                        "policy_task_id": policy_task_id}
-                                       if policy_grant_ref is not None else {}),
                                     **({"inference_usage": inference_usage.document()}
                                        if inference_usage is not None else {}))
+
+    @asynccontextmanager
+    async def stream(self, verb, request, *, inference_usage=None, operation_id):
+        if self._closed or self._stream_factory is None:
+            raise ProxyRequestError("outbound streaming proxy is unavailable")
+        if not isinstance(request, dict):
+            raise ProxyRequestError("outbound proxy rejected an invalid request")
+        async with self._stream_factory() as client:
+            async with client.stream(
+                grant_id=self._grant_id, connection_id=self._connection_id,
+                verb=verb, request=request, op_id=operation_id,
+                inference_usage=(
+                    inference_usage.document() if inference_usage is not None else None),
+            ) as stream:
+                yield stream
 
     def close(self) -> None:
         self._closed = True
@@ -869,7 +855,6 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
     live in the broker's own tree, and this process cannot open either.
     """
     from tinyassets.broker.client import BrokerClient
-    from tinyassets.broker.refresh import prepare
     from tinyassets.broker.supervisor import get_supervisor
 
     supervisor = get_supervisor(Path(data_root))
@@ -878,11 +863,16 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
 
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
-                          verify_peer=supervisor.verify_broker,
-                          refresh_factory=lambda grant, connection: prepare(
-                              data_root, principal=principal, command_center=command_center,
-                              grant_id=grant, connection_id=connection))
-    return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
+                          verify_peer=supervisor.verify_broker)
+    from tinyassets.agent_loop.model_stream import shared_broker_client
+
+    return _BrokerChannel(
+        client, grant_id=grant_id, connection_id=connection_id,
+        stream_factory=lambda: shared_broker_client(
+            supervisor.socket_path, principal=principal, command_center=command_center,
+            fence=supervisor.fence, verify_peer=supervisor.verify_broker,
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -893,30 +883,22 @@ class ScopedConnectionProxy:
     provider: str
     destination: str
     scopes: tuple[str, ...]
-    #: The mode read when the proxy opened. Defence in depth only -- the broker
-    #: re-reads the row and is the authority -- so a stale `exact` here refuses
-    #: a since-upgraded channel until the caller opens a new proxy, which is
-    #: the safe direction to be wrong in.
+    #: Connection metadata; the broker re-reads current credential authority.
     access_mode: str = ACCESS_EXACT
     _channel: _BrokerChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
-    def request(self, verb: str, request: object, *, inference_usage=None,
-                policy_approval=None, policy_grant_ref=None, policy_agent=None,
-                policy_task_id=None) -> Any:
-        if not _verb_within_scopes(verb, self.scopes, self.access_mode):
-            raise PermissionError(
-                f"verb {verb!r} is outside the granted connection scope"
-            )
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         return self._channel.request(
             verb, request, **({"inference_usage": inference_usage}
                              if inference_usage is not None else {}),
-            **({"policy_approval": policy_approval}
-               if policy_approval is not None else {}),
-            **({"policy_grant_ref": policy_grant_ref,
-                "policy_agent": policy_agent,
-                "policy_task_id": policy_task_id}
-               if policy_grant_ref is not None else {}),
         )
+
+    @asynccontextmanager
+    async def stream(self, verb, request, *, inference_usage=None, operation_id):
+        async with self._channel.stream(
+            verb, request, inference_usage=inference_usage, operation_id=operation_id,
+        ) as stream:
+            yield stream
 
     def close(self) -> None:
         self._channel.close()
@@ -1022,7 +1004,7 @@ class CredentialBlindBroker:
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
                  deadline_at: float | None = None, inference_usage=None,
-                 operation_id: str | None = None, body=None, refresh_request=None) -> Any:
+                 operation_id: str | None = None, body=None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1055,7 +1037,17 @@ class CredentialBlindBroker:
                 )
                 if current is None or current[1] != authority_stamp:
                     raise GrantResolutionError("outbound connection authority changed")
-        if not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
+        if resource.connection_type == "http":
+            if not isinstance(request, dict):
+                raise SsrfValidationError("outbound http request shape is not permitted")
+            canonical = _parse_canonical_https_url(
+                request.get("url"), allowed_ports=frozenset({443}))
+            endpoint = _credential_endpoint(canonical, verb, resource.allowed_endpoints,
+                                            resource.access_mode)
+            if (endpoint is None
+                    or not _verb_within_scopes(verb, resource.scopes, resource.access_mode)):
+                resource = replace(resource, auth_scheme="none")
+        elif not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -1069,7 +1061,7 @@ class CredentialBlindBroker:
 
             grant = self._ledger.require_active_grant(grant_id)
             usage = resolve_inference_usage(
-                self._ledger._data_root, grant.owner_user_id, grant.universe_id,
+                self._ledger._data_root, grant.owner_user_id, grant.owner_user_id,
                 self._ledger, resource, grant_id, verb, request, inference_usage, operation_id,
             )
         if usage is not None:
@@ -1083,7 +1075,8 @@ class CredentialBlindBroker:
             _validate_connection_credential_scheme(
                 resource.connection_type, resource.credential_ref
             )
-            credential = self._resolve_credential(
+            keyless = resource.connection_type == "http" and resource.auth_scheme == "none"
+            credential = "" if keyless else self._resolve_credential(
                 resource.credential_ref, resource.connection_type
             )
         except Exception:
@@ -1091,7 +1084,10 @@ class CredentialBlindBroker:
             raise ProxyRequestError(
                 "outbound request failed: credential unavailable"
             ) from None
-        if not credential:
+        if resource.connection_type == "http" and not credential:
+            resource = replace(resource, auth_scheme="none")
+            keyless = True
+        if not credential and not keyless:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         # The request may ASK for a longer budget; whether it gets one is read
@@ -1144,9 +1140,8 @@ class CredentialBlindBroker:
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
                     return self._oauth_bundle(resource, grant_id, verb, credential,
-                                              rejected=rejected, refresh_request=refresh_request)
-            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected,
-                                      refresh_request=refresh_request)
+                                              rejected=rejected)
+            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected)
 
         if oauth:
             from tinyassets.connection_oauth.tokens import decode
@@ -1226,15 +1221,14 @@ class CredentialBlindBroker:
 
     def _oauth_bundle(
         self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
-        *, rejected: str = "", refresh_request=None,
+        *, rejected: str = "",
     ) -> Any:
         if self._oauth_tokens is None:
             self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
         try:
-            return self._oauth_tokens.current(destination, credential, rejected=rejected,
-                **({"refresh_request": refresh_request} if refresh_request is not None else {}))
+            return self._oauth_tokens.current(destination, credential, rejected=rejected)
         except ConnectionAuthorizationError:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
@@ -1502,7 +1496,7 @@ class _GeneralVaultCredentialResolver:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
             raise RuntimeError("credential reference is unavailable")
-        raise RuntimeError("credential reference is unavailable")
+        return ""
 
 
 class _TrustedCredentialResolver:
@@ -1747,7 +1741,7 @@ _SSRF_READ_CHUNK = 65536
 #:
 #: Sending one at all is the fix for an UNIDENTIFIED client, not for one
 #: specific block. On 2026-09-30 a UA-less POST to this platform's own
-#: `/mcp/hooks` was answered `error code: 1010` (403) by Cloudflare while the
+#: `/hooks/inbound` was answered `error code: 1010` (403) by Cloudflare while the
 #: same request carrying a User-Agent reached the application -- but that A/B
 #: did NOT reproduce hours later, from either the dev host or the production
 #: egress IP, with or without the header. So an edge block here is a bot score,
@@ -2164,7 +2158,7 @@ def _substitute_url_secret(
     """Put the vault segment where the reserved placeholder is. AFTER the allowlist.
 
     The ORDER is the design (design.md D2). The canonical parse and
-    ``_enforce_endpoint_allowlist`` have already run against the URL as the
+    ``_credential_endpoint`` have already run against the URL as the
     CALLER supplied it, carrying the literal ``{secret}`` token — so the egress
     boundary was decided with no secret material present, and no
     ``SsrfValidationError`` raised by either of them can carry one. Only then is
@@ -2400,8 +2394,8 @@ def _validate_param_patterns(
 
     ``{secret}`` / ``{secret+}`` is the ONE exception, and the exception is the
     whole security argument for capability URLs. Its pattern is the platform's:
-    the anchored LITERAL token. So a stored ``/mcp/hooks/{secret}`` endpoint
-    matches the concrete path ``/mcp/hooks/{secret}`` and nothing else — the
+    the anchored LITERAL token. So a stored ``/hooks/inbound/{secret}`` endpoint
+    matches the concrete path ``/hooks/inbound/{secret}`` and nothing else — the
     egress allowlist is evaluated with zero secret material in the URL, and a
     node that puts its own value (or a real secret) in the secret's position is
     refused by the allowlist rather than quietly sent. A caller-declared pattern
@@ -2642,44 +2636,19 @@ def _query_permitted(query_items: list[tuple[str, str]], endpoint: OutboundEndpo
     return True
 
 
-def _enforce_endpoint_allowlist(
+def _credential_endpoint(
     canonical: _CanonicalOutboundUrl,
     method: str,
     endpoints: tuple[OutboundEndpoint, ...],
     access_mode: str = ACCESS_EXACT,
 ) -> OutboundEndpoint | None:
-    """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
-
-    Returns the endpoint that ADMITTED the request (``None`` on a ``full``
-    connection, where the host match is the whole decision and no template was
-    consulted). The identity of the matching endpoint is what a capability-URL
-    substitution is positioned by: searching the path for the placeholder
-    instead let a caller-controlled ``{tail+}`` segment carry a reserved token
-    and receive the secret in a position the allowlist never reserved for it
-    (gpt-6-astra refute round 1, FINDING 3).
-
-    This is the real egress boundary: an EMPTY allowlist permits nothing, and a
-    URL whose host, method, path, OR query does not match a declared endpoint is
-    refused before any socket is opened.
-
-    On a ``full`` connection (full-channel-access D3.1) the owner has said the
-    universe may do anything the key itself can do on this channel, so once the
-    HOST matches one the agent declared, any path, any query and any of the five
-    verbs are admitted. What "full" does NOT touch: the caller has already
-    refused a non-HTTPS scheme, userinfo, a port other than 443, dot segments,
-    encoded separators, double encoding and a verb outside the five; and the DNS
-    resolution plus the globally-routable-address check still run after this,
-    immediately before the socket. Full is bounded to the 1-4 hosts the channel
-    declared, never to every host the credential might reach.
-    """
+    """C7: select a credential's authorized endpoint; absence injects nothing."""
     if not endpoints:
-        raise SsrfValidationError("connection has no permitted endpoints")
+        return None
     host = canonical.hostname.strip().lower()
     verb = (method or "").strip().upper()
     if normalize_access_mode(access_mode) == ACCESS_FULL:
-        if any(endpoint.host == host for endpoint in endpoints):
-            return None
-        raise SsrfValidationError("outbound host is not on the connection allowlist")
+        return next((endpoint for endpoint in endpoints if endpoint.host == host), None)
     raw_path, _, raw_query = canonical.path_qs.partition("?")
     if len(raw_query) > _SSRF_MAX_QUERY_LEN:
         raise SsrfValidationError("outbound url query is too long")
@@ -2709,11 +2678,9 @@ def _enforce_endpoint_allowlist(
         if not _query_permitted(query_items, endpoint):
             continue
         return endpoint
-    raise GrantPathRefused("outbound endpoint is not on the connection allowlist")
+    return None
 
 
-_REALTIME_VOICE_PROTOCOL = "tinyassets.voice.v1"
-_CAPABILITY_SERVICE_NAME_MAX = 80
 _CAPABILITY_URL_MAX = 2048
 
 
@@ -2735,42 +2702,6 @@ def _capability_https_url(name: str, value: Any, *, optional: bool = False) -> s
     except SsrfValidationError as exc:
         raise ValueError(f"{name} must be a canonical HTTPS URL") from exc
     return _canonical_request_url(canonical)
-
-
-def _validate_realtime_voice_capability(
-    connection_id: str, descriptor: Any
-) -> ConnectionCapability:
-    """Validate the complete, closed metadata document for one capability."""
-
-    if not isinstance(descriptor, dict):
-        raise ValueError("capability descriptor must be an object")
-    kind = "realtime_voice"
-    required = {"protocol", "session_url", "service_name"}
-    allowed = required | {"privacy_url"}
-    if set(descriptor) - allowed or not required.issubset(descriptor):
-        raise ValueError("capability descriptor fields are invalid")
-    if descriptor.get("protocol") != _REALTIME_VOICE_PROTOCOL:
-        raise ValueError("capability protocol is not supported")
-    service_name = (
-        descriptor["service_name"].strip()
-        if isinstance(descriptor.get("service_name"), str)
-        else ""
-    )
-    if (
-        not 1 <= len(service_name) <= _CAPABILITY_SERVICE_NAME_MAX
-        or any(ord(char) < 32 or ord(char) == 127 for char in service_name)
-    ):
-        raise ValueError("capability service_name is invalid")
-    return ConnectionCapability(
-        connection_id=_required("connection_id", connection_id),
-        capability_kind=kind,
-        protocol=_REALTIME_VOICE_PROTOCOL,
-        session_url=_capability_https_url("session_url", descriptor.get("session_url")),
-        service_name=service_name,
-        privacy_url=_capability_https_url(
-            "privacy_url", descriptor.get("privacy_url"), optional=True
-        ),
-    )
 
 
 def _validate_model_discovery_capability(
@@ -2952,9 +2883,6 @@ class _CapabilitySpec:
 
 
 _CAPABILITY_SPECS = {
-    "realtime_voice": _CapabilitySpec(
-        ConnectionCapability, _validate_realtime_voice_capability, "POST", ("session_url",)
-    ),
     "model_discovery": _CapabilitySpec(
         ModelDiscoveryCapability, _validate_model_discovery_capability, "GET",
         ("catalogue_url", "benchmark_url"),
@@ -2972,7 +2900,7 @@ _CAPABILITY_SPECS = {
 
 def _validate_connection_capability(
     connection_id: str, capability_kind: str, descriptor: Any
-) -> ConnectionCapability | ModelDiscoveryCapability:
+) -> ModelDiscoveryCapability | ModelUseCapability | ConstantHeadersCapability:
     spec = _CAPABILITY_SPECS[_validate_capability_kind(capability_kind)]
     capability = spec.validate(connection_id, descriptor)
     if not isinstance(capability, spec.value_type):
@@ -4021,6 +3949,7 @@ class _SsrfHardenedHttpDriver:
     """
 
     __slots__ = (
+        "_identity",
         "_allowed_ports",
         "_max_body_bytes",
         "_max_header_bytes",
@@ -4050,6 +3979,9 @@ class _SsrfHardenedHttpDriver:
         max_header_bytes: int = _SSRF_MAX_HEADER_BYTES,
         dns_timeout: float = _SSRF_DNS_TIMEOUT_SECONDS,
     ) -> None:
+        from tinyassets.broker.egress import identity
+
+        self._identity = identity.get()
         # An injected resolver is used verbatim (tests drive controlled ones);
         # the production default wraps getaddrinfo in the threaded deadline so a
         # hanging resolver is abandoned instead of escaping the budget.
@@ -4073,18 +4005,16 @@ class _SsrfHardenedHttpDriver:
         does not claim to cancel a native resolver thread instantly.
         """
         remaining = _remaining_redirect_seconds(deadline)
-        if canonical.is_ip_literal:
-            pinned = self._validator(canonical.hostname)
-        else:
-            def resolve(host: str, port: int) -> list[str]:
-                return _threaded_dns_resolve(
-                    host, port, base_resolver=self._resolver_base,
-                    timeout=min(self._dns_timeout, remaining),
-                )
+        from tinyassets.broker.egress import destination
 
-            pinned = _resolve_pinned_addresses(
-                canonical.hostname, canonical.port, resolver=resolve, validator=self._validator,
-            )[0]
+        def resolve(host: str, port: int) -> list[str]:
+            return _threaded_dns_resolve(
+                host, port, base_resolver=self._resolver_base,
+                timeout=min(self._dns_timeout, remaining),
+            )
+
+        pinned = destination(self._identity, canonical.hostname, canonical.port,
+                             resolver=resolve, validator=self._validator)[0]
         _remaining_redirect_seconds(deadline)
         return pinned
 
@@ -4219,14 +4149,10 @@ class _SsrfHardenedHttpDriver:
         )
 
     def _pin(self, canonical: _CanonicalOutboundUrl) -> str:
-        if canonical.is_ip_literal:
-            return self._validator(canonical.hostname)
-        return _resolve_pinned_addresses(
-            canonical.hostname,
-            canonical.port,
-            resolver=self._resolver,
-            validator=self._validator,
-        )[0]
+        from tinyassets.broker.egress import destination
+
+        return destination(self._identity, canonical.hostname, canonical.port,
+                           resolver=self._resolver, validator=self._validator)[0]
 
     def _prepare(
         self,
@@ -4247,23 +4173,12 @@ class _SsrfHardenedHttpDriver:
         if verb not in _SSRF_ALLOWED_METHODS:
             raise SsrfValidationError("outbound method is not permitted")
         canonical = _parse_canonical_https_url(url, allowed_ports=self._allowed_ports)
-        # The per-connection endpoint allowlist is the real egress boundary
-        # (design.md D3). When supplied, the concrete host/method/path must match
-        # a declared endpoint BEFORE any resolution/socket. ``None`` means the
-        # caller is exercising the raw transport (the driver's own adversarial
-        # tests); every production call through _TrustedNetworkDriver passes a
-        # non-empty allowlist, and an empty one refuses.
-        matched_endpoint: OutboundEndpoint | None = None
-        if allowed_endpoints is not None:
-            matched_endpoint = _enforce_endpoint_allowlist(
-                canonical, verb, allowed_endpoints, access_mode
-            )
-        # A capability URL's secret enters the path HERE and not one line
-        # earlier: everything above decided egress against the placeholder form
-        # (design.md D2), and everything below — DNS, the routable-address
-        # check, the socket — needs the real path. The host is unchanged, so the
-        # pin is unaffected. The POSITION comes from the endpoint that admitted
-        # the request, never from searching the path (astra round 1, FINDING 3).
+        # C7: destination permission never confers credential authority.
+        matched_endpoint = _credential_endpoint(
+            canonical, verb, allowed_endpoints or (), access_mode)
+        if matched_endpoint is None:
+            auth_scheme = "none"
+            bundle = ConnectionSecretBundle()
         canonical = _substitute_url_secret(
             canonical,
             auth_scheme=auth_scheme,
@@ -4313,17 +4228,10 @@ class _SsrfHardenedHttpDriver:
         # payload after the scheme, and an OAuth signature encoded and decoded.
         sensitive = list(bundle.secret_values()) + _redirect_auth_material(auth_headers)
         encoded_body = _encode_request_body(body, request_headers)
-        approved_sources = tuple(
-            endpoint for endpoint in (allowed_endpoints or ())
-            if endpoint.redirect_mode == "public_https_get"
-        )
-        redirect_enabled = False
-        if verb == "GET" and body is None and approved_sources:
-            try:
-                _enforce_endpoint_allowlist(canonical, verb, approved_sources, ACCESS_EXACT)
-                redirect_enabled = True
-            except SsrfValidationError:
-                pass  # Full access alone does not opt in arbitrary source paths.
+        redirect_endpoint = _credential_endpoint(
+            canonical, verb, tuple(endpoint for endpoint in (allowed_endpoints or ())
+                                   if endpoint.redirect_mode == "public_https_get"))
+        redirect_enabled = bool(verb == "GET" and body is None and redirect_endpoint)
         return _PreparedRequest(
             verb=verb, canonical=canonical, headers=request_headers,
             auth_headers=auth_headers, sensitive=sensitive, body=encoded_body,
@@ -4411,13 +4319,7 @@ class _SsrfHardenedHttpDriver:
             crossed_origin = crossed_origin or (target.hostname, target.port) != initial_origin
             headers = {"Accept": "*/*", "User-Agent": "TinyAssets-download"}
             if not crossed_origin:
-                authorized = False
-                try:
-                    _enforce_endpoint_allowlist(target, "GET", allowed_endpoints, access_mode)
-                    authorized = True
-                except SsrfValidationError:
-                    pass  # Same origin is not itself authorization for another path.
-                if authorized:
+                if _credential_endpoint(target, "GET", allowed_endpoints, access_mode):
                     auth = _ssrf_auth_headers(
                         auth_scheme, bundle, header_name=header_name, method="GET", url=target_url,
                     )
@@ -4622,9 +4524,6 @@ class _TrustedNetworkDriver:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
             raise ProxyRequestError("outbound http connections are not enabled")
-        if not allowed_endpoints:
-            # No allowlist ⇒ no reachable destination (the real egress boundary).
-            raise SsrfValidationError("connection has no permitted endpoints")
         if not isinstance(request, dict):
             raise SsrfValidationError("outbound http request shape is not permitted")
         # The capability-URL binding, re-checked against the row as the broker
@@ -4682,7 +4581,7 @@ def _build_credential_broker_dispatch(
 ) -> Callable[[str, str, object], Any]:
     runtime_root = Path(config["runtime_root"])
     runtime_root.mkdir(parents=True, exist_ok=True)
-    from tinyassets.connection_oauth.tokens import ConnectionTokens
+    from tinyassets.broker.tokens import ConnectionTokens
     from tinyassets.storage.agent_request_usage import resolve_inference_usage
 
     data_root = Path(config.get("data_root", Path(config["ledger_db_path"]).parent))
@@ -4704,10 +4603,6 @@ def _build_credential_broker_dispatch(
         oauth_tokens=ConnectionTokens(
             universe_dir=config["universe_dir"],
             owner_user_id=config["owner_user_id"],
-            oauth_service=config.get("oauth_service"),
-            # The broker process never refreshes from the owner's vault: the
-            # daemon's refresh admission does, and hands the bundle back.
-            allow_local_refresh=False,
         ),
     )
     return broker.dispatch
@@ -4764,7 +4659,18 @@ def _contains_secret(value: object, secret: str) -> bool:
     return False
 
 
+# Capabilities classify new grants; accepted source descriptors latch them later.
+_MODEL_CONNECTION_SQL = """(
+    c.connection_type = 'http' AND EXISTS (
+            SELECT 1 FROM connection_capabilities k
+            WHERE k.connection_id = c.connection_id
+              AND k.capability_kind IN ('model_use', 'model_discovery')
+    )
+)"""
+
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS broker_schema_migrations (name TEXT PRIMARY KEY);
+
 CREATE TABLE IF NOT EXISTS outbound_connections (
     connection_id   TEXT PRIMARY KEY,
     owner_user_id   TEXT NOT NULL,
@@ -4793,10 +4699,10 @@ CREATE TABLE IF NOT EXISTS outbound_connection_grants (
     grant_id        TEXT PRIMARY KEY,
     connection_id   TEXT NOT NULL REFERENCES outbound_connections(connection_id),
     owner_user_id   TEXT NOT NULL,
-    universe_id     TEXT NOT NULL,
     granted_at      REAL NOT NULL,
     revoked_at      REAL,
-    unprompted_action_cap_json TEXT
+    unprompted_action_cap_json TEXT,
+    inference_required INTEGER NOT NULL DEFAULT 1 CHECK (inference_required IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS connection_capabilities (
@@ -4809,7 +4715,7 @@ CREATE TABLE IF NOT EXISTS connection_capabilities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbound_grant_resolution
-    ON outbound_connection_grants(owner_user_id, universe_id, revoked_at);
+    ON outbound_connection_grants(owner_user_id, revoked_at);
 
 CREATE TABLE IF NOT EXISTS outbound_connector_artifacts (
     artifact_id              TEXT PRIMARY KEY,
@@ -4970,6 +4876,12 @@ class ConnectionLedger:
                 # migration must never widen an existing grant.
                 ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
                 ("incarnation", "TEXT NOT NULL DEFAULT ''"),
+                ("revocation_error", "TEXT NOT NULL DEFAULT ''"),
+                ("custody_erased", "INTEGER NOT NULL DEFAULT 0"),
+                ("request_ref", "TEXT NOT NULL DEFAULT ''"),
+                ("committed_via", "TEXT NOT NULL DEFAULT ''"),
+                ("owner_egress_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("revocation_message", "TEXT NOT NULL DEFAULT ''"),
                 # Empty for every existing row: a migration never names a host
                 # the owner did not.
                 ("git_host", "TEXT NOT NULL DEFAULT ''"),
@@ -4978,6 +4890,24 @@ class ConnectionLedger:
                     connection.execute(
                         f"ALTER TABLE outbound_connections ADD COLUMN {column} {ddl}"
                     )
+            if "inference_required" not in grant_columns:
+                connection.execute(
+                    "ALTER TABLE outbound_connection_grants ADD COLUMN "
+                    "inference_required INTEGER NOT NULL DEFAULT 1 "
+                    "CHECK (inference_required IN (0, 1))"
+                )
+                # Existing grants adopt only broker-held facts, once. Unknown
+                # connection rows retain the fail-closed default.
+                connection.execute(
+                    "UPDATE outbound_connection_grants SET inference_required = COALESCE("
+                    f"(SELECT {_MODEL_CONNECTION_SQL} FROM outbound_connections c "
+                    "WHERE c.connection_id = outbound_connection_grants.connection_id), 1)"
+                )
+            if "inference_required" not in grant_columns or not connection.execute(
+                "SELECT 1 FROM broker_schema_migrations WHERE name='model_source_metering'"
+            ).fetchone():
+                connection.execute("INSERT OR IGNORE INTO broker_schema_migrations "
+                                   "VALUES ('model_source_metering')")
             # The column default also applies to rows inserted by older writers.
             # Adopt those rows without rotating any established deposit identity
             # or changing its policy. Ordinary opens must not take a write lock.
@@ -5436,14 +5366,14 @@ class ConnectionLedger:
         enabled: bool,
         expected_grant: ConnectionGrant | None = None,
         preview: bool = False,
-    ) -> ConnectionCapability | ModelDiscoveryCapability | None:
+    ) -> ModelDiscoveryCapability | ModelUseCapability | ConstantHeadersCapability | None:
         """Idempotently configure one bounded capability on existing authority.
 
         The descriptor is metadata, never authority: enabling succeeds only when
         the current connection is active HTTP authority whose existing scope and
         endpoint allowlist already admit the capability's exact destinations.
         Discovery additionally fences the handler's live grant context in this
-        transaction. Voice retains its existing current-serving API contract.
+        transaction.
         """
 
         if not isinstance(enabled, bool):
@@ -5483,7 +5413,6 @@ class ConnectionLedger:
                     or expected_grant.connection_id != connection_key
                     or grant_row["owner_user_id"] != resource.owner_user_id
                     or grant_row["owner_user_id"] != expected_grant.owner_user_id
-                    or grant_row["universe_id"] != expected_grant.universe_id
                     or grant_row["granted_at"] != expected_grant.granted_at
                 ):
                     raise PermissionError("discovery grant context changed")
@@ -5496,11 +5425,8 @@ class ConnectionLedger:
                 return None
             assert capability is not None
             spec = _CAPABILITY_SPECS[kind]
-            # Preserve voice's legacy explicit-POST rule. Discovery follows the
-            # existing GET/full-channel scope semantics used by its transport.
             verb_allowed = (
-                spec.verb in resource.scopes if kind == "realtime_voice"
-                else not spec.verb
+                not spec.verb
                 or _verb_within_scopes(spec.verb, resource.scopes, resource.access_mode)
             )
             if resource.connection_type != "http" or not verb_allowed:
@@ -5524,9 +5450,10 @@ class ConnectionLedger:
                 if not url:
                     continue
                 canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
-                _enforce_endpoint_allowlist(
+                if _credential_endpoint(
                     canonical, spec.verb, resource.allowed_endpoints, resource.access_mode,
-                )
+                ) is None:
+                    raise GrantPathRefused("capability is outside the credential service")
             if preview:
                 return capability  # Same current grant/endpoint checks, no metadata write.
             connection.execute(
@@ -5545,12 +5472,19 @@ class ConnectionLedger:
                     time.time(),
                 ),
             )
+            if kind in _INFERENCE_CAPABILITIES:
+                # Capability installation may follow grant creation. Once a
+                # grant is a model grant, disabling metadata cannot unmeter it.
+                connection.execute(
+                    "UPDATE outbound_connection_grants SET inference_required=1 "
+                    "WHERE connection_id=? AND inference_required=0", (connection_key,),
+                )
         return capability
 
     def get_connection_capability(
         self, connection_id: str, capability_kind: str, *,
         expected_grant: ConnectionGrant | None = None,
-    ) -> ConnectionCapability | ModelDiscoveryCapability | None:
+    ) -> ModelDiscoveryCapability | ModelUseCapability | ConstantHeadersCapability | None:
         """Return validated non-secret metadata without altering connection views."""
 
         connection_key = _required("connection_id", connection_id)
@@ -5562,10 +5496,10 @@ class ConnectionLedger:
                     "SELECT 1 FROM outbound_connection_grants g "
                     "JOIN outbound_connections c ON c.connection_id=g.connection_id "
                     "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
-                    "AND c.owner_user_id=? AND g.universe_id=? AND g.granted_at=? "
+                    "AND c.owner_user_id=? AND g.granted_at=? "
                     "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
                     (expected_grant.grant_id, connection_key, expected_grant.owner_user_id,
-                     expected_grant.owner_user_id, expected_grant.universe_id,
+                     expected_grant.owner_user_id,
                      expected_grant.granted_at),
                 ).fetchone()
                 if (admitted is None or expected_grant.connection_id != connection_key
@@ -5590,7 +5524,6 @@ class ConnectionLedger:
         grant_id: str,
         connection_id: str,
         owner_user_id: str,
-        universe_id: str,
         granted_at: float | None = None,
         unprompted_action_cap: ActionCap | None = None,
         _transaction: sqlite3.Connection | None = None,
@@ -5605,7 +5538,7 @@ class ConnectionLedger:
             grant_id=_required("grant_id", grant_id),
             connection_id=resource.connection_id,
             owner_user_id=owner,
-            universe_id=_required("universe_id", universe_id),
+
             granted_at=time.time() if granted_at is None else granted_at,
             revoked_at=None,
             unprompted_action_cap=unprompted_action_cap,
@@ -5613,17 +5546,19 @@ class ConnectionLedger:
         with (contextlib.nullcontext(_transaction) if _transaction is not None
               else self._connect()) as connection:
             connection.execute(
-                """
+                f"""
                 INSERT INTO outbound_connection_grants (
-                    grant_id, connection_id, owner_user_id, universe_id,
-                    granted_at, revoked_at, unprompted_action_cap_json
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+                    grant_id, connection_id, owner_user_id,
+                    granted_at, revoked_at, unprompted_action_cap_json, inference_required
+                ) VALUES (?, ?, ?, ?, NULL, ?, (
+                    SELECT {_MODEL_CONNECTION_SQL} FROM outbound_connections c
+                    WHERE c.connection_id = ?
+                ))
                 """,
                 (
                     grant.grant_id,
                     grant.connection_id,
                     grant.owner_user_id,
-                    grant.universe_id,
                     grant.granted_at,
                     (
                         json.dumps(
@@ -5633,9 +5568,21 @@ class ConnectionLedger:
                         if grant.unprompted_action_cap is not None
                         else None
                     ),
+                    grant.connection_id,
                 ),
             )
         return grant
+
+    def grant_requires_inference_usage(self, grant_id: str) -> bool:
+        """Read the durable broker classification, independent of box metadata."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT inference_required FROM outbound_connection_grants "
+                "WHERE grant_id=? AND revoked_at IS NULL", (grant_id,),
+            ).fetchone()
+        if row is None:
+            raise GrantResolutionError("absent or revoked outbound connection grant")
+        return bool(row["inference_required"])
 
     def get_grant(
         self, grant_id: str, *, _transaction: sqlite3.Connection | None = None,
@@ -5654,7 +5601,7 @@ class ConnectionLedger:
             grant_id=row["grant_id"],
             connection_id=row["connection_id"],
             owner_user_id=row["owner_user_id"],
-            universe_id=row["universe_id"],
+
             granted_at=row["granted_at"],
             revoked_at=row["revoked_at"],
             unprompted_action_cap=cap,
@@ -5664,7 +5611,6 @@ class ConnectionLedger:
         self,
         *,
         owner_user_id: str,
-        universe_id: str,
         active_only: bool = True,
         limit: int = 100,
     ) -> list[ConnectionGrant]:
@@ -5676,11 +5622,11 @@ class ConnectionLedger:
             rows = connection.execute(
                 """
                 SELECT * FROM outbound_connection_grants
-                WHERE owner_user_id = ? AND universe_id = ?
+                WHERE owner_user_id = ?
                   AND (? = 0 OR revoked_at IS NULL)
                 ORDER BY grant_id LIMIT ?
                 """,
-                (owner_user_id, universe_id, int(active_only), limit),
+                (owner_user_id, int(active_only), limit),
             ).fetchall()
         result: list[ConnectionGrant] = []
         for row in rows:
@@ -5690,7 +5636,7 @@ class ConnectionLedger:
                     grant_id=row["grant_id"],
                     connection_id=row["connection_id"],
                     owner_user_id=row["owner_user_id"],
-                    universe_id=row["universe_id"],
+
                     granted_at=row["granted_at"],
                     revoked_at=row["revoked_at"],
                     unprompted_action_cap=(
@@ -5767,7 +5713,6 @@ class ConnectionLedger:
     def resolve_exact_scoped_proxy(
         self,
         *,
-        universe_id: str,
         grant_id: str,
         connection_id: str,
     ) -> ScopedConnectionProxy:
@@ -5777,20 +5722,20 @@ class ConnectionLedger:
         is ever spawned, and the daemon never holds the credential.
         """
         grant, resource = self.authorize_exact(
-            universe_id=universe_id, grant_id=grant_id, connection_id=connection_id,
+             grant_id=grant_id, connection_id=connection_id,
         )
         return ScopedConnectionProxy(
             grant_id=grant.grant_id, provider=resource.provider,
             destination=resource.destination, scopes=resource.scopes,
             _channel=_broker_channel(
                 self._data_root, principal=resource.owner_user_id,
-                command_center=grant.universe_id, grant_id=grant.grant_id,
+                command_center=grant.owner_user_id, grant_id=grant.grant_id,
                 connection_id=resource.connection_id,
             ),
         )
 
     def authorize_exact(
-        self, *, universe_id: str, grant_id: str, connection_id: str,
+        self, *, grant_id: str, connection_id: str,
     ) -> tuple[ConnectionGrant, ConnectionResource]:
         """The exact checks every broker request runs (I14 decision 2).
 
@@ -5807,7 +5752,6 @@ class ConnectionLedger:
         exact = (
             grant.connection_id == resource.connection_id,
             grant.owner_user_id == owner_user_id,
-            grant.universe_id == _required("universe_id", universe_id),
             resource.owner_user_id == owner_user_id,
             resource.revoked_at is None,
         )
@@ -5816,17 +5760,19 @@ class ConnectionLedger:
         return grant, resource
 
     def broker_dispatch_config(
-        self, *, grant_id: str, universe_id: str, provider: str, destination: str,
+        self, *, grant_id: str, provider: str, destination: str,
         owner_user_id: str, connection_type: str = "",
     ) -> dict[str, Any]:
         """The trusted dispatcher's configuration for one grant (worker or broker)."""
+        from tinyassets.credential_vault import custody_namespace
+
         grant_runtime_id = hashlib.sha256(grant_id.encode("utf-8")).hexdigest()
         return {
             "allow_test_fixtures": self._allow_test_fixtures,
             "allow_http_connections": _outbound_http_enabled(),
             "ledger_db_path": str(self._db_path.resolve()),
             "data_root": str(self._data_root.resolve()),
-            "universe_dir": str((self._data_root / universe_id).resolve()),
+            "universe_dir": str(custody_namespace(self._data_root, owner_user_id)),
             "provider": provider,
             "destination": destination,
             "connection_type": (connection_type or "").strip().lower(),
@@ -5866,7 +5812,7 @@ class ConnectionLedger:
                 milliseconds = max(1, int(_remaining_redirect_seconds(deadline) * 1000))
                 connection.execute(f"PRAGMA busy_timeout = {milliseconds}")
             row = connection.execute(
-                """SELECT c.*, g.universe_id AS grant_universe,
+                """SELECT c.*, g.owner_user_id AS grant_owner,
                           g.granted_at AS grant_created_at
                      FROM outbound_connection_grants AS g
                      JOIN outbound_connections AS c ON c.connection_id = g.connection_id

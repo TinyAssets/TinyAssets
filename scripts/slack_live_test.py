@@ -1,21 +1,7 @@
-"""One command: verify, deposit, connect, and prove a real Slack round trip.
+"""Prove a Slack round trip using credentials already in broker custody.
 
-    $env:SLACK_BOT_TOKEN = "xoxb-..."
-    $env:SLACK_APP_TOKEN = "xapp-..."
-    python scripts/slack_live_test.py --universe-id <id>
-
-Then send one message in Slack. That is the whole test.
-
-This exists because everything up to that message is automatable and the message
-itself is not. The tokens are yours to generate and yours to put in the
-environment; posting as a human in your own workspace is yours to do. Everything
-between — verification, same-app checking, deposit, connection, the agent turn,
-and the reply — happens here, and the result is reported as a plain PASS/FAIL
-rather than something to interpret from logs.
-
-It waits for exactly one answered message, prints what actually happened at each
-step, and exits non-zero if any of it failed. `--timeout` bounds the wait so it
-cannot hang a terminal indefinitely.
+Run this diagnostic with access to the broker custody store. Credential
+provisioning goes through the connection door; this script never deposits.
 """
 
 from __future__ import annotations
@@ -23,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 import time
 from pathlib import Path
@@ -44,34 +29,6 @@ from tinyassets.credential_vault import (  # noqa: E402
     resolve_slack_app_token,
     resolve_slack_token,
 )
-
-BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
-APP_TOKEN_ENV = "SLACK_APP_TOKEN"
-
-
-def _load_windows_user_env(name: str) -> None:
-    """Fall back to the Windows *User* environment for `name`.
-
-    `setx` and `[Environment]::SetEnvironmentVariable(..., 'User')` write to the
-    registry, and only processes started AFTERWARDS inherit them. A shell that
-    was already open — which is the normal case when someone sets the variable
-    and then runs this in an existing terminal — sees nothing, and the script
-    said "set the env vars" to someone who just had. Read the registry directly
-    so the obvious sequence works.
-
-    Reads only; never writes, and never prints the value.
-    """
-    if os.environ.get(name, "").strip() or sys.platform != "win32":
-        return
-    try:
-        import winreg
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            value, _ = winreg.QueryValueEx(key, name)
-    except (ImportError, OSError):
-        return
-    if isinstance(value, str) and value.strip():
-        os.environ[name] = value.strip()
 
 
 def _step(n: int, text: str) -> None:
@@ -95,29 +52,9 @@ def main() -> int:
         default=300.0,
         help="seconds to wait for your message (default 300)",
     )
-    parser.add_argument(
-        "--skip-deposit",
-        action="store_true",
-        help="credentials are already in the vault; do not read the env vars",
-    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="      %(message)s")
-
-    # The env vars are checked BEFORE anything slow or side-effecting, so a
-    # missing one fails in a second rather than after a network round trip.
-    if not args.skip_deposit:
-        _load_windows_user_env(BOT_TOKEN_ENV)
-        _load_windows_user_env(APP_TOKEN_ENV)
-        if not (
-            os.environ.get(BOT_TOKEN_ENV, "").strip()
-            and os.environ.get(APP_TOKEN_ENV, "").strip()
-        ):
-            _fail(
-                f"set {BOT_TOKEN_ENV} and {APP_TOKEN_ENV} in the environment "
-                "(not as arguments — argv is world-readable), or pass "
-                "--skip-deposit if they are already deposited"
-            )
 
     _step(1, "Resolving the universe...")
 
@@ -138,26 +75,7 @@ def main() -> int:
         )
     print(f"      {universe_dir}")
 
-    if not args.skip_deposit:
-        import subprocess
-
-        _step(2, "Verifying both tokens with Slack and depositing...")
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).parent / "deposit_slack_credentials.py"),
-                "--universe-dir",
-                str(universe_dir),
-                "--connection",
-                args.connection,
-            ],
-            text=True,
-            env=os.environ.copy(),
-        )
-        if result.returncode != 0:
-            _fail("credential verification failed — see the message above")
-    else:
-        _step(2, "Using credentials already in the vault.")
+    _step(2, "Using credentials already in broker custody.")
 
     # --- 3. identity --------------------------------------------------------
     _step(3, "Asking Slack who this app is...")
@@ -165,7 +83,7 @@ def main() -> int:
 
     bot_token = resolve_slack_token(universe_dir, args.connection)
     if not bot_token:
-        _fail("no bot token in the vault after deposit")
+        _fail("no bot token in the vault in broker custody")
     team_id, bot_user_id, team_name = identify(bot_token)
     api_app_id = app_id_from_token(
         resolve_slack_app_token(universe_dir, args.connection)

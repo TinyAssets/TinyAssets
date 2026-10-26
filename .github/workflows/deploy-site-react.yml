@@ -1,7 +1,7 @@
 # Deploy WebSite/site-react (Next.js static export) to GitHub Pages.
 #
 # A push to main publishes when one of the paths below changes. The first
-# three are the site's source folders (the same set preview-worker.yml builds).
+# three are the site's source folders.
 # The workflow file is included so a change to the publisher itself, including
 # the merge that turns this trigger on, publishes the current site:
 #   WebSite/site-react/**
@@ -79,7 +79,7 @@ jobs:
       - name: Install site deps
         run: npm ci
 
-      - name: Test canonical MCP read contract and preview trust boundary
+      - name: Test canonical MCP read contract
         run: npm test
 
       - name: Build (static export)

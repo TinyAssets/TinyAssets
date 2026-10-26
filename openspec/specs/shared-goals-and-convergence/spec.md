@@ -203,16 +203,16 @@ rolling back or failing the mutation.
 - **AND** the original successful Goal result is returned without rollback
 
 ### Requirement: Per-universe participation in shared Goals is opt-in via subscriptions
-A universe SHALL participate in a Goal's cross-universe work pool only by explicitly subscribing to that Goal slug; participation SHALL NOT be implicit. A fresh-install universe with no subscriptions file SHALL behave as subscribed to exactly `["maintenance"]`. The goal-pool producer SHALL be flag-gated (`TINYASSETS_GOAL_POOL`); when enabled it SHALL read `goal_pool/<goal_slug>/*.yaml` only for the universe's subscribed goals, turning each pool YAML into a Branch task whose `inputs` are constrained to a flat dictionary of primitive values so per-universe state cannot cross the isolation boundary.
+A universe SHALL participate in a Goal's cross-universe work pool only by explicitly subscribing to that Goal slug; participation SHALL NOT be implicit. A fresh-install universe with no subscriptions file SHALL behave as subscribed to exactly `["maintenance"]`. The goal-pool producer is removed: no module reads a pool directory into Branch tasks, and there is no setting that turns that producer on.
 
 #### Scenario: Fresh install defaults to the maintenance subscription
 - **WHEN** the daemon reads subscriptions for a universe that has no subscriptions file
 - **THEN** the universe is treated as subscribed to `["maintenance"]` only
 
-#### Scenario: The pool producer only reads subscribed goals when enabled
-- **WHEN** `TINYASSETS_GOAL_POOL` is enabled and the goal-pool producer runs
-- **THEN** it scans `goal_pool/<goal_slug>/*.yaml` only for the universe's subscribed goals and emits Branch tasks with flat-primitive inputs
-- **AND** when the flag is off no goal-pool producer is registered and pool reads are a no-op
+#### Scenario: The pool producer is not a path
+- **WHEN** a deployment looks for the goal-pool producer
+- **THEN** no module reads a pool directory into Branch tasks
+- **AND** no setting registers that producer
 
 ### Requirement: Goal Branch protocols are ordered metadata, not an executor
 The system SHALL let an authenticated Goal author or the literal `host` actor replace a Goal's `branch_protocol` through `goals action=define_protocol`, persist the protocol as an ordered list of metadata step objects, and expose it through `goals action=get` and `goals action=get_protocol`. Each step MUST reference an existing Branch bound to that Goal; the system SHALL coerce a truthy `order` to an integer, substitute the one-based input position when `order` is omitted or otherwise falsy (including an explicitly supplied numeric zero), sort steps by the resulting order, and default `step_id`, `status`, artifact-label lists, `source_label`, `required_rung_key`, `required_verdict`, `rollback_policy`, and `next_step_conditions` when absent. The first step whose normalized status is not `completed`, `skipped`, or `superseded` SHALL be reported as `current_protocol_step`. Protocol fields SHALL remain descriptive metadata: this surface SHALL NOT execute a referenced Branch, enforce prerequisites or verdicts, advance step state, or perform rollback.
@@ -355,44 +355,6 @@ The system SHALL rank each Branch under a Goal by its highest active claim whose
 #### Scenario: Outcome ranking bypasses the selector
 - **WHEN** a Goal has a custom selector Branch and either outcome-leaderboard surface is invoked
 - **THEN** the system computes the result from current ladder order and active claims without dispatching the selector
-
-### Requirement: Gate bonus attachment is paid-market-gated and node-only
-The system SHALL make gate-bonus attachment available only while both `GATES_ENABLED` and `TINYASSETS_PAID_MARKET=on` are enabled. `gates action=stake_bonus` MUST target an existing, active, currently unstaked claim, require a positive integer `bonus_stake` and non-empty `node_id`, and accept only `attachment_scope=node`; `attachment_scope=branch` and every other scope SHALL be rejected. Only the recorded claim owner or configured host identity SHALL be allowed to attach a bonus, and the immutable bonus staker recorded on the claim SHALL remain the claim owner even when the host initiates attachment. The stored `bonus_refund_after` timestamp SHALL be attachment metadata only; this surface SHALL NOT schedule or execute automatic expiry processing. Monetary release, refund, treasury allocation, and settlement behavior remain owned by the paid-market capability.
-
-#### Scenario: Eligible node attachment records bonus metadata
-- **WHEN** the claim owner or configured host submits a positive integer stake and non-empty node ID for an active unstaked claim while both flags are enabled
-- **THEN** the system records a node-scoped bonus, immutable claim-owner staker identity, node ID, and refund-after timestamp on the claim
-
-#### Scenario: Paid-market flag disables bonus attachment
-- **WHEN** `stake_bonus` is invoked while gates are enabled but `TINYASSETS_PAID_MARKET` is not `on`
-- **THEN** the system returns `status=not_available` without attaching a bonus
-
-#### Scenario: Branch attachment is not implemented
-- **WHEN** `stake_bonus` is invoked with `attachment_scope=branch`
-- **THEN** the system rejects the request and records no bonus attachment
-
-#### Scenario: Refund-after metadata does not trigger expiry
-- **WHEN** a node-scoped bonus has a stored `bonus_refund_after` timestamp
-- **THEN** the gate attachment surface retains the timestamp as metadata and does not automatically unstake, refund, release, or otherwise settle the bonus when that time passes
-
-### Requirement: Gate bonus resolution is single-winner but has current stranded states
-The gate surface SHALL allow only the immutable recorded staker to unstake an active bonus and SHALL allow the Goal owner, configured host, or an actor holding `retract_gate_claim` to release it with caller-supplied verdict `pass`, `fail`, or `skip` plus a non-empty `node_last_claimer`. It MUST clear the claim's active stake with a compare-and-swap transition before applying the paid-market settlement, so concurrent unstake or release attempts cannot settle the same stake twice. A pass SHALL delegate payout to the node's last claimer through the paid-market ledger, while fail or skip SHALL delegate refund to the immutable staker. The handler SHALL NOT invoke an evaluator to establish the supplied verdict. As built, a retracted staked claim rejects both unstake and release, and no automatic refund-after worker resolves that stranded attachment.
-
-#### Scenario: Concurrent resolution has one winner
-- **WHEN** two callers race to unstake or release the same active bonus
-- **THEN** exactly one compare-and-swap clears and settles the stake and the other observes that no active bonus remains
-
-#### Scenario: Passing release delegates payout to the node claimer
-- **WHEN** an authorized releaser supplies verdict `pass` and a node last-claimer for an active bonus
-- **THEN** the gate surface clears the attachment and delegates paid-market release to that node claimer under the ledger's settlement policy
-
-#### Scenario: Failing or skipped release refunds the immutable staker
-- **WHEN** an authorized releaser supplies verdict `fail` or `skip` and the required node last-claimer field
-- **THEN** the gate surface clears the attachment and delegates refund to the immutable recorded staker even though the node last-claimer value is unused for that refund
-
-#### Scenario: Retracted staked claims can remain stranded
-- **WHEN** a claim is retracted while it still carries an active bonus
-- **THEN** current unstake and release handlers reject resolution and no refund-after worker automatically clears or settles the attachment
 
 ### Requirement: ChatGPT Goal aliases normalize to the canonical Goal actions
 The Goal dispatch surface SHALL accept exactly four compatibility action names—`list_workflow_goals`, `search_workflow_goals`, `get_workflow_goal`, and `propose_workflow_goal`—and normalize them respectively to `list`, `search`, `get`, and `propose` before handler dispatch. The available-action catalog SHALL include both canonical actions and these aliases, and an alias SHALL inherit the canonical handler's validation, authorization, attribution, and response behavior rather than define a second implementation.

@@ -154,79 +154,6 @@ class TemporalFactStore:
         """Close the database connection."""
         self._conn.close()
 
-    def assert_fact(self, fact: TemporalFact) -> None:
-        """Store a new fact assertion.
-
-        Parameters
-        ----------
-        fact : TemporalFact
-            The fact to store.
-        """
-        self._conn.execute(
-            """
-            INSERT INTO temporal_facts
-                (fact_id, entity, attribute, value, valid_from, valid_until,
-                 asserted_at, asserted_by, confidence, supersedes,
-                 source_type, branch_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                fact.fact_id,
-                fact.entity,
-                fact.attribute,
-                str(fact.value),
-                fact.valid_from,
-                fact.valid_until,
-                fact.asserted_at,
-                fact.asserted_by,
-                fact.confidence,
-                fact.supersedes,
-                fact.source_type,
-                fact.branch_id,
-            ),
-        )
-        self._conn.commit()
-        logger.debug("Asserted fact: %s", fact.fact_id)
-
-    def supersede(
-        self,
-        old_fact_id: str,
-        new_fact: TemporalFact,
-    ) -> None:
-        """Mark an old fact as superseded and store a new one.
-
-        Parameters
-        ----------
-        old_fact_id : str
-            fact_id of the fact being replaced.
-        new_fact : TemporalFact
-            The new fact (should have supersedes=old_fact_id).
-        """
-        # Verify the old fact exists.
-        old = self._conn.execute(
-            "SELECT fact_id FROM temporal_facts WHERE fact_id = ?",
-            (old_fact_id,),
-        ).fetchone()
-        if not old:
-            logger.warning("Attempted to supersede non-existent fact: %s", old_fact_id)
-            return
-
-        # Update old fact's valid_until if not already set.
-        self._conn.execute(
-            """
-            UPDATE temporal_facts
-            SET valid_until = ?
-            WHERE fact_id = ? AND valid_until IS NULL
-            """,
-            (datetime.utcnow().isoformat(), old_fact_id),
-        )
-
-        # Assert the new fact.
-        self.assert_fact(new_fact)
-        logger.info(
-            "Superseded %s with %s", old_fact_id, new_fact.fact_id
-        )
-
     def query_at_time(
         self,
         entity: str,
@@ -361,38 +288,6 @@ class TemporalFactStore:
 
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_temporal_fact(r) for r in rows]
-
-    def invalidate(
-        self,
-        fact_id: str,
-        reason: str = "",
-    ) -> None:
-        """Mark a fact as no longer valid.
-
-        Sets valid_until to now if not already set.
-
-        Parameters
-        ----------
-        fact_id : str
-            fact_id to invalidate.
-        reason : str
-            Optional reason for invalidation (for audit trail).
-        """
-        now = datetime.utcnow().isoformat()
-        self._conn.execute(
-            """
-            UPDATE temporal_facts
-            SET valid_until = ?
-            WHERE fact_id = ? AND valid_until IS NULL
-            """,
-            (now, fact_id),
-        )
-        self._conn.commit()
-        logger.info(
-            "Invalidated fact %s%s",
-            fact_id,
-            f" ({reason})" if reason else "",
-        )
 
     def get_conflicts(
         self,

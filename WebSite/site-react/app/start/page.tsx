@@ -150,8 +150,10 @@ export default function StartPage() {
       <section className="section section--tight">
         <div className="container narrow">
           <p className="note">
-            What is free, and what a later tier would change, is stated in one place: the{" "}
-            <Link href="/fine-print/#plans">fine print</Link>.
+            Every command center starts free. Free and paid are the same app and the same security;
+            a paid plan allows more simultaneous runs and more storage.{" "}
+            <a href={`${SITE.app}?upgrade=1`}>Plans</a>. What changes is stated in the{" "}
+            <Link href="/fine-print/#plans">fine print</Link>. Paid tiers are not on sale.
           </p>
         </div>
       </section>

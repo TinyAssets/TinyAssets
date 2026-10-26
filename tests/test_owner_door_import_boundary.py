@@ -28,6 +28,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[1]
 _PKG = _ROOT / "tinyassets"
 
@@ -37,7 +39,7 @@ _BOUNDING = frozenset({
     "tinyassets.engine_result_bounds",
     "tinyassets.engine_read_views",
     "tinyassets.universe_server",
-    "tinyassets.engine_mcp_server",
+    "tinyassets.universe_tools",
 })
 
 #: The ONLY modules allowed to import the ceiling or the projections: the model
@@ -45,7 +47,7 @@ _BOUNDING = frozenset({
 #: first.
 _MODEL_DOOR = frozenset({
     "tinyassets/universe_server.py",
-    "tinyassets/engine_mcp_server.py",
+    "tinyassets/universe_tools.py",
     "tinyassets/engine_read_views.py",
 })
 
@@ -168,6 +170,12 @@ set_founder_home(base, founder_sub="probe_owner", universe_id=home, platform_gen
 from tinyassets.api.graph_reads import read_graph
 from tinyassets.api.status import get_status
 from tinyassets.owner_door import routes  # noqa: F401
+from tinyassets.broker import owner_reads
+# This import-only probe injects the admitted owner's shared plan transport.
+def shared_plan(operation, **args):
+    assert operation == "plan", operation
+    return {"tier": "free", "ends_at": None}
+owner_reads.remote = shared_plan
 with identity_context(Identity(user_id="probe_owner", username="probe_owner",
                                capabilities=["tinyassets.universe.write"])):
     for target, extra in (("pending_requests", {}), ("model_options", {}),
@@ -188,3 +196,9 @@ def test_exercising_the_owner_reads_never_loads_the_ceiling():
                          encoding="utf-8", cwd=_ROOT, timeout=240, check=False)
     assert run.returncode == 0, run.stderr[-4000:]
     assert json.loads(run.stdout.strip().splitlines()[-1]) == []
+
+
+pytestmark = pytest.mark.verifies(
+    'onboarding-web-app:'
+    "The app reads its owner's data through the owner door, complete",
+)

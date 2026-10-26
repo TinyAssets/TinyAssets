@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { RitualLabel } from "@tiny/design-system";
-import { TokenContracts } from "../../components/TokenContracts";
 import { legal } from "../../lib/legal";
-import tokenInfo from "../../lib/token-info.json";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
@@ -27,7 +25,6 @@ export default function LegalPage() {
             <span className="toc__label">On this page</span>
             <a href="#privacy">Privacy</a>
             <a href="#terms">Terms</a>
-            <a href="#token">Token</a>
             <a href="#license">License</a>
             <a href="#copyright">Copyright</a>
             <a href="#contact">Contact</a>
@@ -155,18 +152,6 @@ export default function LegalPage() {
               <strong>Contact.</strong> <a href={`mailto:${legal.contact}`}>{legal.contact}</a>
             </li>
           </ol>
-
-          <h3 id="token">The token</h3>
-          <p>
-            <strong>{tokenInfo.display_name}</strong> is the TinyAssets currency token. The ticker is{" "}
-            <code>{tokenInfo.ticker}</code>. These contract addresses are the ones in the site record. The same
-            list, with a copy button, is on the <a href="/token/">token page</a>.
-          </p>
-          <TokenContracts />
-          <p>
-            This is not an investment, and there is no promise of value. You are responsible for your own wallet.
-            Availability may vary by jurisdiction.
-          </p>
 
           <h2 id="license">License</h2>
           <ul>

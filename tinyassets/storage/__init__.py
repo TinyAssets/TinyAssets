@@ -1,6 +1,6 @@
 """Bounded-context storage layers for the multiplayer engine.
 
-Second canonical Module Layout subpackage (after ``tinyassets/bid/``) per
+Canonical Module Layout subpackage per
 ``docs/architecture.md``. Replaces the 3,575-LOC ``tinyassets/daemon_server.py``
 god-module with per-context submodules:
 

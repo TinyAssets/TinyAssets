@@ -6,6 +6,7 @@ After=local-fs-pre.target
 Before=var-lib-boxhostd-owners.mount
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets/boxhostd
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/tinyassets/boxhostd/box-store-device.sh

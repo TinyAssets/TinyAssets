@@ -79,7 +79,7 @@ class ConversationAttention(Middleware):
     async def on_call_tool(self, context, call_next):
         from fastmcp.exceptions import ToolError
 
-        from tinyassets.engine_mcp_server import _RAW_CONTENT_TOOLS
+        from tinyassets.universe_tools import _RAW_CONTENT_TOOLS
 
         message = context.message
         tool = getattr(message, "name", "") or ""

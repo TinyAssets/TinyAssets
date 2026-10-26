@@ -493,22 +493,35 @@ def record_daemon_memory_event(
         )
 
 
-def _insert_fts(conn: sqlite3.Connection, *, entry_id: str, daemon_id: str, content: str) -> None:
-    conn.execute(
-        """
-        INSERT INTO daemon_brain_entries_fts (entry_id, daemon_id, content)
-        VALUES (?, ?, ?)
-        """,
-        (entry_id, daemon_id, content),
-    )
+def _fetch_entry(
+    conn: sqlite3.Connection,
+    entry_id: str,
+    base_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """File entry first. The database remains only for rows not yet converted."""
+    if base_path is not None:
+        from tinyassets.knowledge_authority import read_brain_entry
 
-
-def _fetch_entry(conn: sqlite3.Connection, entry_id: str) -> dict[str, Any] | None:
+        found = read_brain_entry(base_path, entry_id)
+        if found is not None:
+            return _coerce_stored_entry(found)
     row = conn.execute(
         "SELECT * FROM daemon_brain_entries WHERE entry_id = ?",
         (entry_id,),
     ).fetchone()
     return _row_to_entry(row) if row is not None else None
+
+
+def _coerce_stored_entry(row: dict[str, Any]) -> dict[str, Any]:
+    """Accept either a live entry file or a converted SQL row."""
+    entry = dict(row)
+    if "metadata" not in entry:
+        entry["metadata"] = _json_loads(str(entry.get("metadata_json") or "{}"), {})
+    if "temporal_bounds" not in entry:
+        entry["temporal_bounds"] = _json_loads(
+            str(entry.get("temporal_bounds_json") or "{}"), {},
+        )
+    return entry
 
 
 def capture_daemon_memory(
@@ -592,25 +605,25 @@ def _capture_daemon_memory(
     fingerprint = _fingerprint(clean)
     trace = _trace_id()
 
-    with _connect(base_path) as conn:
-        existing = conn.execute(
-            """
-            SELECT * FROM daemon_brain_entries
-            WHERE daemon_id = ? AND content_fingerprint = ?
-            """,
-            (daemon_id, fingerprint),
-        ).fetchone()
-        if existing is not None:
-            conn.execute(
+    from tinyassets.knowledge_authority import brain_entry_by_fingerprint, write_brain_entry
+
+    owner = Path(base_path)
+    existing = brain_entry_by_fingerprint(owner, daemon_id, fingerprint)
+    if existing is None:
+        with _connect(base_path) as conn:
+            row = conn.execute(
                 """
-                UPDATE daemon_brain_entries
-                SET updated_at = ?
-                WHERE entry_id = ?
+                SELECT * FROM daemon_brain_entries
+                WHERE daemon_id = ? AND content_fingerprint = ?
                 """,
-                (now, existing["entry_id"]),
-            )
-            entry = _fetch_entry(conn, existing["entry_id"])
-            assert entry is not None
+                (daemon_id, fingerprint),
+            ).fetchone()
+        if row is not None:
+            existing = _row_to_entry(row)
+    if existing is not None:
+        existing["updated_at"] = now
+        write_brain_entry(owner, existing)
+        with _connect(base_path) as conn:
             _record_event_conn(
                 conn,
                 daemon_id=daemon_id,
@@ -618,60 +631,48 @@ def _capture_daemon_memory(
                 trace_id=trace,
                 source_type=clean_source_type,
                 source_id=clean_source_id,
-                entry_ids=[entry["entry_id"]],
+                entry_ids=[existing["entry_id"]],
                 metadata={"deduped": True},
             )
-            entry["deduped"] = True
-            return entry
+        existing["deduped"] = True
+        return existing
 
-        entry_id = _entry_id()
-        conn.execute(
-            """
-            INSERT INTO daemon_brain_entries (
-                entry_id, daemon_id, memory_kind, content, content_fingerprint,
-                source_type, source_id, source_path, source_hash, reliability,
-                temporal_bounds_json, language_type, confidence, importance,
-                sensitivity_tier, visibility, promotion_state,
-                supersedes_entry_id, superseded_by_entry_id, metadata_json,
-                created_at, updated_at, schema_version
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry_id,
-                daemon_id,
-                normalized_kind,
-                clean,
-                fingerprint,
-                clean_source_type,
-                clean_source_id,
-                str(source_path or ""),
-                str(source_hash or ""),
-                clean_reliability,
-                _json_dumps(bounds),
-                clean_language_type,
-                _clamp(confidence, default=0.5),
-                _clamp(importance, default=0.5),
-                str(sensitivity_tier or "normal"),
-                normalized_visibility,
-                normalized_state,
-                supersedes_entry_id,
-                None,
-                _json_dumps(dict(metadata or {})),
-                now,
-                now,
-                SCHEMA_VERSION,
-            ),
+    entry_id = _entry_id()
+    entry = {
+        "entry_id": entry_id,
+        "daemon_id": daemon_id,
+        "memory_kind": normalized_kind,
+        "content": clean,
+        "content_fingerprint": fingerprint,
+        "source_type": clean_source_type,
+        "source_id": clean_source_id,
+        "source_path": str(source_path or ""),
+        "source_hash": str(source_hash or ""),
+        "reliability": clean_reliability,
+        "temporal_bounds": bounds,
+        "language_type": clean_language_type,
+        "confidence": _clamp(confidence, default=0.5),
+        "importance": _clamp(importance, default=0.5),
+        "sensitivity_tier": str(sensitivity_tier or "normal"),
+        "visibility": normalized_visibility,
+        "promotion_state": normalized_state,
+        "supersedes_entry_id": supersedes_entry_id,
+        "superseded_by_entry_id": None,
+        "metadata": dict(metadata or {}),
+        "created_at": now,
+        "updated_at": now,
+        "schema_version": SCHEMA_VERSION,
+    }
+    write_brain_entry(owner, entry)
+    if supersedes_entry_id:
+        _supersede_entry_file(
+            base_path,
+            daemon_id=daemon_id,
+            entry_id=supersedes_entry_id,
+            superseded_by_entry_id=entry_id,
+            trace_id=trace,
         )
-        _insert_fts(conn, entry_id=entry_id, daemon_id=daemon_id, content=clean)
-        if supersedes_entry_id:
-            _supersede_conn(
-                conn,
-                daemon_id=daemon_id,
-                entry_id=supersedes_entry_id,
-                superseded_by_entry_id=entry_id,
-                trace_id=trace,
-            )
+    with _connect(base_path) as conn:
         _record_event_conn(
             conn,
             daemon_id=daemon_id,
@@ -682,8 +683,6 @@ def _capture_daemon_memory(
             entry_ids=[entry_id],
             metadata={"deduped": False, "memory_kind": normalized_kind},
         )
-        entry = _fetch_entry(conn, entry_id)
-        assert entry is not None
 
     if embedding is not None:
         _index_daemon_memory_vector(base_path, entry=entry, embedding=embedding)
@@ -999,7 +998,7 @@ def search_daemon_memory(
                     )
                     by_id[hit["entry_id"]]["retrieval_source"] += "+vector"
                 else:
-                    fetched = _fetch_entry(conn, hit["entry_id"])
+                    fetched = _fetch_entry(conn, hit["entry_id"], base_path)
                     if fetched and fetched["daemon_id"] == daemon_id:
                         fetched["retrieval_score"] = hit["retrieval_score"]
                         fetched["retrieval_source"] = hit["retrieval_source"]
@@ -1476,52 +1475,33 @@ def _promote_daemon_memory_to_wiki(
     trace = _trace_id()
     stamp = _stamp()
     with _connect(base_path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT *
-            FROM daemon_brain_entries
-            WHERE daemon_id = ?
-                AND entry_id IN ({','.join('?' for _ in clean_ids)})
-            ORDER BY updated_at DESC
-            """,
-            [daemon_id, *clean_ids],
-        ).fetchall()
-        entries = [_row_to_entry(row) for row in rows]
+        from tinyassets.knowledge_authority import write_brain_entry, write_brain_promotion
+
+        entries = []
+        for entry_id in clean_ids:
+            entry = _fetch_entry(conn, entry_id, base_path)
+            if entry is not None and entry.get("daemon_id") == daemon_id:
+                entries.append(entry)
         found = {entry["entry_id"] for entry in entries}
         missing = [entry_id for entry_id in clean_ids if entry_id not in found]
         if missing:
             raise ValueError(f"entries not found for daemon: {', '.join(missing)}")
         for entry in entries:
             _validate_promotion_transition(entry["promotion_state"], "promoted")
-        conn.execute(
-            f"""
-            UPDATE daemon_brain_entries
-            SET promotion_state = 'promoted', updated_at = ?
-            WHERE daemon_id = ?
-                AND entry_id IN ({','.join('?' for _ in clean_ids)})
-            """,
-            [stamp, daemon_id, *clean_ids],
-        )
+            entry["promotion_state"] = "promoted"
+            entry["updated_at"] = stamp
+            write_brain_entry(base_path, entry)
         promotion_id = f"daemon-memory-promotion::{uuid.uuid4().hex}"
-        conn.execute(
-            """
-            INSERT INTO daemon_memory_promotions (
-                promotion_id, daemon_id, entry_ids_json, target_path, summary,
-                promoted_at, metadata_json, schema_version
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                promotion_id,
-                daemon_id,
-                _json_dumps(clean_ids),
-                safe_target_rel_path,
-                clean_summary,
-                stamp,
-                _json_dumps(dict(metadata or {})),
-                SCHEMA_VERSION,
-            ),
-        )
+        write_brain_promotion(base_path, {
+            "promotion_id": promotion_id,
+            "daemon_id": daemon_id,
+            "entry_ids_json": _json_dumps(clean_ids),
+            "target_path": safe_target_rel_path,
+            "summary": clean_summary,
+            "promoted_at": stamp,
+            "metadata_json": _json_dumps(dict(metadata or {})),
+            "schema_version": SCHEMA_VERSION,
+        })
         _record_event_conn(
             conn,
             daemon_id=daemon_id,
@@ -1560,31 +1540,32 @@ def _promote_daemon_memory_to_wiki(
     }
 
 
-def _supersede_conn(
-    conn: sqlite3.Connection,
+def _supersede_entry_file(
+    base_path: str | Path,
     *,
     daemon_id: str,
     entry_id: str,
     superseded_by_entry_id: str,
     trace_id: str,
 ) -> None:
-    conn.execute(
-        """
-        UPDATE daemon_brain_entries
-        SET promotion_state = 'superseded',
-            superseded_by_entry_id = ?,
-            updated_at = ?
-        WHERE daemon_id = ? AND entry_id = ?
-        """,
-        (superseded_by_entry_id, _stamp(), daemon_id, entry_id),
-    )
-    _record_event_conn(
-        conn,
-        daemon_id=daemon_id,
-        event_type="daemon.memory.supersede",
-        trace_id=trace_id,
-        entry_ids=[entry_id, superseded_by_entry_id],
-    )
+    """Supersede one entry file and keep the event in operational history."""
+    from tinyassets.knowledge_authority import write_brain_entry
+
+    with _connect(base_path) as conn:
+        old = _fetch_entry(conn, entry_id, base_path)
+        if old is None or old.get("daemon_id") != daemon_id:
+            return
+        old["promotion_state"] = "superseded"
+        old["superseded_by_entry_id"] = superseded_by_entry_id
+        old["updated_at"] = _stamp()
+        write_brain_entry(base_path, old)
+        _record_event_conn(
+            conn,
+            daemon_id=daemon_id,
+            event_type="daemon.memory.supersede",
+            trace_id=trace_id,
+            entry_ids=[entry_id, superseded_by_entry_id],
+        )
 
 
 def supersede_daemon_memory(
@@ -1598,19 +1579,19 @@ def supersede_daemon_memory(
     _validate_daemon(base_path, daemon_id)
     trace = _trace_id()
     with _connect(base_path) as conn:
-        old = _fetch_entry(conn, entry_id)
-        new = _fetch_entry(conn, superseded_by_entry_id)
+        old = _fetch_entry(conn, entry_id, base_path)
+        new = _fetch_entry(conn, superseded_by_entry_id, base_path)
         if old is None or old["daemon_id"] != daemon_id:
             raise ValueError("entry_id not found for daemon")
         if new is None or new["daemon_id"] != daemon_id:
             raise ValueError("superseded_by_entry_id not found for daemon")
-        _supersede_conn(
-            conn,
-            daemon_id=daemon_id,
-            entry_id=entry_id,
-            superseded_by_entry_id=superseded_by_entry_id,
-            trace_id=trace,
-        )
+    _supersede_entry_file(
+        base_path,
+        daemon_id=daemon_id,
+        entry_id=entry_id,
+        superseded_by_entry_id=superseded_by_entry_id,
+        trace_id=trace,
+    )
     return {
         "daemon_id": daemon_id,
         "host_local": True,
@@ -1651,12 +1632,12 @@ def review_daemon_memory(
     trace = _trace_id()
     stamp = _stamp()
     with _connect(base_path) as conn:
-        entry = _fetch_entry(conn, entry_id)
+        entry = _fetch_entry(conn, entry_id, base_path)
         if entry is None or entry["daemon_id"] != daemon_id:
             raise ValueError("entry_id not found for daemon")
         if state == "superseded":
             replacement_id = str(superseded_by_entry_id or "").strip()
-            replacement = _fetch_entry(conn, replacement_id)
+            replacement = _fetch_entry(conn, replacement_id, base_path)
             if replacement is None or replacement["daemon_id"] != daemon_id:
                 raise ValueError("superseded_by_entry_id not found for daemon")
         else:
@@ -1679,24 +1660,15 @@ def review_daemon_memory(
         entry_metadata["last_review"] = review_record
         entry_metadata["review_history"] = history
 
-        conn.execute(
-            """
-            UPDATE daemon_brain_entries
-            SET promotion_state = ?,
-                superseded_by_entry_id = ?,
-                metadata_json = ?,
-                updated_at = ?
-            WHERE daemon_id = ? AND entry_id = ?
-            """,
-            (
-                state,
-                replacement_id,
-                _json_dumps(entry_metadata),
-                stamp,
-                daemon_id,
-                entry_id,
-            ),
-        )
+        from tinyassets.knowledge_authority import write_brain_entry
+
+        entry["promotion_state"] = state
+        entry["superseded_by_entry_id"] = replacement_id
+        entry["metadata"] = entry_metadata
+        entry["updated_at"] = stamp
+        if "metadata_json" in entry:
+            entry["metadata_json"] = _json_dumps(entry_metadata)
+        write_brain_entry(base_path, entry)
         event_type = {
             "accepted": "daemon.memory.accept",
             "rejected": "daemon.memory.reject",
@@ -1713,7 +1685,7 @@ def review_daemon_memory(
             entry_ids=event_entry_ids,
             metadata=review_record,
         )
-        reviewed = _fetch_entry(conn, entry_id)
+        reviewed = _fetch_entry(conn, entry_id, base_path)
         assert reviewed is not None
 
     return {

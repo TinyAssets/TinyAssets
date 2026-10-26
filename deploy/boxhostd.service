@@ -1,20 +1,30 @@
 [Unit]
-Description=TinyAssets box host (P2a idle preflight)
+Description=TinyAssets owner box host
 After=network.target docker.service
-Wants=var-lib-boxhostd-owners.mount
+Requires=var-lib-boxhostd-owners.mount
 After=var-lib-boxhostd-owners.mount
 ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets/boxhostd
+# BACKUP_DEST and UNIVERSE_SERVER_URL; never the container env file (including HOME).
+# Optional only for the idle install before the fail-safe deploy renders it.
+EnvironmentFile=-/etc/tinyassets/boxhostd.env
 Type=simple
 ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh
-ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd_idle.py
+ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd.py
 Restart=on-failure
 RestartSec=5
 Delegate=yes
+# boxhostd.py moves itself into supervisor before enabling domain controllers.
+# Keep the cgroup tree writable; owner cgroups are siblings of supervisor.
 RuntimeDirectory=tinyassets-boxhostd
-RuntimeDirectoryMode=0700
-MemoryMax=3G
+RuntimeDirectoryMode=0755
+# Containers bind this directory inode, including across stop/start deploys.
+RuntimeDirectoryPreserve=yes
+MemoryMax=7G
+# Fleet memory pressure kills a sandbox (oomScoreAdj=500), never this supervisor.
+OOMScoreAdjust=-500
 CPUQuota=300%
 TasksMax=5120
 

@@ -13,6 +13,10 @@ import pytest
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
 GUARDS = {
+    "test_send_path": (
+        "Send owner messages through converse and the box-local durable intake; "
+        "remove browser steering, destructive claims and duplicate send transports. "
+    ),
     "test_policy_writers": (
         "Keep policy writes in the broker store, reachable only through the protected "
         "owner-door policy route. Retire the former editable rule modules. "
@@ -102,11 +106,11 @@ GUARDS = {
     ),
     "test_served_tool_guidance": (
         'Repair the affected handbook chapter and its index in '
-        'tinyassets/engine_mcp_server.py; preserve verbatim guidance and keep expanded '
+        'tinyassets/universe_tools.py; preserve verbatim guidance and keep expanded '
         'instructions in on-demand chapters. '
     ),
     "test_served_systems_guidance": (
-        'Repair the systems handbook chapter in tinyassets/engine_mcp_server.py to name the '
+        'Repair the systems handbook chapter in tinyassets/universe_tools.py to name the '
         'actual supported in-platform calls and fetch path. '
     ),
     "test_owner_door_import_boundary": (
@@ -170,22 +174,13 @@ ROUTE_CASES = (
 
 
 def targets() -> list[str]:
-    return [
-        "tests/test_converse_turn_cost.py::test_engine_tool_description_budget_does_not_grow",
-        "tests/test_converse_turn_cost.py::test_static_folder_harness_budget_does_not_grow",
-    ] + [f"tests/{name}.py" for name in GUARDS if name != "test_onboarding_app"] + [
+    return [f"tests/{name}.py" for name in GUARDS if name != "test_onboarding_app"] + [
         f"tests/test_onboarding_app.py::{name}" for name in ROUTE_CASES
     ]
 
 
 def repair(nodeid: str) -> str:
     name = nodeid.split("::", 1)[0].replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".py")
-    if name == "test_converse_turn_cost":
-        return (
-            "Fix: Move detailed agent instructions verbatim into an on-demand handbook "
-            "chapter, leaving a short pointer; do not raise the static prompt budgets. "
-            f"Reproduce: python -m pytest -q {nodeid}"
-        )
     hint = GUARDS.get(
         name, "Install dev,browser extras and fix the reported collection/import error."
     )

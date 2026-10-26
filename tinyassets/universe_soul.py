@@ -1,7 +1,6 @@
 """Domain-neutral command center soul profile helpers.
 
-PR-139 slice 3 keeps the old ``PROGRAM.md`` premise file as a compatibility
-mirror while introducing ``soul.md`` as the durable universe-intent artifact.
+``soul.md`` is the durable command center intent artifact.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from tinyassets.universe_files import write_data_path
 
 SOUL_FILENAME = "soul.md"
 SOUL_VERSIONS_DIR = "soul_versions"
-LEGACY_PREMISE_FILENAME = "PROGRAM.md"
 SOUL_SCHEMA_VERSION = 1
 DEFAULT_DOMAIN_SHAPE = "general"
 DEFAULT_EDIT_AUTHORITY = "soul.edit"
@@ -96,10 +94,6 @@ class PinnedUniverseSoul:
 
 def soul_path(universe_dir: Path) -> Path:
     return universe_dir / SOUL_FILENAME
-
-
-def legacy_premise_path(universe_dir: Path) -> Path:
-    return universe_dir / LEGACY_PREMISE_FILENAME
 
 
 def has_soul(universe_dir: Path) -> bool:
@@ -237,9 +231,6 @@ def write_universe_soul(
     caller that tries gets silent success — reported by cross-family review
     2026-08-05.
     """
-    from tinyassets.role_center_admission import ensure_center_dir
-
-    ensure_center_dir(universe_dir)
     # Collapse the persona name to a single line: a multiline name would inject
     # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
     name = " ".join(name.split())
@@ -320,17 +311,6 @@ def ensure_universe_soul(
         lineage="created-from-premise" if purpose.strip() else "template",
         loop_branch_def_id=loop_branch_def_id,
     )
-
-
-def read_legacy_premise(universe_dir: Path) -> str:
-    from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
-
-    try:
-        return read_universe_text(
-            universe_dir, LEGACY_PREMISE_FILENAME, max_bytes=MAX_BRAIN_FILE_BYTES,
-        )
-    except (OSError, UnicodeDecodeError):
-        return ""
 
 
 #: How many of the newest soul snapshots are compared per read. The folder is

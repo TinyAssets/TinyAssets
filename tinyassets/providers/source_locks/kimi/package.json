@@ -1,0 +1,8 @@
+{
+  "name": "owner-subscription-source",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@moonshot-ai/kimi-code": "2.3.0"
+  }
+}

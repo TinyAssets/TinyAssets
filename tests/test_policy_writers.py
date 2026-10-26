@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -13,6 +15,10 @@ def test_policy_writers():
     for path in (ROOT / "tinyassets").rglob("*.py"):
         relative = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and "UPDATE outbound_connections SET owner_egress_json" in node.value):
+                assert relative == "tinyassets/broker/http_connect.py", relative
         for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
             fn = call.func
             if isinstance(fn, ast.Attribute) and fn.attr == "write":
@@ -29,3 +35,6 @@ def test_policy_writers():
                     and relative != "tinyassets/onboarding/__init__.py"):
                 raise AssertionError(f"non-owner policy write: {relative}:{call.lineno}")
     assert "policy:write" not in (ROOT / "tinyassets/ta_capabilities.py").read_text()
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:C8')

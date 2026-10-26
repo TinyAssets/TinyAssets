@@ -20,7 +20,7 @@ Six MUST items, two OPTIONAL. Do MUST in order; OPTIONAL any time.
 - **Droplets → Create Droplet:**
   - Region: closest to your users (NYC / SFO / AMS / FRA — all fine).
   - Image: Distributions → **Debian 12**.
-  - Size: Basic → Regular SSD → **$6/mo** (1 vCPU, 1 GB RAM). Bump to $12/mo if you want headroom for paid-market day-one.
+  - Size: Basic → Regular SSD → **$6/mo** (1 vCPU, 1 GB RAM).
   - Authentication: SSH Key → select the one you just added. Do NOT enable password auth.
   - Hostname: `tinyassets-daemon-prod-01`.
   - Firewall: attach or create — Inbound SSH (22) from your admin IP only, ICMP, everything else closed. Outbound: all.

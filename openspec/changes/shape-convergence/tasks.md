@@ -82,7 +82,9 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       builder, and ZIP release; retain the independent `.mcpb` build.
       `scripts/check_mirror_parity.py` and the pre-commit hook reject a tracked
       plugin runtime. Guard: S19 converged. Parallel to C3.
-- **C5 Dead limbs and dead spawn paths.**
+- [x] **C5 Dead limbs and dead spawn paths.** The remaining v1 runner,
+      cloud continuation, root fantasy runner and domain CLI entries were
+      folded into C7.
       **Deletes:**
       - `cloud_automation_continuation.py` (3027) and
         `background_served_provider.py` (1790) with their tests.
@@ -110,15 +112,15 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Floor (cross-user): its own rounds.
       Guard: `role-cells` ceiling falls to one backend;
       `test_universe_path_io_guard` at 0. Net about −5k. Depends on C3, C5.
-- **C7 Control plane only.** Wakes, continuations, automations,
+- [x] **C7 Control plane only.** Wakes, continuations, automations,
       activities and event triggers become control-plane wake handlers on
       one tick.
       **Deletes:** the `scheduler.py` thread, `dispatcher.py`, `producers/`,
       `branch_tasks.py` (merged into v2), `request_continuations` and
       `agent_wakes` threads, and the limit code outside `usage_policy.py`
       (the folded limits change).
-      Guard: `test_control_plane_inventory`, `limit-names`, and
-      `opt-in-flags` for `TINYASSETS_ASSIGNED_QUEUE_CONSUMER`. Net about
+      Guard: `test_control_plane_inventory`, `limit-names`, and one
+      `TINYASSETS_ASSIGNED_QUEUE_CONSUMER` reader with disabled-mode refusals. Net about
       −3k. Depends on C3, C6.
 - **C8 Agents are files; one starter.** (#4744, done) `agents/<name>/`
       holds `AGENTS.md` and `settings.yaml` (the same layout a package lands;
@@ -154,6 +156,10 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       The external-agent packages, the Codex and Claude Code deletions and
       the discovery cell were brought forward as `cli-external-agents`.
 - **C10 Workflows and extensions as packages.**
+      C10 tail: S6/S7/S18 converged. Standalone node registration and bundled
+      domains are deleted; tool handlers share `universe_tools.py` and request
+      context through one registration. Outcome/provenance actions live with
+      their stores; app workflow goals remain in `api/goals.py`.
       **Deletes:** the v1 workspace-executable loader (`ta_cli.py:54-105`),
       the Activities branch, and the platform `invoke_branch*` and
       `await_branch_run` node kinds (converted once). Folds

@@ -7,7 +7,7 @@ platform has never heard of — with ZERO platform changes, by:
 
   1. Creating an ``http`` outbound connection (the Pipedream "connected
      account"): a vault ``credential_ref`` + an ``auth_scheme``
-     (bearer/basic/header/oauth1a/none) + a per-endpoint egress allowlist
+     (bearer/basic/header/oauth1a/none) + authorized credential endpoints
      (host + path_template + methods, including the ``{name+}`` multi-segment
      tail). See ``storage/outbound_connections.ConnectionLedger``.
   2. Granting that connection to the universe (``grant_effector_consent`` /
@@ -925,9 +925,9 @@ def _read_connection_context(
         return None, None, "no_universe_authority"
     try:
         if principal in (f'universe:{universe_id}', f'command_center:{universe_id}'):
-            from tinyassets.role_scope import owner_principal
+            from tinyassets.owner_centers import admitted_owner
 
-            principal = owner_principal(Path(data_root) / universe_id, actor=principal)
+            principal = admitted_owner(Path(data_root).resolve(), center=universe_id)
         grant, resource, _incarnation = authorized_connection(
             Path(data_root), principal=principal, command_center=universe_id,
             grant_id=grant_id, connection_id=connection_id)
@@ -1293,6 +1293,17 @@ def _run(
 
     policy_approval = take_policy_approval() if approved_agent else None
     try:
+        if policy_approval is not None:
+            from tinyassets.action_policy import ActionPolicyStore
+            from tinyassets.broker.server import request_digest
+
+            local_policy = ActionPolicyStore(universe_dir)
+            owner = local_policy.runtime.principal
+            digest = request_digest(grant_id=grant_id, connection_id=connection_id,
+                                    verb=verb, request=wire_request)
+            if not local_policy.consume_once(owner, policy_approval, digest,
+                                             local_policy.read(owner).generation):
+                raise PermissionError("action approval is stale or already consumed")
         proxy = _open_connection_proxy(
             data_root=data_root,
             universe_id=universe_id,
@@ -1304,10 +1315,7 @@ def _run(
 
         with effect_admission():
             response = proxy.request(
-                verb, wire_request, policy_approval=policy_approval,
-                policy_grant_ref=scoped.get("decision_id") if scoped else None,
-                policy_agent=rule_agent if scoped else None,
-                policy_task_id=scoped.get("task_id") if scoped else None)
+                verb, wire_request)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

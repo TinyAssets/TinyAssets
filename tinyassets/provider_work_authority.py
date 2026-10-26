@@ -368,13 +368,16 @@ def _validate_work_lineage(
     agent_invocation_command_digest: str | None,
     agent_invocation_generation: int | None,
 ) -> None:
-    # The agent runtime (and its ``agent_invocation`` receipts) is retired; the
-    # three ``agent_invocation_*`` fields stay in the persisted receipt payload,
-    # always None, so existing receipt digests still verify.
-    if execution_subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
-        raise ValueError("Branch provider work requires a branch version subject")
-    _reference(branch_def_id, "branch_def_id")
-    _reference(branch_version_id, "branch_version_id")
+    if execution_subject.kind is ExecutionSubjectKind.AGENT_ACTIVITY:
+        if work_item_kind != "run" or branch_def_id is not None or branch_version_id is not None:
+            raise ValueError("Activity provider work cannot carry branch lineage")
+        if not re.fullmatch(r"act_[0-9a-f]{16}:[1-9][0-9]*:[0-9a-f]{16}", execution_subject.ref):
+            raise ValueError("Activity subject requires exact activity, generation and run")
+    else:
+        if execution_subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
+            raise ValueError("Branch provider work requires a branch version subject")
+        _reference(branch_def_id, "branch_def_id")
+        _reference(branch_version_id, "branch_version_id")
     if any(
         value is not None
         for value in (
@@ -439,8 +442,8 @@ class ProviderUniverseWorkAuthority:
             agent_invocation_command_digest=self.agent_invocation_command_digest,
             agent_invocation_generation=self.agent_invocation_generation,
         )
-        if self.executor_class != "cloud":
-            raise ValueError("executor_class must be cloud")
+        if self.executor_class not in {"cloud", "owner-box"}:
+            raise ValueError("executor_class must be cloud or owner-box")
         _integer(self.max_invocations, "max_invocations", minimum=1)
         _integer(self.max_tokens, "max_tokens", minimum=0)
         _integer(
@@ -684,8 +687,8 @@ class ProviderUniverseWorkReceipt:
             )
         _integer(self.assignment_generation, "assignment_generation", minimum=1)
         _digest(self.assignment_digest, "assignment_digest")
-        if self.executor_class != "cloud":
-            raise ValueError("executor_class must be cloud")
+        if self.executor_class not in {"cloud", "owner-box"}:
+            raise ValueError("executor_class must be cloud or owner-box")
         object.__setattr__(
             self,
             "allowed_operations",
@@ -1005,15 +1008,6 @@ class ProviderInvocationSelection:
         if type(raw) is not str or len(raw.encode("utf-8")) > 262144:
             raise ValueError("invalid selected model evidence")
         evidence = json.loads(raw)
-        if type(evidence) is dict and evidence.get("kind") == "native":
-            from tinyassets.providers.native_model_selection import NativeSelection
-
-            native = NativeSelection.from_dict(evidence)
-            if (_canonical_json(evidence) != raw or native.provider != self.provider
-                    or native.requested_model_id != self.model_id
-                    or self.executor_id != self.provider):
-                raise ValueError("native model evidence does not match selection")
-            return evidence
         if type(evidence) is not dict or set(evidence) != {
             "discovery_protocol", "source_digest", "context_tokens", "supports_tools",
             "cost_caps", "execution_contract", "observed_at", "completed_at",
@@ -1431,15 +1425,6 @@ class ProviderInvocationCarrier:
 
         return selected_work_model(self._reservation.selection)
 
-    @property
-    def native_selection(self):
-        from tinyassets.providers.native_model_selection import NativeSelection
-
-        selection = self._reservation.selection
-        evidence = None if selection is None else selection.model_evidence()
-        if evidence is not None and evidence.get("kind") == "native":
-            return NativeSelection.from_dict(evidence)
-        return None
 
     @property
     def role(self) -> str:

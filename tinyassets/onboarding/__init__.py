@@ -92,8 +92,8 @@ def _handle_path_key(handle: str) -> str:
 # it must not exist for a future caller to reach for.
 
 
-def _mint_refresh_session(refresh_token: str) -> str:
-    return _session_store.mint(refresh_token)
+def _mint_refresh_session(refresh_token: str, *, owner: str) -> str:
+    return _session_store.mint(refresh_token, owner=owner)
 
 
 def _read_refresh_session(handle: str) -> str:
@@ -126,13 +126,6 @@ def _same_origin_json(request: Any, public_resource: str = "") -> bool:
     return parts.netloc in allowed
 
 
-#: The one subscription service this daemon can complete by BROKERED SIGN-IN rather
-#: than by the owner pasting something. Named here, in the module that implements that
-#: flow, so a caller deciding whether to OFFER a sign-in can ask instead of knowing:
-#: `api.pending_requests` reads this and names no source itself.
-DEVICE_SIGN_IN_SERVICE = "codex"
-
-
 def onboarding_enabled() -> bool:
     """Whether the onboarding app route serves content (dark flag)."""
     return os.environ.get("TINYASSETS_ONBOARDING_APP", "").strip().lower() in _TRUTHY
@@ -146,8 +139,7 @@ def app_config(build: str | None = None) -> dict[str, Any]:
     drift from what ``/mcp`` itself accepts. Contains public values only.
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
-    from tinyassets.onboarding import openai_device as _openai
-    from tinyassets.onboarding.realtime_voice import public_voice_config
+    from tinyassets.providers.source_record import suggested_address
 
     prm = protected_resource_metadata()
     resource = str(prm.get("resource", "")).rstrip("/")
@@ -170,17 +162,7 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # registered public client id are present; otherwise the page renders an
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
-        # One-tap OpenAI (browser flow, native app): public client + authorize
-        # endpoint; the app builds PKCE locally and catches the loopback redirect.
-        "openai": {
-            "authorize_url": _openai.BROWSER_AUTHORIZE_URL,
-            "client_id": _openai.CODEX_CLIENT_ID,
-            "scope": _openai.BROWSER_SCOPE,
-            "redirect_port": _openai.BROWSER_DEFAULT_PORT,
-            "redirect_path": _openai.BROWSER_REDIRECT_PATH,
-            "device_verification_url": _openai.VERIFICATION_URL,
-        },
-        "voice": public_voice_config(),
+        "model_source_address": suggested_address(),
     }
 
 
@@ -231,13 +213,14 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
         credential_requests_source,
         module_url,
         recovery_source,
+        shell_source,
     )
 
     nonce = secrets.token_urlsafe(16)
     cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
-        _HTML_PATH.read_text("utf-8")
+        shell_source(_HTML_PATH)
         .replace("__TA_APP_RECOVERY__", recovery_source())
         .replace("__TA_CHAT_RENDER__", chat_renderer_source())
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
@@ -427,9 +410,15 @@ async def _handle_token(request: Any) -> Any:
         # server-side store keyed by the localStorage handle. Web browser: from
         # the HttpOnly cookie. The handle wins when present (the WebView cookie is
         # unreliable — see _REFRESH_SESSION_TTL note).
+        from tinyassets.auth.workos_provider import clear_rejection_category, rejection_category
+
+        clear_rejection_category()
         refresh, current_handle = (
             _session_store.read(session_ref) if session_ref else ("", "")
         )
+        if rejection_category() == "account_deleted":
+            return JSONResponse({"error": "account_deleted", "message": "Account deleted."},
+                                status_code=401, headers=_NO_STORE)
         # WHICH credential actually worked is the only thing that licenses reusing
         # the handle later. Gating on the grant NAME was not enough: a caller can
         # present a valid-shaped handle that resolves to nothing, fall through to
@@ -438,7 +427,12 @@ async def _handle_token(request: Any) -> Any:
         # from the cookie and the caller proved nothing (Codex, 2026-08-28).
         refresh_came_from_handle = bool(refresh)
         if not refresh:
-            refresh = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
+            cookie = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
+            if cookie.startswith("local:"):
+                refresh, current_handle = _session_store.read(cookie[6:])
+                refresh_came_from_handle = bool(refresh)
+            else:
+                refresh = cookie
         if not refresh or len(refresh) > 4096:
             return JSONResponse({"error": "no_refresh_token"}, status_code=401)
         token_form = {
@@ -547,6 +541,22 @@ async def _handle_token(request: Any) -> Any:
     # it -- the handle the page gets back is one only the server has seen. Even when
     # carrying forward, the store rotates to a fresh handle; nothing is ever written
     # under a value that arrived in the request body.
+    from starlette.concurrency import run_in_threadpool
+
+    from tinyassets.auth.middleware import resolve_token_result
+
+    identity, reason = await run_in_threadpool(resolve_token_result, access)
+    if identity is None or not identity.user_id:
+        body = ({"error": "account_deleted", "message": "Account deleted."}
+                if reason == "account_deleted" else {"error": "identity_unresolved"})
+        return JSONResponse(body, status_code=401, headers=_NO_STORE)
+    if grant == "refresh_token" and not refresh_came_from_handle:
+        from tinyassets.router_account_deletion import local_revocation
+
+        # A fresh upstream iat cannot rehabilitate pre-restore raw refresh authority.
+        if local_revocation(identity.user_id):
+            return JSONResponse({"error": "identity_unresolved"}, status_code=401,
+                                headers=_NO_STORE)
     may_reuse_handle = bool(current_handle) and refresh_came_from_handle
     if refresh_token and len(refresh_token) <= 4096:
         if may_reuse_handle:
@@ -561,7 +571,7 @@ async def _handle_token(request: Any) -> Any:
                 # is not theirs to keep using: drop it rather than leave a stale
                 # token renewable under an identifier a third party may know.
                 _drop_refresh_session(session_ref)
-            handle = _mint_refresh_session(refresh_token)
+            handle = _mint_refresh_session(refresh_token, owner=identity.user_id)
     elif may_reuse_handle:
         # AuthKit rotated without returning a new token (rare): nothing to store,
         # so hand back the handle the token already lives under. No write.
@@ -570,10 +580,18 @@ async def _handle_token(request: Any) -> Any:
     if handle:
         body["session_ref"] = handle
     response = JSONResponse(body, headers={"Cache-Control": "no-store"})
+    if grant == "refresh_token":
+        from tinyassets.onboarding.owner_sessions import COOKIE as OWNER_COOKIE
+        from tinyassets.onboarding.owner_sessions import extend
+
+        owner_cookie = str(request.cookies.get(OWNER_COOKIE, ""))
+        if owner_cookie and await run_in_threadpool(extend, owner_cookie, identity.user_id):
+            response.set_cookie(OWNER_COOKIE, owner_cookie, max_age=28800, secure=True,
+                                httponly=True, samesite="lax")
     if refresh_token and len(refresh_token) <= 4096:
         response.set_cookie(
             _REFRESH_COOKIE,
-            refresh_token,
+            "local:" + handle,
             max_age=_REFRESH_COOKIE_MAX_AGE,
             path=_REFRESH_COOKIE_PATH,
             secure=True,
@@ -624,7 +642,7 @@ def _app_identity_required() -> Any:
     """401 JSON when the request carries no resolved named identity.
 
     The auth middleware resolves the app's bearer into the request identity
-    contextvar before the handler runs; ``connect_llm`` re-checks it too."""
+    contextvar before the handler runs; ``connect_compute`` re-checks it too."""
     from starlette.responses import JSONResponse
 
     from tinyassets.auth.middleware import current_identity_or_none
@@ -714,172 +732,6 @@ def _bootstrap_home(identity: Any) -> str:
             return ""
 
 
-async def _handle_openai_device_start(request: Any) -> Any:
-    """Begin the one-tap OpenAI link: returns the user code + approval URL."""
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        register_flow,
-        start_device_auth,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    from starlette.concurrency import run_in_threadpool
-
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    # The caller says which source it is signing back in to, and this route completes
-    # exactly one. Before, it ignored the field and deposited for its own service
-    # whatever was asked, so a reconnect card for a different source would have
-    # silently replaced the wrong credential (Codex refute-review, P1 #5).
-    #
-    # The universe is NOT taken from the caller, and that is deliberate rather than an
-    # oversight: `_bootstrap_home` states the invariant -- the signed-in user's own
-    # home is the only universe a credential from the app may land in, and a
-    # client-supplied id is ignored. Honouring one here would reverse that decision,
-    # so the card's target is the home and a request naming anything else is refused
-    # rather than quietly redirected.
-    asked = str(data.get("service") or DEVICE_SIGN_IN_SERVICE).strip().lower()
-    if asked != DEVICE_SIGN_IN_SERVICE:
-        # This daemon completes exactly one service by brokered sign-in. A card for any
-        # other source offers its own shapes instead, so reaching here means the caller
-        # asked for a flow that does not exist -- refused loudly rather than silently
-        # completing the one service this route does know.
-        return JSONResponse({"error": "sign_in_unsupported_for_service"}, status_code=400)
-    identity = current_identity()
-    # The TARGET is the card's universe plus this caller's identity, resolved through
-    # the same admin-ACL check every other write here uses. A universe the caller does
-    # not administer fails loudly; it is never quietly replaced with their own.
-    target = await run_in_threadpool(
-        _owned_target_universe, identity, str(data.get("universe_id") or ""),
-    )
-    if target is None:
-        return JSONResponse({"error": "sign_in_universe_not_yours"}, status_code=403)
-    if not target:
-        return JSONResponse({"error": "no_home_universe"}, status_code=409)
-    try:
-        started = await start_device_auth()
-        # The raw device tuple is a bearer capability for the credential; it
-        # stays in the daemon, bound to THIS user + THEIR home. The app gets an
-        # opaque handle.
-        handle = register_flow(
-            user_id=identity.user_id,
-            universe_id=target,
-            device_auth_id=started["device_auth_id"],
-            user_code=started["user_code"],
-        )
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    return JSONResponse(
-        {
-            "flow": handle,
-            "user_code": started["user_code"],
-            "verification_url": started["verification_url"],
-            "interval": started["interval"],
-        },
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-async def _handle_openai_device_poll(request: Any) -> Any:
-    """One poll of the pending OpenAI approval. On approval the tokens are
-    exchanged and deposited server-side as the signed-in user; the response
-    carries only a status — never the credential."""
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity, identity_context
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        consume_flow,
-        deposit_codex_auth_json,
-        lookup_flow,
-        poll_device_auth,
-        release_flow,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    identity = current_identity()
-    handle = str(data.get("flow", ""))[:128]
-    try:
-        # Same identity that started the flow, or it does not exist.
-        flow = lookup_flow(handle, user_id=identity.user_id)
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    try:
-        outcome = await poll_device_auth(
-            device_auth_id=flow.device_auth_id,
-            user_code=flow.user_code,
-        )
-    except DeviceAuthError as exc:
-        consume_flow(handle)  # a terminal failure ends the flow
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    except BaseException:
-        # Anything unexpected (incl. client disconnect / task cancellation)
-        # hands the lease back so the flow is not stuck until expiry.
-        release_flow(handle)
-        raise
-    if outcome is None:
-        release_flow(handle)  # still pending: hand the lease back for the next poll
-        return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})
-    consume_flow(handle)  # approval reached: one-shot, whatever the deposit says
-
-    def _deposit() -> dict[str, Any]:
-        # Re-pin the identity inside the worker thread (same pattern as the
-        # browser deposit form) so connect_llm's actor resolution sees the user.
-        with identity_context(identity):
-            result = deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
-            if (isinstance(result, dict) and not result.get("error")
-                    and (result.get("serving") or {}).get("status") == "held"):
-                from tinyassets.api.helpers import _base_path
-                from tinyassets.onboarding.source_connect import offer_subscription_source
-
-                try:
-                    offered = offer_subscription_source(
-                        base=_base_path(), uid=flow.universe_id, owner=identity.user_id,
-                        service=DEVICE_SIGN_IN_SERVICE,
-                    )
-                    if offered is not None:
-                        result = {**result, "confirmation": offered["request"]}
-                except Exception:  # noqa: BLE001 - deposit succeeded; expose no private detail
-                    result = {**result, "confirmation_error": "model_confirmation_requires_review"}
-            return result
-
-    result = await run_in_threadpool(_deposit)
-    if not isinstance(result, dict) or result.get("error"):
-        err = "deposit_failed"
-        if isinstance(result, dict) and result.get("error"):
-            err = str(result["error"])
-        status = 401 if err == "authentication_required" else 400
-        return JSONResponse({"status": "failed", "error": err}, status_code=status)
-    serving = result.get("serving") or {}
-    response = {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE,
-                "serving": {"status": "serving" if serving.get("status") == "serving"
-                            else "held"}}
-    if "confirmation" in result:
-        response["confirmation"] = result["confirmation"]
-    if "confirmation_error" in result:
-        response["confirmation_error"] = result["confirmation_error"]
-    return JSONResponse(
-        response,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 def _command_center_name(home: str) -> str:
     """The command center's learned name, or "" -- never its id.
 
@@ -948,148 +800,41 @@ async def _handle_me(request: Any) -> Any:
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
-async def _handle_openai_begin(request: Any) -> Any:
-    """Browser sign-in start: the app sends the PKCE challenge + loopback
-    redirect it will build the authorize URL with. The daemon binds them to
-    the signed-in user + their exact home behind an opaque handle, so the
-    later exchange can only complete for that session, that verifier, that
-    redirect, into that universe."""
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        register_flow,
-        valid_loopback_redirect,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    challenge = str(data.get("code_challenge", "")).strip()
-    redirect_uri = str(data.get("redirect_uri", "")).strip()
-    if not (43 <= len(challenge) <= 128) or not _re.fullmatch(r"[A-Za-z0-9_-]+", challenge):
-        return JSONResponse({"error": "invalid_code_challenge"}, status_code=400)
-    if not valid_loopback_redirect(redirect_uri):
-        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
-    identity = current_identity()
-    home = await run_in_threadpool(_bootstrap_home, identity)
-    if not home:
-        return JSONResponse({"error": "no_home_universe"}, status_code=409)
-    try:
-        handle = register_flow(
-            user_id=identity.user_id,
-            universe_id=home,
-            code_challenge=challenge,
-            redirect_uri=redirect_uri,
-        )
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    return JSONResponse({"flow": handle}, headers={"Cache-Control": "no-store"})
+def _part_view(part: Any) -> dict[str, Any]:
+    kind = part.kind
+    if kind == "text":
+        return {"kind": "text", "text": part.text}
+    if kind == "tool_call":
+        return {"kind": "tool_call", "name": part.name, "arguments": part.arguments}
+    view = {
+        "kind": kind, "mime": part.mime, "byte_length": part.byte_length,
+        "digest": part.digest, "reference": part.reference,
+    }
+    if part.timing is not None:
+        view["timing"] = list(part.timing)
+    return view
 
 
-async def _handle_openai_exchange(request: Any) -> Any:
-    """Browser sign-in completion: the app caught OpenAI's redirect on its
-    loopback listener and sends (flow, code, verifier). The flow must belong
-    to this identity, the verifier must hash to the challenge the flow was
-    begun with, and the exchange uses the flow's redirect. The daemon then
-    deposits into the flow's home universe; the response carries only a
-    status."""
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
+async def _handle_realtime_session(request: Any) -> Any:
+    """Admit a realtime session or one committed turn. No provider dial lives here.
 
-    from tinyassets.auth.middleware import current_identity, identity_context
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        consume_flow,
-        deposit_codex_auth_json,
-        exchange_browser_code,
-        lookup_flow,
-        release_flow,
-        verifier_matches_challenge,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    identity = current_identity()
-    handle = str(data.get("flow", ""))[:128]
-    code_verifier = str(data.get("code_verifier", ""))
-    # RFC 7636 §4.1 shape, checked BEFORE the flow is leased so a malformed
-    # verifier can never 500 with the lease held.
-    if not _re.fullmatch(r"[A-Za-z0-9\-._~]{43,128}", code_verifier):
-        return JSONResponse({"error": "invalid_code_verifier"}, status_code=400)
-    try:
-        flow = lookup_flow(handle, user_id=identity.user_id)
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    if not flow.code_challenge or not verifier_matches_challenge(
-        code_verifier, flow.code_challenge
-    ):
-        consume_flow(handle)  # a wrong verifier is terminal: one attempt per flow
-        return JSONResponse({"error": "verifier_mismatch"}, status_code=400)
-    try:
-        outcome = await exchange_browser_code(
-            code=str(data.get("code", "")),
-            code_verifier=code_verifier,
-            redirect_uri=flow.redirect_uri,
-        )
-    except DeviceAuthError as exc:
-        if exc.status in (429, 502):
-            release_flow(handle)  # transient upstream trouble: the app may retry
-        else:
-            consume_flow(handle)
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    except BaseException:
-        release_flow(handle)
-        raise
-    consume_flow(handle)
-    universe_id = flow.universe_id
-
-    def _deposit() -> dict[str, Any]:
-        with identity_context(identity):
-            return deposit_codex_auth_json(outcome["auth_json"], universe_id=universe_id)
-
-    result = await run_in_threadpool(_deposit)
-    if not isinstance(result, dict) or result.get("error"):
-        err = "deposit_failed"
-        if isinstance(result, dict) and result.get("error"):
-            err = str(result["error"])
-        status = 401 if err == "authentication_required" else 400
-        return JSONResponse({"status": "failed", "error": err}, status_code=status)
-    return JSONResponse(
-        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-async def _handle_voice_session(request: Any) -> Any:
-    """Exchange bounded SDP through the signed-in founder's voice bridge.
-
-    There is deliberately no caller-supplied universe id. The long-lived
-    connection credential stays inside the generic broker and never crosses
-    this boundary.
+    The router authenticates and forwards. Media bytes are read only by the
+    owner box store, which refuses another owner before opening the file.
     """
     from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
+    from starlette.responses import JSONResponse, PlainTextResponse, Response
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import (
-        RealtimeVoiceError,
-        create_voice_session,
-        realtime_voice_enabled,
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+    from tinyassets.providers.realtime_session import (
+        CapabilityGap,
+        read_part,
+        resolve_realtime,
+        sources_for,
+        status_document,
     )
 
     if not onboarding_enabled():
@@ -1097,79 +842,66 @@ async def _handle_voice_session(request: Any) -> Any:
     denied = _app_identity_required()
     if denied is not None:
         return denied
-    if not realtime_voice_enabled():
-        return JSONResponse(
-            {"error": "voice_disabled"}, status_code=404, headers=_NO_STORE
-        )
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    universe = _universe_dir(home) if home else None
+    sources = sources_for(identity.user_id, universe) if universe is not None else ()
+    if request.method == "GET":
+        return JSONResponse(status_document(sources), headers=_NO_STORE)
     if not _same_origin_json(request, str(app_config().get("resource") or "")):
-        return JSONResponse(
-            {"error": "same_origin_required"}, status_code=403, headers=_NO_STORE
-        )
+        return JSONResponse({"error": "same_origin_required"}, status_code=403, headers=_NO_STORE)
     data = await _read_small_json(request, 70 * 1024)
-    if data is None:
+    if data is None or not isinstance(data, dict):
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    if "media_ref" in data:
+        if set(data) != {"media_ref"} or not isinstance(data["media_ref"], str):
+            return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+        if universe is None:
+            return JSONResponse({"error": "not_sent", "outcome": "not_sent"}, status_code=409,
+                                headers=_NO_STORE)
+        try:
+            blob = read_part(universe, identity.user_id, data["media_ref"])
+        except PermissionError:
+            return JSONResponse({"error": "refused"}, status_code=403, headers=_NO_STORE)
+        return Response(blob, media_type="application/octet-stream", headers=_NO_STORE)
+    if set(data) - {"media", "turn"} or "media" not in data or not isinstance(data["media"], str):
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    try:
+        selected = resolve_realtime(sources, data["media"])
+    except CapabilityGap as exc:
         return JSONResponse(
-            {"error": "invalid_json"}, status_code=400, headers=_NO_STORE
+            {"admitted": False, "gap": exc.reason, "media": data["media"],
+             "source": exc.source_id, "error": exc.reason},
+            status_code=409, headers=_NO_STORE,
         )
-    if set(data) != {"offer_sdp"}:
-        # Reject a caller-selected universe id: identity alone selects the
-        # connection scope for this first slice.
+    if "turn" not in data:
         return JSONResponse(
-            {"error": "voice_session_fields_not_allowed"},
-            status_code=400,
+            {"admitted": True, "media": data["media"], "source": selected.id,
+             "contract": selected.contract},
             headers=_NO_STORE,
         )
-
-    # No per-user rate gate: the caller here is the authenticated owner asking
-    # their own universe to listen (founder, 2026-09-30 -- storage and seats only).
-    identity = current_identity()
-    home = await run_in_threadpool(_read_home, identity)
-    if not home:
-        return JSONResponse(
-            {"error": "no_home_universe"}, status_code=409, headers=_NO_STORE
-        )
+    if not isinstance(data["turn"], str) or universe is None:
+        return JSONResponse({"error": "not_sent", "outcome": "not_sent"}, status_code=409,
+                            headers=_NO_STORE)
     try:
-        result = await create_voice_session(
-            _universe_dir(home), identity.user_id, data.get("offer_sdp")
-        )
-    except RealtimeVoiceError as exc:
+        result = await call(ModelCall(None, (), ModelContext(
+            prompt=data["turn"], streaming=True,
+            universe_context=UniverseContext(universe_dir=universe),
+            operation="converse",
+        )), Parent(identity.user_id, universe.name))
+    except (ProviderAuthorityHeldError, PermissionError) as exc:
         return JSONResponse(
-            {"error": exc.code}, status_code=exc.status, headers=_NO_STORE
+            {"error": "not_sent", "outcome": getattr(exc, "outcome", "not_sent")},
+            status_code=409, headers=_NO_STORE,
         )
-    return JSONResponse(result, headers=_NO_STORE)
-
-
-async def _handle_voice_status(request: Any) -> Any:
-    """Report whether this founder's universe has voice-capable authority.
-
-    This is a read-only, secret-free preflight.  The client checks it before
-    showing disclosure or requesting microphone access, so an ordinary Codex
-    subscription is never mistaken for Realtime API authority.
-    """
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import voice_capability
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    identity = current_identity()
-    home = await run_in_threadpool(_read_home, identity)
-    result = await run_in_threadpool(
-        voice_capability,
-        _universe_dir(home) if home else None,
-        identity.user_id,
-    )
-    return JSONResponse(result, headers=_NO_STORE)
+    return JSONResponse({
+        "admitted": True, "reply": result.text,
+        "parts": [_part_view(part) for part in result.parts],
+        "outcome": result.receipt.outcome,
+    }, headers=_NO_STORE)
 
 
 _TRACE_STEPS = frozenset({
-    "openai.listener", "openai.browser", "openai.callback", "openai.deeplink",
-    "openai.complete", "openai.exchange", "openai.finish",
     "voice_output_mismatch",
 })
 _TRACE_BUCKET_MAX = 60          # lines per identity per window
@@ -1230,13 +962,7 @@ async def _handle_trace(request: Any) -> Any:
 
 
 async def _handle_serving_bind(request: Any) -> Any:
-    """Make a deposited subscription serve the signed-in user's own universe.
-
-    Called by the app after a Claude deposit (the OpenAI paths do it inline),
-    Body: ``{"service": "<alias or compute connection id>"}``. `claude` and
-    `codex` are aliases for the subscription CLIs; any other value is a compute
-    connection the owner registered, which the binding layer authorizes. Also
-    usable as a "fix my universe" retry."""
+    """Bind an owner-registered HTTP connection to their serving agent."""
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
@@ -1250,17 +976,6 @@ async def _handle_serving_bind(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
-    # ANY LLM THE OWNER REGISTERED, not two named vendors. `claude` and `codex`
-    # stay as friendly aliases for the subscription CLIs; anything else is a
-    # compute connection id, and `_open_serving_context` beneath this refuses a
-    # grant whose owner and universe are not the caller's. Gating the NAME here
-    # as well added nothing to that check and refused every legitimate user with
-    # their own endpoint (founder, 2026-09-03: "we shouldnt have a chatgpt
-    # spacific path ... the request popup ... should allow the user to connect
-    # any llm source they want to thier universe").
-    #
-    # Case is preserved: an alias is matched case-insensitively downstream, but
-    # a connection id is not ours to lowercase.
     service = str(data.get("service", "")).strip()
     if not service:
         return JSONResponse({"error": "service_required"}, status_code=400)
@@ -1284,7 +999,6 @@ async def _handle_serving_bind(request: Any) -> Any:
 
     out = await run_in_threadpool(_bind)
     return JSONResponse({"serving": out}, headers={"Cache-Control": "no-store"})
-
 
 
 async def _handle_memory(request: Any) -> Any:
@@ -1427,14 +1141,19 @@ async def _handle_profile(request: Any) -> Any:
     return JSONResponse(profile, headers=_NO_STORE)
 
 async def _handle_policy(request: Any) -> Any:
-    """Forward an owner policy edit without attesting identity to the broker."""
+    """Edit local action rules, or the separately broker-held spending policy."""
+    from functools import partial
+
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
+    from tinyassets.action_policy import PolicyRefused
+    from tinyassets.action_policy import owner_policy_operation as action_policy
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.broker.client import BrokerRefused, owner_policy_operation
-    from tinyassets.onboarding.owner_sessions import COOKIE
+    from tinyassets.broker.client import BrokerRefused
+    from tinyassets.broker.client import owner_policy_operation as spending_policy
+    from tinyassets.onboarding.owner_sessions import require
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1446,6 +1165,11 @@ async def _handle_policy(request: Any) -> Any:
     center = await run_in_threadpool(_read_home, identity)
     if not center:
         return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+    scope = request.query_params.get("scope", "actions")
+    if scope not in {"actions", "spend", "egress"}:
+        return JSONResponse({"error": "invalid_policy_scope"}, status_code=400)
+    owner_policy_operation = (partial(action_policy, center=center)
+                              if scope == "actions" else spending_policy)
     if request.method == "GET":
         result = await run_in_threadpool(owner_policy_operation, _base_path(), owner, "read")
         receipts = await run_in_threadpool(
@@ -1454,6 +1178,12 @@ async def _handle_policy(request: Any) -> Any:
     if not _same_origin_json(request, str(app_config().get("resource") or "")):
         return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
                             headers=_NO_STORE)
+    try:
+        session = require(request, owner=owner)
+    except PermissionError:
+        return JSONResponse({"error": "interactive_owner_session_required"},
+                            status_code=403, headers=_NO_STORE)
+    session_proof = {"session_hash": session["session_hash"]}
     data = await _read_small_json(request)
     if not isinstance(data, dict):
         return JSONResponse({"error": "invalid_policy"}, status_code=400,
@@ -1464,7 +1194,7 @@ async def _handle_policy(request: Any) -> Any:
     elif data.get("action") == "apply_proposal" and set(data) == {
             "action", "center", "request_id"}:
         from tinyassets.api.pending_requests import displayed_row_matches
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
         from tinyassets.storage.pending_requests import get_request, resolve_request
 
         proposed_center = data["center"]
@@ -1481,13 +1211,17 @@ async def _handle_policy(request: Any) -> Any:
             return JSONResponse({"error": "proposal_not_found"}, status_code=404,
                                 headers=_NO_STORE)
         proposal = row["action"]
+        if "egress" in proposal["policy"]:
+            owner_policy_operation = spending_policy
+        if "egress" in proposal["policy"]:
+            owner_policy_operation = spending_policy
         try:
             result = await run_in_threadpool(
                 owner_policy_operation, _base_path(), owner, "write",
-                cookie=request.cookies.get(COOKIE, ""),
+                session_proof=session_proof,
                 expected_generation=proposal["expected_generation"],
                 policy=proposal["policy"])
-        except BrokerRefused:
+        except (BrokerRefused, PolicyRefused):
             return JSONResponse({"error": "policy_changed_or_session_required"},
                                 status_code=409, headers=_NO_STORE)
         resolved = await run_in_threadpool(
@@ -1510,8 +1244,8 @@ async def _handle_policy(request: Any) -> Any:
     try:
         result = await run_in_threadpool(
             owner_policy_operation, _base_path(), owner, action,
-            cookie=request.cookies.get(COOKIE, ""), **fields)
-    except BrokerRefused:
+            session_proof=session_proof, **fields)
+    except (BrokerRefused, PolicyRefused):
         return JSONResponse({"error": "interactive_owner_session_required"},
                             status_code=403, headers=_NO_STORE)
     if action == "write":
@@ -1809,118 +1543,6 @@ async def _handle_live(request: Any) -> Any:
     return JSONResponse(result, headers=_NO_STORE)
 
 
-async def _handle_turn_steer(request: Any) -> Any:
-    """Send the signed-in user's message into their own RUNNING turn (harness S2).
-
-    Founder, 2026-10-01: the agent should hear a message typed while it works,
-    the way Claude Code does, instead of the page holding it until the turn
-    ends. When a turn of this caller's thread is live, the message is queued
-    for the next tool result of that turn (``tinyassets.agent_steering``) and
-    ``steered: true`` comes back. When none is live, ``steered: false``: the
-    page sends it as an ordinary message instead.
-
-    Keyed on the VERIFIED caller exactly like the Stop button: only a turn this
-    subject started in this universe can be steered, and only into this
-    subject's own thread.
-    """
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.turn_interrupt import live_count
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    cfg = app_config()
-    if not _same_origin_json(request, str(cfg.get("resource") or "")):
-        return JSONResponse(
-            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
-        )
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
-    text = data.get("text")
-    if not isinstance(text, str) or not text.strip():
-        return JSONResponse({"error": "text_required"}, status_code=400, headers=_NO_STORE)
-    identity = current_identity()
-    universe_id = str(data.get("universe_id", "") or "").strip()
-    if not universe_id:
-        try:
-            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
-        except Exception:  # noqa: BLE001 - no home: nothing running to steer
-            universe_id = ""
-    if not universe_id:
-        return JSONResponse({"steered": False}, headers=_NO_STORE)
-    try:
-        live = bool(live_count(identity.user_id, universe_id))
-    except ValueError:
-        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
-
-    def _queue():
-        from tinyassets import addressed_agents, agent_steering
-        from tinyassets.api.helpers import _base_path, _universe_dir
-
-        # A steer goes to the agent the owner is talking to (harness §4.18):
-        # that agent's own thread, resolved inside the owner's own universe.
-        # The main agent's session is `principal:<owner>`, so this is the same
-        # key the main thread always used.
-        addressed = addressed_agents.resolve(
-            _base_path(), universe_id=universe_id, owner=identity.user_id,
-            agent_id=data.get("agent_id"),
-        )
-        session = addressed_agents.memory_session(
-            identity.user_id,
-            addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
-        )
-        udir, key = _universe_dir(universe_id), f"thread:{session}"
-        queued = agent_steering.enqueue(udir, key, text) if live else None
-        if queued is not None:
-            return True, queued
-        # No turn of this thread is open to steer (none running, or one another
-        # window started that is not steerable here): the line is SAVED for the
-        # next turn before the page is told, never left only in the browser
-        # (P1, live 2026-10-02: a send during another window's turn was lost).
-        # Only in a command center the caller may write to.
-        from tinyassets.api.permissions import universe_access_allows
-
-        if not universe_access_allows(universe_id, write=True):
-            return False, None
-        return False, agent_steering.hold(udir, key, text)
-
-    from tinyassets.addressed_agents import AgentNotAddressable
-    from tinyassets.agent_steering import SteeringRefused
-
-    try:
-        queued = await run_in_threadpool(_queue)
-    except AgentNotAddressable as exc:
-        return JSONResponse(
-            {"error": "agent_not_found", "detail": str(exc)},
-            status_code=404, headers=_NO_STORE,
-        )
-    except SteeringRefused as exc:
-        return JSONResponse(
-            {"error": "steering_refused", "detail": str(exc)},
-            status_code=409, headers=_NO_STORE,
-        )
-    except ValueError:
-        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
-    steered, line = queued
-    if line is None:
-        return JSONResponse({"steered": False, "universe_id": universe_id}, headers=_NO_STORE)
-    if not steered:
-        return JSONResponse(
-            {"steered": False, "held": True, "universe_id": universe_id, "steer_id": line.id},
-            headers=_NO_STORE,
-        )
-    return JSONResponse(
-        {"steered": True, "universe_id": universe_id, "steer_id": line.id},
-        headers=_NO_STORE,
-    )
-
-
 async def _handle_turn_pending(request: Any) -> Any:
     """The signed-in user's lines no turn has handled yet, for a reloaded page
     to show and send (harness S2). Only the caller's own thread."""
@@ -1952,10 +1574,6 @@ async def _handle_turn_pending(request: Any) -> Any:
     if not universe_id:
         return JSONResponse({"pending": []}, headers=_NO_STORE)
 
-    claim = data.get("claim")
-    if claim is not None and not (isinstance(claim, list) and len(claim) <= 50):
-        return JSONResponse({"error": "invalid_claim"}, status_code=400, headers=_NO_STORE)
-
     def _list():
         from tinyassets import addressed_agents, agent_steering
         from tinyassets.api.helpers import _base_path, _universe_dir
@@ -1978,8 +1596,6 @@ async def _handle_turn_pending(request: Any) -> Any:
             addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
         )
         udir, key = _universe_dir(universe_id), f"thread:{session}"
-        if claim is not None:
-            return {"claimed": agent_steering.claim(udir, key, claim)}
         return {"pending": [
             {"id": r.id, "text": r.text, "state": r.state, "created_at": r.created_at}
             for r in agent_steering.pending(udir, key)],
@@ -1997,22 +1613,20 @@ async def _handle_turn_pending(request: Any) -> Any:
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
     if doc is None:
-        doc = {"claimed": []} if claim is not None else {"pending": [], "active": None}
+        doc = {"pending": [], "active": None}
     return JSONResponse({"universe_id": universe_id, **doc}, headers=_NO_STORE)
 
 
 async def _handle_account_delete(request: Any) -> Any:
-    """Delete the signed-in user's account: their universe (memory, history,
-    deposited credentials), every row keyed to it, any paid plan (cancelled
-    now), and the sign-in identity itself. The app's Account view posts here;
-    ``tinyassets.io/account`` documents the same path for the web. Google Play
-    requires both. Same-origin JSON + an explicit ``confirm: "DELETE"`` body so
-    a cross-site post or a stray click cannot erase an account."""
+    """Authenticate the owner and enqueue the broker deletion job (C5/C6).
+
+    The app's Account view posts here; same-origin JSON and explicit confirmation
+    prevent a cross-site post or stray click from deleting the owner's data.
+    """
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.account_deletion import AccountDeletionBlocked, AccountDeletionError
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -2027,146 +1641,88 @@ async def _handle_account_delete(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
-    if str(data.get("confirm", "")).strip() != "DELETE":
+    if data.get("confirm") != "DELETE":
         return JSONResponse(
             {"error": "confirmation_required"}, status_code=400, headers=_NO_STORE
         )
-    session_ref = str(data.get("session_ref", "")).strip()
-    if not _valid_handle(session_ref):
-        session_ref = ""
-    identity = current_identity()
-
-    def _run() -> dict[str, Any]:
-        from tinyassets.account_deletion import delete_account
-        from tinyassets.api.helpers import _base_path
-
-        with identity_context(identity):
-            return delete_account(_base_path(), founder_sub=identity.user_id)
+    from tinyassets.broker.deletion_jobs import WithdrawalPending
+    from tinyassets.broker.deletion_jobs import request as job_request
+    from tinyassets.storage import data_dir
 
     try:
-        receipt = await run_in_threadpool(_run)
-    except AccountDeletionBlocked as exc:
-        # Someone else's data, live work, or unsettled money is in scope. The
-        # reasons name no person and no content, so they are safe to show — and
-        # showing them is the difference between "try again" and "email us".
-        return JSONResponse(
-            {"error": "deletion_blocked", "reasons": str(exc).split("; ")},
-            status_code=409,
-            headers=_NO_STORE,
-        )
-    except AccountDeletionError as exc:
-        # Refused before anything changed (unsafe binding, no principal).
-        return JSONResponse(
-            {"error": "deletion_refused", "detail": str(exc)},
-            status_code=409,
-            headers=_NO_STORE,
-        )
-    from tinyassets.onboarding.owner_sessions import revoke_owner
-    await run_in_threadpool(revoke_owner, identity.user_id)
-    # The account is gone; end this device's renewable session the way logout
-    # does. Other devices' refresh handles die with the identity or expire.
-    if session_ref:
-        _drop_refresh_session(session_ref)
-    response = JSONResponse(
-        {
-            "deleted": True,
-            "home_removed": bool(receipt.get("home_removed")),
-            "billing": str(receipt.get("billing") or ""),
-            "identity": str(receipt.get("identity") or ""),
-            "unfinished": list(receipt.get("unfinished_phases") or []),
-        },
-        headers=_NO_STORE,
-    )
-    response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH,
-                           secure=True, httponly=True, samesite="strict")
-    return response
+        result = await run_in_threadpool(job_request, data_dir(), "enqueue",
+                                        owner=current_identity().user_id)
+    except WithdrawalPending as pending:
+        return JSONResponse({"error": "deletion_pending", **pending.progress}, status_code=503,
+                            headers={**_NO_STORE, "location": pending.progress["status_url"]})
+    except Exception:
+        return JSONResponse({"error": "deletion_pending"}, status_code=503, headers=_NO_STORE)
+    return JSONResponse(result, status_code=202, headers={**_NO_STORE,
+                                                        "location": result["status_url"]})
+
+
+async def _handle_deletion_status(request):
+    from tinyassets.onboarding.deletion_status import handle
+
+    return await handle(request)
+
+
+def _billing_surface(request: Any):
+    """The surface the /app wrapper declares. Missing means web.
+
+    Android (and the iOS shell, which shares its purchase rule) sends
+    ``surface=android``. A name this action does not know is refused rather
+    than treated as web, so a typo cannot open a purchase the policy forbids.
+    """
+    from tinyassets.billing.plan_action import UnknownSurface, parse_surface
+
+    params = getattr(request, "query_params", None)
+    raw = ""
+    if params is not None:
+        try:
+            raw = str(params.get("surface") or "")
+        except Exception:  # noqa: BLE001 — a broken query map is "no surface"
+            raw = ""
+    try:
+        return parse_surface(raw)
+    except UnknownSurface:
+        return None
 
 
 async def _handle_billing_status(request: Any) -> Any:
-    """Current tier + usage for the signed-in user's home universe."""
+    """Current plan for the signed-in user, via the shared plan action."""
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.billing.plan_action import account_plan
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
     denied = _app_identity_required()
     if denied is not None:
         return denied
+    surface = _billing_surface(request)
+    if surface is None:
+        return JSONResponse({"error": "unknown_surface"}, status_code=400)
     identity = current_identity()
 
     def _read() -> dict[str, Any]:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import billing_enabled
-        from tinyassets.storage.subscription_state import TIER_FREE, get_plan
-
-        with identity_context(identity):
-            home = _read_home(identity)
-            if not home:
-                return {"tier": TIER_FREE, "ends_at": None,
-                        "reason": "no_home_universe"}
-            # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
-            # persisted by the webhook, so this stays a local read even though it is
-            # polled. Seats are enforced (`universe_seats`); storage is not yet, so
-            # it is not reported as a limit. `upgrade_url` is None on the top tier,
-            # which is what the app's `?upgrade=1` entry reads.
-            plan = get_plan(_universe_dir(home))
-            from tinyassets.usage_policy import limits_for, upgrade_url
-
-            limits = limits_for(plan["tier"])
-            return {
-                "tier": plan["tier"],
-                "ends_at": plan["ends_at"],
-                "billing_enabled": billing_enabled(),
-                "enforced": ["seats"],
-                "seats": limits.seats,
-                "interactive_reserve": limits.interactive_reserve,
-                "upgrade_url": upgrade_url(plan["tier"]),
-            }
+        return account_plan(identity, surface).as_dict()
 
     return JSONResponse(
         await run_in_threadpool(_read), headers={"Cache-Control": "no-store"}
     )
 
 
-#: Where a checkout is allowed to send the user back to. Hard Rule 11 names
-#: ``https://tinyassets.io`` as the only canonical public endpoint.
-_CANONICAL_ORIGIN = "https://tinyassets.io"
-
-
 def _checkout_return_origin(request: Any) -> str:
-    """The origin to build Stripe's success/cancel URLs from.
+    """Web checkout return origin. The allowlist lives on the plan action."""
+    from tinyassets.billing.plan_action import allowed_return_origin
 
-    Only the canonical public origin or the configured public resource is honoured.
-    Everything else gets the canonical origin, because these URLs leave our control
-    the moment Stripe has them.
-
-    The request's own ``Host`` is deliberately NOT trusted. Nothing in this app
-    enforces an allowed-hosts list, so a caller can send ``Host: attacker.example``
-    with a matching ``Origin`` and have it echoed straight back -- an allowlist that
-    accepts whatever the client claims to be is not an allowlist (Codex, 2026-08-28).
-    A deployment on another hostname configures ``resource`` rather than relying on
-    the header.
-
-    Scheme is compared too. Matching on host alone accepted ``http://tinyassets.io``
-    for an origin that is only ever served over HTTPS.
-    """
-    origin = str(request.headers.get("origin", "")).strip().rstrip("/").lower()
-    if not origin:
-        return _CANONICAL_ORIGIN
-    allowed = {_CANONICAL_ORIGIN}
-    resource = str(app_config().get("resource") or "").strip().lower()
-    if resource:
-        # urlsplit raises on a malformed authority (`https://[` -> Invalid IPv6 URL),
-        # and an unhandled ValueError here is a 500 on a billing route.
-        try:
-            parts = urlsplit(resource)
-            if parts.scheme in ("https", "http") and parts.netloc:
-                allowed.add(f"{parts.scheme}://{parts.netloc}")
-        except ValueError:
-            pass
-    return origin if origin in allowed else _CANONICAL_ORIGIN
+    return allowed_return_origin(
+        str(request.headers.get("origin", "")),
+        configured_resource=str(app_config().get("resource") or ""),
+    )
 
 
 #: HTTP status for each checkout outcome. Explicit, because the previous rule --
@@ -2185,7 +1741,9 @@ _CHECKOUT_STATUS = {
     # already open. Both are conflicts with existing state, not failures.
     "already_subscribed": 409,
     "checkout_already_in_progress": 409,
-    "no_home_universe": 409,
+    "account_deleted": 410,
+    # This surface's purchase policy is off (Android). Not an outage.
+    "unavailable_in_app": 403,
     # Genuinely us: billing is unconfigured or the processor is unreachable.
     "billing_unavailable": 503,
 }
@@ -2201,142 +1759,39 @@ def _checkout_status(out: dict[str, Any]) -> int:
 
 
 async def _handle_billing_checkout(request: Any) -> Any:
-    """Start a subscription; returns the hosted Stripe checkout URL."""
+    """Start a subscription via the shared plan action.
+
+    Auth stays here. The action owns the lease, the return URL, and the
+    Android refusal. The JSON shape is unchanged: a URL, or a classified error.
+    """
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.billing.plan_action import account_plan
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
     denied = _app_identity_required()
     if denied is not None:
         return denied
+    surface = _billing_surface(request)
+    if surface is None:
+        return JSONResponse({"error": "unknown_surface"}, status_code=400)
     identity = current_identity()
-    # The return URLs are built from this, so it is not free-form input. An
-    # unvalidated Origin header meant a non-browser caller could point its own
-    # checkout's success and cancel redirects at any host it liked (Codex,
-    # 2026-08-28). Accept only an origin this app actually serves; anything else
-    # falls back to the canonical public URL rather than being echoed.
-    origin = _checkout_return_origin(request)
+    # Raw Origin. The action allowlists it for web and ignores it otherwise,
+    # so an API or agent caller cannot aim Stripe's return URLs at another host.
+    requested_origin = str(request.headers.get("origin", ""))
+    configured_resource = str(app_config().get("resource") or "")
 
     def _start() -> dict[str, Any]:
-        import time as _t
-        import uuid as _uuid
-
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import BillingUnavailable, create_checkout_session
-        from tinyassets.billing.stripe_adapter import (
-            AlreadySubscribed,
-            BillingAmbiguous,
-            checkout_params,
-            key_is_live,
-        )
-        from tinyassets.storage.subscription_state import (
-            CHECKOUT_SESSION_SECONDS,
-            CHECKOUT_WINDOW_SECONDS,
-            begin_checkout_attempt,
-            current_checkout_attempt,
-            record_checkout_session,
-            settle_checkout_attempt,
-        )
-
-        with identity_context(identity):
-            home = _read_home(identity)
-            if not home:
-                return {"error": "no_home_universe"}
-            universe_dir = _universe_dir(home)
-            now = _t.time()
-            mode = "live" if key_is_live() else "test"
-
-            existing = current_checkout_attempt(universe_dir, now=now)
-            if existing is not None and existing.get("__corrupt__"):
-                # Unreadable, and whatever it was may still be payable. Refusing is
-                # the only safe answer; the lease expires on its own.
-                return {"error": "checkout_already_in_progress"}
-
-            if existing is not None and existing.get("mode") != mode:
-                # A test-mode attempt must never be resumed against a live key, and
-                # vice versa. Settle it and start clean rather than hand back a URL
-                # from the wrong Stripe account.
-                settle_checkout_attempt(
-                    universe_dir, attempt_id=str(existing.get("attempt_id") or "")
-                )
-                existing = None
-
-            if existing is not None and existing.get("url"):
-                # A session is already open for this universe. Send the user BACK to
-                # it rather than refusing: the URL stays valid while the session is
-                # active, so a second click is just the same checkout again. Refusing
-                # here is what locked an abandoned checkout out for the whole lease.
-                from tinyassets.observability import emit_checkout_attempt
-
-                emit_checkout_attempt(str(existing.get("attempt_id") or ""))
-                return {"url": str(existing["url"]), "resumed": True}
-
-            if existing is not None:
-                # A previous call died between taking the lease and recording Stripe's
-                # answer. RESUME it: same attempt id, same frozen params, therefore the
-                # same idempotency key, so Stripe replays the session it already made
-                # instead of creating a second one.
-                attempt = existing
-            else:
-                try:
-                    params = checkout_params(
-                        universe_id=home,
-                        success_url=origin + "/app?subscribed=1",
-                        cancel_url=origin + "/app?subscribed=0",
-                        expires_at=int(now + CHECKOUT_SESSION_SECONDS),
-                    )
-                except AlreadySubscribed:
-                    return {"error": "already_subscribed"}
-                except BillingUnavailable as exc:
-                    return {"error": "billing_unavailable", "detail": str(exc)}
-                attempt = begin_checkout_attempt(
-                    universe_dir,
-                    now=now,
-                    attempt_id=_uuid.uuid4().hex,
-                    mode=mode,
-                    params=params,
-                    lease_seconds=CHECKOUT_WINDOW_SECONDS,
-                )
-                if attempt is None:
-                    # Either a concurrent click won, or a pre-lease claim is still
-                    # inside its original window.
-                    return {"error": "checkout_already_in_progress"}
-
-            attempt_id = str(attempt["attempt_id"])
-            from tinyassets.observability import emit_checkout_attempt
-
-            emit_checkout_attempt(attempt_id)
-            try:
-                out = create_checkout_session(
-                    universe_id=home,
-                    attempt_id=attempt_id,
-                    params=attempt["params"],
-                )
-            except AlreadySubscribed:
-                settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
-                # Not an error state for the user - they are already paying.
-                return {"error": "already_subscribed"}
-            except BillingAmbiguous as exc:
-                # We do not know whether Stripe made a session. KEEP the lease: a
-                # retry reuses this attempt and its idempotency key, so Stripe replays
-                # rather than creating a second payable session. Releasing here is the
-                # lost-response path that produced two subscriptions.
-                return {"error": "billing_unavailable", "detail": str(exc)}
-            except BillingUnavailable as exc:
-                # Stripe answered, so no session exists. Safe to release, and a
-                # misconfiguration must not lock the universe out for the lease.
-                settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
-                return {"error": "billing_unavailable", "detail": str(exc)}
-            record_checkout_session(
-                universe_dir,
-                attempt_id=attempt_id,
-                session_id=out["id"],
-                url=out["url"],
-            )
-            return out
+        return account_plan(
+            identity,
+            surface,
+            intent="checkout",
+            requested_origin=requested_origin,
+            configured_resource=configured_resource,
+        ).checkout_body()
 
     out = await run_in_threadpool(_start)
     return JSONResponse(
@@ -2351,7 +1806,7 @@ async def _handle_billing_cancel(request: Any) -> Any:
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -2362,23 +1817,18 @@ async def _handle_billing_cancel(request: Any) -> Any:
 
     def _cancel() -> dict[str, Any]:
         from tinyassets.billing import BillingUnavailable, cancel_subscription
-        from tinyassets.billing.stripe_adapter import find_active_subscription
+        from tinyassets.billing.plan_store import BillingPlans
+        from tinyassets.storage import data_dir
 
-        with identity_context(identity):
-            home = _read_home(identity)
-            if not home:
-                return {"error": "no_home_universe"}
-            try:
-                subscription_id = find_active_subscription(home)
-                if not subscription_id:
-                    return {"cancelled": False, "reason": "no_active_subscription"}
-                cancel_subscription(subscription_id)
-                # The tier itself moves on the WEBHOOK, which is the single
-                # authority - writing it here too would let the UI and Stripe
-                # disagree whenever a cancellation is later reversed.
-                return {"cancelled": True, "at_period_end": True}
-            except BillingUnavailable as exc:
-                return {"error": "billing_unavailable", "detail": str(exc)}
+        plan = BillingPlans(data_dir()).read(identity.user_id)
+        subscription_id = plan["subscription_id"]
+        if not subscription_id or plan["tier"] == "free":
+            return {"cancelled": False, "reason": "no_active_subscription"}
+        try:
+            cancel_subscription(subscription_id)
+            return {"cancelled": True, "at_period_end": True}
+        except BillingUnavailable as exc:
+            return {"error": "billing_unavailable", "detail": str(exc)}
 
     out = await run_in_threadpool(_cancel)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
@@ -2459,65 +1909,78 @@ async def _handle_billing_webhook(request: Any) -> Any:
         )
         return JSONResponse({"error": "wrong_stripe_mode"}, status_code=400)
 
-    def _settle_checkout() -> dict[str, Any] | None:
-        """A terminal Checkout Session event releases exactly its own lease."""
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing.stripe_adapter import checkout_settlement_from_event
-        from tinyassets.storage.subscription_state import settle_checkout_attempt
+    from tinyassets.billing.events import apply_event
+    from tinyassets.storage import data_dir
 
-        identified = checkout_settlement_from_event(event)
-        if identified is None:
-            return None
-        session_id, attempt_id = identified
-        obj = (event.get("data") or {}).get("object") or {}
-        universe_id = str(obj.get("client_reference_id") or "")
-        if not universe_id:
-            # Routing hint only; without it we cannot find the record to release.
-            return {"settled": False, "reason": "no_universe_reference"}
-        settled = settle_checkout_attempt(
-            _universe_dir(universe_id),
-            session_id=session_id,
-            attempt_id=attempt_id,
-        )
-        return {"settled": settled}
+    return JSONResponse(await run_in_threadpool(apply_event, data_dir(), event))
 
-    def _apply() -> dict[str, Any]:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import (
-            subscription_end_from_event,
-            subscription_state_from_event,
-        )
-        from tinyassets.storage.subscription_state import apply_tier_event
 
-        mapped = subscription_state_from_event(event)
-        if mapped is None:
-            return {"applied": False}
-        universe_id, tier = mapped
-        universe_dir = _universe_dir(universe_id)
-        # Ordered by the event's own created time: Stripe does not guarantee
-        # delivery order, and a delayed `active` must not overwrite a newer cancel.
-        created = float(event.get("created") or 0.0)
-        applied = apply_tier_event(
-            universe_dir,
-            tier=tier,
-            event_created=created,
-            # Display only, and stored with the tier it describes so the two cannot
-            # disagree. A cancellation leaves the subscription ACTIVE until the period
-            # ends, so without this the user sees an unchanged "Paid plan" and cannot
-            # tell their cancellation took.
-            ends_at=subscription_end_from_event(event),
-        )
-        # NOTE: releasing the checkout lease is NOT done here. A subscription event
-        # says nothing about WHICH pending session it belongs to, so any rule based on
-        # it -- even one gated on the tier moving -- could release the lease protecting
-        # a different session that is open right now. The lease is released only by a
-        # terminal Checkout Session event naming its own id (see `_settle_checkout`).
-        return {"applied": applied, "tier": tier if applied else None}
+async def _handle_owner_checkpoint(request: Any) -> Any:
+    return await _owner_volume_route(request, "checkpoint")
 
-    settled = await run_in_threadpool(_settle_checkout)
-    if settled is not None:
-        return JSONResponse(settled)
-    return JSONResponse(await run_in_threadpool(_apply))
+
+async def _handle_owner_restore_points(request: Any) -> Any:
+    return await _owner_volume_route(request, "catalog")
+
+
+async def _handle_owner_restore(request: Any) -> Any:
+    return await _owner_volume_route(request, "restore")
+
+
+async def _owner_volume_route(request: Any, action: str) -> Any:
+    """Router-owned undo. The box is not on this path and never sees the proof."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.broker.volume_restore import submit
+    from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.owner_runtime import current
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    if current() is not None:
+        return JSONResponse({"error": "restore_requires_owner_session"},
+                            status_code=403, headers=_NO_STORE)
+    if not _same_origin_json(request, str(app_config().get("resource") or "")):
+        return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
+                            headers=_NO_STORE)
+    identity = current_identity()
+    owner = identity.user_id
+    try:
+        session = require(request, owner=owner)
+    except PermissionError:
+        return JSONResponse({"error": "interactive_owner_session_required"},
+                            status_code=403, headers=_NO_STORE)
+    data = await _read_small_json(request)
+    if action == "restore":
+        if (not isinstance(data, dict) or set(data) != {"snapshot_id", "expected_generation"}
+                or not isinstance(data["snapshot_id"], str)
+                or type(data["expected_generation"]) is not int):
+            return JSONResponse({"error": "invalid_restore"}, status_code=400,
+                                headers=_NO_STORE)
+        fields = {"snapshot_id": data["snapshot_id"],
+                  "expected_generation": data["expected_generation"]}
+    elif not isinstance(data, dict) or set(data) != set():
+        return JSONResponse({"error": "invalid_restore"}, status_code=400, headers=_NO_STORE)
+    else:
+        fields = {}
+    try:
+        result = await run_in_threadpool(
+            submit, _base_path(), owner, action,
+            {"session_hash": session["session_hash"]}, **fields)
+    except PermissionError as exc:
+        status = 409 if "generation" in str(exc) else 403
+        return JSONResponse({"error": "restore_refused", "reason": str(exc)},
+                            status_code=status, headers=_NO_STORE)
+    except RuntimeError:
+        return JSONResponse({"error": "restore_unavailable"}, status_code=503,
+                            headers=_NO_STORE)
+    return JSONResponse(result, headers=_NO_STORE)
 
 
 def onboarding_routes() -> list[Any]:
@@ -2540,7 +2003,11 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.api_keys import handle as handle_api_keys
     from tinyassets.onboarding.app_modules import handle_app_module
-    from tinyassets.onboarding.browser_login import handle as handle_browser_login
+    from tinyassets.onboarding.app_play import (
+        handle_app_document,
+        handle_app_publish,
+        handle_app_state,
+    )
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.inline_requests import handle_approval
@@ -2548,6 +2015,10 @@ def onboarding_routes() -> list[Any]:
         handle_client_metadata,
         handle_model_callback,
         handle_model_connect,
+    )
+    from tinyassets.onboarding.model_discovery import (
+        handle_connection_discovery,
+        handle_model_discovery,
     )
     from tinyassets.onboarding.model_preferences import handle_model_preferences
     from tinyassets.onboarding.notifications import (
@@ -2561,6 +2032,7 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.owner_unread import handle_unread
     from tinyassets.onboarding.public_run import handle_public_run
     from tinyassets.onboarding.soul import handle_soul
+    from tinyassets.onboarding.subscription_connect import handle as subscription_connect
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.onboarding.wakes import handle_wakes
     from tinyassets.owner_door import owner_door_routes
@@ -2575,25 +2047,22 @@ def onboarding_routes() -> list[Any]:
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
-        Route("/app/browser-login", handle_browser_login, methods=["POST"]),
         Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),
         Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),
         Route("/app/api-keys", handle_api_keys, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
+        Route("/app/connection-discovery", handle_connection_discovery, methods=["POST"]),
+        Route("/app/model-discovery", handle_model_discovery, methods=["POST"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
+        Route("/app/subscription-connect/{operation}", subscription_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
         # Public (carve-out in `_auth_challenge_path`): an authorization server
         # fetches this client metadata document with no bearer.
         Route("/app/oauth/client-metadata.json", handle_client_metadata,
               methods=["GET", "HEAD"]),
         Route("/app/token", _handle_token, methods=["POST"]),
-        Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
-        Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
-        Route("/app/openai/begin", _handle_openai_begin, methods=["POST"]),
-        Route("/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
-        Route("/app/voice/status", _handle_voice_status, methods=["GET"]),
-        Route("/app/voice/session", _handle_voice_session, methods=["POST"]),
+        Route("/app/session/realtime", _handle_realtime_session, methods=["GET", "POST"]),
         Route("/app/me", _handle_me, methods=["GET"]),
         Route("/app/trace", _handle_trace, methods=["POST"]),
         Route("/app/serving/bind", _handle_serving_bind, methods=["POST"]),
@@ -2603,6 +2072,10 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/app/owner/restore", _handle_owner_restore, methods=["POST"]),
+        Route("/app/owner/checkpoint", _handle_owner_checkpoint, methods=["POST"]),
+        Route("/app/owner/restore-points", _handle_owner_restore_points, methods=["POST"]),
+        Route("/app/account/deletion/{key}/{token}", _handle_deletion_status, methods=["GET"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),
@@ -2612,7 +2085,6 @@ def onboarding_routes() -> list[Any]:
         Route("/app/profile", _handle_profile, methods=["GET"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/live", _handle_live, methods=["POST"]),
-        Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
         Route("/app/turn/pending", _handle_turn_pending, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
@@ -2629,6 +2101,11 @@ def onboarding_routes() -> list[Any]:
         # The OWNER door: every read the app renders, complete. Identity-gated by
         # `_is_app_path` like every route above; see `tinyassets/owner_door`.
         *owner_door_routes(),
+        # A published app lives in its owner's box. Specific product routes
+        # above keep their paths; a slug cannot use a reserved first segment.
+        Route("/app/{slug}/state", handle_app_state, methods=["GET", "POST"]),
+        Route("/app/{slug}/publish", handle_app_publish, methods=["POST"]),
+        Route("/app/{slug}", handle_app_document, methods=["GET", "HEAD", "POST"]),
     ]
 
 

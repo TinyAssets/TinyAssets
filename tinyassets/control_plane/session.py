@@ -14,25 +14,31 @@ selects how the turn executes:
 * :class:`OwnerTurn` -- the owner's conversation turn, already admitted by
   ``universe_server.converse`` (seat, recorded message, live turn). Runs the
   served writer turn on the owner's thread and returns the reply text.
-* :class:`RunStep` -- a step of an admitted workflow run (an agent node, or
-  the Activities branch continuing an activity). Runs the shared-self turn on
-  the run's provider session and returns the provider's response.
+* :class:`RunStep` -- an agent node of an admitted workflow run.
+  :class:`Activity` uses the same provider session for a durable activity
+  without constructing a workflow. Both run the shared-self turn.
 * :class:`ChildOf` -- an agent starting another agent from inside its own
   turn. The child is a durable activity of the named agent; it runs on the
-  owner's normal budget as a run step of the Activities branch, so the parent
+  owner's normal budget as a durable activity session, so the parent
   turn is never blocked and the child's lineage is its activity record.
 
-The executors underneath (the served writer turn, the workflow agent turn)
-are C9's one loop in waiting; nothing starts them except this function.
+Both parents run :class:`tinyassets.agent_turn_coordinator.AgentTurnCoordinator`.
+Admission is that loop's scope check, a yield journals the unsent planned
+tool, and a work adapter maps provider exhaustion. There is no second
+executor class.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.agent_definition import MAIN_AGENT, AgentFile, load_agent
+from tinyassets.control_plane.binding import (
+    current_binding as current_binding,
+)
+from tinyassets.owner_activity import owner_work
 
 
 class AgentUnavailable(LookupError):
@@ -48,6 +54,7 @@ class OwnerTurn:
     owner: str
     tier: str
     session_key: str
+    execution_id: str = ""
     conversation_history: list = field(default_factory=list)
     input_method: str = "unknown"
     model_choice: dict | None = None
@@ -70,13 +77,8 @@ class RunStep:
 
 
 @dataclass(frozen=True)
-class BackgroundStep:
-    """An agent node of a queued (background) run, on the queue consumer's session."""
-
-    session: Any
-    prompt_config: Any
-    policy: Any
-    node: dict | None = None
+class Activity(RunStep):
+    """A durable activity generation, admitted without a workflow branch."""
 
 
 @dataclass(frozen=True)
@@ -90,14 +92,22 @@ class ChildOf:
     inside_activity: bool = False
 
 
-Parent = OwnerTurn | RunStep | BackgroundStep | ChildOf
+@dataclass(frozen=True)
+class Inbound:
+    """A verified, box-local receipt awaiting durable send admission."""
+
+    base_path: Path
+    universe_id: str
+    owner: str
+    receipt: str
+
+
+Parent = OwnerTurn | RunStep | ChildOf | Inbound
 
 
 def _universe_dir(parent: Parent) -> Path:
     if isinstance(parent, RunStep):
         return Path(parent.session._universe_dir)
-    if isinstance(parent, BackgroundStep):
-        return Path(parent.session._base_path) / parent.session._task.universe_id
     return Path(parent.base_path) / parent.universe_id
 
 
@@ -105,30 +115,40 @@ def _owner(parent: Parent) -> str:
     """The admitted account the agent runs for: the one whose agents it may be."""
     if isinstance(parent, RunStep):
         return parent.session._principal_id
-    if isinstance(parent, BackgroundStep):
-        return parent.session._task.actor_id
     return parent.owner
 
 
+@owner_work
 def start(agent_ref: str, input: str, parent: Parent):
     """Start ``agent_ref`` on ``input`` under ``parent``'s admission.
 
     The agent is resolved among the parent's admitted account's agents only:
     on a shared command center, a co-admin's own agent is not this account's.
     """
+    if not isinstance(parent, (OwnerTurn, RunStep, ChildOf, Inbound)):
+        raise TypeError(f"unknown parent {type(parent).__name__}")
     try:
         agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
     except (LookupError, ValueError, OSError) as exc:
-        raise AgentUnavailable(f"no agent named {agent_ref!r} in this command center") from exc
+        raise AgentUnavailable(
+            f"no agent named {agent_ref!r} in this command center") from exc
+    if isinstance(parent, Inbound):
+        from tinyassets.addressed_agents import memory_session
+        from tinyassets.owner_door.send import admit_owner_input
+        from tinyassets.owner_runtime import require
+
+        home = _universe_dir(parent)
+        require(home, parent.owner)
+        if not parent.receipt.startswith("inb_"):
+            raise ValueError("inbound receipt required")
+        thread = memory_session(parent.owner, agent.agent_id)
+        admit_owner_input(home, thread, parent.receipt, input, {})
+        return {"session": thread, "client_send_id": parent.receipt, "state": "pending"}
     if isinstance(parent, OwnerTurn):
         return _owner_turn(agent, input, parent)
     if isinstance(parent, RunStep):
         return _run_step(agent, input, parent)
-    if isinstance(parent, BackgroundStep):
-        return _background_step(agent, input, parent)
-    if isinstance(parent, ChildOf):
-        return _child(agent, input, parent)
-    raise TypeError(f"unknown parent {type(parent).__name__}")
+    return _child(agent, input, parent)
 
 
 def _owner_turn(agent: AgentFile, message: str, parent: OwnerTurn) -> str:
@@ -153,6 +173,9 @@ def _run_step(agent: AgentFile, prompt: str, parent: RunStep):
     from tinyassets.workflow_agent import call_foreground_work_agent
 
     session = parent.session
+    if parent.activity is not None:
+        prompt, legacy_node = _activity_instructions(session._universe_dir, parent.activity)
+        parent = replace(parent, node=legacy_node)
     prompt, system, config = prepare_shared_self_turn(
         session._base_path, session._universe_id, session._principal_id, prompt,
         parent.prompt_config, parent.node,
@@ -175,20 +198,10 @@ def _run_step(agent: AgentFile, prompt: str, parent: RunStep):
     )
 
 
-def _background_step(agent: AgentFile, prompt: str, parent: BackgroundStep):
-    from tinyassets.addressed_agents import AddressedAgent
-    from tinyassets.shared_self import prepare_shared_self_turn
-    from tinyassets.workflow_agent import call_background_work_agent
+def _activity_instructions(universe_dir: Path, activity: dict) -> tuple[str, dict | None]:
+    from tinyassets.activity_runner import activity_instructions
 
-    session = parent.session
-    prompt, system, config = prepare_shared_self_turn(
-        session._base_path, session._task.universe_id, session._task.actor_id, prompt,
-        parent.prompt_config, parent.node,
-        agent=None if agent.slug == MAIN_AGENT else AddressedAgent.of(agent),
-    )
-    return call_background_work_agent(
-        session, prompt=prompt, system=system, config=config, policy=parent.policy,
-    )
+    return activity_instructions(universe_dir, activity)
 
 
 def _child(agent: AgentFile, input: str, parent: ChildOf) -> dict:

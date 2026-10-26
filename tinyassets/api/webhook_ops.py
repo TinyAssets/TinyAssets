@@ -1,7 +1,7 @@
 """User-facing mint/revoke/list of inbound webhook URLs (channel-agnostic inbound).
 
 These are WRITE actions on the run surface: a universe's founder mints a stable
-`https://<domain>/hooks/<token>` URL for one of THEIR OWN branches, revokes it, or lists
+`https://<domain>/hooks/inbound/<token>` URL for one of THEIR OWN branches, revokes it, or lists
 their hooks. Ownership is enforced two ways: the run surface already gates write actions
 to a universe the caller can write (per-universe), and mint additionally resolves the
 branch within that universe's graph — so a token can only ever be minted for a branch the
@@ -24,8 +24,8 @@ def _public_base_url() -> str:
 
     Validated to scheme+host only (https, a host, no path/query/fragment/userinfo)
     so a misconfigured ``TINYASSETS_PUBLIC_BASE_URL`` can never mis-mint the webhook
-    URL — e.g. an embedded path yielding ``…/mcp/mcp/hooks/<token>`` or a query that
-    places the SECRET token in a query string. Anything not a bare https origin
+    URL by duplicating the route prefix or placing the SECRET token in a query.
+    Anything not a bare https origin
     falls back to the canonical origin (Codex inbound review).
     """
     from urllib.parse import urlsplit
@@ -121,15 +121,24 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
     owner = _owner_principal()
     if not owner:
         return json.dumps({"error": "authentication_required"})
+    agent_ref = kwargs.get("agent_ref")
+    if not isinstance(agent_ref, str) or not agent_ref.strip():
+        return json.dumps({"error": "agent_ref_required"})
+    from pathlib import Path
+
+    from tinyassets.agent_definition import canonical_agent_id
+
     token = webhook_hooks.mint(
-        base, universe_id=uid, branch_def_id=bid, owner_principal_id=owner
+        base, universe_id=uid, branch_def_id=bid, owner_principal_id=owner,
+        agent_ref=canonical_agent_id(Path(base) / uid, agent_ref, owner=owner),
+        source_id=kwargs.get("source_id") or None,
     )
-    url = f"{_public_base_url()}/mcp/hooks/{token}"
+    url = f"{_public_base_url()}/hooks/inbound/{token}"
     return json.dumps({
         "text": (
             "Inbound webhook URL created. Paste it into the channel's webhook settings "
             f"(GitHub, Stripe, or any tool that can POST a webhook):\n{url}\n"
-            "Each POST to it runs this branch as your command center."
+            "Send Idempotency-Key and X-Event-Timestamp headers with each event."
         ),
         "url": url,
         "token": token,
@@ -172,6 +181,7 @@ def _action_revoke_webhook(kwargs: dict[str, Any]) -> str:
 def _action_list_webhooks(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.helpers import _base_path
     from tinyassets.storage import webhook_hooks
+    from tinyassets.storage.inbound_events import installation_view
 
     uid = _uid(kwargs)
     if not uid:
@@ -195,6 +205,7 @@ def _action_list_webhooks(kwargs: dict[str, Any]) -> str:
         ),
         "webhooks": hooks,
         "count": len(hooks),
+        "installations": installation_view(base),
     })
 
 
@@ -214,55 +225,11 @@ def _event_type_for(source_id: str) -> str:
 
 
 def _action_create_source(kwargs: dict[str, Any]) -> str:
-    from tinyassets.api.helpers import _base_path
-    from tinyassets.scheduler import register_subscription
-    from tinyassets.storage import webhook_hooks
-
-    uid = _uid(kwargs)
-    if not uid:
-        return json.dumps({
-            "error": "create_source requires a universe_id (your own command center).",
-        })
-    branch_def_id = str(kwargs.get("branch_def_id", "")).strip()
-    if not branch_def_id:
-        return json.dumps({"error": "branch_def_id is required."})
-
-    base = _base_path()
-    bid, err = _resolve_owned_branch(base, branch_def_id, uid)
-    if err is not None:
-        return err
-
     source_id = uuid.uuid4().hex
-    # Register the event-trigger FIRST so a delivery can never arrive before a subscriber
-    # exists (an event with no subscription is silently dropped). Owner is the universe, so
-    # the fired run's actor is `universe:<uid>` — the correct branch-run identity.
-    try:
-        register_subscription(
-            base,
-            branch_def_id=bid,
-            owner_actor=f"universe:{uid}",
-            event_type=_event_type_for(source_id),
-        )
-    except ValueError as exc:
-        return json.dumps({"error": str(exc)})
-    owner = _owner_principal()
-    if not owner:
-        return json.dumps({"error": "authentication_required"})
-    token = webhook_hooks.mint(
-        base, universe_id=uid, branch_def_id=bid, source_id=source_id,
-        owner_principal_id=owner,
-    )
-    url = f"{_public_base_url()}/mcp/hooks/{token}"
-    return json.dumps({
-        "text": (
-            "Inbound source created. Paste this URL into the channel's webhook settings; "
-            f"each delivery fires this branch (deduped per delivery):\n{url}"
-        ),
-        "url": url,
-        "token": token,
-        "source_id": source_id,
-        "branch_def_id": bid,
-    })
+    result = json.loads(_action_mint_webhook({**kwargs, "source_id": source_id}))
+    if "error" not in result:
+        result["source_id"] = source_id
+    return json.dumps(result)
 
 
 def _action_list_sources(kwargs: dict[str, Any]) -> str:
@@ -291,7 +258,10 @@ def _action_list_sources(kwargs: dict[str, Any]) -> str:
 
 def _action_revoke_source(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.helpers import _base_path
-    from tinyassets.scheduler import list_scheduler_subscriptions, unregister_subscription
+    from tinyassets.control_plane.events import (
+        list_scheduler_subscriptions,
+        unregister_subscription,
+    )
     from tinyassets.storage import webhook_hooks
 
     uid = _uid(kwargs)

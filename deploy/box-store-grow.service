@@ -1,0 +1,10 @@
+[Unit]
+Description=Grow TinyAssets box store within its spending cap
+Requires=var-lib-boxhostd-owners.mount
+After=var-lib-boxhostd-owners.mount network-online.target
+
+[Service]
+Type=oneshot
+User=root
+TimeoutStartSec=10min
+ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/box-store-grow.py

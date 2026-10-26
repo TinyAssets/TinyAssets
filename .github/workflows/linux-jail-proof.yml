@@ -2,23 +2,17 @@ name: linux-jail-proof
 
 # Why this exists
 # ---------------
-# Some proofs only mean anything inside a real bubblewrap jail, and every one
-# of them is `skipif`-gated on bwrap. No other job installs bubblewrap, so
-# `required-tests` records them as SKIPPED on every run. A skip is invisible in
-# a green run and is not evidence in either direction. The guarded cases:
+# Some proofs only mean anything on Linux against the real box core: the
+# file-delivery RPC through a code node, the remote ``ta`` transport and the
+# extension mounts inside an owner box, driven by the shipping engine handlers.
+# The hosted image records those cases as SKIPPED, and a skip is invisible in a
+# green run and is not evidence in either direction. The guarded cases carry
+# ``@pytest.mark.real_jail``:
 #
-#   * tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
-#     runs the file-delivery RPC through the real jail
-#     (tinyassets/node_sandbox.py BwrapLauncher);
-#   * tests/test_jail_seccomp_profiles.py loads each named owner-cell seccomp
-#     profile into real bubblewrap and checks its syscall answers;
-#   * tests/test_universe_tools_jail.py drives the universe agent's four tools
-#     (tinyassets/universe_tools.py, served by tinyassets/engine_mcp_server.py)
-#     through the real tool jail and proves: only its own universe at /u, no
-#     network, no planted link or FIFO, a settings dir it writes masked from
-#     the next provider launch, resource limits that kill a runaway
-#     (memory, processes / fork bomb, cpu, output, wall clock, shared disk), and
-#     that a skill file the agent writes changes its next served turn.
+#     runs the file-delivery RPC through a code node in the owner box;
+#   * tests/test_owner_box_process_boundary.py keeps one owner daemon inside a
+#     real Linux jail across local tool and ta calls; owner identity, filesystem
+#     and environment isolation survive both calls.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
 # unless EVERY case marked `@pytest.mark.real_jail` is present in JUnit with no
@@ -67,8 +61,22 @@ on:
       - "docker/linux-oracle.Dockerfile"
       - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
+      - "tinyassets/boxes/**"
+      - "deploy/deploy_fail_safe.sh"
+      - "deploy/install-boxhostd-preflight.sh"
+      - "deploy/boxhostd*"
+      - "scripts/rehearsal_launch.py"
+      - "scripts/rehearsal_serve.py"
+      - "scripts/archive_rehearsal.py"
+      - "tests/test_box_move_rehearsal.py"
+      - "Dockerfile"
+      - "tinyassets/owner_process.py"
+      - "tinyassets/owner_daemon.py"
+      - "tinyassets/owner_runtime.py"
+      - "tinyassets/owner_ingress.py"
+      - "tinyassets/control_plane/binding.py"
+      - "tests/support/**"
       # The jail and the runtime that drives delivery RPC through it.
-      - "tinyassets/node_sandbox.py"
       - "tinyassets/graph_compiler.py"
       - "tinyassets/runs.py"
       - "tinyassets/engine_admissions.py"
@@ -87,59 +95,41 @@ on:
       - "tinyassets/storage/run_file_lock.py"
       - "tinyassets/storage/conversation_custody.py"
       # The module under proof and the fixtures it imports.
-      - "tests/test_delivery_node_rpc.py"
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      - "tinyassets/external_agents/runner.py"
-      # External-agent confinement is proved by the role image oracle.
-      - "tinyassets/providers/native_jsonrpc_discovery.py"
-      # The shared jail pieces, the cell seccomp profiles, the spawn point,
-      # the router that binds the owning universe and the adapters.
-      - "tests/test_jail_seccomp_profiles.py"
-      - "tinyassets/providers/provider_jail.py"
-      - "tinyassets/providers/jail_seccomp.py"
-      - "tinyassets/providers/owned_process.py"
+      # External-agent confinement is proved by tests/test_owner_box_process_boundary.py.
+      # The box spawn point, the router that binds the owning universe and
+      # the adapters.
       - "tinyassets/providers/router.py"
-      - "tinyassets/providers/claude_provider.py"
       - "tinyassets/providers/base.py"
-      # The universe agent's four tools, the engine surface that serves them,
-      # the served turn that indexes its skills, and their real-jail proof.
-      - "tests/test_universe_tools_jail.py"
-      - "tests/test_ta_capabilities_jail.py"
-      - "tests/test_agent_wakes_jail.py"
-      - "tests/test_agent_wakes.py"
-      - "tinyassets/agent_wakes.py"
+      # The universe agent's four tools, the engine surface that serves them
+      # and the served turn that indexes its skills.
+      - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
-      - "tests/test_remote_box_ta.py"
-      - "tests/test_remote_box_extensions.py"
+      - "tests/test_owner_box_process_boundary.py"
+      - "tests/test_subscription_box_runtime.py"
+      - "tests/test_owner_tools.py"
+      - "tests/test_owner_extensions.py"
       - "tinyassets/agent_loop/box_ta.py"
-      - "tinyassets/agent_loop/box_ta_worker.py"
-      - "tinyassets/agent_loop/box_tools.py"
+      - "tinyassets/agent_loop/extension_stage.py"
+      - "tinyassets/agent_loop/owner_tools.py"
       - "tinyassets/agent_loop/tool_session.py"
       - "tinyassets/extension_capabilities.py"
       - "tinyassets/extension_hooks.py"
       - "tests/test_ta_capabilities.py"
       # Workspace mount jail proofs (real_jail-marked
       # 2026-10-01; before that no CI job ran them).
-      - "tests/test_node_sandbox_workspace.py"
-      - "tests/test_workspace_provision_mount.py"
-      - "tests/test_sandbox_mount_handles.py"
       # Code nodes' bwrap jail: positive control plus the boundary proofs.
-      - "tests/test_node_sandbox.py"
       - "tests/engine_authority_helpers.py"
       - "tinyassets/universe_tools.py"
       - "tinyassets/ta_capabilities.py"
       - "tinyassets/ta_cli.py"
-      - "tinyassets/engine_mcp_server.py"
+      - "tinyassets/universe_tools.py"
       - "tinyassets/served_tools.py"
       - "tinyassets/universe_intelligence.py"
-      - "tinyassets/universe_egress.py"
       - "tinyassets/workspace_fs.py"
-      - "tinyassets/jail_disk.py"
       - "tinyassets/storage_accounting.py"
-      - "tests/test_jail_disk.py"
-      - "tests/test_storage_accounting.py"
   push:
     branches: [main]
     paths:
@@ -148,8 +138,22 @@ on:
       - "docker/linux-oracle.Dockerfile"
       - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
+      - "tinyassets/boxes/**"
+      - "deploy/deploy_fail_safe.sh"
+      - "deploy/install-boxhostd-preflight.sh"
+      - "deploy/boxhostd*"
+      - "scripts/rehearsal_launch.py"
+      - "scripts/rehearsal_serve.py"
+      - "scripts/archive_rehearsal.py"
+      - "tests/test_box_move_rehearsal.py"
+      - "Dockerfile"
+      - "tinyassets/owner_process.py"
+      - "tinyassets/owner_daemon.py"
+      - "tinyassets/owner_runtime.py"
+      - "tinyassets/owner_ingress.py"
+      - "tinyassets/control_plane/binding.py"
+      - "tests/support/**"
       # The jail and the runtime that drives delivery RPC through it.
-      - "tinyassets/node_sandbox.py"
       - "tinyassets/graph_compiler.py"
       - "tinyassets/runs.py"
       - "tinyassets/engine_admissions.py"
@@ -168,59 +172,41 @@ on:
       - "tinyassets/storage/run_file_lock.py"
       - "tinyassets/storage/conversation_custody.py"
       # The module under proof and the fixtures it imports.
-      - "tests/test_delivery_node_rpc.py"
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      - "tinyassets/external_agents/runner.py"
-      # External-agent confinement is proved by the role image oracle.
-      - "tinyassets/providers/native_jsonrpc_discovery.py"
-      # The shared jail pieces, the cell seccomp profiles, the spawn point,
-      # the router that binds the owning universe and the adapters.
-      - "tests/test_jail_seccomp_profiles.py"
-      - "tinyassets/providers/provider_jail.py"
-      - "tinyassets/providers/jail_seccomp.py"
-      - "tinyassets/providers/owned_process.py"
+      # External-agent confinement is proved by tests/test_owner_box_process_boundary.py.
+      # The box spawn point, the router that binds the owning universe and
+      # the adapters.
       - "tinyassets/providers/router.py"
-      - "tinyassets/providers/claude_provider.py"
       - "tinyassets/providers/base.py"
-      # The universe agent's four tools, the engine surface that serves them,
-      # the served turn that indexes its skills, and their real-jail proof.
-      - "tests/test_universe_tools_jail.py"
-      - "tests/test_ta_capabilities_jail.py"
-      - "tests/test_agent_wakes_jail.py"
-      - "tests/test_agent_wakes.py"
-      - "tinyassets/agent_wakes.py"
+      # The universe agent's four tools, the engine surface that serves them
+      # and the served turn that indexes its skills.
+      - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
-      - "tests/test_remote_box_ta.py"
-      - "tests/test_remote_box_extensions.py"
+      - "tests/test_owner_box_process_boundary.py"
+      - "tests/test_subscription_box_runtime.py"
+      - "tests/test_owner_tools.py"
+      - "tests/test_owner_extensions.py"
       - "tinyassets/agent_loop/box_ta.py"
-      - "tinyassets/agent_loop/box_ta_worker.py"
-      - "tinyassets/agent_loop/box_tools.py"
+      - "tinyassets/agent_loop/extension_stage.py"
+      - "tinyassets/agent_loop/owner_tools.py"
       - "tinyassets/agent_loop/tool_session.py"
       - "tinyassets/extension_capabilities.py"
       - "tinyassets/extension_hooks.py"
       - "tests/test_ta_capabilities.py"
       # Workspace mount jail proofs (real_jail-marked
       # 2026-10-01; before that no CI job ran them).
-      - "tests/test_node_sandbox_workspace.py"
-      - "tests/test_workspace_provision_mount.py"
-      - "tests/test_sandbox_mount_handles.py"
       # Code nodes' bwrap jail: positive control plus the boundary proofs.
-      - "tests/test_node_sandbox.py"
       - "tests/engine_authority_helpers.py"
       - "tinyassets/universe_tools.py"
       - "tinyassets/ta_capabilities.py"
       - "tinyassets/ta_cli.py"
-      - "tinyassets/engine_mcp_server.py"
+      - "tinyassets/universe_tools.py"
       - "tinyassets/served_tools.py"
       - "tinyassets/universe_intelligence.py"
-      - "tinyassets/universe_egress.py"
       - "tinyassets/workspace_fs.py"
-      - "tinyassets/jail_disk.py"
       - "tinyassets/storage_accounting.py"
-      - "tests/test_jail_disk.py"
-      - "tests/test_storage_accounting.py"
   workflow_dispatch:
 
 permissions:
@@ -319,3 +305,64 @@ jobs:
           name: junit-linux-jail-proof
           path: ${{ runner.temp }}/jail-out/junit-linux-jail.xml
           if-no-files-found: warn
+
+  production-owner-launch:
+    name: production boxhostd startup and owner wake through runsc
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build the candidate harness image
+        env:
+          SHA: ${{ github.sha }}
+        run: docker build --build-arg TINYASSETS_BUILD_SHA="$SHA" -t ta-launch-proof .
+      - name: Fetch the production-pinned runsc release
+        env:
+          OUT: ${{ runner.temp }}/owner-launch
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/gvisor"
+          release=$(sed -n 's/^release=//p' deploy/install-boxhostd-preflight.sh)
+          digest=$(sed -n 's/^archive_sha=//p' deploy/install-boxhostd-preflight.sh)
+          test -n "$release" && test -n "$digest"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+            "https://github.com/google/gvisor/releases/download/$release/gvisor-x86_64.tar.bz2" \
+            -o "$OUT/gvisor.tar.bz2"
+          echo "$digest  $OUT/gvisor.tar.bz2" | sha256sum --strict -c -
+          tar -xjf "$OUT/gvisor.tar.bz2" -C "$OUT/gvisor"
+      - name: Launch an owner from the production extraction
+        # Disposable synthetic archive only. Starts the production entry point
+        # in a populated, undelegated service cgroup; it must evacuate itself,
+        # create its sockets/relays and wake an owner through the UID1001 channel.
+        # Real runsc supplies OCI mounts/UID/argv and cgroup floor readback.
+        env:
+          OUT: ${{ runner.temp }}/owner-launch
+        run: |
+          python scripts/linux_oracle.py --as-root --docker-engine --out "$OUT" \
+            --env TA_REHEARSAL_BASE_IMAGE=ta-launch-proof \
+            --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
+            -- tests/test_box_move_rehearsal.py::test_synthetic_archive_rehearses_final_cutover \
+            -q --junitxml=/out/owner-launch.xml
+      - name: Refuse absent or skipped launch proof
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/owner-launch/owner-launch.xml
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          cases = ET.parse(os.environ["REPORT"]).findall(".//testcase")
+          assert len(cases) == 1
+          assert not any(c.find(tag) is not None for c in cases for tag in ("skipped", "failure", "error"))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-owner-launch
+          path: ${{ runner.temp }}/owner-launch/owner-launch.xml

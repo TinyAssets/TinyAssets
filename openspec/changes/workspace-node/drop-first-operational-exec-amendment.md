@@ -116,7 +116,7 @@ NAME result. Corrected 2026-09-21; no code changed.)*
 
 `env-summary` satisfies the reviewer's binding condition (b): it is an
 **in-wrapper post-drop print**, never an exec of `printenv | grep | sort`. The
-four flag families (`AUTO_SHIP`, `OLLAMA`, `PIN_WRITER`, `GOAL_POOL`) are
+three flag families (`AUTO_SHIP`, `OLLAMA`, `PIN_WRITER`) are
 compiled in and matched against the **name** only. This is strictly less
 exposure than today's callsite, which pipes the whole environment across ssh.
 

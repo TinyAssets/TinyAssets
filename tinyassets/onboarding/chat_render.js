@@ -9,6 +9,12 @@ const ChatRender = (() => {
     catch(_){return null;}
   }
   function inline(parent, source){
+    // A surface that cannot purchase must not render an upgrade link. The
+    // plan action's canPurchase() is the only gate; this file does not know
+    // which shell it is in.
+    if(typeof canPurchase==="function" && !canPurchase()){
+      source=source.replace(/(?:\s*—\s*|,\s*or\s*)\[Upgrade\]\([^)\s]*\) for more [^.]+\.?/gi, "");
+    }
     const tokens=/`([^`\n]+)`|\[([^\]\n]+)\]\(([^\s]+)\)|(https?:\/\/[^\s<>]+)/gi;
     let at=0;
     for(const match of source.matchAll(tokens)){
@@ -21,6 +27,10 @@ const ChatRender = (() => {
       }
       const href=httpURL(url);
       if(!href){text(parent,match[0]);continue;}
+      if(typeof canPurchase==="function" && !canPurchase() && /[?&]upgrade=1(?:&|#|$)/.test(href)){
+        text(parent, suffix);
+        continue;
+      }
       const a=document.createElement("a"); a.href=href;a.target="_blank";a.rel="noopener noreferrer";
       a.addEventListener("click",event=>{
         if(typeof NATIVE!=="undefined" && NATIVE){event.preventDefault();void openExternal(href);}
@@ -128,6 +138,31 @@ const ChatRender = (() => {
     });
     return button;
   }
+  function renderParts(parent, parts){
+    parent.textContent="";
+    if(!Array.isArray(parts)) return;
+    for(const part of parts){
+      if(!part || typeof part.kind!=="string") continue;
+      if(part.kind==="text"){
+        inline(parent, String(part.text||""));
+        continue;
+      }
+      if(part.kind==="tool_call"){
+        const pre=document.createElement("pre");
+        pre.textContent=String(part.name||"tool")+" "+JSON.stringify(part.arguments||{});
+        parent.appendChild(pre);
+        continue;
+      }
+      if(part.kind!=="image" && part.kind!=="audio" && part.kind!=="video") continue;
+      const node=document.createElement(part.kind==="image"?"img":part.kind);
+      if(part.kind==="image") node.alt=String(part.mime||"image");
+      else node.controls=true;
+      node.dataset.mediaRef=String(part.reference||"");
+      node.dataset.mime=String(part.mime||"");
+      if(part.timing) node.dataset.timing=JSON.stringify(part.timing);
+      parent.appendChild(node);
+    }
+  }
   function render(parent, source, download){
     source=String(source||"");parent.textContent="";
     const fences=/^```([^\n`]*)\r?\n([\s\S]*?)^```[ \t]*(?:\r?\n|$)/gm;
@@ -144,5 +179,5 @@ const ChatRender = (() => {
     }
     inline(parent,source.slice(at));
   }
-  return {render,httpURL,chart};
+  return {render,renderParts,httpURL,chart};
 })();

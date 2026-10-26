@@ -164,3 +164,6 @@ def test_gh_token_is_host_backup_only_never_the_daemon():
 
     compose = (REPO / "deploy" / "compose.yml").read_text(encoding="utf-8")
     assert "GH_TOKEN" not in compose
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

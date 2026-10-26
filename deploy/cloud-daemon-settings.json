@@ -1,4 +1,4 @@
 {
   "request_type_priorities": ["bug_investigation", "branch_run"],
-  "_comment": "Cloud daemon is the safety-net claimer for bug_investigation requests. It runs at low priority — host-tray daemons configured with higher priority will claim first. Add 'paid_market' here when Phase G launches."
+  "_comment": "Cloud daemon is the safety-net claimer for bug_investigation requests. It runs at low priority — host-tray daemons configured with higher priority will claim first."
 }

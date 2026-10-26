@@ -59,7 +59,7 @@ def model_options_document(
                 # admitted choices. Any row reason disables the desktop picker.
                 # A pending/failed catalogue must not revoke accepted access.
                 if (ref in admitted and reason["reason"] in {
-                            "native_catalogue_unavailable", "native_enumeration_unsupported",
+
                             "refreshing", "never_run", "stale",
                             "catalogue_refresh_unavailable",
                         }):

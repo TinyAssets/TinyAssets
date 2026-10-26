@@ -37,9 +37,14 @@ transitive.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -168,7 +173,8 @@ def test_both_shard_paths_hand_the_runner_its_unchanged_command_in_one_venue():
     sel_flags, sel_args = _runner_argv(selective)
     # ONE venue for both paths: identical oracle flags.
     assert whole_flags == sel_flags == [
-        "--out", "shard-out", "--apparmor", "ta-jail-userns",
+        "--docker-engine", "--out", "shard-out",
+        "--env", "TA_REHEARSAL_RUNSC_DIR=/out/gvisor", "--apparmor", "ta-jail-userns",
         "--env", "TINYASSETS_DATA_DIR=/tmp/ta-data",
         "--env", "CI=true", "--env", "GITHUB_ACTIONS=true",
         "--env", "MERGE_GROUP_BASE_SHA=<github.event.merge_group.base_sha>",
@@ -782,6 +788,107 @@ def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
 # ---- PR-time affected tests ----------------------------------------------------
 
 
+@pytest.mark.parametrize("oracle", [False, True])
+def test_affected_shard_accepts_passing_cases_from_each_invocation(
+    tmp_path, monkeypatch, oracle,
+):
+    """Leaf testcase elements must count in direct and merged venue reports."""
+    if oracle and os.name != "posix":
+        pytest.skip("oracle venue coordinator requires POSIX")
+    junit = tmp_path / "junit.xml"
+    user_file = "tests/test_owner_box_deploy.py"
+    root_file = "tests/test_owner_volumes_proof.py"
+    selection = [user_file, root_file] if oracle else [user_file]
+    monkeypatch.setattr(_ci, "_read_selection", lambda args: selection)
+    calls = []
+    real_run = subprocess.run
+
+    def run(cmd, **kwargs):
+        if cmd[:3] != [sys.executable, "-m", "pytest"]:
+            return real_run(cmd, **kwargs)
+        report = Path(next(arg.split("=", 1)[1] for arg in cmd
+                           if arg.startswith("--junitxml=")))
+        files = [file for file in selection if file in cmd]
+        calls.append(files)
+        suites = ET.Element("testsuites")
+        suite = ET.SubElement(suites, "testsuite")
+        for file in files:
+            for index in range(2):
+                ET.SubElement(suite, "testcase", file=file, name=f"test_pass_{index}")
+        ET.ElementTree(suites).write(report, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    # Exercise the real venue merger; only the child pytest processes and
+    # privileged identity operations are replaced in this focused regression.
+    monkeypatch.setattr(_ci.subprocess, "run", run)
+    if oracle:
+        monkeypatch.setattr(_ci.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(_ci.os, "chown", lambda *args: None)
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py", "--junit", str(junit),
+        "--affected", str(tmp_path / "affected.txt"),
+        "--shard", "1/1", "--profile", "affected",
+        *(["--oracle-venues"] if oracle else []),
+    ])
+
+    assert _ci.main() == 0
+    assert calls == ([[user_file], [root_file]] if oracle else [[user_file]])
+    cases = list(ET.parse(junit).getroot().iter("testcase"))
+    assert len(cases) == 2 * len(selection)
+    assert all(len(case) == 0 for case in cases)
+    assert _ci.json.loads(junit.with_suffix(".json").read_text())["pytest_exit"] == 0
+
+
+@pytest.mark.parametrize("oracle", [False, True])
+@pytest.mark.parametrize(
+    ("selection", "pytest_exit", "slow_only", "expected"),
+    [
+        ([], None, [], 0),
+        (["tests/test_slow.py"], 5, ["tests/test_slow.py"], 0),
+        (["tests/test_slow.py"], 5, [], 1),
+        (["tests/test_slow.py"], 0, [], 1),
+        (["tests/test_slow.py"], 1, ["tests/test_slow.py"], 1),
+        (["tests/test_slow.py"], 2, ["tests/test_slow.py"], 1),
+        (["tests/test_slow.py"], 4, ["tests/test_slow.py"], 1),
+    ],
+)
+def test_affected_shard_only_waives_proven_empty_runs(
+    tmp_path, monkeypatch, capsys, oracle, selection, pytest_exit, slow_only, expected,
+):
+    junit = tmp_path / "junit.xml"
+    monkeypatch.setattr(_ci, "_read_selection", lambda args: selection)
+    monkeypatch.setattr(
+        _ci, "collectible_under_gate", lambda files: ([], slow_only),
+    )
+
+    def run(cmd, **kwargs):
+        ET.ElementTree(ET.Element("testsuites")).write(junit, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, pytest_exit)
+
+    monkeypatch.setattr(_ci, "run_oracle_venues", lambda cmd, **kwargs: run(cmd))
+    monkeypatch.setattr(_ci.subprocess, "run", run)
+    monkeypatch.setattr(
+        sys, "argv", [
+            "ci_required_tests.py", "--junit", str(junit),
+            "--affected", str(tmp_path / "affected.txt"),
+            "--shard", "2/4", "--profile", "affected",
+            *(["--oracle-venues"] if oracle else []),
+        ],
+    )
+
+    assert _ci.main() == expected
+    assert _ci.json.loads(junit.with_suffix(".json").read_text())["pytest_exit"] == (
+        0 if expected == 0 else pytest_exit
+    )
+    output = capsys.readouterr().out
+    if expected == 0:
+        assert "nothing to run" in output
+    elif pytest_exit == 0:
+        assert "non-empty selection reported no test cases" in output
+    else:
+        assert f"pytest exited {pytest_exit}" in output
+
+
 def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> None:
     """PR shards report through the required aggregate; queue shards check integration."""
     job = _load()["jobs"]["affected-tests"]
@@ -811,21 +918,13 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
 # ---- the conservative merge gate (round-2 fixes from the #4359 review) ------
 
 
-def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
+def test_pr_tiers_use_fast_units_on_the_box_runner():
     jobs = _load()["jobs"]
     unit = "\n".join(s.get("run", "") for s in jobs["affected-tests"]["steps"])
     assert "--ci-select pr --base HEAD^1" in unit
     assert "linux_oracle.py --required-runner" in unit
     assert "--apparmor ta-jail-userns" in unit
-    image = jobs["core-capabilities"]
-    assert "if" not in image and not image.get("continue-on-error")
-    assert "core-capabilities" in jobs["required-tests"]["needs"]
-    steps = image["steps"]
-    build = next(s for s in steps if "docker/build-push-action" in s.get("uses", ""))
-    assert build["with"]["context"] == "." and build["with"]["load"] is True
-    probe = next(s for s in steps if "core_capability_image.py" in s.get("run", ""))
-    assert build["if"] == probe["if"] == "steps.tier.outputs.required == 'true'"
-    assert not probe.get("continue-on-error") and "|| true" not in probe["run"]
+    assert "core-capabilities" not in jobs
 
 
 
@@ -861,6 +960,39 @@ def test_the_gate_asks_for_the_conservative_selection() -> None:
     )
     assert "ci_required_tests.py --ci-select gate --base" in run
     assert 'f"--{tier}"' in _SCRIPT.read_text(encoding="utf-8")
+
+
+def test_selector_runs_only_files_with_test_cases(tmp_path) -> None:
+    from scripts.affected_tests import gate_selection, select
+
+    tests = tmp_path / "tests"
+    source = tmp_path / "tinyassets"
+    tests.mkdir()
+    source.mkdir()
+    (source / "thing.py").write_text("VALUE = 1\n")
+    (tests / "test_helper.py").write_text(
+        "from tinyassets.thing import VALUE\n"
+        "def fixture_value(): return VALUE\n"
+    )
+    (tests / "test_consumer.py").write_text(
+        "from tests.test_helper import fixture_value\n"
+        "def test_value(): assert fixture_value() == 1\n"
+    )
+    (tests / "test_stale.py").write_text(
+        "from pathlib import Path\n"
+        "def files(): return list(Path('.').rglob('*.md'))\n"
+    )
+    (tests / "test_walker.py").write_text(
+        "from pathlib import Path\n"
+        "def test_walk(): assert list(Path('.').rglob('*.md')) is not None\n"
+    )
+
+    selected, _ = select(["tinyassets/thing.py"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_consumer.py"]
+    selected, _ = select(["tests/test_helper.py"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_consumer.py"]
+    selected, _ = gate_selection(["docs/example.md"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_walker.py"]
 
 
 def test_the_selection_is_pruned_before_it_is_digested() -> None:
@@ -937,7 +1069,11 @@ def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
     step = next(s for s in structural["steps"]
                 if "scripts.ci_structural_guards" in s.get("run", ""))
     assert "if" not in step and not step.get("continue-on-error")
-    slow_run = "\n".join(s.get("run", "") for s in jobs["slow-tests"]["steps"])
+    slow = jobs["slow-tests"]
+    # Playwright 1.58 cannot install chromium on ubuntu 26.04, which is
+    # what ubuntu-latest is now. The queue runs this install before pytest.
+    assert slow["runs-on"] == "ubuntu-24.04"
+    slow_run = "\n".join(s.get("run", "") for s in slow["steps"])
     assert "pip install -e '.[dev,browser]'" in slow_run
     assert "python -m playwright install --with-deps chromium" in slow_run
 
@@ -951,16 +1087,13 @@ def test_every_event_requires_structural_success(tmp_path):
                 and "AFFECTED_RESULT" not in s["env"])
     assert "if" not in step and not step.get("continue-on-error")
     assert step["env"]["STRUCTURAL_RESULT"] == "${{ needs.structural-guards.result }}"
+    assert set(step["env"]) == {"STRUCTURAL_RESULT"}
     # Binary stdin avoids Windows launcher quoting and CRLF translation.
-    assert step['env']['CAPABILITY_RESULT'] == '${{ needs.core-capabilities.result }}'
-    for gate in ('STRUCTURAL_RESULT', 'CAPABILITY_RESULT'):
-        for result in ("success", "failure", "skipped", "cancelled", ""):
-            env = dict(STRUCTURAL_RESULT='success', CAPABILITY_RESULT='success')
-            env[gate] = result
-            script = ''.join(f'{key}={value}\n' for key, value in env.items()) + step['run']
-            run = subprocess.run(["bash", "-s"], input=script.encode(),
-                                 cwd=tmp_path, capture_output=True)
-            assert run.returncode == (0 if result == "success" else 1)
+    for result in ("success", "failure", "skipped", "cancelled", ""):
+        script = f'STRUCTURAL_RESULT={result}\n' + step['run']
+        run = subprocess.run(["bash", "-s"], input=script.encode(),
+                             cwd=tmp_path, capture_output=True)
+        assert run.returncode == (0 if result == "success" else 1)
 
 
 # Events that do not change the head. A workflow that listens to them must be
@@ -1009,3 +1142,9 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
                         assert "pytest" not in code
                         assert "ci_required_tests.py" not in code
                         assert "linux_oracle.py" not in code
+
+
+pytestmark = pytest.mark.verifies(
+    'ci-linux-proof-venue:'
+    'The required shards run the unchanged gate runner',
+)

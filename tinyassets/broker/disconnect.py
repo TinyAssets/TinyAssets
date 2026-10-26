@@ -1,7 +1,9 @@
-"""Named HTTP disconnect steps; custody and dependent authority stay in the daemon."""
+"""Named HTTP disconnect steps; custody is erased by the broker."""
 from __future__ import annotations
 
 import time
+
+from tinyassets.credential_vault import custody_namespace
 
 
 def validate(document):
@@ -23,28 +25,38 @@ def local_operation(ledger, *, principal, command_center, document):
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     validate(document)
-    connection_id, grant_id = _ids(universe_id=command_center, destination=document["destination"])
+    connection_id, grant_id = _ids(owner=principal, destination=document["destination"])
     validate_query(AUTHORIZED_CONNECTION, principal, command_center, grant_id, connection_id)
     with ledger._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
                            (connection_id,)).fetchone()
         if row is None:
-            return {"resource": None, "incarnation": "", "removed": False}
-        # Deterministic center/destination identity also permits recovery of a
+            from tinyassets.broker.vault import forget_credential
+
+            removed = (forget_credential(custody_namespace(ledger._data_root, principal),
+                credential_type="http", destination=document["destination"])
+                if document["action"] == "erase" else 0)
+            return {"resource": None, "incarnation": "", "removed": False,
+                    "secrets_removed": removed, "revocation_message": ""}
+        # Deterministic owner/destination identity also permits recovery of a
         # revoked connection or interrupted deposit with no surviving grant.
         if (row["owner_user_id"] != principal or row["connection_type"] != "http"
                 or row["connection_class"] != "http" or row["provider"] != "http"
                 or row["destination"] != document["destination"]
                 or row["credential_ref"] != "vault://http/" + document["destination"]):
             raise GrantResolutionError("outbound connection identity mismatch")
+        if row["custody_erased"]:
+            return {"resource": None, "incarnation": "", "removed": False,
+                    "secrets_removed": 0, "revocation_message": row["revocation_message"]}
         incarnation = row["incarnation"]
         fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
                   "provider", "destination", "credential_ref", "revoked_at",
                   "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
                   "git_host")
         result = {"resource": {key: row[key] for key in fields},
-                  "incarnation": incarnation, "removed": False}
+                  "incarnation": incarnation, "removed": False, "secrets_removed": 0,
+                  "revocation_message": row["revocation_message"]}
         if document["action"] == "inspect":
             return result
         if not document["incarnation"] or document["incarnation"] != incarnation:
@@ -55,9 +67,33 @@ def local_operation(ledger, *, principal, command_center, document):
         else:
             if row["revoked_at"] is None:
                 raise GrantResolutionError("outbound connection must be fenced before erase")
-            for table in ("connection_capabilities", "outbound_connection_grants",
-                          "outbound_connections"):
+            from tinyassets.broker.revocation import recovery_message, revoke
+            from tinyassets.broker.vault import forget_credential
+
+            failure = ""
+
+            def before_erase(credential):
+                nonlocal failure
+                if row["auth_scheme"] == "oauth2":
+                    failure = revoke(credential) or failure
+                    if failure:
+                        result["revocation_message"] = recovery_message(credential)
+
+            result["secrets_removed"] = forget_credential(
+                custody_namespace(ledger._data_root, principal),
+                credential_type="http", destination=document["destination"],
+                before_erase=before_erase)
+            for table in ("connection_capabilities", "outbound_connection_grants"):
                 conn.execute(f"DELETE FROM {table} WHERE connection_id=?", (connection_id,))
+            if failure:
+                # Retain only a denied, credential-free connection receipt. A
+                # fresh connect may replace it; retries never resend the token.
+                conn.execute("UPDATE outbound_connections SET revocation_error=?, "
+                             "custody_erased=1, revocation_message=? WHERE connection_id=?",
+                             (failure, result["revocation_message"], connection_id))
+            else:
+                conn.execute("DELETE FROM outbound_connections WHERE connection_id=?",
+                             (connection_id,))
             result["removed"] = True
         return result
 
@@ -77,8 +113,10 @@ def disconnect(data_root, *, principal, command_center, destination, action="ins
                           command_center=command_center, fence=supervisor.fence,
                           verify_peer=supervisor.verify_broker, timeout=30)
     result = client.disconnect(document)
-    if (set(result) != {"resource", "incarnation", "removed"}
+    if (set(result) != {"resource", "incarnation", "removed", "secrets_removed",
+                        "revocation_message"}
             or not isinstance(result["incarnation"], str)
+            or not isinstance(result["revocation_message"], str)
             or type(result["removed"]) is not bool
             or (result["resource"] is not None and not isinstance(result["resource"], dict))):
         raise ProxyRequestError("invalid broker disconnect response")

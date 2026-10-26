@@ -79,3 +79,6 @@ def test_basic_requires_both_halves_non_empty_at_dispatch(bad: str) -> None:
 def test_basic_password_may_itself_contain_colons() -> None:
     bundle = _build_http_secret_bundle("basic", "user:pa:ss:wd")
     assert bundle.get("username") == "user" and bundle.get("password") == "pa:ss:wd"
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

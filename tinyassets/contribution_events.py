@@ -1,7 +1,7 @@
 """Contribution events ledger — Phase B item 8.
 
 Single-table append-only events ledger. All five contribution surfaces emit
-into ``contribution_events``; the bounty calculator (Phase 2 dispatch) reads.
+into ``contribution_events`` for attribution.
 
 Spec: ``docs/architecture.md`` §1.
 

@@ -10,6 +10,9 @@ from tinyassets import capability_health as health
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Shared disk refusal has a stable failure code'
+)
 def test_shared_disk_refusal_is_logged_and_drives_rate_alarm(monkeypatch, caplog):
     from tinyassets.universe_tools import UniverseToolError
 
@@ -24,6 +27,9 @@ def test_shared_disk_refusal_is_logged_and_drives_rate_alarm(monkeypatch, caplog
     assert "capability_failure capability=bash code=shared_disk_full" in caplog.text
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_rates_detect_total_failure_and_spikes_without_retaining_user_material():
     now = [0]
     rates = health.CapabilityRates(lambda: now[0])
@@ -56,6 +62,9 @@ def test_rates_detect_total_failure_and_spikes_without_retaining_user_material()
     assert not rates.buckets
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     rates = health.CapabilityRates()
     monkeypatch.setattr(health, "RATES", rates)
@@ -104,6 +113,9 @@ def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     assert rates.snapshot()["capability_successes"]["chat_stream"] == 1
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:One executable capability catalogue'
+)
 def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():
     rows = [
         dict(
@@ -128,16 +140,18 @@ def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():
             ]
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Production image acceptance before merge'
+)
 def test_capability_image_keeps_real_execution_seams():
     import ast
 
     from tests.test_role_production_acceptance_integrity import substitutions
 
-    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    scripts = Path(__file__).resolve().parents[1]
     for name in (
-        "core_capability_image.py",
-        "core_capability_fixture.py",
-        "core_capability_live.py",
+        "deploy/box_daemon_entry.py",
+        "scripts/core_capability_live.py",
     ):
         source = (scripts / name).read_text(encoding="utf-8")
         assert not substitutions(source), name
@@ -150,6 +164,9 @@ def test_capability_image_keeps_real_execution_seams():
                 assert not substitutions(node.value), (name, node.lineno)
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
 def test_one_broken_owner_and_low_volume_never_alarm():
     rates = health.CapabilityRates()
     for _ in range(100):
@@ -162,12 +179,18 @@ def test_one_broken_owner_and_low_volume_never_alarm():
     assert "broken-key" not in json.dumps(rates.snapshot())
 
 
-def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch):
+@pytest.mark.verifies(
+    'core-capability-assurance:Systemic runtime failure alarms'
+)
+def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tmp_path, capsys):
     from scripts import core_capability_live as live
 
-    monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG", raising=False)
+    monkeypatch.delenv("TINYASSETS_CANARY_SESSION_KEY", raising=False)
     report = asyncio.run(live.collect())
-    assert not report["failures"] and report["warnings"][0]["code"] == "canary_not_provisioned"
+    assert report["warnings"][0]["code"] == "canary_not_provisioned"
+    assert not report["failures"]
+    assert live.main(["--report", str(tmp_path / "report.json")]) == 0
+    assert "::warning::core canary canary: canary_not_provisioned" in capsys.readouterr().out
     attempts = []
 
     async def restarted(report):
@@ -185,6 +208,9 @@ def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch):
     assert report["warnings"][0]["code"] == "deployment_in_progress"
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
 def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     from scripts import core_capability_live as live
 
@@ -203,6 +229,43 @@ def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     assert {row["capability"] for row in report["warnings"]} == {"chat_stream", "read_image"}
 
 
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
+def test_live_platform_failure_fails_the_step_and_model_rows_do_not(monkeypatch, tmp_path):
+    from scripts import core_capability_live as live
+
+    async def platform_red(report):
+        report["model_dependent"] = ["chat_stream", "patch_request"]
+        for name in CAPABILITIES:
+            if name not in {"chat_stream", "patch_request", "background_run"}:
+                live.passed(report, name, {"verified": True})
+
+    monkeypatch.setattr(live, "run", platform_red)
+    assert live.main(["--report", str(tmp_path / "red.json")]) == 1
+
+    async def model_red(report):
+        # The probe's real advisory set: the rows it cannot observe at all
+        # (`approval` needs the protected cookie an app session never issues)
+        # must not roll a deploy back either.
+        report["model_dependent"] = ["chat_stream", "patch_request", "approval"]
+        for name in CAPABILITIES:
+            if name not in report["model_dependent"]:
+                live.passed(report, name, {"verified": True})
+
+    monkeypatch.setattr(live, "run", model_red)
+    assert live.main(["--report", str(tmp_path / "advisory.json")]) == 0
+
+    async def crashed(report):
+        raise RuntimeError("probe bug")
+
+    monkeypatch.setattr(live, "run", crashed)
+    assert live.main(["--report", str(tmp_path / "crash.json")]) == 1
+
+
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
 @pytest.mark.parametrize("failure", ["github", "pushover", "report"])
 def test_alert_transport_and_report_errors_never_fail_the_step(
     tmp_path, monkeypatch, capsys, failure
@@ -238,3 +301,19 @@ def test_alert_transport_and_report_errors_never_fail_the_step(
     runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/core_capability_alert.py"),
                    run_name="__main__")
     assert "::warning::Core capability alert delivery failed:" in capsys.readouterr().out
+
+
+@pytest.mark.verifies(
+    'core-capability-assurance:Hosted live assurance and deployment rollback'
+)
+def test_a_refusal_names_the_check_without_any_value():
+    from scripts import core_capability_live as live
+
+    message = str(live.refusal(
+        "write_graph", {"target": "branch", "operation": "create", "payload_json": "{}"},
+        "Durable table has schema drift for alice@example.com at /home/alice sk-abcdefghij",
+    ))
+    assert message == "write_graph branch create refused: operation_failed (schema_drift)"
+    # The server's own words never appear, whatever they hold.
+    unknown = str(live.refusal("write_graph", {"target": "x"}, "alice.internal YWJjZGVm"))
+    assert unknown == "write_graph x refused: operation_failed"

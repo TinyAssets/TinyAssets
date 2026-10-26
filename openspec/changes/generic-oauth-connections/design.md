@@ -167,7 +167,7 @@ The child rereads its own vault. Each daemon launch gets a capability revoked
 on engine stop/restart or proxy close/failed startup; child proxies reuse the
 parent capability. Public-client refresh remains unchanged.
 
-These inheritance protections do not isolate same-UID processes from the
-daemon. The concern `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md`
-must be resolved before production secret activation. This extension does not
+These inheritance protections do not, by themselves, isolate same-UID processes
+from the daemon. That isolation is the owner box: engine endpoints run there
+without platform credentials (ADR-019, #5182). This extension does not
 claim deployment or a live registered-provider consent pass.

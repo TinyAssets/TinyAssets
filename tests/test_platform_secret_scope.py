@@ -146,8 +146,12 @@ def test_no_daemon_code_reads_a_forbidden_name(name):
 @pytest.mark.parametrize("name", sorted(DAEMON_ONLY_ENV))
 def test_daemon_only_names_are_read_by_daemon_routes_only(name):
     """Billing and account deletion are daemon HTTP routes; no child serves them."""
-    allowed = {"tinyassets/billing/stripe_adapter.py", "tinyassets/account_deletion.py"}
+    allowed = {
+        "tinyassets/billing/stripe_adapter.py",
+        "tinyassets/router_account_deletion.py",
+    }
     assert _readers(name) <= allowed
+    assert "tinyassets/account_deletion.py" not in _readers(name)
 
 
 # ---------------------------------------------------------------------------
@@ -187,48 +191,6 @@ def test_child_env_removes_every_platform_secret_and_keeps_the_rest():
     assert child_env(source) == {"TINYASSETS_DATA_DIR": "/data", "UNRELATED": "kept"}
 
 
-def test_http_engine_config_carries_only_its_route_and_no_ambient_secrets(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from tinyassets import credential_vault, engine_mcp_http
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-
-    sentinels = {name: f"SENTINEL-{name}" for name in CHILD_FORBIDDEN_ENV}
-    for name, value in sentinels.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    route = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="owner-route",
-                            grant_key="grant-proof")
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: route)
-    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
-                        lambda path, data: path.write_bytes(data))
-    config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
-                         credential_snapshot_dir=tmp_path)
-    flags = _engine_mcp_flags(config, tmp_path)
-    assert "--strict-mcp-config" in flags
-    path = Path(flags[flags.index("--mcp-config") + 1])
-    assert path.parent == tmp_path
-    document = json.loads(path.read_text())
-    server = document["mcpServers"]["tinyassets"]
-    assert set(server) == {"type", "url", "headers"}
-    assert server["type"] == "http" and server["url"].startswith(route.url)
-    assert server["headers"] == {"Authorization": "Bearer owner-route"}
-    assert not any(value in path.read_text() for value in sentinels.values())
-
-
-def test_missing_http_engine_route_never_falls_back_to_a_spawn(tmp_path, monkeypatch):
-    from tinyassets import engine_mcp_http
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: None)
-    config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
-                         credential_snapshot_dir=tmp_path)
-    assert _engine_mcp_flags(config, tmp_path) == []
-    assert list(tmp_path.iterdir()) == []
-
-
 # ---------------------------------------------------------------------------
 # the renderer
 # ---------------------------------------------------------------------------
@@ -243,6 +205,7 @@ def _helper(tmp_path: Path, args: list[str], source: Path, daemon: Path, stdin: 
         "TINYASSETS_ENV_READ_USER": "",
         "TINYASSETS_DAEMON_ENV_SOURCE": str(source),
         "TINYASSETS_DAEMON_ENV_FILE": str(daemon),
+        "TINYASSETS_RCLONE_CONFIG": str(tmp_path / "rclone.conf"),
     })
     return subprocess.run(
         ["bash", str(HELPER), *args], input=stdin, text=True, capture_output=True,
@@ -259,6 +222,71 @@ def _assigned(path: Path) -> set[str]:
         line = re.sub(r"^export\s+", "", line)
         names.add(re.split(r"\s*[=:]", line, maxsplit=1)[0])
     return names
+
+
+@_POSIX_SHELL
+@pytest.mark.parametrize("declaration", [
+    "WORKOS_MCP_RESOURCE=https://tinyassets.io/mcp",
+    "export WORKOS_MCP_RESOURCE = 'https://tinyassets.io/mcp' # resource",
+    'WORKOS_MCP_RESOURCE: "https://tinyassets.io/mcp"',
+])
+def test_box_public_origin_from_workos_resource_only(tmp_path, declaration):
+    source, daemon = tmp_path / "env", tmp_path / "daemon.env"
+    source.write_text(declaration + "\n", encoding="utf-8")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 0, result.stderr
+    box = tmp_path / "boxhostd.env"
+    assert _assigned(box) == {"UNIVERSE_SERVER_URL"}
+    assert "UNIVERSE_SERVER_URL=https://tinyassets.io\n" in box.read_text()
+
+
+@_POSIX_SHELL
+@pytest.mark.parametrize("resource", ["", "not-a-url", "https://example.com:bad/mcp"])
+def test_box_public_origin_refuses_invalid_resource(tmp_path, resource):
+    source, daemon = tmp_path / "env", tmp_path / "daemon.env"
+    source.write_text("WORKOS_MCP_RESOURCE=" + resource + "\n", encoding="utf-8")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 7
+    assert "WORKOS_MCP_RESOURCE" in result.stderr
+    assert not (tmp_path / "boxhostd.env").exists()
+
+
+@_POSIX_SHELL
+@pytest.mark.parametrize("resource", [None, "https://tinyassets.io/mcp"])
+def test_preflight_requires_rendered_origin_before_restart(tmp_path, resource):
+    source, daemon, box = (tmp_path / name for name in ("env", "daemon.env", "boxhostd.env"))
+    source.write_text("" if resource is None else f"WORKOS_MCP_RESOURCE={resource}\n")
+    box.write_text("BACKUP_DEST=old\n")
+    installer = (REPO / "deploy/install-boxhostd-preflight.sh").read_text()
+    # Execute the production render/require block and restart condition with
+    # temp paths. The rest of the installer manages real host mounts and units.
+    block = installer.split('previous_box_env=', 1)[1].split('mkdir -p "$root"', 1)[0]
+    block = ('previous_box_env=' + block).replace("/etc/tinyassets/boxhostd.env", str(box))
+    changed = installer.split('changed=0', 1)[1].split('source_root=', 1)[0]
+    restart = installer[installer.index('if [[ "$changed" -eq 1 ]]; then\n    systemctl restart'):]
+    restart = restart.split('systemctl enable --now boxhostd.service', 1)[0]
+    script = ('set -euo pipefail\n' + block + 'changed=0\n' + changed + restart)
+    env = os.environ | {
+        "source_dir": str(REPO / "deploy"),
+        "TINYASSETS_ENV_OWNER": "", "TINYASSETS_ENV_READ_USER": "",
+        "TINYASSETS_DAEMON_ENV_SOURCE": str(source),
+        "TINYASSETS_DAEMON_ENV_FILE": str(daemon),
+        "TINYASSETS_BOXHOSTD_ENV_FILE": str(box),
+        "TINYASSETS_BROKER_ENV_FILE": str(tmp_path / "broker.env"),
+        "TINYASSETS_RCLONE_CONFIG": str(tmp_path / "rclone.conf"),
+    }
+    # Record the env at the exact restart point; never invoke systemctl.
+    script = ('systemctl() { cat "$TINYASSETS_BOXHOSTD_ENV_FILE" > '
+              '"$TINYASSETS_BOXHOSTD_ENV_FILE.restarted"; }\n' + script)
+    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    restarted = tmp_path / "boxhostd.env.restarted"
+    if resource is None:
+        assert result.returncode != 0
+        assert "WORKOS_MCP_RESOURCE is required" in result.stderr
+        assert not restarted.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "UNIVERSE_SERVER_URL=https://tinyassets.io\n" in restarted.read_text()
 
 
 @_POSIX_SHELL
@@ -287,6 +315,45 @@ def test_render_removes_every_compose_spelling_of_a_forbidden_name(tmp_path):
     # The report names what it removed and never prints a value.
     assert "DO_API_TOKEN" in result.stdout
     assert "placeholder" not in result.stdout + result.stderr
+
+
+@_POSIX_SHELL
+@pytest.mark.verifies("owner-daemon-in-box:C2")
+def test_boxhostd_receives_only_its_snapshot_remote(tmp_path):
+    # Exactly the snapshot remote and the public origin, which is not a secret.
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text(
+        "HOME=/app\n"
+        "BACKUP_DEST=spaces:bucket/path\n"
+        "WORKOS_MCP_RESOURCE=https://tinyassets.io/mcp\n"
+        "STRIPE_SECRET_KEY=placeholder-stripe\n"
+        "WORKOS_API_KEY=placeholder-workos\n",
+        encoding="utf-8",
+    )
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    box = tmp_path / "boxhostd.env"
+    assert _assigned(box) == {"BACKUP_DEST", "UNIVERSE_SERVER_URL"}
+    assert "UNIVERSE_SERVER_URL=https://tinyassets.io\n" in box.read_text(encoding="utf-8")
+    assert "spaces:bucket/path" in box.read_text(encoding="utf-8")
+    unit = (Path(__file__).resolve().parents[1] / "deploy/boxhostd.service").read_text()
+    assert "EnvironmentFile=-/etc/tinyassets/boxhostd.env\n" in unit
+    assert "EnvironmentFile=/etc/tinyassets/env" not in unit
+
+
+@_POSIX_SHELL
+@pytest.mark.verifies("owner-daemon-in-box:T6")
+def test_broker_env_keeps_outbound_http_flag_from_source(tmp_path):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED=1\n", encoding="utf-8")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 0, result.stderr
+    assert "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED=1\n" in (
+        tmp_path / "broker.env").read_text(encoding="utf-8")
 
 
 @_POSIX_SHELL
@@ -531,3 +598,43 @@ def test_a_source_that_cannot_be_read_installs_nothing(tmp_path):
 
     assert result.returncode == 7
     assert not daemon.exists()
+
+
+@_POSIX_SHELL
+def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
+    source, daemon = tmp_path / "env", tmp_path / "daemon.env"
+    source.write_text("STRIPE_SECRET_KEY=synthetic-billing\n"
+                      "STRIPE_WEBHOOK_SECRET=synthetic-webhook\n"
+                      "TINYASSETS_BILLING_ENTITLEMENT_KEY=synthetic-entitlement\n"
+                      "WORKOS_API_KEY=synthetic-identity\n"
+                      "BACKUP_DEST=fixture:owner-snapshots\n"
+                      "TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID=client\n"
+                      "TINYASSETS_OAUTH_EXAMPLE_SECRET=private-fixture\n"
+                      "TINYASSETS_OAUTH_DIRECTORY=/app/providers.json\n"
+                      "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
+    backup_config = tmp_path / "rclone.conf"
+    backup_config.write_bytes(b"[fixture]\ntype = local\n\n")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 0, result.stderr
+    # The rendered daemon copy assigns none of the registered OAuth names (the
+    # FAKE one only appears inside UNRELATED's quoted value). How compose fills
+    # bare declarations from the project env is covered by the compose tests.
+    oauth = {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID", "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+             "TINYASSETS_OAUTH_DIRECTORY"}
+    assert not oauth & _assigned(daemon) and "private-fixture" not in daemon.read_text()
+    broker = tmp_path / "broker.env"
+    assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
+                                 "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+                                 "TINYASSETS_OAUTH_DIRECTORY", "STRIPE_SECRET_KEY",
+                                 "STRIPE_WEBHOOK_SECRET", "TINYASSETS_BILLING_ENTITLEMENT_KEY",
+                                 "WORKOS_API_KEY", "BACKUP_DEST", "RCLONE_CONFIG"}
+    copied_config = tmp_path / "broker-rclone.conf"
+    assert copied_config.read_bytes() == backup_config.read_bytes()
+    assert copied_config.stat().st_mode & 0o777 == 0o440
+    assert all(secret not in result.stdout + result.stderr
+               for secret in ("private-fixture", "synthetic-billing", "synthetic-identity"))
+    service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["broker"]
+    assert service["env_file"] == [{"path": "/etc/tinyassets/broker.env", "required": False}]
+
+
+pytestmark = pytest.mark.verifies('owner-daemon-in-box:T6')

@@ -75,6 +75,7 @@ class Msg:
     # handle derived from order or timestamp.
     id: int | None = None
     client_send_id: str = ""
+    reply_to_client_send_id: str = ""
 
 
 #: Longest interlocutor name allowed into the fence — bounds the header/footer so

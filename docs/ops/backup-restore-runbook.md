@@ -210,7 +210,7 @@ sudo systemctl start backup.service
 journalctl -f -u tinyassets-backup
 
 # Or run the script directly (useful for testing with DRY_RUN):
-source /etc/tinyassets/env
+set -a; source /etc/tinyassets/env; set +a
 sudo -E bash /opt/tinyassets/deploy/backup.sh
 
 # Dry-run (no mutations):
@@ -222,7 +222,7 @@ DRY_RUN=1 bash /opt/tinyassets/deploy/backup.sh
 ## List available snapshots
 
 ```bash
-source /etc/tinyassets/env
+set -a; source /etc/tinyassets/env; set +a
 bash /opt/tinyassets/deploy/backup-restore.sh --list
 ```
 
@@ -251,74 +251,34 @@ systemctl start tinyassets-daemon
 
 ---
 
-## Restore on the same Droplet
+## Restore
+
+Normal restore is only an exact paired rollback of the pre-traffic cutover.
+Once the live router records `traffic_opened_at`, data loss and lost-droplet
+recovery require the newest verified data/owner-box pair and its pair manifest:
 
 ```bash
-# Dry-run first — shows which archive would be restored:
-DRY_RUN=1 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
-
-# Restore latest:
-sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
-
-# Restore a specific snapshot:
-sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --timestamp=2026-04-20T02-00-00Z
+set -a; source /etc/tinyassets/env; set +a
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh \
+  --disaster-restore --acknowledge-unrecoverable-facts
+rc=$?
+test "$rc" -eq 6 || exit 1
 ```
 
-The script first rejects corrupt archives, paths outside `_data`, links, and
-special files; it then extracts into a unique sibling directory. Only after
-staging succeeds does it stop every running container mounting `tinyassets-data` and
-swap the staged directory into place. It deliberately does **not** start any
-service. The pre-restore directory is retained at the path printed by the
-script.
+For a lost droplet, provision with `deploy/hetzner-bootstrap.sh`, restore
+`/etc/tinyassets/env` from the vault, and pull the daemon image first.
+WorkOS must be reachable; configured Stripe billing is reconciled. Exit 6
+means credentials were invalidated, outbound connections dropped, operations
+fenced and erasures reconciled. Other reported classes revert to backup time.
+Services remain stopped. Reconfigure acceptance credentials from the restored
+router credentials, then start services and run the public and owner-box
+canaries before opening traffic.
 
-Start only the intended service, prove it healthy, and then remove the retained
-directory:
-
-```bash
-sudo systemctl start tinyassets-daemon
-python3 /opt/tinyassets/scripts/mcp_public_canary.py \
-  --url http://127.0.0.1:8001/mcp
-
-```
-
-Only after the canary is green, use the guarded `OLD_DIR` cleanup procedure in
-`deploy/RESTORE.md` with the exact retained path printed by the restore.
-
-If the canary is red, stop the service and swap the retained directory back
-before further diagnosis. Never delete the retained directory before the
-post-restore canary passes.
-
----
-
-## Restore on a new Droplet (disaster recovery)
-
-Use this when the original Droplet is gone or unrecoverable.
-
-1. Provision a fresh Droplet and run `deploy/hetzner-bootstrap.sh` (idempotent; DigitalOcean-compatible).
-   Bootstrap automatically configures:
-   - Docker log-rotation (`/etc/docker/daemon.json` — 10 MB max, 3 files)
-   - 2 GB swap file (`/swapfile`) + `/etc/fstab` persistence + `vm.swappiness=10`
-2. Copy `/etc/tinyassets/env` from the vault (or re-populate from the succession runbook).
-3. Pull the daemon image:
-   ```bash
-   docker pull ghcr.io/tinyassets/tinyassets-daemon:latest
-   ```
-4. Run the restore:
-   ```bash
-   source /etc/tinyassets/env
-   sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
-   ```
-5. Start only the daemon:
-   ```bash
-   docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon
-   ```
-6. Verify:
-   ```bash
-   python scripts/mcp_public_canary.py --url http://127.0.0.1:8001/mcp
-   ```
-7. After the canary is green, remove the exact retained pre-restore directory
-   printed by `backup-restore.sh`. If it is red, keep that directory and the
-   failed host as recovery evidence.
+If a canary fails, keep services stopped and retain the failed state for
+diagnosis. Before traffic, use normal paired restore; after traffic, use the
+acknowledged disaster path. Never swap retained directories back by hand.
+After acceptance, use the guarded cleanup in `deploy/RESTORE.md` with the
+exact retained path printed by restore.
 
 ---
 

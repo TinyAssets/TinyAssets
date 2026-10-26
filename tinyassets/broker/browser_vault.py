@@ -65,9 +65,21 @@ def _owner_key(ledger, principal):
     return current
 
 
-def local_operation(ledger, *, principal, command_center, document):
-    from tinyassets.browser_egress import origin
+def origin(url):
+    """The public HTTPS origin of a browser connection URL."""
+    from urllib.parse import urlsplit
 
+    if not isinstance(url, str) or len(url) > 8192:
+        raise ValueError('invalid browser URL')
+    parsed = urlsplit(url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
+            or parsed.password or parsed.port not in (None, 443)
+            or any(ord(c) < 33 for c in url) or '\\' in url):
+        raise ValueError('browser requires public HTTPS')
+    return 'https://' + parsed.hostname.lower()
+
+
+def local_operation(ledger, *, principal, command_center, document):
     action = document.get('action')
     ident = document.get('id', '')
     if (action not in {'create', 'list', 'read', 'save', 'revoke', 'capture', 'cancel'}
@@ -76,7 +88,7 @@ def local_operation(ledger, *, principal, command_center, document):
         raise ValueError('invalid browser custody operation')
     with ledger._connect() as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS browser_vault ('
-                     'id TEXT PRIMARY KEY, owner TEXT NOT NULL, home TEXT NOT NULL, '
+                     'id TEXT PRIMARY KEY, owner TEXT NOT NULL, '
                      'url TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, '
                      'sealed BLOB NOT NULL, account TEXT NOT NULL, verify TEXT NOT NULL)')
         conn.execute('BEGIN IMMEDIATE')
@@ -88,8 +100,8 @@ def local_operation(ledger, *, principal, command_center, document):
                 raise ValueError('invalid account label')
             existing = conn.execute(
                 "SELECT id,url,revision,status,account FROM browser_vault "
-                "WHERE owner=? AND home=? AND status<>'revoked'",
-                (principal, command_center)).fetchall()
+                "WHERE owner=? AND status<>'revoked'",
+                (principal,)).fetchall()
             matches = [dict(item) for item in existing if origin(item['url']) == site
                        and (not account or item['account'] == account)]
             if len(matches) > 1:
@@ -102,16 +114,16 @@ def local_operation(ledger, *, principal, command_center, document):
                     or not 1 <= len(verify['selector']) <= 500):
                 raise ValueError('an authenticated-page verification URL and selector are required')
             ident = secrets.token_hex(16)
-            conn.execute('INSERT INTO browser_vault VALUES (?,?,?,?,?,?,?,?,?)',
-                         (ident, principal, command_center, document['url'], 1, 'needs_login',
+            conn.execute('INSERT INTO browser_vault VALUES (?,?,?,?,?,?,?,?)',
+                         (ident, principal, document['url'], 1, 'needs_login',
                           b'', account, json.dumps(verify)))
         if action == 'list':
             return {'items': [dict(row) for row in conn.execute(
                 'SELECT id,url,revision,status,account FROM browser_vault '
-                "WHERE owner=? AND home=? AND status<>'revoked' ORDER BY id",
-                (principal, command_center))]}
-        row = conn.execute('SELECT * FROM browser_vault WHERE id=? AND owner=? AND home=?',
-                           (ident, principal, command_center)).fetchone()
+                "WHERE owner=? AND status<>'revoked' ORDER BY id",
+                (principal,))]}
+        row = conn.execute('SELECT * FROM browser_vault WHERE id=? AND owner=?',
+                           (ident, principal)).fetchone()
         if row is None:
             raise PermissionError('browser connection unavailable')
         if row['status'] == 'revoked':
@@ -125,10 +137,10 @@ def local_operation(ledger, *, principal, command_center, document):
                 raise PermissionError('browser connection changed')
             revision += 1
         cipher = AESGCM(_owner_key(ledger, principal))
-        aad = json.dumps([1, principal, command_center, ident, revision]).encode()
+        aad = json.dumps([1, principal, ident, revision]).encode()
         status = row['status']
         if action in {'save', 'capture', 'cancel'}:
-            old_aad = json.dumps([1, principal, command_center, ident, row['revision']]).encode()
+            old_aad = json.dumps([1, principal, ident, row['revision']]).encode()
             sealed = row['sealed']
             state = (json.loads(cipher.decrypt(sealed[:12], sealed[12:], old_aad))
                      if sealed else {})
@@ -161,7 +173,7 @@ def operation(root, owner, home, document):
     if supervisor is None:
         raise RuntimeError('browser credential broker unavailable')
     generation, token = supervisor.fence()
-    wire = dict(op='BROWSER_VAULT', principal=owner, command_center=home,
+    wire = dict(op='BROWSER_VAULT', principal=owner,
                 generation=generation, token=token, document=document)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         channel.settimeout(30)

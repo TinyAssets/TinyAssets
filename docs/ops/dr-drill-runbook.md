@@ -53,12 +53,19 @@ Inputs:
    systemd units, log rotation, swap).
 8. Streams the exact validated backup from primary to drill, then requires the
    destination SHA-256 to match before restore.
-9. Runs `deploy/backup-restore.sh` with the exact transferred `BACKUP_FILE` and
-   verifies the representative member at Docker's inspected volume mountpoint.
+9. Selects a published C3 platform manifest and verifies its shared archive.
+   Separately restores one C2 snapshot selected from that archive's owner map
+   into a disposable XFS store, proving its digest and new volume generation.
+   Then runs `deploy/backup-restore.sh` on the shared archive, requiring exit 0.
+   Unavailable current lifecycle, billing/spend/suspension or identity authority
+   keeps admission closed and the drill red. No paired archives or legacy
+   disaster flags are accepted. Representative shared content must survive;
+   credentials intentionally change.
 10. Requires exactly one `TINYASSETS_IMAGE=` assignment in the fresh template
    and writes only the validated public digest into it. It starts only the
    daemon compose service, waits 30s, opens an SSH port-forward to loopback,
    and probes `http://localhost:8001/mcp` via `scripts/mcp_probe.py status`
+   with the drill's rotated canary bearer (the old configured bearer is invalid)
    (no Cloudflare tunnel required).
 
 ## Pass / fail criteria

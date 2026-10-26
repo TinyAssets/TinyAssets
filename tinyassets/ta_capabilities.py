@@ -6,13 +6,9 @@ The socket grants exactly the authority of ONE bash invocation.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import re
 import secrets
-import socket
-import tempfile
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +53,22 @@ class ModelSourceUnavailable(PermissionError):
     """A named source cannot serve this allocation's next model attempt."""
 
 
+def public_model_part(part):
+    """Typed part view for `ta`. Media bytes stay behind the owner-box reference."""
+    kind = part.kind
+    if kind == "text":
+        return {"kind": "text", "text": part.text}
+    if kind == "tool_call":
+        return {"kind": "tool_call", "name": part.name, "arguments": part.arguments}
+    view = {
+        "kind": kind, "mime": part.mime, "byte_length": part.byte_length,
+        "digest": part.digest, "reference": part.reference,
+    }
+    if part.timing is not None:
+        view["timing"] = list(part.timing)
+    return view
+
+
 def _propose_policy(universe_dir: Path, expected_generation: int, policy: dict) -> dict:
     """Give the owner a literal policy proposal; the agent never applies it."""
     from tinyassets.api.pending_requests import request_from_user
@@ -98,7 +110,7 @@ class Capabilities:
         self.outside_identity = current_identity_or_none()
 
     def _bound_policy_owner(self):
-        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.owner_centers import admitted_owner
 
         try:
             return admitted_owner(self.root.parent, center=self.root.name) == self.context.owner
@@ -252,10 +264,15 @@ class Capabilities:
                 return {"error": "owner policy unavailable"}
             if arguments:
                 return {"error": "policy show takes no arguments"}
-            from tinyassets.broker.client import owner_policy_operation
+            from tinyassets.action_policy import owner_policy_operation
+            from tinyassets.broker.client import owner_policy_operation as broker_policy
 
-            return {"result": await asyncio.to_thread(
-                owner_policy_operation, self.root.parent, self.context.owner, "read")}
+            result = await asyncio.to_thread(
+                owner_policy_operation, self.root.parent, self.context.owner, "read",
+                center=self.root.name)
+            result["account"] = await asyncio.to_thread(
+                broker_policy, self.root.parent, self.context.owner, "read")
+            return {"result": result}
         if name == "policy:propose":
             if not self._bound_policy_owner():
                 return {"error": "owner policy unavailable"}
@@ -263,7 +280,7 @@ class Capabilities:
                     or type(arguments["expected_generation"]) is not int
                     or not isinstance(arguments["policy"], dict)):
                 return {"error": "policy proposal requires a generation and document"}
-            from tinyassets.broker.client import owner_policy_operation
+            from tinyassets.action_policy import owner_policy_operation
 
             encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
             if len(encoded.encode()) > 12000:
@@ -308,17 +325,9 @@ class Capabilities:
         if name == 'browser':
             if not self.connections_granted:
                 return {'error': 'connections not granted'}
-            from tinyassets.browser_sessions import agent
-
-            def checkpoint():
-                if self.check_authority() or (self.stopped and self.stopped() is not None):
-                    raise PermissionError('browser authority ended')
-
-            try:
-                return {'result': await asyncio.to_thread(
-                    agent, self.root.parent, self.context, arguments, checkpoint)}
-            except Exception:  # noqa: BLE001 - browser exceptions can contain secrets
-                return {'error': 'browser operation unavailable; do not retry an uncertain action'}
+            # The owner-cell browser left with the cells; the box browser view
+            # (registry N4) is the next shape of this capability.
+            return {'error': 'browser sessions are unavailable until the owner box view'}
         if name.startswith("extension:"):
             from tinyassets.extension_capabilities import ExtensionCapabilities
 
@@ -361,22 +370,9 @@ class Capabilities:
         return {"result": result}
 
     async def call_model(self, arguments):
-        from tinyassets.exceptions import AllProvidersExhaustedError
         from tinyassets.providers.model_call import call
 
-        fallbacks = (arguments.get("fallbacks", []) if isinstance(arguments, dict)
-                     else None)
-        if not isinstance(fallbacks, list):
-            return await self._model_request(arguments, call)
-        for index in range(len(fallbacks) + 1):
-            trial = (arguments if index == 0 else
-                     {**arguments, "model": fallbacks[index - 1], "fallbacks": []})
-            try:
-                return await self._model_request(trial, call)
-            except (ModelSourceUnavailable, AllProvidersExhaustedError):
-                if index == len(fallbacks):
-                    raise
-        raise AssertionError("unreachable model fallback sequence")
+        return await self._model_request(arguments, call)
 
     def _model_request(self, arguments, invoke, *, purpose="reply"):
         """The request carries content only; its authority comes from this launch."""
@@ -397,6 +393,8 @@ class Capabilities:
 
         def model_result(completed):
             result = {"text": completed.text, "receipt": asdict(completed.receipt)}
+            if completed.parts:
+                result["parts"] = [public_model_part(part) for part in completed.parts]
             reply = completed.response.agent_reply
             if reply is not None and reply.tool_requests:
                 result["tool_requests"] = [
@@ -430,8 +428,7 @@ class Capabilities:
         fallbacks = arguments.get("fallbacks", [])
         if not isinstance(fallbacks, list):
             raise ValueError("model fallbacks must be a list")
-        for value in fallbacks:
-            parse_ref(value)
+        fallbacks = tuple(parse_ref(value) for value in fallbacks)
         row = UsageStore(self.root.parent).resolve_launch_reference(
             self.context.owner, self.context.universe, self.model_reference)
         from tinyassets.providers.served_model_plan import connected_sources
@@ -480,6 +477,8 @@ class Capabilities:
         binding_revision = int(binding["revision"])
         if model is not None and model.connection_id not in admitted:
             raise ModelSourceUnavailable("requested model is not an admitted live source")
+        if any(ref.connection_id not in admitted for ref in fallbacks):
+            raise ModelSourceUnavailable("fallback model is not an admitted live source")
         if model is None:
             from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 
@@ -491,7 +490,8 @@ class Capabilities:
                 if candidate.ref.connection_id in admitted), None)
             if model is None:
                 raise PermissionError("allocation has no admitted live model")
-        if tools and not model.connection_id.startswith("api_key_http:"):
+        if tools and any(not ref.connection_id.startswith("api_key_http:")
+                         for ref in (model, *fallbacks)):
             raise ValueError("model tools require an HTTP model connection")
         budget = TurnRequestBudget.join(self.root.parent, self.context.owner,
                                         self.context.universe, row["usage_id"])
@@ -508,8 +508,13 @@ class Capabilities:
                                if item["role"] == "system")
             prompt = "\n".join(f"{item['role']}: {item['content']}" for item in messages
                                if item["role"] != "system")
+            # S1 inference, not an S2 agent start: caller-supplied tool schemas
+            # go to one model request; model_result returns tool calls to the
+            # caller. This path neither dispatches tools nor repeats inference.
+            # agent_request keeps the router on structured inference rather
+            # than constructing an engine-tool executor.
             request = ModelCall(
-                model=model, fallbacks=(), purpose=purpose, origin="ta",
+                model=model, fallbacks=fallbacks, purpose=purpose, origin="ta",
                 context=ModelContext(
                     prompt=prompt, system=system,
                     config=ModelConfig(
@@ -536,94 +541,6 @@ class Capabilities:
         finally:
             if not locals().get("deferred", False):
                 revoke_provider_request(capability)
-
-
-class JailBridge:
-    """Short-lived Unix socket in a private host directory, bound by exact path.
-
-    One reader bounds concurrent daemon work. Requests never supply context,
-    headers, a bearer or a route. Closing the bash invocation revokes the socket.
-    """
-
-    def __init__(self, dispatch, *, universe_dir=None):
-        if universe_dir is None:
-            raise ValueError("capability bridge requires an admitted command center")
-        self.universe_dir = Path(universe_dir)
-        self.dispatch = dispatch
-        self._context = contextvars.copy_context()
-        self._closed = threading.Event()
-
-    def __enter__(self):
-        self._directory = tempfile.TemporaryDirectory(prefix="ta-")
-        self.extension_root = None
-        backend = getattr(self.dispatch, "extension_backend", None)
-        if backend is not None:
-            from tinyassets.extension_capabilities import ExtensionCapabilities
-
-            candidate = Path(self._directory.name) / "extensions"
-            try:
-                if self._context.run(ExtensionCapabilities(backend).materialize, candidate):
-                    self.extension_root = candidate
-            except Exception:
-                self._directory.cleanup()
-                raise
-        from tinyassets import role_relays
-        from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
-
-        self.path = (self.universe_dir.parent / UNIVERSE_SIDECARS_DIR
-                     / self.universe_dir.name / ("ta-" + secrets.token_hex(16) + ".sock"))
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            self._socket_identity = role_relays.bind(self._server, self.path)
-            self._server.listen(8)
-        except BaseException:
-            self._server.close()
-            self._directory.cleanup()
-            raise
-        self._server.settimeout(0.1)
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
-        return self
-
-    def _serve(self):
-        while not self._closed.is_set():
-            try:
-                client, _ = self._server.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-            with client:
-                client.settimeout(10)
-                try:
-                    with client.makefile("rb") as stream:
-                        raw = stream.readline(MAX_REQUEST + 1)
-                    if len(raw) > MAX_REQUEST or not raw.endswith(b"\n"):
-                        answer = {"error": "invalid or oversized ta request"}
-                    elif self._closed.is_set():
-                        return
-                    else:
-                        answer = self._context.copy().run(self.dispatch, json.loads(raw))
-                    data = json.dumps(answer).encode() + b"\n"
-                    if len(data) > MAX_RESPONSE:
-                        data = b'{"error":"ta response too large; request a smaller page"}\n'
-                    client.sendall(data)
-                except Exception:  # no host exception text crosses into the jail
-                    try:
-                        client.sendall(b'{"error":"ta request failed"}\n')
-                    except OSError:
-                        pass
-
-    def __exit__(self, *_):
-        self._closed.set()
-        self._server.close()
-        self._thread.join(timeout=1)
-        from tinyassets import role_relays
-
-        try:
-            role_relays.remove(self.path, self._socket_identity)
-        finally:
-            self._directory.cleanup()
 
 
 async def engine_dispatch(server, *, completed: list | None = None):
@@ -657,7 +574,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
         from fastmcp.exceptions import ValidationError as MCPValidationError
         from pydantic import ValidationError
 
-        from tinyassets.engine_mcp_server import bounded_tool_error
+        from tinyassets.universe_tools import bounded_tool_error
 
         try:
             result = await server.mcp.call_tool(name, arguments)

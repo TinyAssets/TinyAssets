@@ -45,6 +45,7 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
         "execute_branch",
         "execute_branch_async",
         "execute_branch_version_async",
+        "prepare_activity",
         "recover_expired",
         "recover_in_flight_runs",
         "resume_run",
@@ -55,13 +56,16 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Required reviewed CLASSIFICATION of canonical execution callsites.
 # New boundaries must be reviewed.
 CLASSIFICATION: tuple[CallSite, ...] = (
+    # Owner-box unauthenticated discovery through the broker's public egress proxy.
+    CallSite("tinyassets/connection_oauth/model_discovery.py", "transport_fetch", "client.stream"),
     # K1 remote MCP transport uses the governed connection effector stream, not
     # a graph executor. Exact launch/connection authority is rechecked per reply.
     CallSite("tinyassets/mcp_remote.py", "RemoteMcp._exchange", "self.stream"),
     # D2 Activities launches through the existing owner-bound run entrypoint.
     # Keep canonical and shipped copies exact; the activities root below records
     # the owner/provider checks, generation fence, and agent start barrier.
-    CallSite("tinyassets/activity_runner.py", "start", "execute_branch_async"),
+    CallSite("tinyassets/control_plane/activity_session.py", "execute",
+             "prepare_activity"),
     # Reviewed 2026-08-26 while restoring this checker (PR #2561 deleted it as a
     # "dead script" -- it was not dead, it is the CI closure assertion for
     # `harden-background-branch-execution-authority`). All six were ALREADY
@@ -101,11 +105,20 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # and hosted key exchange reads an httpx response with `client.stream()`.
     # Neither touches a compiled graph stream or grants execution authority.
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
-    CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
+    CallSite("tinyassets/broker/acquisition.py", "exchange_key", "client.stream"),
+    # The router relays opaque HTTP bytes to an admitted Unix socket; neither
+    # stream invokes a model or executes an owner's work in the shared process.
+    # Inbound proof reads the raw body once, capped at 1 MiB, before broker
+    # verification or the admitted forward. It grants no execution authority.
+    CallSite("tinyassets/owner_router.py", "inbound", "Request().stream"),
+    CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),
+    CallSite("tinyassets/owner_router.py", "forward", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
     # The public browser error beacon streams its body with a 4 KiB running
     # cap (#4662); it only writes a log line and grants no execution authority.
     CallSite("tinyassets/observability.py", "client_error", "request.stream"),
+    # One admitted owner-box execution reads its output events from the box
+    # provider's stream; it is the session's own handle, never a graph executor.
     CallSite(
         "tinyassets/universe_server.py",
         "create_streamable_http_app._hooks_endpoint",
@@ -116,45 +129,26 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # Starlette `request.stream()`. It grants no execution authority; the
     # owner authenticates the forwarded request exactly as it would directly.
     CallSite("tinyassets/frontend.py", "Frontend.__call__", "request.stream"),
-    # L7 durable ingress: bounded Starlette HTTP-body reads, not graph streams.
-    # Acceptance grants no execution authority; register both shipped copies.
-    CallSite("tinyassets/ingress.py", "AppIngressMiddleware.__call__", "request.stream"),
-    CallSite(
-        "fantasy_daemon/__main__.py",
-        "DaemonController._try_execute_soul_loop",
-        "execute_branch",
-    ),
-    CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "claim_task"),
     # Reviewed 2026-08-05 (added by 64f27fe7, "Wire cloud drain epoch-2 Branch
     # consumer" #2182, without registration here). `recover_expired()` is
     # queue-owner maintenance over the canonical store: it grants no execution
     # authority. Every recovered task is filtered to this universe and to
     # `status == "pending"`, and must still pass the exact worker + activation
     # claim transaction below before anything executes.
-    CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "recover_expired"),
     # The assigned-queue consumer's `recover_expired()` call retired with its
     # epoch-2 claim pass (plan C2, 2026-09-28): it now runs only user-owned
     # automations and claims nothing from the queue.
+    # Reviewed C9: the owner-bound model proxy streams broker data after the
+    # grant and usage reference are resolved; these calls create no turn root.
+    CallSite("tinyassets/agent_loop/model_stream.py", "collect_stream", "proxy.stream"),
     CallSite(
-        "fantasy_daemon/__main__.py",
-        "_try_execute_claimed_branch_task",
-        "execute_branch",
+        "tinyassets/storage/outbound_connections.py",
+        "ScopedConnectionProxy.stream", "self.stream",
     ),
-    # The REAL compiled-graph stream boundary. Distinguishable from the two
-    # `request.stream()` HTTP body reads only since receiver-sensitive matching
-    # landed; before that all three were the bare name "stream".
     CallSite(
-        "fantasy_daemon/__main__.py",
-        "DaemonController._run_graph",
-        "compiled.stream",
+        "tinyassets/storage/outbound_connections.py",
+        "_BrokerChannel.stream", "client.stream",
     ),
-    # Reviewed 2026-10-02 (S7, change `control-plane-agent-loop`): the thin
-    # loop's box tools READ the output of a box execution through
-    # `BoxProvider.stream`, the box contract's output read (target architecture
-    # D2). It starts nothing: the execution was started by `start_exec` on a
-    # handle bound to the turn's own owner and command center, and runs no
-    # branch. The package build copies the canonical module.
-    CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
     # Reviewed 2026-08-25 (run-provider-authority): server-owned trigger
     # enqueue enters the same governed foreground admission as the MCP action.
     # Reviewed 2026-08-29 (user-owned-automations 3.2). A due automation is a
@@ -174,7 +168,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # `stream` is also Starlette's request-body API. These reviewed sites only
     # enforce bounded request bodies and grant no Branch execution authority.
     CallSite(
-        "tinyassets/api/market.py",
+        "tinyassets/api/goals.py",
         "_action_goal_run_canonical",
         "_action_run_branch_version",
     ),
@@ -199,12 +193,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
         "tinyassets/api/runs.py",
         "_ensure_runs_recovery",
         "recover_in_flight_runs",
-    ),
-    CallSite("tinyassets/api/universe.py", "_action_submit_request", "append_task"),
-    CallSite(
-        "tinyassets/dispatcher.py",
-        "run_branch_task_producers_into_queue",
-        "append_task",
     ),
     CallSite(
         "tinyassets/graph_compiler.py",
@@ -236,7 +224,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # non-universe actor or an empty principal, so the no-principal call is
     # reachable only with a test double (Codex 2026-10-01).
     CallSite(
-        "tinyassets/scheduler.py",
+        "tinyassets/control_plane/events.py",
         "Scheduler._dispatch_event",
         "_run_fn",
         count=2,
@@ -250,75 +238,44 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = CLASSIFICATION
 
 
 REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
+    "owner_send_recovery": (
+        SourceReference("tinyassets/owner_runtime.py", "start_recovery(runtime, stop)"),
+        SourceReference("tinyassets/owner_send_recovery.py", "principal_id=runtime.principal"),
+        SourceReference("tinyassets/owner_send_recovery.py", "revoke_provider_request(capability)"),
+        SourceReference("tinyassets/owner_door/send.py",
+                        "store.owner_send_records(home, pending_only=True)"),
+    ),
     "activities": (
-        SourceReference(
-            "tinyassets/activity_runner.py",
-            "provider_call = _bind_automation_provider_call(base_path, who)",
-        ),
-        SourceReference(
-            "tinyassets/activity_runner.py",
-            "with owner_run_identity(base_path, universe_id, owner) as bound:",
-        ),
-        SourceReference(
-            "tinyassets/activity_runner.py",
-            "if not bound:\n            raise activities.ActivityRefused(",
-        ),
-        SourceReference("tinyassets/activity_runner.py", "owner_user_id=owner,"),
-        SourceReference(
-            "tinyassets/activity_runner.py", "on_node_status=_authority_guard(base_path, who),",
-        ),
-        SourceReference(
-            "tinyassets/activity_runner.py",
-            'if not activities.bind_run(universe_dir, record["activity_id"], generation, run_id):'
-            "\n        stop(base_path, run_id)",
-        ),
-        SourceReference(
-            "tinyassets/activity_runner.py",
-            "record = activities.activity_for_run(universe_dir, run_id)",
-        ),
-        SourceReference(
-            "tinyassets/activity_runner.py",
-            'raise PermissionError(\n                "activity_run_unlinked:',
-        ),
-        SourceReference(
-            "tinyassets/foreground_run_provider.py",
-            "activity_runner.linked_activity(\n"
-            "                    self._base_path, self._universe_id, self._run_id)\n"
-            "                if activity_runner.is_activities_branch(\n"
-            "                    self._branch_snapshot, self._universe_id)",
-        ),
+        SourceReference("tinyassets/control_plane/activity_session.py",
+                        "with owner_run_identity(base, universe, owner) as bound:\n"
+                        "        if not bound:"),
+        SourceReference("tinyassets/control_plane/activity_session.py",
+                        "if not bound:\n            raise activities.ActivityRefused("),
+        SourceReference("tinyassets/control_plane/activity_session.py", "owner_user_id=owner,"),
+        SourceReference("tinyassets/control_plane/activity_session.py",
+                        'if not activities.bind_run(root, stored["activity_id"], '
+                        'generation, run_id):'),
+        SourceReference("tinyassets/control_plane/activity_session.py",
+                        "runs.request_cancel(base, run_id)"),
+        SourceReference("tinyassets/control_plane/activity_session.py",
+                        "provider.prepare_activity("),
+        SourceReference("tinyassets/control_plane/activity_session.py", "binding.check()"),
+        SourceReference("tinyassets/foreground_run_provider.py",
+                        'record["runner_generation"] != generation '
+                        'or record["runner_token"] != run_id'),
+        SourceReference("tinyassets/foreground_run_provider.py",
+                        "self._activity_binding.check()"),
     ),
     "schedule_and_event": (
         SourceReference(
-            "tinyassets/scheduler.py",
+            "tinyassets/control_plane/events.py",
             'self._run_fn(sub["branch_def_id"], actor, inputs, run_name)',
         ),
     ),
-    "goal_subscription": (
-        SourceReference("tinyassets/subscriptions.py", "def subscribe("),
-        SourceReference("tinyassets/scheduler.py", "def register_subscription("),
+    "event_subscription": (
+        SourceReference("tinyassets/control_plane/events.py", "def register_subscription("),
     ),
-    "soul_and_compiled_cycle": (
-        SourceReference(
-            "fantasy_daemon/__main__.py",
-            "read_legacy_premise(output_dir).strip()",
-        ),
-        SourceReference(
-            "fantasy_daemon/__main__.py",
-            "compiled.stream(initial_state, config=config)",
-        ),
-        SourceReference("fantasy_daemon/branches/universe_cycle.yaml", "graph_nodes:"),
-    ),
-    "request_admission": (
-        SourceReference("tinyassets/storage/request_admissions.py", "class RequestAdmissionStore:"),
-        SourceReference("tinyassets/api/universe.py", "def _action_submit_request("),
-    ),
-    "goal_pool_and_paid_market": (
-        SourceReference("tinyassets/producers/goal_pool.py", "class GoalPoolProducer:"),
-        SourceReference("tinyassets/producers/node_bid.py", "class NodeBidProducer:"),
-    ),
-    "branch_task_and_graph_enqueue": (
-        SourceReference("tinyassets/branch_tasks.py", "def append_task("),
+    "graph_enqueue": (
         SourceReference("tinyassets/graph_compiler.py", "def _node_enqueue_branch_run("),
     ),
     "direct_live_and_versioned_run": (
@@ -329,20 +286,18 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     "resume_and_recovery": (
         SourceReference("tinyassets/runs.py", "def resume_run("),
         SourceReference("tinyassets/runs.py", "def recover_in_flight_runs("),
-        SourceReference("tinyassets/branch_tasks.py", "def recover_claimed_tasks("),
         SourceReference("tinyassets/branch_tasks_v2.py", "    def recover_expired("),
     ),
     "request_actor_boundary": (
         SourceReference("tinyassets/api/permissions.py", "def current_request_actor_id("),
         SourceReference("tinyassets/api/engine_helpers.py", "def _current_actor("),
     ),
-    "daemon_cloud_and_distributed_worker": (
-        SourceReference("fantasy_daemon/__main__.py", "def _try_execute_claimed_branch_task("),
+    "owner_tick_and_distributed_worker": (
         # Retargeted 2026-08-29: the host-run `tinyassets/cloud_worker.py`
         # supervisor was deleted (nothing runs outside a user's universe --
         # ADR-009). The served consumer is now the only background claim root.
         SourceReference(
-            "tinyassets/runtime/assigned_queue_consumer.py",
+            "tinyassets/control_plane/tick.py",
             "class AssignedQueueConsumer:",
         ),
         SourceReference("tinyassets/execution_authority/records.py", "class ExecutionGrantV1:"),
@@ -353,7 +308,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
             "tinyassets/api/quality_leaderboard.py",
             "def recommend_parent_for_fork(",
         ),
-        SourceReference("tinyassets/api/market.py", "def _action_goal_run_canonical("),
+        SourceReference("tinyassets/api/goals.py", "def _action_goal_run_canonical("),
     ),
     "retired_wiki_forwarding": (
         # Hard Rule 15 (2026-09-24) deleted the enqueue helper; only the
@@ -398,12 +353,10 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
     "filing_only_wiki_negative": (
         SourceReference("tinyassets/api/wiki.py", "def _wiki_file_bug("),
     ),
-    "goal_subscription": (
-        SourceReference("tinyassets/subscriptions.py", "def list_subscriptions("),
-        SourceReference("tinyassets/scheduler.py", "def list_scheduler_subscriptions("),
+    "event_subscription": (
+        SourceReference("tinyassets/control_plane/events.py", "def list_scheduler_subscriptions("),
     ),
     "queue": (
-        SourceReference("tinyassets/branch_tasks.py", "def read_queue("),
         SourceReference("tinyassets/branch_tasks_v2.py", "class Epoch2OperationalRead:"),
     ),
     "b2": (
@@ -419,7 +372,6 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
 
 _SCAN_ROOTS = (
     "tinyassets",
-    "fantasy_daemon",
 )
 _WIKI_NEGATIVE_PATHS = (
     "tinyassets/api/wiki.py",

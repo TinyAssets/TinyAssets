@@ -33,9 +33,9 @@ Per task spec: daemon may legitimately be idle (no pending work).
 Decision — page anyway. Rationale: "true 24/7 independence means
 'always working on something' once there's work to do." If the queue
 is empty, that's a product signal (nothing to do) that's still worth
-noticing because the paid-market is supposed to be keeping daemons
+noticing because the activity scheduler is supposed to be keeping daemons
 fed. A persistent stale-but-queue-empty state IS a pageable condition
-because it means the paid market isn't working either. Coupling to
+because it means scheduled activity may not be running. Coupling to
 ``pending_requests > 0`` is flagged as a follow-up if the simpler
 decision is noisy in prod.
 

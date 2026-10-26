@@ -37,12 +37,14 @@ def discovery(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     Takes ``in_process_broker`` so its own ``get_supervisor`` patch is applied
     after the autouse double's and is the one the test sees.
     """
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as role_modes
 
     # Same-uid protocol fixture; production-image probes use real gid 1102.
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     path = broker_ledger_path(tmp_path)
-    ledger = ConnectionLedger(path, data_root=tmp_path)
+    ledger = ConnectionLedger(path, data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "alice")
     ledger.create_connection(
         connection_id="conn-a", owner_user_id="alice", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("GET",),
@@ -52,7 +54,7 @@ def discovery(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
                             "methods": ["GET"]}],
     )
     ledger.grant_connection(grant_id="grant-a", connection_id="conn-a",
-                            owner_user_id="alice", universe_id="cc-alice")
+                            owner_user_id="alice")
     daemon_thread = threading.get_ident()
 
     def ledger_for(principal):

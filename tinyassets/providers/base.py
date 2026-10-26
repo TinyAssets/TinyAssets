@@ -9,10 +9,9 @@ from __future__ import annotations
 import abc
 import logging
 import os
-import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import TYPE_CHECKING, Literal
 
 from tinyassets.addressed_agents import MAIN_AGENT
 
@@ -21,7 +20,6 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
-    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
     from tinyassets.providers.agent_chat_codec import AgentReply
     from tinyassets.providers.agent_inference import AgentInferenceRequest
     from tinyassets.providers.agent_model_plan import AgentModelPlan
@@ -35,53 +33,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Streamed-attempt taxonomy (Slice 1: stream-and-classify-provider-attempts)
 # ---------------------------------------------------------------------------
-
-#: Normalized kinds a raw provider stream line collapses to. Only the "real
-#: protocol event" kinds reset the idle watchdog; ``ignored`` (whitespace,
-#: internal reasoning/thinking, unknown-but-well-formed) never does.
-StreamEventKind = Literal[
-    "init",            # system/init — CLI + MCP came up
-    "text_delta",      # assistant text produced (partial delta or full message)
-    "tool_use",        # a tool call started
-    "tool_result",     # a tool call returned
-    "api_retry",       # documented provider retry event (rate-limit/overload/…)
-    "heartbeat",       # any OTHER recognized protocol event (thinking, hooks,
-                       # status, notification, stream framing, tool_progress,
-                       # tool_heartbeat, an informational rate_limit_event) — it
-                       # proves the CLI is alive and working, so it resets the
-                       # idle watchdog, but its content is NEVER relayed.
-    "result",          # terminal result event (canonical response)
-    "declared_busy",   # a DOCUMENTED provider busy status (system/status
-                       # ``compacting``): liveness + opens a bounded declared-
-                       # busy allowance in the reader; never relayed.
-    "declared_clear",  # the explicit clear of that status (``status: null`` /
-                       # ``compact_boundary``): liveness, ends the allowance.
-    "ignored",         # whitespace / unparseable-suppressed / non-liveness —
-                       # do NOT reset
-]
-
-#: The event kinds that count as real progress (reset the idle deadline). Note
-#: ``heartbeat`` is included: a reasoning-only stretch emits ONLY thinking +
-#: framing events (verified against a real Claude 2.1.236 trace), so excluding
-#: them false-killed a working turn at the idle boundary. They are liveness,
-#: never relayed.
-LIVENESS_EVENT_KINDS: frozenset[str] = frozenset({
-    "init", "text_delta", "tool_use", "tool_result", "api_retry",
-    "heartbeat", "result",
-    # A DOCUMENTED provider busy status (``system/status`` ``compacting``) and
-    # its explicit clear (``status: null`` / ``compact_boundary``). Liveness,
-    # never relayed; the busy one also opens a bounded declared-busy allowance
-    # in the reader (same bound shape as a tool wait, never past the cap).
-    "declared_busy", "declared_clear",
-})
-
-# Internal-contract guard: every liveness kind is a declared stream event kind,
-# and ``ignored`` never counts as liveness. Import-time so a drift between the
-# two definitions fails loudly instead of silently never resetting the watchdog.
-assert LIVENESS_EVENT_KINDS <= frozenset(get_args(StreamEventKind)), (
-    sorted(LIVENESS_EVENT_KINDS - frozenset(get_args(StreamEventKind)))
-)
-assert "ignored" not in LIVENESS_EVENT_KINDS
 
 #: Structured failure classes derived from the stream + process exit. These
 #: replace the substring ``"exhausted" -> capacity`` heuristic.
@@ -173,75 +124,6 @@ class UniverseContext:
     """
 
 
-#: Claude CLI builtins that reach the host through its filesystem or a shell.
-#: The cross-user boundary is the OS jail every provider launch made for a
-#: universe runs in (``tinyassets.providers.provider_jail``): inside it these
-#: see only the owner's own universe. The deny list stays as a second, narrower
-#: layer on the chat turn and on workflow nodes (they have no use for them).
-#: The ONE definition: the universe engine's denylist starts from it and a
-#: workflow node call denies it (``ModelConfig.workflow_node``).
-HOST_REACH_TOOLS: tuple[str, ...] = (
-    # shell / process execution (Monitor also runs shell commands; PowerShell
-    # is the CLI's shell tool on hosts where it replaces Bash)
-    "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell",
-    # filesystem
-    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
-    "Glob", "Grep", "LS",
-)
-
-#: Claude CLI builtins whose effect leaves the platform or outlives the turn --
-#: the DAEMON HOST'S logged-in claude.ai account, the outside world, or a clock.
-#: Separate from :data:`HOST_REACH_TOOLS` because the boundary is a different
-#: one: these touch nothing on disk and start no shell, so the OS jail does not
-#: bound them, and they are not MCP servers, so ``--strict-mcp-config`` does not
-#: either.
-#:
-#: **Scheduling, push and remote runs belong to the user's own platform-side
-#: automations -- the channels they build -- never to the CLI's account-side
-#: features** (host decision 2026-10-03). A turn that scheduled its own wakeup
-#: or fired its own push would be running work the owner never built and cannot
-#: see, on the host's account rather than theirs.
-#:
-#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03).
-#: Account-side effects:
-#:   Artifact         publishes pages, uploads assets and reads other people's
-#:                    artifacts; artifact-database writes are visible to every
-#:                    viewer of the artifact.
-#:   SendMessage      messages another session on the machine.
-#:   ListAgents       enumerates those sessions -- SendMessage's discovery half,
-#:                    which is why they belong to one constant.
-#:   SendFeedback     drafts and sends a report off-box.
-#:   ListPlugins      reads the plugins enabled on the claude.ai account.
-#:   EndConversation  can end the turn from inside it.
-#: Scheduled, pushed or remote:
-#:   ScheduleWakeup   starts work after the turn ends, outside any automation.
-#:   PushNotification notifies out of band, not through the owner's channel.
-#:   RemoteTrigger    reaches a remote runner.
-#:   Cron*            Create/Delete/List: a schedule the owner never authored
-#:                    and cannot see in their automations.
-#:   DesignSync*      DesignSync/DesignSyncTool: remote design I/O.
-#:
-#: Deliberately NOT here, and still callable on a node: ``Task*`` (session-local
-#: bookkeeping), ``ReportFindings`` (reports into the turn, not out of it), and
-#: the MCP resource readers (already bounded by ``--strict-mcp-config``).
-#:
-#: The ONE definition, denied on BOTH confined paths: the universe engine's
-#: denylist splats it (``universe_intelligence._ENGINE_DISALLOWED_TOOLS``) and a
-#: workflow node call denies it (``ModelConfig.workflow_node``). A workflow node
-#: keeps every owner-level capability on purpose -- web tools, subagents, plans
-#: -- but it has no business acting on the host's account or on a clock, and
-#: before this it could (it denied only ``HOST_REACH_TOOLS``).
-ACCOUNT_REACH_TOOLS: tuple[str, ...] = (
-    # account-side
-    "Artifact", "SendMessage", "ListAgents", "SendFeedback", "ListPlugins",
-    "EndConversation",
-    # scheduled / pushed / remote
-    "ScheduleWakeup", "PushNotification", "RemoteTrigger",
-    "CronCreate", "CronDelete", "CronList",
-    "DesignSync", "DesignSyncTool",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     """Configuration passed to every provider call."""
@@ -280,13 +162,6 @@ class ModelConfig:
 
     temperature: float = 0.7
 
-    native_model_id: str | None = None
-    """Router-owned native request: None is legacy; empty omits the CLI flag.
-
-    Not authority or an actual answering-model receipt. The router overwrites
-    caller values from the current serving authority or sealed work carrier.
-    """
-
     reasoning_effort: str = ""
     """Generic per-call reasoning/effort level (e.g. ``minimal`` / ``low`` /
     ``medium`` / ``high``). Empty = provider default. Each provider maps this to
@@ -310,44 +185,16 @@ class ModelConfig:
     This is a restriction, never authority to call a model or access credentials.
     """
 
-    sandbox_workspace: bool = False
-    # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
-    # coding workspace. Codex `exec` mounted at the universe with -C /workspace
-    # behaves as a code agent on the files and replies with coding-agent output
-    # instead of a chat answer (live 2026-08-22). Chat turns run in the same
-    # bwrap jail over an EMPTY scratch workspace.
-    sandbox_chat: bool = False
-    """Run the CLI subprocess isolated to the command center's OWN dir instead of the
-    host's cwd. When True, subprocess providers set ``cwd=universe_dir`` so the
-    call does NOT inherit the daemon's working directory (which may be a source
-    checkout, exposing repo files / ``CLAUDE.md`` / other command centers). Set for the
-    founder-facing universe-intelligence turn; leave False for host-trusted engine
-    roles. The isolation is only as strong as the tool policy below — pair it with
-    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
-
-    allowed_tools: tuple[str, ...] | None = None
-    """Allowlist of CLI tool names the subprocess may use (e.g.
-    ``("WebFetch", "Read")``). ``None`` = provider default (no restriction). Maps
-    to ``claude -p --allowedTools``. Default-deny: when set, only these are
-    usable."""
-
-    disallowed_tools: tuple[str, ...] | None = None
-    """Denylist of CLI tool names the subprocess must NOT use (e.g.
-    ``("Bash", "WebSearch")``). ``None`` = no explicit denies. Maps to ``claude -p
-    --disallowedTools`` and takes precedence over ``allowed_tools`` — the hard
-    floor that closes shell-escape / host-access even if a settings file would
-    grant them."""
-
     engine_mcp_enabled: bool = False
     """When True, the founder-facing universe-intelligence turn gets a LOCAL,
-    founder-scoped TinyAssets MCP server (``tinyassets.engine_mcp_server``) wired
+    founder-scoped TinyAssets MCP server (``tinyassets.universe_tools``) wired
     in via ``--mcp-config`` + ``--strict-mcp-config``, so the command center agent has
     the SAME MCP handles the founder's browser chatbot has (read_graph /
     write_graph / run_graph / read_page / write_page / get_status), acting AS the
     founder, scoped to its OWN command center. Requires ``engine_mcp_actor_id`` +
     ``engine_mcp_graph_id`` — the wiring FAILS CLOSED (no tools) if either is
     empty. Only ever set for a FOUNDER-tier turn; never for the learning
-    extractor or a non-founder caller. See ``engine_mcp_server`` for the identity
+    extractor or a non-founder caller. See ``universe_tools`` for the identity
     binding + graph pin."""
 
     engine_mcp_actor_id: str = ""
@@ -375,17 +222,7 @@ class ModelConfig:
 
     agent_session: object | None = field(default=None, repr=False, compare=False)
     """``agent_sessions.AgentSessionRef`` naming the thread or agent node this
-    turn continues. An adapter that declares ``native_resume`` resumes that
-    key's native session instead of starting a fresh one; every other adapter
-    ignores it."""
-
-    credential_snapshot_dir: Path | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    """Internal per-launch credential snapshot. Served adapters must use this
-    immutable copy instead of resolving mutable vault paths at use time."""
+    turn continues, used to track consumed conversation progress."""
 
     selected_model: SelectedModel | None = None
     """Router-owned selection from current serving authority, never caller policy.
@@ -554,8 +391,12 @@ class ProviderResponse:
     """Detached local dispatch accounting, never a confirmed provider quota."""
     execution_receipt: object | None = field(default=None, repr=False, compare=False)
     """Detached requested/resolved/reported identity and usage for this call."""
-    native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
-    """Local execution evidence, not provider-reported billing or HTTP progress."""
+    source_parts: object | None = field(default=None, repr=False, compare=False)
+    """Ordered parts from the connected source, before owner-box normalization."""
+    media_contract: object | None = field(default=None, repr=False, compare=False)
+    """That source's declared or discovered media contract. Not a vendor parser."""
+    media_meter: object | None = field(default=None, repr=False, compare=False)
+    """Input and output bytes already counted for this one call."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -579,8 +420,6 @@ API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
 )
 
 
-def _truthy_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def api_key_providers_enabled() -> bool:
@@ -595,83 +434,6 @@ def api_key_providers_enabled() -> bool:
     return False
 
 
-# Legacy denylist retained for regression assertions. Universe-scoped children
-# now start from an empty allowlisted environment instead of mutating this set.
-HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CONFIG_DIR",
-)
-
-_PROVIDER_CHILD_INHERITED_ENV_VARS: tuple[str, ...] = (
-    "PATH",
-    "SYSTEMROOT",
-    "WINDIR",
-    "COMSPEC",
-    "PATHEXT",
-    "SYSTEMDRIVE",
-    "LANG",
-    "LANGUAGE",
-    "LC_ALL",
-    "LC_COLLATE",
-    "LC_CTYPE",
-    "LC_MESSAGES",
-    "LC_MONETARY",
-    "LC_NUMERIC",
-    "LC_TIME",
-    "LC_ADDRESS",
-    "LC_IDENTIFICATION",
-    "LC_MEASUREMENT",
-    "LC_NAME",
-    "LC_PAPER",
-    "LC_TELEPHONE",
-    "TZ",
-    "TERM",
-    "COLORTERM",
-    "NO_COLOR",
-    "PYTHONUTF8",
-    "PYTHONIOENCODING",
-)
-_PROVIDER_CHILD_CA_FILE_ENV_VARS: tuple[str, ...] = (
-    "SSL_CERT_FILE",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS",
-    "CODEX_CA_CERTIFICATE",
-)
-_PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
-    "claude-code": frozenset({
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "ANTHROPIC_API_KEY",
-    }),
-}
-
-
-#: How a DIRECTORY variable is told apart from a credential variable, by shape
-#: rather than by name. Widen this when an executor declares an auth directory
-#: spelled some other way.
-_AUTH_DIR_ENV_SUFFIXES: tuple[str, ...] = ("_HOME", "_DIR")
-
-
-def auth_directory_env_names() -> tuple[str, ...]:
-    """Every executor auth DIRECTORY variable name, for jails that name none.
-
-    Derived from the overlay allow-list above rather than written out again, so
-    a new executor's auth directory is covered by declaring it there once. Only
-    directory-shaped names are returned: a token variable is a credential, not a
-    path, and must never be handed a disposable directory as its value. The jail
-    (``tinyassets.providers.provider_jail``) is channel-agnostic and takes these
-    as data (``scripts/check_channel_agnostic.py``).
-
-    The shape test is the suffix, because naming the variables here is what the
-    ratchet forbids. ``_DIR`` and ``_HOME`` cover every directory name any
-    executor has used; a declared auth directory spelled some other way would
-    be missed, so :data:`_AUTH_DIR_ENV_SUFFIXES` is the place to widen it.
-    """
-    names = {name for group in _PROVIDER_AUTH_OVERLAY_ENV_VARS.values() for name in group}
-    return tuple(sorted(n for n in names if n.endswith(_AUTH_DIR_ENV_SUFFIXES)))
-
-
 def subprocess_env_without_api_keys() -> dict[str, str] | None:
     """Return this process's env with every model API-key variable removed."""
     env = os.environ.copy()
@@ -680,444 +442,20 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
-def _inherited_env_value(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value is not None or os.name != "nt":
-        return value
-    canonical = name.casefold()
-    return next(
-        (value for key, value in os.environ.items() if key.casefold() == canonical),
-        None,
-    )
-
-
-def _safe_provider_child_base_env() -> dict[str, str]:
-    env = {
-        name: value
-        for name in _PROVIDER_CHILD_INHERITED_ENV_VARS
-        if (value := _inherited_env_value(name)) is not None
-    }
-    for name in _PROVIDER_CHILD_CA_FILE_ENV_VARS:
-        value = _inherited_env_value(name)
-        if not value:
-            continue
-        path = Path(value)
-        try:
-            if path.is_absolute() and path.is_file():
-                env[name] = value
-        except OSError:
-            continue
-    return env
-
-
-def _ensure_private_provider_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    try:
-        path.chmod(0o700)
-    except OSError:
-        pass
-
-
-def _resolved_universe_child(universe_root: Path, path: Path) -> Path:
-    resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(universe_root):
-        raise ValueError("provider path escapes command center")
-    return resolved
-
-
-def _preflight_provider_auth_paths(
-    provider_name: str,
-    universe_root: Path,
-    configured_auth_path: Path | None,
-) -> None:
-    service = "claude"
-    default_materialization = universe_root / ".credentials" / service
-    _resolved_universe_child(universe_root, default_materialization)
-    if configured_auth_path is not None:
-        _resolved_universe_child(universe_root, configured_auth_path)
-
-
-def _preflight_vault_source(universe_root: Path, vault_path: Path) -> None:
-    try:
-        source_stat = os.lstat(vault_path)
-    except FileNotFoundError:
-        return
-    is_reparse_point = bool(
-        getattr(source_stat, "st_file_attributes", 0)
-        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    )
-    if (
-        not stat.S_ISREG(source_stat.st_mode)
-        or is_reparse_point
-        or source_stat.st_nlink != 1
-    ):
-        raise ValueError("credential vault source is not a private regular file")
-    resolved = vault_path.resolve(strict=True)
-    if not resolved.is_relative_to(universe_root):
-        raise ValueError("credential vault source escapes command center")
-
-
-def _provider_child_runtime_env(
-    provider_name: str, universe_dir: Path,
-) -> dict[str, str]:
-    if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
-        raise ValueError("unsupported command center provider")
-
-    runtime_root = universe_dir / ".runtime" / "provider-child" / provider_name
-    raw_paths = {
-        "home": runtime_root / "home",
-        "appdata": runtime_root / "home" / "AppData" / "Roaming",
-        "local_appdata": runtime_root / "home" / "AppData" / "Local",
-        "xdg_config": runtime_root / "home" / ".config",
-        "xdg_cache": runtime_root / "home" / ".cache",
-        "xdg_data": runtime_root / "home" / ".local" / "share",
-        "xdg_state": runtime_root / "home" / ".local" / "state",
-        "xdg_runtime": runtime_root / "xdg-runtime",
-        "temp": runtime_root / "tmp",
-        "claude_config": runtime_root / "auth-empty" / "claude",
-    }
-    paths = {
-        name: _resolved_universe_child(universe_dir, path)
-        for name, path in raw_paths.items()
-    }
-    for path in paths.values():
-        _ensure_private_provider_dir(path)
-
-    env = _safe_provider_child_base_env()
-    env.update({
-        "HOME": str(paths["home"]),
-        "USERPROFILE": str(paths["home"]),
-        "APPDATA": str(paths["appdata"]),
-        "LOCALAPPDATA": str(paths["local_appdata"]),
-        "XDG_CONFIG_HOME": str(paths["xdg_config"]),
-        "XDG_CACHE_HOME": str(paths["xdg_cache"]),
-        "XDG_DATA_HOME": str(paths["xdg_data"]),
-        "XDG_STATE_HOME": str(paths["xdg_state"]),
-        "XDG_RUNTIME_DIR": str(paths["xdg_runtime"]),
-        "TMPDIR": str(paths["temp"]),
-        "TMP": str(paths["temp"]),
-        "TEMP": str(paths["temp"]),
-        "CLAUDE_CONFIG_DIR": str(paths["claude_config"]),
-        "AWS_EC2_METADATA_DISABLED": "true",
-    })
-    home = paths["home"]
-    if os.name == "nt" and len(home.drive) == 2 and home.drive.endswith(":"):
-        env["HOMEDRIVE"] = home.drive
-        env["HOMEPATH"] = str(home)[len(home.drive):]
-    return env
-
-
-def _valid_provider_auth_overlay(
-    overlay: object, provider_name: str, universe_dir: Path,
-) -> bool:
-    if not isinstance(overlay, dict):
-        return False
-    allowed = _PROVIDER_AUTH_OVERLAY_ENV_VARS.get(provider_name, frozenset())
-    for name, value in overlay.items():
-        if name not in allowed or not isinstance(value, str) or not value:
-            return False
-        if name != "CLAUDE_CONFIG_DIR":
-            continue
-        try:
-            _resolved_universe_child(universe_dir, Path(value))
-        except (OSError, RuntimeError, ValueError):
-            return False
-    return True
-
-
-#: Reasons safe to log verbatim: fixed sentinels raised by THIS module's own
-#: containment checks. An allow-list, not a scrub — an arbitrary exception's
-#: message is upstream text that can carry a credential (a review demonstrated
-#: exactly that with `secret=do-not-leak`), so anything unrecognised is reduced
-#: to its type name.
-_SAFE_RESOLUTION_REASONS: frozenset[str] = frozenset({
-    "provider path escapes command center",
-    "unsupported command center provider",
-    "auth overlay is not universe-contained",
-})
-
-
-def _safe_resolution_reason(exc: BaseException) -> str:
-    """A loggable reason for a credential-resolution failure."""
-    message = str(exc)
-    if message in _SAFE_RESOLUTION_REASONS:
-        return f"{type(exc).__name__}: {message}"
-    return type(exc).__name__
-
-
-def subprocess_env_for_provider(
-    provider_name: str,
-    *,
-    universe_dir: Path | None = None,
-    credential_snapshot_dir: Path | None = None,
-) -> dict[str, str]:
-    """Return subprocess env with API-key policy and exact launch auth applied.
-
-    When *universe_dir* is given it takes precedence over the process-global
-    ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
-    resolve per-universe credentials for an explicitly threaded universe.
-    A credential snapshot, when supplied, replaces vault resolution entirely.
-    """
-    bound_universe = os.environ.get("TINYASSETS_UNIVERSE", "").strip()
-    resolved_universe = (
-        Path(universe_dir)
-        if universe_dir is not None
-        else Path(bound_universe) if bound_universe else None
-    )
-    if resolved_universe is None:
-        # The host's own environment. The platform never reaches this branch:
-        # the provider router is the only caller of ``complete`` and it refuses
-        # any launch without a universe directory and the owner's authority
-        # (Hard Rule 15, ``tinyassets/providers/owner_binding.py``). What is
-        # left is developer tooling on a developer's own machine
-        # (``scripts/peer_agent.py``), which is not the platform.
-        return subprocess_env_without_api_keys() or os.environ.copy()
-
-    credential_resolution_failed = False
-    reason = ""
-    env: dict[str, str] = {}
-    try:
-        if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
-            raise ValueError("unsupported command center provider")
-        universe_root = resolved_universe.expanduser().resolve(strict=False)
-        if credential_snapshot_dir is not None:
-            snapshot = _resolved_universe_child(
-                universe_root,
-                credential_snapshot_dir,
-            )
-            if snapshot.is_symlink() or not snapshot.is_dir():
-                raise ValueError("credential snapshot is unavailable")
-            env = _provider_child_runtime_env(provider_name, universe_root)
-            if provider_name == "claude-code":
-                # The sealed snapshot stores the claude OAuth token in
-                # auth.json. Claude Code authenticates from
-                # CLAUDE_CODE_OAUTH_TOKEN (see entrypoint).
-                try:
-                    _tok = (snapshot / "auth.json").read_text(
-                        encoding="utf-8"
-                    ).strip()
-                except OSError:
-                    _tok = ""
-                if _tok.startswith("sk-ant-"):
-                    # Raw-token credential: authenticate via the ENV token and
-                    # KEEP CLAUDE_CONFIG_DIR on the clean isolated dir that
-                    # _provider_child_runtime_env already set — do NOT point it
-                    # at the snapshot. The snapshot is a codex-format credential
-                    # dir (config.toml + bare auth.json); pointing the claude
-                    # CLI at a non-claude config dir SILENTLY stops it from
-                    # spawning --mcp-config MCP servers, which broke the
-                    # founder-scoped engine tools (read_graph/run_graph) on every
-                    # SERVED turn while a manual `claude -p` with the same flags
-                    # worked (isolated live 2026-08-19: the engine MCP server
-                    # never launched). The token env fully authenticates, so the
-                    # config dir only needs to be a clean claude config home.
-                    env["CLAUDE_CODE_OAUTH_TOKEN"] = _tok
-                else:
-                    # JSON (.credentials.json) material: leave auth to
-                    # CLAUDE_CONFIG_DIR resolution against the snapshot.
-                    env["CLAUDE_CONFIG_DIR"] = str(snapshot)
-            return env
-        from tinyassets.credential_vault import (
-            apply_provider_auth_env,
-            credential_vault_path,
-            resolve_claude_config_dir,
-        )
-
-        _preflight_vault_source(
-            universe_root, credential_vault_path(universe_root),
-        )
-        configured_auth_path = resolve_claude_config_dir(universe_root)
-        _preflight_provider_auth_paths(
-            provider_name, universe_root, configured_auth_path,
-        )
-        env = _provider_child_runtime_env(provider_name, universe_root)
-        overlay = apply_provider_auth_env(
-            {}, provider_name, universe_dir=universe_root,
-        )
-        if not _valid_provider_auth_overlay(
-            overlay, provider_name, universe_root,
-        ):
-            credential_resolution_failed = True
-            reason = "auth overlay is not universe-contained"
-        else:
-            env.update(overlay)
-    except Exception as exc:  # noqa: BLE001 - see _safe_resolution_reason
-        credential_resolution_failed = True
-        reason = _safe_resolution_reason(exc)
-    if credential_resolution_failed:
-        from tinyassets.exceptions import ProviderUnavailableError
-        # The reason goes to the DAEMON LOG only. The raised error stays
-        # generic on purpose: it crosses into caller-visible surfaces, and
-        # `test_universe_credential_resolution_failure_is_explicit` and
-        # `test_malformed_real_vault_failure_is_sanitized_without_artifact_creation`
-        # both exist because a message here previously disclosed vault
-        # internals. Logging the cause fixes diagnosability without reopening
-        # that; a bare `except Exception: failed = True` had made every
-        # containment refusal indistinguishable, which cost a live debugging
-        # session to unpick.
-        logger.warning(
-            "%s credential resolution failed for command center %s: %s",
-            provider_name,
-            resolved_universe.name,
-            reason,
-        )
-        raise ProviderUnavailableError(
-            f"{provider_name} credential resolution failed for "
-            "universe-scoped provider"
-        )
-    return env
-
-
-def subscription_auth_health(
-    provider_name: str, *, allow_probe: bool = True,
-) -> dict[str, str]:
-    """Return subscription-auth health for *provider_name*.
-
-    ``allow_probe=False`` for latency-sensitive callers (get_status): never
-    spawns the live-probe subprocess; serves fast paths + cached verdicts.
-    """
-    name = (provider_name or "").strip()
-    from tinyassets.external_agents.registry import PACKAGES
-
-    package = PACKAGES.get(name)
-    if package is not None:
-        auth = package.row["auth"]
-        configured_home = os.environ.get(auth["home_env"], "").strip()
-        if not configured_home:
-            return {"provider": name, "status": "unknown",
-                    "detail": "package auth is owner-scoped"}
-        home = Path(configured_home)
-        files = [home / filename for filename in auth["files"]]
-        try:
-            available = all(path.is_file() and path.stat().st_size > 0 for path in files)
-        except OSError:
-            available = False
-        return {"provider": name,
-                "status": "ok" if available else "not_logged_in",
-                "detail": "package auth available" if available else "package auth unavailable"}
-    if name == "claude-code":
-        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
-            return {"provider": name, "status": "ok",
-                    "detail": "CLAUDE_CODE_OAUTH_TOKEN set"}
-        config_dir = Path(
-            os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")
-        )
-        # Deliberately conservative: any non-empty config dir reads "ok". For a
-        # quarantine gate, a false "not_logged_in" (quarantining a HEALTHY
-        # worker) is worse than a false "ok" (which still fails at call time and
-        # trips the loop_stalled warning). Only the empty/absent dir — the exact
-        # 2026-06-25 incident — yields "not_logged_in".
-        try:
-            if config_dir.is_dir() and any(config_dir.iterdir()):
-                return {"provider": name, "status": "ok",
-                        "detail": f"config dir populated at {config_dir}"}
-        except OSError as exc:
-            return {"provider": name, "status": "not_logged_in",
-                    "detail": f"config dir unreadable: {exc}"}
-        return {"provider": name, "status": "not_logged_in",
-                "detail": f"no token and empty/absent {config_dir}"}
-    return {"provider": name, "status": "unknown",
-            "detail": "no subscription-auth probe for this provider"}
-
-
-# bwrap failure signature emitted to stderr on Linux hosts that lack
-# unprivileged user namespaces. When this appears the CLI silently wrote
-# the error to state and returned exit=0 — hard-rule #8 demands we detect
-# and raise rather than let the garbage propagate.
-_BWRAP_FAILURE_PATTERNS: tuple[str, ...] = (
-    "bwrap: No permissions to create a new namespace",
-    "bwrap: No permissions to create new namespace",
-    "bwrap: No such file or directory",
-    "sandbox initialization failed",
-    # The 2026-08-21 production outage: Docker's masked /proc paths make the
-    # --proc mount EPERM inside the sandbox namespace.
-    "bwrap: Can't mount proc",
-    "Can't mount proc on",
-)
-
-
-class SandboxUnavailableError(Exception):
-    """Raised when bwrap / sandbox is unavailable on the host.
-
-    Carries the exact stderr excerpt so callers can surface guidance.
-    """
-
-
-def check_bwrap_failure(stderr_text: str) -> None:
-    """Raise SandboxUnavailableError if *stderr_text* contains a bwrap error.
-
-    Called by subprocess-backed providers after every CLI invocation so the
-    failure is loud (raises) rather than silent (appears in state as output).
-    No-op on Windows (bwrap is Linux-only).
-    """
-    import sys as _sys
-    if _sys.platform == "win32":
-        return
-    lower = stderr_text.lower()
-    for pattern in _BWRAP_FAILURE_PATTERNS:
-        if pattern.lower() in lower:
-            raise SandboxUnavailableError(
-                f"Sandbox (bwrap) is unavailable on this host. "
-                f"The CLI subprocess emitted a sandboxing failure:\n"
-                f"  {stderr_text[:400].strip()}\n\n"
-                f"Fix options:\n"
-                f"  1. Enable unprivileged user namespaces: "
-                f"sysctl -w kernel.unprivileged_userns_clone=1\n"
-                f"  2. Use a branch that contains only design-only nodes "
-                f"(requires_sandbox=false). These nodes don't need bwrap.\n"
-                f"  3. Run the daemon on a host where bwrap is available."
-            )
-
-
-def probe_sandbox_available() -> dict[str, object]:
-    """Probe whether bwrap is available on this host.
-
-    Returns {bwrap_available: bool, reason: str | None}.  Cached at
-    module level after first call so get_status probes once at startup.
-
-    This is a THIN adapter over :func:`tinyassets.sandbox.detect.detect_bwrap`
-    and deliberately owns no probe of its own. It used to carry a second,
-    divergent one -- ``bwrap --ro-bind / / /bin/sh -c true`` -- which asks a
-    different question than the launcher does. #2736 fixed that in
-    ``sandbox/detect.py`` and this copy survived, so the two answered
-    differently on the same host: measured 2026-08-31 in the Linux oracle
-    container, the old probe here exited 1 ("Creating new namespace failed:
-    Operation not permitted") while the launcher's real argv exited 0.
-
-    Two consequences, both silent. ``get_status`` would advertise the sandbox
-    as unavailable on a host where every code node in fact runs; and
-    ``tests/test_node_sandbox.py`` gates ``requires_bwrap`` on THIS function,
-    so the six hostile-code jail tests -- including the positive control that
-    proves the jail runs a node at all -- skipped on CI and on the oracle
-    rather than failing. A boundary test that skips is a boundary that is
-    never checked.
-
-    One probe, one answer. The dict shape is kept because callers and the
-    status surface read these keys.
-    """
-    from tinyassets.sandbox.detect import detect_bwrap
-
-    status = detect_bwrap()
-    return {"bwrap_available": status.available, "reason": status.reason}
-
-
-# Module-level cache populated on first get_status call.
-_sandbox_probe_cache: dict[str, object] | None = None
+class SandboxUnavailableError(PermissionError):
+    """A code node or CLI has no admitted owner box to run in."""
 
 
 def get_sandbox_status() -> dict[str, object]:
-    """Return cached sandbox probe result (probes once per process)."""
-    global _sandbox_probe_cache  # noqa: PLW0603
-    if _sandbox_probe_cache is None:
-        _sandbox_probe_cache = probe_sandbox_available()
-    return _sandbox_probe_cache
+    """Owner work always executes inside the admitted owner's box."""
+    return {"box_available": True, "reason": ""}
 
 
 class BaseProvider(abc.ABC):
     """Abstract base for all LLM providers."""
 
     name: str = ""
-    """Short identifier used in fallback chains (e.g. ``'claude-code'``)."""
+    """Canonical connection identifier used in fallback chains."""
 
     family: str = ""
     """Model family for judge diversity enforcement."""
@@ -1144,73 +482,15 @@ class BaseProvider(abc.ABC):
             )
         if any(getattr(config, key, None) for key in (
             "engine_mcp_enabled", "engine_mcp_actor_id", "engine_mcp_graph_id",
-            "allowed_tools", "engine_tool_grant", "agent_node_id", "agent_node_key",
+            "engine_tool_grant", "agent_node_id", "agent_node_key",
         )) or any(getattr(config, key, None) is not None for key in (
             "agent_request", "agent_session",
         )):
             raise ProviderAuthorityHeldError("text-only provider restriction conflicts with tools")
 
-    native_credential_service: str | None = None
-    """Native custody service declared by this executor; not a model identifier."""
-    native_discovery_protocol = None
-    native_metadata_arguments: tuple[str, ...] = ()
-    native_command_resolver = None
-    native_install_mounts = None
-
-    @staticmethod
-    def native_process_options():
-        return {}
-
-    async def enumerate_models(self, *, universe_dir: Path, credential_snapshot_dir: Path):
-        """Optional native metadata adapter; None means enumeration is unknown.
-
-        Invoked only with owned snapshot custody by the discovery boundary.
-        Returns NativeCatalogue, never execution authority or inference output.
-        Future executors override this without adding model releases to policy.
-        """
-        if self.native_discovery_protocol is None:
-            return None
-        from tinyassets.exceptions import ProviderError
-        from tinyassets.providers.native_jsonrpc_discovery import read_native_catalogue
-
-        if universe_dir is None or credential_snapshot_dir is None:
-            raise ProviderError("native model discovery requires owned credentials")
-        if not callable(self.native_command_resolver):
-            raise ProviderError("native model discovery requires an executable resolver")
-        base_cmd, use_shell = self.native_command_resolver()
-        if use_shell:
-            raise ProviderError("native model discovery requires a direct executable")
-        from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
-
-        env = subprocess_env_for_provider(
-            self.name, universe_dir=universe_dir, credential_snapshot_dir=credential_snapshot_dir,
-        )
-        try:
-            return await read_native_catalogue(
-                [*base_cmd, *self.native_metadata_arguments],
-                protocol=self.native_discovery_protocol,
-                env=env, cwd=str(credential_snapshot_dir), universe_dir=universe_dir,
-                spawn_kwargs=self.native_process_options(),
-                install_mounts=(None if self.native_install_mounts is None else
-                                lambda: self.native_install_mounts(base_cmd)),
-                auth_env_names=auth_directory_env_names(),
-            )
-        except NativeMetadataUnsupported:
-            # An installed executor that ANSWERED "I do not implement this"
-            # is the same honest unknown as one declaring no protocol at all:
-            # None, so the source reads `native_enumeration_unsupported` and
-            # its own default stays usable. This is the feature detection --
-            # by asking, never by a version table.
-            return None
-
     @classmethod
     def is_available(cls) -> bool:
-        """Return True if this provider's binary/dependency is present.
-
-        Subprocess-backed providers override this to probe the binary with
-        ``shutil.which`` so the router skips registration on cloud hosts
-        where the CLI is absent — avoiding 30s+ wasted cooldowns per call.
-        """
+        """Return whether the executor is available."""
         return True
 
     @abc.abstractmethod
@@ -1224,8 +504,5 @@ class BaseProvider(abc.ABC):
     ) -> ProviderResponse:
         """Send *prompt* with *system* instructions and return a response.
 
-        *universe_dir*, when supplied, scopes vault-backed subscription auth to
-        that universe (subscription-backed providers pass it into
-        :func:`subprocess_env_for_provider`); providers that never touch the
-        vault ignore it.
+        *universe_dir* scopes the connection grant to its command center.
         """

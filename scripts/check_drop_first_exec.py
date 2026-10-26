@@ -76,7 +76,6 @@ FLAGS_WITH_VALUE = {"-e", "--env", "-u", "--user", "-w", "--workdir", "--env-fil
 SELF_EXEMPT = {
     "scripts/check_drop_first_exec.py",
     "deploy/native/ta_op_modes.tsv",
-    "tests/test_drop_first_exec_gate.py",
 }
 
 

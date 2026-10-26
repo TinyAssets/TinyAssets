@@ -1,817 +1,599 @@
-"""No real registry, Docker host, image removal, or production access.
+"""Box harness retention: unreferenced rootfs copies are reclaimable."""
 
-Historical test identities are retained; assertions track the repaired keep set,
-removal budget and locked dangling cleanup rather than the incident-era policy.
-"""
+from __future__ import annotations
 
-import hashlib
 import json
 import os
-import subprocess
-import sys
+import stat
+from collections import namedtuple
 from contextlib import contextmanager
-from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from scripts import daemon_image_retention as retention
-
-
-def identity(number):
-    return "sha256:" + f"{number:064x}"
-
-
-def reference(number):
-    return retention.REPOSITORY + "@" + identity(number)
-
-
-@pytest.fixture
-def inventory():
-    images = [
-        dict(
-            Id=identity(n),
-            Created=f"2026-09-{n:02}T00:00:00Z",
-            RepoDigests=[reference(n)],
-            RepoTags=[],
-        )
-        for n in range(1, 11)
-    ]
-    daemon = dict(Name="/tinyassets-daemon", Image=identity(9), State={"Running": True})
-    return images, [daemon], daemon, {"rollback_target": ""}
-
-
-def select(inventory, configured=reference(9)):
-    images, containers, daemon, receipt = inventory
-    return retention.candidates(images, containers, daemon, configured, receipt)
-
-
-@pytest.mark.parametrize("digest_aliases", [False, True])
-def test_protects_current_two_older_newer_and_container_references(inventory, digest_aliases):
-    if digest_aliases:
-        for image in inventory[0]:
-            image["RepoTags"] = image["RepoDigests"].copy()
-    inventory[1].append(dict(Image=identity(1), State={"Running": False}))
-    inventory[3]["rollback_target"] = reference(2)
-    rows, protected = select(inventory, reference(3))
-    assert [r["ref"] for r in rows] == [reference(n) for n in (4, 5, 6, 7, 10)]
-    assert set(protected) == {identity(n) for n in (1, 2, 3, 8, 9)}
-
-
-def test_containerd_captured_digest_alias_is_not_a_mutable_tag(inventory):
-    # Sanitized root-observed Docker inspect shape, September 19 2026.
-    digest = "sha256:494502b5ffffc3ba3eb50d86f1218b4195237261e520cce5220d1f1d76402f75"
-    ref = retention.REPOSITORY + "@" + digest
-    image = inventory[0][0]
-    image.update(Id=digest, RepoDigests=[ref], RepoTags=[ref])
-    assert {"image_id": digest, "ref": ref} in select(inventory)[0]
-
-
-@pytest.mark.parametrize("aliases", [
-    [retention.REPOSITORY + ":old"],
-    ["other.example/image@" + identity(1)],
-    [reference(99)],
-    [reference(1), retention.REPOSITORY + ":old"],
-    [reference(1), "other.example/image@" + identity(1)],
-    [reference(1), reference(99)],
-    [reference(1), reference(1)],
-])
-def test_digest_alias_exception_preserves_every_extra_or_mismatched_alias(inventory, aliases):
-    inventory[0][0]["RepoTags"] = aliases
-    assert reference(1) not in [row["ref"] for row in select(inventory)[0]]
-
-
-@pytest.mark.parametrize("mutation", ["tag", "foreign", "multi"])
-def test_aliases_exclude_candidate(inventory, mutation):
-    row = inventory[0][0]
-    if mutation == "tag":
-        row["RepoTags"] = [retention.REPOSITORY + ":old"]
-    elif mutation == "foreign":
-        row["RepoDigests"] = ["other.example/image@" + identity(1)]
-    else:
-        row["RepoDigests"].append(reference(11))
-    assert reference(1) not in [r["ref"] for r in select(inventory)[0]]
-
-
-@pytest.mark.parametrize("mutation", ["timestamp", "current", "container", "rollback"])
-def test_incomplete_protection_refuses(inventory, mutation):
-    if mutation == "timestamp":
-        inventory[0][0]["Created"] = "invalid"
-    elif mutation == "current":
-        inventory[2]["Image"] = identity(99)
-    elif mutation == "container":
-        inventory[1].append(dict(Image=identity(99)))
-    else:
-        inventory[3]["rollback_target"] = reference(99)
-    with pytest.raises(retention.Refusal):
-        select(inventory)
-
-
-@pytest.mark.parametrize("configured", ["", "not-in-inventory", None])
-def test_missing_configured_reference_refuses(inventory, configured):
-    with pytest.raises(retention.Refusal):
-        select(inventory, configured)
-
-
-@pytest.mark.parametrize("total,free,expected", [(100, 19, 81), (100, 0, 100), (100, 100, 0)])
-def test_pressure_uses_available(total, free, expected):
-    assert retention.pressure(
-        "unused", lambda p: SimpleNamespace(total=total, free=free)
-    ) == pytest.approx(expected)
-
-
-@pytest.mark.parametrize(
-    "total,free", [(0, 0), (100, -1), (100, 101), (float("inf"), 1), (100, float("nan"))]
+from scripts.daemon_image_retention import (
+    KEEP_OLDER,
+    PULL_FREE_BYTES,
+    Refusal,
+    candidates,
+    check_pull_headroom,
+    image_refs,
+    main,
+    prune_box_harnesses,
+    read_receipt,
+    repair_host_symlink_modes,
+    retain,
 )
-def test_bad_pressure_refuses(total, free):
-    with pytest.raises(retention.Refusal):
-        retention.pressure("unused", lambda p: SimpleNamespace(total=total, free=free))
+
+pytestmark = pytest.mark.verifies("owner-daemon-in-box:C4")
+
+IMAGE = "sha256:" + "ab" * 32
+OTHER = "sha256:" + "cd" * 32
+CONFIGURED = "sha256:" + "ef" * 32
+REF = "ghcr.io/tinyassets/tinyassets-daemon@" + IMAGE
+OTHER_REF = "ghcr.io/tinyassets/tinyassets-daemon@" + OTHER
+CONFIGURED_REF = "ghcr.io/tinyassets/tinyassets-daemon@" + CONFIGURED
 
 
-def test_store_mapping_requires_evidence(tmp_path):
-    info = dict(Driver="overlay2", DockerRootDir=str(tmp_path))
-    assert retention.storage_path(info) == str(tmp_path)
-    info.update(Driver="overlayfs", DriverStatus=[["driver-type", "io.containerd.snapshotter.v1"]])
-    with pytest.raises(retention.Refusal, match="filesystem"):
-        retention.storage_path(info)
-    assert retention.storage_path(info, str(tmp_path)) == str(tmp_path)
-    with pytest.raises(retention.Refusal, match="unknown_image_store"):
-        retention.storage_path(dict(Driver="unknown"), str(tmp_path))
+def _seal(path: Path) -> None:
+    payload = path / "app" / "payload"
+    payload.parent.mkdir(parents=True)
+    payload.write_text("sealed\n", encoding="utf-8")
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    path.chmod(0o555)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o555
 
 
-class FakeDocker:
-    def __init__(self, inventory, root):
-        self.data = inventory
-        self.calls = []
-        self.deadline = float("inf")
-        self.before_inventory = lambda: None
-        self.root = root
-
-    def json(self, *args):
-        return dict(
-            Driver="overlay2", DockerRootDir=str(self.root), OSType="linux", Architecture="x86_64"
-        )
-
-    def inventory(self):
-        self.before_inventory()
-        return deepcopy(self.data[:2])
-
-    def command(self, *args):
-        assert args[:2] == ("image", "rm")
-        assert len(args) == 3 and retention.DIGEST.fullmatch(args[2])
-        self.calls.append(args)
-        self.data[0][:] = [row for row in self.data[0] if args[2] != row["Id"]]
+def _name(digest: str) -> str:
+    return "harness-" + digest.removeprefix("sha256:")
 
 
-def runner(inventory, tmp_path, **kwargs):
-    docker = FakeDocker(inventory, tmp_path)
-    state = dict(locked=False, verified=[])
+def test_missing_harness_root_removes_nothing(tmp_path: Path):
+    missing = tmp_path / "absent"
+    assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=missing) == []
+    assert not missing.exists()
+
+
+def test_prune_removes_readonly_copies_and_keeps_live_ones(tmp_path: Path):
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current = _name(IMAGE)
+    running = _name(OTHER)
+    configured = _name(CONFIGURED)
+    leaked = "harness-" + "12" * 32
+    for name in (current, running, configured, leaked):
+        _seal(root / name)
+    stage = root / ".harness-stage.deadbeef"
+    _seal(stage)
+    (root / "notes").mkdir()
+    (root / "notes" / "keep").write_text("keep\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "safe").write_text("safe\n", encoding="utf-8")
+    link_name = "harness-" + "34" * 32
+    (root / link_name).symlink_to(outside, target_is_directory=True)
+    (root / "harness-current").symlink_to(current)
+
+    removed = prune_box_harnesses(
+        {"Image": OTHER},
+        CONFIGURED_REF,
+        {REF: IMAGE, OTHER_REF: OTHER, CONFIGURED_REF: CONFIGURED},
+        root=root,
+    )
+    assert set(removed) == {leaked, stage.name}
+    for name in (current, running, configured):
+        assert (root / name / "app" / "payload").read_text(encoding="utf-8") == "sealed\n"
+        assert stat.S_IMODE((root / name).stat().st_mode) == 0o555
+    assert (root / "harness-current").readlink() == Path(current)
+    assert (root / "notes" / "keep").read_text(encoding="utf-8") == "keep\n"
+    assert (root / link_name).is_symlink()
+    assert (outside / "safe").read_text(encoding="utf-8") == "safe\n"
+
+
+def test_prune_deletes_a_readonly_rootfs_without_following_symlinks(tmp_path: Path):
+    """Symlinks in a container rootfs are not chmod targets and are not followed."""
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    leaked = root / ("harness-" + "78" * 32)
+    nested = leaked / "usr" / "bin"
+    nested.mkdir(parents=True)
+    payload = nested / "tool"
+    payload.write_text("bin\n", encoding="utf-8")
+    outside = tmp_path / "host-file"
+    outside.write_text("host\n", encoding="utf-8")
+    outside.chmod(0o444)
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
+    (nested / "broken").symlink_to("/nonexistent/path")
+    (nested / "loop").symlink_to("loop")
+    (nested / "etc-host").symlink_to(outside)
+    payload.chmod(0o444)
+    nested.chmod(0o555)
+    (leaked / "usr").chmod(0o555)
+    leaked.chmod(0o555)
+
+    removed = prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root)
+
+    assert removed == [leaked.name]
+    assert not leaked.exists()
+    assert outside.is_file()
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
+    assert outside.read_text(encoding="utf-8") == "host\n"
+
+
+def test_restarting_daemon_still_names_the_current_image(tmp_path: Path):
+    mount = tmp_path / "data"
+    mount.mkdir()
+    (mount / "release-state.json").write_text(
+        json.dumps({"rollback_target": REF}), encoding="utf-8",
+    )
+
+    class Docker:
+        def json(self, *args):
+            assert args == ("volume", "inspect", "tinyassets-data")
+            return [{"Mountpoint": str(mount)}]
+
+    containers = [{
+        "Name": "/tinyassets-daemon",
+        "State": {"Running": False, "Restarting": True},
+        "Config": {"Env": []},
+        "Mounts": [{
+            "Destination": "/data", "Type": "volume", "Name": "tinyassets-data",
+            "Source": str(mount),
+        }],
+        "Image": IMAGE,
+    }]
+    daemon, receipt = read_receipt(Docker(), containers)
+    assert daemon["Image"] == IMAGE
+    assert receipt["rollback_target"] == REF
+
+    stopped = json.loads(json.dumps(containers))
+    stopped[0]["State"] = {"Running": False, "Restarting": False}
+    with pytest.raises(Refusal, match="current_daemon_unavailable"):
+        read_receipt(Docker(), stopped)
+
+
+def test_retain_reclaims_harnesses_before_it_returns(tmp_path: Path, monkeypatch):
+    root = tmp_path / "boxhostd"
+    leaked = root / ("harness-" + "56" * 32)
+    _seal(leaked)
+    (root / "harness-current").symlink_to(_name(IMAGE))
+    live = root / _name(IMAGE)
+    _seal(live)
+    monkeypatch.setenv("TINYASSETS_BOX_HARNESS_ROOT", str(root))
+    row = {
+        "Id": IMAGE,
+        "RepoDigests": [REF],
+        "RepoTags": [REF],
+        "Created": "2026-10-01T00:00:00+00:00",
+    }
+
+    class Docker:
+        deadline = 0
+
+        def json(self, *args):
+            assert args[0] == "info"
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+        def inventory(self):
+            return [row], [{"Image": IMAGE, "Name": "/tinyassets-daemon"}]
+
+        def command(self, *args):
+            raise AssertionError(args)
 
     @contextmanager
     def locker():
-        state["locked"] = True
-        try:
-            yield
-        finally:
-            state["locked"] = False
-
-    def verify(choice, platform):
-        assert not state["locked"]
-        assert platform == ("linux", "amd64")
-        state["verified"].append(choice)
-
-    options = dict(
-        dry_run=False,
-        environ={"TINYASSETS_IMAGE": reference(9)},
-        docker=docker,
-        registry=SimpleNamespace(verify=verify),
-        locker=locker,
-        receipt_reader=lambda d, c: (inventory[2], inventory[3]),
-        config_reader=lambda: reference(9),
-        measure=lambda p: 90,
-    )
-    options.update(kwargs)
-    return docker, state, options
-
-
-def test_no_more_than_four_nonforce_immutable_removals(inventory, tmp_path):
-    docker, state, options = runner(inventory, tmp_path)
-    report = retention.retain(**options)
-    assert len(docker.calls) == 8
-    assert report["status"] == "pressure_unmet"
-    assert len(state["verified"]) == 8
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_digest_aliases_still_require_registry_proof_and_respect_dry_run(
-    inventory, tmp_path, dry_run
-):
-    for image in inventory[0]:
-        image["RepoTags"] = image["RepoDigests"].copy()
-    docker, state, options = runner(inventory, tmp_path, dry_run=dry_run)
-    report = retention.retain(**options)
-    assert state["verified"]
-    if dry_run:
-        assert report["selected"] and not docker.calls
-    else:
-        assert len(docker.calls) == 8
-        assert report["removed"] == [reference(n) for n in (1, 2, 3, 4, 5, 6, 7, 10)]
-
-
-def test_new_mutable_alias_is_rechecked_under_lock(inventory, tmp_path):
-    inventory[0][0]["RepoTags"] = [reference(1)]
-    docker, state, options = runner(inventory, tmp_path)
-
-    def race():
-        if state["locked"]:
-            inventory[0][0]["RepoTags"].append(retention.REPOSITORY + ":keep")
-
-    docker.before_inventory = race
-    report = retention.retain(**options)
-    assert state["verified"][0]["ref"] == reference(1)
-    assert reference(1) not in report["removed"]
-
-
-def test_threshold_mode_low_watermark_stops_after_first_removal(inventory, tmp_path):
-    readings = iter([90, 90, 74, 74, 74])
-    docker, _, options = runner(
-        inventory, tmp_path, mode="threshold", measure=lambda p: next(readings)
-    )
-    report = retention.retain(**options)
-    assert len(docker.calls) == 1
-    assert report["status"] == "pressure_relieved"
-
-
-def test_dry_run_never_removes(inventory, tmp_path):
-    docker, _, options = runner(inventory, tmp_path, dry_run=True)
-    assert retention.retain(**options)["status"] == "dry_run"
-    assert docker.calls == []
-
-
-def test_threshold_mode_below_threshold_does_not_verify_or_lock(inventory, tmp_path):
-    docker, state, options = runner(
-        inventory, tmp_path, mode="threshold", measure=lambda p: 84.9
-    )
-    assert retention.retain(**options)["status"] == "below_threshold"
-    assert not docker.calls and not state["verified"]
-
-
-def test_threshold_mode_dry_run_below_trigger_still_proves_protected_refs(inventory, tmp_path):
-    docker, state, options = runner(
-        inventory, tmp_path, mode="threshold", dry_run=True, measure=lambda p: 79
-    )
-    report = retention.retain(**options)
-    assert report["status"] == "below_threshold"
-    assert identity(9) in report["protected_image_ids"]
-    assert state["verified"] and not report["selected"] and not docker.calls
-
-
-def test_new_stopped_reference_is_rechecked(inventory, tmp_path):
-    docker, state, options = runner(inventory, tmp_path)
-
-    def race():
-        if state["locked"]:
-            inventory[1].append(dict(Image=identity(1)))
-
-    docker.before_inventory = race
-    report = retention.retain(**options)
-    assert reference(1) not in report["removed"]
-
-
-@pytest.mark.parametrize("digest_aliases", [False, True])
-def test_registry_failure_causes_zero_removal(inventory, tmp_path, digest_aliases):
-    if digest_aliases:
-        for image in inventory[0]:
-            image["RepoTags"] = image["RepoDigests"].copy()
-    docker, _, options = runner(inventory, tmp_path)
-
-    def unavailable(*args):
-        raise retention.Refusal("registry_unavailable")
-
-    options["registry"] = SimpleNamespace(verify=unavailable)
-    report = retention.retain(**options)
-    assert not docker.calls and not report["removed"]
-    assert report["unverified"]
-    assert all(row["reason"] == "registry_unavailable" for row in report["unverified"])
-
-
-def test_locked_deadline_is_at_most_sixty_seconds(inventory, tmp_path):
-    clock = [0]
-    docker, state, options = runner(inventory, tmp_path, clock=lambda: clock[0])
-
-    def stalled():
-        if state["locked"]:
-            assert docker.deadline == 60
-            clock[0] = 61
-            raise retention.Refusal("budget_expired")
-
-    docker.before_inventory = stalled
-    with pytest.raises(retention.Refusal):
-        retention.retain(**options)
-    assert not docker.calls and not state["locked"]
-
-
-@pytest.mark.skipif(os.name != "posix", reason="real advisory lock needs Linux oracle")
-@pytest.mark.parametrize("which", [0, 1])
-def test_real_other_process_lock_blocks_retention(tmp_path, which):
-    paths = [tmp_path / "fence.lock", tmp_path / "mutation.lock"]
-    source = (
-        "import fcntl,sys; f=open(sys.argv[1],'w'); fcntl.flock(f,fcntl.LOCK_EX); "
-        "print('ready',flush=True); sys.stdin.read()"
-    )
-    child = subprocess.Popen(
-        [sys.executable, "-c", source, str(paths[which])],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        assert child.stdout.readline().strip() == "ready"
-        with pytest.raises(retention.Refusal, match="busy"):
-            with retention.locks(paths, tmp_path / "state"):
-                pytest.fail("entered locked section")
-    finally:
-        child.communicate("", timeout=5)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="real advisory lock needs Linux oracle")
-def test_any_fence_state_refuses(tmp_path):
-    state = tmp_path / "state"
-    state.write_text('{"phase":"restored"}')
-    with pytest.raises(retention.Refusal, match="fence_present"):
-        with retention.locks([tmp_path / "one", tmp_path / "two"], state):
-            pytest.fail("entered fenced section")
-
-
-def registry_fixture(index=True):
-    config = json.dumps(dict(os="linux", architecture="amd64")).encode()
-
-    def digest(raw):
-        return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-    config_id = digest(config)
-    layer = identity(42)
-    manifest = json.dumps(dict(config=dict(digest=config_id), layers=[dict(digest=layer)])).encode()
-    manifest_id = digest(manifest)
-    root = (
-        json.dumps(
-            dict(
-                manifests=[
-                    dict(digest=manifest_id, platform=dict(os="linux", architecture="amd64"))
-                ]
-            )
-        ).encode()
-        if index
-        else manifest
-    )
-    root_id = digest(root)
-    registry = retention.Registry(999999999)
-    blobs = {root_id: root, manifest_id: manifest, config_id: config, layer: b"layer"}
-    calls = []
-
-    def request(url, **kwargs):
-        key = url.rsplit("/", 1)[1]
-        calls.append((key, kwargs.get("head", False)))
-        if key not in blobs:
-            raise retention.Refusal("registry_unavailable")
-        return blobs[key]
-
-    registry.request = request
-    candidate = dict(ref=retention.REPOSITORY + "@" + root_id, image_id=config_id)
-    return registry, candidate, blobs, calls
-
-
-@pytest.mark.parametrize("index", [True, False])
-@pytest.mark.parametrize("id_kind", ["config", "root"])
-def test_registry_verifies_hashes_platform_and_every_blob(index, id_kind):
-    registry, candidate, _, calls = registry_fixture(index)
-    if id_kind == "root":
-        candidate["image_id"] = candidate["ref"].split("@")[1]
-    registry.verify(candidate, ("linux", "amd64"))
-    assert (identity(42), True) in calls
-
-
-@pytest.mark.parametrize("failure", ["hash", "missing", "local", "platform"])
-def test_registry_negative_evidence_refuses(failure):
-    registry, candidate, blobs, _ = registry_fixture()
-    if failure == "hash":
-        blobs[candidate["ref"].split("@")[1]] += b" "
-    elif failure == "missing":
-        del blobs[identity(42)]
-    elif failure == "local":
-        candidate["image_id"] = identity(99)
-    platform = ("linux", "arm64") if failure == "platform" else ("linux", "amd64")
-    with pytest.raises(retention.Refusal):
-        registry.verify(candidate, platform)
-
-
-def test_registry_redirect_never_sends_bearer_to_cdn():
-    import urllib.request
-
-    req = urllib.request.Request("https://ghcr.io/blob", headers={"Authorization": "Bearer SECRET"})
-    redirect = retention.SafeRedirect()
-    target = redirect.redirect_request(
-        req, None, 302, "", {}, "https://pkg-containers.githubusercontent.com/blob"
-    )
-    assert not target.has_header("Authorization")
-    with pytest.raises(retention.Refusal):
-        redirect.redirect_request(req, None, 302, "", {}, "https://evil.example/blob")
-
-
-def test_configuration_is_reread_under_lock(inventory, tmp_path):
-    docker, state, options = runner(inventory, tmp_path)
-    options["config_reader"] = lambda: reference(1) if state["locked"] else reference(9)
-    result = retention.retain(**options)
-    assert reference(1) not in result["removed"]
-    assert all(choice["ref"] != reference(1) for choice in result["selected"])
-
-
-@pytest.mark.skipif(os.name != "posix", reason="production nofollow file reads require Linux")
-@pytest.mark.parametrize(
-    "value", [reference(9), "'" + reference(9) + "'", '"' + reference(9) + '"']
-)
-def test_configuration_reader_extracts_only_exact_key(tmp_path, value):
-    path = tmp_path / "env"
-    path.write_text("PRIVATE_TOKEN=secret\nTINYASSETS_IMAGE=" + value + "\n")
-    assert retention.read_configured_image(path) == reference(9)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="production nofollow file reads require Linux")
-@pytest.mark.parametrize(
-    "contents", ["", "TINYASSETS_IMAGE=\n", "TINYASSETS_IMAGE=x\nTINYASSETS_IMAGE=y\n"]
-)
-def test_missing_duplicate_empty_config_refuses(tmp_path, contents):
-    path = tmp_path / "env"
-    path.write_text(contents)
-    with pytest.raises(retention.Refusal):
-        retention.read_configured_image(path)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="production nofollow file reads require Linux")
-def test_symlink_fifo_and_oversized_files_are_refused(tmp_path):
-    path = tmp_path / "real"
-    path.write_text("large")
-    with pytest.raises(retention.Refusal, match="oversize"):
-        retention.read_regular(path, 1)
-    link = tmp_path / "link"
-    link.symlink_to(path)
-    with pytest.raises(OSError):
-        retention.read_regular(link, 10)
-    fifo = tmp_path / "fifo"
-    os.mkfifo(fifo)
-    with pytest.raises(retention.Refusal, match="not_regular"):
-        retention.read_regular(fifo, 10)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="production nofollow file reads require Linux")
-@pytest.mark.parametrize(
-    "fault", ["none", "missing", "invalid", "rollback_missing", "override", "mount"]
-)
-def test_receipt_has_one_authoritative_volume_location(tmp_path, fault):
-    path = tmp_path / "release-state.json"
-    path.write_text(json.dumps(dict(rollback_target="")))
-    daemon = dict(
-        Name="/tinyassets-daemon",
-        State={"Running": True},
-        Config={"Env": []},
-        Mounts=[
-            dict(Destination="/data", Type="volume", Name="tinyassets-data", Source=str(tmp_path))
-        ],
-    )
-    if fault == "missing":
-        path.unlink()
-    elif fault == "invalid":
-        path.write_text("invalid")
-    elif fault == "rollback_missing":
-        path.write_text("{}")
-    elif fault == "override":
-        daemon["Config"]["Env"] = ["TINYASSETS_RELEASE_STATE_PATH=/other"]
-    elif fault == "mount":
-        daemon["Mounts"][0]["Name"] = "other"
-    docker = SimpleNamespace(json=lambda *args: [dict(Mountpoint=str(tmp_path))])
-    if fault == "none":
-        assert retention.read_receipt(docker, [daemon])[1] == dict(rollback_target="")
-    else:
-        with pytest.raises(retention.Refusal):
-            retention.read_receipt(docker, [daemon])
-
-
-def test_docker_deadline_never_starts_an_expired_command():
-    calls = []
-    docker = retention.Docker(1, clock=lambda: 2, runner=lambda *a, **k: calls.append(a))
-    with pytest.raises(retention.Refusal, match="budget_expired"):
-        docker.command("image", "rm", reference(1))
-    assert not calls
-
-
-def test_docker_timeout_is_bounded_by_remaining_budget():
-    calls = []
-
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs["timeout"]))
-        return SimpleNamespace(returncode=0, stdout="")
-
-    docker = retention.Docker(5, clock=lambda: 2, runner=run)
-    docker.command("image", "rm", reference(1))
-    assert calls == [(["docker", "image", "rm", reference(1)], 3)]
-
-
-def test_cli_unknown_error_never_echoes_credentials(monkeypatch, capsys):
-    def fail(**kwargs):
-        raise OSError("SECRET")
-
-    monkeypatch.setattr(retention, "retain", fail)
-    assert retention.main([]) == 2
-    assert "SECRET" not in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    "activation,argv,effect",
-    [
-        (None, ["--apply"], False),
-        ("0", ["--apply"], False),
-        ("1", [], False),
-        ("1", ["--apply"], True),
-    ],
-)
-def test_activation_requires_both_opt_in_and_apply(
-    inventory, tmp_path, monkeypatch, activation, argv, effect
-):
-    docker, _, options = runner(inventory, tmp_path)
-    actual_retain = retention.retain
-
-    def exercise(**kwargs):
-        options.update(kwargs)
-        return actual_retain(**options)
-
-    monkeypatch.setattr(retention, "retain", exercise)
-    monkeypatch.delenv("DRY_RUN", raising=False)
-    monkeypatch.delenv("DISK_AUTOPRUNE_PCT", raising=False)
-    monkeypatch.delenv("DISK_AUTOPRUNE_LOW_PCT", raising=False)
-    if activation is None:
-        monkeypatch.delenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", raising=False)
-    else:
-        monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", activation)
-    retention.main(argv)
-    assert bool(docker.calls) is effect
-
-
-@pytest.mark.parametrize("value", ["", "true", "yes", "2", " 1", "invalid"])
-def test_malformed_activation_refuses_before_any_work(monkeypatch, capsys, value):
-    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", value)
-    monkeypatch.setattr(retention, "retain", lambda **kw: pytest.fail("must refuse before work"))
-    assert retention.main(["--apply"]) == 2
-    assert "invalid_retention_activation" in capsys.readouterr().out
-
-
-def test_legacy_dry_run_can_only_reduce_authority(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
-    monkeypatch.setenv("DRY_RUN", "1")
-
-    def check(**kwargs):
-        assert kwargs["dry_run"] is True
-        return dict(status="dry_run")
-
-    monkeypatch.setattr(retention, "retain", check)
-    assert retention.main(["--apply"]) == 1
-
-
-def test_retention_activation_does_not_control_transcript_rotation(tmp_path, monkeypatch):
-    from scripts import rotate_run_transcripts as rotation
-
-    calls = []
-    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "0")
-    monkeypatch.setenv("DRY_RUN", "1")
-    monkeypatch.setattr(rotation, "data_dir", lambda: tmp_path)
-
-    def rotate(path, **kwargs):
-        calls.append(path)
-        return SimpleNamespace(as_dict=lambda: {})
-
-    monkeypatch.setattr(rotation, "rotate_run_transcripts", rotate)
-    assert rotation.main([]) == 0
-    assert calls == [tmp_path / "runs"]
-    calls.clear()
-    assert rotation.main(["--dry-run"]) == 0
-    assert calls == []
-
-
-# ---------------------------------------------------------------------------
-# Count-based retention (2026-09-24): the keep set is a rule, not a pressure
-# response. Deploys pull a ~2.7 GB image many times a day; the threshold-gated
-# pass reported "below_threshold" with 23 daemon images on a 50 GB disk.
-# ---------------------------------------------------------------------------
-
-
-def drain(inventory, tmp_path, passes=5, **kwargs):
-    """Run passes until one removes nothing; return surviving refs and removals."""
-    removed = []
-    for _ in range(passes):
-        _, _, options = runner(inventory, tmp_path, **kwargs)
-        report = retention.retain(**options)
-        removed.extend(report["removed"])
-        if not report["removed"]:
-            break
-    survivors = {row["RepoDigests"][0] for row in inventory[0]}
-    return survivors, removed
-
-
-def test_count_mode_removes_excess_images_below_the_threshold(inventory, tmp_path):
-    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 50)
-    report = retention.retain(**options)
-    assert report["removed"] == [reference(n) for n in (1, 2, 3, 4, 5, 6, 7, 10)]
-    assert report["status"] == "retained"
-    assert report["mode"] == "count"
-
-
-def test_count_mode_ignores_the_low_watermark(inventory, tmp_path):
-    # 70% is under both the 85% trigger and the 75% stop: the legacy path did
-    # nothing here; the count rule still removes every image outside the keep set.
-    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 70)
-    retention.retain(**options)
-    assert len(docker.calls) == 8
-
-
-def test_count_keep_set_is_current_plus_two_previous(inventory, tmp_path):
-    # Unadopted newer images have no implicit indefinite pin.
-    survivors, removed = drain(inventory, tmp_path, measure=lambda p: 50)
-    assert survivors == {reference(n) for n in (8, 9)}
-    assert sorted(removed) == sorted(reference(n) for n in (1, 2, 3, 4, 5, 6, 7, 10))
-
-
-def test_count_mode_preserves_rollback_target_and_any_container_image(inventory, tmp_path):
-    inventory[3]["rollback_target"] = reference(2)
-    inventory[1].append(dict(Name="/exited-helper", Image=identity(4), State={"Running": False}))
-    survivors, _ = drain(inventory, tmp_path, measure=lambda p: 50)
-    assert survivors == {reference(n) for n in (2, 4, 8, 9)}
-
-
-def test_count_mode_preserves_the_running_image_even_when_it_is_the_oldest(inventory, tmp_path):
-    # A manual rollback to an old digest: the running image is image 1 and every
-    # newer image is removable unless explicitly pinned.
-    inventory[2]["Image"] = identity(1)
-    survivors, removed = drain(
-        inventory, tmp_path, measure=lambda p: 50, config_reader=lambda: reference(1)
-    )
-    assert reference(1) in survivors
-    assert len(removed) == 9
-
-
-def test_count_mode_emergency_threshold_grades_the_pass(inventory, tmp_path):
-    # Above the trigger the same keep set applies; the threshold grades the
-    # result so pressure the rule cannot relieve stays loud (exit 1).
-    docker, _, options = runner(inventory, tmp_path)
-    options["measure"] = lambda p: 90 - 6 * len(docker.calls)
-    report = retention.retain(**options)
-    assert len(docker.calls) == 8
-    assert report["status"] == "pressure_relieved"
-    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 95)
-    assert retention.retain(**options)["status"] == "pressure_unmet"
-
-
-def test_threshold_mode_is_still_available_as_an_operator_lever(inventory, tmp_path):
-    docker, _, options = runner(inventory, tmp_path, mode="threshold", measure=lambda p: 90)
-    report = retention.retain(**options)
-    assert report["mode"] == "threshold"
-    assert len(docker.calls) == 8
-    assert report["status"] == "pressure_unmet"
-
-
-def test_one_unrecoverable_image_does_not_block_the_rule(inventory, tmp_path):
-    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 50)
-
-    def verify(choice, platform):
-        if choice["ref"] == reference(1):
-            raise retention.Refusal("registry_object_unavailable")
-
-    options["registry"] = SimpleNamespace(verify=verify)
-    report = retention.retain(**options)
-    assert report["removed"] == [reference(n) for n in (2, 3, 4, 5, 6, 7, 10)]
-    assert report["unverified"] == [dict(ref=reference(1), reason="registry_object_unavailable")]
-    assert report["status"] == "retention_incomplete"
-
-
-def test_nothing_to_remove_does_not_contend_for_the_host_lock(inventory, tmp_path):
-    keep = {identity(n) for n in (7, 8, 9, 10)}
-    inventory[0][:] = [row for row in inventory[0] if row["Id"] in keep]
-    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 50)
-
-    @contextmanager
-    def busy():
-        raise retention.Refusal("host_mutation_busy")
         yield
 
-    options["locker"] = busy
-    with pytest.raises(retention.Refusal, match="host_mutation_busy"):
-        retention.retain(**options)
-    assert not docker.calls
+    report = retain(
+        dry_run=False,
+        mode="count",
+        docker=Docker(),
+        locker=locker,
+        receipt_reader=lambda _docker, _containers: (
+            {"Image": IMAGE}, {"rollback_target": REF},
+        ),
+        config_reader=lambda: REF,
+        measure=lambda _path: 10.0,
+    )
+    assert report["status"] == "retained"
+    assert report["harnesses_removed"] == [leaked.name]
+    assert not leaked.exists()
+    assert live.is_dir()
+    assert stat.S_IMODE(live.stat().st_mode) == 0o555
+    assert image_refs([row]) == {REF: IMAGE}
 
 
-def test_count_mode_dry_run_selects_without_removing(inventory, tmp_path):
-    docker, _, options = runner(inventory, tmp_path, dry_run=True, measure=lambda p: 50)
-    report = retention.retain(**options)
-    assert report["status"] == "dry_run"
-    assert [c["ref"] for c in report["selected"]] == [
-        reference(n) for n in (1, 2, 3, 4, 5, 6, 7, 10)]
-    assert not docker.calls
+def _guard_chmod(monkeypatch, host: Path) -> None:
+    """Refuse a repair that resolves a fixture link onto the machine running it."""
+    root = os.path.realpath(host)
+    real_chmod = os.chmod
+
+    def guarded(path, mode):
+        resolved = os.path.realpath(path)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            raise AssertionError(f"chmod escaped the fixture: {path}")
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(os, "chmod", guarded)
 
 
-@pytest.mark.parametrize(
-    "value,expected", [(None, "count"), ("count", "count"), ("threshold", "threshold")]
-)
-def test_mode_is_read_from_the_environment(monkeypatch, value, expected):
+def _damaged_host(tmp_path: Path) -> tuple[Path, Path, dict[str, Path]]:
+    host = tmp_path / "host"
+    mawk = host / "usr/bin/mawk"
+    mawk.parent.mkdir(parents=True)
+    mawk.write_bytes(b"\x7fELF" + b"\x00" * 12)
+    mawk.chmod(0o600)
+    nawk = host / "usr/bin/nawk"
+    nawk.write_bytes(b"\x7fELF" + b"\x00" * 12)
+    nawk.chmod(0o700)
+    script = host / "usr/bin/pager"
+    script.write_bytes(b"#!/bin/sh\ntrue\n")
+    script.chmod(0o600)
+    cert = host / "etc/ssl/certs/ca-certificates.crt"
+    cert.parent.mkdir(parents=True)
+    cert.write_bytes(b"not a program\n")
+    cert.chmod(0o600)
+    lib = host / "usr/lib/ssl"
+    lib.mkdir(parents=True)
+    lib.chmod(0o700)
+    secret = host / "etc/ssh/ssh_host_key"
+    secret.parent.mkdir(parents=True)
+    secret.write_bytes(b"secret")
+    secret.chmod(0o600)
+    note = host / "usr/share/doc-note"
+    note.parent.mkdir(parents=True)
+    note.write_bytes(b"not a program\n")
+    note.chmod(0o700)
+    harness_root = host / "opt/tinyassets/boxhostd"
+    leaked = harness_root / ("harness-" + "12" * 32) / "usr/bin"
+    leaked.mkdir(parents=True)
+    (leaked / "awk").symlink_to("/usr/bin/mawk")
+    (leaked / "pager").symlink_to("/usr/bin/pager")
+    (leaked / "certs").symlink_to("/etc/ssl/certs/ca-certificates.crt")
+    (leaked / "ssl").symlink_to("/usr/lib/ssl")
+    (leaked / "sshkey").symlink_to("/etc/ssh/ssh_host_key")
+    return host, harness_root, {
+        "mawk": mawk, "nawk": nawk, "script": script, "cert": cert, "lib": lib,
+        "secret": secret, "note": note,
+    }
+
+
+def test_repair_host_symlink_modes_restores_damaged_targets(tmp_path: Path, monkeypatch):
+    host, harness_root, paths = _damaged_host(tmp_path)
+    _guard_chmod(monkeypatch, host)
+
+    repaired = repair_host_symlink_modes(harness_root, host_root=host)
+
+    assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["script"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["note"].stat().st_mode) == 0o700
+    assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
+    assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["secret"].stat().st_mode) == 0o600
+    assert "/usr/bin/mawk" in repaired
+    assert "/etc/ssl/certs/ca-certificates.crt" in repaired
+    assert "/usr/lib/ssl" in repaired
+    assert "/etc/ssh/ssh_host_key" not in repaired
+
+
+def test_prune_repairs_host_modes_before_deleting_the_harness(tmp_path: Path, monkeypatch):
+    host, harness_root, paths = _damaged_host(tmp_path)
+    _guard_chmod(monkeypatch, host)
+
+    removed = prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=harness_root,
+        repair_host=True, host_root=host,
+    )
+
+    assert removed == ["harness-" + "12" * 32]
+    assert not (harness_root / ("harness-" + "12" * 32)).exists()
+    assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
+    assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["secret"].stat().st_mode) == 0o600
+
+
+def test_check_pull_headroom_repairs_when_asked(tmp_path: Path, monkeypatch):
+    host, _harness_root, paths = _damaged_host(tmp_path)
+    _guard_chmod(monkeypatch, host)
+    usage = namedtuple("Usage", "total used free")(100 * 1024**3, 10 * 1024**3, 90 * 1024**3)
+
+    class Docker:
+        def json(self, *args):
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+    check_pull_headroom(docker=Docker(), disk_fn=lambda _path: usage, repair_host_root=host)
+
+    assert stat.S_IMODE(paths["mawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["nawk"].stat().st_mode) == 0o755
+    assert stat.S_IMODE(paths["cert"].stat().st_mode) == 0o644
+    assert stat.S_IMODE(paths["lib"].stat().st_mode) == 0o755
+
+
+def test_apply_repairs_host_modes_before_retain_can_refuse(monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "scripts.daemon_image_retention.repair_host_symlink_modes",
+        lambda *args, **kwargs: calls.append("repair") or [],
+    )
+
+    def retain(**kwargs):
+        assert calls == ["repair"]
+        raise Refusal("current_daemon_unavailable")
+
+    monkeypatch.setattr("scripts.daemon_image_retention.retain", retain)
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    assert main(["--apply", "--prepare-pull"]) == 2
+    assert calls == ["repair"]
+
+
+def _headroom_docker():
+    class Docker:
+        def json(self, *args):
+            assert args[0] == "info"
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+    return Docker()
+
+
+def test_pull_headroom_uses_the_post_cutover_root_reserve():
+    usage = namedtuple("Usage", "total used free")
+    total = 468 * 1024**3 // 10  # 46.8 GiB root after the C6 harness extract
+    free = total - (85 * total // 100)
+    assert free > PULL_FREE_BYTES
+    check_pull_headroom(
+        docker=_headroom_docker(),
+        disk_fn=lambda _path: usage(total, total - free, free),
+    )
+    big = 200 * 1024**3
+    free_at_ninety = big // 10
+    assert free_at_ninety > PULL_FREE_BYTES
+    with pytest.raises(Refusal, match="deploy_disk_headroom_insufficient"):
+        check_pull_headroom(
+            docker=_headroom_docker(),
+            disk_fn=lambda _path: usage(big, big - free_at_ninety, free_at_ninety),
+        )
+    modest = 40 * 1024**3
+    tight = (4 * 1024**3) + (1024**3 // 2)
+    assert 100 * (1 - tight / modest) < 90
+    assert tight < PULL_FREE_BYTES
+    with pytest.raises(Refusal, match="deploy_disk_headroom_insufficient"):
+        check_pull_headroom(
+            docker=_headroom_docker(),
+            disk_fn=lambda _path: usage(modest, modest - tight, tight),
+        )
+    floor = PULL_FREE_BYTES
+    assert 100 * (1 - floor / modest) < 90
+    check_pull_headroom(
+        docker=_headroom_docker(),
+        disk_fn=lambda _path: usage(modest, modest - floor, floor),
+    )
+    assert PULL_FREE_BYTES == 5 * 1024**3
+
+
+def test_retention_does_not_keep_an_extra_older_image():
+    assert KEEP_OLDER == 0
+    images = [
+        {
+            "Id": IMAGE,
+            "RepoDigests": [REF],
+            "RepoTags": [REF],
+            "Created": "2026-10-02T00:00:00+00:00",
+        },
+        {
+            "Id": OTHER,
+            "RepoDigests": [OTHER_REF],
+            "RepoTags": [OTHER_REF],
+            "Created": "2026-10-01T00:00:00+00:00",
+        },
+    ]
+    choices, protected = candidates(
+        images, [{"Image": IMAGE}], {"Image": IMAGE}, REF, {"rollback_target": REF},
+    )
+    assert OTHER not in protected
+    assert IMAGE in protected
+    assert [item["image_id"] for item in choices] == [OTHER]
+
+
+def test_threshold_default_stays_quiet_below_ninety_percent():
+    class Docker:
+        def json(self, *args):
+            assert args[0] == "info"
+            return {
+                "Driver": "overlay2",
+                "DockerRootDir": "/var/lib/docker",
+                "OSType": "linux",
+                "Architecture": "x86_64",
+            }
+
+        def inventory(self):
+            raise AssertionError("88% is below the post-C6 trigger")
+
+    report = retain(dry_run=False, mode="threshold", docker=Docker(), measure=lambda _path: 88.0)
+    assert report["status"] == "below_threshold"
+    assert report["removed"] == []
+
+
+def test_main_watermark_defaults_are_post_cutover(monkeypatch):
     seen = {}
 
-    def check(**kwargs):
+    def fake_retain(**kwargs):
         seen.update(kwargs)
-        return dict(status="retained")
+        return {"status": "below_threshold", "after_pct": 10}
 
-    monkeypatch.setattr(retention, "retain", check)
-    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    monkeypatch.setattr("scripts.daemon_image_retention.retain", fake_retain)
+    monkeypatch.delenv("DISK_AUTOPRUNE_PCT", raising=False)
+    monkeypatch.delenv("DISK_AUTOPRUNE_LOW_PCT", raising=False)
+    monkeypatch.delenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", raising=False)
     monkeypatch.delenv("DRY_RUN", raising=False)
-    if value is None:
-        monkeypatch.delenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", raising=False)
-    else:
-        monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", value)
-    assert retention.main(["--apply"]) == 0
-    assert seen["mode"] == expected
+    assert main([]) == 0
+    assert seen["high"] == 90.0
+    assert seen["low"] == 80.0
 
 
-@pytest.mark.parametrize("value", ["", "Count", "age", "0"])
-def test_malformed_mode_refuses_before_any_work(monkeypatch, capsys, value):
-    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
-    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", value)
-    monkeypatch.setattr(retention, "retain", lambda **kw: pytest.fail("must refuse before work"))
-    assert retention.main(["--apply"]) == 2
-
-    assert "invalid_retention_mode" in capsys.readouterr().out
-
-def test_incident_untagged_digest_images_leave_only_running_rollback_and_cutover(tmp_path):
-    fixture = Path(__file__).parent / "fixtures/daemon_images_20261011.json"
-    images = json.loads(fixture.read_text())["images"]
-    running, rollback, cutover = images[:3]
-    daemon = dict(Name="/tinyassets-daemon", Image=running["Id"], State={"Running": True})
-    data = (images, [daemon], daemon, {"rollback_target": rollback["RepoDigests"][0]})
-    docker, _, options = runner(data, tmp_path, measure=lambda _: 54,
-                               config_reader=lambda: running["RepoDigests"][0])
-    report = retention.retain(**options)
-    assert report["status"] == "retained"
-    assert len(report["removed"]) == 11
-    assert {row["Id"] for row in images} == {running["Id"], rollback["Id"], cutover["Id"]}
-    assert all(call[:2] == ("image", "rm") and len(call) == 3 for call in docker.calls)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="real nofollow reads require Linux")
-def test_retention_reads_receipt_with_full_git_containment(tmp_path):
-    receipt = {"rollback_target": reference(2), "containment": {"commits": ["a" * 40] * 6000}}
-    (tmp_path / "release-state.json").write_text(json.dumps(receipt))
-    daemon = dict(Name="/tinyassets-daemon", State={"Running": True},
-                  Mounts=[dict(Destination="/data", Type="volume", Name="tinyassets-data",
-                               Source=str(tmp_path))])
-    docker = SimpleNamespace(json=lambda *args: [dict(Mountpoint=str(tmp_path))])
-    assert retention.read_receipt(docker, [daemon])[1]["rollback_target"] == reference(2)
+def _legacy_gvisor_snapshots(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    host = tmp_path / "host"
+    deploy = host / "var/lib/tinyassets-deploy"
+    stamp = deploy / "bundle-snapshots" / "2026-10-01T00-00-00Z-aaaaaa" / "host" / "root"
+    paths: dict[str, Path] = {}
+    for name in ("current", "release-20260928.0"):
+        tree = stamp / name
+        (tree / "gvisor-bin").mkdir(parents=True)
+        (tree / "runsc").write_text("bin\n", encoding="utf-8")
+        tree.chmod(0o555)
+        paths[name] = tree
+    kept = stamp / "harness-current"
+    kept.mkdir()
+    (kept / "keep").write_text("keep\n", encoding="utf-8")
+    paths["kept"] = kept
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "safe").write_text("safe\n", encoding="utf-8")
+    (stamp / "release-link").symlink_to(outside, target_is_directory=True)
+    paths["outside"] = outside
+    cutover = deploy / "cutover" / "bundle" / "host" / "root"
+    old = cutover / "release-old"
+    old.mkdir(parents=True)
+    (old / "runsc").write_text("old\n", encoding="utf-8")
+    (cutover / "current").symlink_to("release-old")
+    paths["cutover_release"] = old
+    paths["cutover_link"] = cutover / "current"
+    return host, paths
 
 
-@pytest.mark.parametrize("free_gib,refused", [(9, True), (10, True), (11, False)])
-def test_headroom_checks_absolute_reserve_and_80_percent(tmp_path, free_gib, refused):
-    docker = FakeDocker(None, tmp_path)
-    usage = SimpleNamespace(total=50 * 1024**3, free=free_gib * 1024**3)
-    if refused:
-        with pytest.raises(retention.Refusal, match="headroom"):
-            retention.check_pull_headroom(docker, disk_fn=lambda _: usage)
-    else:
-        retention.check_pull_headroom(docker, disk_fn=lambda _: usage)
+def test_prune_removes_legacy_gvisor_snapshot_directories(tmp_path: Path):
+    host, paths = _legacy_gvisor_snapshots(tmp_path)
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    removed = prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=root,
+        repair_host=True, host_root=host,
+    )
+    assert not paths["current"].exists()
+    assert not paths["release-20260928.0"].exists()
+    assert not paths["cutover_release"].exists()
+    assert paths["cutover_link"].is_symlink()
+    assert (paths["kept"] / "keep").read_text(encoding="utf-8") == "keep\n"
+    assert (paths["outside"] / "safe").read_text(encoding="utf-8") == "safe\n"
+    assert (host / "var/lib/tinyassets-deploy/bundle-snapshots").is_dir()
+    assert set(removed) == {
+        "bundle-snapshots/2026-10-01T00-00-00Z-aaaaaa/host/root/current",
+        "bundle-snapshots/2026-10-01T00-00-00Z-aaaaaa/host/root/release-20260928.0",
+        "cutover/bundle/host/root/release-old",
+    }
 
 
-def test_dangling_cleanup_preserves_digest_refs_and_container_images(inventory, tmp_path):
-    orphan = dict(Id=identity(80), RepoTags=[], RepoDigests=[])
-    used = dict(Id=identity(81), RepoTags=[], RepoDigests=[])
-    inventory[0].extend([orphan, used])
-    inventory[1].append(dict(Image=used["Id"]))
-    docker = FakeDocker(inventory, tmp_path)
-    assert retention.prune_dangling(docker) == [orphan["Id"]]
-    assert len(docker.data[0]) == 11
+def test_legacy_snapshots_stay_until_the_host_repair_pass(tmp_path: Path):
+    host, paths = _legacy_gvisor_snapshots(tmp_path)
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    assert prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=root, host_root=host,
+    ) == []
+    assert paths["current"].is_dir()
+    assert paths["cutover_release"].is_dir()
+    assert paths["cutover_link"].is_symlink()
 
 
-def test_bounded_pass_reports_incomplete_not_success(inventory, tmp_path, monkeypatch):
-    monkeypatch.setattr(retention, "MAX_REMOVALS", 2)
-    _, _, options = runner(inventory, tmp_path, measure=lambda _: 50)
-    report = retention.retain(**options)
-    assert len(report["removed"]) == 2
-    assert report["status"] == "retention_incomplete"
+def test_production_harness_root_clears_legacy_snapshots(tmp_path: Path, monkeypatch):
+    host, paths = _legacy_gvisor_snapshots(tmp_path)
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    monkeypatch.setattr("scripts.daemon_image_retention.BOX_HARNESS_ROOT", root)
+    removed = prune_box_harnesses(
+        {"Image": IMAGE}, REF, {REF: IMAGE}, root=root, host_root=host,
+    )
+    assert "cutover/bundle/host/root/release-old" in removed
+    assert not paths["current"].exists()
+    assert not paths["release-20260928.0"].exists()
 
 
-def test_old_receipt_during_canary_protects_immediate_rollback(inventory):
-    inventory[3]["rollback_target"] = reference(7)
-    choices, protected = select(inventory)
-    assert identity(8) in protected and identity(7) in protected
-    assert reference(8) not in {row["ref"] for row in choices}
+def _two_images():
+    return [
+        {"Id": IMAGE, "RepoDigests": [REF], "RepoTags": [REF],
+         "Created": "2026-10-02T00:00:00+00:00"},
+        {"Id": OTHER, "RepoDigests": [OTHER_REF], "RepoTags": [OTHER_REF],
+         "Created": "2026-10-01T00:00:00+00:00"},
+    ]
 
 
-def test_cached_prefetch_needs_no_second_reserve_but_missing_image_does(inventory, tmp_path):
-    docker = FakeDocker(inventory, tmp_path)
-    usage = SimpleNamespace(total=50 * 1024**3, free=8 * 1024**3)
-    retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(10))
-    with pytest.raises(retention.Refusal, match="headroom"):
-        retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(11))
+def test_an_already_absent_rollback_digest_does_not_block_retention(capsys):
+    gone = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "9f" * 32
+    choices, protected = candidates(
+        _two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, REF, {"rollback_target": gone},
+    )
+    assert IMAGE in protected
+    assert [item["image_id"] for item in choices] == [OTHER]
+    assert "rollback_target_absent" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("receipt,configured,slot", [
+    ({"rollback_target": "ghcr.io/tinyassets/tinyassets-daemon:previous"}, REF,
+     "rollback_target"),
+    ({"rollback_target": REF},
+     "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "ef" * 32, "configured"),
+])
+def test_a_missing_tag_or_configured_image_still_refuses_by_name(receipt, configured, slot):
+    with pytest.raises(Refusal, match="protected_reference_unmapped:" + slot):
+        candidates(_two_images(), [{"Image": IMAGE}], {"Image": IMAGE}, configured, receipt)
+
+
+@pytest.mark.parametrize("bundle", ["live", "unreadable"])
+def test_prune_keeps_the_image_a_running_owner_still_reads(tmp_path: Path, monkeypatch, bundle):
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current, deferred, stale = _name(IMAGE), "harness-" + "56" * 32, "harness-" + "78" * 32
+    for name in (current, deferred, stale):
+        _seal(root / name)
+    (root / "harness-current").symlink_to(current)
+    bundles = tmp_path / "bundles"
+    (bundles / "owner-300001").mkdir(parents=True)
+    config = bundles / "owner-300001" / "config.json"
+    config.write_text(json.dumps({"root": {"path": str(root / deferred)}})
+                      if bundle == "live" else "{not json", encoding="utf-8")
+    monkeypatch.setenv("TINYASSETS_BOX_BUNDLE_ROOT", str(bundles))
+    removed = prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root)
+    # An owner left serving through a deploy keeps its image until it sleeps;
+    # an unknowable live set removes no image at all.
+    assert set(removed) == ({stale} if bundle == "live" else set())
+    assert (root / deferred).is_dir()
+
+
+def test_prune_removes_no_image_while_a_launch_holds_the_harness_lease(tmp_path: Path,
+                                                                     monkeypatch):
+    from scripts import daemon_image_retention as retention
+    from tinyassets.boxes.images import harness_lease
+
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    current, stale = _name(IMAGE), "harness-" + "78" * 32
+    for name in (current, stale):
+        _seal(root / name)
+    (root / "harness-current").symlink_to(current)
+    monkeypatch.setenv("TINYASSETS_HARNESS_LOCK_SECONDS", "0.2")
+    # A launch between image selection and its bundle holds the lease shared:
+    # pruning waits, then removes nothing rather than race it.
+    with harness_lease(root):
+        assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root) == []
+        assert (root / stale).is_dir()
+    assert prune_box_harnesses({"Image": IMAGE}, REF, {REF: IMAGE}, root=root) == [stale]
+    del retention

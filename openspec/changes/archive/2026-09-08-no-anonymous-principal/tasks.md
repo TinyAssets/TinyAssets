@@ -21,7 +21,7 @@ and lands as small, independently tested commits.
   existing exact-one-segment hook predicate and the traversal-safe connect
   predicate (no wildcard prefixes): `/.well-known/*` and
   `/mcp/.well-known/*`; `/mcp/app` shell and `/mcp/app/token`;
-  `/mcp/connect/*`; `/mcp/hooks/<id>`; `/mcp/app/billing/webhook`;
+  `/mcp/connect/*`; `/hooks/inbound/<id>`; `/mcp/app/billing/webhook`;
   `/mcp/pulse` (superseded by continuation task 12).
 - [x] 4. Identity sources outside auth: `api/permissions.py` (no `"anonymous"`
   return), `api/engine_helpers.py` and every `UNIVERSE_SERVER_USER` fallback

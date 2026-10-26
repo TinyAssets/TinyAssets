@@ -1210,26 +1210,9 @@ def run_git(
     Output is truncated to the last 64 KiB of each stream and scrubbed before
     it is returned or classified.
     """
-    _checked_git_request(
-        argv, cwd=cwd, home_dir=home_dir, path=path, options=options,
-        timeout_s=timeout_s, git_binary=git_binary, extra_secrets=extra_secrets,
-        pass_fds=pass_fds,
-    )
-    from tinyassets.role_git import run as run_owner_git
-
-    # Owner git runs in the owner's git cell and nowhere else. A caller that
-    # needs a launcher, an inherited descriptor or its own child setup is
-    # asking for a daemon-uid git; that mode does not exist.
-    if (launcher is not None or git_binary not in ('git', '/usr/bin/git') or pass_fds
-            or preexec_fn is not None):
-        raise WorkspaceGitError(
-            'bad_argument', 'git cell descriptor/launcher mode not admitted')
-    completed = run_owner_git(argv, cwd=cwd, options=options, timeout_s=float(timeout_s))
-    stderr_scrubbed = scrub_text(_tail_text(completed.stderr), extra_secrets)
-    return GitResult(returncode=completed.returncode,
-                     stdout_tail=scrub_text(_tail_text(completed.stdout), extra_secrets),
-                     stderr_class=classify_stderr(stderr_scrubbed),
-                     stderr_scrubbed=stderr_scrubbed)
+    del argv, cwd, home_dir, path, options, timeout_s, launcher, git_binary
+    del extra_secrets, preexec_fn, pass_fds
+    raise WorkspaceGitError("auth", "owner git requires the admitted box operation")
 
 
 def run_git_in_cell(

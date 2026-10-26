@@ -1,8 +1,4 @@
-"""Sealed command-center boxes (target architecture D1/D2).
-
-`BoxProvider` is the only way the platform touches a command center's files or
-runs code on its behalf. Drivers implement it; callers never branch on which.
-"""
+"""In-box file contracts and persistent owner-box lifecycle components."""
 
 from tinyassets.boxes.provider import (
     BOX_ROOT,
@@ -18,10 +14,7 @@ from tinyassets.boxes.provider import (
     DestroyReceipt,
     DirEntry,
     DirPage,
-    ExecEvent,
     ExecLimits,
-    ExecState,
-    ExecStatus,
     ExportProfile,
     FileRead,
     FileStat,
@@ -49,10 +42,7 @@ __all__ = [
     "DestroyReceipt",
     "DirEntry",
     "DirPage",
-    "ExecEvent",
     "ExecLimits",
-    "ExecState",
-    "ExecStatus",
     "ExportProfile",
     "FileRead",
     "FileStat",

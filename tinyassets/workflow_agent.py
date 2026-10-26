@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 from dataclasses import replace
 
 from tinyassets.activity_runner import ActivityYielded
-from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
-from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+from tinyassets.agent_loop.execution import execution_owner, off_loop, off_loop_context
+from tinyassets.agent_turn_coordinator import start_coordinator
+from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.base import UniverseContext
 from tinyassets.providers.model_policy import ModelRef
-from tinyassets.storage.agent_native_records import NativeInput
 from tinyassets.storage.agent_turn_records import RoundInput, dump
 
 #: How often a native activity call re-reads its activity, and how long a
@@ -47,10 +46,7 @@ class WorkAgentAdapter:
         # small (the coordinator's overflow path). Per turn, never the run's.
         self.min_context = None
         selected = self.carrier.selected_model
-        native = self.carrier.native_selection
-        model = selected.model_id if selected is not None else (
-            native.requested_model_id if native is not None else ""
-        )
+        model = selected.model_id if selected is not None else ""
         self.selection = ModelRef(self.carrier.provider, model)
         # Resolve provider-default once for this turn. Subsequent HTTP rounds
         # refresh authority for that actual model without editing the Branch.
@@ -154,14 +150,14 @@ class WorkAgentAdapter:
         if changing:
             if self._staged_next is None or self.initial_pending:
                 raise ProviderAuthorityHeldError("workflow candidate was not staged")
-            self._identity(context, config, self._staged_next)
-            if self.candidates.next_candidate(
+            await off_loop(self._identity, context, config, self._staged_next)
+            if await off_loop(self.candidates.next_candidate,
                 self.source_policy, min_context=self.min_context,
                 local_exclusions=self._budget_exclusions,
             ) != self._staged_next:
                 raise ProviderAuthorityHeldError("workflow candidate was exhausted")
         else:
-            self.check(context, config)
+            await off_loop(self.check, context, config)
         if self.initial_pending:
             self.initial_pending = False
             return await self._infer_launch(
@@ -171,9 +167,9 @@ class WorkAgentAdapter:
         if changing:
             policy["preferred"] = {"provider": self._staged_next.connection_id,
                                    "model_id": self._staged_next.model_id}
-        with self.session._authorize_attempt(
+        async with off_loop_context(self.session._authorize_attempt(
             role="writer", prompt=prompt, system=system, policy=policy,
-        ) as launch:
+        )) as launch:
             if changing:
                 self.selection = self._staged_next
                 self.policy = policy
@@ -182,10 +178,10 @@ class WorkAgentAdapter:
             )
 
     async def _infer_launch(self, launch, router, prompt, system, config, context, observer, kind):
-        self.carrier, snapshot_dir, provider = launch
+        self.carrier, provider = launch
         if provider != self.selection.connection_id:
             raise ProviderAuthorityHeldError("workflow agent source changed")
-        self.check(context, config)
+        await off_loop(self.check, context, config)
         from tinyassets.providers.model_call import ModelCall, ModelContext, Parent
         from tinyassets.providers.model_call import call as model_call
 
@@ -194,7 +190,7 @@ class WorkAgentAdapter:
                 model=self.selection, fallbacks=(),
                 context=ModelContext(
                     prompt=prompt, system=system,
-                    config=replace(config, credential_snapshot_dir=snapshot_dir),
+                    config=config,
                     operation=self.carrier.operation,
                     universe_context=replace(context, provider_invocation=self.carrier),
                     agent_observer=observer, agent_execution_kind=kind,
@@ -208,60 +204,17 @@ class WorkAgentAdapter:
             ))
             return result.response
 
-        call = _infer()
-        if kind != "native_agent" or self.activity_binding is None:
-            return await call
-        return await self._until_activity_stops(call)
+        return await _infer()
 
-    async def _until_activity_stops(self, call):
-        """Run a native call for an activity only while the activity runs.
-
-        A native agent's whole tool loop is ONE provider call. Once the
-        activity yields, pauses or stops, the engine route refuses every
-        further tool (``activity_fence``) and this cancels the call: the
-        provider ends its process family and the router settles its seat,
-        exactly where an HTTP turn would not start another round. A call that
-        finished in the same instant keeps its answer.
-        """
-        task = asyncio.ensure_future(call)
-        stopped: BaseException | None = None
-        try:
-            while not task.done():
-                await asyncio.wait({task}, timeout=_ACTIVITY_POLL_S)
-                if task.done():
-                    break
-                try:
-                    await asyncio.to_thread(self.activity_binding.check)
-                except (ActivityYielded, PermissionError) as exc:
-                    stopped = exc
-                    task.cancel()
-                    await asyncio.wait({task})
-        finally:
-            if not task.done():
-                task.cancel()
-                await asyncio.wait({task}, timeout=_CANCEL_GRACE_S)
-        if stopped is not None and (task.cancelled() or task.exception() is not None):
-            raise stopped
-        return task.result()
 
     def round_input(self, authority, reservation, config, *, owner, context,
-                    prompt, system, native_input, kind):
+                    prompt, system, kind):
         if authority is not self.carrier or reservation is not None:
             raise ProviderAuthorityHeldError("workflow inference observer scope changed")
         if self.check(context, config) != owner:
             raise ProviderAuthorityHeldError("workflow inference owner changed")
         lineage = {"authority_kind": "work_invocation",
                    "work_receipt_id": self.receipt.receipt_id}
-        if kind == "native_agent":
-            if native_input is None or config.agent_request is not None:
-                raise ProviderAuthorityHeldError("workflow native input changed")
-            native_prompt, native_system = native_input
-            body = dump({"prompt": native_prompt, "system": native_system})
-            return NativeInput(
-                authority.provider, self.selection.model_id, authority.binding_id,
-                authority.reservation_id, authority.binding_generation, authority.binding_digest,
-                "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest(), **lineage,
-            )
         if kind != "engine_inference" or config.agent_request is None:
             raise ProviderAuthorityHeldError("workflow inference input changed")
         request = config.agent_request
@@ -276,93 +229,48 @@ class WorkAgentAdapter:
             "sha256:" + hashlib.sha256(json.dumps(body).encode("utf-8")).hexdigest(), **lineage,
         )
 
-
-class WorkflowAgentTurn(AgentTurnCoordinator):
-    async def run(self):
-        try:
-            return await super().run()
-        except ActivityYielded:
-            # A model can batch an ask and a later action in the same reply.
-            # Preserve the ask's committed result and explicitly mark the next
-            # planned call unsent; never dispatch it or request another round.
-            if self.turn is not None and self.turn.state == "tools_pending":
-                for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
-                    if tool.state == "planned":
-                        uid = self.context.universe_dir.name
-                        self._accept(self.journal.start_tool(
-                            self.owner, uid, self.turn.turn_id,
-                            expected_generation=self.turn.generation,
-                            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
-                        ))
-                        self._accept(self.journal.finish_tool(
-                            self.owner, uid, self.turn.turn_id,
-                            expected_generation=self.turn.generation,
-                            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
-                            request=tool.request, failure="not_sent",
-                        ))
-                        break
-            raise
-        except AllProvidersExhaustedError as exc:
-            rounds = () if self.turn is None else self.turn.rounds
-            effects = any(tool.state not in {"planned", "not_sent"}
-                          for step in rounds for tool in step.tools)
-            boundary = capacity_boundary(
-                self.context.model_selection, exc.attempts, execution_kind=self.execution_kind,
-                native_evidence=(getattr(exc, "native_evidence", ())
-                                 if self.execution_kind == "native_agent" else ()),
+    def map_exhaustion(self, turn, exc):
+        """One mapping, called by the coordinator when every provider is spent."""
+        rounds = () if turn.turn is None else turn.turn.rounds
+        effects = any(tool.state not in {"planned", "not_sent"}
+                      for step in rounds for tool in step.tools)
+        boundary = capacity_boundary(
+            turn.context.model_selection, exc.attempts, execution_kind=turn.execution_kind,
+        )
+        # Before a durable inference round exists, the observer prevented
+        # transport launch. Keep the existing known-unsent retry contract;
+        # authentication/unknown transport failures have a recorded round.
+        if effects or (rounds and boundary is None):
+            return WorkAgentEffectHeld(
+                "Workflow agent progress is held; "
+                "completed or uncertain actions were not replayed.",
             )
-            # Before a durable inference round exists, the observer prevented
-            # transport launch. Keep the existing known-unsent retry contract;
-            # authentication/unknown transport failures have a recorded round.
-            if effects or (rounds and boundary is None):
-                raise WorkAgentEffectHeld(
-                    "Workflow agent progress is held; "
-                    "completed or uncertain actions were not replayed.",
-                ) from exc
-            if boundary is not None and self._order_exhausted():
-                # Validated capacity evidence, nothing to replay, and the owner's
-                # own order has no candidate left. Typed HERE, with the boundary
-                # in frame: re-raising the retryable class sent the compiler
-                # through a backoff that could only end at the same wall, and
-                # the re-entry raise had lost this evidence.
-                raise self.adapter.candidates.exhausted_error((boundary,)) from exc
-            raise
+        if boundary is not None and self._order_exhausted():
+            # Validated capacity evidence, nothing to replay, and the owner's
+            # own order has no candidate left. Typed HERE, with the boundary
+            # in frame: re-raising the retryable class sent the compiler
+            # through a backoff that could only end at the same wall, and
+            # the re-entry raise had lost this evidence.
+            return self.candidates.exhausted_error((boundary,))
+        return None
 
     def _order_exhausted(self):
-        adapter = self.adapter
-        if not getattr(adapter, "has_candidate_order", False):
+        if not self.has_candidate_order:
             return False
-        return adapter.candidates.next_candidate(adapter.source_policy) is None
+        return self.candidates.next_candidate(self.source_policy) is None
 
 
 def call_foreground_work_agent(session, *, prompt, system, config, policy, response_observer=None,
                                metadata_observer=None, activity_binding=None):
-    """Enter once from immutable work opt-in, never through a fake served request."""
-    return _call_work_agent(
-        session, prompt=prompt, system=system, config=config, policy=policy,
-        principal_id=session._principal_id, universe_id=session._universe_id,
-        response_observer=response_observer,
-        metadata_observer=metadata_observer,
-        activity_binding=activity_binding,
-    )
-
-
-def call_background_work_agent(session, *, prompt, system, config, policy):
-    """Use the queue session's own per-round admission and between-step fence."""
-    return _call_work_agent(
-        session, prompt=prompt, system=system, config=config, policy=policy,
-        principal_id=session._task.actor_id, universe_id=session._task.universe_id,
-    )
-
-
-def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id,
-                     response_observer=None, metadata_observer=None, activity_binding=None):
+    """Run an admitted agent node, entered only through ``session.start``."""
     from tinyassets.config import load_universe_config
     from tinyassets.engine_mcp_http import engine_tools_authorized
     from tinyassets.provider_work_authority import ProviderInvocationReservationState
     from tinyassets.providers import call as bridge
     from tinyassets.providers.provider_resolver import register_universe_open_providers
 
+    principal_id = session._principal_id
+    universe_id = session._universe_id
     router = bridge.get_provider_router()
     if router is None:
         raise ProviderAuthorityHeldError("workflow agent requires its real provider router")
@@ -371,7 +279,7 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
     ):
         raise ProviderAuthorityHeldError("engine_tools_unavailable")
     config = replace(config, engine_mcp_enabled=True, engine_mcp_actor_id=principal_id,
-                     engine_mcp_graph_id=universe_id, credential_snapshot_dir=None)
+                     engine_mcp_graph_id=universe_id)
     initial_policy = policy
     candidates = getattr(session, "_work_candidates", None)
     if candidates is not None:
@@ -402,7 +310,7 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
                 model_selection=adapter.selection,
             )
             register_universe_open_providers(router, receipt.universe_id)
-            turn = WorkflowAgentTurn(adapter=adapter, router=router, prompt=prompt, system=system,
+            turn = start_coordinator(adapter=adapter, router=router, prompt=prompt, system=system,
                                      universe_context=context, config=config)
             try:
                 from tinyassets.engine_steering import session_of
@@ -414,7 +322,7 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
                     workflow_id=str(getattr(session, "_branch_def_id", "") or
                                     adapter.receipt.branch_def_id or ""),
                 ):
-                    response = asyncio.run(turn.run())
+                    response = execution_owner().run(turn.run())
             except ActivityYielded:
                 # Platform lifecycle output, not a fabricated provider answer.
                 # The committed inference/tool evidence remains in the journal.

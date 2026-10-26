@@ -56,7 +56,7 @@ def read_policy(data_root, *, principal, command_center, destination):
         _resource_from_row,
     )
 
-    connection_id, grant_id = _ids(universe_id=command_center, destination=destination)
+    connection_id, grant_id = _ids(owner=principal, destination=destination)
     answer = query_ledger(data_root, query=AUTHORIZED_CONNECTION, principal=principal,
                           command_center=command_center, connection_id=connection_id,
                           grant_id=grant_id)
@@ -67,7 +67,7 @@ def read_policy(data_root, *, principal, command_center, destination):
         grant = ConnectionGrant(**(grow | {
             "unprompted_action_cap": ActionCap(**cap) if cap is not None else None}))
         if not all((resource.connection_id == grant.connection_id == connection_id,
-                    grant.grant_id == grant_id, grant.universe_id == command_center,
+                    grant.grant_id == grant_id,
                     grant.owner_user_id == resource.owner_user_id == principal,
                     grant.revoked_at is None, resource.revoked_at is None)):
             raise ValueError("invalid policy scope")

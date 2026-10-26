@@ -140,6 +140,11 @@ class ControlPlaneScheduler:
     def tick(self, now: datetime | None = None) -> TickReport:
         moment = now if now is not None else self._clock()
         report = TickReport()
+        from tinyassets.boxes.restore_settle import rewind_paused
+
+        if rewind_paused(self.store.base_path):
+            report.lease_held = True
+            return report
         lease = self.lease
         if not lease.held():
             report.lease_held = False

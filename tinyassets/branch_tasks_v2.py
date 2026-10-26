@@ -15,12 +15,11 @@ import math
 import re
 import sqlite3
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from tinyassets.branch_tasks import BranchTask
 from tinyassets.execution_subject import ExecutionSubject
 from tinyassets.platform_runtime_provenance import (
     PLATFORM_NOT_CLOUD_REASON,
@@ -41,6 +40,50 @@ from tinyassets.storage.request_admissions import (
     _stale_task_integrity_digest,
     expected_idempotency_hash_re,
 )
+
+
+@dataclass
+class BranchTask:
+    """Transactional queue read model shared by admission and claim paths."""
+
+    branch_task_id: str
+    branch_def_id: str
+    universe_id: str
+    inputs: dict = field(default_factory=dict)
+    trigger_source: str = "user_request"
+    priority_weight: float = 0.0
+    pickup_signal_weight: float = 0.0
+    queued_at: str = ""
+    claimed_by: str = ""
+    status: str = "pending"
+    bid: float = 0.0
+    goal_id: str = ""
+    required_llm_type: str = ""
+    directed_daemon_id: str = ""
+    evidence_url: str = ""
+    error: str = ""
+    cancel_requested: bool = False
+    request_type: str = "branch_run"
+    deadline: str = ""
+    worker_owner_id: str = ""
+    executor_worker_id: str = ""
+    executor_runtime_id: str = ""
+    lease_expires_at: str = ""
+    heartbeat_at: str = ""
+    last_progress_at: str = ""
+    terminal_at: str = ""
+    rung_claim_recommendations: list[dict] = field(default_factory=list)
+    depth: int = 0
+    parent_branch_task_id: str = ""
+    origin_branch_task_id: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BranchTask":
+        return cls(**{key: value for key, value in data.items()
+                      if key in cls.__dataclass_fields__})
 
 
 @dataclass
@@ -565,22 +608,6 @@ class Epoch2BranchTaskAdapter:
                 candidate=candidate,
                 consumer_lease=consumer_lease,
             )
-            if reason is None:
-                from tinyassets.background_served_provider import (
-                    explain_background_queue_authority_in_transaction,
-                )
-
-                claimed_at = _parse_timestamp(transaction_at)
-                assert claimed_at is not None
-                reason = explain_background_queue_authority_in_transaction(
-                    conn,
-                    candidate,
-                    consumer_lease,
-                    claimed_at=transaction_at,
-                    lease_expires_at=(
-                        claimed_at + timedelta(seconds=lease_seconds)
-                    ).isoformat(),
-                )
             conn.rollback()
         return reason
 

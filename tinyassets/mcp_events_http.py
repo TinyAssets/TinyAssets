@@ -25,6 +25,19 @@ FORWARDED = {"tools/list", "tools/call", "prompts/list", "prompts/get", "ping"}
 logger = logging.getLogger(__name__)
 
 
+def _object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def _invalid_constant(value):
+    raise ValueError('non-JSON number')
+
+
 def _decoded(value):
     if value.startswith("=?base64?") and value.endswith("?="):
         return base64.b64decode(value[9:-2], validate=True).decode()
@@ -61,7 +74,6 @@ class MCPEventsMiddleware:
                 _replay_receive,
                 current_identity,
             )
-            from tinyassets.ingress import _invalid_constant, _object
 
             body, messages, disconnected, oversized = await _buffer_request_body(receive)
             if oversized:
@@ -145,8 +157,14 @@ class MCPEventsMiddleware:
             if method == "server/discover":
                 result = {
                     "supportedVersions": [VERSION, *LEGACY],
-                    "serverInfo": {"name": "TinyAssets", "version": "0.1.0"},
+                    "_meta": {
+                        "io.modelcontextprotocol/serverInfo": {
+                            "name": "TinyAssets", "version": "0.1.0",
+                        },
+                    },
                     "capabilities": {"tools": {}, "prompts": {}, "events": {}},
+                    "ttlMs": 0,
+                    "cacheScope": "private",
                 }
             elif method == "events/list":
                 if params.get("cursor") is not None:

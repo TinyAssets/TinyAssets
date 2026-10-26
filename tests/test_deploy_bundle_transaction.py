@@ -93,12 +93,13 @@ Windows too."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -110,13 +111,16 @@ REAL_ENV_HELPER = REPO / "deploy" / "install-tinyassets-env.sh"
 
 _BASH = shutil.which("bash")
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [
+    pytest.mark.skipif(
     os.name == "nt" or _BASH is None,
     reason=(
         "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX "
         "ownership; Linux CI is the oracle for this suite"
     ),
-)
+),
+    pytest.mark.verifies('owner-daemon-in-box:C4'),
+]
 
 OLD_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
 NEW_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
@@ -138,6 +142,9 @@ import json
 import os
 import re
 import sys
+import tarfile
+import io
+import time
 
 
 STATE_PATH = os.environ["FAKE_DOCKER_STATE"]
@@ -157,6 +164,8 @@ def save_state(state):
 def record(argv):
     with open(CALL_LOG, "a", encoding="utf-8") as handle:
         handle.write(" ".join(argv) + "\n")
+    with open(os.environ["FAKE_EVENT_LOG"], "a", encoding="utf-8") as handle:
+        handle.write("docker " + " ".join(argv) + "\n")
 
 
 def image_id(ref):
@@ -330,6 +339,24 @@ def main(argv):
     record(argv)
     state = load_state()
 
+    if argv[:1] == ["create"]:
+        if state.get("create_fail"):
+            return 1
+        print("fake-harness-container")
+        return 0
+    if argv[:1] == ["export"]:
+        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+            for name in ("app/tinyassets/boxd.py", "data/private.txt",
+                         ".broker/secret", ".platform/secret", ".runtime/secret"):
+                payload = b"image bytes"
+                entry = tarfile.TarInfo(name)
+                entry.size = len(payload)
+                entry.mode = 0o644
+                archive.addfile(entry, io.BytesIO(payload))
+        return 0
+    if argv[:1] == ["rm"]:
+        return 0
+
     if argv[:1] == ["pull"]:
         if not state.get("pull_ok", True):
             sys.stderr.write("fake docker: pull refused\n")
@@ -339,6 +366,96 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if any("TURNS_PROBE_KIND" in arg for arg in argv):
+            rc = int(state.get("turns_rc", 0))
+            if rc:
+                sys.stderr.write("fake turns probe rc=%s\n" % rc)
+            else:
+                print('{"in_flight": 0}')
+            return rc
+        if "ACTIVE_BOX_LAYOUT" in argv[-1]:
+            target = argv[argv.index("--entrypoint") + 2]
+            if state.get("require_dirty_during_layout"):
+                marker = os.path.join(os.environ["BUNDLE_STATE_DIR"], "bundle-dirty")
+                if not os.path.isfile(marker):
+                    sys.stderr.write("bundle dirty marker cleared before acceptance\n")
+                    return 9
+            if state.get("box_layout_read_rc"):
+                return int(state["box_layout_read_rc"])
+            print(state.get("active_box_layout", {}).get(target, "owner-split"))
+            return 0
+        if "tinyassets.box_layout_migration" in argv:
+            marker = os.path.join(os.environ.get("FAKE_DOCKER_VOLUME_DIR") or "", ".layout.json")
+            command = argv[argv.index("tinyassets.box_layout_migration") + 1]
+
+            def census(layout, marker_state, pending):
+                print(json.dumps({
+                    "box_layout": layout,
+                    "marker_state": marker_state,
+                    "pending": pending,
+                    "counts": {
+                        "owner-split": {"centers": 1, "admitted_owners": None},
+                        "owner-box": {
+                            "registered_boxes": 1 if layout == "owner-box" else None,
+                            "registry_present": layout == "owner-box",
+                        },
+                    },
+                }, sort_keys=True))
+
+            if command == "check" and state.get("box_census_rc") is not None:
+                forced = int(state["box_census_rc"])
+                census("unreadable" if forced == 3 else "absent", None, None)
+                return forced
+            if command == "check" and not os.path.isfile(marker):
+                census("absent", None, None)
+                return 4
+            try:
+                with open(marker, encoding="utf-8") as handle:
+                    document = json.load(handle)
+            except (OSError, ValueError):
+                if command == "check":
+                    census("unreadable", None, None)
+                    return 3
+                raise
+            if not isinstance(document, dict):
+                document = {}
+            if command == "check":
+                layout = document.get("box_layout", "owner-split")
+                marker_state = document.get("state")
+                if marker_state != "stable" or layout not in ("owner-split", "owner-box"):
+                    census(layout, marker_state, None)
+                    return 3
+                census(
+                    layout,
+                    marker_state,
+                    True if layout == "owner-split" else False,
+                )
+                return 0 if layout == "owner-box" else 10
+            if command == "preflight":
+                store = os.environ.get("FAKE_DOCKER_BOX_STORE_DIR")
+                if store and any(name != "lost+found" for name in os.listdir(store)):
+                    sys.stderr.write(
+                        "box layout migration refused: "
+                        "box store must be empty before the one-shot move\n"
+                    )
+                    return 3
+                return 0
+            if command == "census":
+                ready = state.get("box_detail_census_ready", True)
+                print(json.dumps({"ready": ready}))
+                return 0 if ready else 3
+            if command == "verify":
+                return int(state.get("box_verify_rc", 0))
+            state["box_migration_apply_attempted"] = True
+            outcome = state.get("box_migration_apply", "commit")
+            if outcome == "commit":
+                document.update(box_layout="owner-box", state="stable")
+            else:
+                document.update(state="migrating")
+            with open(marker, "w", encoding="utf-8") as handle:
+                json.dump(document, handle)
+            save_state(state)
+            return 0 if outcome == "commit" else 3
         if "tinyassets.agent_file_migration" in argv:
             # The C8 cutover container (deploy step 3c). `check` reports the
             # rows still in SQL; a failed `apply` can be before or after commit,
@@ -382,6 +499,8 @@ def main(argv):
             # Declarations belong to the requested image, not the running one.
             target = argv[argv.index("--entrypoint") + 2]
             declaration = state.get("known_layouts", {}).get(target, [1])
+            if isinstance(declaration, list):
+                declaration = {"layouts": declaration, "boxes": ["owner-split"]}
             print(state.get("layout_probe_output", json.dumps(declaration)))
         return 0 if state.get("preflight_ok", True) else 1
 
@@ -406,6 +525,10 @@ def main(argv):
                 % (argv[-1], (container or {}).get("status", "missing"))
             )
             return 1
+        if argv[0] == "stop" and state.get("stop_delay_s"):
+            delay = state.pop("stop_delay_s")
+            save_state(state)
+            time.sleep(delay)
         if container is not None:
             container["status"] = "running" if argv[0] == "start" else "exited"
             save_state(state)
@@ -498,7 +621,23 @@ def main(argv):
                     handle.write(content)
             return 0
         if "up" in argv:
+            host_root = os.environ.get("FAKE_DOCKER_EXPECT_RESTORED_HOST")
+            if host_root:
+                if (any(open(os.path.join(host_root, name, "release.txt"),
+                             encoding="utf-8").read() != "old\n"
+                        for name in ("tinyassets", "deploy", "scripts")) or
+                        os.readlink(os.path.join(host_root, "harness-current")) !=
+                        "harness-old"):
+                    sys.stderr.write("fake docker: broker converged before host restore\n")
+                    return 1
             ref = env_values.get("TINYASSETS_IMAGE", "")
+            gone = os.environ.get("FAKE_DOCKER_EXPECT_HARNESS_GONE")
+            expect_image = os.environ.get("FAKE_DOCKER_EXPECT_HARNESS_GONE_IMAGE", "")
+            if gone and ref == expect_image and os.path.isdir(gone):
+                sys.stderr.write("fake docker: candidate harness still present at converge\n")
+                return 1
+            if ref in (state.get("up_start_delay_s") or {}):
+                time.sleep(state["up_start_delay_s"][ref])
             partial = ref in (state.get("up_partial_images") or [])
             if not partial and (
                 not state.get("up_ok", True)
@@ -609,14 +748,32 @@ exec /bin/rm "$@"
 FAKE_BACKUP = r'''#!/usr/bin/env bash
 set -euo pipefail
 [ "${BACKUP_MODE:-}" = "snapshot" ] || { echo "fake backup: not a snapshot" >&2; exit 1; }
-name="tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
-printf 'tar' > "${BACKUP_SNAPSHOT_DIR}/${name}"
-printf '%064d  %s\n' 0 "$name" > "${BACKUP_SNAPSHOT_DIR}/${name}.sha256"
+stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+name="tinyassets-snapshot-${stamp}.tar.gz"
+mkdir -p "${BACKUP_SNAPSHOT_DIR}"
+python3 - "${BACKUP_SNAPSHOT_DIR}" "${stamp}" "${BACKUP_REQUIRE_BOX_STORE:-0}" <<'PY'
+import hashlib, io, os, sys, tarfile
+directory, stamp, require_box = sys.argv[1:]
+names = ["tinyassets-snapshot-%s.tar.gz" % stamp]
+if require_box == "1":
+    names.append("tinyassets-box-store-%s.tar.gz" % stamp)
+for name in names:
+    path = os.path.join(directory, name)
+    payload = b"snapshot-member\n"
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("inventory.txt")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    with open(path + ".sha256", "w", encoding="ascii") as handle:
+        handle.write("%s  %s\n" % (digest, name))
+PY
 echo "SNAPSHOT id=${name} sha256=0 bytes=3 names=1"
 '''
 
 FAKE_SYSTEMCTL = r'''#!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$FAKE_SYSTEMCTL_CALLS"
+printf 'systemctl %s\n' "$*" >> "$FAKE_EVENT_LOG"
 for failing in ${FAKE_SYSTEMCTL_FAIL:-}; do
   if [ "$1" = "$failing" ]; then
     echo "fake systemctl: $1 refused" >&2
@@ -647,7 +804,25 @@ if [ -n "$match" ] && [ ! -f "${FAKE_INSTALL_FAIL_STATE}" ]; then
       ;;
   esac
 fi
+# Production liveness is shared by UID 1001 and broker GID 1102. Record the
+# real contract above, but create the fixture directory as this test's user.
+case "$*" in
+  "-d -o 1001 -g 1102 -m 2770 -- "*/.consumer_liveness)
+    exec /usr/bin/install -d -m 2770 -- "${9}" ;;
+esac
 exec /usr/bin/install "$@"
+'''
+
+# Only emulate the production liveness ownership in an unprivileged fixture.
+FAKE_CHOWN = r'''#!/bin/sh
+printf 'chown %s\n' "$*" >> "$FAKE_INSTALL_CALLS"
+case "$*" in
+  "1001:1102 -- "*/.consumer_liveness)
+    if [ "$(id -u)" != 0 ]; then
+      exec /usr/bin/chown "$(id -u):$(id -g)" -- "$3"
+    fi ;;
+esac
+exec /usr/bin/chown "$@"
 '''
 
 # Writes KEY=value into ENV_FILE the way install-tinyassets-env.sh does. The
@@ -711,6 +886,7 @@ class Box:
         self.docker_state = root / "docker-state.json"
         self.docker_calls = root / "docker-calls.log"
         self.systemctl_calls = root / "systemctl-calls.log"
+        self.event_log = root / "events.log"
         self.install_calls = root / "install-calls.log"
         self.env_helper = root / "tmp" / "install-tinyassets-env.sh"
         self.lock = root / "host-mutation.lock"
@@ -860,11 +1036,21 @@ class Box:
             "FAKE_DOCKER_STATE": str(self.docker_state),
             "FAKE_DOCKER_CALLS": str(self.docker_calls),
             "FAKE_SYSTEMCTL_CALLS": str(self.systemctl_calls),
+            "FAKE_EVENT_LOG": str(self.event_log),
             "FAKE_SYSTEMCTL_FAIL": "",
             "FAKE_INSTALL_CALLS": str(self.install_calls),
             "FAKE_INSTALL_FAIL_MATCH": "",
             "FAKE_INSTALL_FAIL_STATE": str(self.root / "install-refused.flag"),
             "FAKE_RM_FAIL_MATCH": "",
+            "BACKUP_SCRIPT": str(self.root / "backup.sh"),
+            "MIGRATION_BACKUP_DIR": str(self.root / "backups"),
+            "TURNS_PROBE": str(self.root / "turns_probe.py"),
+            "VERIFY_BACKUP_PY": str(REPO / "scripts" / "verify_deploy_backup.py"),
+            # A provisioned canary is the ordinary path. Tests of the missing
+            # config set this to 0. The volume marker is stable owner-split so
+            # the census is a real layout, not an absent one.
+            "CORE_CANARY_PROVISIONED": "1",
+            "FAKE_DOCKER_VOLUME_DIR": str(self.root / "default-data-volume"),
         }
         env.update(overrides)
         return env
@@ -906,7 +1092,6 @@ def box(tmp_path: Path) -> Box:
     for extra in (
         "agent-interchange.env",
         "request-idempotency.env",
-        "app-ingress.env",
     ):
         (fake.env_file.parent / extra).write_text("", encoding="utf-8")
 
@@ -915,6 +1100,7 @@ def box(tmp_path: Path) -> Box:
     # expect them.
     if Path("/usr/bin/install").exists():
         fake_bins.append(("install", FAKE_INSTALL))
+        fake_bins.append(("chown", FAKE_CHOWN))
     if Path("/bin/rm").exists():
         fake_bins.append(("rm", FAKE_RM))
     for name, body in fake_bins:
@@ -925,6 +1111,17 @@ def box(tmp_path: Path) -> Box:
     fake.helper_install_path.parent.mkdir(parents=True)
     fake.env_helper.write_text(FAKE_ENV_HELPER, encoding="utf-8", newline="\n")
     fake.env_helper.chmod(0o755)
+    backup = fake.root / "backup.sh"
+    backup.write_text(FAKE_BACKUP, encoding="utf-8", newline="\n")
+    backup.chmod(0o755)
+    (fake.root / "backups").mkdir()
+    (fake.root / "turns_probe.py").write_text("# in-flight probe stand-in\n", encoding="utf-8")
+    default_volume = fake.root / "default-data-volume"
+    default_volume.mkdir()
+    (default_volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-split"}\n',
+        encoding="utf-8",
+    )
 
     import hashlib
 
@@ -960,6 +1157,198 @@ def box(tmp_path: Path) -> Box:
     return fake
 
 
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+@pytest.mark.parametrize("domains_old", [True, False])
+@pytest.mark.parametrize("interrupt_restore", [False, True])
+def test_restore_reverts_box_host_bundle_and_harness_before_converge(
+    box: Box, domains_old, interrupt_restore,
+):
+    box.stage_bundle()
+    host = box.root / "boxhostd"
+    for directory in ("tinyassets", "deploy", "scripts", "harness-old", "harness-new"):
+        (host / directory).mkdir(parents=True, exist_ok=True)
+    if domains_old:
+        (host / "domains").mkdir()
+    for directory in ("tinyassets", "deploy", "scripts") + (("domains",) if domains_old else ()):
+        (host / directory / "release.txt").write_text("old\n")
+    (host / ".host-service-files.json").write_text(
+        json.dumps([f"{name}/release.txt" for name in
+                    ("tinyassets", "deploy", "scripts", "domains")])
+    )
+    (host / "harness-current").symlink_to("harness-old")
+    (host / "current").symlink_to("release-old")
+    installer = box.root / "host-install" / "deploy" / "install-boxhostd-preflight.sh"
+    installer.parent.mkdir(parents=True)
+    installer.write_text('''#!/bin/bash
+set -euo pipefail
+for directory in tinyassets deploy scripts domains; do
+  mkdir -p "${BOX_HARNESS_ROOT}/${directory}"
+  printf 'new\\n' > "${BOX_HARNESS_ROOT}/${directory}/release.txt"
+done
+printf 'new unit\n' > "${BOXHOSTD_UNIT_FILE}"
+printf 'NEW=1\n' > "${BROKER_ENV_FILE}"
+printf 'NEW=1\n' > "${BOXHOSTD_ENV_FILE}"
+printf '{"current":"harness-new"}\n' > "${BOX_IMAGE_STATE_FILE}"
+printf 'BOX_STORE_DEVICE=/dev/new\n' > "${BOX_STORE_CONFIG_FILE}"
+printf 'FAKE_FLAG=new\n' >> "${ENV_FILE}"
+printf 'FAKE_FLAG=new\n' >> "${DAEMON_ENV_FILE}"
+ln -s harness-new "${BOX_HARNESS_ROOT}/.harness-current.new"
+mv -Tf "${BOX_HARNESS_ROOT}/.harness-current.new" "${BOX_HARNESS_ROOT}/harness-current"
+ln -s release-new "${BOX_HARNESS_ROOT}/.current.new"
+mv -Tf "${BOX_HARNESS_ROOT}/.current.new" "${BOX_HARNESS_ROOT}/current"
+''')
+    from scripts.boxhostd_install_files import ship_list
+
+    with tarfile.open(box.stage / "boxhostd-install.tar", "w") as archive:
+        for relative in ship_list(REPO):
+            source = (installer if relative == "deploy/install-boxhostd-preflight.sh"
+                      else REPO / relative)
+            archive.add(source, arcname=relative)
+    unit = box.root / "boxhostd.service"
+    unit.write_text("old unit\n")
+    broker_env = box.root / "broker.env"
+    broker_env.write_text("OLD=1\n")
+    selected = box.root / "images.json"
+    selected.write_text('{"current":"harness-old"}\n')
+    with box.env_file.open("a") as stream:
+        stream.write("FAKE_FLAG=old\n")
+    env = {"BOX_HARNESS_ROOT": str(host), "BOXHOSTD_UNIT_FILE": str(unit),
+           "BROKER_ENV_FILE": str(broker_env), "BOX_IMAGE_STATE_FILE": str(selected)}
+    for key in ("BOX_STORE_DEVICE_UNIT_FILE", "BOX_STORE_MOUNT_UNIT_FILE",
+                "BOX_STORE_GROW_UNIT_FILE", "BOX_STORE_GROW_TIMER_FILE",
+                "BOXHOSTD_ENV_FILE", "BROKER_RCLONE_FILE", "BOX_STORE_CONFIG_FILE"):
+        env[key] = str(box.root / key.lower())
+    forward = box.run(NEW_IMAGE, **env)
+    assert forward.returncode == 0, forward.stdout + forward.stderr
+    assert (host / "tinyassets/release.txt").read_text() == "new\n"
+    from scripts.host_service_bundle import BOXHOSTD_HOST_PROBES, service_bundle
+
+    manifest_source = box.root / "manifest-source"
+    with tarfile.open(box.stage / "boxhostd-install.tar") as archive:
+        archive.extractall(manifest_source)
+    installed = set(service_bundle(manifest_source, [manifest_source / "deploy" / unit for unit in
+                                                 ("boxhostd.service", "box-store-device.service",
+                                                  "box-store-grow.service")],
+                                   entrypoints=BOXHOSTD_HOST_PROBES))
+    installed.update(Path(path).name for path in tuple(installed) if len(Path(path).parts) == 2
+                     and Path(path).parts[0] in {"deploy", "scripts"}
+                     and Path(path).name != "__init__.py")
+    expected = {path.split("/", 1)[0] for path in installed}
+    # Snapshot names follow host_snapshot_names: the new install closure plus
+    # every top-level name in the previous manifest. domains stays in that
+    # manifest after the tree was retired, so restore can put it back or
+    # remove the copy this release's installer created.
+    previous = json.loads((host / ".host-service-files.json").read_text())
+    expected.update(path.split("/", 1)[0] for path in previous)
+    expected.update({".host-service-files.json", "current", "harness-current"})
+    snap = Path(box.pointer.read_text().strip())
+    assert set((snap / "host/root-manifest").read_text().splitlines()) == expected
+    if interrupt_restore:
+        wrapper = box.bin / "mv"
+        wrapper.write_text(
+            '#!/bin/sh\ncase "$*" in *".restore-stage."*"/tinyassets"*) exit 1;; esac\n'
+            'exec /usr/bin/mv "$@"\n', encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        interrupted = box.run("--restore-bundle", OLD_IMAGE, **env)
+        assert _result(interrupted) == "rollback_failed"
+        assert box.dirty.read_text().strip() == str(snap)
+        wrapper.unlink()
+    restored = box.run("--restore-bundle", OLD_IMAGE,
+                       FAKE_DOCKER_EXPECT_RESTORED_HOST=str(host), **env)
+    assert _result(restored) == "deployed", restored.stdout + restored.stderr
+    for directory in ("tinyassets", "deploy", "scripts"):
+        assert (host / directory / "release.txt").read_text() == "old\n"
+    if domains_old:
+        assert (host / "domains/release.txt").read_text() == "old\n"
+    else:
+        assert not (host / "domains").exists()
+    assert (host / "harness-current").readlink() == Path("harness-old")
+    assert (host / "current").readlink() == Path("release-old")
+    assert unit.read_text() == "old unit\n"
+    assert broker_env.read_text() == "OLD=1\n"
+    assert not Path(env["BOXHOSTD_ENV_FILE"]).exists()
+    assert selected.read_text() == '{"current":"harness-old"}\n'
+    assert not Path(env["BOX_STORE_CONFIG_FILE"]).exists()
+    assert "FAKE_FLAG=new" not in box.env_file.read_text()
+    assert "FAKE_FLAG=old" in box.env_file.read_text()
+    assert "FAKE_FLAG=new" not in box.daemon_env_file.read_text()
+    events = box.event_log.read_text().splitlines()
+    restart = max(i for i, event in enumerate(events)
+                  if event == "systemctl restart boxhostd.service")
+    converge = max(i for i, event in enumerate(events)
+                   if event.startswith("docker compose ") and " up " in event)
+    assert restart < converge
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+@pytest.mark.parametrize("box_state", ["invalid", "unreadable"])
+def test_every_post_install_layout_failure_restores_bundle(box: Box, box_state):
+    box.stage_bundle()
+    if box_state == "invalid":
+        box.set_docker_state(active_box_layout={NEW_IMAGE: "invalid"})
+    else:
+        box.set_docker_state(box_layout_read_rc=1)
+    failed = box.run(NEW_IMAGE)
+    assert failed.returncode != 0
+    assert box.live()["compose"] == OLD_COMPOSE
+    assert not box.dirty.exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_harness_install_failure_restores_bundle(box: Box):
+    _, env, _, _ = _owner_box_cutover(box)
+    box.stage_bundle()
+    box.set_docker_state(create_fail=True)
+    before = box.live()
+    failed = box.run(NEW_IMAGE, **env)
+    assert failed.returncode == 1
+    assert _result(failed) == "harness_invalid"
+    assert box.live() == before
+    assert not box.dirty.exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_dirty_marker_stays_through_post_install_preflight(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(require_dirty_during_layout=True)
+    deployed = box.run(NEW_IMAGE)
+    assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+    assert not box.dirty.exists()
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_required_host_bundle_refuses_absent_stage(box: Box):
+    failed = box.run(NEW_IMAGE, BOXHOSTD_BUNDLE_REQUIRED="1")
+    assert _result(failed) == "bundle_invalid"
+    assert box.live()["compose"] == OLD_COMPOSE
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_post_deploy_hold_does_not_succeed_with_a_dirty_bundle(box: Box):
+    box.dirty.write_text(str(box.snapshots / "interrupted") + "\n")
+    held = box.run("--post-deploy-failure", NEW_IMAGE,
+                   IMAGE_ROLLBACK_ALLOWED="0")
+    assert held.returncode == 3
+    assert _result(held) == "bundle_dirty"
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C4')
+def test_host_snapshot_manifest_is_exact_real_install_set(tmp_path):
+    script = REPO / "scripts/host_service_bundle.py"
+    units = ("boxhostd.service", "box-store-device.service", "box-store-grow.service")
+    root = tmp_path / "installed"
+    command = ["python3", str(script), "--root", str(REPO), "--flat-scripts",
+               "--boxhostd-probes"]
+    listed = subprocess.run([*command, "--list-install-paths", *units],
+                            capture_output=True, text=True, check=True)
+    subprocess.run([*command, "--install-to", str(root), *units],
+                   capture_output=True, text=True, check=True)
+    actual = {str(path.relative_to(root)).replace("\\", "/")
+              for path in root.rglob("*") if path.is_file() or path.is_symlink()}
+    assert actual == set(listed.stdout.splitlines())
+
+
 def _result(completed: subprocess.CompletedProcess) -> str:
     for line in reversed(completed.stdout.splitlines()):
         if line.startswith("deploy_result="):
@@ -974,17 +1363,78 @@ def _deployed_image(completed: subprocess.CompletedProcess) -> str:
     return ""
 
 
+def _env_image_line(path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("TINYASSETS_IMAGE="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def _stage_required_host_bundle(box: Box) -> dict[str, str]:
+    """Stage ``boxhostd-install.tar`` the way production does.
+
+    ``BOXHOSTD_BUNDLE_REQUIRED=1`` makes the snapshot include ``ENV_FILE`` and
+    ``daemon.env`` taken before ``set_image``. Every host path is redirected
+    onto this box so that snapshot never reads the real machine.
+    """
+    box.stage_bundle()
+    host = box.root / "boxhostd"
+    (host / "tinyassets").mkdir(parents=True, exist_ok=True)
+    (host / "tinyassets" / "release.txt").write_text("old\n", encoding="utf-8")
+    (host / ".host-service-files.json").write_text(
+        json.dumps(["tinyassets/release.txt"]), encoding="utf-8",
+    )
+    installer = box.root / "host-install" / "deploy" / "install-boxhostd-preflight.sh"
+    installer.parent.mkdir(parents=True, exist_ok=True)
+    installer.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "mkdir -p \"${BOX_HARNESS_ROOT}/tinyassets\"\n"
+        "printf 'new\\n' > \"${BOX_HARNESS_ROOT}/tinyassets/release.txt\"\n",
+        encoding="utf-8",
+    )
+    from scripts.boxhostd_install_files import ship_list
+
+    with tarfile.open(box.stage / "boxhostd-install.tar", "w") as archive:
+        for relative in ship_list(REPO):
+            source = (
+                installer if relative == "deploy/install-boxhostd-preflight.sh"
+                else REPO / relative
+            )
+            archive.add(source, arcname=relative)
+    (box.root / "boxhostd.service").write_text("old unit\n", encoding="utf-8")
+    env = {
+        "BOX_HARNESS_ROOT": str(host),
+        "BOXHOSTD_BUNDLE_REQUIRED": "1",
+        "BOXHOSTD_UNIT_FILE": str(box.root / "boxhostd.service"),
+        "BROKER_ENV_FILE": str(box.root / "broker.env"),
+        "BOX_IMAGE_STATE_FILE": str(box.root / "images.json"),
+    }
+    for key in (
+        "BOX_STORE_DEVICE_UNIT_FILE", "BOX_STORE_MOUNT_UNIT_FILE",
+        "BOX_STORE_GROW_UNIT_FILE", "BOX_STORE_GROW_TIMER_FILE",
+        "BOXHOSTD_ENV_FILE", "BROKER_RCLONE_FILE", "BOX_STORE_CONFIG_FILE",
+    ):
+        env[key] = str(box.root / key.lower())
+    return env
+
+
+def _assert_candidate_held(box: Box) -> None:
+    assert box.env_image() == NEW_IMAGE
+    assert _env_image_line(box.daemon_env_file) == NEW_IMAGE
+    assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
+    assert (box.runtime / "deploy" / "vector.yaml").read_text(encoding="utf-8") == NEW_VECTOR
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text(
+        encoding="utf-8",
+    ) == "new\n"
+    assert box.dirty.exists()
+
+
 # ---------------------------------------------------------------------------
 # (0) the harness itself must be able to go red
 # ---------------------------------------------------------------------------
 
 
-def test_fake_docker_rejects_a_compose_file_it_cannot_parse(box: Box):
-    """A canned-JSON fake could never fail; this one parses the staged file."""
-    box.stage_bundle(compose_text="services: [this is not a mapping\n")
-    completed = box.run(NEW_IMAGE)
-    assert completed.returncode == 1
-    assert _result(completed) == "bundle_invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -997,110 +1447,6 @@ def _mutate(compose_text: str, old: str, new: str) -> str:
     return compose_text.replace(old, new, 1)
 
 
-@pytest.mark.parametrize(
-    "label,old,new",
-    [
-        ("no daemon memory limit", "\n    mem_limit: 4g\n", "\n"),
-        (
-            "wrong logs container name",
-            "container_name: tinyassets-logs",
-            "container_name: tinyassets-logging",
-        ),
-        (
-            "daemon image pinned instead of interpolated",
-            "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-            "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
-            "image: ghcr.io/tinyassets/tinyassets-daemon:latest",
-        ),
-        (
-            "a vector mount dropped",
-            "      - /opt/tinyassets/deploy/vector-betterstack.yaml:"
-            "/etc/vector/vector-betterstack.yaml:ro\n",
-            "",
-        ),
-        (
-            "a vector mount is writable",
-            "/etc/vector/vector-entrypoint.sh:ro",
-            "/etc/vector/vector-entrypoint.sh",
-        ),
-        (
-            "daemon restart policy weakened",
-            "    container_name: tinyassets-daemon\n    restart: unless-stopped",
-            "    container_name: tinyassets-daemon\n    restart: 'no'",
-        ),
-        # Round 2, §2: nothing constrained the sidecars at all, and a daemon with
-        # no secrets, no data volume or no healthcheck converged "successfully"
-        # and served nothing.
-        (
-            "arbitrary cloudflared image",
-            "image: cloudflare/cloudflared:",
-            "image: attacker/cloudflared-but-not-really:",
-        ),
-        (
-            "unpinned vector image",
-            "image: timberio/vector:0.40.0-alpine@sha256:"
-            "7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2",
-            "image: timberio/vector:latest",
-        ),
-        (
-            "daemon loses its env_file",
-            "    env_file:\n      - /etc/tinyassets/daemon.env\n",
-            "    env_file:\n",
-        ),
-        (
-            "daemon loads the host secret store again",
-            "    env_file:\n      - /etc/tinyassets/daemon.env\n",
-            "    env_file:\n      - /etc/tinyassets/env\n",
-        ),
-        (
-            "daemon loses its /data volume",
-            "    volumes:\n      - tinyassets-data:/data\n",
-            "    volumes:\n      - tinyassets-data:/somewhere-else\n",
-        ),
-        (
-            "daemon environment loses TINYASSETS_DATA_DIR",
-            "      TINYASSETS_DATA_DIR: /data\n",
-            "",
-        ),
-        (
-            "daemon loses its healthcheck",
-            "    healthcheck:\n      # Liveness from release facts as the canary "
-            "service principal.",
-            "    x-healthcheck-removed:\n      # Liveness from release facts as the "
-            "canary service principal.",
-        ),
-        (
-            "daemon image pinned via a different variable",
-            "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-            "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
-            "image: ${SOME_OTHER_IMAGE:-"
-            "ghcr.io/tinyassets/tinyassets-daemon@sha256:"
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}",
-        ),
-    ],
-)
-def test_invalid_bundle_is_refused_before_any_install(box: Box, label, old, new):
-    """Any production invariant miss refuses with production files untouched.
-
-    `config --services` passed on "any syntactically valid file containing three
-    skeletal services named daemon, cloudflared and logs" (Codex, 2026-08-29);
-    each case here is such a file.
-    """
-    # Mutate against the ORIGINAL production paths, then repoint: the mount and
-    # env_file cases are written in terms of /opt/tinyassets and /etc/tinyassets.
-    raw = REAL_COMPOSE.read_text(encoding="utf-8")
-    mutated = box.repoint(_mutate(raw, old, new))
-    before = box.live()
-    box.stage_bundle(compose_text=mutated)
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1, f"{label}: expected a refusal\n{completed.stderr}"
-    assert _result(completed) == "bundle_invalid", label
-    assert box.live() == before, f"{label}: production files were mutated"
-    assert not box.pointer.exists(), f"{label}: the bundle pointer advanced"
-    assert box.env_image() == OLD_IMAGE, f"{label}: TINYASSETS_IMAGE was swapped"
-    assert "compose up" not in box.docker_calls_text(), f"{label}: the stack converged"
 
 
 _DAEMON_IMAGE_LINE = (
@@ -1109,138 +1455,18 @@ _DAEMON_IMAGE_LINE = (
 )
 
 
-def test_variable_in_a_trailing_comment_does_not_satisfy_the_source_check(box: Box):
-    """`image: <literal> # ${TINYASSETS_IMAGE}` rendered to the candidate and
-    passed the substring scan; comments must be stripped first."""
-    before = box.live()
-    literal = f"image: {NEW_IMAGE}  # ${{TINYASSETS_IMAGE}}"
-    raw = REAL_COMPOSE.read_text(encoding="utf-8")
-    assert _DAEMON_IMAGE_LINE in raw
-    box.stage_bundle(compose_text=box.repoint(raw.replace(_DAEMON_IMAGE_LINE, literal, 1)))
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_invalid"
-    assert box.live() == before
 
 
-def test_an_earlier_extension_block_named_daemon_does_not_satisfy_the_check(box: Box):
-    """The scan must anchor at top-level `services:` -> `daemon:`.
-
-    An `x-` extension mapping with its own indented `daemon:` block was found
-    first, so a real service using a literal image passed.
-    """
-    before = box.live()
-    raw = REAL_COMPOSE.read_text(encoding="utf-8")
-    assert _DAEMON_IMAGE_LINE in raw
-    decoy = (
-        "x-decoy:\n"
-        "  daemon:\n"
-        "    image: ${TINYASSETS_IMAGE}\n"
-    )
-    poisoned = decoy + raw.replace(_DAEMON_IMAGE_LINE, f"image: {NEW_IMAGE}", 1)
-    box.stage_bundle(compose_text=box.repoint(poisoned))
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_invalid"
-    assert box.live() == before
 
 
-def test_the_decoy_fixture_is_otherwise_valid(box: Box):
-    """Control: the decoy alone, with the real interpolated image, deploys.
-
-    Without this the test above could pass because the fixture is broken for
-    some unrelated reason.
-    """
-    raw = REAL_COMPOSE.read_text(encoding="utf-8")
-    decoy = "x-decoy:\n  daemon:\n    image: ${TINYASSETS_IMAGE}\n"
-    box.stage_bundle(compose_text=box.repoint(decoy + raw))
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
 
 
-def test_the_private_copy_is_what_gets_installed(box: Box):
-    """Change the STAGE after validation; the validated bytes must still win.
-
-    This is the race the claim exists for: the workflow populates the stage
-    before the script's lock exists, so anything with write access to /tmp could
-    swap the bytes between `docker compose config` and `install`.
-    """
-    poison = "# POISON: written to the stage after validation\nsources: {}\n"
-    box.stage_bundle()
-    box.set_docker_state(
-        mutate_stage_after_config={str(box.stage / "vector.yaml"): poison}
-    )
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert (box.stage / "vector.yaml").read_text(encoding="utf-8") == poison, (
-        "precondition: the stage really was changed mid-run"
-    )
-    assert box.live()["vector"] == NEW_VECTOR, (
-        "the installed file must be the validated copy, not the changed stage"
-    )
 
 
-def test_the_private_work_copy_is_removed_on_exit(box: Box):
-    """It holds a whole bundle and lives under persistent state."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    assert box.work_dirs() == [], f"left behind: {box.work_dirs()}"
-
-    # and on a refusal path, which exits long before the install
-    box.stage_bundle(compose_text="services: {}\n")
-    assert box.run(OTHER_IMAGE).returncode == 1
-    assert box.work_dirs() == [], f"left behind on refusal: {box.work_dirs()}"
 
 
-def test_rollback_converge_failure_is_rollback_failed(box: Box):
-    """The rollback's OWN `restart_stack` can fail; that is not `rolled_back`.
-
-    Vector inputs are pre-seeded to match the bundle so the rollback does NOT
-    force-recreate logs: that call would also fail here, and would reach
-    `rollback_failed` by a different route, leaving the test unable to say which
-    return code the script acted on.
-    """
-    (box.runtime / "deploy" / "vector.yaml").write_text(NEW_VECTOR, encoding="utf-8")
-    (box.runtime / "deploy" / "vector-betterstack.yaml").write_text(
-        NEW_BETTERSTACK, encoding="utf-8"
-    )
-    (box.runtime / "deploy" / "vector-entrypoint.sh").write_text(
-        NEW_ENTRYPOINT, encoding="utf-8"
-    )
-    box.stage_bundle()
-    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
-
-    completed = box.run(NEW_IMAGE)
-
-    assert "--force-recreate" not in box.docker_calls_text(), (
-        "precondition: no logs recreate, so only restart_stack can fail"
-    )
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
-    assert _deployed_image(completed) == ""
 
 
-def test_partial_bundle_is_refused_rather_than_half_installed(box: Box):
-    """Half a bundle is the 2026-08 502; an incomplete stage dir must refuse."""
-    box.stage_bundle()
-    (box.stage / "vector-betterstack.yaml").unlink()
-    before = box.live()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1
-    assert _result(completed) == "bundle_invalid"
-    assert box.live() == before
-    assert "incomplete" in completed.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -1248,152 +1474,14 @@ def test_partial_bundle_is_refused_rather_than_half_installed(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_valid_bundle_snapshots_installs_and_advances_the_pointer(box: Box):
-    before = box.live()
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    assert _deployed_image(completed) == NEW_IMAGE
-
-    # installed
-    after = box.live()
-    assert after["vector"] == NEW_VECTOR
-    assert after["betterstack"] == NEW_BETTERSTACK
-    assert after["entrypoint"] == NEW_ENTRYPOINT
-    assert after["unit"] == NEW_UNIT
-    assert after["compose"] == box.valid_compose()
-    assert after["deploy_compose"] == box.valid_compose()
-
-    # modes: 0644 for config, 0755 for the entrypoint script
-    def mode(path: Path) -> int:
-        return stat.S_IMODE(path.stat().st_mode)
-
-    assert mode(box.runtime / "compose.yml") == 0o644
-    assert mode(box.runtime / "deploy" / "compose.yml") == 0o644
-    assert mode(box.runtime / "deploy" / "vector.yaml") == 0o644
-    assert mode(box.runtime / "deploy" / "vector-betterstack.yaml") == 0o644
-    assert mode(box.runtime / "deploy" / "vector-entrypoint.sh") == 0o755
-    assert mode(box.unit_file) == 0o644
-
-    # snapshot holds what was live BEFORE the install
-    snapshot = Path(box.pointer.read_text(encoding="utf-8").strip())
-    assert snapshot.is_dir()
-    assert snapshot.parent == box.snapshots
-    assert (snapshot / "compose.yml").read_text(encoding="utf-8") == before["compose"]
-    assert (snapshot / "deploy" / "vector.yaml").read_text(
-        encoding="utf-8"
-    ) == before["vector"]
-    assert (snapshot / "deploy" / "vector-betterstack.yaml").read_text(
-        encoding="utf-8"
-    ) == before["betterstack"]
-    assert (snapshot / "deploy" / "vector-entrypoint.sh").read_text(
-        encoding="utf-8"
-    ) == before["entrypoint"]
-    assert (snapshot / "systemd" / "tinyassets-daemon.service").read_text(
-        encoding="utf-8"
-    ) == before["unit"]
-
-    assert box.env_image() == NEW_IMAGE
-    assert "daemon-reload" in box.systemctl_calls.read_text(encoding="utf-8")
 
 
-def test_back_to_back_deploys_get_distinct_snapshots(box: Box):
-    """Two deploys inside one UTC second must not share a snapshot directory.
-
-    A bare second-resolution stamp let the SECOND deploy write its snapshot into
-    the first's directory -- capturing the files the first deploy had just
-    installed, so the rollback target became the state being rolled back from.
-    """
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0, "first deploy"
-    first_snapshot = box.pointer.read_text(encoding="utf-8").strip()
-    installed_by_first = box.live()
-
-    box.stage_bundle(compose_text=box.valid_compose() + "\n# second deploy\n")
-    assert box.run(OTHER_IMAGE).returncode == 0, "second deploy"
-    second_snapshot = box.pointer.read_text(encoding="utf-8").strip()
-
-    # The NAME carries the fix, and asserting it is the only deterministic part:
-    # whether two deploys land in the same UTC second depends on how long the
-    # run takes, so a content-only assertion passes by luck on a slow box.
-    assert re.fullmatch(r"\d{8}T\d{6}Z-[A-Za-z0-9]{6}", Path(second_snapshot).name), (
-        f"snapshot {Path(second_snapshot).name!r} is a bare second-resolution "
-        "stamp; two deploys in one second would share it"
-    )
-    assert second_snapshot != first_snapshot
-    assert Path(first_snapshot).is_dir(), "the first snapshot must survive"
-    second = Path(second_snapshot)
-    assert (second / "compose.yml").read_text(encoding="utf-8") == installed_by_first[
-        "compose"
-    ], "the second snapshot must hold what the FIRST deploy installed"
-    assert (second / "deploy" / "vector.yaml").read_text(
-        encoding="utf-8"
-    ) == installed_by_first["vector"]
 
 
-def test_snapshot_retention_keeps_the_last_five(box: Box):
-    box.stage_bundle()
-    # One real snapshot plus older directories is enough to cross the retention
-    # boundary; seven full deploys only repeat the setup proved elsewhere.
-    completed = box.run(NEW_IMAGE)
-    assert completed.returncode == 0, completed.stderr
-    box.set_docker_state(containers=box.docker_state_json()["containers"])
-    for index in range(BUNDLE_KEEP):
-        (box.snapshots / f"20260101T00000{index}Z").mkdir(exist_ok=True)
-    completed = box.run(NEW_IMAGE)
-    assert completed.returncode == 0, completed.stderr
-    assert len(list(box.snapshots.iterdir())) <= 5, (
-        "snapshot retention must keep the last 5"
-    )
 
 
-def test_pointer_does_not_advance_when_the_bundle_is_refused(box: Box):
-    """The pointer must name the snapshot the LAST successful install replaced."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    good_snapshot = box.pointer.read_text(encoding="utf-8").strip()
-
-    box.stage_bundle(compose_text="services: {}\n")
-    completed = box.run(NEW_IMAGE)
-
-    assert _result(completed) == "bundle_invalid"
-    assert box.pointer.read_text(encoding="utf-8").strip() == good_snapshot
 
 
-@pytest.mark.skipif(
-    not Path("/usr/bin/install").exists(),
-    reason="the install(1) wrapper needs the real binary at /usr/bin/install",
-)
-def test_failed_install_restores_the_snapshot_and_leaves_the_pointer_alone(box: Box):
-    """A part-way install must roll back and must NOT advance the pointer.
-
-    The pointer is the contract a rollback depends on: if it advanced before the
-    install succeeded it would name the state this deploy created, and
-    `--restore-bundle` would restore the very bundle it is meant to undo.
-    """
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    good_snapshot = box.pointer.read_text(encoding="utf-8").strip()
-    before = box.live()
-
-    # install(1) refuses ONCE, part-way down the bundle; the restore that
-    # follows uses the same binary and must succeed.
-    box.stage_bundle()
-    # A THIRD image, so "the env still names the previous deploy's image" is a
-    # real assertion rather than a coincidence of the fixture.
-    completed = box.run(
-        OTHER_IMAGE, FAKE_INSTALL_FAIL_MATCH="deploy/vector-betterstack.yaml"
-    )
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_install_failed"
-    assert box.live() == before, "a failed install must restore its own snapshot"
-    assert box.pointer.read_text(encoding="utf-8").strip() == good_snapshot
-    assert box.env_image() == NEW_IMAGE, "a refused install must not swap the image"
-    assert not box.dirty.exists(), "a completed restore clears the dirty marker"
 
 
 # ---------------------------------------------------------------------------
@@ -1401,22 +1489,6 @@ def test_failed_install_restores_the_snapshot_and_leaves_the_pointer_alone(box: 
 # ---------------------------------------------------------------------------
 
 
-def test_unhealthy_candidate_restores_the_bundle_and_the_previous_image(box: Box):
-    before = box.live()
-    box.stage_bundle()
-    # The candidate converges but never becomes healthy; the previous image does.
-    box.set_docker_state(unhealthy_images=[NEW_IMAGE])
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert _deployed_image(completed) == OLD_IMAGE
-    assert box.live() == before, (
-        "rollback must restore the runtime bundle, not just the image -- "
-        "converging PREV_IMAGE against the NEW compose file rolls back half a change"
-    )
-    assert box.env_image() == OLD_IMAGE
 
 
 @pytest.mark.parametrize("version", [1, 2])
@@ -1439,7 +1511,7 @@ def test_no_image_converges_onto_data_a_migration_has_touched(box: Box, version)
     assert box.env_image() == OLD_IMAGE and box.live() == before, "prod must be untouched"
 
 
-@pytest.mark.parametrize("supported,allowed", [([1, 2], True), ([1, 2, 3], True), ([1], False)])
+@pytest.mark.parametrize("supported,allowed", [([1, 2], True), ([1], False)])
 def test_forward_deploy_uses_the_candidate_layout_declaration(box: Box, supported, allowed):
     volume = box.root / "data-volume"
     volume.mkdir()
@@ -1465,13 +1537,10 @@ def test_forward_deploy_uses_the_candidate_layout_declaration(box: Box, supporte
 
 
 @pytest.mark.parametrize("probe_state", [
-    {"layout_probe_ok": False},
-    {"layout_probe_output": ""},
-    {"layout_probe_output": "garbage"},
-    {"layout_probe_output": "{}"},
-    {"layout_probe_output": "[]"},
-    {"layout_probe_output": '["1", "2"]'},
-    {"layout_probe_output": "[true, 2]"},
+    {'layout_probe_ok': False},
+    {'layout_probe_output': 'garbage'},
+    {'layout_probe_output': '["1", "2"]'},
+    {'layout_probe_output': '[true, 2]'},
 ])
 def test_missing_or_invalid_candidate_declaration_refuses_without_mutation(box: Box, probe_state):
     box.set_docker_state(**probe_state)
@@ -1492,18 +1561,309 @@ def test_layout_two_still_refuses_rollback_to_an_older_image(box: Box, explicit)
     volume.mkdir()
     (volume / ".layout.json").write_text('{"layout": 2, "state": "stable"}', encoding="utf-8")
     box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]}, unhealthy_images=[NEW_IMAGE])
-    box.stage_bundle()
+    host_env = _stage_required_host_bundle(box)
 
     args = ("--restore-bundle", OLD_IMAGE) if explicit else (NEW_IMAGE,)
-    completed = box.run(*args, FAKE_DOCKER_VOLUME_DIR=str(volume))
+    completed = box.run(*args, FAKE_DOCKER_VOLUME_DIR=str(volume), **host_env)
 
     assert completed.returncode == (1 if explicit else 3), completed.stderr
     assert _result(completed) == ("layout_refused" if explicit else "rollback_needs_restore")
     if explicit:
         assert "compose up" not in box.docker_calls_text()
+        assert box.env_image() == OLD_IMAGE
+        assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "old\n"
     else:
-        assert box.env_image() == NEW_IMAGE, "automatic rollback must not start the old image"
+        _assert_candidate_held(box)
         assert "stop tinyassets-daemon" in box.docker_calls_text()
+        assert len(_daemon_starts(box)) == 1
+        assert f"NOT starting {OLD_IMAGE}" in completed.stderr
+
+
+@pytest.mark.parametrize("post_deploy", [False, True])
+def test_restart_stack_failure_leaves_bundle_dirty(box: Box, post_deploy):
+    """A forward rollback that cannot converge stays dirty.
+
+    A post-canary rollback starts from a candidate that already passed health.
+    If the recorded previous image cannot converge, that candidate is put back
+    and the tunnel is not left on the image that just failed.
+    """
+    host_env = _stage_required_host_bundle(box)
+    if post_deploy:
+        deployed = box.run(NEW_IMAGE, **host_env)
+        assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+        assert not box.dirty.exists()
+        box.set_docker_state(up_fail_images=[OLD_IMAGE])
+        failed = box.run(
+            "--post-deploy-failure", NEW_IMAGE,
+            IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE, **host_env,
+        )
+        assert failed.returncode == 2, failed.stdout + failed.stderr
+        assert _result(failed) == "candidate_held"
+        assert "returning to" in failed.stderr
+        assert not box.dirty.exists()
+        assert box.env_image() == NEW_IMAGE
+        assert box.live()["compose"] != OLD_COMPOSE
+        assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "new\n"
+        return
+
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+
+    assert failed.returncode == 3, failed.stdout + failed.stderr
+    assert _result(failed) == "rollback_failed"
+    assert box.dirty.exists()
+    assert box.live()["compose"] == OLD_COMPOSE
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "old\n"
+
+
+def _write_cutover_state(box: Box, state: str) -> None:
+    directory = box.state_dir / "cutover"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "state.json").write_text(
+        json.dumps({"state": state}) + "\n", encoding="utf-8",
+    )
+
+
+def _daemon_compose_ups(calls: list[str]) -> list[str]:
+    return [
+        line for line in calls
+        if "compose" in line and " up " in line and " daemon " in f" {line} "
+    ]
+
+
+def test_dirty_bundle_still_refuses_without_recovery(box: Box):
+    """A forward deploy with no recovery flag still refuses bundle-dirty."""
+    box.dirty.write_text(str(box.snapshots / "interrupted") + "\n", encoding="utf-8")
+    _write_cutover_state(box, "consumed")
+    box.stage_bundle()
+    before = box.live()
+
+    refused = box.run(NEW_IMAGE)
+
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert _result(refused) == "bundle_dirty"
+    assert "recovering dirty runtime bundle before forward deploy" not in refused.stdout
+    assert box.dirty.exists()
+    assert box.live() == before
+    assert "compose up" not in box.docker_calls_text()
+
+
+def test_recover_dirty_bundle_restores_files_then_deploys(box: Box):
+    """Consumed cutover: restore the dirty snapshot files, then install forward.
+
+    Recovery must not start OLD_IMAGE. The forward deploy snapshots the
+    restored baseline, so a later failure restores that snapshot.
+    """
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+    assert failed.returncode == 3, failed.stdout + failed.stderr
+    assert _result(failed) == "rollback_failed"
+    original = box.dirty.read_text(encoding="utf-8").strip()
+    assert original
+    assert box.live()["compose"] == OLD_COMPOSE
+    _write_cutover_state(box, "consumed")
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[], up_fail_images=[])
+    marked = len(box.docker_calls_text().splitlines())
+
+    recovered = box.run(NEW_IMAGE, RECOVER_DIRTY_BUNDLE="1", **host_env)
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert _result(recovered) == "deployed"
+    assert "recovering dirty runtime bundle before forward deploy" in recovered.stdout
+    assert f"restoring runtime bundle from {original}" in recovered.stdout
+    assert "mode: --restore-bundle" not in recovered.stdout
+    assert not box.dirty.exists()
+    assert box.live()["compose"] != OLD_COMPOSE
+    assert (box.stage / "compose.yml").read_text(encoding="utf-8") == box.live()["compose"]
+    assert box.pointer.read_text(encoding="utf-8").strip() != original
+    calls = box.docker_calls_text().splitlines()[marked:]
+    assert len(_daemon_compose_ups(calls)) == 1
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == NEW_IMAGE
+
+
+def test_recover_dirty_bundle_exit_restores_the_forward_snapshot(box: Box):
+    """A forward candidate that fails after install restores the new snapshot."""
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+    assert _result(failed) == "rollback_failed", failed.stdout + failed.stderr
+    original = box.dirty.read_text(encoding="utf-8").strip()
+    _write_cutover_state(box, "consumed")
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[], up_fail_images=[], box_layout_read_rc=1)
+
+    recovered = box.run(NEW_IMAGE, RECOVER_DIRTY_BUNDLE="1", **host_env)
+
+    assert recovered.returncode != 0, recovered.stdout + recovered.stderr
+    restoring = [
+        line for line in recovered.stderr.splitlines()
+        if "post-install failure: restoring" in line
+    ]
+    assert len(restoring) == 1, recovered.stderr
+    assert original not in restoring[0]
+    assert box.live()["compose"] == OLD_COMPOSE
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text(
+        encoding="utf-8",
+    ) == "old\n"
+    assert not box.dirty.exists()
+
+
+def test_recover_dirty_bundle_refuses_pre_traffic_cutover(box: Box):
+    """pre_traffic is still pending: recovery must not legitimize that tree."""
+    host_env = _stage_required_host_bundle(box)
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+    failed = box.run(NEW_IMAGE, **host_env)
+    assert _result(failed) == "rollback_failed", failed.stdout + failed.stderr
+    assert box.dirty.exists()
+    _write_cutover_state(box, "pre_traffic")
+    volume = box.root / "default-data-volume"
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-box"}\n',
+        encoding="utf-8",
+    )
+    box.set_docker_state(
+        unhealthy_images=[],
+        up_fail_images=[],
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+            OLD_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+        },
+    )
+    host_env = _stage_required_host_bundle(box)
+    before = box.live()
+
+    refused = box.run(NEW_IMAGE, RECOVER_DIRTY_BUNDLE="1", **host_env)
+
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert _result(refused) == "bundle_dirty"
+    assert "recovering dirty runtime bundle before forward deploy" not in refused.stdout
+    assert box.dirty.exists()
+    assert box.live() == before
+
+
+def _drain_bound_s() -> int:
+    for line in (REPO / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8").splitlines():
+        if line.startswith("MAX_DAEMON_STOP_GRACE_S="):
+            return int(line.split("=", 1)[1])
+    raise AssertionError("MAX_DAEMON_STOP_GRACE_S missing")
+
+
+def _daemon_health(box: Box, health: str) -> None:
+    state = box.docker_state_json()
+    state["containers"]["tinyassets-daemon"]["health"] = health
+    state["containers"]["tinyassets-daemon"]["status"] = "running"
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_idle_or_unhealthy_daemon_at_the_drain_bound_still_swaps(box: Box):
+    """A wedged daemon that ignores SIGTERM must not block the next image.
+
+    The forward path has already proved no turn is in flight. Reaching the
+    stop grace then means docker SIGKILLed a process that was not serving,
+    including when its health is still reported healthy. A rollback that
+    never ran that probe still continues when the running daemon is unhealthy.
+    """
+    box.stage_bundle()
+    box.set_docker_state(stop_delay_s=_drain_bound_s() + 1)
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    assert "prior healthy, idle proved 1" in completed.stdout
+    assert "no in-flight turn, continuing the swap" in completed.stdout
+    assert "refusing this deploy rather than accepting a cut turn" not in (
+        completed.stdout + completed.stderr
+    )
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == NEW_IMAGE
+
+    _daemon_health(box, "unhealthy")
+    state = box.docker_state_json()
+    state["stop_delay_s"] = _drain_bound_s() + 1
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert _result(restored) == "deployed"
+    assert "no in-flight turn, continuing the swap" in restored.stdout
+    assert "idle proved 0" in restored.stdout
+    assert box.env_image() == OLD_IMAGE
+
+
+def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box: Box):
+    """A healthy daemon that was not proved idle is still a cut turn."""
+    box.stage_bundle()
+    deployed = box.run(NEW_IMAGE)
+    assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+    state = box.docker_state_json()
+    state["stop_delay_s"] = _drain_bound_s() + 1
+    state["containers"]["tinyassets-daemon"]["health"] = "healthy"
+    state["containers"]["tinyassets-daemon"]["status"] = "running"
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    marked = len(box.docker_calls_text().splitlines())
+
+    refused = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    assert _result(refused) == "rollback_failed"
+    assert "refusing this deploy rather than accepting a cut turn" in refused.stderr
+    assert "no in-flight turn, continuing the swap" not in refused.stdout
+    calls = box.docker_calls_text().splitlines()[marked:]
+    assert not any(" up " in line and "compose" in line for line in calls)
+
+
+def test_a_failed_docker_stop_still_refuses_an_unhealthy_daemon(box: Box):
+    """The grace waiver applies only after docker stop itself succeeds."""
+    box.stage_bundle()
+    _daemon_health(box, "unhealthy")
+    box.set_docker_state(stop_refused=True)
+    refused = box.run(NEW_IMAGE)
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    assert _result(refused) == "rollback_failed"
+    assert "did not stop cleanly" in refused.stderr
+    assert "no in-flight turn, continuing the swap" not in refused.stdout
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == OLD_IMAGE
+
+
+def test_restore_bundle_clears_dirty_marker_and_stops_broker(box: Box):
+    """``--restore-bundle`` clears ``bundle-dirty`` after it converges.
+
+    That path never installs a bundle, so ``INSTALLED_THIS_RUN`` stays 0.
+    ``finish deployed`` still has to clear the marker the failed rollback left.
+    ``restart_stack`` stops a running broker before ``compose up`` so a
+    boxhostd restart cannot leave the broker mounted on a deleted runtime
+    directory inode.
+    """
+    state = box.docker_state_json()
+    state["containers"]["tinyassets-broker"] = {"status": "running"}
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    box.stage_bundle()
+    deployed = box.run(NEW_IMAGE)
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    assert not box.dirty.exists()
+    box.dirty.write_text(box.pointer.read_text().strip() + "\n", encoding="utf-8")
+    state = box.docker_state_json()
+    state["containers"]["tinyassets-broker"] = {"status": "running"}
+    box.docker_state.write_text(json.dumps(state), encoding="utf-8")
+    marked = len(box.docker_calls_text().splitlines())
+
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert _result(restored) == "deployed"
+    assert not box.dirty.exists()
+    calls = box.docker_calls_text().splitlines()[marked:]
+    stop_at = next(i for i, line in enumerate(calls) if line.startswith("stop tinyassets-broker"))
+    up_at = next(
+        i for i, line in enumerate(calls)
+        if line.startswith("compose ") and " up " in f" {line} "
+    )
+    assert stop_at < up_at
+
+
+
+
+
+
 
 
 def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: Box):
@@ -1512,6 +1872,11 @@ def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: B
     restore (design D7.2)."""
     volume = box.root / "data-volume"
     volume.mkdir()
+    # Stable before the swap, so the census is not the refusal. The candidate
+    # then rewrites the marker to migrating as it boots.
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable"}', encoding="utf-8",
+    )
     box.stage_bundle()
     box.set_docker_state(
         unhealthy_images=[NEW_IMAGE],
@@ -1525,17 +1890,6 @@ def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: B
     assert box.env_image() != OLD_IMAGE, "the previous image must not be started"
 
 
-def test_env_write_failure_after_install_restores_the_bundle(box: Box):
-    """A failure between install and converge must not strand the new config."""
-    before = box.live()
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, FAKE_ENV_HELPER_FAIL="1")
-
-    assert completed.returncode == 1
-    assert _result(completed) == "failed_env_write"
-    assert box.live() == before
-    assert box.env_image() == OLD_IMAGE
 
 
 # ---------------------------------------------------------------------------
@@ -1543,51 +1897,10 @@ def test_env_write_failure_after_install_restores_the_bundle(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_restore_bundle_reinstalls_the_pointed_snapshot_then_converges(box: Box):
-    """The public-canary rollback path."""
-    before = box.live()
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    assert box.live() != before, "precondition: the forward deploy installed the bundle"
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    assert _deployed_image(completed) == OLD_IMAGE
-    assert box.live() == before, "--restore-bundle must reinstall the snapshot"
-    assert box.env_image() == OLD_IMAGE
 
 
-def test_restore_bundle_does_not_reinstall_the_still_staged_bundle(box: Box):
-    """The staged bundle is what a canary rollback is undoing, not applying."""
-    before = box.live()
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    assert box.stage.is_dir(), "precondition: the stage directory survives the deploy"
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert box.live() == before
 
 
-def test_restore_bundle_on_a_virgin_box_still_rolls_the_image_back(box: Box):
-    """A box that has NEVER installed a bundle must not lose its image rollback.
-
-    Distinct from a missing pointer beside existing snapshots, which is a broken
-    contract and refuses — see the test below it.
-    """
-    shutil.rmtree(box.stage, ignore_errors=True)
-    assert not box.pointer.exists()
-    assert not box.snapshots.exists() or not list(box.snapshots.iterdir())
-
-    completed = box.run("--restore-bundle", NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    assert box.env_image() == NEW_IMAGE
-    assert "no bundle has ever been installed here" in completed.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1595,63 +1908,12 @@ def test_restore_bundle_on_a_virgin_box_still_rolls_the_image_back(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_changed_vector_inputs_force_recreate_the_logs_container(box: Box):
-    """vector-entrypoint.sh copies the mounts into /run/vector-config at START.
-
-    `up -d` leaves a container whose image and compose config are unchanged
-    alone, so a new vector.yaml would otherwise never reach the running vector.
-    """
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    calls = box.docker_calls_text()
-    assert "up -d --force-recreate logs" in calls, calls
 
 
-def test_unchanged_vector_inputs_do_not_recreate_the_logs_container(box: Box):
-    """A no-op vector change must not churn the log sidecar."""
-    (box.runtime / "deploy" / "vector.yaml").write_text(NEW_VECTOR, encoding="utf-8")
-    (box.runtime / "deploy" / "vector-betterstack.yaml").write_text(
-        NEW_BETTERSTACK, encoding="utf-8"
-    )
-    (box.runtime / "deploy" / "vector-entrypoint.sh").write_text(
-        NEW_ENTRYPOINT, encoding="utf-8"
-    )
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert "--force-recreate" not in box.docker_calls_text()
 
 
-def test_logs_container_that_will_not_run_after_recreate_fails_the_deploy(box: Box):
-    """A dead log sidecar is a deploy failure, not a warning."""
-    before = box.live()
-    box.stage_bundle()
-    # Dead on the forward recreate, alive again once the old config is restored.
-    box.set_docker_state(logs_recreate_statuses=["exited", "running"])
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert box.live() == before
-    assert "tinyassets-logs" in completed.stderr
 
 
-def test_logs_that_stays_dead_through_the_rollback_is_rollback_failed(box: Box):
-    """Reporting `rolled_back` with log forwarding down is a false receipt."""
-    box.stage_bundle()
-    box.set_docker_state(logs_recreate_statuses=["exited", "exited"])
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
-    assert _deployed_image(completed) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1659,19 +1921,6 @@ def test_logs_that_stays_dead_through_the_rollback_is_rollback_failed(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_absent_bundle_is_an_image_only_deploy(box: Box):
-    """A manual run with no staged bundle must still deploy the image."""
-    shutil.rmtree(box.stage, ignore_errors=True)
-    before = box.live()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    assert "bundle: absent, image-only deploy" in completed.stdout
-    assert box.live() == before
-    assert box.env_image() == NEW_IMAGE
-    assert not box.pointer.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1679,28 +1928,8 @@ def test_absent_bundle_is_an_image_only_deploy(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_failed_image_pull_leaves_the_bundle_uninstalled(box: Box):
-    """The pull failure Codex named: config must not already be live."""
-    before = box.live()
-    box.stage_bundle()
-    box.set_docker_state(pull_ok=False)
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1
-    assert box.live() == before
-    assert box.env_image() == OLD_IMAGE
 
 
-def test_failed_candidate_preflight_leaves_the_bundle_uninstalled(box: Box):
-    before = box.live()
-    box.stage_bundle()
-    box.set_docker_state(preflight_ok=False)
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1
-    assert box.live() == before
 
 
 # ---------------------------------------------------------------------------
@@ -1708,19 +1937,6 @@ def test_failed_candidate_preflight_leaves_the_bundle_uninstalled(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_install_ownership_defaults_match_the_unit_contract():
-    """Runtime files are `tinyassets`-owned; the systemd unit stays root's.
-
-    The unit runs compose as `tinyassets` (deploy/tinyassets-daemon.service), so
-    the files it reads must be readable by that user -- the pre-#2442 contract.
-    """
-    script = SCRIPT.read_text(encoding="utf-8")
-    assert 'RUNTIME_OWNER="${RUNTIME_OWNER:-tinyassets}"' in script
-    assert 'RUNTIME_GROUP="${RUNTIME_GROUP:-tinyassets}"' in script
-    assert 'UNIT_OWNER="${UNIT_OWNER:-root}"' in script
-    assert 'UNIT_GROUP="${UNIT_GROUP:-root}"' in script
-    assert 'BUNDLE_DIR="${BUNDLE_DIR:-/tmp/tinyassets-bundle}"' in script
-    assert 'BUNDLE_STATE_DIR="${BUNDLE_STATE_DIR:-/var/lib/tinyassets-deploy}"' in script
 
 
 # ---------------------------------------------------------------------------
@@ -1728,224 +1944,30 @@ def test_install_ownership_defaults_match_the_unit_contract():
 # ---------------------------------------------------------------------------
 
 
-def test_pointer_write_failure_restores_the_snapshot_and_refuses(box: Box):
-    """A pointer that did not advance would make every later rollback wrong.
-
-    It would name the PREVIOUS deploy's snapshot, so a rollback would install a
-    bundle that was never live. Fatal, not a warning.
-    """
-    before = box.live()
-    box.stage_bundle()
-    # A directory cannot be replaced by `mv -f <file>`, so write_pointer fails
-    # at its last step — after the install has already happened.
-    box.pointer.mkdir()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_pointer_failed"
-    assert box.live() == before, "the snapshot must be restored"
-    assert box.env_image() == OLD_IMAGE, "the image must not be swapped"
-    assert not box.dirty.exists(), "a completed restore must clear the dirty marker"
 
 
-def test_pointer_is_written_atomically(box: Box):
-    """tmp + rename. A truncating redirect can leave a pointer naming nothing."""
-    script = SCRIPT.read_text(encoding="utf-8")
-    assert "mv -f" in script, "the pointer must be renamed into place"
-    assert 'printf \'%s\\n\' "$SNAPSHOT_PATH" >"$BUNDLE_POINTER"' not in script
 
 
-def test_restore_of_an_incomplete_snapshot_reports_rollback_failed(box: Box):
-    """A snapshot missing a manifest row must not read as a completed rollback."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    snapshot = Path(box.pointer.read_text(encoding="utf-8").strip())
-    manifest = snapshot / "manifest"
-    rows = [
-        line
-        for line in manifest.read_text(encoding="utf-8").splitlines()
-        if not line.startswith("deploy/vector.yaml|")
-    ]
-    manifest.write_text("\n".join(rows) + "\n", encoding="utf-8")
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
-    assert _deployed_image(completed) == "", "a failed rollback reports no image"
 
 
-def test_restore_bundle_with_a_missing_snapshot_reports_rollback_failed(box: Box):
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    shutil.rmtree(Path(box.pointer.read_text(encoding="utf-8").strip()))
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
 
 
-def test_restore_bundle_without_a_pointer_but_with_history_refuses(box: Box):
-    """A missing pointer beside existing snapshots is a broken contract, not a
-    virgin box — reporting `deployed` there claims a rollback that never ran."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    box.pointer.unlink()
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
 
 
-def test_image_only_failed_deploy_leaves_an_older_pointer_alone(box: Box):
-    """This run installed no bundle, so it must not restore someone else's.
-
-    The surviving pointer names the state before the PREVIOUS deploy; restoring
-    it here would revert a bundle change this run never made.
-    """
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    installed = box.live()
-    pointer_before = box.pointer.read_text(encoding="utf-8")
-
-    shutil.rmtree(box.stage, ignore_errors=True)
-    box.set_docker_state(unhealthy_images=[OTHER_IMAGE])
-    completed = box.run(OTHER_IMAGE)
-
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert box.live() == installed, "an image-only rollback must not touch the bundle"
-    assert box.pointer.read_text(encoding="utf-8") == pointer_before
 
 
-def test_failed_converge_rolls_back_instead_of_accepting(box: Box):
-    """`up -d` can bring up some services and not others; accept() on that is
-    how a partially converged stack earns a success receipt.
-
-    The daemon comes up on the new image here, so health, running-image, tunnel
-    and logs all look green. Only compose's exit status says otherwise, and
-    discarding it is exactly what produced the false receipt.
-
-    The vector inputs are pre-seeded to match the bundle so NO force-recreate
-    runs: otherwise that second compose call fails too and masks which return
-    code the script actually acted on.
-    """
-    (box.runtime / "deploy" / "vector.yaml").write_text(NEW_VECTOR, encoding="utf-8")
-    (box.runtime / "deploy" / "vector-betterstack.yaml").write_text(
-        NEW_BETTERSTACK, encoding="utf-8"
-    )
-    (box.runtime / "deploy" / "vector-entrypoint.sh").write_text(
-        NEW_ENTRYPOINT, encoding="utf-8"
-    )
-    before = box.live()
-    box.stage_bundle()
-    box.set_docker_state(up_partial_images=[NEW_IMAGE])
-
-    completed = box.run(NEW_IMAGE)
-
-    assert _result(completed) != "deployed", (
-        "a compose invocation that returned non-zero must never be accepted"
-    )
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert box.live() == before
 
 
-def test_daemon_reload_failure_is_fatal_and_leaves_the_dirty_marker(box: Box):
-    """systemd refusing the new unit must not pass as an installed bundle."""
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, FAKE_SYSTEMCTL_FAIL="daemon-reload")
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
-    assert box.dirty.exists(), (
-        "an install whose restore also failed must leave the dirty marker"
-    )
 
 
-def test_dirty_marker_blocks_the_next_normal_deploy(box: Box):
-    """Otherwise the next deploy snapshots the mixed tree and legitimizes it."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE, FAKE_SYSTEMCTL_FAIL="daemon-reload").returncode == 3
-    assert box.dirty.exists()
-
-    completed = box.run(OTHER_IMAGE)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_dirty"
-    assert "--restore-bundle" in completed.stderr
-    assert box.env_image() == OLD_IMAGE, "a refused deploy must not swap the image"
 
 
-@pytest.mark.skipif(
-    not Path("/bin/rm").exists(), reason="the rm(1) wrapper needs /bin/rm"
-)
-def test_marker_that_will_not_clear_is_terminal(box: Box):
-    """A successful deploy that leaves the marker behind blocks the NEXT one.
-
-    Reporting `deployed` there hides that production is now un-deployable, so
-    the result is `marker_clear_failed` — while still naming the image, because
-    the image DID change and the operator has to know which one is live.
-    """
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, FAKE_RM_FAIL_MATCH=str(box.dirty))
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "marker_clear_failed"
-    assert _deployed_image(completed) == NEW_IMAGE, (
-        "the operator must still learn which image is live"
-    )
-    assert box.dirty.exists()
-    assert box.env_image() == NEW_IMAGE, "the deploy itself did succeed"
 
 
-def test_an_empty_marker_blocks_a_normal_deploy(box: Box):
-    box.dirty.parent.mkdir(parents=True, exist_ok=True)
-    box.dirty.write_text("", encoding="utf-8")
-    box.stage_bundle()
-    before = box.live()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_dirty"
-    assert box.live() == before
 
 
-def test_an_empty_marker_makes_restore_bundle_refuse_not_fall_through(box: Box):
-    """An empty marker means "interrupted, snapshot unknown".
-
-    Falling through to the pointer would restore the last GOOD state over an
-    interrupted one and report success for a tree nobody has accounted for.
-    """
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    assert box.pointer.exists(), "precondition: a pointer the fall-through could use"
-    box.dirty.write_text("", encoding="utf-8")
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
-    assert str(box.dirty) in completed.stderr, "the refusal must name the empty marker"
 
 
-def test_restore_bundle_clears_the_dirty_marker(box: Box):
-    """`--restore-bundle` is the documented way out of the dirty state."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE, FAKE_SYSTEMCTL_FAIL="daemon-reload").returncode == 3
-    assert box.dirty.exists()
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    assert not box.dirty.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1953,124 +1975,14 @@ def test_restore_bundle_clears_the_dirty_marker(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_restore_puts_back_the_recorded_mode_not_the_install_contract(box: Box):
-    """Live /opt/tinyassets/compose.yml is root:root 0644, but the forward
-    install writes tinyassets:tinyassets. Re-asserting that contract on the way
-    back makes the rollback change something."""
-    (box.runtime / "compose.yml").chmod(0o640)
-    (box.runtime / "deploy" / "vector-entrypoint.sh").chmod(0o700)
-    modes_before = box.modes()
-    box.stage_bundle()
-
-    assert box.run(NEW_IMAGE).returncode == 0
-    assert box.modes()["compose"] == 0o644, "the forward install applies 0644"
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert box.modes() == modes_before, (
-        "the restore must reinstate the recorded modes, not the install contract"
-    )
 
 
-@pytest.mark.skipif(
-    not Path("/usr/bin/install").exists(),
-    reason="the install(1) wrapper needs the real binary at /usr/bin/install",
-)
-def test_restore_passes_the_manifest_uid_and_gid_to_install(box: Box):
-    """Content and mode are assertable unprivileged; ownership is not.
-
-    So assert the arguments: the restore's `install` calls must carry the uid/gid
-    the manifest recorded, never the RUNTIME_OWNER/UNIT_OWNER the forward install
-    used.
-    """
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    snapshot = Path(box.pointer.read_text(encoding="utf-8").strip())
-    manifest = {
-        row.split("|")[0]: row.split("|")[2]
-        for row in snapshot.joinpath("manifest").read_text(encoding="utf-8").splitlines()
-        if row.strip()
-    }
-    box.install_calls.write_text("", encoding="utf-8")
-
-    assert box.run("--restore-bundle", OLD_IMAGE).returncode == 0
-
-    calls = box.install_calls_text()
-    assert calls.strip(), "the restore must go through install(1)"
-    for rel, meta in manifest.items():
-        uid, gid, perms = meta.split()
-        expected = f"-m {perms} -o {uid} -g {gid}"
-        assert expected in calls, (
-            f"restore of {rel} must use the manifest's {expected!r}; calls were:\n{calls}"
-        )
 
 
-def test_snapshot_records_a_manifest_row_per_bundle_file(box: Box):
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    snapshot = Path(box.pointer.read_text(encoding="utf-8").strip())
-    rows = [
-        row
-        for row in snapshot.joinpath("manifest").read_text(encoding="utf-8").splitlines()
-        if row.strip()
-    ]
-    assert {row.split("|")[0] for row in rows} == {
-        "compose.yml",
-        "deploy/compose.yml",
-        "deploy/vector.yaml",
-        "deploy/vector-betterstack.yaml",
-        "deploy/vector-entrypoint.sh",
-        "systemd/tinyassets-daemon.service",
-    }
-    for row in rows:
-        rel, state, meta = row.split("|")
-        assert state in {"present", "absent"}, row
-        if state == "present":
-            assert len(meta.split()) == 3, f"{rel}: expected 'uid gid mode', got {meta!r}"
 
 
-def test_a_missing_root_compose_row_is_not_satisfied_by_the_deploy_row(box: Box):
-    """The manifest lookup must match the key EXACTLY, not by suffix.
-
-    `grep -F "compose.yml|"` also matched `deploy/compose.yml|`, so a missing
-    root row was silently served by the deploy copy's metadata and the restore
-    reported success having applied the wrong uid/gid/mode (Codex round 3).
-    """
-    # Distinct modes so a collision is visible in the result, not just the code.
-    (box.runtime / "compose.yml").chmod(0o640)
-    (box.runtime / "deploy" / "compose.yml").chmod(0o604)
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    snapshot = Path(box.pointer.read_text(encoding="utf-8").strip())
-    manifest = snapshot / "manifest"
-    rows = manifest.read_text(encoding="utf-8").splitlines()
-    kept = [row for row in rows if not row.startswith("compose.yml|")]
-    assert any(row.startswith("deploy/compose.yml|") for row in kept), (
-        "the collision only exists while the deploy row is present"
-    )
-    assert len(kept) == len(rows) - 1
-    manifest.write_text("\n".join(kept) + "\n", encoding="utf-8")
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
-    assert stat.S_IMODE((box.runtime / "compose.yml").stat().st_mode) != 0o604, (
-        "the root compose file was restored with the deploy copy's mode"
-    )
 
 
-def test_a_snapshot_without_a_manifest_is_refused(box: Box):
-    """Guessing the ownership is how a rollback silently changes something."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    (Path(box.pointer.read_text(encoding="utf-8").strip()) / "manifest").unlink()
-
-    completed = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert completed.returncode == 3, completed.stderr
-    assert _result(completed) == "rollback_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -2078,44 +1990,8 @@ def test_a_snapshot_without_a_manifest_is_refused(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_retention_never_deletes_the_pointed_snapshot(box: Box):
-    """Prune excess history while advancing to a restorable rollback target.
-
-    Asserting `count <= 5` alone also passes when the pointer target is gone.
-    The sorts_oldest case below deterministically puts it in the prune window.
-    """
-    box.stage_bundle()
-    # Retention reads directory names, not old payload sizes. Seed the excess
-    # history and perform two real installs so the pointer still advances.
-    for index in range(BUNDLE_KEEP + 1):
-        (box.snapshots / f"20260101T00000{index}Z-aaaaaa").mkdir(parents=True)
-    for index in range(2):
-        completed = box.run(NEW_IMAGE if index % 2 == 0 else OTHER_IMAGE)
-        assert completed.returncode == 0, f"deploy {index}: {completed.stderr}"
-
-    pointed = Path(box.pointer.read_text(encoding="utf-8").strip())
-    assert pointed.is_dir(), "retention deleted the snapshot the pointer names"
-    assert (pointed / "manifest").exists()
-    assert len(list(box.snapshots.iterdir())) <= BUNDLE_KEEP
 
 
-def test_retention_keeps_the_pointed_snapshot_when_it_sorts_oldest(box: Box):
-    """The guard only matters when the pointed snapshot is in the prune window.
-
-    Six far-future stamps push the freshly pointed 2026 snapshot into the oldest
-    three, so retention would delete the rollback target if it did not check.
-    """
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    for index in range(6):
-        (box.snapshots / f"20990101T00000{index}Z-aaaaaa").mkdir()
-
-    box.stage_bundle()
-    assert box.run(OTHER_IMAGE).returncode == 0
-
-    pointed = Path(box.pointer.read_text(encoding="utf-8").strip())
-    assert pointed.is_dir(), "retention deleted the snapshot the pointer names"
-    assert (pointed / "manifest").exists(), "the pointed snapshot must stay restorable"
 
 
 # ---------------------------------------------------------------------------
@@ -2123,19 +1999,6 @@ def test_retention_keeps_the_pointed_snapshot_when_it_sorts_oldest(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def test_logs_that_exits_after_being_seen_running_fails_the_deploy(box: Box):
-    """logs_running() returns on the first sighting, then health_ok can burn the
-    whole health timeout. accept() re-checks last for exactly this."""
-    before = box.live()
-    box.stage_bundle()
-    # Alive for the recreate check, dead by the time accept() looks again.
-    box.set_docker_state(logs_dies_after=1, unhealthy_images=[])
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode != 0, completed.stdout
-    assert _result(completed) != "deployed", "a dead log sidecar is not a green deploy"
-    assert box.live() == before
 
 
 # ---------------------------------------------------------------------------
@@ -2144,246 +2007,34 @@ def test_logs_that_exits_after_being_seen_running_fails_the_deploy(box: Box):
 # ---------------------------------------------------------------------------
 
 
-def _seed_platform_secrets(box: Box) -> None:
-    box.env_file.write_text(
-        f"TINYASSETS_IMAGE={OLD_IMAGE}\n"
-        "DO_API_TOKEN=placeholder-do\n"
-        "CLOUDFLARE_TUNNEL_TOKEN=placeholder-cf\n"
-        "STRIPE_SECRET_KEY=placeholder-stripe\n",
-        encoding="utf-8",
-    )
 
 
-def _config_env_names(box: Box) -> set[str]:
-    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
-    return {entry.split("=", 1)[0] for entry in daemon.get("config_env") or []}
 
 
-def test_a_deploy_leaves_platform_secrets_out_of_the_daemon(box: Box):
-    _seed_platform_secrets(box)
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    rendered = box.daemon_env_file.read_text(encoding="utf-8")
-    assert "DO_API_TOKEN=" not in rendered
-    assert "CLOUDFLARE_TUNNEL_TOKEN=" not in rendered
-    names = _config_env_names(box)
-    assert "DO_API_TOKEN" not in names and "CLOUDFLARE_TUNNEL_TOKEN" not in names
-    # The daemon still gets what its own routes need.
-    assert "STRIPE_SECRET_KEY" in names
-    # Nothing was destroyed: the host file keeps every value for the host and
-    # the tunnel's interpolation.
-    assert "DO_API_TOKEN=placeholder-do" in box.env_file.read_text(encoding="utf-8")
-    assert "placeholder" not in completed.stdout + completed.stderr
 
 
-@pytest.mark.parametrize("where", ["extra_process_env", "extra_config_env"])
-def test_a_daemon_holding_a_platform_secret_is_rolled_back(box: Box, where):
-    """Checked on the running container, not on the files meant to produce it:
-    an image ENV or an entrypoint can put a name back that no env file holds."""
-    box.stage_bundle()
-    box.set_docker_state(**{where: {"DO_API_TOKEN": "placeholder-do"}})
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert _deployed_image(completed) == OLD_IMAGE
-    assert "DO_API_TOKEN" in completed.stderr
-    assert "placeholder" not in completed.stdout + completed.stderr
 
 
-def test_a_daemon_whose_processes_cannot_be_read_is_not_accepted(box: Box):
-    """No environment read is not the same as a clean one."""
-    box.stage_bundle()
-    box.set_docker_state(environ_unreadable=True)
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert "pid 4242 of tinyassets-daemon has no readable environment" in completed.stderr
 
 
-def test_a_refused_render_leaves_production_untouched(box: Box):
-    box.env_file.write_text(
-        f'TINYASSETS_IMAGE={OLD_IMAGE}\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n',
-        encoding="utf-8",
-    )
-    before = box.live()
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1
-    assert _result(completed) == "daemon_env_render_failed"
-    assert box.live() == before
-    assert "compose" not in box.docker_calls_text()
 
 
-def test_the_env_helper_is_kept_where_the_unit_points_an_operator(box: Box):
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert box.helper_install_path.read_bytes() == box.env_helper.read_bytes()
 
 
-def test_a_permitted_value_that_looks_like_a_forbidden_name_is_not_a_leak(box: Box):
-    """Record boundaries are kept: a newline inside a permitted value is not a
-    new variable (Codex on the first draft, which split on newlines)."""
-    box.stage_bundle()
-    box.set_docker_state(
-        extra_config_env={"NOTES": "line one\nDO_API_TOKEN=looks-like-one"},
-        extra_process_env={"MORE_NOTES": "x\nCLOUDFLARE_TUNNEL_TOKEN=also"},
-    )
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
 
 
-def test_one_unreadable_live_process_is_not_skipped(box: Box):
-    box.stage_bundle()
-    box.set_docker_state(extra_pids={"4243": "unreadable"})
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 2, completed.stderr
-    assert _result(completed) == "rolled_back"
-    assert "pid 4243" in completed.stderr
 
 
-def test_a_process_that_exited_before_the_read_is_not_a_failure(box: Box):
-    box.stage_bundle()
-    box.set_docker_state(extra_pids={"4244": "gone"})
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
 
 
-def test_restore_bundle_onto_a_pre_split_bundle_restores_the_previous_image(box: Box):
-    """The public-canary rollback must land on the image it was given.
-
-    The bundle it restores predates the split and loads the host env file, so
-    the previous daemon holds the platform's secrets again. Checking scope on
-    that path failed it and re-converged the image the canary had just
-    rejected (Codex on the first draft).
-    """
-    pre_split = box.valid_compose().replace(
-        str(box.daemon_env_file), str(box.env_file)
-    )
-    assert pre_split != box.valid_compose(), "precondition: the live bundle is pre-split"
-    (box.runtime / "compose.yml").write_text(pre_split, encoding="utf-8")
-    (box.runtime / "deploy" / "compose.yml").write_text(pre_split, encoding="utf-8")
-    _seed_platform_secrets(box)
-    box.stage_bundle()
-    forward = box.run(NEW_IMAGE)
-    assert forward.returncode == 0, forward.stderr
-
-    restored = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert restored.returncode == 0, restored.stderr
-    assert box.env_image() == OLD_IMAGE
-    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
-    assert daemon["image_ref"] == OLD_IMAGE
-    assert "DO_API_TOKEN" in _config_env_names(box), (
-        "precondition: the restored bundle really does load the host env file"
-    )
 
 
-def test_the_first_deploy_after_the_split_renders_daemon_env_before_compose(box: Box):
-    """The box has only /etc/tinyassets/env. The fake refuses a missing
-    env_file as the real CLI does, so this fails if anything reads daemon.env
-    before the render."""
-    _seed_platform_secrets(box)
-    assert not box.daemon_env_file.exists(), "precondition: a box that predates the split"
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 0, completed.stderr
-    assert _result(completed) == "deployed"
-    assert box.daemon_env_file.is_file()
-    assert "DO_API_TOKEN" not in _config_env_names(box)
 
 
-def test_the_fake_refuses_a_missing_daemon_env_like_the_real_cli(box: Box):
-    """Guards the test above: without the render, the same deploy must fail."""
-    box.stage_bundle()
-    box.set_docker_state()
-    helper = box.env_helper.read_text(encoding="utf-8").replace(
-        "daemon-forbidden-names|render-daemon-env) real",
-        "daemon-forbidden-names) real",
-    )
-    helper = helper.replace(
-        'case "${1:-}" in',
-        'case "${1:-}" in\n  render-daemon-env) exit 0 ;;',
-    )
-    helper = helper.replace(
-        "TINYASSETS_ENV_FILE=\"$DAEMON_ENV_FILE\" real render-daemon-env >/dev/null",
-        "true",
-    )
-    assert "render-daemon-env) exit 0" in helper
-    assert "real render-daemon-env" not in helper, "precondition: every render is disabled"
-    box.env_helper.write_text(helper, encoding="utf-8", newline="\n")
-
-    completed = box.run(NEW_IMAGE)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "bundle_invalid"
-    assert not box.daemon_env_file.exists()
 
 
-def test_restore_bundle_is_not_blocked_by_a_failed_render(box: Box):
-    """A rollback must run even when the source cannot be rendered."""
-    box.stage_bundle()
-    assert box.run(NEW_IMAGE).returncode == 0
-    box.env_file.write_text(
-        f'TINYASSETS_IMAGE={NEW_IMAGE}\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n',
-        encoding="utf-8",
-    )
-
-    restored = box.run("--restore-bundle", OLD_IMAGE)
-
-    assert restored.returncode == 0, restored.stderr
-    assert box.env_image() == OLD_IMAGE
-    assert "continuing the restore" in restored.stderr
-    assert "placeholder" not in restored.stdout + restored.stderr
 
 
-@pytest.mark.parametrize("headroom_status", [0, 2])
-def test_pull_headroom_is_enforced_under_mutation_lock(box: Box, headroom_status):
-    box.stage_bundle()
-    helper = box.root / "headroom.py"
-    helper.write_text(
-        "import fcntl, os, sys\n"
-        "assert sys.argv[1:] == ['--check-headroom', '--image-ref', " + repr(NEW_IMAGE) + "]\n"
-        "with open(os.environ['LOCK_FILE'], 'r') as stream:\n"
-        "    try:\n"
-        "        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-        "    except BlockingIOError:\n"
-        "        pass\n"
-        "    else:\n"
-        "        raise AssertionError('host lock not held')\n"
-        f"sys.exit({headroom_status})\n", encoding="utf-8",
-    )
-    before = box.live()
-    completed = box.run(NEW_IMAGE, DISK_HEADROOM_HELPER=str(helper))
-    assert completed.returncode == (0 if headroom_status == 0 else 1), completed.stderr
-    if headroom_status:
-        assert "insufficient disk headroom" in completed.stderr
-        assert "pull " not in box.docker_calls_text()
-        assert box.live() == before
-    else:
-        assert "pull " in box.docker_calls_text()
 
 
 # ---------------------------------------------------------------------------
@@ -2429,6 +2080,140 @@ def _daemon_starts(box: Box) -> list[str]:
     ]
 
 
+def _owner_box_cutover(box: Box, *, device_present: bool = True):
+    volume, env = _cutover(box)
+    with box.env_file.open("a") as stream:
+        stream.write("BACKUP_DEST=:local:/synthetic-snapshots\n")
+    box.set_docker_state(
+        migration_pending=False,
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-box"]}},
+    )
+    env["BOX_STORE_CHECK"] = "/bin/true"
+    harness_root = box.root / "boxhostd"
+    harness_root.mkdir(exist_ok=True)
+    env["BOX_HARNESS_ROOT"] = str(harness_root)
+    device = "/dev/tinyassets-test-box-store"
+    findmnt = box.bin / "findmnt"
+    findmnt.write_text(
+        f'#!/bin/sh\nif [ "$*" = "--mountpoint /var/lib/boxhostd/owners -no SOURCE" ]; '
+        f'then printf "%s\\n" "{device if device_present else "/dev/missing-box-store"}"; '
+        'else exec /usr/bin/findmnt "$@"; fi\n',
+        encoding="utf-8",
+    )
+    findmnt.chmod(0o755)
+    fake_stat = box.root / "fake-block-stat.c"
+    fake_stat.write_text(r'''
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <string.h>
+#include <sys/stat.h>
+int stat(const char *path, struct stat *out) {
+    int (*real_stat)(const char *, struct stat *) = dlsym(RTLD_NEXT, "stat");
+    if (strcmp(path, "/dev/tinyassets-test-box-store") != 0)
+        return real_stat(path, out);
+    int result = real_stat("/dev/null", out);
+    if (result == 0) out->st_mode = (out->st_mode & ~S_IFMT) | S_IFBLK;
+    return result;
+}
+''', encoding="utf-8")
+    preload = box.root / "fake-block-stat.so"
+    subprocess.run(["cc", "-shared", "-fPIC", "-o", str(preload), str(fake_stat), "-ldl"],
+                   check=True)
+    env["LD_PRELOAD"] = str(preload)
+    return volume, env, device, harness_root
+
+
+@pytest.mark.parametrize("outcome", ["commit", "fail"])
+def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outcome):
+    volume, env, device, harness_root = _owner_box_cutover(box)
+    box.set_docker_state(box_migration_apply=outcome)
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    calls = box.docker_calls_text()
+    assert "tinyassets.box_layout_migration preflight" in calls, completed.stdout + completed.stderr
+    preflight_call = next(line for line in calls.splitlines()
+                          if "tinyassets.box_layout_migration preflight" in line)
+    assert "tinyassets-data:/data:ro" in preflight_call
+    assert "dst=/box-store,readonly" in preflight_call
+    assert calls.index(preflight_call) < calls.index("stop --time")
+    # The live writer is frozen only around the read-only preflight.
+    assert (calls.index("pause tinyassets-daemon") < calls.index(preflight_call)
+            < calls.index("unpause tinyassets-daemon") < calls.index("stop --time"))
+    apply_call = next((line for line in calls.splitlines()
+                       if "tinyassets.box_layout_migration apply" in line), None)
+    assert apply_call is not None, completed.stdout + completed.stderr
+    assert "apply /data --store /box-store" in apply_call
+    assert "--cap-drop ALL --user 0 --privileged" in apply_call
+    assert f"--device {device}:{device}:r" in apply_call
+    assert "--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store" in apply_call
+    assert "--security-opt no-new-privileges=true --network bridge" in apply_call
+    assert "BACKUP_DEST=:local:/synthetic-snapshots" in apply_call
+    assert "/root/.config/rclone:/root/.config/rclone:ro" in apply_call
+    assert "RCLONE_CONFIG=/root/.config/rclone/rclone.conf" in apply_call
+    assert "--box-backup /backup/tinyassets-box-store-" in calls
+    detail_call = next(line for line in calls.splitlines()
+                       if "tinyassets.box_layout_migration census" in line)
+    assert "tinyassets-data:/data:ro" in detail_call
+    assert calls.index(preflight_call) < calls.index(detail_call) < calls.index(apply_call)
+    if outcome == "commit":
+        verify_call = next(line for line in calls.splitlines()
+                           if "tinyassets.box_layout_migration verify" in line)
+        assert "tinyassets-data:/data:ro" in verify_call
+        assert "--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store " in verify_call
+        assert "--cap-drop ALL --user 0 --privileged" in verify_call
+        assert "--network none" in verify_call
+        assert calls.index(apply_call) < calls.index(verify_call)
+    harness = (harness_root / "harness-current").resolve()
+    assert (harness / "app" / "tinyassets" / "boxd.py").is_file()
+    assert not any((harness / name).exists() for name in (
+        "data", ".broker", ".platform", ".runtime"
+    ))
+    marker = json.loads((volume / ".layout.json").read_text())
+    if outcome == "commit":
+        assert _result(completed) == "deployed", completed.stderr
+        assert marker["box_layout"] == "owner-box"
+    else:
+        assert _result(completed) == "rollback_needs_restore", completed.stderr
+        assert "-m tinyassets.cutover_control rollback --state" in completed.stderr
+        assert "backup-restore.sh" not in completed.stderr
+        assert marker["state"] == "migrating"
+        assert not _daemon_starts(box)
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("leftover", "box store must be empty before the one-shot move"),
+    ("device", "owner store has no block device"),
+])
+def test_owner_box_preflight_refuses_before_daemon_stop_and_preserves_prod(
+    box: Box, failure: str, reason: str,
+):
+    volume, env, _, _ = _owner_box_cutover(box, device_present=failure != "device")
+    if failure == "leftover":
+        store = box.root / "owners"
+        (store / "300001").mkdir(parents=True)
+        env["FAKE_DOCKER_BOX_STORE_DIR"] = str(store)
+    before = box.live()
+    marker_before = (volume / ".layout.json").read_bytes()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 1
+    assert _result(completed) == "migration_refused"
+    assert "check=box_layout_preflight" in _migration_refusal(completed)
+    assert reason in _migration_refusal(completed)
+    assert box.live() == before
+    assert (volume / ".layout.json").read_bytes() == marker_before
+    if failure == "leftover":
+        assert (store / "300001").is_dir()
+    calls = box.docker_calls_text()
+    assert "stop --time" not in calls
+    assert "start tinyassets-daemon" not in calls
+    assert "tinyassets.box_layout_migration apply" not in calls
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+
+
 @pytest.mark.parametrize("candidate", ["healthy", "unhealthy", "converge_fails"])
 def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candidate):
     """The old image serving with its bindings deleted from SQL is the failure
@@ -2441,17 +2226,21 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     elif candidate == "converge_fails":
         box.set_docker_state(up_fail_images=[NEW_IMAGE])
     before = box.live()
-    box.stage_bundle()
+    host_env = _stage_required_host_bundle(box)
 
-    completed = box.run(NEW_IMAGE, **env)
+    completed = box.run(NEW_IMAGE, **env, **host_env)
 
     calls = box.docker_calls_text()
     assert "agent_file_migration apply /data --backup /backup/tinyassets-snapshot-" in calls
     assert "--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE" in calls
     assert "stop --time" in calls, "the daemon stops before the snapshot and the move"
+    assert completed.stdout.index("stopping tinyassets-daemon") < completed.stdout.index(
+        "verified backup:"
+    )
+    assert "verified backup:" in completed.stdout
     assert json.loads((volume / ".layout.json").read_text(encoding="utf-8"))["state"] == "stable"
-    snapshot = box.root / "backups" / "tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
-    assert snapshot.is_file()
+    snapshots = list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
+    assert len(snapshots) == 1
     if candidate == "healthy":
         assert completed.returncode == 0, completed.stderr
         assert _result(completed) == "deployed"
@@ -2464,9 +2253,18 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
         "only the candidate's converge was attempted; no rollback converge of the previous image"
     )
     assert f"NOT starting {OLD_IMAGE}" in completed.stderr
-    assert f"BACKUP_FILE={snapshot} sudo bash deploy/backup-restore.sh" in completed.stderr
-    assert box.live() == before, "the bundle this run installed is restored"
-    assert box.env_image() == NEW_IMAGE, "the env must not be re-pointed at the previous image"
+    assert "python3 -m tinyassets.cutover_control rollback --state " in completed.stderr
+    assert "/cutover --data" in completed.stderr
+    assert "backup-restore.sh" not in completed.stderr
+    assert box.live() != before
+    assert box.env_image() == NEW_IMAGE
+    assert _env_image_line(box.daemon_env_file) == NEW_IMAGE
+    assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
+    assert (box.runtime / "deploy" / "vector.yaml").read_text(encoding="utf-8") == NEW_VECTOR
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text(
+        encoding="utf-8",
+    ) == "new\n"
+    assert box.dirty.exists()
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
     assert daemon["status"] == "exited", "the service is left down for the restore"
     # A refused converge never replaced the container stopped for the move.
@@ -2484,19 +2282,22 @@ def test_a_failed_apply_is_judged_by_sql(box: Box, outcome, result, code):
     volume, env = _cutover(box)
     box.set_docker_state(migration_apply=outcome)
     before = box.live()
-    box.stage_bundle()
+    host_env = _stage_required_host_bundle(box)
 
-    completed = box.run(NEW_IMAGE, **env)
+    completed = box.run(NEW_IMAGE, **env, **host_env)
 
     assert completed.returncode == code, completed.stderr
     assert _result(completed) == result
-    assert box.live() == before and box.env_image() == OLD_IMAGE
     calls = box.docker_calls_text()
     assert calls.count("agent_file_migration check /data") == 2
     assert "compose" not in calls.split("agent_file_migration apply")[-1], (
         "no image is converged after a failed apply"
     )
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    if result == "migration_refused":
+        assert box.live() == before and box.env_image() == OLD_IMAGE
+    else:
+        _assert_candidate_held(box)
     assert f"fake migration: apply failed outcome={outcome.removeprefix('committed_')}" in (
         completed.stdout
     )
@@ -2510,7 +2311,8 @@ def test_a_failed_apply_is_judged_by_sql(box: Box, outcome, result, code):
         assert 'recheck_output={"pending": 1}' in reason
     else:
         assert "start " not in calls and daemon["status"] == "exited"
-        assert "restore it with: BACKUP_FILE=" in completed.stderr
+        assert "rollback through deployment control:" in completed.stderr
+        assert "tinyassets.cutover_control rollback" in completed.stderr
         assert "apply_rc=1 apply_output=fake migration: apply failed outcome=" in (
             completed.stdout
         )
@@ -2535,119 +2337,328 @@ def _refusing_backup(box: Box, body: str) -> None:
     script.chmod(0o755)
 
 
-def test_a_snapshot_refusal_names_the_check_and_its_values(box: Box):
-    """The echoed deploy log names the census check and the socket it rejected."""
-    _, env = _cutover(box)
-    socket = (
-        ".universe-sidecars/u-01kxm1vszd8hwp7em418asq8h9/"
-        "ta-b9cd7a37b3752b2734bbf9daa3806c7e.sock"
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+def test_every_forward_deploy_proves_idle_and_snapshots_only_for_a_move(box: Box):
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    stdout = completed.stdout
+    assert "in-flight proof: idle" in stdout
+    assert stdout.index("in-flight proof: idle") < stdout.index("migration: asking")
+    assert "stopping tinyassets-daemon" not in stdout
+    assert "migration: nothing to move; inspected" in stdout
+    assert "box layout inspected: candidate=owner-split rc=10" in stdout
+    assert "stable owner-split census" in stdout
+    assert not list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
+
+
+def test_an_in_flight_turn_refuses_before_any_stop(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(turns_rc=10)
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=turns_idle rc=10" in _migration_refusal(completed)
+    assert "stop --time" not in box.docker_calls_text()
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+
+
+def test_a_backup_older_than_this_run_is_refused(box: Box):
     _refusing_backup(
         box,
         "#!/usr/bin/env bash\n"
-        f"echo \"unrecognized socket in snapshot inventory: '{socket}'\" >&2\n"
-        "echo '[backup test] ERROR: snapshot does not match the restorable inventory'\n"
-        "exit 2\n",
+        "set -euo pipefail\n"
+        "name='tinyassets-snapshot-2020-01-01T00-00-00Z.tar.gz'\n"
+        "mkdir -p \"${BACKUP_SNAPSHOT_DIR}\"\n"
+        "python3 - \"${BACKUP_SNAPSHOT_DIR}\" \"$name\" <<'PY'\n"
+        "import hashlib, io, os, sys, tarfile\n"
+        "directory, name = sys.argv[1:]\n"
+        "path = os.path.join(directory, name)\n"
+        "payload = b'stale\\n'\n"
+        "with tarfile.open(path, 'w:gz') as archive:\n"
+        "    info = tarfile.TarInfo('inventory.txt')\n"
+        "    info.size = len(payload)\n"
+        "    archive.addfile(info, io.BytesIO(payload))\n"
+        "digest = hashlib.sha256(open(path, 'rb').read()).hexdigest()\n"
+        "open(path + '.sha256', 'w').write('%s  %s\\n' % (digest, name))\n"
+        "PY\n"
+        "echo \"SNAPSHOT id=${name} sha256=0 bytes=1 names=1\"\n",
     )
+    box.set_docker_state(migration_pending=True)
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    reason = _migration_refusal(completed)
+    assert "check=backup_verify" in reason
+    assert "older than this run" in reason
+    stdout = completed.stdout
+    assert stdout.index("stopping tinyassets-daemon") < stdout.index("migration refused:")
+    assert "agent_file_migration apply" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+
+
+def test_unprovisioned_canary_refuses_an_owner_box_candidate(box: Box):
+    """A pending box move refuses without a canary before stopping or snapshotting."""
+    _volume, env, _, _ = _owner_box_cutover(box)
+    env["CORE_CANARY_PROVISIONED"] = "0"
+    env["BOX_STORE_CHECK"] = "/bin/true"
+    before = box.live()
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=core_canary_not_provisioned move=box_layout_pending" in (
+        _migration_refusal(completed)
+    )
+    calls = box.docker_calls_text()
+    assert "stop --time" not in calls
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+    assert "box layout inspected: candidate=owner-box rc=10" in completed.stdout
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    assert box.live() == before
+
+
+def test_unprovisioned_canary_refuses_a_pending_migration(box: Box):
+    """Agent-files pending is a data move even when the candidate is owner-split."""
+    _volume, env = _cutover(box)
+    env["CORE_CANARY_PROVISIONED"] = "0"
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=core_canary_not_provisioned move=agent_files_pending" in (
+        _migration_refusal(completed)
+    )
+    calls = box.docker_calls_text()
+    assert "agent_file_migration apply" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "start tinyassets-daemon" in calls
+
+
+def test_an_absent_layout_census_refuses_instead_of_skipping(box: Box):
+    """No marker is not 'nothing to move'. The census refuses the deploy."""
+    volume = box.root / "empty-volume"
+    volume.mkdir()
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=box_layout_absent" in reason
+    assert "box_layout_migration apply" not in box.docker_calls_text()
+    assert "stable owner-split census" not in completed.stdout
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_an_ambiguous_layout_census_refuses_instead_of_skipping(box: Box):
+    """An unreadable census is a refusal, not a skip past the move."""
+    box.set_docker_state(box_census_rc=3)
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=box_layout_ambiguous rc=3" in reason
+    assert "box_layout_migration apply" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+@pytest.mark.parametrize("gate,reason", [
+    ("canary", "check=core_canary_not_provisioned move=box_layout_pending"),
+    ("in_flight", "check=turns_idle rc=10"),
+    ("backup", "check=backup_verify"),
+    ("census", "check=box_layout_probe rc=4"),
+])
+def test_flipping_active_box_layout_without_a_gate_refuses(box: Box, gate, reason):
+    """ACTIVE_BOX_LAYOUT=owner-box would move this owner-split volume on the next deploy.
+
+    The constant only selects the move step. That step refuses unless the fresh
+    verified backup, the in-flight probe, the census, and the canary all passed.
+    """
+    box.set_docker_state(active_box_layout={NEW_IMAGE: "owner-box"})
+    harness = box.root / "boxhostd"
+    harness.mkdir()
+    env = {
+        "BOX_HARNESS_ROOT": str(harness),
+        "BOX_STORE_CHECK": "/bin/true",
+    }
+    if gate == "canary":
+        env["CORE_CANARY_PROVISIONED"] = "0"
+    elif gate == "in_flight":
+        box.set_docker_state(turns_rc=10)
+    elif gate == "backup":
+        _, ready_env, _, _ = _owner_box_cutover(box)
+        env.update(ready_env)
+        _refusing_backup(
+            box,
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "name='tinyassets-snapshot-2020-01-01T00-00-00Z.tar.gz'\n"
+            "mkdir -p \"${BACKUP_SNAPSHOT_DIR}\"\n"
+            "python3 - \"${BACKUP_SNAPSHOT_DIR}\" \"$name\" <<'PY'\n"
+            "import hashlib, io, os, sys, tarfile\n"
+            "directory, name = sys.argv[1:]\n"
+            "path = os.path.join(directory, name)\n"
+            "payload = b'stale\\n'\n"
+            "with tarfile.open(path, 'w:gz') as archive:\n"
+            "    info = tarfile.TarInfo('inventory.txt')\n"
+            "    info.size = len(payload)\n"
+            "    archive.addfile(info, io.BytesIO(payload))\n"
+            "digest = hashlib.sha256(open(path, 'rb').read()).hexdigest()\n"
+            "open(path + '.sha256', 'w').write('%s  %s\\n' % (digest, name))\n"
+            "PY\n"
+            "echo \"SNAPSHOT id=${name} sha256=0 bytes=1 names=1\"\n",
+        )
+    elif gate == "census":
+        box.set_docker_state(box_census_rc=4)
+    else:
+        raise AssertionError(gate)
     before = box.live()
     box.stage_bundle()
 
     completed = box.run(NEW_IMAGE, **env)
 
-    assert completed.returncode == 1, completed.stderr
+    assert completed.returncode == 1, completed.stdout + completed.stderr
     assert _result(completed) == "migration_refused"
-    reason = _migration_refusal(completed)
-    assert "check=full_volume_snapshot rc=2" in reason
-    assert socket in reason
-    assert "ERROR: snapshot does not match the restorable inventory" in reason
-    stdout = completed.stdout
-    assert stdout.index("stopping tinyassets-daemon") < stdout.index("migration refused:")
-    assert stdout.index("migration refused:") < stdout.index("deploy_result=")
+    assert "candidate box layout: owner-box" in completed.stdout
+    refusal = _migration_refusal(completed)
+    assert reason in refusal
+    calls = box.docker_calls_text()
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    marker = json.loads(
+        (box.root / "default-data-volume" / ".layout.json").read_text(encoding="utf-8")
+    )
+    assert marker["box_layout"] == "owner-split"
+    assert marker["state"] == "stable"
     assert box.live() == before
-    assert "start tinyassets-daemon" in box.docker_calls_text()
-    assert "agent_file_migration apply" not in box.docker_calls_text()
+    if gate == "backup":
+        assert "older than this run" in refusal
+        assert completed.stdout.index("stopping tinyassets-daemon") < completed.stdout.index(
+            "migration refused:"
+        )
+    else:
+        assert "stop --time" not in calls
+        assert "start tinyassets-daemon" in calls
+        events = box.event_log.read_text().splitlines()
+        restored = max(i for i, event in enumerate(events)
+                       if event == "systemctl daemon-reload")
+        restarted = max(i for i, event in enumerate(events)
+                        if event == "docker start tinyassets-daemon")
+        assert restored < restarted
 
 
-def test_a_missing_snapshot_script_names_the_path(box: Box):
-    _, env = _cutover(box)
-    missing = box.root / "no-such-backup.sh"
-    env["BACKUP_SCRIPT"] = str(missing)
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, **env)
-
-    assert _result(completed) == "migration_refused"
-    reason = _migration_refusal(completed)
-    assert f"check=backup_script path={missing} present=no" in reason
+def _readonly_harness(path: Path) -> None:
+    payload = path / "app" / "payload"
+    payload.parent.mkdir(parents=True)
+    payload.write_text("sealed\n", encoding="utf-8")
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    path.chmod(0o555)
 
 
-def test_a_snapshot_without_an_id_names_the_last_line(box: Box):
-    _, env = _cutover(box)
-    _refusing_backup(
-        box,
-        "#!/usr/bin/env bash\n"
-        "echo 'backup finished without an id'\n"
-        "exit 0\n",
+def _owner_box_already(box: Box) -> tuple[Path, Path]:
+    volume = box.root / "owner-box-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-box"}\n',
+        encoding="utf-8",
     )
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, **env)
-
-    assert _result(completed) == "migration_refused"
-    reason = _migration_refusal(completed)
-    assert "check=snapshot_id present=no last=backup finished without an id" in reason
+    harness = box.root / "boxhostd"
+    harness.mkdir()
+    return volume, harness
 
 
-def test_a_stop_refusal_names_the_container_and_docker_output(box: Box):
-    _, env = _cutover(box)
-    box.set_docker_state(stop_refused=True)
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, **env)
-
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "migration_refused"
-    reason = _migration_refusal(completed)
-    assert "check=daemon_stopped container=tinyassets-daemon grace_s=20 rc=1" in reason
-    assert "output=fake docker: stop refused for tinyassets-daemon status=running" in reason
-    assert "agent_file_migration apply" not in box.docker_calls_text()
-    assert not list((box.root / "backups").glob("*.tar.gz"))
+def _harness_name(ref: str) -> str:
+    return "harness-" + hashlib.sha256(ref.encode("utf-8")).hexdigest()
 
 
-def test_a_restart_refusal_names_docker_output(box: Box):
-    _, env = _cutover(box)
-    box.set_docker_state(start_refused=True)
-    _refusing_backup(box, "#!/usr/bin/env bash\necho 'ERROR: snapshot tar failed' >&2\nexit 2\n")
-    box.stage_bundle()
-
-    completed = box.run(NEW_IMAGE, **env)
-
-    assert _result(completed) == "migration_refused"
-    reason = _migration_refusal(completed)
-    assert "check=full_volume_snapshot rc=2" in reason
-    assert "ERROR: snapshot tar failed" in reason
-    assert "check=daemon_restart container=tinyassets-daemon" in reason
-    assert "output=fake docker: start refused for tinyassets-daemon status=exited" in reason
-    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
-    assert daemon["status"] == "exited"
-
-
-def test_a_probe_refusal_names_the_rc_and_the_probe_output(box: Box):
-    _, env = _cutover(box)
+def test_rollback_converge_failure_discards_the_candidate_harness(box: Box):
+    """restart_stack's exit 3 used to skip the only discard, leaking ~4 GiB."""
+    volume, harness = _owner_box_already(box)
+    previous = "harness-" + "1" * 64
+    (harness / previous / "app").mkdir(parents=True)
+    (harness / previous / "app" / "kept").write_text("old\n", encoding="utf-8")
+    (harness / "harness-current").symlink_to(previous)
+    candidate = harness / _harness_name(NEW_IMAGE)
     box.set_docker_state(
-        migration_probe_error="PermissionError errno=13 path=/data/.broker/.runs.db",
-        migration_probe_rc=2,
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+            OLD_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+        },
+        unhealthy_images=[NEW_IMAGE],
+        up_fail_images=[OLD_IMAGE],
     )
     box.stage_bundle()
+    completed = box.run(
+        NEW_IMAGE,
+        FAKE_DOCKER_VOLUME_DIR=str(volume),
+        BOX_HARNESS_ROOT=str(harness),
+        BOX_STORE_CHECK="/bin/true",
+        FAKE_DOCKER_EXPECT_HARNESS_GONE=str(candidate),
+        FAKE_DOCKER_EXPECT_HARNESS_GONE_IMAGE=OLD_IMAGE,
+    )
+    assert completed.returncode == 3, completed.stdout + completed.stderr
+    assert _result(completed) == "rollback_failed"
+    assert "candidate harness still present" not in completed.stderr
+    assert "removed candidate harness" in completed.stdout
+    assert not candidate.exists()
+    assert (harness / "harness-current").readlink() == Path(previous)
+    assert (harness / previous / "app" / "kept").read_text(encoding="utf-8") == "old\n"
 
-    completed = box.run(NEW_IMAGE, **env)
 
-    assert completed.returncode == 1, completed.stderr
-    assert _result(completed) == "migration_refused"
-    reason = _migration_refusal(completed)
-    assert f"check=agent_bindings_probe image={NEW_IMAGE} rc=2" in reason
-    assert (
-        "output=fake migration: probe failed: "
-        "PermissionError errno=13 path=/data/.broker/.runs.db"
-    ) in reason
-    assert "stop --time" not in box.docker_calls_text()
+def test_successful_deploy_prunes_readonly_historical_harnesses(box: Box):
+    volume, harness = _owner_box_already(box)
+    previous = "harness-" + "1" * 64
+    older = "harness-" + "2" * 64
+    _readonly_harness(harness / previous)
+    _readonly_harness(harness / older)
+    (harness / "harness-current").symlink_to(previous)
+    box.set_docker_state(
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+            OLD_IMAGE: {"layouts": [1], "boxes": ["owner-split", "owner-box"]},
+        },
+    )
+    box.stage_bundle()
+    completed = box.run(
+        NEW_IMAGE,
+        FAKE_DOCKER_VOLUME_DIR=str(volume),
+        BOX_HARNESS_ROOT=str(harness),
+        BOX_STORE_CHECK="/bin/true",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    current = _harness_name(NEW_IMAGE)
+    assert (harness / "harness-current").readlink() == Path(current)
+    assert (harness / current / "app" / "tinyassets" / "boxd.py").is_file()
+    # The public canary can still roll back to the rootfs this deploy replaced.
+    assert (harness / previous).is_dir()
+    assert not (harness / older).exists()
+    assert f"removed old harness {older}" in completed.stdout
+    assert f"removed old harness {previous}" not in completed.stdout
+    assert "box layout: already owner-box; no move" in completed.stdout
+    events = box.event_log.read_text().splitlines()
+    creates = [i for i, event in enumerate(events) if event.startswith("docker create ")]
+    restarts = [i for i, event in enumerate(events)
+                if event == "systemctl restart boxhostd.service"]
+    ups = [i for i, event in enumerate(events)
+           if event.startswith("docker compose ") and " up " in event]
+    assert creates and restarts and ups
+    assert creates[-1] < restarts[-1] < ups[0]

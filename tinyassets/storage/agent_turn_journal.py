@@ -8,8 +8,10 @@ No timer, loader or stale worker can turn an uncertain effect back into a plan.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +22,6 @@ from tinyassets.providers.agent_chat_codec import AgentReply, ToolRequest
 from tinyassets.storage import agent_turn_records as records
 from tinyassets.storage import agent_turn_runner as runner
 from tinyassets.storage import db_path
-from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
 from tinyassets.storage.agent_turn_records import (
     RoundInput,
@@ -39,8 +40,8 @@ _SCOPE = "owner_user_id = ? AND universe_id = ? AND turn_id = ?"
 # a ``held_*`` turn is stopped, not working, so it is not something a surface may
 # report as activity. The reset blocker set below is this plus the two ambiguous
 # holds, expressed as the union so neither question has a second literal list.
-WORKING_STATES = frozenset({"ready", "inference_started", "native_started", "tools_pending"})
-_AMBIGUOUS_STATES = frozenset({"held_native_unknown", "held_tool_unknown"})
+WORKING_STATES = frozenset({"ready", "inference_started", "tools_pending"})
+_AMBIGUOUS_STATES = frozenset({"held_tool_unknown"})
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS agent_turns (
       owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL, turn_id TEXT NOT NULL,
@@ -132,6 +133,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 conn.rollback()
                 raise
 
+    if "recovered_owner_generation" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+    }:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "recovered_owner_generation" not in {
+                row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+            }:
+                conn.execute(
+                    "ALTER TABLE agent_turns ADD COLUMN recovered_owner_generation INTEGER"
+                )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
     return tuple(records.identity(value) for value in (owner, universe, turn))
@@ -189,13 +206,6 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         ):
             # SQL version 1 is the unchanged container. Candidate/reply payloads
             # carry their own version; old HTTP rows are neither migrated nor rewritten.
-            candidate_document = records.document(rr["candidate_json"])
-            if candidate_document.get("version") == 2 or (
-                candidate_document.get("version") == 3
-                and candidate_document.get("kind") == "native_agent"
-            ):
-                rounds.append(_read_native_round(conn, scope, ordinal, rr))
-                continue
             if (
                 rr["version"] != 1
                 or rr["ordinal"] != ordinal
@@ -287,10 +297,6 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
                 and completed_round.state == "failed"
                 and completed_round.reply is None
                 and not completed_round.tools
-            ) and not (
-                type(completed_round.candidate) is NativeInput
-                and type(completed_round.reply) is NativeTerminal
-                and completed_round.reply.status == "capacity_no_effects"
             ):
                 raise records.invalid()
         expected_state = _frontier(rounds[-1]) if rounds else "ready"
@@ -317,39 +323,7 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         raise JournalUnavailable("agent turn record unavailable") from None
 
 
-def _read_native_round(conn, scope, ordinal, row) -> RoundSnapshot:
-    if (row["version"] != 1 or row["ordinal"] != ordinal
-            or row["state"] not in {"native_started", "native_received"}):
-        raise records.invalid()
-    candidate = NativeInput.from_json(row["candidate_json"])
-    reply = (None if row["reply_json"] is None
-             else NativeTerminal.from_json(row["reply_json"], candidate))
-    if (reply is not None) != (row["state"] == "native_received"):
-        raise records.invalid()
-    cost = row["cost_microusd"]
-    if cost is not None:
-        records.integer(cost)
-        if reply is None or reply.status != "completed":
-            raise records.invalid()
-    if conn.execute(
-        f"SELECT 1 FROM agent_turn_tools WHERE {_SCOPE} AND round_ordinal = ? LIMIT 1",
-        (*scope, ordinal),
-    ).fetchone() is not None:
-        raise records.invalid()
-    return RoundSnapshot(ordinal, candidate, row["state"], reply, (), cost)
-
-
 def _frontier(round_snapshot: RoundSnapshot) -> str:
-    if type(round_snapshot.candidate) is NativeInput:
-        if round_snapshot.state == "native_started":
-            return "native_started"
-        if type(round_snapshot.reply) is not NativeTerminal:
-            raise records.invalid()
-        return {
-            "completed": "completed",
-            "capacity_no_effects": "held_native_capacity",
-            "indeterminate": "held_native_unknown",
-        }[round_snapshot.reply.status]
     if round_snapshot.state == "inference_started":
         return "inference_started"
     if round_snapshot.state == "failed":
@@ -413,14 +387,25 @@ class AgentTurnJournal:
 
     def __init__(self, base_path: str | Path) -> None:
         self._ledger = SQLiteProviderWorkAuthorityStore(base_path)
+        self._leases = {}
+        self._lease_lock = threading.Lock()
+        self._recovering_turn = ContextVar("recovering_agent_turn", default=None)
 
     @contextmanager
-    def _transaction(self, universe: str):
+    def _recovering_orphan(self, turn_id: str):
+        token = self._recovering_turn.set(turn_id)
+        try:
+            yield
+        finally:
+            self._recovering_turn.reset(token)
+
+    @contextmanager
+    def _transaction(self, universe: str, *, new_turn: bool = False):
         """One owner mutation: the command center's lease, then ONE fenced write
         transaction (change execution-owner-lease D3). Yields (conn, lease)."""
         with self._ledger.connection() as conn:
             ensure_schema(conn)
-            lease = self._lease(universe)
+            lease = self._lease(universe, new_turn=new_turn)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 check_fence(conn, lease)
@@ -430,10 +415,58 @@ class AgentTurnJournal:
                 conn.rollback()
                 raise
 
-    def _lease(self, universe: str):
+    def _lease(self, universe: str, *, new_turn: bool = False):
         base = self._ledger.base_path
-        owner_lease.register_store(base, db_path(base), "agent_turn_journal")
-        return owner_lease.acquire(base, owner_lease.key_for(records.identity(universe)))
+        key = owner_lease.key_for(records.identity(universe))
+        with self._lease_lock:
+            lease = self._leases.get(key)
+            if lease is None or (new_turn and not lease.held()):
+                owner_lease.register_store(base, db_path(base), "agent_turn_journal")
+                lease = owner_lease.acquire(base, key)
+                self._leases[key] = lease
+            # Existing turns cannot silently adopt a successor's generation.
+            # A new turn can use the current owner's lease after an owner-tree
+            # restart; its INSERT receives that generation below.
+            if not lease.held():
+                raise owner_lease.LeaseLost("agent journal owner generation changed")
+            return lease
+
+    def adopt_orphan(self, owner: str, universe: str, turn_id: str, *,
+                     owner_generation: int, runner_token: str) -> None:
+        """Fence a progressing orphan into this owner's generation.
+
+        This does not run the turn. It only lets the ordinary terminal journal
+        transitions settle its recorded frontier. A prior generation is proof
+        that the old owner tree ended; a row from this generation also needs
+        its unique runner token's death proof. Both checks happen under the
+        fenced write transaction.
+        """
+        scope = _scope(owner, universe, turn_id)
+        with self._transaction(universe) as (conn, lease):
+            check_current_home(conn, owner, universe)
+            row = conn.execute(
+                "SELECT owner_generation, runner_token, recovered_owner_generation, state "
+                f"FROM agent_turns WHERE {_SCOPE}",
+                scope,
+            ).fetchone()
+            if row is None or row["state"] not in WORKING_STATES:
+                return
+            if (row["owner_generation"] != owner_generation
+                    or row["runner_token"] != runner_token
+                    or owner_generation > lease.generation
+                    or (owner_generation == lease.generation
+                        and not runner.orphan(self._ledger.base_path, runner_token))):
+                raise owner_lease.LeaseLost("agent turn is not an orphaned row")
+            if (owner_generation < lease.generation
+                    or row["recovered_owner_generation"] is None):
+                conn.execute(
+                    "UPDATE agent_turns SET owner_generation = ?, "
+                    f"recovered_owner_generation = ? WHERE {_SCOPE}",
+                    (lease.generation,
+                     row["recovered_owner_generation"]
+                     if row["recovered_owner_generation"] is not None
+                     else owner_generation, *scope),
+                )
 
     def create(
         self,
@@ -448,7 +481,9 @@ class AgentTurnJournal:
         work_receipt_id: str = "",
         agent_id: str = "main",
     ) -> TurnSnapshot:
-        scope = _scope(owner, universe, uuid.uuid4().hex)
+        from tinyassets.operation_epoch import new_identity
+
+        scope = _scope(owner, universe, new_identity(uuid.uuid4().hex))
         agent_id = records.identity(agent_id or "main")
         if not isinstance(prompt, str) or not isinstance(system, str):
             raise records.invalid()
@@ -468,7 +503,7 @@ class AgentTurnJournal:
             }
         )
         with (runner.claim(self._ledger.base_path, scope[2]) as token,
-              self._transaction(universe) as (conn, lease)):
+              self._transaction(universe, new_turn=True) as (conn, lease)):
             check_current_home(conn, owner, universe)
             conn.execute(
                 "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, "
@@ -608,8 +643,18 @@ class AgentTurnJournal:
     def _mutation(self, owner, universe, turn_id, expected_generation):
         scope = _scope(owner, universe, turn_id)
         records.integer(expected_generation, minimum=1)
-        with self._transaction(universe) as (conn, _lease):
+        with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
+            row = conn.execute(
+                "SELECT owner_generation, recovered_owner_generation "
+                f"FROM agent_turns WHERE {_SCOPE}",
+                scope,
+            ).fetchone()
+            if row is not None and row["owner_generation"] != lease.generation:
+                raise owner_lease.LeaseLost("agent turn belongs to an earlier owner generation")
+            if (row is not None and row["recovered_owner_generation"] is not None
+                    and self._recovering_turn.get() != turn_id):
+                raise owner_lease.LeaseLost("adopted agent turn is recovery-only")
             current = _read(conn, scope)
             if current is None:
                 raise JournalUnavailable("agent turn unavailable")
@@ -622,10 +667,10 @@ class AgentTurnJournal:
         turn_id,
         *,
         expected_generation: int,
-        candidate: RoundInput | NativeInput,
+        candidate: RoundInput,
         after_failed_inference: bool = False,
     ) -> Transition:
-        if (type(candidate) not in (RoundInput, NativeInput)
+        if (type(candidate) is not RoundInput
                 or type(after_failed_inference) is not bool):
             raise records.invalid()
         raw = candidate.canonical_json()
@@ -645,19 +690,12 @@ class AgentTurnJournal:
                 and current.rounds[-1].state == "failed"
                 and current.rounds[-1].reply is None
                 and not current.rounds[-1].tools
-            ) or (
-                after_failed_inference
-                and current.state == "held_native_capacity"
-                and current.rounds
-                and type(current.rounds[-1].candidate) is NativeInput
-                and type(current.rounds[-1].reply) is NativeTerminal
-                and current.rounds[-1].reply.status == "capacity_no_effects"
             )
             admissible = retryable if after_failed_inference else current.state == "ready"
             if current.generation != expected_generation or not admissible:
                 return Transition("conflict", current)
             ordinal = len(current.rounds) + 1
-            state = "native_started" if type(candidate) is NativeInput else "inference_started"
+            state = "inference_started"
             conn.execute(
                 "INSERT INTO agent_turn_rounds (owner_user_id, universe_id, turn_id, ordinal, "
                 "version, "
@@ -745,41 +783,6 @@ class AgentTurnJournal:
             state = "held_transport" if reply is None else records.STOP_STATE[reply.stop]
             return _advance(conn, scope, current, state)
 
-    def finish_native(
-        self, owner, universe, turn_id, *, expected_generation: int,
-        ordinal: int, terminal: NativeTerminal, cost_microusd: int | None = None,
-    ) -> Transition:
-        """Persist a native terminal union; missing effects never mean no effects."""
-        records.integer(ordinal, minimum=1)
-        if type(terminal) is not NativeTerminal:
-            raise records.invalid()
-        if cost_microusd is not None:
-            records.integer(cost_microusd)
-            if terminal.status != "completed":
-                raise records.invalid()
-        with self._mutation(owner, universe, turn_id, expected_generation) as (
-            conn, scope, current,
-        ):
-            if ordinal > len(current.rounds):
-                return Transition("conflict", current)
-            target = current.rounds[ordinal - 1]
-            if type(target.candidate) is not NativeInput:
-                return Transition("conflict", current)
-            raw = terminal.canonical_json(target.candidate)
-            if target.state != "native_started":
-                same = (terminal, cost_microusd) == (target.reply, target.cost_microusd)
-                return Transition("already_applied" if same else "conflict", current)
-            if current.generation != expected_generation or ordinal != len(current.rounds):
-                return Transition("conflict", current)
-            conn.execute(
-                f"UPDATE agent_turn_rounds SET state = 'native_received', reply_json = ?, "
-                f"cost_microusd = ? WHERE {_SCOPE} AND ordinal = ?",
-                (raw, cost_microusd, *scope, ordinal),
-            )
-            state = _frontier(RoundSnapshot(
-                ordinal, target.candidate, "native_received", terminal, (), cost_microusd,
-            ))
-            return _advance(conn, scope, current, state)
 
     def start_tool(
         self, owner, universe, turn_id, *, expected_generation: int, ordinal: int, call_ordinal: int

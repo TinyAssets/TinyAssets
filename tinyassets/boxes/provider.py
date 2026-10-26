@@ -1,31 +1,10 @@
-"""`BoxProvider`: the only way the platform touches a command center's box.
+"""Descriptor-safe file operations local to the persistent owner box.
 
-Target architecture D2 (`openspec/changes/target-architecture/design.md`). Every
-command center runs in exactly one sealed box. The daemon reaches the box's
-contents ONLY through this interface, never a host path. That is the
-by-construction close of the planted-link class (#4244): a path is resolved
-inside the box, so a link the agent planted can only point inside its own box.
-
-Three rules every driver keeps:
-
-* **Binding is not waking.** :meth:`BoxProvider.bind` checks ownership and
-  returns a handle without contacting the box. :meth:`committed_generation`
-  answers from the box host's own record, even while the box is suspended. So a
-  turn whose cache is current never wakes a box.
-* **Every operation is authenticated.** A handle carries the owning account,
-  the command center and the box's placement epoch. A driver refuses a handle
-  whose account does not own the command center, or whose epoch is stale
-  because the box was destroyed or re-imported. A valid handle on the wrong
-  turn fails at the execution boundary, not in the caller's good intentions.
-* **Mutations are idempotent by operation id.** A retry with the same `op_id`
-  returns the recorded outcome and never runs the operation again. An
-  operation in flight across a box-host restart reports
-  :attr:`ExecState.UNKNOWN_AFTER_RESTORE`; the caller holds, it does not
-  re-issue. That is the same rule as the turn journal.
-
-Box paths are absolute under :data:`BOX_ROOT` (``/cc``). They are resolved
-inside the box; ``..``, empty components, NULs and anything outside ``/cc``
-are refused here, before any driver sees them.
+OwnerBoxd implements this file contract inside the owner's OS boundary; the
+local driver is a development reference. Operation IDs, epochs, generations
+and compare-and-swap writes protect coherent file updates. File API paths
+use /cc relative to the mounted owner root. Boxhostd alone owns persistent
+sandbox lifecycle; there is no file or execution forwarding interface.
 """
 
 from __future__ import annotations
@@ -49,10 +28,7 @@ __all__ = [
     "DestroyReceipt",
     "DirEntry",
     "DirPage",
-    "ExecEvent",
     "ExecLimits",
-    "ExecState",
-    "ExecStatus",
     "ExportProfile",
     "FileRead",
     "FileStat",
@@ -125,10 +101,6 @@ class ExportProfile(str, enum.Enum):
     MIGRATION = "migration"  #: complete private state for a cell move; never user-facing
 
 
-class ExecState(str, enum.Enum):
-    RUNNING = "running"
-    EXITED = "exited"
-    UNKNOWN_AFTER_RESTORE = "unknown_after_restore"
 
 
 @dataclass(frozen=True)
@@ -148,24 +120,8 @@ class ExecLimits:
     output_bytes: int = 64 * 1024
 
 
-@dataclass(frozen=True)
-class ExecEvent:
-    #: ``"output"`` (stdout and stderr, merged in order) or ``"exit"``.
-    kind: str
-    offset: int = 0
-    data: bytes = b""
-    exit_code: int | None = None
-    #: ``"timeout"``, ``"output_limit"``, ``"cancelled"`` or None.
-    killed: str | None = None
 
 
-@dataclass(frozen=True)
-class ExecStatus:
-    op_id: str
-    exec_id: str
-    state: ExecState
-    exit_code: int | None = None
-    killed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -205,6 +161,9 @@ class DirEntry:
     name: str
     kind: str
     size: int
+    #: Identify hard links so byte measures count a linked file once.
+    inode: int = 0
+    links: int = 1
 
 
 @dataclass(frozen=True)
@@ -270,20 +229,6 @@ class BoxProvider(Protocol):
              turn_id: str | None = None) -> BoxHandle: ...
     def committed_generation(self, handle: BoxHandle) -> int: ...
     def ensure_awake(self, handle: BoxHandle, *, reason: str) -> None: ...
-
-    # execution lifecycle
-    def start_exec(self, handle: BoxHandle, op_id: str, argv: Sequence[str], *,
-                   stdin: bytes = b"", env: Mapping[str, str] | None = None,
-                   cwd: str = BOX_ROOT, limits: ExecLimits = ExecLimits(),
-                   interactive_stdin: bool = False) -> str: ...
-    def send_stdin(self, handle: BoxHandle, exec_id: str, request_id: str,
-                   data: bytes) -> None:
-        """Idempotent bounded reply to this handle's running exec, outside durable files."""
-        ...
-    def stream(self, handle: BoxHandle, exec_id: str, *,
-               from_offset: int = 0, timeout: float | None = None) -> Iterator[ExecEvent]: ...
-    def cancel(self, handle: BoxHandle, exec_id: str) -> None: ...
-    def exec_status(self, handle: BoxHandle, op_id: str) -> ExecStatus: ...
 
     # files
     def read(self, handle: BoxHandle, path: str, *, offset: int = 0,

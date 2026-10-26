@@ -5,9 +5,7 @@ result is advisory: every actual launch still validates its exact member anew.
 """
 
 import logging
-import sqlite3
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyassets.commons_catalog import get_binding
@@ -19,9 +17,7 @@ from tinyassets.provider_assignment import (
     provider_assignment_admission,
 )
 from tinyassets.provider_serving_binding import (
-    _PROVIDER_SERVICE,
     ServingProviderHeld,
-    _resolve_serving_source,
     current_connected_source_custody,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
@@ -29,35 +25,37 @@ from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
 from tinyassets.providers.model_policy import (
     Catalog,
     Charge,
-    ConnectionModels,
     Ineligible,
     Interaction,
-    Model,
     ModelPolicy,
     ModelRef,
-    Pricing,
     SourceModelPolicy,
     order_models,
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_plan_scope, current_home
-from tinyassets.storage.learned_models import (
-    LEARNED_SOURCE_KIND,
-    OWN_VERIFIED_BASIS,
-)
 from tinyassets.storage.model_preferences import ModelPreferenceStore, PreferenceSnapshot
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
 
-#: An id from the reviewed public list for this source kind. A public claim that the
-#: id EXISTS, never permission to use it.
-PUBLIC_LISTED_BASIS = "publicly_listed"
 
-#: Evidence alone cannot grant access. Subscription history is not provider-keyed;
-#: only this provider's catalogue or an explicit grant can make its ids selectable.
-_CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
+def _recover_stale_default(plan, catalogues, connected, owner, universe):
+    policy = plan.policy
+    saved = policy.saved_default
+    stale = saved is not None and (
+        saved.connection_id not in connected or any(
+            c.connection_id == saved.connection_id
+            and all(m.model_id != saved.model_id for m in c.models)
+            for c in catalogues))
+    if (plan.next_candidate(owner, universe) is None
+            and policy.current_selection is None and policy.saved_default is not None
+            and stale):
+        policy = replace(policy, mode="automatic", saved_default=None, fallbacks=(),
+                         stable_preference=None)
+        return replace(plan, policy=policy)
+    return plan
 
 
 def connected_sources(base: str | Path, universe: str | Path, owner: str,
@@ -69,7 +67,6 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
     """
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.ledger_queries import HAS_MODEL_SOURCE, query_ledger
-    from tinyassets.credential_vault import current_llm_subscription_custody
     from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
 
@@ -78,22 +75,19 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
             or not owner):
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
-    def subscriptions(db):
-        for provider, service in _PROVIDER_SERVICE.items():
-            if current_llm_subscription_custody(
-                db, universe_dir=universe, owner_user_id=owner,
-                universe_id=universe.name, service=service,
-            ) is not None:
-                sources.add(provider)
-    if conn is None:
-        with SQLiteProviderWorkAuthorityStore(base).connection() as db:
-            db.execute("BEGIN")
-            subscriptions(db)
-            db.rollback()
-    else:
-        subscriptions(conn)
     for definition in list_definitions(universe.name):
-        if definition.owner_user_id != owner or definition.access_method != "api_key_http":
+        if definition.owner_user_id != owner:
+            continue
+        if definition.access_method == "subscription_cli":
+            from tinyassets.providers.subscription_catalog import context
+
+            try:
+                context(definition, owner, universe.name)
+                sources.add("subscription_cli:" + definition.id)
+            except (PermissionError, OSError, ValueError):
+                pass
+            continue
+        if definition.access_method != "api_key_http":
             continue
         try:
             facts = query_ledger(
@@ -101,13 +95,11 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
                 command_center=universe.name, grant_id=definition.ref,
             )
         except (GrantResolutionError, BrokerRefused, ProxyRequestError, ValueError, OSError):
-            # One unavailable HTTP grant cannot withhold an independent
-            # subscription source. An HTTP call still fails membership below.
+            # One unavailable grant cannot withhold another connected HTTP source.
             continue
         if facts.get("model_source") is True:
             sources.add("api_key_http:" + definition.id)
     return frozenset(sources)
-
 
 
 #: Prefix of the refusal when no accepted model can run. The served turn's
@@ -117,20 +109,8 @@ HELD_SOURCES = "not usable now: "
 
 def _assert_plan_snapshot(snapshot, *, display_only=False):
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
-    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 
-    if type(snapshot) is NativeDiscoverySnapshot:
-        # The caller has just rechecked every exact member/custody chain in its
-        # transaction. Do not open another SQLite connection inside that fence.
-        if display_only:
-            # Age is advisory for an owned display, but future observations are
-            # still invalid. Execution always takes the strict default below.
-            if datetime.now(timezone.utc) < snapshot.completed_at:
-                raise ProviderError("native model discovery expired or source changed")
-        else:
-            snapshot.assert_fresh()
-    else:
-        assert_discovery_snapshot_current(snapshot)
+    assert_discovery_snapshot_current(snapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,156 +208,27 @@ class ModelSourceUnavailable(PermissionError):
         self.reason = reason
 
 
-def _native_models(base, universe, owner, member, *, native_snapshot=None, display_only=False):
-    from tinyassets.providers.call import get_provider_router
-    from tinyassets.providers.model_selection import _native_default
-
-    _resolve_serving_source(base, universe.name, owner, member.provider, member.access)
-    from tinyassets.providers.native_model_selection import accepted_native_selection
-
-    declared = member.access.model_ids if member.access.model_scope == "explicit" else ("",)
-    models = []
-    #: Ids the executor advertised AND marked unselectable. Withheld from the
-    #: choices, and also withheld from the candidate sources below: Codex found
-    #: that filtering them out of enumeration alone let the same id return as a
-    #: learned or reviewed-list candidate, because dedupe only saw the rows that
-    #: were kept. A source saying "not this one" outranks our own history of it.
-    withdrawn = set()
-    for model_id in declared:
-        if model_id:
-            accepted_native_selection(member.provider, model_id, member.access)
-        else:
-            _native_default(member.provider, model_id, member.access)
-        models.append(Model(
-            model_id, True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True),
-            availability_basis="owner_declared" if model_id else "executor_default",
-        ))
-    if native_snapshot is not None:
-        if member.access.model_scope != "discovered":
-            raise PermissionError("native discovery cannot widen an explicit model scope")
-        if not display_only:
-            native_snapshot.assert_fresh()
-        if (native_snapshot.provider != member.provider or native_snapshot.owner_id != owner
-                or native_snapshot.universe != Path(universe).resolve()
-                or native_snapshot.custody.reference_digest != member.credential_reference_digest):
-            raise PermissionError("native catalogue is outside current member custody")
-        # A row the executor itself marked unselectable must not become a normal
-        # choice. Offering it would hand the owner a pick that fails at launch,
-        # which is worse than not listing it (see the learned-id split below).
-        withdrawn.update(model.model_id for model in native_snapshot.catalogue.models
-                         if model.hidden)
-        models.extend(Model(
-            model.model_id, True, model.input_modalities,
-            pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
-            effort_levels=model.effort_levels,
-        ) for model in native_snapshot.catalogue.models if not model.hidden)
-    # The owner's verified history is source-scoped; reviewed public lists use kind.
-    # Without this the list is only what this owner typed into their own access
-    # grant, so a newly released model was invisible until someone shipped a patch
-    # (founder, 2026-09-26: "i cant seem to select fable as a user for the llm").
-    #
-    # These are NOT put through accepted_native_selection: they are candidates the
-    # platform can vouch exist, not ids this universe has granted access to. The
-    # existing access machinery marks them outside the accepted scope, so they
-    # surface as "needs access" and become selectable when the owner grants it.
-    # A catalog row is evidence, never permission.
-    # THIS OWNER's own verified ids first. The founder's rule is that an id which
-    # worked for one owner "stays on that user's own list forever" even when it
-    # never becomes public -- and Codex round 3 found the store was keeping it while
-    # nothing ever listed it, so a solo user's ARN silently vanished from their own
-    # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
-    # keeping it.
-    # The reviewed list is keyed by source, including external-agent packages.
-    # The owner's history remains separately scoped by provider_ref.
-    router = get_provider_router()
-    provider = None if router is None else router._providers.get(member.provider)
-    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, member.provider, owner,
-                                          already=models, excluded=withdrawn))
-    # ...then the reviewed public list for this kind of source, which is how a newly
-    # released model reaches everyone without a patch: a PR adds the id, review is the
-    # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, source_key=member.provider,
-                                     already=models,
-                                     excluded=withdrawn))
-    if provider is None or not provider.is_available():
-        raise ModelSourceUnavailable("executor_unavailable")
-    return ConnectionModels(
-        member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
-        True, True,
-        tuple(models), default_model_id="" if "" in declared else None,
-    )
 
 
-def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
-                             excluded=frozenset()):
-    """Ids THIS owner has already made work on this source.
-
-    Their own history, not anyone else's: read from the private evidence table
-    scoped to this owner, so nothing here depends on the promotion threshold. A
-    solo user keeps every id they have ever used even though none of it is public.
-
-    Carries its own basis so the list distinguishes owner history from reviewed
-    public ids. Like the published rows, these do not grant access: the owner may
-    have narrowed their scope since. Display
-    retention requires a non-hidden row in this provider's last catalogue under
-    current custody, while refresh is pending or failed. Such rows are already
-    included as executor_enumerated, so history-only rows remain offers. A fresh
-    catalogue is authoritative; execution always needs fresh discovery.
-    """
-    from tinyassets.storage.learned_models import OwnModelHistory
-
-    have = {model.model_id for model in already} | set(excluded)
-    try:
-        rows = OwnModelHistory(base).ids_for(source_kind, provider_ref, owner)
-    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
-        _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
-        return ()
-    return tuple(
-        Model(row.model_id, True, frozenset({"text"}),
-              pricing=Pricing("fresh", unmetered=True),
-              availability_basis=OWN_VERIFIED_BASIS)
-        for row in rows if row.model_id and row.model_id not in have
-    )
-
-
-def _listed_candidates(source_kind, *, source_key, already, excluded=frozenset()):
-    """Newest-per-class ids from the reviewed public list for one source kind.
-
-    A UNION, never a filter: an id this universe already has keeps its own row and its
-    own basis, whatever the list says. A user happily running an older model does not
-    lose it because a newer one was listed.
-
-    A malformed list file RAISES rather than reading as empty -- a corrupted list must
-    not silently shrink every user's picker with no signal -- and the caller's own
-    except clause turns that into a source-level reason the repair screen can show.
-    """
-    from tinyassets.providers.public_model_lists import newest_listed_cached
-
-    have = {model.model_id for model in already} | set(excluded)
-    return tuple(
-        Model(model_id, True, frozenset({"text"}),
-              pricing=Pricing("fresh", unmetered=True),
-              availability_basis=PUBLIC_LISTED_BASIS)
-        for model_id in newest_listed_cached(source_kind, source_key=source_key)
-        if model_id and model_id not in have
-    )
 
 
 def _http_models(owner, uid, member, *, snapshot=None, needs_tools=True):
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
-    if not member.provider.startswith("api_key_http:") or member.access.model_scope == "legacy":
+    if (not member.provider.startswith(("api_key_http:", "subscription_cli:"))
+            or member.access.model_scope == "legacy"):
         raise ModelSourceUnavailable("model_access_optin_required")
     if snapshot is None:
         snapshot = refresh_model_discovery(
             owner_user_id=owner, universe_id=uid,
-            definition_id=member.provider.removeprefix("api_key_http:"),
+            definition_id=member.provider.split(":", 1)[-1],
         )
     contract = snapshot.contract()
-    definition = get_definition(uid, member.provider.removeprefix("api_key_http:"))
+    definition = get_definition(uid, member.provider.split(":", 1)[-1])
     if (definition is None or definition.owner_user_id != owner
-            or not same_dialect(definition.protocol, contract.inference_protocol)):
+            or (definition.access_method != "subscription_cli"
+                and not same_dialect(definition.protocol, contract.inference_protocol))):
         raise ModelSourceUnavailable("protocol_mismatch")
     caps = member.access.cost_caps
     if caps is None:
@@ -487,7 +338,8 @@ def prepare_owned_model_plan(
             from types import SimpleNamespace
 
             chains, rejected = [], []
-            for provider in sorted(connected_sources(base, universe, owner, conn=conn)):
+            connected = connected_sources(base, universe, owner, conn=conn)
+            for provider in sorted(connected):
                 try:
                     custody = current_connected_source_custody(
                         conn, base=base, universe=universe, owner=owner, provider=provider,
@@ -518,116 +370,30 @@ def prepare_owned_model_plan(
     for provider, chain in chains:
         member = chain[0]
         try:
-            if provider in _PROVIDER_SERVICE:
-                native_snapshot = None
-                pending = ""
-                if member.access.model_scope == "discovered":
-                    # A DISPLAY read takes whatever is warm and asks for a
-                    # refresh in the background; it never runs discovery. That
-                    # is what stops one slow or expired source delaying the
-                    # selection of a different accepted one
-                    # (concerns/2026-09-16-model-picker-global-discovery-delay).
-                    #
-                    # A served turn still discovers inline: it is about to
-                    # launch, and a plan built from a catalogue it has not
-                    # confirmed is not a saving. Execution's own fresh check in
-                    # `prepare_selected_model` is unchanged either way.
-                    if allow_empty:
-                        from tinyassets.providers.shortlist_refresh import (
-                            SHORTLIST_CACHE,
-                            USABLE_AGE,
-                        )
+            from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
-                        native_snapshot, pending = SHORTLIST_CACHE.get(
-                            base=base, owner=owner, universe_id=universe.name,
-                            provider=provider,
-                            display_only=True,
-                        )
-                        if (native_snapshot is not None
-                                and (datetime.now(timezone.utc)
-                                     - native_snapshot.observed_at).total_seconds()
-                                > USABLE_AGE):
-                            pending = "stale"
-                        if pending:
-                            rejected.append(Ineligible(ModelRef(provider, ""), pending,
-                                                       scope="source"))
-                    else:
-                        from tinyassets.providers.native_discovery import (
-                            discover_native_models_sync,
-                        )
+            snapshot = refresh_model_discovery(
+                owner_user_id=owner, universe_id=universe.name,
+                definition_id=provider.split(":", 1)[-1],
+            )
+            # Discovery facts remain useful to a repair screen even when
+            # authority, pricing or the agent's contract excludes execution.
+            all_models.append(snapshot.models)
+            snapshots.append(snapshot)
+            snapshot, filtered, required, caps, denied = _http_models(
+                owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
+            )
+            from tinyassets.universe_intelligence import _engine_mcp_enabled
 
-                        try:
-                            native_snapshot = discover_native_models_sync(
-                                base_path=base, owner_user_id=owner,
-                                universe_id=universe.name, provider=provider,
-                            )
-                            if native_snapshot is None:
-                                rejected.append(Ineligible(
-                                    ModelRef(provider, ""), "native_enumeration_unsupported",
-                                    scope="source",
-                                ))
-                        except ProviderError:
-                            # Enumeration is not necessary to run the provider's
-                            # own default. Preserve that lane and expose the gap.
-                            rejected.append(Ineligible(
-                                ModelRef(provider, ""), "native_catalogue_unavailable",
-                                scope="source"))
-                catalog = _native_models(
-                    base, universe, owner, member, native_snapshot=native_snapshot,
-                    display_only=allow_empty,
-                )
-                # The provider/custody-checked snapshot already contributes its
-                # non-hidden rows as executor_enumerated, including during a
-                # pending/failed display refresh. History alone cannot restore a
-                # missing/hidden row or transfer access from another provider.
-                candidate_only = _CANDIDATE_ONLY_BASES
-                contributed = tuple(
-                    model for model in catalog.models
-                    if model.availability_basis in candidate_only
-                )
-                filtered = replace(catalog, models=tuple(
-                    model for model in catalog.models
-                    if model.availability_basis not in candidate_only
-                ))
-                # Unknown rows under a pending discovery grant need a catalogue
-                # result, not another consent request. Other offers need access.
-                rejected.extend(
-                    Ineligible(ModelRef(provider, model.model_id),
-                               pending or "model_access_optin_required")
-                    for model in contributed
-                )
-                if native_snapshot is not None:
-                    snapshots.append(native_snapshot)
-                # Keep snapshots for honest source timestamps and warnings.
-                # Display rechecks current member/custody through chains below;
-                # the display_only plan cannot authorize a launch.
-                required, caps = interaction, member.access.cost_caps
-            else:
-                from tinyassets.providers.discovery_snapshot import refresh_model_discovery
-
-                snapshot = refresh_model_discovery(
-                    owner_user_id=owner, universe_id=universe.name,
-                    definition_id=provider.removeprefix("api_key_http:"),
-                )
-                # Discovery facts remain useful to a repair screen even when
-                # authority, pricing or the agent's contract excludes execution.
-                all_models.append(snapshot.models)
-                snapshots.append(snapshot)
-                snapshot, filtered, required, caps, denied = _http_models(
-                    owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
-                )
-                from tinyassets.universe_intelligence import _engine_mcp_enabled
-
-                if needs_tools and not _engine_mcp_enabled():
-                    denied.extend(Ineligible(ModelRef(provider, model.model_id),
-                                             "engine_tools_unavailable")
-                                  for model in filtered.models)
-                    filtered = replace(filtered, models=())
-                catalog = snapshot.models
-                rejected.extend(denied)
-                benchmark = snapshot.contract().ranking_source
-                if benchmark is not None:
-                    ranking_sources.add(benchmark)
+            if needs_tools and not _engine_mcp_enabled():
+                denied.extend(Ineligible(ModelRef(provider, model.model_id),
+                                         "engine_tools_unavailable")
+                              for model in filtered.models)
+                filtered = replace(filtered, models=())
+            rejected.extend(denied)
+            benchmark = snapshot.contract().ranking_source
+            if benchmark is not None:
+                ranking_sources.add(benchmark)
         except (ModelDiscoveryUnavailable, ModelSourceUnavailable, ServingProviderHeld) as exc:
             rejected.append(Ineligible(ModelRef(provider, ""), exc.reason, scope="source"))
             continue
@@ -635,8 +401,6 @@ def prepare_owned_model_plan(
             rejected.append(Ineligible(ModelRef(provider, ""), "discovery_unavailable",
                                        scope="source"))
             continue
-        if provider in _PROVIDER_SERVICE:
-            all_models.append(catalog)
         admitted.append(filtered)
         source_policies.append(SourceModelPolicy(
             provider, required,
@@ -656,6 +420,9 @@ def prepare_owned_model_plan(
         _refused_models(base, owner, (provider for provider, _chain in chains)),
         cooling_sources(owner, admitted),
     )
+    if not allow_empty:
+        plan = _recover_stale_default(plan, all_models, connected, owner, universe.name)
+        policy = plan.policy
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         pinned = policy.current_selection or policy.saved_default
         # Name what is held and why: "no model connected" was wrong for an owner

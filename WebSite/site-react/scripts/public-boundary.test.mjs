@@ -148,19 +148,31 @@ test("no page imports a reader the client does not export", () => {
   }
 });
 
-test("plans name no price and do not claim a live cutoff", () => {
+test("plans name no price, do not claim a live cutoff, and upgrade only in the app", () => {
   // Caps are not published. Paid tiers are not on sale. The refusal gate is
   // dark, so no page may describe hitting a limit as something that happens now.
+  // The only upgrade entry is the app, not a price restated on the site.
   const finePrint = source("app/fine-print/page.tsx");
   assert.match(finePrint, /same app and the same security/);
   assert.match(finePrint, /simultaneous runs/);
   assert.match(finePrint, /storage/);
+  assert.match(finePrint, /more simultaneous runs and more storage/i);
   assert.match(finePrint, /usage is metered/i);
   assert.match(finePrint, /is not switched on/);
   assert.match(finePrint, /<OwnerDecision>/);
+  assert.match(finePrint, /\$\{SITE\.app\}\?upgrade=1/);
   assert.match(source("components/OwnerDecision.tsx"), /Owner decision/);
+  assert.doesNotMatch(finePrint, /no control for it yet/i);
+  assert.doesNotMatch(finePrint, /there is no control in the app/i);
+  assert.doesNotMatch(finePrint, /daily (allowance|limits)/i);
   assert.doesNotMatch(finePrint, /\$20\b|USD 20/);
   assert.doesNotMatch(finePrint, /\b5,?000\b|\b12,?000\b|\b20 GB\b/, "no allowance numbers while the gate is dark");
+
+  const home = source("app/page.tsx");
+  const start = source("app/start/page.tsx");
+  assert.match(home, /\$\{SITE\.app\}\?upgrade=1/);
+  assert.match(start, /\$\{SITE\.app\}\?upgrade=1/);
+  assert.doesNotMatch(start, /daily limits/i);
 
   for (const file of pages) {
     assert.doesNotMatch(file.body, /\$20\b|USD 20/, `${file.path} must not name a price`);

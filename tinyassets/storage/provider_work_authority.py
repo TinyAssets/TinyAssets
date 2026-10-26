@@ -469,7 +469,6 @@ def _accepted_work_access(conn, receipt, provider):
 def _current_connected_member(conn, base, receipt, selection):
     """Fence one attempt against its admission snapshot and live owner custody."""
     from tinyassets.provider_serving_binding import current_connected_source_custody
-    from tinyassets.providers.native_model_selection import NativeSelection
     from tinyassets.storage.current_home import check_current_home
 
     if (receipt.schema_version != 5 or receipt.admitted_sources is None
@@ -483,11 +482,6 @@ def _current_connected_member(conn, base, receipt, selection):
         conn, base=base, universe=base / receipt.universe_id,
         owner=receipt.principal_id, provider=selection.provider,
     )
-    evidence = selection.model_evidence()
-    if evidence is not None and evidence.get("kind") == "native":
-        NativeSelection.from_dict(evidence).assert_access(
-            _accepted_work_access(conn, receipt, selection.provider), custody.reference_digest,
-        )
     return custody
 
 
@@ -503,13 +497,13 @@ def _background_receipt_authority(
     from tinyassets.background_branch_authority import (
         BackgroundBranchAttemptLifecycle,
         BackgroundBranchBindingStatus,
+        build_request_task_attempt_key,
     )
     from tinyassets.background_branch_authority_service import (
         BackgroundBranchAuthorityOwnerFence,
         BackgroundBranchAuthorityOwnerKind,
         BackgroundBranchAuthorityOwnerState,
     )
-    from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
     from tinyassets.storage.background_branch_authority import (
         _attempt_from_row,
         _attempt_matches_binding,
@@ -811,7 +805,7 @@ class _Transaction:
                 (("run_graph",),) if candidate.work_item_kind == "run"
                 else (("background_branch_run",), ("repository_spec_delivery",))
             )
-            or candidate.executor_class != "cloud"
+            or candidate.executor_class not in {"cloud", "owner-box"}
             or candidate.receipt_id != provider_work_receipt_id(
                 universe_id=candidate.universe_id,
                 root=ProviderUniverseWorkRoot(candidate.work_item_kind, candidate.work_item_id),
@@ -1555,131 +1549,6 @@ class SQLiteProviderWorkAuthorityStore:
                 allow_test_fixtures=self._allow_test_fixtures,
             )
 
-    def _claim_or_renew_cloud_branch(
-        self,
-        request: ProviderWorkExecutionClaimRequest,
-        authority_grant: object,
-    ) -> ProviderWorkExecutionClaimWriteResult:
-        """Explicitly renew one exact cloud claim under a service grant."""
-        if not isinstance(request, ProviderWorkExecutionClaimRequest):
-            raise ValueError("request must be a ProviderWorkExecutionClaimRequest")
-        from tinyassets.cloud_automation_continuation import (
-            _CloudProviderClaimAuthorityGrant,
-        )
-
-        if type(authority_grant) is not _CloudProviderClaimAuthorityGrant:
-            raise PermissionError("cloud provider claim requires a service-issued grant")
-        now = self._now()
-        candidate = _claim_from_request(
-            request,
-            created_at=self._timestamp(now),
-            lease_expires_at=self._timestamp(
-                now + timedelta(seconds=request.lease_seconds)
-            ),
-        )
-        with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                authority = authority_grant._consume(request, conn)
-                receipt_row = conn.execute(
-                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
-                    (request.receipt_id,),
-                ).fetchone()
-                if receipt_row is None:
-                    conn.commit()
-                    return ProviderWorkExecutionClaimWriteResult(
-                        ProviderWorkAuthorityWriteOutcome.MISSING,
-                        None,
-                    )
-                receipt = _receipt_record(receipt_row)
-                if (
-                    authority.root.work_item_kind != "background_attempt"
-                    or receipt.schema_version != 5
-                    or receipt.principal_id != authority.principal_id
-                    or receipt.universe_id != authority.binding.universe_id
-                    or receipt.work_item_id != authority.root.work_item_id
-                    or datetime.fromisoformat(
-                        candidate.lease_expires_at.removesuffix("Z") + "+00:00"
-                    )
-                    > datetime.fromisoformat(
-                        receipt.expires_at.removesuffix("Z") + "+00:00"
-                    )
-                ):
-                    raise PermissionError("cloud provider claim authority is not current")
-                transaction = _Transaction(conn, self.base_path)
-                result = transaction.claim_receipt(
-                    request,
-                    candidate,
-                    now=now,
-                    allow_test_fixtures=self._allow_test_fixtures,
-                    manifest_authorized=True,
-                )
-                current = result.record
-                if (
-                    result.outcome is not ProviderWorkAuthorityWriteOutcome.STALE
-                    or current is None
-                    or current.state is not ProviderWorkExecutionClaimState.ACTIVE
-                    or datetime.fromisoformat(
-                        current.lease_expires_at.removesuffix("Z") + "+00:00"
-                    )
-                    > now
-                    or not _same_claim_intent(current, candidate)
-                ):
-                    conn.commit()
-                    return result
-                reserved = conn.execute(
-                    """
-                    SELECT 1 FROM provider_invocation_reservations
-                    WHERE receipt_id = ? AND state = ? LIMIT 1
-                    """,
-                    (
-                        receipt.receipt_id,
-                        ProviderInvocationReservationState.RESERVED.value,
-                    ),
-                ).fetchone()
-                if reserved is not None:
-                    conn.commit()
-                    return result
-                renewed = replace(
-                    current,
-                    claim_digest=_PLACEHOLDER_DIGEST,
-                    generation=current.generation + 1,
-                    lease_expires_at=candidate.lease_expires_at,
-                    created_at=candidate.created_at,
-                )
-                renewed = replace(renewed, claim_digest=renewed.expected_digest())
-                cursor = conn.execute(
-                    """
-                    UPDATE provider_work_execution_claims
-                    SET claim_digest = ?, generation = ?, state = ?,
-                        lease_expires_at = ?, record_json = ?
-                    WHERE claim_id = ? AND generation = ? AND claim_digest = ?
-                    """,
-                    (
-                        renewed.claim_digest,
-                        renewed.generation,
-                        renewed.state.value,
-                        renewed.lease_expires_at,
-                        _json_record(renewed),
-                        current.claim_id,
-                        current.generation,
-                        current.claim_digest,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    conn.rollback()
-                    return ProviderWorkExecutionClaimWriteResult(
-                        ProviderWorkAuthorityWriteOutcome.CONFLICT,
-                        current,
-                    )
-                conn.commit()
-                return ProviderWorkExecutionClaimWriteResult(
-                    ProviderWorkAuthorityWriteOutcome.APPLIED,
-                    renewed,
-                )
-            except Exception:
-                conn.rollback()
-                raise
 
     def reserve(
         self,
@@ -1743,75 +1612,6 @@ class SQLiteProviderWorkAuthorityStore:
             settler=self._settle_carrier,
         )
 
-    def _reserve_and_arm_cloud_branch_carrier_in_transaction(
-        self,
-        conn: sqlite3.Connection,
-        request: ProviderInvocationReservationRequest,
-        authority_fence: object,
-        model_snapshot=None,
-    ) -> ProviderInvocationCarrier:
-        """Linearize current Branch authority validation with provider launch."""
-        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
-            raise ValueError("cloud Branch launch requires an active transaction")
-        from tinyassets.cloud_automation_continuation import (
-            _CloudBranchInvocationAuthorityFence,
-        )
-
-        if type(authority_fence) is not _CloudBranchInvocationAuthorityFence:
-            raise PermissionError("cloud Branch launch authority was not revalidated")
-        authority_fence._consume(request)
-        now = self._now()
-        receipt_row = conn.execute(
-            "SELECT * FROM provider_work_receipts WHERE receipt_id=?",
-            (request.receipt_id,),
-        ).fetchone()
-        if receipt_row is None:
-            raise PermissionError("cloud provider receipt is unavailable")
-        receipt = _receipt_record(receipt_row)
-        selection = self._validate_work_selection(
-            conn, receipt, request.selection, model_snapshot,
-        )
-        request = replace(request, selection=selection)
-        transaction = _Transaction(conn, self.base_path)
-        reserved = transaction.reserve_invocation(
-            request,
-            now=now,
-            created_at=self._timestamp(now),
-            allow_test_fixtures=self._allow_test_fixtures,
-            manifest_selection=selection,
-        )
-        if (
-            reserved.record is None
-            or reserved.outcome
-            not in {
-                ProviderWorkAuthorityWriteOutcome.APPLIED,
-                ProviderWorkAuthorityWriteOutcome.REPLAYED,
-            }
-            or reserved.record.state is not ProviderInvocationReservationState.RESERVED
-        ):
-            raise PermissionError("provider invocation budget or authority is unavailable")
-        launch = ProviderInvocationLaunchRequest.from_reservation(reserved.record)
-        armed = transaction.arm_launch(
-            launch,
-            now=now,
-            allow_test_fixtures=self._allow_test_fixtures,
-            manifest_selection=selection,
-        )
-        if (
-            armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
-            or armed.record is None
-            or armed.receipt is None
-            or armed.claim is None
-        ):
-            raise PermissionError("provider invocation reservation could not be armed")
-        return _mint_provider_invocation_carrier(
-            armed.receipt,
-            armed.claim,
-            armed.record,
-            _provider_invocation_store_mint_proof(armed.record),
-            settlement_owner=ProviderInvocationSettlementOwner.ROUTER,
-            settler=self._settler_for_transaction(conn),
-        )
 
     def _reserve_and_arm_background_branch_carrier_in_transaction(
         self,
@@ -2025,26 +1825,11 @@ class SQLiteProviderWorkAuthorityStore:
         self, conn, receipt, selection, model_snapshot=None, *, needs_tools=False,
     ):
         """Validate model evidence on a source in the snapshot and live set."""
-        from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
 
-        custody = _current_connected_member(conn, self.base_path, receipt, selection)
+        _current_connected_member(conn, self.base_path, receipt, selection)
         if selection.model_evidence_json is not None or selection.executor_id != selection.provider:
             raise PermissionError("work model evidence must be prepared by admission")
         access = _accepted_work_access(conn, receipt, selection.provider)
-        if selection.provider in _PROVIDER_SERVICE and selection.model_id:
-            from tinyassets.provider_work_authority import _canonical_json
-            from tinyassets.providers.work_model_selection import native_work_model
-
-            native = native_work_model(
-                model_snapshot, provider=selection.provider, owner=receipt.principal_id,
-                universe=self.base_path / receipt.universe_id, custody=custody,
-                model_id=selection.model_id, access=access,
-            )
-            return replace(selection, model_evidence_json=_canonical_json(native.to_dict()))
-        if selection.provider in _PROVIDER_SERVICE:
-            if model_snapshot is not None:
-                raise PermissionError("native model cannot use HTTP discovery")
-            return selection
 
         from tinyassets.exceptions import WorkModelExhaustedError
         from tinyassets.providers.definition import get_definition
@@ -2059,7 +1844,7 @@ class SQLiteProviderWorkAuthorityStore:
         if type(model_snapshot) is not DiscoverySnapshot:
             raise PermissionError("workflow model requires fresh discovery")
         definition = get_definition(
-            receipt.universe_id, selection.provider.removeprefix("api_key_http:"),
+            receipt.universe_id, selection.provider.split(":", 1)[-1],
         )
         if definition is None:
             raise PermissionError("workflow model source is unavailable")

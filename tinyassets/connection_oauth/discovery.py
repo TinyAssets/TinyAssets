@@ -115,10 +115,10 @@ def _metadata_urls(issuer: str) -> list[str]:
     ]
 
 
-def fetch_server_metadata(issuer: str) -> ServerMetadata:
+def fetch_server_metadata(issuer: str, *, fetch=None) -> ServerMetadata:
     issuer = validate_https_url(issuer)
     for url in _metadata_urls(issuer):
-        status, doc = request_json("GET", url)
+        status, doc = fetch(url)[:2] if fetch else request_json("GET", url)
         if status != 200 or not isinstance(doc, dict):
             continue
         # RFC 8414 §3.3 / OIDC Discovery §4.3: the document must name the very
@@ -179,7 +179,8 @@ def bearer_challenge(header: str) -> dict[str, str]:
     return selected
 
 
-def _resource_metadata(resource: str, *, probe: bool) -> tuple[list[str], list[str], str]:
+def _resource_metadata(resource: str, *, probe: bool, fetch=None
+                       ) -> tuple[list[str], list[str], str]:
     from tinyassets.connection_oauth.transport import request_json_with_headers
 
     resource = validate_https_url(resource)
@@ -187,7 +188,8 @@ def _resource_metadata(resource: str, *, probe: bool) -> tuple[list[str], list[s
     origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
     challenge: dict[str, str] = {}
     if probe:
-        status, _, headers = request_json_with_headers("GET", resource)
+        status, _, headers = (fetch(resource) if fetch else
+                              request_json_with_headers("GET", resource))
         if status in (401, 403):
             challenge = bearer_challenge(headers.get("www-authenticate", ""))
     urls = []
@@ -198,7 +200,7 @@ def _resource_metadata(resource: str, *, probe: bool) -> tuple[list[str], list[s
                  (origin + "/.well-known/oauth-protected-resource", origin)])
     last = None
     for url, expected_resource in dict.fromkeys(urls):
-        status, doc = request_json("GET", url)
+        status, doc = fetch(url)[:2] if fetch else request_json("GET", url)
         if status != 200 or not isinstance(doc, dict):
             continue
         named = doc.get("resource")
@@ -231,7 +233,7 @@ def protected_resource_issuers(host: str) -> list[str]:
     return _resource_metadata(f"https://{host}", probe=False)[0]
 
 
-def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
+def _metadata_for(hosts: list[str], *, fetch=None) -> tuple[ServerMetadata, str, list[str]]:
     """Concrete endpoint URLs preserve resource identity; bare hosts are legacy."""
     last = OAuthError("no_authorization_server_metadata")
     for host in hosts[:_MAX_ISSUERS]:
@@ -240,7 +242,7 @@ def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
         origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
         try:
             candidates, scopes, identified = _resource_metadata(
-                resource, probe=host.startswith("https://"))
+                resource, probe=host.startswith("https://"), fetch=fetch)
         except OAuthError as exc:
             last = exc
             if exc.code == "protected_resource_mismatch":
@@ -250,7 +252,8 @@ def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
                 # A failed endpoint probe/challenge must not hide legacy root
                 # metadata. Retry without probing, just as for a bare host.
                 try:
-                    candidates, scopes, identified = _resource_metadata(origin, probe=False)
+                    candidates, scopes, identified = _resource_metadata(
+                        origin, probe=False, fetch=fetch)
                 except OAuthError as root_exc:
                     last = root_exc
                     if root_exc.code == "protected_resource_mismatch":
@@ -258,7 +261,7 @@ def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
         for candidate in candidates or [origin]:
             try:
                 selected = identified if candidates else resource
-                return fetch_server_metadata(candidate), selected, scopes
+                return fetch_server_metadata(candidate, fetch=fetch), selected, scopes
             except OAuthError as exc:
                 last = exc
     raise last
@@ -282,7 +285,6 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     The offer is recorded on the ask, so what the owner is
     shown (every endpoint host) is exactly what the sign-in uses.
     """
-    scopes = list(requested.get("scopes") or [])
     directory_hosts = [urlsplit(h).hostname if h.startswith("https://") else h for h in hosts]
     from tinyassets.connection_oauth import directory, service
 
@@ -303,10 +305,18 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
         # the host supports the existing public-client flow. No raw RPC/config
         # exception contents belong in logs.
         logger.warning("Optional OAuth directory unavailable: %s", exc.code)
+    return discover_offer(requested, hosts)
+
+
+def discover_offer(requested: dict[str, Any], hosts: list[str], *,
+                   callback: str = "", use_cache: bool = True, fetch=None
+                   ) -> tuple[dict[str, Any] | None, str]:
+    """Public-client discovery. Registered-client lookup belongs to the broker."""
+    scopes = list(requested.get("scopes") or [])
     if not DISCOVERY_ENABLED:
         return None, "discovery_unavailable"
     try:
-        metadata, resource, resource_scopes = _metadata_for(hosts)
+        metadata, resource, resource_scopes = _metadata_for(hosts, fetch=fetch)
         scopes = scopes or resource_scopes
     except OAuthError as exc:
         return None, exc.code
@@ -317,11 +327,11 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     from tinyassets.connection_oauth.flow import callback_origin, configured_redirect_uri
     from tinyassets.connection_oauth.pkce import cached_client
 
-    callback = configured_redirect_uri()
+    callback = callback or configured_redirect_uri()
     method = "existing"
     if not client_id:
         try:
-            client_id = cached_client(metadata.issuer, callback)
+            client_id = cached_client(metadata.issuer, callback) if use_cache else ""
         except OAuthError as exc:
             return None, exc.code
         if client_id:

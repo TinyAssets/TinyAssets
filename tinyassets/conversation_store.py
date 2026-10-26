@@ -75,6 +75,12 @@ logger = logging.getLogger(__name__)
 _DB_NAME = ".conversation_memory.db"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS owner_sends (
+    session_id TEXT NOT NULL, client_send_id TEXT NOT NULL,
+    founder_turn INTEGER NOT NULL, options_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending', result_json TEXT,
+    PRIMARY KEY(session_id, client_send_id)
+);
 CREATE TABLE IF NOT EXISTS conversation_turns (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT    NOT NULL,
@@ -225,6 +231,13 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
                 pass  # Corrupt optional metadata never discards the message text.
         parts = ext_id.split(":") if isinstance(ext_id, str) else []
         consumer_id = None
+        reply_to = ''
+        if speaker != 'founder' and len(parts) == 2 and parts[0] == 'reply-to':
+            parent = conn.execute(
+                'SELECT client_send_id FROM conversation_turns WHERE session_id=? AND turn_no=?',
+                (session_id, parts[1]),
+            ).fetchone()
+            reply_to = parent[0] if parent else ''
         if (has_projections and len(parts) == 3 and parts[0] == "consumer"
                 and parts[2] in {"reply", "founder"} and len(parts[1]) == 32
                 and all(c in "0123456789abcdef" for c in parts[1])):
@@ -263,7 +276,7 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
         result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
                           read_turn_failure(speaker, failure_raw), consumer_id,
                           id=row_id if isinstance(row_id, int) else None,
-                          client_send_id=client_send_id or ""))
+                          client_send_id=client_send_id or "", reply_to_client_send_id=reply_to))
     return result
 
 
@@ -555,6 +568,156 @@ def stored_owner_send(universe_dir, session_id: str, client_send_id: str) -> str
         conn.close()
 
 
+def admit_owner_send(universe_dir, session, send_id, message, options):
+    """The sole send admission: identity, verbatim transcript and options commit together."""
+    options_json = json.dumps(options, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    conn = _connect(_db_path(universe_dir))
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute(
+            'SELECT s.founder_turn,t.content,s.options_json FROM owner_sends s '
+            'JOIN conversation_turns t ON t.session_id=s.session_id AND t.turn_no=s.founder_turn '
+            'WHERE s.session_id=? AND s.client_send_id=?', (session, send_id),
+        ).fetchone()
+        if row:
+            if row[1:] != (message, options_json):
+                raise ValueError('client_send_id_conflict')
+            conn.commit()
+            return row[0]
+        # A pre-cutover acknowledged identity must never acquire another execution.
+        old = conn.execute(
+            "SELECT turn_no,content FROM conversation_turns WHERE session_id=? "
+            "AND client_send_id=? AND speaker='founder'", (session, send_id),
+        ).fetchone()
+        if old and old[1] != message:
+            raise ValueError('client_send_id_conflict')
+        number = old[0] if old else conn.execute(
+            'SELECT coalesce(max(turn_no),0)+1 FROM conversation_turns WHERE session_id=?',
+            (session,),
+        ).fetchone()[0]
+        if not old:
+            conn.execute(
+                'INSERT INTO conversation_turns '
+                '(session_id,turn_no,speaker,content,ts,client_send_id) VALUES (?,?,?,?,?,?)',
+                (session, number, 'founder', message, time.time(), send_id),
+            )
+        conn.execute('INSERT INTO owner_sends '
+                     '(session_id,client_send_id,founder_turn,options_json,state) '
+                     'VALUES (?,?,?,?,?)',
+                     (session, send_id, number, options_json, 'running' if old else 'pending'))
+        conn.commit()
+        return number
+    finally:
+        conn.close()
+
+
+def owner_send_records(universe_dir, *, pending_only=False):
+    """Read durable work inside the box, in admission order."""
+    if not _db_path(universe_dir).exists():
+        return []
+    conn = _connect(_db_path(universe_dir))
+    try:
+        return [(session, ident, text, json.loads(options))
+                for session, ident, text, options in conn.execute(
+                    'SELECT s.session_id,s.client_send_id,t.content,s.options_json '
+                    'FROM owner_sends s JOIN conversation_turns t '
+                    'ON t.session_id=s.session_id AND t.turn_no=s.founder_turn '
+                    + ("WHERE s.state='pending' " if pending_only else '')
+                    + 'ORDER BY s.session_id,s.founder_turn')]
+    finally:
+        conn.close()
+
+
+def owner_send_options(universe_dir, session, send_id):
+    if not send_id or not _db_path(universe_dir).exists():
+        return None
+    conn = _connect(_db_path(universe_dir))
+    try:
+        row = conn.execute('SELECT options_json FROM owner_sends '
+                           'WHERE session_id=? AND client_send_id=?', (session, send_id)).fetchone()
+        return json.loads(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def owner_send_state(universe_dir, session, send_id, *, state=None, result=None):
+    """Read/update dispatch metadata; caller holds the box dispatch lock for transitions."""
+    conn = _connect(_db_path(universe_dir))
+    try:
+        if state is not None:
+            conn.execute('UPDATE owner_sends SET state=?,result_json=? '
+                         'WHERE session_id=? AND client_send_id=?',
+                         (state, json.dumps(result) if result is not None else None,
+                          session, send_id))
+            conn.commit()
+        row = conn.execute('SELECT state,result_json FROM owner_sends '
+                           'WHERE session_id=? AND client_send_id=?', (session, send_id)).fetchone()
+        return row[0], json.loads(row[1]) if row[1] else None
+    finally:
+        conn.close()
+
+
+def load_send_history(universe_dir, session, *, current_send_id=''):
+    """Unfinished requests are status observations, never silently executed instructions."""
+    from dataclasses import replace
+
+    history = load_recent(universe_dir, session)
+    conn = _connect(_db_path(universe_dir))
+    try:
+        waiting = dict(conn.execute(
+            "SELECT client_send_id,state FROM owner_sends "
+            "WHERE session_id=? AND state!='completed'",
+            (session,),
+        ))
+        result = []
+        for m in history:
+            if current_send_id and m.client_send_id == current_send_id:
+                continue
+            state = waiting.get(m.client_send_id)
+            if state:
+                status = {'pending': 'pending; not yet executed',
+                          'held': 'held; setup incomplete, no effects',
+                          'running': 'running or interrupted; outcome uncertain'}.get(state, state)
+                m = replace(m, speaker='platform', text=(
+                    f'Saved owner message ({status}): {m.text}\n'
+                    'This is a status observation, not a request to execute or repeat it.'))
+            result.append(m)
+        return result
+    finally:
+        conn.close()
+
+
+def bind_send_execution(universe_dir, session, number, live_id):
+    """Keep the admitted row linked to its tool-evidence journal."""
+    conn = _connect(_db_path(universe_dir))
+    try:
+        conn.execute('UPDATE conversation_turns SET ext_id=? WHERE session_id=? AND turn_no=?',
+                     (f'turn:{live_id}', session, number))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def owner_send_terminal(universe_dir, session, number):
+    """Recover a committed reply if the process died before saving the wire receipt."""
+    conn = _connect(_db_path(universe_dir))
+    try:
+        row = conn.execute(
+            'SELECT speaker,content,execution_json,failure_json FROM conversation_turns '
+            'WHERE session_id=? AND ext_id=?', (session, f'reply-to:{number}'),
+        ).fetchone()
+        if row is None:
+            return None
+        result = {'reply' if row[0] == 'universe' else 'error': row[1]}
+        if row[2]:
+            result['execution'] = json.loads(row[2])
+        if row[3]:
+            result.update(turn_failure=json.loads(row[3]), failure_notice=row[1])
+        return result
+    finally:
+        conn.close()
+
+
 def record_exchange(
     universe_dir: "str | Path",
     session_id: str,
@@ -643,6 +806,9 @@ def _record_pair(
     """The shared transaction and retry boundary for terminal pairs.
 
     Returns the ``(first, last)`` turn numbers written, or ``None``."""
+    if founder_turn is None and session_id.startswith(('principal:', 'agent:')):
+        logger.error('owner conversation terminal requires send admission')
+        return None
     if not session_id or not isinstance(founder_text, str) or not founder_text.strip():
         return None
     if not isinstance(universe_text, str) or not universe_text.strip():

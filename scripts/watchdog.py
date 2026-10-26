@@ -134,26 +134,45 @@ def _save_state(path: Path, state: dict) -> None:
     tmp.replace(path)
 
 
+class ProbeFault(RuntimeError):
+    """The helper could not measure health; never evidence to restart a daemon."""
+
+
+# --pulse-only reserves 10 for a completed unhealthy measurement. Python's
+# startup/import/argument failures (1/2), signals and other exits are faults.
+PULSE_UNHEALTHY = 10
+
+
 def _probe(canary_script: Path, url: str, timeout: float) -> tuple[bool, str]:
-    """Return (green, message). Green=True on canary exit 0."""
+    """Return (green, message). Green=True on canary exit 0.
+
+    Liveness only (``--pulse-only``), the same probe as the container
+    healthcheck. The full canary also checks the anonymous challenge, whose
+    ``resource_metadata`` is the configured PUBLIC resource; probed on the
+    loopback URL it can never match, so the full check restarted a healthy
+    daemon every ten minutes from 2026-10-14 (watchdog issues #4918 on).
+    """
     if not canary_script.is_file():
-        return (False, f"canary script missing: {canary_script}")
+        raise ProbeFault(f"canary script missing: {canary_script}")
     try:
         result = subprocess.run(
-            [sys.executable, str(canary_script), "--url", url, "--timeout", str(timeout)],
+            [sys.executable, str(canary_script), "--pulse-only",
+             "--url", url, "--timeout", str(timeout)],
             capture_output=True,
             text=True,
             timeout=timeout + 5,
         )
-    except subprocess.TimeoutExpired:
-        return (False, f"canary timeout after {timeout + 5}s")
+    except subprocess.TimeoutExpired as exc:
+        raise ProbeFault(f"canary did not complete within {timeout + 5}s") from exc
     except OSError as exc:
-        return (False, f"canary invoke error: {exc}")
+        raise ProbeFault(f"canary invoke error: {exc}") from exc
     if result.returncode == 0:
         return (True, "green")
-    # Canary prints diagnostic to stderr; pass through.
-    msg = (result.stderr or result.stdout or "").strip().replace("\n", " | ")
-    return (False, f"exit={result.returncode}: {msg[:300]}")
+    # Preserve the full diagnostic: truncation can hide the exception type.
+    msg = (result.stderr or result.stdout or "").strip()
+    if result.returncode != PULSE_UNHEALTHY:
+        raise ProbeFault(f"canary could not measure health (exit={result.returncode}): {msg}")
+    return (False, f"exit={result.returncode}: {msg}")
 
 
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "TinyAssets/TinyAssets")

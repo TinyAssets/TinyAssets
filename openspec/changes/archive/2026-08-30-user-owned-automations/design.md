@@ -1,7 +1,8 @@
 ## Context
 
-Evidence: `docs/concerns/2026-08-29-background-loop-activation-is-fleet-era.md` and the two
-reviews it cites. What works today: `background_served_provider.py:912-1039` mints a work binding
+Evidence: the 2026-08-29 fleet-era background-activation review (resolved when
+#5182 deleted `tinyassets/background_served_provider.py` and
+`tinyassets/runtime/assigned_queue_consumer.py`) and the two reviews it cites. What works today: `background_served_provider.py:912-1039` mints a work binding
 from `provider_assignments` + `llm_credential_custody` and runs on the user's credential; the
 daemon's consumer (`assigned_queue_consumer.py`, flag `TINYASSETS_ASSIGNED_QUEUE_CONSUMER`) claims
 and runs. What does not: the activation preflight and the later transactional fences require an

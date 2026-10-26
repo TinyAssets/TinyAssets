@@ -25,6 +25,17 @@ class BrokerUidSplitRequired(RuntimeError):
     """The daemon cannot reach the bootstrapped broker over its authenticated boundary."""
 
 
+def daemon_identity_split(fields: dict[str, str]) -> bool:
+    """The daemon role: uid/gid 1001, supplementary groups exactly the work,
+    broker-IPC and broker-readable groups (beyond its own primary group, which
+    Docker always lists for a named user), no capabilities, no new privileges."""
+    return (os.getresuid() == (1001, 1001, 1001) and os.getresgid() == (1001, 1001, 1001)
+            and sorted(set(os.getgroups()) - {os.getgid()}) == [1100, 1101, 1102]
+            and not any(int(fields[key], 16) for key in
+                        ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+            and int(fields["NoNewPrivs"]) == 1)
+
+
 def _peer(sock: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
 
@@ -43,11 +54,7 @@ def _protect_daemon() -> None:
     finally:
         os.close(directory)
     fields = dict(line.split(':', 1) for line in raw.decode().splitlines())
-    if (os.getresuid() != (1001, 1001, 1001) or os.getresgid() != (1001, 1001, 1001)
-            or os.getgroups() != [1100, 1101, 1102]
-            or any(int(fields[key], 16) for key in
-                   ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
-            or int(fields["NoNewPrivs"]) != 1):
+    if not daemon_identity_split(fields):
         raise BrokerUidSplitRequired("credential broker needs the per-role uid split")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:
@@ -70,6 +77,25 @@ class BrokerSupervisor:
         self._bootstrap_pidfd = os.pidfd_open(broker_pid)
 
     @classmethod
+    def from_boxhost(cls, data_root: Path, *, socket_path: Path, proof: str) -> BrokerSupervisor:
+        """Adopt the separately retired broker, from the root-authenticated host handoff."""
+        _protect_daemon()
+        if not isinstance(proof, str) or len(proof) < 32:
+            raise BrokerUidSplitRequired("invalid box-host lease")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(_START_TIMEOUT_S)
+            channel.connect(str(socket_path))
+            identity = _peer(channel)
+        if identity[1:] != (1002, 1002):
+            raise BrokerUidSplitRequired("box broker has the wrong retired identity")
+        self = cls.__new__(cls)
+        self._root, self._pid = Path(data_root).resolve(), os.getpid()
+        self._proof, self._pair, self._socket = proof, None, Path(socket_path)
+        self._bootstrap_pid = identity[0]
+        self._bootstrap_pidfd = os.pidfd_open(identity[0]) if identity[0] else None
+        return self
+
+    @classmethod
     def from_bootstrap(cls, data_root: Path, *, broker_pid: int,
                        socket_path: Path, proof: str) -> BrokerSupervisor:
         """Adopt the broker forked before host authority was retired.
@@ -86,7 +112,8 @@ class BrokerSupervisor:
     def _same_process(self) -> None:
         if os.getpid() != self._pid:
             raise BrokerUidSplitRequired("broker owner state cannot be inherited by a child")
-        if select.select([self._bootstrap_pidfd], [], [], 0)[0]:
+        if (self._bootstrap_pidfd is not None
+                and select.select([self._bootstrap_pidfd], [], [], 0)[0]):
             raise BrokerUidSplitRequired("bootstrapped broker exited; container restart required")
 
     def _fence(self) -> None:
@@ -136,6 +163,10 @@ class BrokerSupervisor:
 
 
 def get_supervisor(data_root: Path) -> BrokerSupervisor | None:
+    from tinyassets.owner_runtime import broker_egress, current
+
+    if current() is not None:
+        return broker_egress()
     with _registry_lock:
         result = _registry.get(Path(data_root).resolve())
         if result is not None:

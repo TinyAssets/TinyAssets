@@ -17,9 +17,7 @@ from tinyassets.config import write_provider_assignment_projection
 from tinyassets.credential_vault import (
     LLMCredentialCustodyReference,
     adopt_connection_grant_custody,
-    adopt_llm_subscription_custody,
     current_connection_grant_custody,
-    current_llm_subscription_custody,
 )
 from tinyassets.provider_assignment import (
     ProviderAssignment,
@@ -46,10 +44,6 @@ from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
 
-_PROVIDER_SERVICE = {
-    "claude-code": "claude",
-    "codex": "codex",
-}
 _SERVING_OPERATIONS = ("converse",)
 _SERVING_ROLES = ("writer",)
 _MAX_BINDING_INVOCATIONS = 10_000
@@ -211,7 +205,7 @@ def _write_failed_assignment(
 
 
 def _is_open_provider(name: str) -> bool:
-    return name.startswith("api_key_http:")
+    return name.startswith(("api_key_http:", "subscription_cli:"))
 
 
 class UnknownServingProvider(ValueError):
@@ -273,9 +267,14 @@ def _open_serving_context(
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     definition = get_definition(universe_id, definition_id)
+    if definition is not None and definition.access_method == "subscription_cli":
+        from tinyassets.providers.subscription_catalog import context
+
+        _runtime, fingerprint = context(definition, owner_user_id, universe_id)
+        return ("subscription_cli:" + definition.id, definition.ref, definition.id, fingerprint)
     if definition is None or definition.access_method != "api_key_http":
         raise UnknownServingProvider(
-            "provider must be claude-code, codex, or a registered api_key_http definition_id"
+            "provider must be a registered api_key_http definition_id"
         )
     provider_name = provider_for_definition(definition).name
     if not owner_user_id or definition.owner_user_id != owner_user_id:
@@ -306,7 +305,7 @@ def verify_open_grant_custody(
     connection_id is rejected (a stale-digest comparison alone would let it pass)."""
     from tinyassets.credential_vault import _connection_grant_record_digest
 
-    def_id = provider_name.split("api_key_http:", 1)[-1]
+    def_id = provider_name.split(":", 1)[-1]
     _pname, grant_id, connection_id, credential_ref = _open_serving_context(
         base, universe_id, owner_user_id, def_id
     )
@@ -331,14 +330,14 @@ def _open_connection_id(base: Path, universe_id: str, provider_name: str, *,
     caller supplies its independently admitted owner; a definition or grant's own
     owner must never stand in for that authority.
     Callers MUST follow with verify_open_grant_custody for the rotation gate."""
-    def_id = provider_name.split("api_key_http:", 1)[-1]
+    def_id = provider_name.split(":", 1)[-1]
     return _open_serving_context(base, universe_id, owner_user_id, def_id)[2]
 
 
 @dataclass(frozen=True, slots=True)
 class _ServingSource:
     provider: str
-    open_grant: tuple[str, str, str] | None
+    open_grant: tuple[str, str, str]
     access: ModelAccess
 
 
@@ -350,17 +349,11 @@ def _resolve_serving_source(
     access: ModelAccess,
 ) -> _ServingSource:
     selected = provider.strip()
-    # open_grant carries (grant_id, connection_id, credential_ref) for an open
-    # api_key_http provider; None for a subscription-CLI provider. When set, the
-    # custody source below switches to the secret-free connection-grant custody and
-    # `selected` becomes the resolved executor name (api_key_http:<def-id>).
-    open_grant: tuple[str, str, str] | None = None
-    if selected not in _PROVIDER_SERVICE:
-        provider_name, grant_id, connection_id, credential_ref = _open_serving_context(
-            base, uid, owner, selected.removeprefix("api_key_http:")
-        )
-        selected = provider_name
-        open_grant = (grant_id, connection_id, credential_ref)
+    provider_name, grant_id, connection_id, credential_ref = _open_serving_context(
+        base, uid, owner, selected.split(":", 1)[-1]
+    )
+    selected = provider_name
+    open_grant = (grant_id, connection_id, credential_ref)
     return _ServingSource(selected, open_grant, access)
 
 
@@ -374,34 +367,24 @@ def _source_custody(
     uid: str,
     adopt: bool,
 ) -> LLMCredentialCustodyReference:
-    if source.open_grant is not None:
-        grant_id, connection_id, credential_ref = source.open_grant
-        if adopt:
-            custody = adopt_connection_grant_custody(
-                conn,
-                owner_user_id=owner,
-                universe_id=uid,
-                grant_id=grant_id,
-                connection_id=connection_id,
-                credential_ref=credential_ref,
-            )
-        else:
-            custody = current_connection_grant_custody(
-                conn,
-                owner_user_id=owner,
-                universe_id=uid,
-                connection_id=connection_id,
-            )
-            verify_open_grant_custody(base, uid, owner, source.provider, custody)
-    else:
-        resolver = adopt_llm_subscription_custody if adopt else current_llm_subscription_custody
-        custody = resolver(
+    grant_id, connection_id, credential_ref = source.open_grant
+    if adopt:
+        custody = adopt_connection_grant_custody(
             conn,
-            universe_dir=universe,
             owner_user_id=owner,
             universe_id=uid,
-            service=_PROVIDER_SERVICE[source.provider],
+            grant_id=grant_id,
+            connection_id=connection_id,
+            credential_ref=credential_ref,
         )
+    else:
+        custody = current_connection_grant_custody(
+            conn,
+            owner_user_id=owner,
+            universe_id=uid,
+            connection_id=connection_id,
+        )
+        verify_open_grant_custody(base, uid, owner, source.provider, custody)
     if custody is None:
         raise PermissionError("credential custody changed during assignment")
     return custody
@@ -417,40 +400,33 @@ def current_connected_source_custody(conn, *, base: Path, universe: Path,
     source = _resolve_serving_source(
         base, universe.name, owner, provider, ModelAccess(model_scope="discovered"),
     )
-    if source.open_grant is not None:
-        # An HTTP connection is usable as soon as its owned grant has model_use.
-        # It need not have been selected by the old assignment writer first.
-        import hashlib
+    import hashlib
 
-        from tinyassets.credential_vault import (
-            _connection_custody_service,
-            _connection_grant_record_digest,
-            _custody_reference_digest,
-        )
+    from tinyassets.credential_vault import (
+        _connection_custody_service,
+        _connection_grant_record_digest,
+        _custody_reference_digest,
+    )
 
-        grant_id, connection_id, credential_ref = source.open_grant
-        record_digest = _connection_grant_record_digest(
-            grant_id=grant_id, connection_id=connection_id,
-            credential_ref=credential_ref, owner_user_id=owner,
-            universe_id=universe.name,
-        )
-        reference_id = "llm_credential_" + hashlib.sha256(
-            f"{owner}:{universe.name}:{connection_id}".encode("utf-8")
-        ).hexdigest()[:32]
-        service = _connection_custody_service(connection_id)
-        return LLMCredentialCustodyReference(
+    grant_id, connection_id, credential_ref = source.open_grant
+    record_digest = _connection_grant_record_digest(
+        grant_id=grant_id, connection_id=connection_id,
+        credential_ref=credential_ref, owner_user_id=owner,
+        universe_id=universe.name,
+    )
+    reference_id = "llm_credential_" + hashlib.sha256(
+        f"{owner}:{universe.name}:{connection_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    service = _connection_custody_service(connection_id)
+    return LLMCredentialCustodyReference(
+        reference_id=reference_id, owner_user_id=owner,
+        universe_id=universe.name, service=service, generation=1,
+        reference_digest=_custody_reference_digest(
             reference_id=reference_id, owner_user_id=owner,
             universe_id=universe.name, service=service, generation=1,
-            reference_digest=_custody_reference_digest(
-                reference_id=reference_id, owner_user_id=owner,
-                universe_id=universe.name, service=service, generation=1,
-                record_digest=record_digest,
-            ),
-            _record_digest=record_digest,
-        )
-    return _source_custody(
-        conn, source, base=base, universe=universe, owner=owner,
-        uid=universe.name, adopt=False,
+            record_digest=record_digest,
+        ),
+        _record_digest=record_digest,
     )
 
 
@@ -876,31 +852,22 @@ def _current_bound_member_authority(
         role="writer",
     ):
         raise PermissionError("connect your provider before enabling serving")
-    if _is_open_provider(member.provider):
-        custody = current_connection_grant_custody(
-            conn,
-            owner_user_id=owner_user_id,
-            universe_id=universe_id,
-            connection_id=_open_connection_id(
-                authority_root, universe_id, member.provider, owner_user_id=owner_user_id),
-        )
-        # Exact live-grant revalidation (owner + bound + not-revoked + not-rotated),
-        # not just a stored-digest compare (Codex reject #1/#2).
-        verify_open_grant_custody(
-            authority_root,
-            universe_id,
-            owner_user_id,
-            member.provider,
-            custody,
-        )
-    else:
-        custody = current_llm_subscription_custody(
-            conn,
-            universe_dir=universe_dir,
-            owner_user_id=owner_user_id,
-            universe_id=universe_id,
-            service=_PROVIDER_SERVICE[member.provider],
-        )
+    custody = current_connection_grant_custody(
+        conn,
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        connection_id=_open_connection_id(
+            authority_root, universe_id, member.provider, owner_user_id=owner_user_id),
+    )
+    # Exact live-grant revalidation (owner + bound + not-revoked + not-rotated),
+    # not just a stored-digest compare (Codex reject #1/#2).
+    verify_open_grant_custody(
+        authority_root,
+        universe_id,
+        owner_user_id,
+        member.provider,
+        custody,
+    )
     if custody is None or (
         custody.reference_id != member.credential_reference_id
         or custody.generation != member.credential_reference_generation
@@ -1126,18 +1093,13 @@ def resolve_current_serving_provider_authority(
         provider = (assignment.provider if assignment is not None
                     and assignment.provider in sources else sorted(sources)[0])
 
-    if not _is_open_provider(provider):
-        return CurrentServingProviderAuthority(
-            provider=provider,
-            access_method="subscription_cli",
-        )
-    definition_id = provider.split("api_key_http:", 1)[-1]
+    definition_id = provider.split(":", 1)[-1]
     _provider_name, grant_id, connection_id, _credential_ref = _open_serving_context(
         base, uid, owner, definition_id
     )
     return CurrentServingProviderAuthority(
         provider=provider,
-        access_method="api_key_http",
+        access_method=provider.split(":", 1)[0],
         connection_id=connection_id,
         grant_id=grant_id,
     )

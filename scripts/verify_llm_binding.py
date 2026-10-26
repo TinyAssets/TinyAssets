@@ -194,15 +194,15 @@ def check_llm_binding(
 
     if require_sandbox:
         sandbox = _sandbox_status(status)
-        if not sandbox.get("bwrap_available"):
+        if not sandbox.get("box_available"):
             reason = sandbox.get("reason", "sandbox_status missing")
             raise VerifyError(
                 5,
-                "subscription LLM is bound, but Linux sandbox runtime is "
-                f"unavailable: {reason}. Install/enable bubblewrap so Codex "
-                "can execute without silently stalling node work.",
+                "subscription LLM is bound, but the owner box runtime is "
+                f"unavailable: {reason}. The daemon must serve from owner "
+                "boxes (boxhostd) for any node work to run.",
             )
-        print("[verify-llm] sandbox_status.bwrap_available=true")
+        print("[verify-llm] sandbox_status.box_available=true")
 
     return status
 
@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--require-sandbox",
         action="store_true",
-        help="Fail unless get_status reports sandbox_status.bwrap_available=true.",
+        help="Fail unless get_status reports sandbox_status.box_available=true.",
     )
     ap.add_argument(
         "--retries",

@@ -48,19 +48,8 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **`training_excluded = true` structural enforcement verified** — any query as `workflow_analytics` role errors on training-excluded rows (smoke test green).
 - [ ] **Weekly pg_dump scheduled** + client-side-encrypted with `age` (per `SUCCESSION.md §3.2`).
 - [ ] **Monthly manual restore-test** performed + row-counts verified within 30 days of launch.
-- [ ] **`treasury_config` seeded** with Base Sepolia treasury address (testnet launch) + CC0-1.0 in `default_content_license` (per spec #29 §6.5 + #32 §5.1).
 
-## E. Paid market + crypto
-
-- [ ] **TinyAssets test-token (ERC-20) deployed to Base Sepolia** + address in `treasury_config`.
-- [ ] **Treasury wallet seed in vault** (testnet single-key OK; multisig REQUIRED before any mainnet value accrues).
-- [ ] **WalletConnect integration verified** end-to-end (connect → verify → top-up → bid → settle on testnet).
-- [ ] **Min-bid threshold set** per capability (default 0.01 test-token).
-- [ ] **Account-age + interaction-count gates** enforced on `place_paid_request` RPC.
-- [ ] **Settlement batch cron** scheduled (weekly default per spec #29 §3).
-- [ ] **Dispute window + auto-accept cron** live (per spec #29 §8).
-
-## F. Moderation
+## E. Moderation
 
 - [ ] **`moderation_rubric.md (archived in git)` v1.0 merged** into `TinyAssets/` main branch.
 - [ ] **Admin pool includes ≥2 `host_admin` mod_role rows** in production Supabase (not just in runbook — in the database).
@@ -69,7 +58,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Rate limits on `flag_content` enforced** (10/hour/user).
 - [ ] **2-mod concurrence for hard-delete enforced** at RPC level (not just UI).
 
-## G. Content + SEO
+## F. Content + SEO
 
 - [ ] **`TinyAssets-catalog/` repo** has LICENSE (CC0-1.0) + CONTRIBUTING.md (DCO) + README.
 - [ ] **≥10 seed nodes** live in catalog across ≥3 domains (research, fantasy, accounting, or similar) — not just example scaffolds.
@@ -79,7 +68,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Landing page LCP ≤2.5s on mobile 3G** (Lighthouse pass).
 - [ ] **`robots.txt` live** disallowing `/auth/`, `/editor/`, `/admin/`, `/earnings`.
 
-## H. Tier-2 daemon host
+## G. Tier-2 daemon host
 
 - [ ] **Windows EV code-signing cert procured** (~$300/yr).
 - [ ] **macOS Developer ID procured** ($99/yr, Apple Developer Program).
@@ -90,14 +79,14 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Tray singleton holds** — double-click shortcut 3× → exactly 1 tray process.
 - [ ] **host_pool + Presence-based online status verified** end-to-end (register → go online → kill → goes offline within 90s).
 
-## I. Load-test + scale proof
+## H. Load-test + scale proof
 
 - [ ] **#26 harness scenarios S1-S5 all green** on production-equivalent test Supabase.
 - [ ] **Scenario S8 mixed-workload green** (tier-share at 1k-DAU scale).
 - [ ] **Load-test runs in CI** on every `main` merge (full S1-S8).
 - [ ] **Nightly load-test scheduled** and alerting on failure.
 
-## J. Safety + legal
+## I. Safety + legal
 
 - [ ] **Privacy policy live at `tinyassets.io/legal/privacy`**.
 - [ ] **Terms of Service live at `tinyassets.io/legal/terms`**.
@@ -106,7 +95,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **DMCA counter-notice email address** published in ToS.
 - [ ] **Security report channel `security@tinyassets.io` monitored** + initial response SLA documented.
 
-## K. Post-launch readiness
+## J. Post-launch readiness
 
 - [ ] **`SUCCESSION.md` is current** — last-updated date within 30 days.
 - [ ] **Incident-response runbook** tested (at least one fire-drill against §6 scenarios of `SUCCESSION.md`).
@@ -114,7 +103,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Public changelog at `tinyassets.io/changelog`** started.
 - [ ] **Public status page** (either `/status` on the app or a separate status.tinyassets.io) live.
 
-## L. Anthropic connector submission
+## K. Anthropic connector submission
 
 - [ ] **Live research on submission path complete** (`docs/ops/anthropic-connector-catalog-submission.md` §4 OPEN flags resolved).
 - [ ] **Branding assets prepared** — logo 512×512, banner 1200×630, ≤30s demo clip.

@@ -18,7 +18,7 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTask,
     Epoch2BranchTaskAdapter,
 )
-from tinyassets.dispatcher import load_dispatcher_config, prefers_request_type
+from tinyassets.control_plane.queue_policy import load_dispatcher_config, prefers_request_type
 from tinyassets.platform_runtime_provenance import require_process_cloud_admission
 from tinyassets.storage import DB_FILENAME, data_dir
 from tinyassets.storage.request_admissions import RequestAdmissionStore

@@ -40,6 +40,12 @@ PRODUCTION_SECRETS = (
     "DO_SSH_USER",
     "DIGITALOCEAN_TOKEN",
     "DO_API_TOKEN",
+    # The canary's session and signing key repair its own account, so a
+    # branch run must never see them.
+    "TINYASSETS_CANARY_SESSION_KEY",
+    "TINYASSETS_CANARY_SESSION_SEED_DEPLOY",
+    "TINYASSETS_CANARY_SESSION_SEED_UPTIME",
+    "TINYASSETS_CANARY_HMAC_KEY",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch
@@ -53,10 +59,6 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
         "bearer for the read-only `canary` service principal; the daemon 403s anything "
         "beyond get_status / read_graph status (docs/reference/environment-variables.md)"
     ),
-    "TINYASSETS_CORE_CANARY_CONFIG": (
-        "sign-in of the dedicated synthetic canary owner with no founder data behind it "
-        "(docs/host-actions.md, one-time core-canary setup)"
-    ),
     "PUSHOVER_APP_TOKEN": "send-only notification credential",
     "PUSHOVER_USER_KEY": "send-only notification recipient",
     "CLOUDFLARE_API_TOKEN": (
@@ -66,9 +68,6 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
     ),
     "CLOUDFLARE_ACCOUNT_ID": "Cloudflare account identifier, not a credential",
     "CLOUDFLARE_ZONE_ID": "Cloudflare zone identifier, not a credential",
-    "CLOUDFLARE_PREVIEW_API_TOKEN": (
-        "preview-only Worker token, already in the `react-preview` environment"
-    ),
     # Store release pipelines: these sign and upload artifacts, never reach the host,
     # and run on tag/release refs that a main-only environment would refuse.
     "APPLE_DISTRIBUTION_CERT_P12_B64": (
@@ -120,6 +119,7 @@ _KNOWN_PRODUCTION_WORKFLOWS = {
     "install-host-services.yml",
     "p0-outage-triage.yml",
     "restart-daemon.yml",
+    "uptime-canary.yml",
 }
 
 
@@ -576,3 +576,9 @@ def test_box_preflight_guard_rejects(case):
 def test_box_preflight_guard_accepts_unrelated_edits(case):
     old, new = _BOX_MUST_PASS[case]
     assert box_preflight_problems(_mutate(_box_text(), old, new)) == [], case
+
+
+pytestmark = pytest.mark.verifies(
+    'uptime-and-alarms:'
+    'Digest-Pinned Deploy Admission Rollback And Receipt',
+)

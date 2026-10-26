@@ -427,19 +427,19 @@ def _probe_sandbox() -> dict[str, Any]:
 
         status = get_sandbox_status()
         return {
-            "bwrap_available": bool(status.get("bwrap_available")),
+            "box_available": bool(status.get("box_available")),
             "reason": str(status.get("reason") or ""),
         }
     except Exception as exc:  # noqa: BLE001 — an unprobed host is not an isolated host
-        return {"bwrap_available": False, "reason": f"probe failed: {exc}"}
+        return {"box_available": False, "reason": f"probe failed: {exc}"}
 
 
 def isolation_report() -> dict[str, Any]:
     """Report authoring's admitted isolation boundary, not host availability."""
     probe = _probe_sandbox()
     probe_reason = str(probe.get("reason") or "")
-    if probe.get("bwrap_available") and not probe_reason:
-        probe_reason = "host sandbox executable available (diagnostic only)"
+    if probe.get("box_available") and not probe_reason:
+        probe_reason = "owner box provider available (diagnostic only)"
     return {
         "level": "in_process_confined",
         "os_isolated": False,

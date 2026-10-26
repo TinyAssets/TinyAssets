@@ -10,8 +10,12 @@ def probe(*, opener=urllib.request.urlopen):
     token = os.environ.get("TINYASSETS_WIKI_CANARY_TOKEN", "")
     if not token:
         return 2, "disk health unavailable: canary credential missing"
+    # Cloudflare refuses urllib's default Python-urllib agent with a 403
+    # before the request reaches the daemon.
     request = urllib.request.Request(
-        "https://tinyassets.io/mcp/pulse", headers={"Authorization": "Bearer " + token})
+        "https://tinyassets.io/mcp/pulse",
+        headers={"Authorization": "Bearer " + token,
+                 "User-Agent": "tinyassets-healthcheck/1.0"})
     try:
         with opener(request, timeout=15) as response:
             value = json.loads(response.read(65536))["disk_health"]

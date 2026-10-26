@@ -80,7 +80,7 @@ def _action_project_memory_get(kwargs: dict[str, Any]) -> str:
 
 def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.memory.project import project_memory_set
+    from tinyassets.knowledge_authority import write_project_memory
 
     project_id = kwargs.get("project_id", "").strip()
     key = kwargs.get("key", "").strip()
@@ -102,7 +102,7 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
 
     actor = _current_actor()
     try:
-        result = project_memory_set(
+        result = write_project_memory(
             _base_path(),
             project_id=project_id,
             key=key,
@@ -357,8 +357,8 @@ _MESSAGING_ACTIONS: dict[str, Any] = {
 
 def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
     from tinyassets.automations import EVENT_TYPES
+    from tinyassets.control_plane.events import VALID_EVENT_TYPES, register_subscription
     from tinyassets.runs import initialize_runs_db
-    from tinyassets.scheduler import VALID_EVENT_TYPES, register_subscription
 
     branch_def_id = (kwargs.get("branch_def_id") or "").strip()
     if not branch_def_id:
@@ -413,7 +413,7 @@ def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
 
 
 def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
-    from tinyassets.scheduler import unregister_subscription
+    from tinyassets.control_plane.events import unregister_subscription
 
     subscription_id = (kwargs.get("subscription_id") or "").strip()
     if not subscription_id:
@@ -443,8 +443,8 @@ def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
 
 
 def _action_list_scheduler_subscriptions(kwargs: dict[str, Any]) -> str:
+    from tinyassets.control_plane.events import list_scheduler_subscriptions
     from tinyassets.runs import initialize_runs_db
-    from tinyassets.scheduler import list_scheduler_subscriptions
 
     owner_actor = (kwargs.get("owner_actor") or "").strip()
     event_type = (kwargs.get("event_type") or "").strip()

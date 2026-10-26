@@ -832,17 +832,22 @@ def _validated_main_database(root: Path) -> Path:
         )
     for suffix in ("-journal", "-shm", "-wal"):
         sidecar = Path(f"{db_file}{suffix}")
-        if sidecar.exists():
-            sidecar_stat = sidecar.stat()
-            if (
-                _is_link_or_reparse(sidecar)
-                or sidecar_stat.st_nlink != 1
-                or sidecar_stat.st_dev != root.stat().st_dev
-            ):
-                raise ScopedResetBlocked(
-                    "main database sidecar is linked or crosses filesystems: "
-                    f"{sidecar.name}"
-                )
+        try:
+            sidecar_stat = sidecar.lstat()
+        except FileNotFoundError:
+            # SQLite removes WAL/SHM when its last connection closes. Shared
+            # service writers may finish during this check; absence is normal.
+            continue
+        if (
+            not stat.S_ISREG(sidecar_stat.st_mode)
+            or getattr(sidecar_stat, "st_file_attributes", 0) & 0x400
+            or sidecar_stat.st_nlink != 1
+            or sidecar_stat.st_dev != database_stat.st_dev
+        ):
+            raise ScopedResetBlocked(
+                "main database sidecar is linked or crosses filesystems: "
+                f"{sidecar.name}"
+            )
     return db_file
 
 
@@ -1037,7 +1042,7 @@ def _relocated_home_store_blockers(home: Path) -> list[str]:
     """Stores that belong to this home but no longer live inside it.
 
     Platform state that decides what a command center may do moved out of the
-    command-center folder on 2026-10-03 (``storage/platform_state_move.py``),
+    command-center folder on 2026-10-03 (``storage/effector_consents.py``),
     because the command center could write it. This walk only sees inside the
     home, so without this the relocated stores would simply stop being noticed:
     today ``.effector_consents.db`` raises a "no scoped-reset adapter" blocker,
@@ -1056,7 +1061,7 @@ def _relocated_home_store_blockers(home: Path) -> list[str]:
         out.append(
             "home operational store has no scoped-reset adapter: "
             f"{relocated.name} (relocated outside the home, see "
-            "storage/platform_state_move.py)"
+            "storage/effector_consents.py)"
         )
     return out
 

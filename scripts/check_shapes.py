@@ -63,14 +63,15 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/router.py", r"\bTurnRequestBudget\("),
             ("tinyassets/universe_intelligence.py", r"\bTurnRequestBudget\("),
             ("tinyassets/ta_capabilities.py", r"\bdef _turn_reviewer\b"),
+            ("tinyassets/**/*.py", r"\bcreate_message\("),
             ("tinyassets/providers/router.py", r"chain = \[served_authority\.provider\]"),
         ),
-        ceiling=1,
+        ceiling=0,
     ),
     "S2": Shape(
         ("tinyassets/control_plane/**",),
         (("tinyassets/**/*.py", r"\b(?:_call_writer|make_interactive_agent_turn)\("),),
-        ceiling=5,
+        ceiling=0,
     ),
     "S3": Shape(
         ("tinyassets/agent_loop/**",),
@@ -78,8 +79,9 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/claude_provider.py", ""),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
+            ("tinyassets/**/*.py", r"\bclass\s+WorkflowAgentTurn\("),
         ),
-        ceiling=1,
+        ceiling=0,
     ),
     "S4": Shape(
         ("tinyassets/providers/**", "tinyassets/connections/**"),
@@ -103,15 +105,42 @@ SHAPES: dict[str, Shape] = {
     ),
     "S6": Shape(
         ("tinyassets/extension_manifest.py", "tinyassets/extension_state.py"),
-        (("tinyassets/api/extensions.py", ""), ("tinyassets/ta_cli.py", r"workspace.?executable")),
-        ceiling=1,
+        (("tinyassets/api/extensions.py", ""), ("tinyassets/ta_cli.py", r"workspace.?executable"),
+         ("tinyassets/**/*.py", r"\bclass NodeRegistration\b")),
+        ceiling=0,
     ),
     "S7": Shape(
-        ("tinyassets/universe_tools.py", "tinyassets/ta_cli.py"),
-        (("tinyassets/engine_mcp_server.py", ""),),
-        ceiling=1,
+        ("tinyassets/universe_tools.py", "tinyassets/ta_cli.py",
+         "tinyassets/control_plane/registration.py"),
+        (("tinyassets/engine_mcp_server.py", ""),
+         ("tinyassets/engine_mcp_server.py", r"\bFastMCP\("),
+         ("tinyassets/universe_tools.py", r"\bFastMCP\("),
+         ("tinyassets/engine_endpoint.py", r"\bspec_from_file_location\(")),
+        ceiling=0,
     ),
-    "S8": Shape(("tinyassets/boxes/**",), (("tinyassets/**/role_*.py", ""),), ceiling=26),
+    "S8": Shape(("tinyassets/boxes/**",), (
+        ("tinyassets/**/role_*.py", ""),
+        ("tinyassets/boxes/frontend.py", ""),
+        ("tinyassets/boxes/production_files.py", ""),
+        ("tinyassets/boxes/file_worker.py", ""),
+        ("tinyassets/boxes/exec_worker.py", ""),
+        ("tinyassets/boxes/executions.py", ""),
+        ("tinyassets/boxes/gvisor_files.py", ""),
+        ("tinyassets/boxes/owner_files.py", ""),
+        ("tinyassets/boxes/handles.py", ""),
+        ("tinyassets/boxes/file_channel.py", ""),
+        ("tinyassets/boxes/file_wire.py", ""),
+        ("tinyassets/boxes/git_bridge.py", ""),
+        ("tinyassets/agent_loop/box_tools.py", ""),
+        ("tinyassets/box_process.py", ""),
+        ("tinyassets/agent_loop/box_ta_worker.py", ""),
+        ("scripts/box_acceptance.py", ""),
+        ("tinyassets/boxes/network.py", r"\bFORWARDER\s*="),
+        ("tinyassets/daemon*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/router/**/*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/owner_router.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/**/*.py", r"\b(?:class\s+BoxExecutor|def\s+start_exec)\b"),
+    ), ceiling=0),
     "S9": Shape(
         ("tinyassets/control_plane/**",),
         (
@@ -123,7 +152,8 @@ SHAPES: dict[str, Shape] = {
     ),
     "S10": Shape(
         ("tinyassets/storage/**",),
-        (("tinyassets/daemon_server.py", r"\bCREATE TABLE\b"),),
+        (("tinyassets/daemon_server.py", r"\bCREATE TABLE\b"),
+         ("tinyassets/storage/*_schema.py", r"\bCREATE TABLE\b")),
         ceiling=27,
     ),
     "S11": Shape(
@@ -134,9 +164,23 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/universe_server.py",), (("tinyassets/mcp_server.py", ""),), ceiling=0
     ),
     "S13": Shape(
-        ("tinyassets/providers/owner_binding.py",),
-        (("tinyassets/**/*.py", r"\b(?:reflexion|raptor|agentic_search|extract_learning)\b"),),
-        ceiling=14,
+        # These helpers and their readers run inside the owner box. New readers
+        # elsewhere remain old paths; the helpers may import only model_call.
+        ("tinyassets/providers/owner_binding.py", "tinyassets/memory/__init__.py",
+         "tinyassets/memory/manager.py", "tinyassets/memory/reflexion.py",
+         "tinyassets/knowledge/raptor.py", "tinyassets/retrieval/agentic_search.py",
+         "tinyassets/retrieval/router.py",
+         "tinyassets/universe_intelligence.py"),
+        (("tinyassets/**/*.py", r"\b(?:reflexion|raptor|agentic_search|extract_learning)\b"),
+         ("tinyassets/**/*.py", r"\bget_provider_router\s*\(\s*\)\s*\.call\s*\(")),
+        forbid=(r"from tinyassets\.providers\.(?:router|.*_provider) import",
+                r"from tinyassets\.providers\.call import "
+                r"(?!(?:make_interactive_agent_turn|call_interactive_agent_turn)\b)",
+                r"\.(?:complete|call_sync)\(",
+                r"\bget_provider_router\s*\(",
+                r"\b(?:router|provider_router)\.call\s*\(",
+                r"\b(?:call_provider|call_with_policy|_force_mock)\b"),
+        ceiling=0,
     ),
     "S14": Shape(
         ("tinyassets/api/visibility.py", "tinyassets/api/universe.py"),
@@ -162,8 +206,19 @@ SHAPES: dict[str, Shape] = {
             ("domains/fantasy_daemon/**/*.py", ""),
             ("domains/research_probe/**/*.py", ""),
             ("tinyassets/api/market.py", ""),
+            ("tinyassets/bid/**/*.py", ""),
+            ("tinyassets/treasury/**/*.py", ""),
+            ("tinyassets/executors/node_bid.py", ""),
+            ("tinyassets/gates/actions.py", ""),
+            ("tinyassets/payments/actions.py", ""),
+            ("tinyassets/payments/funding.py", ""),
+            ("tinyassets/payments/settlement_backend.py", ""),
+            ("tinyassets/payments/settlement_ledger.py", ""),
+            ("tinyassets/payments/wallets.py", ""),
+            ("tinyassets/api/extensions.py", r"_ESCROW_ACTIONS"),
+            ("tinyassets/desktop/dashboard.py", r"TINYASSETS_PAID_MARKET"),
         ),
-        ceiling=57,
+        ceiling=0,
     ),
     "S19": Shape(
         ("packaging/claude-plugin/.claude-plugin/marketplace.json",),
@@ -188,8 +243,18 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/**/universe_*.py", ""),),
         ceiling=10,
     ),
-    "S23": Shape(("tinyassets/graph_compiler.py",)),
-    "S24": Shape(("tinyassets/owner_door/**",)),
+    "S23": Shape(
+        ("tinyassets/graph_compiler.py", "tinyassets/providers/call.py"),
+        forbid=(r"\b_force_mock\b", r"\[MOCK\]"),
+    ),
+    "S24": Shape(
+        ("tinyassets/owner_door/**", "tinyassets/conversation_store.py",
+         "tinyassets/onboarding/app/**", "tinyassets/universe_server.py"),
+        (("tinyassets/ingress.py", ""),
+         ("tinyassets/agent_steering.py", r"\bdef\s+(?:enqueue|hold|claim)\("),
+         ("tinyassets/onboarding/app/**/*.js", r"/app/turn/steer|claimHeldLines")),
+        ceiling=0,
+    ),
     "S25": Shape(
         ("tinyassets/universe_server.py", "tinyassets/onboarding/**", "tinyassets/api/**")
     ),
@@ -206,7 +271,8 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/model_call.py", "tinyassets/agent_loop/**")
     ),
     "N4": Shape(("tinyassets/boxes/**",)),  # box-view
-    "N5": Shape(("tinyassets/boxes/**",)),  # egress-gate
+    "N5": Shape(("tinyassets/broker/**", "tinyassets/owner_public_egress.py",
+                 "tinyassets/egress_requests.py")),  # egress-gate
     "N6": Shape(("tinyassets/boxes/**",)),  # box-snapshot
     "N7": Shape(("tinyassets/broker/**",)),  # spend-path
     "N8": Shape(("tinyassets/boxes/**",)),  # host-paths
@@ -221,7 +287,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
         r"|class\s+TurnRequestBudget\b)"
     ),
     "S2": (
-        r"\b(?:def\s+(?:session_start|start_agent|make_interactive_agent_turn)\s*\("
+        r"\b(?:def\s+(?:session_start|start_agent|call_background_work_agent|_call_work_agent)\s*\("
         r"|class\s+\w*Admission\b)"
     ),
     "S5": (
@@ -247,8 +313,14 @@ MIRROR_ROOT = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtim
 VENDOR_NAMES = re.compile(
     r"anthropic|chatgpt|claude|codex|gemini|grok|groq|kimi|mistral|ollama|openai|openrouter", re.I
 )
-DUAL_FLAGS = re.compile(
-    r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING|ASSIGNED_QUEUE_CONSUMER)\b"
+DUAL_FLAGS = re.compile(r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING)\b")
+CONSUMER_DISABLE_SITES = frozenset({
+    "tinyassets/control_plane/tick.py",
+})
+RETIRED_ACCOUNT_LIMITS = re.compile(
+    r"\b(?:RUN_WRITE_LIMIT|RUN_TOTAL_LIMIT|RUN_DAY_LIMIT|DISPATCHES_PER_HOUR|"
+    r"BYTES_PER_HOUR|BUDGET_WINDOW_S|usage_notice|charge_dispatch|"
+    r"dispatch_window_usage)\b"
 )
 PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
@@ -268,7 +340,11 @@ DOC_HOMES = (
 HOST_PATHS = (
     "tinyassets/host_pool",
     "tinyassets/mcp_server.py",
-    "fantasy_daemon/mcp_server.py",
+    "fantasy_daemon",
+    "tinyassets/__main__.py",
+    "tinyassets/background_served_provider.py",
+    "tinyassets/cloud_automation_continuation.py",
+    "tinyassets/branch_tasks.py",
     "tinyassets_tray.py",
     "tinyassets.pyw",
     "tinyassets/desktop/launcher.py",
@@ -277,20 +353,19 @@ HOST_PATHS = (
     "start-tinyassets-server.vbs",
 )
 LIVE_SCRIPTS = {
-    "tinyassets-cli": "tinyassets.__main__:main",
     "tinyassets-universe-server": "tinyassets.universe_server:main",
     "tinyassets-probe": "tinyassets.probe:entry_point",
 }
-LIVE_DOMAIN_ENTRY_POINTS = {
-    # tinyassets-cli still loads these domains; remove this pin with its domain-loading follow-up.
-    "fantasy_daemon": "domains.fantasy_daemon.skill:FantasyAuthorDomain",
-    "research_probe": "domains.research_probe.skill:ResearchProbeDomain",
-}
+LIVE_DOMAIN_ENTRY_POINTS = {}
 
 
 def dead_entry_problems(root: Path = ROOT) -> list[str]:
     """Keep removed host paths and extra start surfaces out of the package."""
-    problems = [f"host-paths: {path}" for path in HOST_PATHS if (root / path).exists()]
+    problems = [
+        f"host-paths: {path}" for path in HOST_PATHS
+        if (root / path).is_file()
+        or ((root / path).is_dir() and any(files(f"{path}/**", root)))
+    ]
     if (root / "prototype").exists():
         problems.append("host-paths: prototype/ fixture tree returned")
     compose = root / "deploy/compose.yml"
@@ -305,11 +380,6 @@ def dead_entry_problems(root: Path = ROOT) -> list[str]:
     domains = project.get("entry-points", {}).get("tinyassets.domains", {})
     if domains != LIVE_DOMAIN_ENTRY_POINTS:
         problems.append(f"domain-entry-points: changed registered domains {domains!r}")
-    runner = root / "fantasy_daemon/__main__.py"
-    if runner.is_file() and re.search(
-        r'"--mcp"|from fantasy_daemon\.mcp_server\b', runner.read_text(encoding="utf-8")
-    ):
-        problems.append("spawn-entry: local MCP runner returned")
     return problems
 
 
@@ -343,7 +413,7 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
     total = 0
     for glob, pattern in shape.old:
         for path in files(glob, root):
-            if shape is SHAPES["S22"] and any(
+            if (shape is SHAPES["S22"] or shape is SHAPES["S13"]) and any(
                 registered_path(path.relative_to(root).as_posix(), home) for home in shape.paths
             ):
                 continue
@@ -571,10 +641,12 @@ def _borrow_checkout_objects(root: Path) -> bool:
     info = local / "objects" / "info"
     info.mkdir(parents=True, exist_ok=True)
     alternates = info / "alternates"
-    entry = f"{(source / 'objects').resolve()}\n"
-    current = alternates.read_text(encoding="utf-8") if alternates.exists() else ""
+    # Git's alternates file uses slash paths even when the host is Windows.
+    entry = f"{(source / 'objects').resolve().as_posix()}\n"
+    current = alternates.read_bytes().decode("utf-8") if alternates.exists() else ""
     if entry not in current:
-        alternates.write_text(current + entry, encoding="utf-8")
+        # Git reads this file bytewise; Windows text mode would add CR bytes.
+        alternates.write_bytes((current + entry).encode("utf-8"))
         # Local config only: a global safe.directory would outlive this repo.
         subprocess.run(
             ["git", "config", "--add", "safe.directory", str(source.parent.resolve())],
@@ -720,7 +792,10 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
     for rel, source in changes.items():
         if not rel.startswith("tinyassets/") or not rel.endswith(".py"):
             continue
-        if DUAL_FLAGS.search(source) or re.search(
+        if (DUAL_FLAGS.search(source) or (
+            "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source
+            and rel not in CONSUMER_DISABLE_SITES
+        )) or re.search(
             r"(?:getenv|environ|if)\b[^\n]*TINYASSETS_\w*(?:LOOP|LEGACY|V2|FALLBACK)\b", source
         ):
             problems.append(f"opt-in-flags: {rel} selects a second path")
@@ -734,8 +809,24 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
     return problems
 
 
+def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
+    """Only the explicit consumer-off boundary may gate the owner tick."""
+    problems: list[str] = []
+    for path in files("tinyassets/**/*.py", root) + files("scripts/**/*.py", root):
+        if path.name == "check_shapes.py":
+            continue
+        source = path.read_text(encoding="utf-8", errors="replace")
+        rel = path.relative_to(root).as_posix()
+        if "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source and rel not in CONSUMER_DISABLE_SITES:
+            problems.append(f"opt-in-flags: {rel} gates the owner tick")
+        if rel.startswith("tinyassets/") and RETIRED_ACCOUNT_LIMITS.search(source):
+            problems.append(f"limit-names: {rel} contains a retired account meter")
+    return problems
+
+
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
+    problems.extend(control_plane_policy_problems(root))
     problems.extend(dead_entry_problems(root))
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())

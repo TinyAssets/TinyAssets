@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "env":
         return _run(
-            # Drop-first: `ta-op env-summary` prints the same four flag
+            # Drop-first: `ta-op env-summary` prints the same three flag
             # families, matched on the NAME and sorted in-process AFTER the
             # identity drop. The old form piped the WHOLE environment into a
             # host-side grep over ssh; this one never emits a non-matching var.

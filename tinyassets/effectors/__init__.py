@@ -377,7 +377,6 @@ class EffectChain:
     run_id: str = ""
     base_path: Any = None
     dry_run: bool | None = None
-    cloud_effect_session: Any = None
     results: dict[str, dict] = field(default_factory=dict)
     evidence: dict[str, dict] = field(default_factory=dict)
     fired: list[tuple[str, str | None]] = field(default_factory=list)
@@ -940,7 +939,6 @@ def run_effects_for_branch(
     base_path=None,
     run_id="",
     dry_run=None,
-    cloud_effect_session=None,
 ):
     """Post-run dispatch of every node's effects, in branch STORAGE order.
 
@@ -952,7 +950,6 @@ def run_effects_for_branch(
     """
     chain = EffectChain(
         run_id=run_id, base_path=base_path, dry_run=dry_run,
-        cloud_effect_session=cloud_effect_session,
     )
     schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
     node_defs = list(getattr(branch, "node_defs", None) or [])

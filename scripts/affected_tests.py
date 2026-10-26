@@ -55,7 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Directories whose .py files make up the import graph. Top-level modules in
 # scripts/ and tests/ are imported by bare name (tests put scripts/ on
 # sys.path), so those two are also searched for a bare top-level name.
-GRAPH_ROOTS = ("tinyassets", "scripts", "tests", "fantasy_daemon", "domains", "packaging")
+GRAPH_ROOTS = ("tinyassets", "scripts", "tests", "domains", "packaging")
 BARE_NAME_DIRS = ("", "scripts", "tests")
 
 # Any change here can move the verdict of an arbitrary test. The CI machinery
@@ -215,6 +215,26 @@ def is_test_file(rel: str) -> bool:
     return rel.startswith("tests/") and name.startswith("test_") and name.endswith(".py")
 
 
+def defines_tests(source: str) -> bool:
+    """Keep files that can expose pytest cases; helper modules are dependencies."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True  # Let pytest report the collection error.
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name.startswith("test")):
+            return True
+        if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            return True
+        if isinstance(node, ast.alias) and (node.asname or node.name).startswith("test_"):
+            return True
+        if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+                and node.id.startswith("test_")):
+            return True
+    return False
+
+
 def _mention_keys(rel: str) -> list[str]:
     keys = [rel]
     name = rel.rsplit("/", 1)[-1]
@@ -290,7 +310,8 @@ def select(
             return None, [f"{rel}: shared test infrastructure"]
 
     graph = graph or Graph(root)
-    tests = sorted(rel for rel in graph.files if is_test_file(rel))
+    tests = sorted(rel for rel, source in graph.files.items()
+                   if is_test_file(rel) and defines_tests(source))
     if pr:
         shared = set()
     elif shared is None:
@@ -310,7 +331,7 @@ def select(
             # it, so nothing would select them.
             return None, [f"{rel}: deleted or moved Python module"]
         hit: set[str] = set()
-        if is_test_file(rel) and (root / rel).exists():
+        if rel in tests:
             hit.add(rel)
         hit.update(t for t in tests if rel in closures[t])
         keys = _mention_keys(rel)
@@ -378,7 +399,8 @@ def walking_tests(graph: Graph) -> set[str]:
     """Every test that enumerates a tree, so a file it never names still reaches it."""
     return {
         rel for rel in graph.files
-        if is_test_file(rel) and _WALKS.search(_PATHLIB_JOIN.sub("/", graph.files[rel]))
+        if is_test_file(rel) and defines_tests(graph.files[rel])
+        and _WALKS.search(_PATHLIB_JOIN.sub("/", graph.files[rel]))
     }
 
 
@@ -440,7 +462,8 @@ def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
         structural_files = {target for target in module.targets() if '::' not in target}
     candidates = selected if selected is not None else sorted(
         p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py'))
-    return [name for name in candidates if name not in structural_files and name not in heavy]
+    return [name for name in candidates if name not in structural_files and name not in heavy
+            and defines_tests((root / name).read_text(encoding="utf-8", errors="replace"))]
 
 
 def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
@@ -449,7 +472,7 @@ def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
     from scripts.runtime_paths import runtime_inputs
 
     inputs = runtime_inputs(root, 'HEAD')
-    return any(inputs.covers(name) or name.startswith('scripts/core_capability')
+    return any(inputs.covers(name)
                or name in ('scripts/affected_tests.py', '.github/workflows/tests.yml')
                for name in changed)
 

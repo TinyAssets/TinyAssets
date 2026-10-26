@@ -243,6 +243,45 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 - **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
 - **THEN** the guard reports the authority hit and requires the receipt
 
+### Requirement: A new skip names its owner and where it runs
+
+A new skip or xfail that is not an environment guard SHALL carry `owner=` and
+either `expires=YYYY-MM-DD` in its reason or `runs-in=`. `owner=` and `runs-in=`
+MAY instead sit in a comment on the marker's lines or the line directly before or
+after it, so wrapping a reason never fails the gate.
+
+#### Scenario: Metadata on the following line passes
+- **WHEN** a new skipif's reason is wrapped and `# owner=x runs-in=linux-ci` follows it
+- **THEN** the hygiene gate accepts the marker
+
+### Requirement: A pull request stays inside its declared lane
+
+A pull request whose body declares `Lane: <glob> <dir/> ...` SHALL be refused
+when any changed path (including a rename's previous path) is outside those
+globs. A pull request touching a release-critical path SHALL declare a lane. The
+check SHALL run from the trusted base checkout, before the receipt is read.
+
+#### Scenario: A smuggled lineage is refused
+- **WHEN** a lane declares `Lane: scripts/peer_agent.py` and its diff also carries `deploy/deploy_fail_safe.sh`
+- **THEN** the scope guard refuses it and names `deploy/deploy_fail_safe.sh`
+
+#### Scenario: A release-critical change must declare a lane
+- **WHEN** a pull request touches `deploy/` and its body has no `Lane:` line
+- **THEN** the scope guard refuses it
+
+### Requirement: Agent shell commands that lost time are refused
+
+The Claude Code Bash guard SHALL refuse a heredoc whose body holds a backslash
+(quoting the delimiter does not keep it on this host), a `pkill -f` whose pattern
+lacks the bracket trick, and a receipt naming a head that is not the pull
+request's current head. After a `git push` it SHALL report a pushed branch whose
+ref on the pushed remote is not the local branch. A guard that cannot run SHALL
+allow the call.
+
+#### Scenario: A self-matching pkill is refused
+- **WHEN** the agent runs `ssh host 'pkill -f rehearse'`
+- **THEN** the guard refuses it and suggests `'[r]ehearse'`
+
 ### Requirement: Worktree inspection supports narrowed provider scope
 
 The worktree status tool SHALL accept a provider filter and MUST apply it before
@@ -255,7 +294,7 @@ lanes it will discard.
 
 ### Requirement: Peer dispatch runs from a lane-local worktree with bounded autonomy
 
-Cross-family dispatch SHALL run the peer CLI as a subprocess against an explicit
+Peer dispatch SHALL run the peer CLI as a subprocess against an explicit
 working directory so a write-enabled run is confined to a lane worktree rather
 than the live checkout. Read-only SHALL be the default; write autonomy SHALL be
 explicit. The peer's result SHALL always land in the declared output file, and a
@@ -292,3 +331,33 @@ is worse than silence -- a reader cannot tell a stale requirement from a live on
 
 Recover any of it from git: the reset merged as `e4180697`, and this file's
 history holds the full text.
+
+### Requirement: Fixes reach production through a reversible hotfix first
+
+Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a corroborated Drain-Review APPROVE receipt for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
+
+#### Scenario: A live check fails
+
+- **WHEN** health, app 200, anonymous MCP 401, authenticated pulse 200, or the available sign-in probe fails
+- **THEN** the hotfix restores saved originals in every affected running TinyAssets container and the box harness, then restarts the affected services and box host and records the failure durably under the shared host-mutation lock
+
+#### Scenario: Normal deployment would erase a fix
+
+- **WHEN** any active hotfix has neither matching applied SHA256s in the candidate image nor a PR merged into main whose merge commit is contained in the image revision
+- **THEN** deployment refuses before replacing the daemon
+- **AND** a successful deployment satisfying every active hotfix archives those records, including after squash merges
+- **AND** the tool records the PR number at apply time and checks actual candidate-image content under the host mutation lock
+
+#### Scenario: Existing hand-written records remain authoritative
+
+- **WHEN** a record uses `id`, `commit`, `result`, `containers`, a `files` path-to-SHA256 map, `applied_at`, and `active`, with `<id>.orig/` backups
+- **THEN** list, guard, revert and rollback recovery read it through the shared record reader
+- **AND** deployment saves verified applied bytes before replacing containers so rollback can restore them
+- **AND** an unreadable record refuses with its filename and repair instructions; it never silently disappears from the active set
+
+#### Scenario: All affected processes load the fix
+
+- **WHEN** a hotfix applies or reverts
+- **THEN** it discovers running TinyAssets-image containers, patches each containing the file, and restarts those services
+- **AND** files present in the box harness are patched and boxhostd restarts, closing awake boxes so subsequent admission loads the updated harness
+- **AND** review uses the existing drain-review receipt requirement for every PR, with no private path exemptions

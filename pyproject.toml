@@ -77,18 +77,8 @@ dependencies = [
 ]
 
 [project.scripts]
-tinyassets-cli = "tinyassets.__main__:main"
 tinyassets-universe-server = "tinyassets.universe_server:main"
 tinyassets-probe = "tinyassets.probe:entry_point"
-
-# Domain discovery entry-point group (Task #22 / modularity §3.2).
-# Each built-in or third-party domain declares itself here as
-# name = "module.path:ClassName". Discovered at runtime by
-# tinyassets.discovery.discover_domains() — pip-installed packages
-# surface via this table without needing to sit inside the repo tree.
-[project.entry-points."tinyassets.domains"]
-fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
-research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
 # Real-browser proofs (tests marked real_browser); installed by
@@ -130,7 +120,7 @@ scientific = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["fantasy_author", "tinyassets", "domains"]
+packages = ["fantasy_author", "tinyassets"]
 
 [tool.ruff]
 target-version = "py311"
@@ -151,8 +141,12 @@ select = ["E", "F", "W", "I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+    "verifies(*ids): current OpenSpec design rows or requirement titles checked by this test",
     "slow: stress/race tests; opt-in via `pytest -m slow`",
     "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
     "real_browser: needs a real Chromium; run by .github/workflows/real-browser-proof.yml, which fails on any skip",
     "role_split: exercises the real broker, launcher or cells; no test double is installed",
-]
+  ]
+
+[tool.coverage.json]
+show_contexts = true

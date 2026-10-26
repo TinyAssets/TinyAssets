@@ -68,8 +68,8 @@ ALLOWED_ACTIONS = tuple(sorted(READ_ACTIONS | WRITE_ACTIONS))
 #: ``_unavailable``) rather than silently rendering as nothing.
 _UNAVAILABLE_DETAIL = {
     "consumer_disabled": (
-        "This daemon is not running automations right now, so nothing was "
-        "stored. Ask the host to enable the assigned-queue consumer."
+        "This automation is stored. The owner tick fires it when it is due; "
+        "the assigned-queue consumer does not have to be enabled."
     ),
     "authentication_required": (
         "Sign in before creating an automation: an automation is owned by a "
@@ -212,8 +212,8 @@ def _schedule_local(automation: Automation) -> str:
     honest answer rather than picking one of its slots to display.
     """
     from tinyassets.automations import TRIGGER_CRON, cron_zone_name
+    from tinyassets.control_plane.events import CronParseError, CronSchedule
     from tinyassets.schedule_timezone import describe_slot
-    from tinyassets.scheduler import CronParseError, CronSchedule
 
     if automation.trigger_kind != TRIGGER_CRON:
         return ""
@@ -299,7 +299,7 @@ def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
     enrichment, never a precondition for seeing the row.
     """
     try:
-        from tinyassets.runtime.assigned_queue_consumer import (
+        from tinyassets.control_plane.tick import (
             assigned_queue_refusal_freshness_seconds,
         )
         from tinyassets.storage.assigned_queue_refusals import (

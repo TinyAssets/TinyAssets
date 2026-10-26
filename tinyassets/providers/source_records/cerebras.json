@@ -1,0 +1,55 @@
+{
+  "id": "cerebras",
+  "display_name": "Cerebras",
+  "origin": "declared",
+  "addresses": [
+    "https://api.cerebras.ai/v1",
+    "https://api.cerebras.ai"
+  ],
+  "suggested": false,
+  "free": true,
+  "sign_in": {
+    "api_key": {
+      "header_style": "bearer",
+      "help_url": "https://cloud.cerebras.ai/platform/api-keys"
+    }
+  },
+  "invoke": {
+    "http": {
+      "wire": "chat_completions",
+      "base_url": "https://api.cerebras.ai/v1",
+      "models_url": "https://api.cerebras.ai/v1/models",
+      "inference_url": "https://api.cerebras.ai/v1/chat/completions",
+      "card": {
+        "help_url": "https://cloud.cerebras.ai/platform/api-keys",
+        "billing_url": "https://cloud.cerebras.ai",
+        "offer": "$5 trial credit expires after 30 days; a verified payment method is required. No recurring free tier. Buy credit there only if you choose.",
+        "wire": "openai_chat",
+        "daily_cap": {
+          "requests_per_day": null,
+          "tokens_per_minute": null,
+          "reset_timezone": null,
+          "source_url": "https://inference-docs.cerebras.ai/support/rate-limits"
+        }
+      }
+    }
+  },
+  "egress": {
+    "provider": [
+      "api.cerebras.ai"
+    ]
+  },
+  "state": {
+    "location": "broker"
+  },
+  "models": [
+    {
+      "id": "gpt-oss-120b",
+      "context": 32768
+    },
+    {
+      "id": "qwen-3.8-27b",
+      "context": 32768
+    }
+  ]
+}

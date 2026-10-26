@@ -9,7 +9,7 @@ arXiv 2607.12068):
 * **Tampering.** A failing test gets deleted, skipped or its assertions
   loosened inside the feature PR that broke it. Deleting, skipping or
   weakening a test is legitimate -- but as its OWN change, with a stated
-  reason, reviewed by the other model family. Not riding along in a feature.
+  reason, given an adversarial review. Not riding along in a feature.
 * **Suppression that never ends.** ``tests/test_wiki_file_bug.py`` skipped
   itself for 144 days behind a guard that looked in the wrong module.
 * **Non-hermetic new tests.** Real sleeps, the real calendar, the network,
@@ -56,15 +56,18 @@ from __future__ import annotations
 import argparse
 import ast
 import datetime as dt
+import io
 import re
 import subprocess
 import sys
+import tokenize
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_inventory as inv  # noqa: E402  (one definition of a marker)
+import test_shape  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAX_EXPIRY_DAYS = 180
@@ -90,6 +93,7 @@ class Finding:
 
 @dataclass
 class Delta:
+    shape: list[Finding] = field(default_factory=list)
     tampering: list[Finding] = field(default_factory=list)
     unexplained_markers: list[Finding] = field(default_factory=list)
     expired: list[Finding] = field(default_factory=list)
@@ -185,6 +189,7 @@ class FileModel:
     bodies: dict[str, str]
     markers: list[inv.Marker]
     lines: list[str]
+    comments: dict[int, str] = field(default_factory=dict)
 
 
 def _assertions(func: ast.AST) -> int:
@@ -217,6 +222,7 @@ def model(text: str | None, rel: str) -> FileModel:
         bodies={k: inv._norm_body(f) for k, f in tests.items()},
         markers=inv.scan_markers(tree, rel),
         lines=text.splitlines(),
+        comments=_comments(text),
     )
 
 
@@ -233,12 +239,30 @@ def _enclosing(m: inv.Marker, fm: FileModel) -> str | None:
 # ---- the rules ----------------------------------------------------------------
 
 
-def marker_problem(m: inv.Marker, today: dt.date) -> str | None:
-    """Why an ADDED marker is not acceptable, or None."""
+def _comments(text: str) -> dict[int, str]:
+    """Line number -> the `#` comment on that line, tokenized (never a string)."""
+    out: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                out[tok.start[0]] = tok.string
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass
+    return out
+
+
+def marker_problem(m: inv.Marker, today: dt.date, comments: str = "") -> str | None:
+    """Why an ADDED marker is not acceptable, or None.
+
+    `owner=` and `runs-in=` may sit in the reason or in `comments` -- the
+    comments on the marker's lines and the line before or after it -- so
+    wrapping a reason never fails the gate. `expires=` must be in the reason:
+    the weekly inventory reads it from there.
+    """
     if m.kind != "xfail" and inv.is_environment_guard(m.reason):
         return None
     missing = []
-    if not OWNER_RE.search(m.reason):
+    if not OWNER_RE.search(m.reason) and not OWNER_RE.search(comments):
         missing.append("`owner=<who>`")
     hit = inv.EXPIRY_RE.search(m.reason)
     if hit:
@@ -250,7 +274,7 @@ def marker_problem(m: inv.Marker, today: dt.date) -> str | None:
             return f"expires={when} is already past"
         if (when - today).days > MAX_EXPIRY_DAYS:
             return f"expires={when} is more than {MAX_EXPIRY_DAYS} days out"
-    elif not RUNS_IN_RE.search(m.reason):
+    elif not RUNS_IN_RE.search(m.reason) and not RUNS_IN_RE.search(comments):
         missing.append("`expires=YYYY-MM-DD` or `runs-in=<where this case does run>`")
     if missing:
         return "not an environment guard; the reason needs " + " and ".join(missing)
@@ -450,6 +474,22 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     delta = Delta()
     base = merge_base(base, head, root)
     changes = changed_files(base, head, root)
+    shape_files = test_shape.sources(root, head)
+    old_shape_files = test_shape.sources(root, base)
+    rows = test_shape.registry(shape_files)
+    old_rows = test_shape.registry(old_shape_files)
+    changed_tests = {new for _, _, new in changes if collectable(new)}
+    retired = {row for row, state in old_rows.items()
+               if state == "current" and rows.get(row) != "current"}
+    for test in test_shape.inventory(shape_files):
+        if test.node.split("::")[0] in changed_tests:
+            if not test.ids:
+                delta.shape.append(Finding(test.node, "test has no verifies id"))
+            for claim in sorted(test.ids):
+                if rows.get(claim) != "current":
+                    delta.shape.append(Finding(test.node, f"unresolvable verifies id: {claim}"))
+        for claim in sorted(test.ids & retired):
+            delta.shape.append(Finding(test.node, f"spec retires an id still named: {claim}"))
 
     for status, old, new in changes:
         path = new or old or ""
@@ -464,8 +504,19 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
         if ((old or "").startswith("tests/") and (old or "").endswith(".py"))
         or ((new or "").startswith("tests/") and (new or "").endswith(".py"))
     ]
-    befores = {old: model(_show(base, old, root), old) for old, _ in test_changes if old}
-    afters = {new: model(_show(head, new, root), new) for _, new in test_changes if new}
+    # The shape resolver already batch-read every collectable test blob.
+    # Reuse that text instead of spawning two more git processes per file.
+    def test_text(revision, path, blobs):
+        return blobs.get(path) if collectable(path) else _show(revision, path, root)
+
+    befores = {
+        old: model(test_text(base, old, old_shape_files), old)
+        for old, _ in test_changes if old
+    }
+    afters = {
+        new: model(test_text(head, new, shape_files), new)
+        for _, new in test_changes if new
+    }
     # A test counts as MOVED only if an identical body was ADDED to a file
     # pytest still collects; matched one-to-one, so a surviving copy can never
     # vouch for a deleted one.
@@ -527,7 +578,9 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                         f"new `{m.kind}` on a test that already existed: {m.reason!r}",
                     )
                 )
-            why = marker_problem(m, today)
+            last = (m.end_line or m.line) + 1
+            near = " ".join(a.comments.get(n, "") for n in range(m.line - 1, last + 1))
+            why = marker_problem(m, today, near)
             if why:
                 delta.unexplained_markers.append(
                     Finding(f"{rel}:{m.line}", f"new `{m.kind}` -- {why}")
@@ -561,7 +614,7 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
 
 
 def evaluate(delta: Delta, body: str) -> list[str]:
-    failures = []
+    failures = [f"{f.where} {f.what}" for f in delta.shape]
     if delta.tampering:
         listed = "; ".join(f"{f.where} ({f.what})" for f in delta.tampering[:20])
         reason = REMOVAL_RE.search(body or "")
@@ -569,7 +622,7 @@ def evaluate(delta: Delta, body: str) -> list[str]:
             failures.append(
                 f"this PR removes, skips or loosens existing tests: {listed}. That is allowed "
                 "only as its own reviewed change: add `Test-Removal: retired|consolidated|wrong "
-                "-- <why>` to the PR body and get the other model family's review."
+                "-- <why>` to the PR body and get an adversarial review."
             )
         elif delta.feature_lines and not (
             reason.group(1).lower() == "retired" and delta.removals_only and delta.product_deleted

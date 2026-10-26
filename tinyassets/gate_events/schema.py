@@ -1,6 +1,5 @@
 """Gate events schema — DDL and dataclasses for real-world outcome attestation.
 
-Spec: openspec/specs/paid-market-economy/spec.md §gate_event (vetted 2026-04-23 by navigator).
 
 Two tables:
   gate_event       — append-only attestation records (immutable once created)

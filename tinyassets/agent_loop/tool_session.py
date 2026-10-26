@@ -4,11 +4,11 @@ Same surface as :class:`tinyassets.engine_tool_client.EngineToolSession`
 (``tools`` plus ``call``), so :class:`AgentTurnCoordinator` journals intent,
 dispatches and records outcomes exactly as it does for the engine route. The
 difference is that ``call`` takes the journal position as ``op_id``
-(``takes_op_id``), which the box needs to make a lost reply safe to ask about.
+(``takes_op_id``), which the owner loop uses for its local operation receipts.
 
 Routing, decided once when the session opens and never by the model:
 
-* ``read``/``write``/``edit``/``bash`` -> the turn's bound box (:mod:`.box_tools`);
+* ``read``/``write``/``edit``/``bash`` -> the daemon's local :class:`OwnerTools`;
 * every other granted served tool -> the existing engine route, opened only if
   the grant names one. Its gates (owner rules, auto-review, effect consent)
   stay where they already are.
@@ -24,13 +24,13 @@ from typing import Any
 
 from mcp.types import CallToolResult, TextContent, Tool
 
-from tinyassets.agent_loop.box_tools import (
+from tinyassets.agent_loop.owner_tools import (
     BOX_ROOT,
     BOX_TOOLS,
-    BoxOperationRefused,
-    BoxTools,
+    OwnerTools,
     box_tool_definitions,
 )
+from tinyassets.boxes.provider import BoxOperationRefused
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 
 
@@ -49,7 +49,7 @@ class LoopToolSession:
 
     takes_op_id = True
 
-    def __init__(self, *, tools: tuple[Tool, ...], box: BoxTools | None,
+    def __init__(self, *, tools: tuple[Tool, ...], box: OwnerTools | None,
                  engine: Any | None,
                  steer: Callable[[], str | None] = lambda: None) -> None:
         self._tools = tools
@@ -88,7 +88,6 @@ class LoopToolSession:
 async def open_loop_tools(
     *,
     granted: Sequence[str],
-    bind_box: Callable[[], tuple[BoxTools, str]] | None,
     owner: str,
     universe_dir: Path,
     engine_identity: Callable[[], tuple[str, str]],
@@ -100,19 +99,21 @@ async def open_loop_tools(
     model_parent=None,
     capability_grant: Sequence[str] | None = None,
 ) -> AsyncIterator[LoopToolSession]:
-    """Open the turn's tools. ``bind_box`` binds the handle once, here.
+    """Open the turn's local owner tools.
 
     ``granted`` is the turn's model-visible tools in canonical order, and
     ``capability_grant`` the backend authority signed onto the engine session
     (what ``ta`` may reach; default ``granted``);
-    A granted box tool with no box
-    to bind is refused loudly rather than silently dropped from the turn.
+    Startup admission supplies the local tools.
     """
     granted = tuple(granted)
+
+    from tinyassets.agent_loop.owner_tools import tools_for
+
+    def bind_box():
+        return tools_for(universe_dir)
     box_names = tuple(name for name in granted if name in BOX_TOOLS)
     engine_names = tuple(name for name in granted if name not in BOX_TOOLS)
-    if box_names and bind_box is None:
-        raise EngineToolError("box_unavailable")
     async with AsyncExitStack() as stack:
         box, root = (None, BOX_ROOT)
         if box_names:
@@ -131,20 +132,15 @@ async def open_loop_tools(
             ))
             engine_tools = {tool.name: tool for tool in engine.tools}
         if ta_turn and "bash" in box_names:
-            from tinyassets.agent_loop.box_ta import TurnBridge, engine_deliver, engine_ta
-            from tinyassets.storage import data_dir
+            from tinyassets.agent_loop.box_ta import engine_deliver, engine_ta
 
-            if (actor_id, graph_id) != (owner, universe_dir.name):
-                raise EngineToolError("remote_ta_binding_refused")
-            bridge = TurnBridge(owner=owner, center=universe_dir.name, turn=ta_turn,
-                                handle=box._exec.handle,
-                                database=data_dir() / ".remote-ta-receipts.sqlite3",
-                                dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
-                                deliver=lambda: engine_deliver(
-                                    engine, universe_dir=universe_dir, owner=owner,
-                                    session_key=session_key))
+            bridge = box.enable_ta(
+                turn=ta_turn,
+                dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
+                deliver=lambda: engine_deliver(engine, universe_dir=universe_dir,
+                                                owner=owner, session_key=session_key),
+            )
             stack.callback(bridge.close)
-            box._exec.enable_ta(bridge)
         box_definitions = box_tool_definitions(root)
         tools = tuple(
             _tool(name, box_definitions[name]) if name in BOX_TOOLS else engine_tools[name]

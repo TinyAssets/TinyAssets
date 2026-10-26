@@ -112,6 +112,19 @@ def runs_db_path(base_path: str | Path) -> Path:
     return Path(base_path) / ".runs.db"
 
 
+def pause_queued(base_path: str | Path) -> int:
+    """Stop restored queued runs until the owner submits fresh work."""
+    path = runs_db_path(base_path)
+    if not path.is_file():
+        return 0
+    with sqlite3.connect(path, timeout=30.0) as conn:
+        cursor = conn.execute(
+            "UPDATE runs SET status='paused_by_restore', error='paused_by_restore' "
+            "WHERE status='queued'")
+        conn.commit()
+        return cursor.rowcount
+
+
 @contextlib.contextmanager
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db = runs_db_path(base_path)
@@ -622,16 +635,6 @@ def _bind_waiting_run_provider(
     from tinyassets.foreground_run_provider import new_foreground_run_provider_session
     from tinyassets.providers.base import UniverseContext
     from tinyassets.providers.model_call import bind_model_call, text_sync
-    from tinyassets.storage import _connect as author_connect
-    from tinyassets.storage.current_home import check_principal_not_deleted
-
-    with author_connect(base_path) as authority:
-        # The deletion fence is transaction-local by contract; the admitted-input
-        # path reads it under BEGIN IMMEDIATE, and so must this one. Without it
-        # every nominated waiter failed ``provider_unavailable`` (live
-        # 2026-09-24, founder universe, the second of two contending runs).
-        authority.execute("BEGIN IMMEDIATE")
-        check_principal_not_deleted(authority, owner_id)
     session = new_foreground_run_provider_session(
         base_path, universe_id=universe_id, principal_id=owner_id,
         provider_call=text_sync,
@@ -855,7 +858,6 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     reached the outbox (a crash between the two writes of an older code path),
     then process every claimable entry."""
     from tinyassets import workspace_pool
-    from tinyassets.workspace_fs import RealPoolFilesystem
 
     db = runs_db_path(base_path)
     with _connect(base_path) as conn:
@@ -941,7 +943,7 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
         orphaned_locks = list(orphaned_locks) + [(r,) for r in releasable]
         for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
             _enqueue_workspace_terminal(conn, base_path, run_id)
-    done = workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
+    done = workspace_pool.periodic_sweep(db, fs=_workspace_pool_fs(base_path), claimant=claimant)
     # A pass that released a lock is exactly when the next waiter's turn comes;
     # a pass that released nothing is the backstop for a missed nomination.
     try:
@@ -1145,6 +1147,12 @@ def _ensure_scratch_root(base: Path) -> Path:
     return scratch_pool_root(base)
 
 
+def _workspace_pool_fs(base_path: str | Path):
+    from tinyassets.workspace_fs import BoxPoolFilesystem
+
+    return BoxPoolFilesystem(Path(base_path).parent)
+
+
 def ensure_workspace_reconciled(
     base_path: str | Path,
     *,
@@ -1156,7 +1164,6 @@ def ensure_workspace_reconciled(
     earlier process (the admission barrier of the scratch-storage spec) and
     start the periodic sweeper. Returns True the first time, False after."""
     from tinyassets import workspace_pool
-    from tinyassets.workspace_fs import RealPoolFilesystem
 
     key = (os.getpid(), str(Path(base_path).resolve()))
     with _WORKSPACE_RECONCILE_LOCK:
@@ -1170,7 +1177,7 @@ def ensure_workspace_reconciled(
         with _connect(base_path) as conn:
             workspace_pool.ensure_schema(conn)
         done = workspace_pool.startup_sweep(
-            db, fs=RealPoolFilesystem(), claimant=f"startup:{os.getpid()}",
+            db, fs=_workspace_pool_fs(base_path), claimant=f"startup:{os.getpid()}",
         )
         if done:
             logger.info("workspace startup sweep finished %d outbox entries", done)
@@ -1499,8 +1506,8 @@ def initialize_runs_db(base_path: str | Path) -> Path:
     """
     from tinyassets.branch_versions import BRANCH_VERSIONS_SCHEMA
     from tinyassets.contribution_events import CONTRIBUTION_EVENTS_SCHEMA
+    from tinyassets.control_plane.events import SCHEDULER_SCHEMA, migrate_scheduler_schema
     from tinyassets.gate_events.schema import GATE_EVENT_SCHEMA
-    from tinyassets.scheduler import SCHEDULER_SCHEMA, migrate_scheduler_schema
     schema = (
         schema
         + SCHEDULER_SCHEMA
@@ -1860,7 +1867,9 @@ def create_run(
         # A run is somebody's; no synthetic principal is minted.
         raise ValueError("create_run actor must be a real principal; an unowned value is not one")
     initialize_runs_db(base_path)
-    run_id = uuid.uuid4().hex[:16]
+    from tinyassets.operation_epoch import new_identity
+
+    run_id = new_identity(uuid.uuid4().hex[:16])
     resolved_owner_user_id = (
         str(owner_user_id or "")
         if owner_user_id is not None
@@ -4224,6 +4233,10 @@ def _prepare_run(
     editable definition. A capture failure raises ``AdmissionEnvelopeError``
     carrying the reserved ``run_id`` so the caller can refuse to dispatch.
     """
+    if branch.branch_def_id.startswith("activities::"):
+        raise PermissionError(
+            "The Activities workflow was retired; start an activity through the "
+            "agent session instead. The workflow definition remains available as history.")
     initialize_runs_db(base_path)
     run_id = create_run(
         base_path,
@@ -4763,7 +4776,6 @@ def _invoke_graph(
     effect_chain = EffectChain(
         run_id=run_id,
         base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
-        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         invocation_depth=int(invocation_depth or 0),
         universe_id=_eff_universe_hint or run_universe,
     )
@@ -5180,21 +5192,6 @@ _EXTERNAL_WRITE_RESERVED_KEYS = (
 )
 
 
-def _claimed_cloud_effect_session(provider_call: Any) -> Any | None:
-    """Expose effect authority only from the exact service-issued call owner."""
-    try:
-        from tinyassets.cloud_automation_continuation import (
-            _ClaimedCloudProviderSession,
-        )
-    except ImportError:
-        return None
-    return (
-        provider_call
-        if type(provider_call) is _ClaimedCloudProviderSession
-        else None
-    )
-
-
 def _quarantine_branch_authored_external_write_keys(
     output: dict[str, Any],
 ) -> None:
@@ -5252,7 +5249,6 @@ def _run_external_write_effectors(
     *,
     base_path: str | Path | None = None,
     run_id: str = "",
-    cloud_effect_session: Any | None = None,
 ) -> dict[str, Any]:
     """Dispatch external-write effectors for ``branch`` against ``run_state``.
 
@@ -5276,7 +5272,6 @@ def _run_external_write_effectors(
             run_state=run_state,
             base_path=base_path,
             run_id=run_id,
-            cloud_effect_session=cloud_effect_session,
         )
     except Exception:  # pragma: no cover — effectors are no-raise
         logger.exception("external-write effector dispatch crashed")
@@ -6685,7 +6680,6 @@ def _invoke_graph_resume(
     effect_chain = EffectChain(
         run_id=run_id,
         base_path=_resolve_effector_base(base_path, run_id),
-        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         universe_id=_resume_universe,
     )
     # What the interrupted segment already fired and spent, so "at most once
@@ -7412,7 +7406,6 @@ ACTIONABLE_BY: dict[str, str] = {
     # host — server-side configuration / credentials / binaries
     "empty_llm_response": "host",
     "provider_unavailable": "host",
-    "provider_subprocess_failed": "host",
     "provider_exhausted": "host",
     "sandbox_unavailable": "host",
     "node_not_approved": "host",

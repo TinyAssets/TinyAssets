@@ -14,30 +14,8 @@ Shares are normalized so the total sums to 1.0.
 from __future__ import annotations
 
 from tinyassets.attribution.schema import AttributionCredit, AttributionEdge
-from tinyassets.payments.identifiers import MicroToken
 
 _DEFAULT_DEPTH_CAP = 10
-
-
-class NoAttributionError(ValueError):
-    """A positive payout arrived with nothing to attribute it to.
-
-    This is a data-integrity failure, not a normal outcome, and it is narrow:
-    ``depth_cap`` CLAMPS a contributor's depth rather than filtering them out
-    (see ``_shares_from_credits``), and the edge path raises on a cycle rather
-    than returning empty. So a credited contributor can never be silently
-    dropped. The only way to reach here is a payout for an artifact with no
-    credit records AND no lineage edges at all — meaning the caller passed the
-    wrong id, or the attribution records were never written.
-
-    It is therefore refused rather than absorbed. Routing the gross to
-    ``_treasury`` would convert a missing-data bug into platform revenue and
-    destroy the evidence that anything went wrong; the money should not have
-    been authorized against an unattributed artifact in the first place, so the
-    correct response is to surface the gap loudly (hard rule 8).
-
-    Host decision 2026-08-05.
-    """
 
 
 def compute_credit_shares(
@@ -162,65 +140,3 @@ def _shares_from_edges(
     if total <= 0.0:
         return {}
     return {aid: w / total for aid, w in raw.items()}
-
-
-def compute_payout_shares(
-    edges: list[AttributionEdge],
-    credits: list[AttributionCredit],
-    total_payout: MicroToken,
-    fee_pct: float = 0.01,
-    depth_cap: int = _DEFAULT_DEPTH_CAP,
-) -> dict[str, MicroToken]:
-    """Compute per-actor payout amounts after deducting the platform fee.
-
-    Args:
-        edges: provenance edges (used when credits is empty).
-        credits: per-actor AttributionCredit records for share weighting.
-        total_payout: gross payout amount in MicroTokens.
-        fee_pct: platform fee fraction (default 1% = 0.01). Routed to treasury.
-        depth_cap: max lineage depth.
-
-    Returns:
-        dict mapping actor_id → net payout amount in MicroTokens.
-        Special key "_treasury" holds the platform fee in MicroTokens.
-        All returned amounts are integers, and the result sums exactly to
-        `total_payout`.
-
-    Raises:
-        NoAttributionError: if a positive payout has no attribution to split
-            it over. See the class docstring for why this is not treated as
-            platform revenue.
-    """
-    gross_total = int(total_payout)
-    if gross_total <= 0:
-        return {"_treasury": MicroToken(0)}
-
-    shares = compute_credit_shares(edges=edges, credits=credits or None, depth_cap=depth_cap)
-    if not shares:
-        raise NoAttributionError(
-            f"payout of {gross_total} has no attribution to split over: "
-            f"{len(credits or [])} credit(s), {len(edges or [])} edge(s)"
-        )
-
-    fee = int(gross_total * fee_pct)
-    distributable = gross_total - fee
-
-    floored_allocations: dict[str, int] = {}
-    remainders: list[tuple[float, str]] = []
-    allocated = 0
-    for actor_id, share in shares.items():
-        raw_payout = distributable * share
-        payout = int(raw_payout)
-        floored_allocations[actor_id] = payout
-        allocated += payout
-        remainders.append((raw_payout - payout, actor_id))
-
-    remainder = distributable - allocated
-    remainders.sort(key=lambda item: (-item[0], item[1]))
-    for _, actor_id in remainders[:remainder]:
-        floored_allocations[actor_id] += 1
-
-    result: dict[str, MicroToken] = {"_treasury": MicroToken(fee)}
-    for actor_id, payout in floored_allocations.items():
-        result[actor_id] = MicroToken(payout)
-    return result

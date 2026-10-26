@@ -64,7 +64,7 @@ Cross-module note: ``_current_actor``, ``_truncate``, ``_append_ledger``,
 (universe-engine territory) and are lazy-imported inside the functions that use
 them. This avoids the load-time cycle (universe_server back-compat-imports
 symbols from this module). ``_gates_enabled`` is also lazy-imported, but from
-``tinyassets.api.market`` (its real home post-Step-7).
+``tinyassets.api.goals`` (its real home post-Step-7).
 """
 
 from __future__ import annotations
@@ -289,10 +289,9 @@ def _source_code_problems(node_defs: Any) -> list[dict[str, Any]]:
     founder its PR-building branch needed an approval flow that does not
     exist).
 
-    Scope: the owner's own branches through ``run_graph``. The bid-market
-    executor (``executors/node_bid.py``) keeps its own approval gate because
-    a bid-referenced node is another universe's code -- that boundary is
-    cross-user and is not what this receipt describes."""
+    Scope: the owner's own branches through ``run_graph``. The node-bid
+    executor was removed with the bidding feature, so this receipt does not
+    describe a second code-exec path."""
     from tinyassets.graph_compiler import source_code_problems
 
     found: list[dict[str, Any]] = []
@@ -772,7 +771,7 @@ def _attach_copy_use(branch: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
-    from tinyassets.api.market import _gates_enabled
+    from tinyassets.api.goals import _gates_enabled
     from tinyassets.daemon_server import list_gate_claims
 
     selector = kwargs.get("branch_def_id", "").strip()
@@ -1016,8 +1015,9 @@ def _branch_dependents(
     """
     import sqlite3
 
-    from tinyassets import branch_versions, scheduler
+    from tinyassets import branch_versions
     from tinyassets.automations import AutomationStore
+    from tinyassets.control_plane import events as scheduler
     from tinyassets.daemon_server import list_branch_definitions
     from tinyassets.storage import db_path, webhook_hooks
 
@@ -1441,27 +1441,25 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     ]
     problems = _source_code_problems(source_dict.get("node_defs", []))
 
-    # sandbox-compat warning: list any requires_sandbox=True nodes when
-    # the host's bwrap probe says sandbox is unavailable. Non-fatal.
+    # sandbox-compat warning: list any requires_sandbox=True nodes when this
+    # process serves no owner box. Non-fatal.
     sandbox_warnings: list[str] = []
     try:
         from tinyassets.providers.base import get_sandbox_status
         sb = get_sandbox_status()
-        if not sb.get("bwrap_available"):
+        if not sb.get("box_available"):
             sandbox_nodes = [
                 nd.node_id
                 for nd in branch.node_defs
                 if getattr(nd, "requires_sandbox", False)
             ]
             if sandbox_nodes:
-                reason = sb.get("reason") or "bwrap unavailable"
+                reason = sb.get("reason") or "owner box unavailable"
                 sandbox_warnings.append(
                     f"This branch contains {len(sandbox_nodes)} node(s) that "
                     f"require a sandbox ({', '.join(sorted(sandbox_nodes))}) but "
-                    f"the host sandbox probe returned: {reason}. "
-                    f"These nodes will fail at runtime. Options: enable bwrap "
-                    f"on the host, or use a branch variant without "
-                    f"requires_sandbox=true nodes (design-only branch)."
+                    f"this process serves no owner box: {reason}. "
+                    f"These nodes will fail at runtime."
                 )
     except Exception:  # noqa: BLE001 — best-effort non-blocking warning
         pass
@@ -2156,22 +2154,9 @@ def _resolve_node_spec(
     ``NodeDefinition`` from. On failure ``resolved_spec`` is ``None``
     and ``error`` explains what the caller must do.
 
-    The shape changes we accept are:
-
-    - ``node_ref={"source": "standalone", "node_id": "X"}`` — copy the
-      canonical standalone registration X into this branch.
-    - ``node_ref={"source": "<branch_def_id>", "node_id": "X"}`` —
-      copy node X from another branch.
-    - Plain inline spec (``node_id``/``display_name``/...): used as-is,
-      EXCEPT we refuse to silently shadow an existing standalone
-      registration (#66). The caller must either pick a different
-      ``node_id`` or pass ``intent="copy"`` to opt into the copy.
-
-    ``intent="reference"`` is reserved for a future live-reference
-    mode. v1 only supports ``intent="copy"``; other values error.
+    A node_ref copies a node from another readable branch. Inline definitions
+    do not consult a global node registry. Extensions are activated v2 packages.
     """
-    from tinyassets.api.extensions import _load_nodes
-
     nid = (raw.get("node_id") or "").strip()
     intent = (raw.get("intent") or "").strip().lower()
     if intent and intent not in ("copy", "reference"):
@@ -2183,7 +2168,7 @@ def _resolve_node_spec(
     if intent == "reference":
         return None, (
             "intent='reference' (live shared node) is not supported "
-            "yet. Use intent='copy' to snapshot a standalone node "
+            "yet. Use intent='copy' to snapshot a branch node "
             "into this branch."
         )
 
@@ -2195,14 +2180,10 @@ def _resolve_node_spec(
         ref_nid = (node_ref.get("node_id") or nid).strip()
         if not ref_source or not ref_nid:
             return None, "node_ref requires 'source' and 'node_id'."
-        if ref_source != "standalone":
-            resolved_source = _resolve_readable_branch(
-                ref_source,
-                str(_base_path()),
-            )
-            if resolved_source is None:
-                return None, _branch_not_found_message(ref_source)
-            ref_source = resolved_source[0]
+        resolved_source = _resolve_readable_branch(ref_source, str(_base_path()))
+        if resolved_source is None:
+            return None, _branch_not_found_message(ref_source)
+        ref_source = resolved_source[0]
         resolved, err = _lookup_node_body(ref_source, ref_nid)
         if err:
             return None, err
@@ -2227,26 +2208,6 @@ def _resolve_node_spec(
         _reconcile_copied_approval(merged)
         return merged, ""
 
-    # No explicit ref — fall back to raw. If the node_id shadows a
-    # standalone registration, demand explicit intent so the caller
-    # cannot silently create a hollow clone.
-    if nid and intent != "copy":
-        try:
-            standalone = _load_nodes()
-        except Exception:
-            standalone = []
-        hit = next(
-            (n for n in standalone if n.get("node_id") == nid), None,
-        )
-        if hit:
-            return None, (
-                f"node_id '{nid}' matches an existing standalone "
-                "registered node. Pass node_ref="
-                f"{{'source': 'standalone', 'node_id': '{nid}'}} to "
-                "copy its body into this branch, or pass intent='copy' "
-                "on this spec if you intentionally want the existing "
-                "body, or rename this node to avoid collision."
-            )
     raw = dict(raw)
     raw.pop("approved", None)
     raw.pop("author", None)
@@ -2258,46 +2219,8 @@ def _lookup_node_body(
 ) -> tuple[dict[str, Any], str]:
     """Return the canonical node body for a ``node_ref`` lookup.
 
-    ``source`` is either the literal string ``'standalone'`` (look in
-    the standalone node registry) or a branch_def_id (look in that
-    branch's ``node_defs``).
+    ``source`` is a readable branch_def_id.
     """
-    from tinyassets.api.extensions import _load_nodes
-
-    if source == "standalone":
-        try:
-            nodes = _load_nodes()
-        except Exception as exc:
-            return {}, f"could not load standalone node registry: {exc}"
-        hit = next(
-            (n for n in nodes if n.get("node_id") == node_id), None,
-        )
-        if not hit:
-            return {}, (
-                f"standalone node '{node_id}' not found. "
-                "Global registered-node discovery is not exposed by the "
-                "advertised handles."
-            )
-        return {
-            "node_id": hit.get("node_id", node_id),
-            "display_name": hit.get("display_name", node_id),
-            "description": hit.get("description", ""),
-            "phase": hit.get("phase", "custom"),
-            "input_keys": list(hit.get("input_keys") or []),
-            "output_keys": list(hit.get("output_keys") or []),
-            "tools_allowed": list(hit.get("tools_allowed") or []),
-            "strict_input_isolation": bool(
-                hit.get("strict_input_isolation", True),
-            ),
-            "source_code": hit.get("source_code", ""),
-            "prompt_template": hit.get("prompt_template", ""),
-            "author": hit.get("author", ""),
-            "approved": bool(hit.get("approved", False)),
-            "approved_by": hit.get("approved_by", ""),
-            "approved_at": hit.get("approved_at", ""),
-            "approved_source_hash": hit.get("approved_source_hash", ""),
-            "approval_reason": hit.get("approval_reason", ""),
-        }, ""
 
     # Otherwise treat `source` as a branch_def_id.
     from tinyassets.daemon_server import get_branch_definition
@@ -2941,8 +2864,7 @@ def _apply_node_updates(
     ignored_fields: frozenset[str] = frozenset(),
 ) -> str:
     """Apply validated node update fields shared by both update surfaces."""
-    from tinyassets.api.extensions import VALID_PHASES
-    from tinyassets.phase_vocab import normalize_phase
+    from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
     editable_updates = {
         key: value
@@ -4487,10 +4409,9 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
     ``node_ids`` (default: all nodes on the branch). Atomic — if any
     node rejects, nothing is written.
     """
-    from tinyassets.api.extensions import VALID_PHASES
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import save_branch_definition
-    from tinyassets.phase_vocab import normalize_phase
+    from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
     selector = (kwargs.get("branch_def_id") or "").strip()
     if not selector:
@@ -4829,11 +4750,6 @@ canonical body is snapshotted into the new Branch and diverges from
 there. If the user later edits it on either side, the other stays
 unchanged. (v1; live shared nodes may come later.)
 
-Bare `node_id` that collides with an existing standalone registered node is
-rejected by the server; in an existing branch patch, pass `node_ref` /
-`intent="copy"` or rename. This is intentional — silent shadowing was a bug
-(#66).
-
 ## New-workflow authoring
 
 Create a Branch through `write_graph target="branch" operation="create"
@@ -4987,4 +4903,52 @@ The never-simulate rule lives in `control_station` (hard rule 5):
 if `run_graph` fails, the branch isn't validated, or a code node will not
 compile (`source_code_problems`), state the reason and stop. Approval is
 provenance, never a gate.
+
+## Code nodes and the folder they can touch
+
+Pass `source_code` instead of `prompt_template`. Inside `def run(state)`,
+`invoke_mcp_action(name, ...)` calls one supported action.
+
+The command-center folder `/u` uses these names and arguments:
+
+- `invoke_mcp_action("read", path="notes.md", offset=1, limit=200)` —
+  `offset` is the first line (1-based); `limit` is a line count (default 2000).
+- `invoke_mcp_action("write", path="notes.md", content="...")` — create or replace.
+- `invoke_mcp_action("edit", path="notes.md", old_text="...", new_text="...")` —
+  `old_text` must occur exactly once.
+- `invoke_mcp_action("bash", command="...", timeout=30)` — `timeout` is seconds
+  (omit it for the tool default; at most 600).
+
+An empty `tools_allowed` grants every served tool (`read`, `write`, `edit`,
+`bash`, `read_graph`, `get_status`, `run_graph`, `write_graph`,
+`browse_commons`, `read_commons_shape`, `read_brain`, `write_brain`,
+`connect_compute`, `source_channel`). A named list grants exactly those names.
+Aliases must be named in `tools_allowed`: `wiki.read`, `wiki.search`,
+`wiki.list`, `wiki.since`, `wiki.lint`, `goals.leaderboard`,
+`goals.archive_consultation`, `gates.leaderboard`, `gates.get_ladder`,
+`enqueue_branch_run`, `deliver_output`, `read_run_file`, `notify` (the
+underscore spellings of those aliases work too). Wiki writes are not an
+action; publish through an effect. Bound user attachments are a different
+call, `invoke_mcp_action("read_run_file", file_id=..., offset=0, count=524288)`,
+on a node that declares that file field in `input_keys`.
+
+An unknown name is refused with this same set. The refusal is the list above,
+not a shorter alias-only list.
+
+## Workspace effect packet
+
+A node with `"effects": ["workspace"]` returns one packet under an output key.
+Every packet has `"sink": "workspace"`. A packet without that field is not a
+workspace packet, and the node is refused `no_matching_packet`.
+
+- create: `{"sink": "workspace", "op": "create", "storage": "scratch"}`
+  (`"universe"` keeps it; `"workspace_key"` names it).
+- checkout: `{"sink": "workspace", "op": "checkout", "connection_id": "...",
+  "grant_id": "...", "repo": "owner/name", "ref": "main", "storage": "scratch"}`.
+- push: `{"sink": "workspace", "op": "push", "workspace": "<checkout node id>",
+  "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`.
+- discard: `{"sink": "workspace", "op": "discard", "workspace": "<node id>"}`.
+
+A later code node binds that checkout with `"workspace": "<that node id>"`
+and uses `ws` at `/workspace`.
 """

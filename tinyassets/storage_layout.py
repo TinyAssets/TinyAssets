@@ -5,8 +5,8 @@ command-center`, design D7.2 / D10) renames tables, columns, files and ids in on
 locked migration run. An image built for the old layout must never start against
 renamed data: it would find no ``universes`` table and could create a blank home
 for a person who already has one. The marker shipped first (C4a) as the
-production baseline; layout 2 now records the consent sidecar move, before
-the naming cutover:
+production baseline; layout 2 records the consent sidecar placement.
+Startup only validates the committed marker; cutover performs migrations.
 
 * ``data_dir()/.layout.json`` holds ``{"layout": <n>, "state": "stable"}``,
   written the first time an image that knows layout 1 finds none.
@@ -42,13 +42,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tinyassets.storage import platform_state_move as psm
-
 #: Layout 2 moves consent authority outside homes. The naming cutover must use
 #: a subsequent version; reusing 2 would admit this image onto renamed data.
 LAYOUT = 2
 #: Layouts this code understands. A newer one means "migrated past me".
 KNOWN_LAYOUTS = frozenset({1, 2})
+# This image serves only the owner-box layout (ADR-022). On owner-split data it
+# is a cutover candidate for deploy_fail_safe.sh's one-shot move and never serves.
+SUPPORTED_BOX_LAYOUTS = frozenset({"owner-box"})
+ACTIVE_BOX_LAYOUT = "owner-box"
 STABLE = "stable"
 MARKER = ".layout.json"
 LOCK = ".layout.lock"
@@ -173,30 +175,13 @@ def _validated(base: Path, document: dict[str, Any]) -> dict[str, Any]:
             f"{sorted(KNOWN_LAYOUTS)}. Nothing was opened; run the image built for "
             "that layout."
         )
+    box_layout = document.get("box_layout")
+    if box_layout != ACTIVE_BOX_LAYOUT:
+        raise LayoutRefused(
+            f"{marker_path(base)} says box_layout={box_layout!r}; this image serves "
+            f"only {ACTIVE_BOX_LAYOUT!r}. Nothing was opened; use the image for that box layout."
+        )
     return document
-
-
-def _mark_move(base: Path, state: str) -> None:
-    """Record a one-way move's state in the marker, durably, before it changes
-    anything. A crash between the two writes leaves ``migrating``, which the
-    next admission sees and resumes from."""
-    document = read_marker(base) or {"layout": LAYOUT, "state": STABLE}
-    moves = dict(document.get(psm.MOVES) or {})
-    moves[psm.CONSENTS] = state
-    _write_atomically(marker_path(base), {
-        **document, "layout": LAYOUT,
-        "state": psm.MIGRATING if state == psm.MIGRATING else STABLE,
-        psm.MOVES: moves,
-    })
-
-
-def _validate_for_move(base: Path, document: dict[str, Any]) -> None:
-    # Only OUR interrupted move is resumable. Other migrations still refuse.
-    if (document.get("layout") == LAYOUT
-            and document.get("state") == psm.MIGRATING
-            and (document.get(psm.MOVES) or {}).get(psm.CONSENTS) == psm.MIGRATING):
-        return
-    _validated(base, document)
 
 
 def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
@@ -209,13 +194,11 @@ def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
             _lock(fd, exclusive=False)
             document = read_marker(base)
             if document is not None:
-                _validate_for_move(base, document)
-                if not psm.move_needed(document) and document.get("layout") == LAYOUT:
-                    _validated(base, document)
-                    break
+                _validated(base, document)
+                break
             _unlock(fd)
             # Never queue an exclusive waiter behind an admitted process's
-            # lifetime shared lock. It may have completed the move since our
+            # lifetime shared lock. It may have initialized the marker since our
             # read. Reacquire shared and inspect its result on every retry.
             try:
                 _lock(fd, exclusive=True, blocking=False)
@@ -225,12 +208,12 @@ def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
             try:
                 document = read_marker(base)
                 if document is not None:
-                    _validate_for_move(base, document)
-                if psm.move_needed(document):
-                    psm.run(base, mark=lambda state: _mark_move(base, state))
-                else:
-                    # Fence volumes already moved by the unfenced PR image.
-                    _mark_move(base, psm.DONE)
+                    _validated(base, document)
+                if document is None:
+                    _write_atomically(marker_path(base), {
+                        "layout": LAYOUT, "state": STABLE,
+                        "box_layout": ACTIVE_BOX_LAYOUT,
+                    })
             finally:
                 _unlock(fd)
     except BaseException:

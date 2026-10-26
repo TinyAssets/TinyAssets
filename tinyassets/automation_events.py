@@ -73,6 +73,10 @@ from tinyassets.principals import named_principal
 logger = logging.getLogger(__name__)
 
 _UNIVERSE_ACTOR_PREFIX = "universe:"
+#: Recorded on the subscription when this event key already has a wake.
+#: It names that wake and does not start a run. ``woke:`` is only a wake
+#: this delivery actually stored.
+EVENT_DEDUPLICATED_PREFIX = "deduplicated:"
 
 
 def _matches(payload: dict[str, Any], event_filter: dict[str, Any] | None) -> bool:
@@ -108,9 +112,12 @@ def emit(
 
     ``principal_id`` is who caused the event, or '' for the universe's own
     work, which wakes nothing. ``event_id`` identifies this occurrence, so a
-    second delivery of it stores no second wake. Never raises: a failure
-    returns None under ``strict`` (the caller keeps the event owed and
-    delivers it again), and ``[]`` otherwise.
+    second delivery of it stores no second wake. A repeat finds the wake
+    already stored for that event key, records ``deduplicated:<id>`` on the
+    subscription, and returns no new id: the first delivery's ``woke:<id>``
+    is the run, and a later ``deduplicated:<id>`` is that same wake with no
+    second run. Never raises: a failure returns None under ``strict`` (the
+    caller keeps the event owed and delivers it again), and ``[]`` otherwise.
     """
     try:
         return _emit(
@@ -179,6 +186,11 @@ def _emit(
                 stored.append(pending.automation_id)
                 continue
             key = _coalesced_key(base, sub, event_id)
+            already = None
+        else:
+            # One wake per subscription and occurrence. The row for this key
+            # is that wake; registering again returns it and starts nothing.
+            already = AutomationStore(base).get_by_event_key(key)
         # The branch is read as its owner: a private branch is refused to an
         # unbound thread. owner_run_identity binds only an admin of this
         # universe, and register_automation re-checks admin AND home.
@@ -214,6 +226,11 @@ def _emit(
             _record_fire(base, sub, reason, now)
             if detail in RETRYABLE_REFUSALS:
                 retry.append(detail)
+            continue
+        if already is not None:
+            _record_fire(
+                base, sub, f"{EVENT_DEDUPLICATED_PREFIX}{wake.automation_id}", now,
+            )
             continue
         _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
@@ -424,7 +441,10 @@ def emit_app_event(
         event_type=EVENT_APP,
         universe_id=universe_id,
         principal_id=principal_id,
-        payload={"name": name, "data": data},
+        # ``viewer`` is the authenticated account, not a field of ``data``. A
+        # screen can put any account_id in data; a node that enforces one
+        # rating per account reads this instead.
+        payload={"name": name, "data": data, "viewer": {"account_id": principal_id}},
     )
 
 

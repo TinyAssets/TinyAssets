@@ -30,8 +30,6 @@ FROM mirror.gcr.io/library/python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093c
 
 ARG TARGETARCH
 ARG NODEJS_VERSION=22.23.3-1nodesource1
-ARG CODEX_CLI_VERSION=0.160.0
-ARG CLAUDE_CODE_CLI_VERSION=2.1.288
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 ARG RUSTUP_VERSION=1.28.2
 ARG RUSTUP_SHA256_AMD64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
@@ -40,11 +38,7 @@ ARG RUST_TOOLCHAIN=1.85.1
 
 # Native build-deps for lancedb (rust), clingo (cmake), spacy (cython),
 # and general C extensions. Removed from the final image.
-# Node.js 22 LTS via nodesource — Debian's default apt nodejs is too old
-# (Node 12/18) for either CLI. The floor is now @anthropic-ai/claude-code,
-# whose published metadata moved from engines.node >=18.0.0 at 2.1.183 to
-# >=22.0.0 at 2.1.288; @openai/codex asks only for >=16, so 22 serves both.
-# 22 is the current LTS line, and the smallest one that satisfies that floor.
+# Node supports the owner toolchain.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -122,32 +116,6 @@ RUN set -e; \
     /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal; \
     rm -f /tmp/rustup-init
 
-# Install codex CLI to an explicit prefix so the path is deterministic
-# across distros. npm global prefix under nodesource Debian may be
-# /usr/lib/node_modules (not /usr/local/lib), so we pin to /opt/codex-install
-# — then COPY --from=builder targets a known path.
-#
-# Smoke-test the install via the absolute path. The final-stage image
-# does NOT symlink the bare codex bin to /usr/local/bin; it copies the
-# flock wrapper there instead (see below). Adding the same wrapper in
-# the builder stage would just be dead weight, so we run the binary
-# directly here.
-COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
-COPY tinyassets/external_agents/packages/codex/extension.json /tmp/codex-extension.json
-COPY tinyassets/external_agents/catalogue_rewrite.py /tmp/catalogue_rewrite.py
-RUN mkdir -p /opt/codex-install && \
-    npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
-    /opt/codex-install/node_modules/.bin/codex --version && \
-    /opt/codex-install/node_modules/.bin/codex debug models --bundled > /opt/codex-install/bundled-models.json && \
-    python /tmp/codex_cli_smoke.py /opt/codex-install/node_modules/.bin/codex
-
-# Install Claude Code CLI next to Codex. It runs only as a universe's provider
-# child, on that universe's own credentials; the image holds no model login
-# (AGENTS.md Hard Rule 15).
-RUN mkdir -p /opt/claude-code-install && \
-    npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
-    /opt/claude-code-install/node_modules/.bin/claude --version
-
 WORKDIR /build
 
 # Copy project metadata + source so editable install works. Every COPY source
@@ -178,9 +146,6 @@ RUN python -m venv --copies /opt/venv && \
     /opt/venv/bin/python -c 'import subprocess,sys,tomllib; p=tomllib.load(open("pyproject.toml","rb"))["project"]; subprocess.check_call([sys.executable,"-m","pip","install","--no-cache-dir",*p["dependencies"],*p["optional-dependencies"]["mcp"],*p["optional-dependencies"]["browser"]])'
 
 COPY tinyassets/ ./tinyassets/
-COPY domains/ ./domains/
-# The node-execution runtime invoked by tinyassets.cloud_worker.
-COPY fantasy_daemon/ ./fantasy_daemon/
 
 # ---------- Stage 2: final ----------
 
@@ -196,10 +161,6 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # Runtime-only deps. No build-essential here.
 # libgomp1 is a common transitive native dep for numpy/scipy-backed
 # packages (spacy, lancedb); include it proactively.
-# Node.js 22 LTS via nodesource — same version as builder so the copied
-# codex and claude-code native addons are ABI-compatible. No npm needed at
-# runtime; both module trees are COPY'd from the builder.
-#
 # GitHub CLI (gh) — the github_pull_request effector shells out to
 # `gh pr create` (tinyassets/effectors/github_pr.py). Without gh on the
 # runtime PATH the effector fails with error_kind=gh_not_installed
@@ -222,10 +183,14 @@ RUN set -e; \
         git \
         gnupg \
         libgomp1 \
+        libpsl5 \
         ffmpeg \
         ripgrep \
+        rclone \
+        rsync \
         tini \
-        util-linux; \
+        util-linux \
+        xfsprogs; \
     mkdir -p -m 755 /etc/apt/keyrings; \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         -o /tmp/nodesource-repo.gpg.key; \
@@ -261,22 +226,7 @@ RUN set -e; \
 RUN /usr/local/bin/python -m pip install --no-cache-dir "pytest==8.4.2" && \
     /usr/local/bin/python -m pytest --version
 
-# Copy the codex install tree from builder and install the flock
-# wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
-# flock on a sentinel in /app/.codex before exec'ing the real codex
-# binary — required because PR #965 binds the codex auth directory
-# across the daemon + worker containers, and Codex's official CI/CD
-# auth guide forbids sharing one auth.json across concurrent runners
-# without serialization (concurrent refresh attempts race rotation
-# and trigger `refresh_token_reused`). See deploy/codex-flock-wrapper.sh.
-COPY --from=builder /opt/codex-install /opt/codex-install
-COPY --from=builder /opt/claude-code-install /opt/claude-code-install
-COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
-RUN chmod 0755 /usr/local/bin/codex && \
-    ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
-    /usr/local/bin/codex --version && \
-    /usr/local/bin/claude --version && \
-    git --version && rg --version && node --version && python3 --version
+RUN git --version && rg --version && node --version && python3 --version
 
 # Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
 # OUTSIDE /app and /data; /app stays root-owned and read-only.
@@ -325,24 +275,23 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
     ls -d /opt/ms-playwright/chromium_headless_shell-*
 
 COPY --from=builder /build/tinyassets /app/tinyassets
-COPY --from=builder /build/domains /app/domains
-COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # Install the actual package metadata and entry points against /app. Dependencies
 # above use the same pyproject extras and are not resolved a second time.
 RUN /opt/venv/bin/pip install --no-cache-dir --no-deps -e ".[mcp,browser]"
+
+# This image is also the exported read-only owner-box rootfs. Subscription
+# software is platform software; only login/configuration belongs in owner HOME.
+RUN /opt/venv/bin/python -m tinyassets.providers.subscription_image && \
+    chown -R root:root /opt/tinyassets/cli && \
+    chmod -R a-w,a+rX /opt/tinyassets/cli && \
+    rm -rf /root/.npm /root/.cache/pip
 
 # Static data files required at runtime.
 # world_rules.lp is the ASP constraint program; asp_engine.py resolves it
 # relative to the package root (parents[2]/data/). The *.db files in data/
 # are runtime state and live in TINYASSETS_DATA_DIR, not here.
 COPY data/world_rules.lp /app/data/world_rules.lp
-
-# Public model lists, one file per source kind. REVIEWED DATA the runtime reads, not
-# state: `public_model_lists.lists_directory()` resolves `models/` beside the package,
-# so without this COPY every source kind reads as unlisted and the feature silently
-# does nothing in production (Codex on #4028 — it never reached the image).
-COPY models/ /app/models/
 
 # Stdlib-only MCP canary — reused across Layer-1 (local), tier-3 GHA,
 # docker-build CI, cloud canary, and the compose.yml container-health
@@ -352,33 +301,18 @@ COPY models/ /app/models/
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
 COPY scripts/_canary_common.py /app/scripts/_canary_common.py
 
-# The workspace jail's acceptance proofs. They assert Linux-only, bwrap-only
-# behaviour that no developer box and no CI runner can answer, so they run
-# INSIDE the deployed container after a deploy:
-#
-#     docker exec <daemon> python /app/scripts/workspace_bwrap_oracle.py
-#
-# Shipped rather than copied in on the day: an acceptance check you have to
-# `docker cp` before you can run it is one that gets skipped. Stdlib-only and
-# read-only against a temp root under /tmp; it never touches /data.
-COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
-# Owner split (openspec/changes/per-role-uid-split). Every file on PID1's
-# privileged execution and import chain is root-owned 0555 outside /data, and
-# ta-chain.py verifies the whole chain (ancestors and link targets included)
-# before the bootstrap trusts it. ta-migrate.py is the one-time volume migration
-# (docs/ops/owner-split-cutover-runbook.md); the service never runs it.
+# The owner-box runtime (ADR-022): the daemon container starts unprivileged
+# as uid 1001 and serves only from owner boxes through boxhostd; the image
+# ships no launcher, mapper or cell. Every file on the entry and import chain
+# is root-owned 0555 outside /data, and ta-chain.py verifies the whole chain
+# (ancestors and link targets included) before the entry trusts it.
 COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
+COPY deploy/box_daemon_entry.py /usr/local/libexec/ta-box-entry.py
 COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
-COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
-COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
-COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
-COPY deploy/role_git.py /usr/local/libexec/ta-git.py
-COPY deploy/role_provision.py /usr/local/libexec/ta-provision.py
-COPY deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.py
-COPY deploy/role_migrate.py /usr/local/libexec/ta-migrate.py
 COPY deploy/broker_main.py /app/broker_main.py
 
 ARG TINYASSETS_BUILD_SHA=unknown
+RUN printf '%s\n' "$TINYASSETS_BUILD_SHA" > /etc/tinyassets-build-sha
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -401,10 +335,7 @@ RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker /run/tinyassets-roles/bro
     chown -R root:root /app && \
     chmod -R a-w,a+rX /app && \
     chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh \
-        /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-launch.py \
-        /usr/local/libexec/ta-owner-launch.py /usr/local/libexec/ta-decoder.py \
-        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py /usr/local/libexec/ta-admission-contract.py \
-        /usr/local/libexec/ta-migrate.py && \
+        /usr/local/libexec/ta-box-entry.py /usr/local/libexec/ta-chain.py && \
     /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 
 USER tinyassets
@@ -416,11 +347,6 @@ EXPOSE 8001
 # CMD in place.
 ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]
 
-# Default command: the owner-split PID1 (deploy/role_launcher.py). It refuses
-# unless it starts as root holding only KILL, SETGID, SETUID and SETPCAP
-# (compose `user: "0:0"` and `cap_add`) on a migrated volume; then it forks the
-# broker and the mapper, retires to uid 1001 and serves the FastMCP server on
-# 0.0.0.0:8001. Its __main__ imports only the standard library, so every
-# multiprocessing spawn child, which re-imports __main__ first, stays light.
-# As the image's default uid 1001 it refuses (the CI startup check).
-CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]
+# The marker admits one serving path: the unprivileged owner-box frontend on a
+# committed owner-box layout. Anything else raises RuntimeError (process exit 1).
+CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]

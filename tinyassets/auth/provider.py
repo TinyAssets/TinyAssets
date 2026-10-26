@@ -363,17 +363,8 @@ _EFFECT_TO_COST_TIER: dict[str, str] = {
     "admin": "admin",
 }
 
-_EXTENSION_STANDALONE_ACTIONS = frozenset({
-    "register", "list", "inspect", "approve", "disable", "enable", "remove",
-    "get_action_scope_status",
-})
-_EXTENSION_STANDALONE_WRITE_ACTIONS = frozenset({
-    "register", "approve", "disable", "enable", "remove",
-})
 _UNIVERSE_COSTLY_ACTIONS = frozenset({
     "create_universe",
-    "post_to_goal_pool",
-    "submit_node_bid",
     "daemon_create",
     "daemon_summon",
     "daemon_memory_promote",
@@ -381,7 +372,6 @@ _UNIVERSE_COSTLY_ACTIONS = frozenset({
 _UNIVERSE_ADMIN_ACTIONS = frozenset({
     "control_daemon",
     "set_tier_config",
-    "set_engine",
     "daemon_banish",
     "daemon_pause",
     "daemon_resume",
@@ -396,9 +386,6 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "rollback_merge",
     "rollback_node",
     "subscribe_branch",
-    "escrow_lock",
-    "escrow_release",
-    "escrow_refund",
     "record_outcome",
     "record_remix",
 })
@@ -414,13 +401,10 @@ _EXTENSIONS_ADMIN_ACTIONS = frozenset({
 _GATES_COSTLY_ACTIONS = frozenset({
     "claim",
     "claim_from_branch_run",
-    "stake_bonus",
-    "release_bonus",
 })
 _GATES_ADMIN_ACTIONS = frozenset({
     "define_ladder",
     "retract",
-    "unstake_bonus",
 })
 
 
@@ -486,14 +470,11 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     )
     from tinyassets.api.extensions_consent_actions import _EFFECTOR_CONSENT_ACTIONS
     from tinyassets.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
-    from tinyassets.api.market import (
-        _ATTRIBUTION_ACTIONS,
-        _ESCROW_ACTIONS,
+    from tinyassets.api.goals import (
         _GATE_EVENT_ACTIONS,
         _GATES_ACTIONS,
         _GOAL_ACTIONS,
         _GOAL_WRITE_ACTIONS,
-        _OUTCOME_ACTIONS,
     )
     from tinyassets.api.runs import _RUN_ACTIONS, _RUN_WRITE_ACTIONS
     from tinyassets.api.runtime_ops import (
@@ -505,6 +486,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     )
     from tinyassets.api.universe import UNIVERSE_ACTIONS, WRITE_ACTIONS
     from tinyassets.api.wiki import WIKI_ACTIONS, WIKI_WRITE_ACTIONS
+    from tinyassets.attribution.actions import _ATTRIBUTION_ACTIONS
     from tinyassets.authoring.service import (
         _AUTHORING_ACTIONS,
         _AUTHORING_COSTLY_ACTIONS,
@@ -515,6 +497,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _HANDOFF_COSTLY_ACTIONS,
         _HANDOFF_WRITE_ACTIONS,
     )
+    from tinyassets.outcomes.actions import _OUTCOME_ACTIONS
 
     _extend_scope_rows(
         rows,
@@ -533,23 +516,22 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         write_actions=set(WIKI_WRITE_ACTIONS),
     )
 
-    extension_actions: set[str] = set(_EXTENSION_STANDALONE_ACTIONS)
-    extension_writes: set[str] = set(_EXTENSION_STANDALONE_WRITE_ACTIONS)
+    extension_actions: set[str] = {"get_action_scope_status"}
+    extension_writes: set[str] = set()
     for action_map in (
+        _OUTCOME_ACTIONS,
+        _ATTRIBUTION_ACTIONS,
         _BRANCH_ACTIONS,
         _RUN_ACTIONS,
         _JUDGMENT_ACTIONS,
         _BRANCH_VERSION_ACTIONS,
         _PROJECT_MEMORY_ACTIONS,
         _MESSAGING_ACTIONS,
-        _ESCROW_ACTIONS,
         _GATE_EVENT_ACTIONS,
         _INSPECT_DRY_ACTIONS,
         _AUTO_SHIP_ACTIONS,
         _SCHEDULER_ACTIONS,
-        _OUTCOME_ACTIONS,
         _EFFECTOR_CONSENT_ACTIONS,
-        _ATTRIBUTION_ACTIONS,
         _LEADERBOARD_ACTIONS,
         _AUTHORING_ACTIONS,
         _HANDOFF_ACTIONS,
@@ -561,14 +543,6 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     extension_writes.update({"publish_version"})
     extension_writes.update(_PROJECT_MEMORY_WRITE_ACTIONS)
     extension_writes.update({"messaging_send", "messaging_ack"})
-    extension_writes.update({
-        # Money WRITE actions — these mutate balances / move funds out and MUST
-        # require write authorization, never derive as read-scope. escrow_fund,
-        # escrow_set_wallet, and escrow_withdraw were silently read-classified
-        # before (slice1a review CRITICAL 2).
-        "escrow_lock", "escrow_release", "escrow_refund",
-        "escrow_fund", "escrow_set_wallet", "escrow_withdraw",
-    })
     extension_writes.update({
         "attest_gate_event", "verify_gate_event", "dispute_gate_event",
         "retract_gate_event",
@@ -590,7 +564,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         rows,
         tool="extensions",
         actions=extension_actions,
-        source="tinyassets.api.extensions internal dispatch tables",
+        source="tinyassets.api.workflow_actions internal dispatch tables",
         write_actions=extension_writes,
         costly_actions=(
             _EXTENSIONS_COSTLY_ACTIONS
@@ -606,15 +580,12 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         "claim_from_branch_run",
         "record_conformance_pack",
         "retract",
-        "stake_bonus",
-        "unstake_bonus",
-        "release_bonus",
     }
     _extend_scope_rows(
         rows,
         tool="gates",
         actions=set(_GATES_ACTIONS),
-        source="tinyassets.api.market._GATES_ACTIONS",
+        source="tinyassets.api.goals._GATES_ACTIONS",
         write_actions=gates_writes,
         costly_actions=_GATES_COSTLY_ACTIONS,
         admin_actions=_GATES_ADMIN_ACTIONS,
@@ -624,7 +595,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         rows,
         tool="goals",
         actions=set(_GOAL_ACTIONS),
-        source="tinyassets.api.market._GOAL_ACTIONS",
+        source="tinyassets.api.goals._GOAL_ACTIONS",
         write_actions=set(_GOAL_WRITE_ACTIONS),
         # run_canonical triggers a branch run; scope it as costly like run_branch.
         costly_actions=frozenset({"run_canonical"}),
@@ -869,6 +840,9 @@ class OAuthProvider(AuthProvider):
     """
 
     def __init__(self, db_path: Path | str | None = None) -> None:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("mcp_oauth")
         if db_path is None:
             # Route through the canonical resolver so container deploys
             # get $TINYASSETS_DATA_DIR/.auth.db instead of the CWD-relative
@@ -882,6 +856,9 @@ class OAuthProvider(AuthProvider):
         self._initialize_db()
 
     def _connect(self) -> sqlite3.Connection:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("mcp_oauth")
         conn = sqlite3.connect(str(self._db_path), timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -966,6 +943,10 @@ class OAuthProvider(AuthProvider):
 
             # Resolve user identity
             user_id = row["user_id"]
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(user_id, self._db_path.parent):
+                return None
             scope = row["scope"]
             capabilities = scope.split() if scope else ["read"]
 
@@ -1053,6 +1034,10 @@ class OAuthProvider(AuthProvider):
             if not subject:
                 raise ValueError("UNIVERSE_SERVER_OAUTH_SUBJECT is not set")
 
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(subject, self._db_path.parent):
+                raise ValueError("Account deleted.")
             code = secrets.token_urlsafe(48)
             conn.execute(
                 "INSERT INTO authorization_codes "
@@ -1099,6 +1084,11 @@ class OAuthProvider(AuthProvider):
                 code_verifier, row["code_challenge"], row["code_challenge_method"],
             ):
                 logger.warning("PKCE verification failed for client %s", client_id)
+                return None
+
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(row["user_id"], self._db_path.parent):
                 return None
 
             # Mark code as used

@@ -33,6 +33,44 @@ from tinyassets.storage_accounting import StorageRefused
 
 #: ``read_app_ui(ui_id=INDEX)`` is the row without any UI body.
 INDEX = "index"
+
+#: The public authoring page ``read_page page="app_ui"`` returns. The seven
+#: component fields and ``version`` 1 are the contract ``add_ui`` stores.
+APP_UI_AUTHORING_PAGE = """\
+# App UI
+
+One private library per person and command center. Read and write one UI at a
+time. `read_page page="app_ui"` is this page.
+
+Read:
+
+- `read_graph target="app_ui" query="index"` — the index: each UI's ui_id,
+  name, etag and size, plus ui_selection and revision. No markup, style or
+  script.
+- `read_graph target="app_ui" query="<ui_id>"` — that one UI.
+- `read_graph target="app_ui" query="<ui_id>" field_name="script" output_offset=0`
+  — one chunk of one field, with next_offset when more remains.
+
+Write with `write_graph target="app_ui"`. `operation="add_ui"` takes exactly:
+
+```
+{"component": {"kind": "tinyassets.app-ui.v1", "version": 1,
+ "ui_id": "office-tower", "name": "Office tower",
+ "markup": "<div id=lobby></div>", "style": "", "script": ""}}
+```
+
+`version` is the format version and must be 1. It is not a revision or a
+cache-buster; anything else is refused and the UI cannot be shown.
+`ui_id` is lowercase letters, digits and dashes, starting with a letter or
+digit, at most 64 characters. `markup` is body markup only (no html or head).
+`replace_ui` takes the same `{"component": {...}}`.
+
+Optional component fields, and no others: `assets`, `libraries`,
+`script_type`, `workflow_refs`, `agent_refs`.
+
+Other operations: `activate` `{"ui_id": "..."}`, `use_default` `{}`,
+`edit_ui` `{"ui_id", "set" and/or "edits"}`, `remove_ui` `{"ui_id"}`.
+"""
 #: Chunk bound for one field of one UI, the unit a bounded model reads.
 _MAX_FIELD_CHUNK = 32768
 
@@ -41,12 +79,13 @@ def read_app_ui(
     *, universe_id: str = "", ui_id: str = "", field_name: str = "",
     output_offset: int = 0, output_max_chars: int = 8192,
 ) -> dict[str, Any]:
-    """The caller's own UI row: whole, as an index, one UI, or one field chunk.
+    """The caller's own UI row: whole, as an index, the choice, one UI, or a chunk.
 
     No ``ui_id`` is the whole row (the app's read). ``ui_id="index"`` is every
     UI's id, name, etag and field sizes with no bodies, plus the choice.
-    Any other ``ui_id`` is that one UI; with ``field_name`` it is one chunk of
-    that field, from ``output_offset``, with ``next_offset`` to continue.
+    ``ui_id="ui_selection"`` is the choice only: no library. Any other
+    ``ui_id`` is that one UI; with ``field_name`` it is one chunk of that
+    field, from ``output_offset``, with ``next_offset`` to continue.
     """
 
     uid = _binding_universe(universe_id)
@@ -67,6 +106,16 @@ def read_app_ui(
         return {"app_ui": {**document, "platform_default": PLATFORM_DEFAULT_UI}}
     if selector == INDEX:
         return {"app_ui": app_ui_index(document)}
+    if selector == "ui_selection":
+        # The choice is a few fields. Returning the row here handed the model
+        # the whole library (live: 569KB, then cut). ui_id cannot contain "_",
+        # so this name cannot be a real UI.
+        return {"app_ui": {
+            "universe_id": document.get("universe_id"),
+            "revision": document.get("revision"),
+            "updated_at": document.get("updated_at"),
+            "ui_selection": document.get("ui_selection"),
+        }}
     entry = next((e for e in document["ui_library"]
                   if isinstance(e, dict) and e.get("ui_id") == selector), None)
     if entry is None:
@@ -284,7 +333,7 @@ def _preview_publication(uid: str, actor: str, definition_id: str) -> dict[str, 
                    if c.get("kind") == "tinyassets.app-ui.v1"), None)
     if screen is None:
         return {"error": "app_ui_not_found"}
-    report = ui_preview.preview_public_component(screen)
+    report = ui_preview.preview_public_component(screen, universe_dir=_universe_dir(uid))
     name = "publication-" + hashlib.sha256(definition_id.encode()).hexdigest()[:32]
     report["screenshot"] = ui_preview.write_preview(_universe_dir(uid), name, report.pop("png"))
     return report

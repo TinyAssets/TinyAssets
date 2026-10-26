@@ -1,7 +1,6 @@
 """Binary git exchange on the existing authenticated owner broker channel."""
 from __future__ import annotations
 
-import os
 import socket
 
 from tinyassets import rpc_frames as rf
@@ -21,8 +20,10 @@ def exchange(client, *, grant_id, connection_id, verb, request, upload, head, da
     got_head = False
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(client._timeout)
-        sock.connect(os.fspath(client._path))
+        client._connect(sock)
         try:
+            if client._verify_peer is not None:
+                client._verify_peer(sock)
             sock.sendall(rf.control(1, document))
             while True:
                 frame = rf.read_frame_blocking(sock)

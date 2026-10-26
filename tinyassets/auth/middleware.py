@@ -30,13 +30,7 @@ from tinyassets.auth.provider import (
     action_scope_for,
     create_provider,
 )
-from tinyassets.auth.wiki_canary import (
-    canary_request_allowed,
-    is_exact_wiki_canary_request,
-    reset_wiki_canary_authority,
-    set_wiki_canary_authority,
-    wiki_canary_token_matches,
-)
+from tinyassets.auth.wiki_canary import canary_request_allowed, wiki_canary_token_matches
 
 logger = logging.getLogger("universe_server.auth")
 
@@ -51,6 +45,10 @@ _current_identity: ContextVar[Identity | None] = ContextVar(
     "workflow_current_identity",
     default=None,
 )
+
+# Authentication providers may resolve shared credentials here, but owner-side
+# grants and receipts run only after forwarding. Set by the serving factory.
+router_authentication: ContextVar[bool] = ContextVar("router_authentication", default=False)
 _current_bearer_present: ContextVar[bool] = ContextVar(
     "tinyassets_current_bearer_present",
     default=False,
@@ -451,17 +449,61 @@ _provider: AuthProvider | None = None
 
 
 def _get_provider() -> AuthProvider:
-    """Get or create the global auth provider."""
+    """Get or create the global auth provider.
+
+    An owner box has no provider. The router already authenticated the caller;
+    action-scope checks use :func:`_action_scope_mode` and must not land here.
+    """
     global _provider
     if _provider is None:
+        from tinyassets.owner_runtime import in_owner_box
+
+        if in_owner_box():
+            raise RuntimeError(
+                "an owner box has no auth provider; the router authenticated this request"
+            )
         _provider = create_provider()
     return _provider
+
+
+def _action_scope_mode() -> tuple[bool, bool]:
+    """Return ``(auth_required, resolve_always)`` for one action-scope check.
+
+    Inside an owner box this is the production resolve-always posture on the
+    router-authenticated or engine-bound Identity, and it does not construct a
+    provider or read ``UNIVERSE_SERVER_AUTH`` / ``UNIVERSE_SERVER_DEV_USER``.
+    Outside the box, the configured provider still decides.
+    """
+    from tinyassets.owner_runtime import in_owner_box
+
+    if in_owner_box():
+        return False, True
+    provider = _get_provider()
+    return provider.is_auth_required(), provider.resolve_always_writes()
 
 
 def set_provider(provider: AuthProvider) -> None:
     """Override the global auth provider (for testing)."""
     global _provider
     _provider = provider
+
+
+def resolve_token(token):
+    """Authenticate through any configured provider against the deletion fence."""
+    from tinyassets.auth.workos_provider import clear_rejection_category
+    from tinyassets.router_credentials import active_owner
+
+    clear_rejection_category()
+    identity = _get_provider().resolve_token(token)
+    return identity if identity is not None and active_owner(identity.user_id) else None
+
+
+def resolve_token_result(token):
+    # Carry the refusal out of the worker thread alongside its identity.
+    from tinyassets.auth.workos_provider import rejection_category
+
+    identity = resolve_token(token)
+    return identity, rejection_category()
 
 
 def auth_middleware(token: str | None) -> Identity | None:
@@ -478,8 +520,6 @@ def auth_middleware(token: str | None) -> Identity | None:
     from tinyassets.auth.workos_provider import clear_rejection_category
 
     clear_rejection_category()
-    provider = _get_provider()
-
     identity: Identity | None = None
     from tinyassets.api_keys import looks_like_key
 
@@ -491,7 +531,7 @@ def auth_middleware(token: str | None) -> Identity | None:
     # An API key is a REST credential only: it never reaches the OAuth provider
     # (or its logs), so it can never become an MCP or app session.
     if token and not looks_like_key(token):
-        identity = provider.resolve_token(token)
+        identity = resolve_token(token)
     _current_identity.set(identity)
     if identity is not None:
         _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
@@ -499,17 +539,15 @@ def auth_middleware(token: str | None) -> Identity | None:
 
 
 def _is_inbound_hook_path(path: str) -> bool:
-    """Exactly ``/mcp/hooks/<one-segment-token>`` (non-empty, no deeper path).
+    """Exactly ``/hooks/inbound/<one-segment-token>`` (non-empty, no deeper path).
 
     The token is variable so this can't be an equality check like ``/app``;
     it is pinned to a single non-empty segment after the fixed prefix so no
-    deeper ``/mcp/hooks/...`` path is ever exempted.
+    deeper ``/hooks/inbound/...`` path is ever exempted.
     """
-    prefix = "/mcp/hooks/"
-    if not path.startswith(prefix):
-        return False
-    token = path[len(prefix):]
-    return bool(token) and "/" not in token
+    from tinyassets.owner_router import hook_token
+
+    return hook_token(path) is not None
 
 
 def _inbound_hooks_enabled() -> bool:
@@ -651,6 +689,10 @@ def _auth_challenge_path(path: str) -> bool:
     """
     if path in _DISCOVERY_PATHS or path in _LOCAL_OAUTH_PATHS:
         return False
+    from tinyassets.onboarding.deletion_status import status_path
+
+    if status_path(path):
+        return False  # C5: the status handler checks the off-host job capability.
     from tinyassets.onboarding.public_run import public_path
 
     if public_path(path):
@@ -664,11 +706,13 @@ def _auth_challenge_path(path: str) -> bool:
 
         if is_callback_path(path):
             return False  # Shell only; authenticated exchange remains challenged.
-    if path in {"/app", "/app/token", "/app/owner-sign-in"}:
+    if path in {"/app", "/app/token", "/app/owner-sign-in", "/app/native-sign-in"}:
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
         # load before sign-in, and /app/token is its same-origin PKCE
         # token-exchange proxy — both run BEFORE any bearer exists, so neither may
         # be swept into the /mcp bearer 401 (mirrors the .well-known carve-out).
+        # /app/native-sign-in starts the phone apps' system-browser sign-in, so
+        # it too runs signed out; it issues only a flow ref, never a session.
         # Their own authenticated /mcp tool calls are still challenged; the dark
         # flag still returns a bare 404 when the app is off.
         return False
@@ -712,7 +756,7 @@ def _auth_challenge_path(path: str) -> bool:
         # from the configured resource, never the request). Exactly one path.
         return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
-    # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
+    # /hooks/inbound it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement
     # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
     # /app/billing/... route is exempt, so checkout and cancel stay identity-gated.
@@ -723,13 +767,13 @@ def _auth_challenge_path(path: str) -> bool:
     # challenged.
     if path == "/app/client-error":
         return False
-    # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
+    # Inbound webhook receiver: /hooks/inbound/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
     # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
     # carries no MCP bearer, so — like /app — it must not be
     # swept into the /mcp/* bearer 401. Only exempt when inbound is enabled (the
-    # route only exists then) and only the exact /mcp/hooks/<one-segment-token>
-    # shape — no deeper /mcp/hooks/... path is opened.
+    # route only exists then) and only the exact /hooks/inbound/<one-segment-token>
+    # shape — no deeper /hooks/inbound/... path is opened.
     if _inbound_hooks_enabled() and _is_inbound_hook_path(path):
         return False
     return path == "/mcp" or path.startswith("/mcp/") or _is_app_path(path)
@@ -993,6 +1037,14 @@ def _replay_receive(messages: list[dict], receive: Any) -> Any:
     return _receive
 
 
+def published_box_owner(root, path: str, caller: str) -> str:
+    from tinyassets.app_access import app_slug
+    from tinyassets.published_apps import owner_for
+
+    slug = app_slug(path)
+    return (owner_for(root, slug) if slug is not None else None) or caller
+
+
 def current_identity_or_none() -> Identity | None:
     """The bound identity, or None when the request bound nothing.
 
@@ -1113,7 +1165,7 @@ def current_request_boundary_id() -> str | None:
 
 
 def current_mcp_message_identity() -> Identity | None:
-    """Re-derive bearer identity from only the low-level current MCP message."""
+    """Authenticate only this MCP POST: router proof or its public bearer."""
 
     from mcp.server.lowlevel.server import request_ctx
 
@@ -1129,14 +1181,23 @@ def current_mcp_message_identity() -> Identity | None:
         path = request.url.path
     except (AttributeError, TypeError):
         return None
-    if method != "POST" or path not in {"/mcp", "/mcp/"} or len(auth_headers) != 1:
+    if method != "POST" or path not in {"/mcp", "/mcp/"}:
+        return None
+    # OwnerIngress put this identity on this exact request after checking the
+    # per-box secret and bound owner. The router strips public bearer material.
+    # Never use ambient identity: an MCP session can carry multiple requests.
+    trusted = getattr(request, "scope", {}).get("tinyassets_router_identity")
+    if trusted is not None:
+        return (trusted if isinstance(trusted, Identity)
+                and isinstance(trusted.user_id, str) and trusted.user_id.strip() else None)
+    if len(auth_headers) != 1:
         return None
     scheme, separator, credential = auth_headers[0].partition(" ")
     if scheme.lower() != "bearer" or not separator or not credential.strip():
         return None
     if wiki_canary_token_matches(credential.strip()):
         return None
-    identity = _get_provider().resolve_token(credential.strip())
+    identity = resolve_token(credential.strip())
     if identity is None or not (identity.user_id or "").strip():
         return None
     return identity
@@ -1145,8 +1206,9 @@ def current_mcp_message_identity() -> Identity | None:
 class AuthContextMiddleware:
     """Resolve bearer auth into request-local identity for MCP tool calls."""
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, router: bool = False) -> None:
         self.app = app
+        self.router = router
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.app, name)
@@ -1159,8 +1221,9 @@ class AuthContextMiddleware:
         previous: Token[Identity | None] = _current_identity.set(None)
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
         previous_boundary: Token[str | None] = _current_request_boundary_id.set(None)
-        previous_canary = set_wiki_canary_authority(False)
+        previous_router = router_authentication.set(self.router)
         try:
+            trusted = scope.get("tinyassets_router_identity")
             auth_header = ""
             for key, value in scope.get("headers", []):
                 if key.lower() == b"authorization":
@@ -1172,12 +1235,35 @@ class AuthContextMiddleware:
             path = scope.get("path", "")
             method = scope.get("method", "").upper()
 
-            if _is_rest_api_path(path):
+            if trusted is not None:
+                _current_identity.set(trusted)
+                _current_bearer_present.set(True)
+                _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
+                if trusted.metadata.get("auth_provider") == "api_key":
+                    from tinyassets.api_keys import admit_forwarded_identity
+
+                    if not admit_forwarded_identity(trusted):
+                        await _send_forbidden_403(send, "API capability not granted")
+                        return
+                elif trusted.metadata.get("outside_origin") is not None:
+                    from tinyassets.outside_authority import current_store
+
+                    authority = current_store()
+                    try:
+                        authority.observe(trusted.user_id, trusted.metadata["outside_origin"])
+                        trusted.metadata["outside_origin"] = authority.admit(
+                            trusted.user_id, trusted.metadata["outside_origin"])
+                    except PermissionError:
+                        await _send_forbidden_403(send, "outside client capability not granted")
+                        return
+
+            if _is_rest_api_path(path) and trusted is None:
                 await _serve_rest_api(self.app, scope, receive, send, token)
                 return
 
             canary_authorized = False
-            if token and wiki_canary_token_matches(token):
+            if ((trusted is not None and trusted.user_id == CANARY.user_id)
+                    or (trusted is None and token and wiki_canary_token_matches(token))):
                 # The canary service principal (change D4). Its
                 # bearer is valid for the exact GET /mcp/pulse health read or
                 # the probe shapes in canary_request_allowed on the MCP POST
@@ -1196,6 +1282,10 @@ class AuthContextMiddleware:
                         "the canary bearer may only probe /mcp or GET /mcp/pulse",
                     )
                     return
+                elif self.router:
+                    _current_identity.set(CANARY)
+                    _current_bearer_present.set(True)
+                    canary_authorized = True
                 else:
                     body, messages, disconnected, oversized = await _buffer_request_body(receive)
                     if oversized:
@@ -1204,13 +1294,12 @@ class AuthContextMiddleware:
                     if disconnected or not canary_request_allowed(body):
                         await _send_forbidden_403(
                             send, "the canary bearer may only initialize, list tools, "
-                            "read status, and write its own probe page"
+                            "and read status"
                         )
                         return
                     receive = _replay_receive(messages, receive)
                     _current_identity.set(CANARY)
                     _current_bearer_present.set(True)
-                    set_wiki_canary_authority(is_exact_wiki_canary_request(body))
                     canary_authorized = True
             # The inbound webhook receiver's sole boundary is its unguessable URL
             # token + owner-bound handler; a generic channel may POST with its OWN
@@ -1219,10 +1308,39 @@ class AuthContextMiddleware:
             # token handler runs (Codex inbound review). The hook's OWNER is bound
             # to the run by the handler from the hook row, never from this request.
             is_hook_route = _inbound_hooks_enabled() and _is_inbound_hook_path(path)
-            if not canary_authorized and not is_hook_route:
-                auth_middleware(token)
+            if trusted is None and not canary_authorized and not is_hook_route:
+                session_identity = None
+                if self.router and not token and path.startswith("/app/"):
+                    from starlette.concurrency import run_in_threadpool
+                    from starlette.requests import Request
+
+                    from tinyassets.onboarding import owner_sessions
+                    from tinyassets.owner_router import forwarded_path
+
+                    if forwarded_path(path):
+                        request = Request(scope)
+                        if method in {"GET", "HEAD"}:
+                            session = await run_in_threadpool(
+                                owner_sessions.lookup,
+                                request.cookies.get(owner_sessions.COOKIE, ""))
+                        else:
+                            try:
+                                session = await run_in_threadpool(
+                                    owner_sessions.require, request, optional=True)
+                            except PermissionError:
+                                session = None
+                        if session is not None:
+                            session_identity = Identity(**json.loads(session["identity_json"]))
+                if session_identity is not None:
+                    _current_identity.set(session_identity)
+                    _current_bearer_present.set(True)
+                    _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
+                else:
+                    auth_middleware(token)
             identity = _current_identity.get()
-            if identity is not None and identity.metadata.get("outside_origin") is not None:
+            if (not self.router and identity is not None
+                    and identity.metadata.get("outside_origin") is not None
+                    and not _is_rest_api_path(path)):
                 if path not in ("/mcp", "/mcp/"):
                     await _send_forbidden_403(
                         send, "outside clients use the MCP capability surface")
@@ -1247,6 +1365,10 @@ class AuthContextMiddleware:
                     await self.app(scope, receive, send)
                     return
                 linking_body = None
+                # The owner router does not change this door. An anonymous
+                # tools/call has no owner to forward to, and a hosted connector
+                # that cached the catalog must get the linking result rather
+                # than a transport 401. Initialize stays on the 401 path.
                 if method == "POST" and path in ("/mcp", "/mcp/"):
                     request_body, _, disconnected, oversized = await _buffer_request_body(receive)
                     if oversized:
@@ -1274,7 +1396,7 @@ class AuthContextMiddleware:
                     # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
-            if (identity is not None and not canary_authorized
+            if (not self.router and identity is not None and not canary_authorized
                     and path in {"/mcp", "/mcp/"} and method == "POST"
                     and identity.metadata.get("oauth_connection")
                     and not identity.metadata.get("first_party_client")):
@@ -1290,7 +1412,7 @@ class AuthContextMiddleware:
                 observe_identity(_current_identity.get())
             except Exception:
                 logger.exception("session trail identity snapshot failed")
-            reset_wiki_canary_authority(previous_canary)
+            router_authentication.reset(previous_router)
             _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)
             _current_identity.reset(previous)
@@ -1341,9 +1463,7 @@ def require_action_scope(
     """Authorize one internal dispatch action against its named OAuth scope."""
 
     identity = current_identity()
-    provider = _get_provider()
-    auth_required = provider.is_auth_required()
-    resolve_always = provider.resolve_always_writes()
+    auth_required, resolve_always = _action_scope_mode()
 
     # Dev / optional modes: no scope enforcement (unchanged).
     if not auth_required and not resolve_always:

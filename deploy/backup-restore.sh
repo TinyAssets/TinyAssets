@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# backup-restore.sh — stage and restore tinyassets-data from a full snapshot.
+# backup-restore.sh — stage and restore tinyassets-data from its independent platform backup (C3).
 #
-# The script restores data only. It stops containers that mount the selected
-# volume, but it never starts services; the caller owns startup and health
-# verification after inspecting the retained pre-restore directory.
+# The script installs the shared layer, starts services behind closed admission,
+# and opens admission only after the broker's startup reconciliation completes.
 #
 # Usage:
 #   sudo bash deploy/backup-restore.sh
@@ -22,20 +21,16 @@
 #   BACKUP_LOG       log file (default: /var/log/tinyassets-backup.log)
 #
 # Exit codes:
-#   0  restore complete (or DRY_RUN=1); caller starts services
+#   0  recovery complete (or DRY_RUN=1)
 #   1  configuration, argument, path, or lock failure
 #   2  archive not found
 #   3  remote download failed
 #   4  archive validation, extraction, stop, or swap failed
-#   5  reserved legacy restart failure; never emitted
 
 set -euo pipefail
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
 BACKUP_FILE="${BACKUP_FILE:-}"
-BOX_BACKUP_FILE="${BOX_BACKUP_FILE:-}"
-ALLOW_PRE_STORE_BACKUP="${ALLOW_PRE_STORE_BACKUP:-0}"
-BOX_STORE_DIR="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
 DRY_RUN="${DRY_RUN:-0}"
 BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
@@ -43,12 +38,7 @@ TIMESTAMP_ARG=""
 LIST_MODE=0
 DOWNLOAD_DIR=""
 STAGE_DIR=""
-BOX_STAGE=""
 VOLUME_PARENT=""
-BOX_OLD=""
-BOX_SWAP_ACTIVE=0
-box_old_names=()
-box_new_names=()
 
 for arg in "$@"; do
     case "${arg}" in
@@ -67,39 +57,7 @@ log() {
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }
 
-rollback_box() {
-    [[ "$BOX_SWAP_ACTIVE" -eq 1 ]] || return 0
-    log "rolling back box-store swap"
-    mkdir -p -- "$BOX_STAGE"
-    for name in "${box_new_names[@]}"; do
-        if [[ -e "${BOX_STORE_DIR}/${name}" ]]; then
-            mv -- "${BOX_STORE_DIR}/${name}" "${BOX_STAGE}/" || \
-                log "CRITICAL: failed to retain restored box tree ${name}"
-        fi
-    done
-    for name in "${box_old_names[@]}"; do
-        if [[ -e "${BOX_OLD}/${name}" ]]; then
-            mv -- "${BOX_OLD}/${name}" "${BOX_STORE_DIR}/" || \
-                log "CRITICAL: failed to restore original box tree ${name}"
-        fi
-    done
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
-            "${VOLUME_DIR}/.broker/box-registry.json"; then
-        log "CRITICAL: failed to restore original box quota limits"
-    fi
-    rmdir -- "$BOX_OLD" 2>/dev/null || true
-    BOX_SWAP_ACTIVE=0
-}
-
 cleanup() {
-    rollback_box
-    if [[ -n "${BOX_STAGE}" && -d "${BOX_STAGE}" ]]; then
-        case "${BOX_STAGE}" in
-            "${BOX_STORE_DIR}"/.tinyassets-box-restore-stage.*) rm -rf -- "${BOX_STAGE}" ;;
-            *) log "ERROR: refusing to clean unexpected box stage ${BOX_STAGE}" ;;
-        esac
-    fi
     if [[ -n "${STAGE_DIR}" && -d "${STAGE_DIR}" ]]; then
         case "${STAGE_DIR}" in
             "${VOLUME_PARENT}"/.tinyassets-restore-stage.*)
@@ -129,7 +87,7 @@ if [[ ! "${BACKUP_VOLUME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
 fi
 
 is_full_archive_name() {
-    [[ "$1" =~ ^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
+    [[ "$1" =~ ^tinyassets-(data|snapshot)-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
 }
 
 # ----- 1. select local or remote source --------------------------------
@@ -154,34 +112,22 @@ else
         exit 1
     fi
 
+    if ! catalog="$(python3 "$(dirname "$(realpath "$0")")/backup-platform.py" --catalog "$BACKUP_DEST")"; then
+        log "ERROR: verified platform backup catalog unavailable"
+        exit 2
+    fi
     if [[ "${LIST_MODE}" -eq 1 ]]; then
-        log "available full archives at ${BACKUP_DEST}:"
-        rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
-            | awk -F';' '$2 ~ /^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$/ {print "  " $2}' \
-            | sort -r
+        printf '%s\n' "$catalog"
         exit 0
     fi
-
     if [[ -n "${TIMESTAMP_ARG}" ]]; then
-        if [[ ! "${TIMESTAMP_ARG}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$ ]]; then
-            log "ERROR: invalid UTC backup timestamp ${TIMESTAMP_ARG}"
-            exit 1
-        fi
-        TAR_NAME="tinyassets-data-${TIMESTAMP_ARG}.tar.gz"
+        selected="$(awk -v name="tinyassets-data-${TIMESTAMP_ARG}.tar.gz" '$1==name {print}' <<< "$catalog")"
     else
-        TAR_NAME="$(
-            rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
-                | awk -F';' '$2 ~ /^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$/ {print $2}' \
-                | sort -r \
-                | awk 'NR==1 {print}'
-        )"
-        if [[ -z "${TAR_NAME}" ]]; then
-            log "ERROR: no full-volume archives found at ${BACKUP_DEST}/"
-            exit 2
-        fi
+        selected="$(head -n 1 <<< "$catalog")"
     fi
-    if ! is_full_archive_name "${TAR_NAME}"; then
-        log "ERROR: unsafe or non-full archive name ${TAR_NAME}"
+    read -r TAR_NAME EXPECTED_SHA <<< "$selected"
+    if ! is_full_archive_name "$TAR_NAME" || [[ ! "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]; then
+        log "ERROR: no verified platform backup found"
         exit 2
     fi
 
@@ -204,52 +150,16 @@ else
         log "ERROR: rclone download failed"
         exit 3
     fi
+    if [[ "$(sha256sum "$TAR_PATH" | cut -d' ' -f1)" != "$EXPECTED_SHA" ]]; then
+        log "ERROR: platform backup differs from verified publication"
+        exit 4
+    fi
     log "  download OK ($(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?') bytes)"
 fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
     log "DRY_RUN=1 — would restore ${TAR_NAME} into volume ${BACKUP_VOLUME}. No mutations."
     exit 0
-fi
-
-# An installed box store gets an archive with the exact data timestamp.
-BOX_TAR_PATH=""
-BOX_REMOTE=""
-if [[ -e "${BOX_STORE_DIR}" ]]; then
-    if ! "$(dirname "$(realpath "$0")")/box-store-check.sh" "${BOX_STORE_DIR}"; then
-        log "ERROR: box store is not mounted with XFS project quota"
-        exit 1
-    fi
-    if ! is_full_archive_name "${TAR_NAME}"; then
-        log "ERROR: paired restore requires a timestamped full archive"
-        exit 2
-    fi
-    BOX_NAME="${TAR_NAME/tinyassets-data-/tinyassets-box-store-}"
-    if [[ -n "${BACKUP_FILE}" ]]; then
-        BOX_TAR_PATH="${BOX_BACKUP_FILE:-$(dirname "${BACKUP_FILE}")/${BOX_NAME}}"
-        if [[ "${BOX_TAR_PATH}" != /* || -L "${BOX_TAR_PATH}" || ! -f "${BOX_TAR_PATH}" ]]; then
-            if [[ "$ALLOW_PRE_STORE_BACKUP" == 1 && -z "$BOX_BACKUP_FILE" && ! -e "$BOX_TAR_PATH" ]]; then
-                log "ALLOW_PRE_STORE_BACKUP=1: pre-store data archive has no box member; retaining current box trees"
-                BOX_NAME=''
-                BOX_TAR_PATH=''
-            else
-                log "ERROR: paired box-store archive missing"
-                exit 2
-            fi
-        fi
-    else
-        BOX_REMOTE="${BACKUP_DEST}/${BOX_NAME}"
-        if ! rclone ls "${BOX_REMOTE}" > /dev/null 2>&1; then
-            if [[ "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
-                log "ALLOW_PRE_STORE_BACKUP=1: pre-store data archive has no box member; retaining current box trees"
-                BOX_NAME=''
-                BOX_REMOTE=''
-            else
-                log "ERROR: paired box-store archive missing"
-                exit 2
-            fi
-        fi
-    fi
 fi
 
 # ----- 2. resolve and guard the Docker volume --------------------------
@@ -303,6 +213,7 @@ if not members:
     print("archive is empty", file=sys.stderr)
     raise SystemExit(1)
 
+symlinks = {member.name.rstrip("/") for member in members if member.issym()}
 for member in members:
     path = pathlib.PurePosixPath(member.name)
     parts = path.parts
@@ -315,12 +226,16 @@ for member in members:
     if len(parts) == 1 and not member.isdir():
         print(f"archive root is not a directory: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
-    # Stripping the `_data` root changes link coordinates, so reject links
-    # entirely rather than trying to prove their post-strip target safe.
-    if member.issym() or member.islnk():
-        print(f"archive links are not restorable safely: {member.name!r}", file=sys.stderr)
+    if any(str(parent) in symlinks for parent in path.parents):
+        print(f"archive descends through a symlink: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
-    if not (member.isfile() or member.isdir()):
+    if member.islnk():
+        target = pathlib.PurePosixPath(member.linkname)
+        if (target.is_absolute() or not target.parts or target.parts[0] != "_data"
+                or ".." in target.parts or str(target) in symlinks):
+            print(f"unsafe archive hardlink: {member.name!r}", file=sys.stderr)
+            raise SystemExit(1)
+    elif not (member.isfile() or member.isdir() or member.issym()):
         print(f"unsupported archive member type: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
 PY
@@ -339,38 +254,23 @@ if ! tar -xzf "${TAR_PATH}" -C "${STAGE_DIR}" --strip-components=1 \
     log "ERROR: archive staging extract failed"
     exit 4
 fi
-if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
-        || ! chmod --reference="${VOLUME_DIR}" "${STAGE_DIR}"; then
+if ! python3 - "$TAR_PATH" "$STAGE_DIR" <<'PY'
+import os
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1]) as archive:
+    root = archive.getmember("_data")
+    if not root.isdir():
+        raise ValueError("shared backup root metadata missing")
+    os.chown(sys.argv[2], root.uid, root.gid)
+    os.chmod(sys.argv[2], root.mode)
+PY
+then
     log "ERROR: failed to preserve volume-root ownership or mode on staging"
     exit 4
 fi
 log "  archive validated and staged at ${STAGE_DIR}"
-
-if [[ -n "${BOX_NAME:-}" ]]; then
-    archive_check="$(dirname "$(realpath "$0")")/box-store-archive.py"
-    if [[ -n "${BOX_REMOTE}" ]]; then
-        rclone cat "${BOX_REMOTE}" | python3 "${archive_check}" - || {
-            log "ERROR: box-store archive validation failed"; exit 4;
-        }
-    elif ! python3 "${archive_check}" "${BOX_TAR_PATH}"; then
-        log "ERROR: box-store archive validation failed"
-        exit 4
-    fi
-    BOX_STAGE="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-stage.XXXXXX")"
-    if [[ -n "${BOX_REMOTE}" ]]; then
-        rclone cat "${BOX_REMOTE}" | tar -xzf - -C "${BOX_STAGE}" \
-            --strip-components=1 --numeric-owner --acls --xattrs || {
-                log "ERROR: box-store extraction failed"; exit 4;
-            }
-    else
-        if ! tar -xzf "${BOX_TAR_PATH}" -C "${BOX_STAGE}" --strip-components=1 \
-                --numeric-owner --acls --xattrs; then
-            log "ERROR: box-store extraction failed"
-            exit 4
-        fi
-    fi
-    REGISTRY="${BOX_REGISTRY_FILE:-${STAGE_DIR}/.broker/box-registry.json}"
-fi
 
 # ----- 4. stop every consumer, then swap with automatic rollback -------
 
@@ -402,39 +302,35 @@ if [[ -n "${CONTAINER_OUTPUT}" ]]; then
     log "ERROR: running volume consumers remain after stop"
     exit 4
 fi
-if [[ -n "${BOX_STAGE}" ]]; then
-    if ! systemctl stop boxhostd.service; then
-        log "ERROR: failed to stop boxhostd before box-store swap"
+# C3: only credential preparation runs offline. Reconciliation runs in the broker.
+systemctl stop boxhostd.service
+# Exclude service restarts on both sides of the volume rename. The staged
+# lock becomes the live lock; keep both descriptors until restore exits.
+# Bash <> includes O_CREAT: fs.protected_regular=2 rejects even root when
+# the sticky data root contains a service-owned lock. flock needs no write
+# access. Open existing inodes without O_CREAT; only create missing legacy
+# locks, exclusively, so we never truncate or replace a writer's lock.
+for layout_lock in "${VOLUME_DIR}/.layout.lock" "${STAGE_DIR}/.layout.lock"; do
+    if [[ ! -e "$layout_lock" ]]; then
+        (set -o noclobber; : > "$layout_lock")
+    fi
+    if [[ ! -f "$layout_lock" || -L "$layout_lock" ]]; then
+        log "ERROR: layout lock is not a regular file"
         exit 4
     fi
-    BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
-    BOX_SWAP_ACTIVE=1
-    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
-        [[ -d "$tree" && ! -L "$tree" ]] || continue
-        name="$(basename "$tree")"
-        [[ "$name" =~ ^[0-9]+$ ]] || continue
-        mv -- "$tree" "${BOX_OLD}/"
-        box_old_names+=("$name")
-    done
-    quota_script="$(dirname "$(realpath "$0")")/box-store-quotas.py"
-    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-            "${VOLUME_DIR}/.broker/box-registry.json" --clear; then
-        log "ERROR: failed to clear retained box project IDs"
-        exit 4
-    fi
-    for tree in "${BOX_STAGE}"/[0-9]*; do
-        [[ -d "$tree" && ! -L "$tree" ]] || continue
-        name="$(basename "$tree")"
-        [[ "$name" =~ ^[0-9]+$ ]] || continue
-        mv -- "$tree" "${BOX_STORE_DIR}/"
-        box_new_names+=("$name")
-    done
-    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" "$REGISTRY"; then
-        log "ERROR: box-store quota restoration failed"
-        exit 4
-    fi
-    rmdir -- "$BOX_STAGE"
+done
+exec 8<"${VOLUME_DIR}/.layout.lock"
+exec 7<"${STAGE_DIR}/.layout.lock"
+if ! flock -n -x 8 || ! flock -n -x 7; then
+    log "ERROR: a storage writer still owns the live or staged layout"
+    exit 4
 fi
+if ! python3 "$(dirname "$(realpath "$0")")/platform-recovery.py" \
+        --current "$VOLUME_DIR" --staged "$STAGE_DIR" --backup "$TAR_NAME"; then
+    log "ERROR: platform authority unavailable; admission remains closed"
+    exit 4
+fi
+sync -f "$STAGE_DIR"
 
 OLD_DIR="$(mktemp -d "${VOLUME_PARENT}/.tinyassets-restore-old.XXXXXX")"
 rmdir -- "${OLD_DIR}"
@@ -450,15 +346,20 @@ if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
     exit 4
 fi
 STAGE_DIR=""
-BOX_SWAP_ACTIVE=0
-BOX_STAGE=''
-
-# ----- 5. done — caller verifies, starts, and later removes old data ----
-
-log "restore complete. Data installed at ${VOLUME_DIR}."
-log "pre-restore volume retained at ${OLD_DIR} until caller health verification."
-if [[ -n "${BOX_NAME:-}" ]]; then
-    log "pre-restore box trees retained at ${BOX_OLD} until caller health verification."
+sync -f "$VOLUME_PARENT"
+# C14: the running broker must acquire its lifetime layout lock. Recovery never
+# holds an exclusive layout lock while executing broker jobs.
+flock -u 7
+flock -u 8
+systemctl start boxhostd.service
+if [[ "${#containers[@]}" -gt 0 ]]; then
+    docker start "${containers[@]}"
 fi
-log "NEXT — start only the intended service, probe it, then remove ${OLD_DIR}."
+if ! python3 "$(dirname "$(realpath "$0")")/platform-recovery.py" \
+        --current "$VOLUME_DIR" --finish; then
+    log "ERROR: broker startup recovery incomplete; admission remains closed"
+    exit 4
+fi
+log "shared-layer restore complete. Data installed at ${VOLUME_DIR}."
+log "pre-restore shared layer retained at ${OLD_DIR} until caller health verification."
 exit 0

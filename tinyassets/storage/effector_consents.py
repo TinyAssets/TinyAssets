@@ -70,9 +70,9 @@ def consents_db_path(universe_dir: str | Path) -> Path:
     says so where it is defined: "daemon-owned files that belong to one
     universe but must not live inside it ... No jail binds that directory, so
     nothing a universe runs can replace them"
-    (``providers/provider_jail.UNIVERSE_SIDECARS_DIR``).
+    (``boxes/layout.UNIVERSE_SIDECARS_DIR``).
     """
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     root = Path(universe_dir)
     return root.parent / UNIVERSE_SIDECARS_DIR / root.name / _DB_FILENAME

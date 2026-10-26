@@ -56,7 +56,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-
 class CompilerError(Exception):
     """Raised when the compiler cannot produce a runnable graph.
 
@@ -155,7 +154,7 @@ def _sandbox_workspace_mount(
     Falls back to the path when there is no descriptor: Windows, the
     tests-only launcher, or a sink that has not published one.
     """
-    from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
+    from tinyassets.boxes.node import WorkspaceLimits, WorkspaceMount
 
     bind_source = getattr(mount, "bind_source", "")
     if not isinstance(bind_source, str) or not bind_source:
@@ -347,27 +346,6 @@ def _get_timeout_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _TIMEOUT_EXECUTOR
 
 
-_SHARED_ROUTER: Any = None
-
-
-def _get_shared_router() -> Any:
-    """Return the shared ProviderRouter singleton, or None if not available.
-
-    Lazily imports so test environments without providers don't fail at
-    import time.  The router is cached module-level after first import.
-    """
-    global _SHARED_ROUTER
-    if _SHARED_ROUTER is not None:
-        return _SHARED_ROUTER
-    try:
-        from tinyassets.providers.base import subscription_auth_health
-        from tinyassets.providers.router import ProviderRouter
-        _SHARED_ROUTER = ProviderRouter(auth_health=subscription_auth_health)
-    except Exception:
-        pass
-    return _SHARED_ROUTER
-
-
 def _seat_scope(universe_context, seat_scope) -> tuple[Path, str] | None:
     """(data root, universe id) whose account this agent call is charged to.
 
@@ -544,20 +522,6 @@ _MAX_SOURCE_CODE_BYTES = 50_000
 
 _DANGEROUS_PATTERNS = (
     "os.system", "subprocess", "eval(", "exec(", "__import__",
-)
-
-# Phase G preflight §4.1 #5d: stricter list for NodeBid executor.
-# Wrapper nodes (Phase D) trust the narrower list — they're
-# domain-trusted-callables registered by the host at import time.
-# Bid-referenced nodes are adversarially-accessible (anyone can
-# post a bid), so the sandbox catches a wider surface. Network-call
-# patterns (urllib, requests, socket, http.client) are intentionally
-# EXCLUDED — approved nodes may legitimately call LLM APIs.
-# Single source of truth: both producer-side + executor-side sandbox
-# layers (invariant 1) import from here so the bid-market posture
-# can't drift from the wrapper's.
-_BID_DANGEROUS_PATTERNS = _DANGEROUS_PATTERNS + (
-    "compile(", "open(", "importlib", "pickle", "marshal",
 )
 
 
@@ -1698,17 +1662,6 @@ def _build_prompt_template_node(
                 node_id=node.node_id,
             )
 
-        # Defense-in-depth: if a subprocess provider leaked a bwrap failure
-        # into the response text instead of raising, catch it here so the
-        # garbage never propagates into state (hard-rule #8 fail-loudly).
-        try:
-            from tinyassets.providers.base import check_bwrap_failure
-            check_bwrap_failure(response)
-        except _SandboxUnavailableError:
-            raise
-        except Exception:  # noqa: BLE001 — import/probe errors must not block runs
-            pass
-
         if event_sink is not None:
             try:
                 _meta_detail = {}
@@ -1871,6 +1824,18 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     "read_run_file": ("run_files", "read_run_file"),
     "notify": ("notifications", "notify"),
 }
+
+
+def node_mcp_supported_actions() -> list[str]:
+    """Every action name ``invoke_mcp_action`` accepts.
+
+    Served tools plus the in-node aliases. The unsupported-action error lists
+    this set. A name that is absent is unknown; a known name the node was not
+    granted is a different refusal.
+    """
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+    return sorted(set(BACKEND_ENGINE_CAPABILITIES) | set(_NODE_MCP_ACTION_ALIASES))
 
 
 @dataclass(frozen=True)
@@ -2126,7 +2091,7 @@ def _build_node_mcp_invoker(
             raise CompilerError(
                 f"Node '{node.node_id}' requested unsupported MCP action "
                 f"'{requested}'. Supported actions: "
-                f"{sorted(_NODE_MCP_ACTION_ALIASES)}"
+                f"{node_mcp_supported_actions()}"
             )
         canonical = ".".join(resolved)
         if requested not in allowed and canonical not in allowed:
@@ -2183,11 +2148,11 @@ def _build_node_mcp_invoker(
                 **kwargs,
             )
         if tool_name == "goals":
-            from tinyassets.api.market import goals
+            from tinyassets.api.goals import goals
 
             raw = goals(action=action, **kwargs)
         elif tool_name == "gates":
-            from tinyassets.api.market import gates
+            from tinyassets.api.goals import gates
 
             raw = gates(action=action, **kwargs)
         elif tool_name == "wiki":
@@ -2307,7 +2272,7 @@ def _build_source_code_node(
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
     if workspace_node:
-        from tinyassets.node_sandbox import MAX_WORKSPACE_TIMEOUT_SECONDS
+        from tinyassets.boxes.node import MAX_WORKSPACE_TIMEOUT_SECONDS
 
         # The DECLARED value, not the defaulted one: `or 300.0` above reads a
         # zero as "unset", and a workspace node has to say how long it may hold
@@ -2332,7 +2297,7 @@ def _build_source_code_node(
     strict_inputs = bool(getattr(node, "strict_input_isolation", True))
 
     def _fn_body(state: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.node_sandbox import NodeSandbox
+        from tinyassets.boxes.node import NodeSandbox
 
         if event_sink is not None:
             try:
@@ -3701,8 +3666,8 @@ def _wrap_with_effects(
         delta = inner_fn(state)
         if not isinstance(delta, dict):
             return delta
+        from tinyassets.boxes.node import _cancel_requested
         from tinyassets.effectors import EffectFailedError, dispatch_node_effects
-        from tinyassets.node_sandbox import _cancel_requested
 
         if should_cancel is not None and _cancel_requested(should_cancel):
             raise NodeCancelledError(

@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -27,13 +29,10 @@ from tinyassets.capability_health import observed
 from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import (
-    ACCOUNT_REACH_TOOLS,
-    HOST_REACH_TOOLS,
     ModelConfig,
     UniverseContext,
 )
 from tinyassets.providers.model_call import text_sync
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
     SoulEditError,
     apply_soul_edit,
@@ -77,7 +76,7 @@ _GROUNDING_IS_CURRENT = (
 
 #: The persona half of the untrusted envelope. Content another USER authored
 #: reaches the universe wrapped as ``{"untrusted": true, "source": ...,
-#: "notice": ..., "content": ...}`` (``engine_mcp_server._untrusted``); this is
+#: "notice": ..., "content": ...}`` (``universe_tools._untrusted``); this is
 #: the one line that tells it what that wrapper means. The universe keeps writing
 #: its own brain as it learns from its founder and the world -- the boundary is
 #: between users, not on learning.
@@ -104,131 +103,6 @@ _HONESTY_FLOOR = (
 )
 
 # ── engine sandbox (2026-07-03 live-test P0) ────────────────────────────────
-# The universe intelligence is founder-facing and MUST NOT inherit the daemon's
-# checkout or keep host tools. The live test showed the un-sandboxed engine read
-# the platform source + uncommitted diff, ran Bash/gh, and cloned repos. Every
-# universe-intelligence call runs isolated: cwd pinned to the universe's own dir,
-# host tools denied.
-#
-# Served turns use only the platform's granted tools. A non-granted turn has
-# no tools on any provider; native web access is not an exception.
-_ENGINE_ALLOWED_TOOLS = ()
-# Defense in depth alongside the provider's empty native-tool inventory.
-_ENGINE_DISALLOWED_TOOLS = (
-    # shell / process execution and filesystem: the one host-reach definition
-    *HOST_REACH_TOOLS,
-    # Native web access is never part of the served agent definition.
-    "WebSearch", "WebFetch",
-    # subagents / skills / plans / deferred-tool loading
-    "Task", "Agent", "Workflow", "Skill", "ToolSearch", "SlashCommand",
-    "TodoWrite", "EnterPlanMode", "ExitPlanMode",
-    "EnterWorktree", "ExitWorktree",
-    # session-local bookkeeping: the turn's own task list and its findings
-    # report, which reports INTO the turn rather than out of it.
-    "ReportFindings",
-    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
-    # Effects that leave the platform or outlive the turn -- the host's claude.ai
-    # account, the outside world, or a clock. The ONE definition, shared with the
-    # workflow-node denylist so the two cannot drift; it carries the names that
-    # used to be literals here (SendMessage, ScheduleWakeup, PushNotification,
-    # RemoteTrigger, Cron*, DesignSync*). Neither the OS jail nor
-    # --strict-mcp-config bounds these.
-    # Re-checked against the installed CLI 2.1.288 and its changelog for
-    # 2.1.184-2.1.288 (Codex ADAPT 2026-10-03): Artifact, ListAgents,
-    # SendFeedback, ListPlugins and EndConversation are all carried by the
-    # constant, which documents each one.
-    *ACCOUNT_REACH_TOOLS,
-    # MCP: all server tools (wildcard) + resource readers
-    "mcp__*", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
-    "ListMcpResourcesTool",
-)
-
-# ── engine MCP tools (2026-08-13) ───────────────────────────────────────────
-# Founder directive: "all user functions are just mcp functions ... all the same
-# mcp commands whether its through the app or through slack or the browser." When
-# enabled (env flag, FOUNDER turn only), the engine gets a LOCAL, founder-scoped
-# TinyAssets MCP server exposing the same canonical handles the browser chatbot
-# has, acting AS the founder, pinned to its OWN universe (see
-# tinyassets.engine_mcp_server + claude_provider._engine_mcp_flags).
-#
-# Slice 1 = READ handles only (``read_graph`` + ``get_status``): inspection with
-# NO domain mutation / spend / commons blast radius (the status path may touch
-# internal infra sidecars — locks/queue markers — but no domain state or cost),
-# and enough to prove the whole mechanism end-to-end live (identity binding +
-# graph pin + CLI wiring). Both pin cleanly to the universe via their
-# ``graph_id`` / ``universe_id`` parameter, and the founder identity gates reads
-# of a PRIVATE universe.
-#
-# Slice 2 (2026-08-19): ``run_graph`` — run a branch end-to-end (founder-owned OR
-# public; foreign-private refused — NOT author-only), allowlisted + rate-limited;
-# safe execution of a public branch rests on #2498's invoke sanitization.
-#
-# Slice 3 (2026-08-22): the SHARED COMMONS. ``browse_commons`` +
-# ``read_commons_shape`` are READ-ONLY over PUBLIC cross-universe shapes (the
-# existing viewer filter + author gate enforce visibility). ``remix_shape`` forks
-# a public shape into a new PRIVATE branch the founder owns — cross-author
-# executable source approval is STRIPPED on the fork so inherited code carries
-# no forged provenance; it runs in the OS sandbox like any code node (Codex
-# ADAPT 2026-08-22 #2; gate retired by sandboxed-code-node). The writes are allowlisted +
-# rate-limited (fail-closed) like run_graph. This gives the served agent the SAME
-# commons the browser chatbot has, so it stops WebFetching n8n/Make when asked to
-# browse "our" commons.
-#
-# DEFERRED, each gated on the matching cross-family confinement review:
-#   * commons PUBLISH — make a shape public + snapshot a new best version, with
-#     the founder's "same workflow, improved, updated in place" model (founder
-#     2026-08-22). A GLOBAL write; needs a consent gate before an autonomous agent
-#     can publish (Codex ADAPT 2026-08-22 #5). Built + reverted from this slice.
-#   * fork AUTO-TRACK — let a fork opt in to auto-sync when the upstream commons
-#     shape it depends on publishes a new version (founder 2026-08-22). Needs a
-#     dependency-subscription store + a re-fork/sync mechanism.
-#   * ``read_page`` / ``write_page`` — resolve their universe from the founder's
-#     HOME, not a graph_id, and ``write_page scope=commons`` writes the GLOBAL
-#     shared commons; pinning them needs a wiki-root override not yet set.
-#   * ``converse`` — never exposed (a universe relaying to itself is a
-#     recursion / fork bomb).
-# Brain / harness read-write loop (2026-08-22): the agent reads + durably writes
-# its OWN brain (identity/founder/origin/body + name + canon) so the change is in
-# its system prompt next turn. Governed (commit_learning -> apply_soul_edit,
-# soul.edit.md whitelist; soul.md's executable frontmatter excluded), pinned to
-# its own universe, allowlisted + rate-limited. Markdown content, never executed —
-# no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
-# injected into the next turn."
-#
-# remix_shape is intentionally NOT listed yet: it is cross-author (fork a foreign
-# public shape) and gets its own review slice in the served-agent-build-run
-# OpenSpec change. run_graph + write_graph ARE enabled (2026-08-23): the
-# invoke_branch closure is now sanitized (#2498 — delegated child-authority,
-# fail-closed actor, mapping/await confidentiality), so a run reaching a public
-# branch is safe. run_graph is NOT author-only (its resolver admits founder-owned
-# or public; foreign-private is refused) — the sanitization, not an author gate,
-# is what keeps that safe.
-# Served engine-MCP allowlist from the one canonical served_tools.py list.
-_ENGINE_MCP_TOOLS = SERVED_ENGINE_MCP_TOOLS
-_ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
-# Denylist for an engine-MCP-on turn: identical to the tool-free floor EXCEPT
-# the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
-# Isolation for the OTHER MCP servers comes from ``--strict-mcp-config`` admitting
-# only the one local server (verified 2026-08-13); the three MCP resource-reader
-# tools stay denied so the surface is EXACTLY the declared handles.
-# ``ToolSearch`` is ALSO dropped, not only ``mcp__*``: claude CLI 2.1.183
-# surfaces MCP-server tools through its DEFERRED-tool mechanism — their schemas
-# are loaded on demand via ``ToolSearch`` — so denying ``ToolSearch`` silently
-# prevents the engine ``mcp__tinyassets__*`` handles from EVER becoming callable.
-# Verified live 2026-08-19: with ``ToolSearch`` in the denylist the served turn
-# sees only ``WebFetch`` + ``AskUserQuestion``; drop it and ``read_graph`` /
-# ``run_graph`` work. Isolation for this turn does NOT rely on denying
-# ``ToolSearch``: ``--strict-mcp-config`` admits ONLY the one local engine server
-# (the ambient claude.ai account connectors are excluded), and every dangerous
-# builtin stays individually denied below — a loaded schema for a denied tool is
-# still not callable. The residual (a NEW CLI builtin not yet in this denylist
-# could be ToolSearch-loaded) is the same denylist-rot this module already
-# tracks; the durable fix remains the OS sandbox.
-_ENGINE_DISALLOWED_TOOLS_WITH_MCP = tuple(
-    t for t in _ENGINE_DISALLOWED_TOOLS if t not in ("mcp__*", "ToolSearch")
-)
-
-
 def _engine_mcp_enabled() -> bool:
     """True when the founder-scoped engine MCP tooling is switched on.
 
@@ -271,14 +145,18 @@ UNBOUNDED_TURN_SECONDS = 30 * 24 * 3600.0
 def _served_knob(config, name: str, default):
     """A positive per-universe override for a watchdog knob, else ``default``.
 
-    Nonsense (a string, zero, negative) falls back to the default rather than
-    disabling a bound - the same hardening the profile resolver applies.
+    Invalid, boolean, nonfinite or nonpositive values use the default.
     """
+    import math
+
     try:
-        value = float(getattr(config, name, None) or 0)
-    except (TypeError, ValueError):
+        raw = getattr(config, name, None)
+        if isinstance(raw, bool):
+            return default
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def served_absolute_cap_s(config) -> float | None:
@@ -288,11 +166,13 @@ def served_absolute_cap_s(config) -> float | None:
     coordinator about how long a turn may take. Codex on #4020: a bound derived
     from the library's 600s default called a healthy founder turn dead after ten
     and a half minutes, which hid the indicator for exactly the long turns it was
-    added for. The granted turn's cap is 3600s (founder rule 2026-08-29, "a
-    granted turn runs until it is finished") with a positive per-universe
-    override, and this returns that same number.
+    added for. Granted turns now default to no cap; a positive finite owner
+    override loaded from config.yaml supplies the same bound to runtime and
+    activity readers, at most the platform-safe unbounded horizon above.
+    Ordinary node timeouts are not this served-turn policy.
     """
-    return _served_knob(config, "absolute_cap_s", None)
+    value = _served_knob(config, "absolute_cap_s", None)
+    return None if value is None else min(value, UNBOUNDED_TURN_SECONDS)
 
 
 def _sandboxed_config(
@@ -355,20 +235,10 @@ def _sandboxed_config(
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()
     )
-    if engine_mcp:
-        allowed = _ENGINE_MCP_ALLOWED
-        disallowed = _ENGINE_DISALLOWED_TOOLS_WITH_MCP
-    else:
-        allowed = _ENGINE_ALLOWED_TOOLS
-        disallowed = _ENGINE_DISALLOWED_TOOLS
     return ModelConfig(
         timeout=timeout,
         absolute_cap_s=absolute_cap_s,
         idle_timeout_s=idle_timeout_s,
-        sandbox_workspace=True,
-        sandbox_chat=True,
-        allowed_tools=allowed,
-        disallowed_tools=disallowed,
         engine_mcp_enabled=engine_mcp,
         engine_mcp_actor_id=founder_principal if engine_mcp else "",
         engine_mcp_graph_id=universe_id if engine_mcp else "",
@@ -903,7 +773,6 @@ def _learn_from_turn(
     """
     from tinyassets.exceptions import (
         AllProvidersExhaustedError,
-        ExternalAgentUnavailable,
         ProviderAuthorityHeldError,
         ProviderError,
     )
@@ -928,7 +797,7 @@ def _learn_from_turn(
         commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id,
                         agent_id=agent_id)
         return True
-    except (AllProvidersExhaustedError, ExternalAgentUnavailable,
+    except (AllProvidersExhaustedError,
             ProviderAuthorityHeldError, TurnInterrupted) as exc:
         if isinstance(exc, AllProvidersExhaustedError):
             attempts = getattr(exc, "attempts", ())
@@ -937,8 +806,6 @@ def _learn_from_turn(
                 "auth_invalid", "quota_or_cooldown", "provider_error", "timed_out",
                 "provider_unavailable", "unknown",
             } else "provider_exhausted"
-        elif isinstance(exc, ExternalAgentUnavailable):
-            reason = exc.reason
         elif isinstance(exc, TurnInterrupted):
             reason = "interrupted"
         else:
@@ -1100,127 +967,6 @@ def _brain_recording_tools(http_turn) -> set:
     return names
 
 
-def _call_writer(
-    turn_input, *, system, universe_context, config, response_observer=None,
-    tools_observer=None,
-):
-    """Run one served writer turn; retry ONCE immediately only if nothing ran.
-
-    ``tools_observer``, when given, is called with the set of brain-recording tool
-    names this turn PROVED wrote something (see :func:`_wrote_its_brain` — a
-    returned refusal is not a write) — how the caller learns whether the turn
-    recorded its own lesson instead of spending another round-trip discovering it.
-
-    Streamed attempts now classify their own outcome (idle-timeout /
-    interactive-deadline / rate-limit) and the router no longer cools the sole
-    served writer on a transient attempt timeout, so the old 30/60s synchronous
-    backoff sleeps are gone — the interactive request must NEVER block a worker
-    slot on a sleep (design.md § "Router health/cooldown model"). The sole-writer
-    retry policy is: one immediate FRESH-process retry only when every provider
-    was SKIPPED (pure cooldown/quota, nothing executed, no possible side effect);
-    otherwise end the turn honestly and let the caller post an accurate notice.
-    """
-    from tinyassets.exceptions import AllProvidersExhaustedError
-    from tinyassets.providers.agent_inference import AgentInferenceRequest
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.request_budget import RequestBudgetExceeded
-
-    config = config or ModelConfig()
-    ordinary_text = (type(config.agent_request) is AgentInferenceRequest
-                     and config.agent_request.text_only)
-    http_turn = None
-    selection = getattr(universe_context, "model_selection", None)
-    if (selection is not None and universe_context.agent_model_plan is not None
-            and not (getattr(config, "engine_mcp_enabled", False) or ordinary_text)):
-        from tinyassets.exceptions import ProviderAuthorityHeldError
-
-        raise ProviderAuthorityHeldError("selected interactive model requires engine tools")
-    if ((getattr(config, "engine_mcp_enabled", False) or ordinary_text) and selection is not None
-            and (universe_context.agent_model_plan is not None
-                 or selection.connection_id.startswith("api_key_http:"))):
-        from tinyassets.providers.call import make_interactive_agent_turn
-
-        http_turn = make_interactive_agent_turn(
-            prompt=turn_input, system=system, universe_context=universe_context, config=config,
-        )
-
-    def _attempt():
-        if http_turn is not None:
-            from tinyassets.providers.call import call_interactive_agent_turn
-
-            return call_interactive_agent_turn(http_turn, response_observer=response_observer)
-        observe = {} if response_observer is None else {"response_observer": response_observer}
-        return text_sync(
-            turn_input,
-            system=system,
-            role="writer",
-            universe_context=universe_context,
-            config=config,
-            operation="converse",
-            # The interactive path must not sleep on aggregated exhaustion; the
-            # tenacity backoff in call.py is disabled here (retry policy below).
-            retry_on_exhaustion=False,
-            **observe,
-        )
-
-    try:
-        return _attempt()
-    except RequestBudgetExceeded as exc:
-        completed = getattr(exc, "completed_tools", ())
-        detail = f" Completed tool calls: {len(completed)}." if completed else ""
-        answer = exc.continuation + detail
-        if response_observer is not None:
-            from tinyassets.providers.base import ProviderResponse
-
-            try:
-                response_observer(ProviderResponse(
-                    text=answer, provider="", model="", family="", latency_ms=0,
-                    degraded=True, request_receipt=exc.request_receipt,
-                ))
-            except Exception:  # noqa: BLE001 - telemetry cannot lose earned progress
-                logger.warning("writer budget stop could not be reported")
-        return answer
-    except AllProvidersExhaustedError as exc:
-        # Codex 2026-08-09: the writer call is an AGENTIC loop (it may run
-        # tools), so retrying blindly could re-execute tools it already ran.
-        # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
-        # cooldown/quota), so nothing ran and no side effect is possible. Any
-        # actual attempt (status != skipped) → re-raise for the honest notice.
-        attempts = getattr(exc, "attempts", None) or []
-        all_skipped = bool(attempts) and all(
-            getattr(a, "status", "") == "skipped" for a in attempts
-        )
-        if not all_skipped or (http_turn is not None and (
-            http_turn.plan is not None or http_turn.turn.rounds
-        )):
-            raise  # something ran / real failure class → caller's honest notice
-        logger.warning(
-            "writer chain fully cooled (all providers skipped, nothing ran); "
-            "one immediate fresh-process retry (no sleep)",
-        )
-        if http_turn is not None:
-            # Its own request budget and root closed on exit. Caller-owned
-            # budgets remain in config and are shared with the fresh coordinator.
-            http_turn = make_interactive_agent_turn(
-                prompt=turn_input, system=system, universe_context=universe_context, config=config,
-            )
-        return _attempt()
-
-    finally:
-        if http_turn is not None:
-            if tools_observer is not None:
-                try:
-                    tools_observer(_brain_recording_tools(http_turn))
-                except Exception:  # noqa: BLE001 - evidence never breaks the turn
-                    # No evidence means the lesson is still owed, which costs the
-                    # extraction, never the lesson.
-                    logger.warning("could not read this turn's brain writes")
-            try:
-                http_turn.close_quiescent()
-            except Exception:
-                logger.exception("could not close quiescent interactive agent progress")
-
-
 #: Engine tools whose completion proves the turn recorded its own lesson. Only the
 #: governed brain-write handle counts: `write`/`edit` can touch a brain file too,
 #: but they are not the governed path and their target is not checked here, so
@@ -1297,6 +1043,25 @@ def _ordinary_chat(message: str) -> bool:
         r"explain (?:recursion|photosynthesis|gravity|the concept of [a-z]+)|"
         r"what is [0-9 ()+*/.%-]+)[?.! ]*", text,
     ))
+
+
+@contextmanager
+def _surface_chat_allocation_failure(account_id: str, universe_id: str, db: Path):
+    """Record a provider-allocation refusal on the seat status, then re-raise it."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    try:
+        yield
+    except ProviderAuthorityHeldError as exc:
+        from tinyassets import universe_seats
+
+        try:
+            universe_seats.note_chat_allocation_failure(
+                account_id, universe_id, str(exc), db=db,
+            )
+        except (universe_seats.SeatLedgerUnusable, sqlite3.Error, OSError):
+            logger.warning("chat allocation failure could not be recorded")
+        raise
 
 
 @observed('chat_stream', inspect_result=False)
@@ -1416,27 +1181,6 @@ def converse(
                 universe_id=uid,
                 owner_user_id=capability.principal_id,
             )
-            # Bring the owner's stored sign-ins current BEFORE this turn pins
-            # anything. A rotation renews the accepted binding, which moves its
-            # revision and digests, and the carrier and model plan captured below
-            # pin both: rotated after capture, the turn was refused "connect your
-            # provider" (live 2026-09-28). The principal is proven the serving
-            # binding's owner by the resolution above. `launching` is unknown yet,
-            # so a finished sign-in only records its card here; the launch-time
-            # refresh is still what refuses the source it is about to use.
-            from tinyassets.subscription_refresh import refresh_deposited_subscriptions
-
-            refresh_deposited_subscriptions(
-                base_path=udir.parent,
-                universe_dir=udir,
-                owner_user_id=capability.principal_id,
-                universe_id=uid,
-            )
-            selected = resolve_serving_agent_binding(
-                udir.parent,
-                universe_id=uid,
-                owner_user_id=capability.principal_id,
-            )
         request_carrier = mint_provider_request_carrier(
             universe_id=uid,
             agent_binding_id=selected["agent_binding_id"],
@@ -1509,7 +1253,7 @@ def converse(
 
         turn_config = replace(
             turn_config, engine_mcp_enabled=False, engine_mcp_actor_id="",
-            engine_mcp_graph_id="", allowed_tools=(), engine_tool_grant=None,
+            engine_mcp_graph_id="", engine_tool_grant=None,
             agent_session=None, agent_request=AgentInferenceRequest(tools=(), tool_choice="none"),
         )
         system += (
@@ -1538,7 +1282,9 @@ def converse(
     # Over the seat count it waits with no deadline -- never refused -- and its
     # queue row, tagged with this universe, is what `get_status` reports as
     # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
-    # reserve means a chat only ever waits behind another chat.
+    # reserve means a chat only ever waits behind another chat. A provider
+    # allocation failure is recorded on that same status as an error with a
+    # message, then re-raised for the caller's failure notice.
     from contextlib import closing, nullcontext
 
     from tinyassets import universe_seats
@@ -1558,15 +1304,20 @@ def converse(
         )
     turn_config = replace(turn_config, request_budget=budget)
     scope = closing(budget) if owns_budget and budget is not None else nullcontext()
+    account = universe_seats.account_key(uid, root=udir.parent)
+    ledger = universe_seats.ledger_path(udir.parent)
     with scope, universe_seats.hold(
-        universe_seats.account_key(uid, root=udir.parent),
+        account,
         seat_class=universe_seats.CLASS_INTERACTIVE,
         kind=universe_seats.KIND_CHAT_TURN, universe_id=uid,
-        db=universe_seats.ledger_path(udir.parent),
-    ):
+        db=ledger,
+    ), _surface_chat_allocation_failure(account, uid, ledger):
+        universe_seats.clear_chat_allocation_failure(account, uid, db=ledger)
         recorded: set = set()
         responses = []
-        reply = _call_writer(
+        from tinyassets.agent_loop.served_chat import run_served_writer
+
+        reply = run_served_writer(
             turn_input,
             system=system,
             universe_context=ctx,

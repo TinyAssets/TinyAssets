@@ -4,9 +4,9 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 
 async def handle_wakes(request):
-    from tinyassets import agent_wakes
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
+    from tinyassets.control_plane import agent_wakes
     from tinyassets.onboarding import (
         _NO_STORE,
         _app_identity_required,

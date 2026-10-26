@@ -7,6 +7,7 @@ admission lock before any credential or provider access.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -16,7 +17,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,7 +25,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
-    from tinyassets.providers.native_model_selection import NativeSelection
 
 from tinyassets.provider_assignment_manifest import (
     AssignmentCandidate,
@@ -66,16 +66,7 @@ class ProviderAssignment:
 
 @dataclass(frozen=True, slots=True)
 class ServedProviderAuthority:
-    """Fresh, server-validated provider facts for one exact served call.
-
-    ``authority_kind`` explicitly discriminates the credential model (Codex shape
-    review of serve-open-compute-provider): ``subscription_snapshot`` carries the
-    subscription custody tuple + a required ``credential_snapshot_dir``;
-    ``connection_grant`` carries an open provider's exact definition + grant identity
-    with ``credential_snapshot_dir=None`` (the credential lives in the connection grant,
-    resolved credential-blind at call time). The kind is NEVER inferred from a missing
-    snapshot — an absent subscription snapshot must fail closed, not silently become
-    open authority."""
+    """Fresh owner-bound HTTP connection facts for one exact served call."""
 
     authority_kind: str
     provider: str
@@ -94,7 +85,6 @@ class ServedProviderAuthority:
     credential_reference_generation: int
     credential_reference_digest: str
     credential_service: str
-    credential_snapshot_dir: Path | None = field(repr=False, compare=False)
     request_capability: object = field(repr=False, compare=False)
     operation: str = "converse"
     allowed_roles: tuple[str, ...] = ("writer",)
@@ -103,7 +93,6 @@ class ServedProviderAuthority:
         default=None, repr=False, compare=False
     )
     selected_model: SelectedModel | None = None
-    native_selection: NativeSelection | None = None
     after_provider_claim: object | None = field(default=None, repr=False, compare=False)
 
 
@@ -129,7 +118,7 @@ def _is_open_provider(name: str) -> bool:
     """True for an open compute provider serving name (``api_key_http:<def-id>``).
     Its credential is a connection grant, not a subscription snapshot — the authority
     + budget paths branch on this."""
-    return name.startswith("api_key_http:")
+    return name.startswith(("api_key_http:", "subscription_cli:"))
 
 #: Rolling window for the invocation runaway guard (Codex 2026-08-19 reject #3).
 #: The per-binding-generation invocation ceiling counts only rows CREATED within
@@ -347,13 +336,6 @@ def reconcile_served_budget_leases(base_path: str | Path) -> int:
         return 0
 
 
-
-# The daemon-owned background operation (mirrors
-# background_served_provider.BACKGROUND_BRANCH_RUN_OPERATION; kept as a literal here
-# because that module imports this one — importing back would be circular).
-_BACKGROUND_BRANCH_RUN_OPERATION = "background_branch_run"
-
-
 def reserve_served_provider_budget(
     base_path: str | Path,
     *,
@@ -381,19 +363,7 @@ def reserve_served_provider_budget(
         for value in (requested_output_tokens, estimated_input_tokens)
     ):
         raise ProviderAuthorityHeldError(held)
-    # Explicit authority_kind consistency (Codex reject #5): the credential model is
-    # NEVER inferred from the provider-name prefix alone. The kind, the provider shape,
-    # and the snapshot presence must agree, or fail closed — an absent subscription
-    # snapshot must never be treated as open authority, and vice versa.
-    _kind = getattr(authority, "authority_kind", None)
-    _open = _is_open_provider(authority.provider)
-    if _kind == "connection_grant":
-        if not _open or authority.credential_snapshot_dir is not None:
-            raise ProviderAuthorityHeldError(held)
-    elif _kind == "subscription_snapshot":
-        if _open or authority.credential_snapshot_dir is None:
-            raise ProviderAuthorityHeldError(held)
-    else:
+    if authority.authority_kind != "connection_grant" or not _is_open_provider(authority.provider):
         raise ProviderAuthorityHeldError(held)
     store = SQLiteProviderWorkAuthorityStore(base_path)
     with store.connection() as conn:
@@ -747,9 +717,9 @@ class _AdmissionState:
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.readers = 0
-        self.writer: int | None = None
+        self.writer: object | None = None
         self.waiting_writers = 0
-        self.reader_threads: set[int] = set()
+        self.reader_threads: set[object] = set()
 
 
 def _acquire_windows_file_lock(
@@ -806,11 +776,16 @@ class ProviderAssignmentAdmission:
             return self._states.setdefault(key, _AdmissionState())
 
     @staticmethod
+    def _open_lock_file(universe_dir):
+        from tinyassets.workspace_fs import open_assignment_lock
+
+        universe = Path(universe_dir).absolute()
+        return open_assignment_lock(universe.parent, universe.name)
+
+    @staticmethod
     @contextmanager
     def _file_lock(universe_dir: str | Path, *, exclusive: bool) -> Iterator[None]:
-        universe = Path(universe_dir).resolve(strict=False)
-        universe.mkdir(parents=True, exist_ok=True)
-        handle = (universe / ".provider-assignment-admission.lock").open("a+b")
+        handle = ProviderAssignmentAdmission._open_lock_file(universe_dir)
         try:
             if os.name == "nt":
                 import msvcrt
@@ -839,6 +814,85 @@ class ProviderAssignmentAdmission:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+    @asynccontextmanager
+    async def _async_admission(self, universe_dir, *, exclusive):
+        """Task identity and writer priority shared with synchronous callers.
+
+        Neither an in-process wait nor a cross-process flock can block the loop.
+        Cancelling a waiting writer removes its priority before waking readers.
+        """
+        from tinyassets.agent_loop.execution import off_loop
+
+        state = self._state(universe_dir)
+        identity = asyncio.current_task()
+        admitted = False
+        handle = None
+        with state.condition:
+            if state.writer == identity or identity in state.reader_threads:
+                raise RuntimeError("provider assignment admission is not reentrant")
+            if exclusive:
+                state.waiting_writers += 1
+        try:
+            while not admitted:
+                with state.condition:
+                    if state.writer is None and (not state.readers if exclusive
+                                                 else not state.waiting_writers):
+                        if exclusive:
+                            state.writer = identity
+                        else:
+                            state.readers += 1
+                            state.reader_threads.add(identity)
+                        admitted = True
+                if not admitted:
+                    await asyncio.sleep(0.01)
+
+            # Opening a local file can block too; retain the handle in this
+            # scope even when cancellation arrives during its creation.
+            def open_lock():
+                nonlocal handle
+                handle = self._open_lock_file(universe_dir)
+                if os.name == "nt":
+                    handle.seek(0, os.SEEK_END)
+                    if not handle.tell():
+                        handle.write(b"\0")
+                        handle.flush()
+
+            await off_loop(open_lock)
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                        fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
+                    break
+                except (BlockingIOError, PermissionError):
+                    await asyncio.sleep(0.01)
+            yield
+        finally:
+            if handle is not None:
+                handle.close()
+            with state.condition:
+                if exclusive:
+                    state.waiting_writers -= 1
+                    if admitted:
+                        state.writer = None
+                elif admitted:
+                    state.readers -= 1
+                    state.reader_threads.remove(identity)
+                state.condition.notify_all()
+
+    def shared_async(self, universe_dir):
+        return self._async_admission(universe_dir, exclusive=False)
+
+    def exclusive_async(self, universe_dir):
+        return self._async_admission(universe_dir, exclusive=True)
 
     @contextmanager
     def shared(self, universe_dir: str | Path) -> Iterator[None]:
@@ -1163,10 +1217,8 @@ def accepted_connected_model_access(assignment, owner, provider):
         member = next((item for item in assignment.candidates if item.provider == provider), None)
         if member is not None:
             return member.access
-    elif assignment.provider == provider and provider in _SERVED_PROVIDER_SERVICE:
-        # A legacy native binding accepted only its provider default.
-        return ModelAccess("explicit", ("",))
-    elif assignment.provider == provider and provider.startswith("api_key_http:"):
+    elif (assignment.provider == provider
+          and provider.startswith(("api_key_http:", "subscription_cli:"))):
         # A legacy single-provider HTTP binding accepted exactly the model the
         # owner connected it with, free-only: what the legacy lane always ran
         # and what the model picker shows as its `legacy_source`. Nothing
@@ -1174,10 +1226,11 @@ def accepted_connected_model_access(assignment, owner, provider):
         from tinyassets.providers.definition import get_definition
 
         definition = get_definition(
-            assignment.universe_id, provider.removeprefix("api_key_http:"),
+            assignment.universe_id, provider.split(":", 1)[-1],
         )
         if (definition is not None and definition.owner_user_id == owner
-                and definition.access_method == "api_key_http" and definition.model):
+                and definition.access_method in {"api_key_http", "subscription_cli"}
+                and definition.model):
             return ModelAccess("explicit", (definition.model,), None)
     raise PermissionError("model source is outside accepted access")
 
@@ -1200,12 +1253,12 @@ def _selected_chain(store, base_path, universe, capability, agent, selection):
             assignment, capability.principal_id, selection.connection_id,
         )
         conn.rollback()
-    if selection.connection_id.startswith("api_key_http:"):
+    if selection.connection_id.startswith(("api_key_http:", "subscription_cli:")):
         from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
         refresh_model_discovery(
             owner_user_id=capability.principal_id, universe_id=universe.name,
-            definition_id=selection.connection_id.removeprefix("api_key_http:"),
+            definition_id=selection.connection_id.split(":", 1)[-1],
         )
     return selection.connection_id, custody, access
 
@@ -1249,77 +1302,30 @@ async def authorize_served_provider_call_async(
 ):
     """Release admission for discovery; revalidate the exact chain before launch.
 
-    Thread-owned admission contexts enter and exit on the event-loop thread.
-    Only discovery IO runs in a worker. Neither callers nor configuration may
+    Task-owned admission never blocks the event-loop thread.
+    Synchronous authority and credential IO runs in a worker. Neither callers nor configuration may
     supply the prepared result, and the final fence rechecks request + custody.
     """
+    from tinyassets.agent_loop.execution import off_loop
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.model_selection import prepare_selected_model_async
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
-    from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
     universe = Path(universe_dir)
-    # THE interactive launch path. Wiring only the workflow lanes left the
-    # founder's own served turn -- the surface the outage is on -- never calling
-    # the refresh at all (Codex refute-review, P1 #7).
-    #
-    # Here, at the very top: before the shared admission is taken (the refresh
-    # needs the EXCLUSIVE one, which cannot nest inside it), before `_selected_chain`
-    # resolves custody, and before the snapshot below pins the credential. A refresh
-    # after any of those would make the launch refuse with "credential changed
-    # before launch snapshot".
-    #
-    # `launching` is the source this call actually selected, so another deposited
-    # source's dead credential cannot fail this one.
-    #
-    # The owner is the request's principal, proved by the same check the launch
-    # makes, under the shared admission (released again before the refresh takes
-    # the exclusive one). It is what carries the accepted binding onto a rotated
-    # document. Passing no owner rotated the founder's sign-in and then could not
-    # renew the binding, so custody pinned the old digest and every turn after it
-    # was refused "connect your provider" (live 2026-09-28). A request that proves
-    # no owner refreshes nothing: it is refused below, and it must not spend the
-    # owner's single-use refresh token on its way there.
-    #
-    # A selection that is not a `ModelRef` is refused below, by the checks that
-    # already exist for it, and NOTHING is refreshed for it. Reading a field off an
-    # unvalidated caller-supplied object turned that refusal into an AttributeError
-    # (`test_async_unaccepted_selection_refused_before_discovery`, which passes a
-    # bare object precisely to pin the ordering) -- and more importantly, the
-    # selection decides WHICH source is refreshed and which one may fail the
-    # launch, so an unrecognized one must steer neither.
-    from tinyassets.providers.model_policy import ModelRef
-
-    if isinstance(model_selection, ModelRef):
-        try:
-            with provider_assignment_admission().shared(universe):
-                owner = _served_request_agent(
-                    base_path, universe, request_carrier, role, operation
-                )[0].principal_id
-        except Exception:  # noqa: BLE001 - refused with its own words below
-            owner = ""
-        if owner:
-            refresh_deposited_subscriptions(
-                base_path=base_path,
-                universe_dir=universe,
-                owner_user_id=owner,
-                universe_id=universe.name,
-                launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
-            )
+    admission = provider_assignment_admission()
     try:
-        with provider_assignment_admission().shared(universe):
-            capability, agent = _served_request_agent(
-                base_path, universe, request_carrier, role, operation
+        async with admission.shared_async(universe):
+            capability, agent = await off_loop(
+                _served_request_agent, base_path, universe, request_carrier, role, operation,
             )
-            chain = _selected_chain(
-                SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
+            chain = await off_loop(
+                _selected_chain, SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
                 capability, agent, model_selection,
             )
-        # No assignment fence or SQL transaction spans the remote request.
         from tinyassets.providers.model_selection import saved_effort_level
 
-        effort = saved_effort_level(
-            base_path, capability.principal_id, universe.name, model_selection,
+        effort = await off_loop(
+            saved_effort_level, base_path, capability.principal_id, universe.name, model_selection,
         )
         selected, recheck = await prepare_selected_model_async(
             base_path=Path(base_path), owner_user_id=capability.principal_id,
@@ -1331,19 +1337,24 @@ async def authorize_served_provider_call_async(
         raise
     except Exception as exc:
         raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
-    with _authorize_served_provider_call(
+    from tinyassets.agent_loop.execution import off_loop_context
+
+    # Final validation runs under task admission; it releases before inference.
+    manager = _authorize_served_provider_call(
         base_path, universe_dir=universe, request_carrier=request_carrier,
         role=role, operation=operation, model_selection=model_selection,
         _prepared_selection=(agent, chain, selected, recheck),
-        agent_turn=agent_turn,
-    ) as authority:
+        agent_turn=agent_turn, _admitted=True,
+    )
+    async with admission.shared_async(universe):
+        # Keep resource cleanup outside the assignment lock, as for sync calls.
+        context = off_loop_context(manager)
+        authority = await context.__aenter__()
+    try:
         yield authority
+    finally:
+        await context.__aexit__(None, None, None)
 
-
-#: Which subscription record a served provider launches from. Hoisted out of the
-#: snapshot branch below so the pre-launch refresh names the same source the
-#: launch will, rather than repeating the mapping.
-_SERVED_PROVIDER_SERVICE = {"codex": "codex", "claude-code": "claude"}
 
 #: Imported, not re-declared: `providers.owner_binding` owns the sentence.
 _SERVED_AUTHORITY_HELD = _CONNECT_PROVIDER_MESSAGE
@@ -1354,14 +1365,10 @@ def _authorize_served_provider_call(
     base_path: str | Path, *, universe_dir: str | Path,
     request_carrier: object, role: str, operation: str,
     model_selection: ModelRef | None = None, _prepared_selection=None,
-    agent_turn: bool = False,
+    agent_turn: bool = False, _admitted: bool = False,
 ) -> Iterator[ServedProviderAuthority]:
     """Authorize one model on the request principal's live connected set."""
     from tinyassets.commons_catalog import get_binding
-    from tinyassets.credential_vault import (
-        cleanup_llm_credential_snapshot,
-        snapshot_llm_subscription_credential,
-    )
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.provider_serving_binding import current_connected_source_custody
     from tinyassets.providers.model_policy import ModelRef
@@ -1372,9 +1379,8 @@ def _authorize_served_provider_call(
     universe = Path(universe_dir)
     base = Path(base_path)
     authority = None
-    snapshot = None
     try:
-        with provider_assignment_admission().shared(universe):
+        with (nullcontext() if _admitted else provider_assignment_admission().shared(universe)):
             capability, agent = _served_request_agent(
                 base, universe, request_carrier, role, operation,
             )
@@ -1422,16 +1428,7 @@ def _authorize_served_provider_call(
                     raise PermissionError("connected source custody changed during discovery")
                 conn.rollback()
             provider = model_selection.connection_id
-            if _is_open_provider(provider):
-                kind, service, snapshot_dir = "connection_grant", "http", None
-            else:
-                service = _SERVED_PROVIDER_SERVICE.get(provider)
-                if service is None:
-                    raise PermissionError("connected subscription executor is unavailable")
-                snapshot = snapshot_llm_subscription_credential(
-                    universe_dir=universe, custody=custody,
-                )
-                kind, snapshot_dir = "subscription_snapshot", snapshot.directory
+            kind, service = "connection_grant", "http"
             import hashlib
 
             budget_digest = "sha256:" + hashlib.sha256(
@@ -1470,10 +1467,9 @@ def _authorize_served_provider_call(
                 credential_reference_id=custody.reference_id,
                 credential_reference_generation=custody.generation,
                 credential_reference_digest=custody.reference_digest,
-                credential_service=service, credential_snapshot_dir=snapshot_dir,
+                credential_service=service,
                 request_capability=capability, budget_owner="connected_request",
-                selected_model=selected if _is_open_provider(provider) else None,
-                native_selection=selected if not _is_open_provider(provider) else None,
+                selected_model=selected,
                 before_provider_launch=before_launch,
             )
         yield authority
@@ -1483,8 +1479,6 @@ def _authorize_served_provider_call(
         if authority is not None:
             raise
         raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
-    finally:
-        cleanup_llm_credential_snapshot(snapshot)
 
 
 __all__ = [

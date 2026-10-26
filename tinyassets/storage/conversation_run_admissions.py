@@ -99,6 +99,27 @@ def initialize(base):
     initialize_branch_versions_db(base)
     with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
         conn.executescript(_SCHEMA)
+        _mark_legacy_projections(conn)
+
+
+def _mark_legacy_projections(conn):
+    """One cutover mark for runs reserved before owner-send admission existed."""
+    conn.execute('BEGIN IMMEDIATE')
+    conn.execute('CREATE TABLE IF NOT EXISTS conversation_projection_cutover '
+                 '(id INTEGER PRIMARY KEY CHECK(id=1))')
+    if conn.execute('SELECT 1 FROM conversation_projection_cutover WHERE id=1').fetchone():
+        conn.commit()
+        return
+    for admission_id, encoded in conn.execute(
+            "SELECT admission_id,context_json FROM conversation_run_admissions "
+            "WHERE projection_state IN ('pending','held')"):
+        context = json.loads(encoded or '{}')
+        if 'owner_send_turn' not in context:
+            context['_legacy_projection'] = True
+            conn.execute('UPDATE conversation_run_admissions SET context_json=? '
+                         'WHERE admission_id=?', (_json(context), admission_id))
+    conn.execute('INSERT INTO conversation_projection_cutover VALUES (1)')
+    conn.commit()
 
 
 def _plain(path):
@@ -488,24 +509,43 @@ def _write_pair(scope, row):
             return None
         number = conn.execute("SELECT coalesce(max(turn_no),0)+1 FROM conversation_turns "
                               "WHERE session_id=?", (scope.session,)).fetchone()[0]
+        context = json.loads(row["context_json"] or '{}')
+        admitted = context.get('owner_send_turn')
+        if admitted is None:
+            if context.get('_legacy_projection') is not True:
+                raise TerminalUnavailable('owner send admission required')
+            founder_number = number
+            conn.execute("INSERT INTO conversation_turns "
+                         "(session_id,turn_no,speaker,content,ts,ext_id) VALUES (?,?,?,?,?,?)",
+                         (scope.session, number, 'founder', intent['message'], time.time(),
+                          f"consumer:{row['admission_id']}:founder"))
+        else:
+            founder_number = admitted
+            original = conn.execute(
+                "SELECT content FROM conversation_turns WHERE session_id=? AND turn_no=? "
+                "AND speaker='founder'", (scope.session, admitted),
+            ).fetchone()
+            if original != (intent['message'],):
+                raise TerminalUnavailable('owner send admission unavailable')
+            conn.execute('UPDATE conversation_turns SET ext_id=? WHERE session_id=? AND turn_no=?',
+                         (f"consumer:{row['admission_id']}:founder", scope.session, admitted))
         now = time.time()
         for offset, speaker, content, execution, failure in (
-            (0, "founder", intent["message"], "", ""),
             (1, terminal["speaker"], terminal["content"],
              _json(terminal["execution"]) if terminal["execution"] else "",
              _json(terminal["failure"]) if terminal["failure"] else ""),
         ):
-            suffix = "founder" if offset == 0 else "reply"
+            suffix = "reply"
             conn.execute("INSERT INTO conversation_turns (session_id,turn_no,speaker,content,ts,"
                          "ext_id,execution_json,failure_json) VALUES (?,?,?,?,?,?,?,?)",
                          (scope.session, number + offset, speaker, content, now,
                           f"consumer:{row['admission_id']}:{suffix}", execution, failure))
         conn.execute("INSERT INTO conversation_terminal_projections VALUES (?,?,?,?,?,?)",
-                     (row["admission_id"], scope.session, digest, number, number + 1, now))
+                     (row["admission_id"], scope.session, digest, founder_number, number + 1, now))
         # No retention delete. The projected pair joins the transcript and stays
         # there; see conversation_store, where the 400-turn ceiling used to be.
         conn.commit()
-        return number
+        return founder_number
     finally:
         conn.close()
 

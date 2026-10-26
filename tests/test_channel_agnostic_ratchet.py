@@ -91,7 +91,7 @@ def test_a_runtime_literal_does_count(tmp_path):
 
 
 #: The file that owns the relocated-docstring exemption.
-OWNER = "tinyassets/engine_mcp_server.py"
+OWNER = "tinyassets/universe_tools.py"
 
 
 def _engine_copy(tmp_path, body: str, module):
@@ -214,10 +214,10 @@ def test_a_second_module_assignment_to_the_name_revokes_the_exemption(tmp_path):
 def test_every_exempt_documentation_constant_still_exists():
     """A stale name in the exemption list is an exemption nobody can audit."""
     module = _module()
-    from tinyassets import engine_mcp_server
+    from tinyassets import universe_tools
 
     for name in module.DOCUMENTATION_CONSTANTS[OWNER]:
-        assert isinstance(getattr(engine_mcp_server, name), str)
+        assert isinstance(getattr(universe_tools, name), str)
     assert (REPO_ROOT / OWNER).is_file()
     # Every keyed path must exist, or the exemption points at nothing.
     for rel in module.DOCUMENTATION_CONSTANTS:
@@ -252,3 +252,6 @@ def test_the_same_rule_covers_compute(vendor):
     compute provider, no per-provider code, no allowlist -- so the count is the
     distance between the promise and the tree."""
     assert vendor in _module().VENDORS
+
+
+pytestmark = pytest.mark.verifies('shape-convergence:C1')

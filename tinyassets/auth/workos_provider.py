@@ -52,20 +52,6 @@ _ALGORITHMS = ("RS256",)
 # and set ``WORKOS_MCP_RESOURCE`` so tokens are bound to this server.
 _ALLOW_NO_AUDIENCE_TRUTHY = ("1", "true", "yes", "on")
 _TOKEN_REJECTION_LOG_WINDOW_SECONDS = 60.0
-_TOKEN_REJECTION_CATEGORIES = frozenset({
-    "algorithm",
-    "audience",
-    "expired",
-    "invalid_subject",
-    "invalid_token",
-    "issuer",
-    "malformed",
-    "outside_authority",
-    "outside_store",
-    "required_claim",
-    "signature",
-    "signing_key",
-})
 _token_rejection_log_lock = threading.Lock()
 _token_rejection_log_state: dict[str, tuple[float, int]] = {}
 _rejection_log_now = time.monotonic
@@ -78,6 +64,7 @@ _rejection_category: ContextVar[str | None] = ContextVar(
 # Fixed sentences only. A description must not contain a quote or a claim value:
 # it is copied into a WWW-Authenticate parameter.
 _REJECTION_DESCRIPTIONS = {
+    "account_deleted": "Account deleted. This account can no longer sign in.",
     "algorithm": "The access token uses an unsupported signing algorithm.",
     "audience": "The access token was not issued for this connector.",
     "expired": "The access token is expired.",
@@ -172,7 +159,7 @@ def _audience_matches(aud: object, expected: str) -> bool:
 def _log_token_rejection(category: str) -> None:
     """Log a bounded safe reason, never token or exception material."""
     safe_category = (
-        category if category in _TOKEN_REJECTION_CATEGORIES else "invalid_token"
+        category if category in _REJECTION_DESCRIPTIONS else "invalid_token"
     )
     _rejection_category.set(safe_category)
     now = _rejection_log_now()
@@ -310,6 +297,9 @@ class WorkOSAuthProvider(AuthProvider):
 
         try:
             claims = jwt.decode(token, signing_key.key, **decode_kwargs)
+        except (TypeError, OverflowError):
+            _log_token_rejection("invalid_token")
+            return None
         except jwt.PyJWTError as error:
             _log_token_rejection(_validation_failure_category(error))
             return None
@@ -323,6 +313,11 @@ class WorkOSAuthProvider(AuthProvider):
             _log_token_rejection("invalid_subject")
             return None
 
+        from tinyassets.router_credentials import active_owner
+
+        if not active_owner(sub):
+            return None
+
         return claims
 
     def resolve_token(self, token: str) -> Identity | None:
@@ -330,6 +325,28 @@ class WorkOSAuthProvider(AuthProvider):
         if claims is None:
             return None
         sub = named_principal(claims.get("sub"))
+
+        import math
+        import sqlite3
+
+        from tinyassets.router_account_deletion import local_revocation
+
+        try:
+            revocation = local_revocation(sub)
+        except (OSError, sqlite3.Error):
+            _log_token_rejection("invalid_token")
+            return None
+        if revocation and revocation[1]:
+            _log_token_rejection("account_deleted")
+            return None
+        issued = claims.get("iat")
+        if (isinstance(issued, bool) or not isinstance(issued, (int, float))
+                or not math.isfinite(issued)):
+            _log_token_rejection("required_claim")
+            return None
+        if revocation and issued < revocation[0]:
+            _log_token_rejection("expired")
+            return None
 
         email = str(claims.get("email", "")).strip()
         username = email or sub
@@ -345,13 +362,13 @@ class WorkOSAuthProvider(AuthProvider):
             dict.fromkeys([*_AUTHENTICATED_BASE_CAPABILITIES, *granted])
         )
 
-        import sqlite3
-
         from tinyassets.outside_authority import OutsideRefused, current_store, origin
 
         try:
             outside = origin(claims)
-            if outside is not None:
+            from tinyassets.auth.middleware import router_authentication
+
+            if outside is not None and not router_authentication.get():
                 authority = current_store()
                 authority.observe(sub, outside)
                 outside = authority.admit(sub, outside)

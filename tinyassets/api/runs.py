@@ -485,16 +485,18 @@ def recover_dead_owner_runs_now() -> int:
     if _RUNS_RECOVERY_LOCK is None:
         return 0
     try:
+        from tinyassets.owner_activity import activity
         from tinyassets.runs import (
             PROCESS_STARTED_AT,
             deliver_terminal_events,
             recover_in_flight_runs,
         )
 
-        base = Path(_base_path())
-        count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
-        deliver_terminal_events(base)
-        return count
+        with activity.enter(keep_awake=False):
+            base = Path(_base_path())
+            count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
+            deliver_terminal_events(base)
+            return count
     except Exception:
         logger.exception("dead-owner run recovery failed")
         return 0
@@ -998,12 +1000,6 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "exit code" in msg or "subprocess failure" in msg or "api likely unavailable" in msg:
-        return (
-            "provider_subprocess_failed",
-            "Provider CLI process failed; check that claude/codex binary is"
-            " installed and reachable.",
-        )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return (
             "state_mutation_conflict",
@@ -1046,7 +1042,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "provider_unavailable",
             _no_provider_advice(),
         )
-    if "call failed" in msg or "groq" in msg or "gemini" in msg or "grok" in msg:
+    if "call failed" in msg:
         return (
             "provider_error",
             "Provider returned an unexpected error; check provider logs"
@@ -1366,7 +1362,7 @@ def enqueue_universe_branch_run(
     # Settlement identity only; a triggered run is never refused for usage. It
     # waits for its account's seats at its agent calls (`universe_seats`).
     from tinyassets.engine_admissions import attach_run
-    from tinyassets.engine_mcp_server import _engine_run_admit
+    from tinyassets.universe_tools import _engine_run_admit
 
     ticket = _engine_run_admit(universe_id=uid)
 
@@ -2137,106 +2133,6 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
     })
 
 
-def _action_estimate_run_cost(kwargs: dict[str, Any]) -> str:
-    """Estimate cost and time for running a branch before dispatch.
-
-    Returns a structured estimate so the chatbot can narrate cost/time
-    framing before the user commits to a paid-market bid or free-queue
-    wait. Read-only — no provider calls, no writes.
-
-    Confidence levels:
-    - "low": branch has never been run (estimate from node declarations).
-    - "medium": 1-4 prior completed runs exist (use average).
-    - "high": 5+ prior completed runs exist (use median of sample).
-    """
-    from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import RUN_STATUS_COMPLETED, list_runs
-
-    bid = kwargs.get("branch_def_id", "").strip()
-    if not bid:
-        return json.dumps({"error": "branch_def_id is required."})
-
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except Exception:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
-
-    branch = BranchDefinition.from_dict(source_dict)
-    node_count = len(branch.node_defs)
-
-    # Per-node cost heuristic: roughly 0.01 credits per node for a
-    # prompt-template node (LLM call), 0.001 for a code node (exec only).
-    # These are illustrative baseline defaults — real pricing depends on
-    # the provider bid the user sets at dispatch time (paid_market model).
-    credits_per_node: dict[str, float] = {}
-    for n in branch.node_defs:
-        if n.prompt_template:
-            credits_per_node[n.node_id] = 0.01
-        else:
-            credits_per_node[n.node_id] = 0.001
-
-    estimated_paid_market_credits = round(sum(credits_per_node.values()), 4)
-
-    # Confidence: check prior completed run history.
-    try:
-        prior_runs = list_runs(
-            _base_path(), branch_def_id=bid, status=RUN_STATUS_COMPLETED,
-        )
-    except Exception:
-        prior_runs = []
-
-    run_count = len(prior_runs)
-    if run_count == 0:
-        confidence = "low"
-    elif run_count < 5:
-        confidence = "medium"
-    else:
-        confidence = "high"
-
-    # Free-queue ETA: best-effort from dispatcher queue depth.
-    free_queue_eta_hours: float | None = None
-    free_queue_caveat: str | None = None
-    try:
-        from tinyassets.dispatcher import get_queue_depth
-        queue_depth = get_queue_depth()
-        # Rough heuristic: ~10 min per queued run ahead of this one.
-        free_queue_eta_hours = round((queue_depth * 10) / 60, 2)
-    except Exception:
-        free_queue_caveat = (
-            "Dispatcher queue depth unavailable — free_queue_eta_hours is null. "
-            "Dispatcher may be disabled or not yet initialised."
-        )
-
-    # Build a chatbot-quotable basis string.
-    llm_nodes = sum(1 for n in branch.node_defs if n.prompt_template)
-    code_nodes = node_count - llm_nodes
-    basis_parts = [
-        f"{node_count} node(s) total: {llm_nodes} LLM node(s) at ~0.01 credits each, "
-        f"{code_nodes} code/other node(s) at ~0.001 credits each.",
-        f"Confidence: {confidence} ({run_count} prior completed run(s)).",
-    ]
-    if free_queue_caveat:
-        basis_parts.append(free_queue_caveat)
-    else:
-        basis_parts.append(
-            f"Free-queue ETA based on ~{free_queue_eta_hours}h "
-            "(estimated from current queue depth)."
-        )
-    basis = " ".join(basis_parts)
-
-    return json.dumps({
-        "branch_def_id": bid,
-        "node_count": node_count,
-        "estimated_paid_market_credits": estimated_paid_market_credits,
-        "free_queue_eta_hours": free_queue_eta_hours,
-        "confidence": confidence,
-        "basis": basis,
-        "prior_run_count": run_count,
-    })
-
-
-
 def _action_query_runs(kwargs: dict[str, Any]) -> str:
     from tinyassets.runs import _VALID_AGGREGATES, query_runs
 
@@ -2811,7 +2707,6 @@ _RUN_ACTIONS: dict[str, Any] = {
     "get_run_output": _action_get_run_output,
     "attach_existing_child_run": _action_attach_existing_child_run,
     "resume_run": _action_resume_run,
-    "estimate_run_cost": _action_estimate_run_cost,
     "query_runs": _action_query_runs,
     "record_run_receipt": _action_record_run_receipt,
     "list_run_receipts": _action_list_run_receipts,

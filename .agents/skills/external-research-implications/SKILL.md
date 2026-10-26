@@ -230,7 +230,7 @@ in the durable artifact so a later reader knows whose finding it was.
 
 A research finding needs no review of its own to be built. When one IS owed
 (floor-class change or gate file, per `AGENTS.md` § *The loop* item 4),
-dispatch it to the other family via `peer-agents` and keep the verdict artifact
+dispatch an adversarial reviewer via `peer-agents` and keep the verdict artifact
 with the change: it is a real gate, not a rubber stamp, and the reviewer may
 change the plan.
 

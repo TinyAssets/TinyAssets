@@ -9,7 +9,6 @@ afterwards with a durable outbox. No multi-file atomic-write claim is made.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
@@ -160,10 +159,6 @@ def _connect(base, owner):
             "source_pins": ".command-center-packages/packages.db",
             "storage_ledger": accounting.DB_FILENAME,
         }
-        if home:
-            if Path(home).name != home or home.startswith("."):
-                raise ValueError("invalid founder home")
-            paths["account_tier"] = home + "/.subscription_state.db"
         for alias, relative in paths.items():
             path = _safe_path(base, relative)
             if path.is_file():
@@ -191,11 +186,6 @@ def _authority(conn, base, owner, uid):
     row = conn.execute("SELECT owner_id FROM universe_owner WHERE universe_id=?", (uid,)).fetchone()
     if row is None or row[0] != owner:
         raise PermissionError("recipient ownership changed")
-    if conn.execute(
-        "SELECT 1 FROM deleted_principals WHERE founder_sub=?",
-        (hashlib.sha256(owner.strip().encode()).hexdigest(),),
-    ).fetchone():
-        raise PermissionError("recipient owner unavailable")
 
 
 def _quota_inputs(conn, owner):
@@ -203,16 +193,9 @@ def _quota_inputs(conn, owner):
     home = conn.execute("SELECT * FROM founder_home WHERE founder_sub=?", (owner,)).fetchone()
     if home is None:
         raise PermissionError("recipient founder home unavailable")
-    databases = {r[1]: r[2] for r in conn.execute("PRAGMA database_list")}
-    tier_path = Path(databases["main"]).parent / home["universe_id"] / ".subscription_state.db"
-    if ("account_tier" in databases) != tier_path.is_file():
-        raise ValueError("account tier store changed during preparation")
-    tier = None
-    if "account_tier" in databases:
-        tier = [
-            tuple(r)
-            for r in conn.execute("SELECT * FROM account_tier.subscription_meta ORDER BY key")
-        ]
+    from tinyassets.broker.owner_reads import remote
+
+    tier = remote("plan")
     owned = [
         dict(r)
         for r in conn.execute(

@@ -26,6 +26,16 @@ def answer_request(*, universe_id="", payload=None, cookie=None, origin="https:/
     from tinyassets.onboarding.inline_requests import handle_approval
 
     document = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+    if (document.get("values") and not document.get("feedback")
+            and cookie is None and origin == "https://tinyassets.io"):
+        from tests.support.connection_door import answer_connect
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.pending_requests import get_request
+
+        row = get_request(_base_path() / universe_id, document.get("request_id", ""))
+        if row and row["status"] == "pending" and row["action"].get("type") in {
+                "connect", "connect_http", "rotate_http"}:
+            return answer_connect(universe_id, row, document["values"])
     body = json.dumps({**document, "universe_id": universe_id}).encode()
     cookie = session_cookie() if cookie is None else cookie
 
@@ -72,7 +82,7 @@ def connect_owner_provider(home, owner, monkeypatch):
         allowed_endpoints=[{"host": "api.example.com",
                             "path_template": "/v1/chat/completions", "methods": ["POST"]}])
     ledger.grant_connection(grant_id=grant, connection_id=connection, owner_user_id=owner,
-                            universe_id=home.name,
+
                             unprompted_action_cap=ActionCap("http_requests", 100, "requests"))
     ledger.configure_capability(
         connection_id=connection, capability_kind="model_use", enabled=True,

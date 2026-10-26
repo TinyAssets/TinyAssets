@@ -39,8 +39,8 @@ coordination files (locks) as dotted platform entries opened link-free.
 - **THEN** `config.yaml` is published through `universe_files.write_universe_file` and the owner-storage scan still passes
 
 #### Scenario: Status read on a new center creates no visible lock
-- **WHEN** a branch-task, auto-ship ledger, subscription or bid execution-log lock is first taken in a center
-- **THEN** the lock file is its dotted name (`.branch_tasks.json.lock`, `.auto_ship_attempts.jsonl.lock`, `.subscriptions.json.lock`, `.bid_execution_log.json.lock`), created without following a link, and classified as platform
+- **WHEN** a branch-task, auto-ship ledger, or subscription lock is first taken in a center
+- **THEN** the lock file is its dotted name (`.branch_tasks.json.lock`, `.auto_ship_attempts.jsonl.lock`, `.subscriptions.json.lock`), created without following a link, and classified as platform
 
 #### Scenario: Online recovery preserves existing content
 - **WHEN** a center holds daemon-owned visible content after the split

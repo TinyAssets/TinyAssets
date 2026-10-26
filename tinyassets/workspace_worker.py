@@ -1,23 +1,4 @@
-"""The daemon's side of one workspace git operation: authority, then a cell.
-
-Nothing here runs git, reads a credential or touches a repository. This module
-turns a workspace request into three things and then gets out of the way:
-
-1. **authority** -- the live grant for exactly this principal, command center,
-   connection and repository (``ledger_queries.authorized_connection``), with
-   the git scopes narrowed to the one verb this operation needs;
-2. **a route** -- an ephemeral rewrite on the command center's own checking
-   egress proxy (``git_egress``), so the URL the cell hands git resolves to a
-   route id that only the BROKER can turn into an authenticated request. The
-   token never leaves the broker process, and the route dies with this call;
-3. **a cell** -- the owner's ``workspace-remote`` cell
-   (``role_remote_git``), which performs every git step as the owner, inside
-   the owner's command center.
-
-What comes back is a sha, a byte count, a ref name and a fixed error class,
-validated here before any caller sees it. The request that goes out carries no
-secret and no credential reference: there is nothing to resolve any more.
-"""
+"""Owner-daemon workspace authority, broker git routes and bounded local children."""
 
 from __future__ import annotations
 
@@ -95,17 +76,6 @@ def _authority(request: dict[str, Any], op: str):
     return grant, replace(resource, scopes=(verb,)), incarnation
 
 
-def _proxy(universe_dir: Path):
-    """The command center's checking egress proxy, started on first use."""
-    from tinyassets import universe_egress
-
-    socket_path = universe_egress.ensure_proxy(universe_dir)
-    proxy = universe_egress._PROXIES.get(str(Path(universe_dir).resolve()))
-    if socket_path is None or proxy is None:
-        raise _Refused("transport", "the command center's checking egress proxy is unavailable")
-    return proxy, socket_path
-
-
 def _broker_client(request: dict[str, Any], universe_dir: Path):
     from tinyassets.storage.outbound_connections import (
         ProxyRequestError,
@@ -177,28 +147,6 @@ def _validated(answer: Any) -> dict[str, Any]:
     return answer
 
 
-def _routed(request: dict[str, Any], op: str, universe_dir: Path) -> dict[str, Any]:
-    """Open the route, run the cell inside it, and close the route after."""
-    from tinyassets import role_remote_git
-    from tinyassets.git_egress import rewrite_options
-
-    agent = str(request.get("agent") or "")
-    if not _AGENT_RE.match(agent):
-        raise _Refused("bad_argument", "request.agent must name the acting run")
-    grant, view, incarnation = _authority(request, op)
-    proxy, socket_path = _proxy(universe_dir)
-    client = _broker_client(request, universe_dir)
-    with rewrite_options(proxy, client, [(grant, view, incarnation)], agent) as rewrites:
-        if not rewrites:
-            raise _Refused("auth", "no git route was opened for this grant")
-        options = ["-c", f"http.proxy={_CELL_PROXY}", *rewrites]
-        return _validated(role_remote_git.run(
-            _cell_request(request, op, options),
-            universe_dir=universe_dir, principal=_require(request, "principal"),
-            egress_socket=socket_path,
-        ))
-
-
 def execute_workspace_operation(
     request: dict[str, Any],
     *,
@@ -222,16 +170,10 @@ def execute_workspace_operation(
         if op not in WORKSPACE_OPS:
             raise _Refused("bad_argument", f"unknown workspace op: {op or '(none)'}")
         universe_dir = Path(_require(request, "universe_dir"))
-        if op in ROUTED_OPS:
-            return _routed(request, op, universe_dir)
-        from tinyassets import role_remote_git
+        from tinyassets.owner_runtime import require
 
-        # An empty workspace reaches nothing: no grant, no route, no socket.
-        return _validated(role_remote_git.run(
-            _cell_request(request, op, []),
-            universe_dir=universe_dir, principal=_require(request, "principal"),
-            egress_socket=None,
-        ))
+        runtime = require(universe_dir, _require(request, "principal"))
+        return _boxed(request, op, runtime)
     except _Refused as refused:
         return {"ok": False, "error": refused.error, "stderr_class": refused.code}
     except Exception as exc:  # noqa: BLE001 - loud, but never leaky
@@ -239,6 +181,43 @@ def execute_workspace_operation(
 
         return {"ok": False, "stderr_class": "other",
                 "error": scrub_text(f"the workspace cell refused: {type(exc).__name__}: {exc}")}
+
+
+def _boxed(request, op, runtime):
+    """Run the operation locally in the persistent owner box."""
+    import json
+    from contextlib import nullcontext
+
+    from tinyassets.owner_git import routes
+    from tinyassets.workspace_remote_cell import MAX_REQUEST_BYTES
+
+    home = Path(request["universe_dir"])
+    context = nullcontext({})
+    if op in ROUTED_OPS:
+        agent = _require(request, "agent")
+        if not _AGENT_RE.fullmatch(agent):
+            raise _Refused("bad_argument", "request.agent must name the acting run")
+        context = routes(_broker_client(request, home), [_authority(request, op)], agent)
+    with context as env:
+        options = []
+        if env:
+            options += ["-c", "http.proxy=" + env["http_proxy"]]
+        for index in range(int(env.get("GIT_CONFIG_COUNT", "0"))):
+            options += ["-c", env[f"GIT_CONFIG_KEY_{index}"] + "="
+                        + env[f"GIT_CONFIG_VALUE_{index}"]]
+        payload = json.dumps(_cell_request(request, op, options), separators=(",", ":")).encode()
+        if len(payload) > MAX_REQUEST_BYTES:
+            raise _Refused("bad_argument", "workspace request exceeds its bound")
+        done = runtime.tools.run(
+            ["python", "-m", "tinyassets.workspace_remote_cell"], cwd=home,
+            stdin=payload, env=env, wall_seconds=_DEFAULT_TIMEOUT_S, output_bytes=64 * 1024,
+        )
+    if done.returncode:
+        raise _Refused("other", "workspace box execution failed")
+    lines = done.stdout.splitlines()
+    if len(lines) != 1:
+        raise _Refused("other", "workspace box returned no bounded answer")
+    return _validated(json.loads(lines[0]))
 
 
 def reconcile_push_intents(base_path: Any, **kwargs: Any) -> list[tuple[str, str]]:

@@ -111,20 +111,11 @@ UNIVERSE_SERVER_DEV_USER=
 TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY=1
 
 # ---------------------------------------------------------------------
-# Community patch loop pickup
+# Community pool directory
 # ---------------------------------------------------------------------
 
-# Runtime fleet activation is separate from PR-177's goal-pool /
-# marketplace economy layer. Keep the producer dark until that follow-on
-# explicitly ships and flips the per-universe dispatcher tier.
-TINYASSETS_GOAL_POOL=off
-
-# Shared pool root used for daemon/worker goal-pool handoff. This path
-# intentionally lives under TINYASSETS_DATA_DIR so the non-root container
-# user can write it and both services see the same durable posts.
-# Load-bearing: the container has no `.git`, so unsetting this makes
-# `producers.goal_pool.repo_root_path()` raise `repo_root_not_resolvable`.
-# The directory need not pre-exist; pool writes mkdir parents.
+# Shared community-pool directory on the data volume. No in-process reader
+# remains after the goal-pool producer was removed.
 TINYASSETS_REPO_ROOT=/data/community-pool
 
 
