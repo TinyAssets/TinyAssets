@@ -49,12 +49,13 @@ def register_universe_open_providers(
     Returns the registered provider names.
     """
     from tinyassets.providers.definition import list_definitions
+    from tinyassets.providers.subscription_runtime import SubscriptionError
 
     names: list[str] = []
     for definition in list_definitions(universe_id):
         try:
             provider = provider_for_definition(definition)
-        except (ValueError, KeyError, PermissionError):
+        except (ValueError, KeyError, PermissionError, SubscriptionError):
             continue  # Planning already left it out and named why.
         router.register(provider)
         names.append(provider.name)

@@ -31,10 +31,15 @@ def test_execution_rules_refuse_a_malformed_block(execution, cli):
 
 @pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_every_shipped_record_declares_where_it_runs():
-    for record in records(strict=True).values():
-        assert set(record.execution) == {"placement", "billing", "serves"}
-        if "cli" in record.invoke:
-            assert record.execution == _CLI
+    from tinyassets.providers.source_record import SOURCES
+
+    shipped = records(strict=True)
+    for path in sorted(SOURCES.glob("*.json")):  # Declared in the file, not defaulted.
+        declared = json.loads(path.read_text())["execution"]
+        assert shipped[path.stem].execution == declared
+        assert set(declared) == {"placement", "billing", "serves"}
+        if "cli" in shipped[path.stem].invoke:
+            assert declared == _CLI
 
 
 @pytest.mark.verifies("model-source-discovery:Placement is source data")
