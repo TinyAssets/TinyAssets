@@ -873,13 +873,32 @@ _HOLDER_COMMANDS = frozenset({
     "runsc-sandbox", "runsc-gofer", "python3", "node",
 })
 _BOX_ERROR = re.compile(r"owner daemon uid=\d{1,9} failures=(\d{1,6}): (.{1,300})\Z")
-_ERROR_SHAPE = re.compile(r"[A-Za-z ,:;'()._N-]{1,160}")
+# The box host's own fixed lifecycle messages (tinyassets/boxes). Any other text,
+# including an exception's own words, is reported only as "other".
+_BOX_MESSAGES = (
+    "broker launch authorization is missing", "broker owner reservation changed",
+    "cannot prove the owner sandbox stopped", "harness image identity mismatch",
+    "immutable harness image unavailable", "local image is absent",
+    "owner app socket did not become ready", "owner daemon crashed",
+    "owner daemon did not flush before shutdown deadline",
+    "owner daemon exited during startup", "owner daemon is still draining",
+    "owner daemon stopped answering", "owner lifecycle is unavailable",
+    "owner relay socket is unavailable",
+    "owner sandbox has an unverified launch or stop",
+    "owner work must drain before volume operation", "runsc returned no sandbox PID",
+    "runtime filesystem references remain", "the harness rootfs is unavailable or a link",
+    "the pinned runsc binary is unavailable", "unexpected sandbox bundle",
+    "volume must be fully detached", "volume operation requires a stopped box",
+)
+_STARTUP = "owner daemon startup failed: "
 
 
 def _error_shape(text: str) -> str:
-    text = re.sub(r"\S*/\S*", "PATH", text)
-    text = re.sub(r"\d+", "N", text)
-    return text if _ERROR_SHAPE.fullmatch(text) else "other"
+    text = text.strip()
+    prefix = ""
+    if text.startswith(_STARTUP):
+        prefix, text = _STARTUP, text[len(_STARTUP):]
+    return prefix + text if text in _BOX_MESSAGES else prefix + "other"
 
 
 def _box_health(run=None) -> dict:
@@ -904,12 +923,14 @@ def _box_health(run=None) -> dict:
             continue
         command = parts[0] if parts[0] in _HOLDER_COMMANDS else "other"
         locks.append({"command": command,
-                      "mode": parts[2] if parts[2] in ("READ", "WRITE") else "other",
+                      "mode": {"READ": "READ", "WRITE": "WRITE", "READ*": "READ waiting",
+                               "WRITE*": "WRITE waiting"}.get(parts[2], "other"),
                       "seconds": seconds_by_pid.get(parts[1])})
     errors: dict[str, int] = {}
     worst = 0
     for line in _capture(["journalctl", "-u", "boxhostd", "--since", "12 hours ago",
-                          "--no-pager", "--output=cat", "-g", "owner daemon uid="],
+                          "--no-pager", "--output=cat", "-n", "2000",
+                          "-g", "owner daemon uid="],
                          run).splitlines():
         match = _BOX_ERROR.search(line.strip())
         if match is None:
