@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -400,3 +401,107 @@ def test_a_canary_still_on_the_old_image_after_the_wait_fails_and_others_fail_at
     receipt, code = driver.run(drain, broken, lambda: None, pause=lambda _s: None,
                                clock=lambda: 0)
     assert code == 1 and calls == ["probe"]
+
+
+def test_sign_in_budget_outlasts_the_broker_wake_wait(monkeypatch):
+    from tinyassets.broker.lifecycle_config import LifecycleConfig
+
+    # 70s is the router socket that holds OWNER_BOX_WAKE.
+    assert canary.SIGN_IN_BUDGET > LifecycleConfig().wake_timeout
+    assert canary.SIGN_IN_BUDGET > 70
+    seen = {}
+
+    def capture(origin, timeout):
+        seen["timeout"] = timeout
+        return "token", {"universe_id": "home", "principal_id": "owner"}, {
+            "x-tinyassets-box-uid": "300001"}
+
+    monkeypatch.setenv("TINYASSETS_CANARY_UNIVERSE_ID", "home")
+    monkeypatch.setenv("TINYASSETS_CANARY_USER_ID", "owner")
+    monkeypatch.setattr(canary, "owner_canary_sign_in", capture)
+    assert canary.wake("https://example.test")[2] == "300001"
+    assert seen["timeout"] == canary.SIGN_IN_BUDGET
+    assert seen["timeout"] > LifecycleConfig().wake_timeout
+
+
+def _me_server(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    origin = "http://127.0.0.1:" + str(server.server_port)
+    return server, thread, origin
+
+
+def test_app_me_timeout_and_http_errors_are_distinct_tokens(monkeypatch):
+    from scripts._canary_common import owner_canary_sign_in
+
+    monkeypatch.setattr("scripts.canary_session.access_token", lambda origin: "not-a-real-token")
+    secret = "owner-secret-must-not-leak"
+    release = threading.Event()
+
+    class Hang(BaseHTTPRequestHandler):
+        def do_GET(self):
+            release.wait(5)
+
+        def log_message(self, *args):
+            pass
+
+    server, thread, origin = _me_server(Hang)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            owner_canary_sign_in(origin, 0.2)
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+    assert str(caught.value) == "canary_sign_in_timeout"
+    assert secret not in str(caught.value)
+    assert "not-a-real-token" not in str(caught.value)
+
+    class Denied(BaseHTTPRequestHandler):
+        status = 503
+
+        def do_GET(self):
+            body = secret.encode()
+            self.send_response(type(self).status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server, thread, origin = _me_server(Denied)
+    try:
+        with pytest.raises(RuntimeError) as down:
+            owner_canary_sign_in(origin, 2)
+        Denied.status = 404
+        with pytest.raises(RuntimeError) as missing:
+            owner_canary_sign_in(origin, 2)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+    assert str(down.value) == "canary_sign_in_http_5xx"
+    assert str(missing.value) == "canary_sign_in_http_4xx"
+    assert secret not in str(down.value) and secret not in str(missing.value)
+
+    held = socket.socket()
+    held.bind(("127.0.0.1", 0))
+    port = held.getsockname()[1]
+    held.close()
+    with pytest.raises(RuntimeError) as refused:
+        owner_canary_sign_in("http://127.0.0.1:" + str(port), 1)
+    assert str(refused.value) == "canary_sign_in_failed"
+
+
+def test_a_sign_in_timeout_is_the_roll_reason():
+    def prepare():
+        raise RuntimeError("canary_sign_in_timeout")
+
+    receipt, code = driver.run(
+        lambda: {"slept": 0, "asleep": 0, "incomplete": 0}, lambda: True, prepare)
+    assert code == 1
+    assert receipt["reason"] == "canary_sign_in_timeout"
+    assert "owner" not in receipt["reason"]

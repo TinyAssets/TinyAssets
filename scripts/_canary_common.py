@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -160,11 +161,26 @@ def _post(
     return parsed, new_sid
 
 
+def _sign_in_http_token(status: int) -> str:
+    """A fixed status class. The code and the body stay off the failure."""
+    klass = status // 100
+    if klass in (4, 5):
+        return f"canary_sign_in_http_{klass}xx"
+    return "canary_sign_in_failed"
+
+
+def _sign_in_timed_out(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", None)
+    return isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+
+
 def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
     """Renew the canary's ordinary app session, then read ``/app/me``.
 
     ``scripts/canary_session.py`` holds the session like a signed-in phone app.
     No credentials, upstream text or owner rows are included in errors.
+    A read that hits ``timeout`` is ``canary_sign_in_timeout``. An HTTP error
+    is ``canary_sign_in_http_4xx`` or ``canary_sign_in_http_5xx``.
     """
     from scripts.canary_session import USER_AGENT, CanarySessionError, access_token
 
@@ -176,6 +192,12 @@ def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
             return token, json.load(response), response.headers
     except CanarySessionError as exc:
         raise RuntimeError(str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(_sign_in_http_token(exc.code)) from None
+    except (TimeoutError, urllib.error.URLError) as exc:
+        if _sign_in_timed_out(exc):
+            raise RuntimeError("canary_sign_in_timeout") from None
+        raise RuntimeError("canary_sign_in_failed") from None
     except Exception:
         raise RuntimeError("canary_sign_in_failed") from None
 
