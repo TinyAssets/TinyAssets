@@ -279,6 +279,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, lo
              "operation": "POST", "origin": "https://example.com", "agent": "main"}
     assert store.standing_grant("alice", query) == "grant-5"
     assert store.standing_grant("alice", {**query, "agent": "worker"}) is None
+    assert store.standing_grant("alice", {**query, "origin": "https://other.test"}) is None
     edited = json.loads(json.dumps(document))
     edited["entries"].append({"scope": "account", "table": "review_on",
                               "values": {"agent": "worker"}})

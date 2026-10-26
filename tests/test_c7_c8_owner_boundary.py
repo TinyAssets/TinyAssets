@@ -11,8 +11,6 @@ from tinyassets.broker.admission import local_mutate
 from tinyassets.storage import outbound_connections as oc
 from tinyassets.storage.outbound_connections import _classify_global_address
 
-N10_AUTHORITY = 'owner-daemon-in-box:Owner authority is held by the broker and gated at OPEN'
-
 
 @pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("verb", ["GET", "POST"])
@@ -77,7 +75,8 @@ def test_public_broker_destination_uses_only_its_own_credential(box, chain, host
     assert len(chain.state["requests"]) == 1
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8', N10_AUTHORITY)
+@pytest.mark.verifies('owner-daemon-in-box:C8',
+                      'owner-daemon-in-box:Owner authority is held by the broker and gated at OPEN')
 def test_the_broker_stores_and_decides_owner_actions(box):
     store = box.broker.server._policy_store
     document = store.read("owner").document
@@ -92,7 +91,8 @@ def test_the_broker_stores_and_decides_owner_actions(box):
     assert not (box.root / ".action-policy.db").exists()
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8', N10_AUTHORITY)
+@pytest.mark.verifies('owner-daemon-in-box:C8',
+                      'owner-daemon-in-box:Owner authority is held by the broker and gated at OPEN')
 @pytest.mark.parametrize("missing", ["row", "file"])
 def test_missing_owner_policy_is_never_recreated_by_a_decision(box, missing):
     import sqlite3
