@@ -90,7 +90,7 @@ ERROR_CLASSES = frozenset({
 })
 #: N10: the box channel's policy operations. None of them widens authority.
 BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify",
-                                "consents_read", "consent_revoke", "import"})
+                                "consents_read", "consent_revoke"})
 
 
 def peer_uid(sock: socket.socket) -> int:
@@ -1058,8 +1058,9 @@ class _Connection:
                 raise PolicyRefused("interactive owner session required")
             if self._role != OWNER and action in {"write", "issue_once", "consent_grant"}:
                 raise PolicyRefused("owner authority widens only through the router")
-            if self._role == BOX and action != "import":
-                # N10 cutover: the one import is this owner's first box operation.
+            if self._role == BOX:
+                # N10 cutover: boxhostd lifts the old authority on the wake, under
+                # the owner lock; a box acting while it is pending gets defaults.
                 store.abandon_import(owner)
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
@@ -1130,10 +1131,6 @@ class _Connection:
                                           request_digest(grant_id=doc["grant_id"],
                                                          connection_id=doc["connection_id"],
                                                          verb=doc["verb"], request=wire))
-            elif action == "import" and set(doc) == {"op", "action", "principal", "document"}:
-                if self._role != BOX:
-                    raise PolicyRefused("authority import comes from the owner's box")
-                result = store.import_authority(owner, doc["document"])
             else:
                 raise PolicyRefused("unsupported policy operation")
             answer = {"op": "OWNER_POLICY_RESULT", "result": result}

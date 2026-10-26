@@ -724,8 +724,9 @@ class PolicyStore:
             return False
         return True
 
-    def abandon_import(self, owner: str) -> None:
-        """Another box operation came first: the owner keeps defaults, loudly."""
+    def abandon_import(self, owner: str, *,
+                       reason: str = "another box operation came first") -> None:
+        """The import cannot happen: the owner keeps defaults, loudly."""
         if not self.import_pending(owner):
             return
         with closing(self._connect(owner)) as db:
@@ -733,10 +734,10 @@ class PolicyStore:
             row = db.execute("SELECT state FROM import_state WHERE singleton=1").fetchone()
             if row is not None and row["state"] == "pending":
                 db.execute("UPDATE import_state SET state='none' WHERE singleton=1")
-                db.execute("INSERT INTO receipts(at,kind,owner,decision,outcome) "
-                           "VALUES (?,?,?,?,?)",
-                           (time.time(), "import", owner, "alarm", "abandoned"))
-                _LOG.error("ALARM: owner authority import abandoned for %s", owner)
+                db.execute("INSERT INTO receipts(at,kind,owner,rule,decision,outcome) "
+                           "VALUES (?,?,?,?,?,?)",
+                           (time.time(), "import", owner, reason[:512], "alarm", "abandoned"))
+                _LOG.error("ALARM: owner authority import abandoned for %s: %s", owner, reason)
             db.commit()
         self._import_settled.add(owner)
 

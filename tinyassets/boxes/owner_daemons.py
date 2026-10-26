@@ -31,6 +31,8 @@ class Box:
     answered: float = 0.0  # monotonic time of the last status the box's own app gave
     image: str = ""
     launch: dict = field(default_factory=dict)
+    #: N10 one-shot: old authority lifted from the volume before this start.
+    authority: dict | None = None
 
 
 class OwnerDaemons:
@@ -151,6 +153,9 @@ class OwnerDaemons:
         volume_mount = mount.oci_mount()
         if record["uid"] != box.uid:
             raise BoxError("broker owner reservation changed")
+        # N10: lifted before the sandbox exists, so the box never sees the files.
+        box.authority = (self._lift_authority(box.uid, mount)
+                         if record.get("import_authority") else self._settle_authority(box.uid))
         relay = self.relays.bind(box.owner, box.uid)
         box.secret = record["secret"]
         directory, secret = self._paths(box.uid, box.secret)
@@ -163,6 +168,36 @@ class OwnerDaemons:
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
                            volume_generation=record["volume_generation"], **launch_options)
+
+    def _held_authority(self, uid):
+        held = self.directory / "authority-import"
+        held.mkdir(mode=0o700, exist_ok=True)
+        if held.is_symlink() or not held.is_dir():
+            raise BoxError("authority import directory is not host-private")
+        return held, held / str(uid)
+
+    def _lift_authority(self, uid, mount):
+        """Extract once; hold the rows until the broker stops asking (it settled)."""
+        from tinyassets.boxes.authority_import import extract
+
+        held, path = self._held_authority(uid)
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+        payload = extract(Path(mount.mountpoint), held / "work")
+        stage = held / f".{uid}.stage"
+        stage.unlink(missing_ok=True)
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(stage, path)
+        return payload
+
+    def _settle_authority(self, uid):
+        _held, path = self._held_authority(uid)
+        path.unlink(missing_ok=True)
+        return None
 
     def _failed(self, box, error):
         box.failures += 1

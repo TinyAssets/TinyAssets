@@ -559,8 +559,10 @@ per-owner `policy.db` holds one document (action rules, operation kinds,
 standing grants, egress, spend), one-use approvals and effector consents; the
 router alone widens them (`/app/api/policy`, `/app/api/consents`); the box
 channel reads, previews, decides and narrows; and `broker/authority_gate.py`
-decides every box OPEN. `.action-policy.db` and the box consent files are
-imported once by `authority_export.py` and deleted.
+decides every box OPEN. On the first wake of a pending owner, boxhostd lifts
+`.action-policy.db` and the box consent files from the attached volume before
+the sandbox starts (`boxes/authority_import.py`), deletes them, and the broker
+imports the rows under the wake's owner lock.
 
 ### C9. Wake index is two columns (T7)
 Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, and drop the

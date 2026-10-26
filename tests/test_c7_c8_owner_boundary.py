@@ -191,15 +191,16 @@ def test_public_operation_without_credential_authority_uses_no_secret(box, chain
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C1')
-def test_authority_export_releases_the_volume_handle(tmp_path, monkeypatch):
+def test_authority_extraction_releases_the_volume_handle(tmp_path, monkeypatch):
     import sqlite3
 
-    from tinyassets import authority_export
-    from tinyassets.broker import client
+    from tinyassets.boxes import authority_import as lift
 
-    with sqlite3.connect(tmp_path / authority_export.POLICY_FILE) as db:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    with sqlite3.connect(mount / lift.POLICY_FILE) as db:
         db.execute("CREATE TABLE policy (singleton INTEGER, document TEXT)")
-        db.execute("INSERT INTO policy VALUES (1, '{\"entries\": []}')")
+        db.execute("INSERT INTO policy VALUES (1, ?)", ('{"entries": []}',))
     opened = []
     connect = sqlite3.connect
 
@@ -209,8 +210,7 @@ def test_authority_export_releases_the_volume_handle(tmp_path, monkeypatch):
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", track)
-    monkeypatch.setattr(client, "owner_policy_operation", lambda *args, **kwargs: {})
-    authority_export.export(tmp_path, "owner")
+    assert lift.extract(mount, tmp_path / "private")["errors"] == 0
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         opened[0].execute("SELECT 1")

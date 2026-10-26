@@ -151,11 +151,6 @@ def start(relay: Path) -> OwnerRuntime:
     _runtime = OwnerRuntime(doc["principal"], doc["uid"], root, os.getpid(), tools,
                             Path(relay).resolve())
     install_outbound_guard()
-    # N10: the owner's first box operation hands old authority files to the
-    # broker, once, before this box serves anything.
-    from tinyassets.authority_export import export
-
-    export(root, doc["principal"])
     return _runtime
 
 

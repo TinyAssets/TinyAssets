@@ -272,7 +272,8 @@ decide a box's OPEN by the owner's rules for every call except a model source
 known from its own ledger, SHALL spend a matching one-use approval or match a
 standing grant for an ask, and SHALL require the owner's consent for every
 non-read call. An owner admitted before this change SHALL import its box-held
-rules and consents once, as its box's first operation.
+rules and consents once, lifted by boxhostd from the attached volume before
+the box starts and imported by the broker under the wake's owner lock.
 
 #### Scenario: A box cannot widen its owner's authority
 - **WHEN** a box sends a policy write, a one-use approval or a consent grant, with or without a session proof
@@ -288,9 +289,10 @@ rules and consents once, as its box's first operation.
 - **THEN** the broker refuses the stream; with full access it is admitted
 
 #### Scenario: The box's old authority is imported once
-- **WHEN** a box starts with its old rules and consents and its owner's import is pending
-- **THEN** the broker imports the valid entries, counts the invalid ones in one receipt, and refuses a second import
-- **AND** any other box operation first ends the pending import with defaults and an alarm
+- **WHEN** the broker wakes a pending owner whose volume holds its old rules and consents
+- **THEN** boxhostd lifts and deletes the files before the box starts, and the broker imports the valid entries, counting the invalid ones in one receipt
+- **AND** a linked, multiply linked or oversized file yields no rows, defaults and an alarm
+- **AND** a wake of a settled owner never reads the files
 
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before

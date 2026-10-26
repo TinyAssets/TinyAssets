@@ -571,8 +571,8 @@ STORES: dict[str, Store] = {
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
     ".ta-cli": "platform: owner-box source declarations and connection state; volume quota applies",
-    ".action-policy.db": "platform: retired box action policy; authority_export reads it "
-                         "once into the broker and deletes it (N10)",
+    ".action-policy.db": "platform: retired box action policy; boxhostd lifts it once "
+                         "into the broker before the box starts and deletes it (N10)",
     ".centers.db": "platform: box-local center membership, charged by owner volume quota",
     "credential-custody.db": "platform: broker credential ownership",
     "plans.db": "platform: broker billing plan state",
@@ -659,8 +659,8 @@ ROOT_ENTRIES: dict[str, str] = {
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
-    ".effector_consents.db": ("platform: retired consent records; authority_export reads "
-                              "them once into the broker and deletes them (N10)"),
+    ".effector_consents.db": ("platform: retired consent records; boxhostd lifts them once "
+                              "into the broker before the box starts and deletes them (N10)"),
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
     ".inbound-routing.sqlite3": (
@@ -731,6 +731,8 @@ ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
     ".box-image-id",
     # Ephemeral boxhostd socket exports and per-start secrets under /run, never owner data.
     "app.sock", "secret", "secrets", "daemon.sock",
+    # N10: boxhostd's private copy of a lifted authority file, under /run.
+    "copy.db",
     ".git", ".agents", ".author_server.db", ".workflow.db",
     ".bin",  # Shipped npm install tree under /opt, outside the data root.
     # The box host's control-plane record (boxes/local.py), kept in the box

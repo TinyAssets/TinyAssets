@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sqlite3
 import sys
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_broker_server import _connect, broker, new_op_id  # noqa: F401
+from tests.test_owner_box_lifecycle import fleet  # noqa: F401
 from tests.test_owner_policy import _session, admissions
 from tinyassets import rpc_frames as rf
 from tinyassets.broker import authority_gate
@@ -220,36 +222,136 @@ def test_another_box_operation_first_ends_the_import_loudly(tmp_path, caplog):
     assert store.read("alice").document["entries"] == []
 
 
-def test_the_exporter_sends_box_files_once_and_removes_them(tmp_path, monkeypatch):
-    from tinyassets import authority_export
-    from tinyassets.broker import client
+def _old_files(mount, *, entries=None, consents=(("patch_intake", "r-1", None),)):
+    """A box volume as it stood before N10: its policy file and one center's consents."""
+    from tinyassets.boxes import authority_import as lift
 
-    root = tmp_path / "box"
-    sidecar = root / ".universe-sidecars" / "center"
+    sidecar = mount / lift.SIDECARS / "center"
     sidecar.mkdir(parents=True)
-    with sqlite3.connect(root / authority_export.POLICY_FILE) as db:
+    with sqlite3.connect(mount / lift.POLICY_FILE) as db:
         db.execute("CREATE TABLE policy (singleton INTEGER, generation INTEGER, digest TEXT, "
                    "document TEXT)")
-        db.execute("INSERT INTO policy VALUES (1,1,'',?)", (json.dumps({"entries": [
-            {"scope": "account", "table": "rules", "values": {"action_class": "share",
-                                                             "behaviour": "do"}}]}),))
-    with sqlite3.connect(sidecar / authority_export.CONSENTS_FILE) as db:
+        db.execute("INSERT INTO policy VALUES (1,1,'',?)", (json.dumps({"entries": entries or [
+            {"scope": "account", "table": "rules", "values": {
+                "agent": "main", "action_class": "share", "behaviour": "hand_off"}}]}),))
+    with sqlite3.connect(sidecar / lift.CONSENTS_FILE) as db:
         db.execute("CREATE TABLE effector_consents (sink TEXT, destination TEXT, "
                    "granted_at REAL, granted_by TEXT, revoked_at REAL)")
-        db.execute("INSERT INTO effector_consents VALUES ('patch_intake','r-1',2,'alice',NULL)")
-        db.execute("INSERT INTO effector_consents VALUES ('patch_intake','r-0',1,'alice',3)")
-    sent = []
-    monkeypatch.setattr(client, "owner_policy_operation",
-                        lambda data_root, owner, action, **fields: sent.append(
-                            (owner, action, fields["document"])) or {"generation": 2})
-    assert authority_export.export(root, "alice") == {"generation": 2}
-    (owner, action, document), = sent
-    assert (owner, action) == ("alice", "import")
-    assert document["entries"][0]["values"]["action_class"] == "share"
-    assert [row["destination"] for row in document["consents"]] == ["r-1"]
-    assert not (root / authority_export.POLICY_FILE).exists()
-    assert not (sidecar / authority_export.CONSENTS_FILE).exists()
-    assert authority_export.export(root, "alice") is None
+        for sink, destination, revoked in consents:
+            db.execute("INSERT INTO effector_consents VALUES (?,?,2,'alice',?)",
+                       (sink, destination, revoked))
+    return mount / lift.POLICY_FILE, sidecar / lift.CONSENTS_FILE
+
+
+def test_the_extractor_lifts_live_rows_and_deletes_the_files(tmp_path):
+    from tinyassets.boxes.authority_import import extract
+
+    mount = tmp_path / "mount"
+    policy, consents = _old_files(mount, consents=[("patch_intake", "r-1", None),
+                                                   ("patch_intake", "r-0", 3.0)])
+    payload = extract(mount, tmp_path / "private")
+    assert payload["errors"] == 0
+    assert payload["entries"][0]["values"]["action_class"] == "share"
+    assert [row["destination"] for row in payload["consents"]] == ["r-1"]
+    assert not policy.exists() and not consents.exists()
+    assert extract(mount, tmp_path / "private")["entries"] == []
+
+
+@pytest.mark.parametrize("damage", ["symlink", "oversized", "linked_dir", "hardlink"])
+def test_the_extractor_refuses_untrusted_files_and_counts_them(tmp_path, monkeypatch, damage):
+    from tinyassets.boxes import authority_import as lift
+
+    mount = tmp_path / "mount"
+    policy, consents = _old_files(mount)
+    target = tmp_path / "outside.db"
+    if damage == "symlink":
+        policy.rename(target)
+        policy.symlink_to(target)
+    elif damage == "oversized":
+        monkeypatch.setattr(lift, "MAX_BYTES", 16)
+    elif damage == "linked_dir":
+        sidecars = mount / lift.SIDECARS
+        sidecars.rename(tmp_path / "elsewhere")
+        sidecars.symlink_to(tmp_path / "elsewhere")
+    else:
+        os.link(consents, target)
+    payload = lift.extract(mount, tmp_path / "private")
+    assert payload["errors"] >= 1
+    assert (payload["entries"], payload["consents"]) == ([], [])
+    if damage == "symlink":
+        assert target.exists() and not policy.is_symlink()
+    if damage == "linked_dir":
+        assert (tmp_path / "elsewhere/center" / lift.CONSENTS_FILE).exists()
+
+
+def _fleet_store(fleet, tmp_path, *, pending):
+    store = PolicyStore(tmp_path, fleet.identities)
+    store.bootstrap()
+    if pending:
+        with sqlite3.connect(store._path("a")) as db:
+            db.execute("DELETE FROM import_state")
+            db.execute("PRAGMA user_version=1")
+        store = PolicyStore(tmp_path, fleet.identities)
+        store.bootstrap()
+    fleet.routing.server._policy_store = store
+    return store
+
+
+def _mounted(fleet, tmp_path, monkeypatch):
+    mount = tmp_path / "mount"
+    volumes = fleet.manager.volumes
+    attach = volumes.attach
+    monkeypatch.setattr(volumes, "attach", lambda uid: SimpleNamespace(
+        mountpoint=mount, oci_mount=attach(uid).oci_mount))
+    seen = []
+    start = fleet.runtime.start
+
+    def started(uid, gid, **kwargs):
+        seen.append(sorted(path.name for path in mount.rglob("*.db")))
+        return start(uid, gid, **kwargs)
+
+    monkeypatch.setattr(fleet.runtime, "start", started)
+    return mount, seen
+
+
+def test_a_wake_of_a_pending_owner_imports_its_old_files_once(fleet, tmp_path, monkeypatch):
+    mount, seen = _mounted(fleet, tmp_path, monkeypatch)
+    _old_files(mount)
+    store = _fleet_store(fleet, tmp_path, pending=True)
+    fleet.wake("a")
+    assert seen == [[]]  # the box process starts with the files already gone
+    assert store.decide("a", center="a", action_class="share")["decision"] == "deny"
+    assert store.consent_active("a", "patch_intake", "r-1")
+    assert not store.import_pending("a")
+    assert [row["outcome"] for row in store.receipts("a") if row["kind"] == "import"][0] \
+        == "committed"
+
+
+def test_a_wake_with_damaged_files_alarms_and_keeps_defaults(fleet, tmp_path, monkeypatch,
+                                                             caplog):
+    from tinyassets.boxes import authority_import as lift
+
+    mount, seen = _mounted(fleet, tmp_path, monkeypatch)
+    policy, _ = _old_files(mount)
+    policy.rename(tmp_path / "outside.db")
+    policy.symlink_to(tmp_path / "outside.db")
+    store = _fleet_store(fleet, tmp_path, pending=True)
+    fleet.wake("a")
+    assert seen == [[]] and not (mount / lift.POLICY_FILE).is_symlink()
+    assert "ALARM: owner authority import abandoned for a" in caplog.text
+    assert store.decide("a", center="a", action_class="share")["decision"] == "ask"
+    assert not store.import_pending("a")
+
+
+def test_a_wake_of_a_settled_owner_never_reads_the_files(fleet, tmp_path, monkeypatch):
+    from tinyassets.boxes import authority_import as lift
+
+    mount, _seen = _mounted(fleet, tmp_path, monkeypatch)
+    policy, _ = _old_files(mount)
+    _fleet_store(fleet, tmp_path, pending=False)
+    monkeypatch.setattr(lift, "extract", lambda *_: pytest.fail("settled owner read"))
+    fleet.wake("a")
+    assert policy.exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
@@ -321,41 +423,6 @@ def test_a_box_open_with_an_inference_flag_still_meets_the_rules(
     assert (end["op"], end["error_class"], end["stream_sent"]) == ("END", "policy_ask", False)
     assert broker.sent == []
     assert any(row["kind"] == "gate" for row in store.receipts("alice"))
-
-
-@pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
-                    reason="the box channel uses Unix peer credentials")
-@pytest.mark.parametrize("first", ["import", "read"])
-def test_the_box_import_is_its_first_operation_only(broker, monkeypatch, tmp_path, first):
-    import os
-
-    from tinyassets.broker import box_admission
-    from tinyassets.broker.server import BOX_HOST
-
-    store = _legacy_v1(tmp_path, broker.server._owner_identities)
-    broker.server._policy_store = store
-    broker.server._roles = {os.getuid(): BOX_HOST}
-    monkeypatch.setattr(box_admission, "resolve_owner", lambda identities, request, **_: {
-        "op": "BOX_ADMITTED", "uid": 300001, "quota": 1024**3})
-    document = {"source_digest": "sha256:" + "1" * 64, "consents": [], "entries": [
-        {"scope": "account", "table": "rules", "values": {
-            "agent": "main", "action_class": "share", "behaviour": "do"}}]}
-
-    def box_policy(doc):
-        with _connect(broker) as sock:
-            sock.sendall(rf.control(rf.CONNECTION, {"op": "BOX_CHANNEL", "principal": "alice"}))
-            assert rf.read_frame_blocking(sock).control()["op"] == "BOX_ADMITTED"
-            sock.sendall(rf.control(rf.CONNECTION, {"op": "OWNER_POLICY", **doc}))
-            return rf.read_frame_blocking(sock).control()
-
-    if first == "read":
-        assert box_policy({"action": "read"})["op"] == "OWNER_POLICY_RESULT"
-    answer = box_policy({"action": "import", "document": document})
-    if first == "import":
-        assert answer["op"] == "OWNER_POLICY_RESULT" and answer["result"]["entries"] == 1
-        assert store.decide("alice", center="alice", action_class="share")["decision"] == "allow"
-        answer = box_policy({"action": "import", "document": document})
-    assert answer == {"op": "OWNER_POLICY_REFUSED", "reason": "authority import is not pending"}
 
 
 def test_the_router_routes_refuse_inside_a_box(monkeypatch):

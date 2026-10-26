@@ -128,10 +128,35 @@ class BrokerLifecycle:
     def _launch(self, owner, record, *, scheduled=False):
         from tinyassets.boxes.daemon_control import request
 
+        store = getattr(self.server, "_policy_store", None)
+        pending = store is not None and store.import_pending(owner)
+        if pending:
+            # N10: boxhostd lifts the box's old authority before the box starts.
+            record = {**record, "import_authority": True}
         result = request("wake", owner, record=record, scheduled=scheduled)
-        if result != {"uid": record["uid"]}:
+        if {k: v for k, v in result.items() if k != "authority"} != {"uid": record["uid"]}:
             raise RuntimeError("broker-bound box did not become ready")
+        if pending:
+            self._settle_import(store, owner, result.get("authority"))
         return result["uid"]
+
+    @staticmethod
+    def _settle_import(store, owner, payload):
+        """Import under this wake's owner lock, before any box operation can run."""
+        from tinyassets.broker.policy import PolicyRefused
+
+        if payload is None:
+            return  # A box already running lifted nothing; the import stays pending.
+        fields = ("source_digest", "entries", "consents")
+        if (not isinstance(payload, dict) or set(payload) != {*fields, "errors"}
+                or payload["errors"] != 0):
+            errors = payload.get("errors") if isinstance(payload, dict) else "invalid"
+            store.abandon_import(owner, reason=f"extraction errors: {errors}")
+            return
+        try:
+            store.import_authority(owner, {key: payload[key] for key in fields})
+        except PolicyRefused as exc:
+            store.abandon_import(owner, reason=str(exc))
 
     async def wake(self, owner, *, scheduled=False):
         from tinyassets.boxes.daemon_control import REQUEST_DRIVEN

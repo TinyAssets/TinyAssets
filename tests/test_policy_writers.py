@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-#: Box-held authority files that are only ever read once, by the exporter.
+#: Box-held authority files, read once by boxhostd before the box starts.
 _OLD_FILES = (".action-policy.db", ".effector_consents.db")
-#: The stopped cutover's census and the storage classification name them too.
-_NAMES_OLD_FILES = {"tinyassets/authority_export.py", "tinyassets/box_layout_migration.py",
-                    "tinyassets/storage_accounting.py"}
+#: The boxhostd extractor, the stopped cutover's census and the storage classification.
+_NAMES_OLD_FILES = {"tinyassets/boxes/authority_import.py",
+                    "tinyassets/box_layout_migration.py", "tinyassets/storage_accounting.py"}
 _WIDENINGS = {"write", "issue_once", "consent_grant"}
 
 
@@ -51,8 +51,9 @@ def test_policy_writers():
                     and _WIDENINGS & set(literal)
                     and relative != "tinyassets/onboarding/__init__.py"):
                 raise AssertionError(f"non-router policy widening: {relative}:{call.lineno}")
-    exporter = (ROOT / "tinyassets/authority_export.py").read_text(encoding="utf-8")
-    assert '"?mode=ro"' in exporter and "INSERT" not in exporter and "UPDATE" not in exporter
+    assert not (ROOT / "tinyassets/authority_export.py").exists()
+    extractor = (ROOT / "tinyassets/boxes/authority_import.py").read_text(encoding="utf-8")
+    assert "O_NOFOLLOW" in extractor and "INSERT" not in extractor and "UPDATE" not in extractor
     assert "policy:write" not in (ROOT / "tinyassets/ta_capabilities.py").read_text()
 
 

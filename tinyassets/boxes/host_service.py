@@ -304,7 +304,11 @@ class HostService:
                     raise ValueError("scheduled must be boolean")
                 ready = self.daemons.ensure_awake(
                     owner, scheduled=scheduled, launch=document["record"])
-                return {"uid": ready}
+                if not document["record"].get("import_authority"):
+                    return {"uid": ready}
+                # N10: the old authority this start lifted, for the broker to import.
+                box = self.daemons.boxes.get(ready)
+                return {"uid": ready, "authority": box.authority if box else None}
             if (uid == 1001 and operation == "status"
                     and set(document) == {"lifecycle", "owner"}):
                 box = next(box for box in self.daemons.boxes.values() if box.owner == owner)
