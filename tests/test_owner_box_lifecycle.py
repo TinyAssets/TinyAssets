@@ -628,3 +628,58 @@ def test_fifth_broker_connection_gets_explicit_refusal(tmp_path, monkeypatch):
         assert entered.empty()
     finally:
         finish(stop, release, thread, clients)
+
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_running_box_that_stops_answering_is_replaced_on_the_next_wake(fleet, monkeypatch):
+    manager = fleet.manager
+    uid = fleet.wake("a")
+    answering = manager._rpc
+    silent = {uid}
+
+    def rpc(box, operation="status", **body):
+        if box.uid in silent:
+            raise OSError("owner app does not answer")
+        return answering(box, operation, **body)
+
+    monkeypatch.setattr(manager, "_rpc", rpc)
+    manager.answer_probe = 0.2
+    silent.add(uid)
+    assert fleet.runtime.alive(uid)
+    # Silent, but it answered moments ago: a stalled turn is never killed for it.
+    with pytest.raises(BoxError, match="not answering"):
+        manager.ensure_awake("a", launch=manager.boxes[uid].launch)
+    assert fleet.runtime.stops == [] and manager.boxes[uid].awake
+    # Nothing has answered for the whole silence: replaced rather than failing forever.
+    manager.boxes[uid].answered -= manager.answer_silence
+
+    def restart(*args, **kwargs):
+        silent.discard(uid)  # The fresh box answers.
+        return started(*args, **kwargs)
+
+    started = fleet.runtime.start
+    monkeypatch.setattr(fleet.runtime, "start", restart)
+    assert fleet.wake("a") == uid
+    assert fleet.runtime.stops == [uid] and len(fleet.runtime.starts) == 2
+    assert manager.boxes[uid].error == "" and manager.boxes[uid].awake
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_one_slow_answer_never_replaces_a_running_box(fleet, monkeypatch):
+    manager = fleet.manager
+    uid = fleet.wake("a")
+    answering = manager._rpc
+    misses = [1, 1]
+
+    def rpc(box, operation="status", **body):
+        if misses:
+            misses.pop()
+            raise OSError("slow reply")
+        return answering(box, operation, **body)
+
+    monkeypatch.setattr(manager, "_rpc", rpc)
+    manager.answer_probe = 5
+    manager.boxes[uid].answered -= manager.answer_silence  # Even long after an answer.
+    assert fleet.wake("a") == uid
+    assert fleet.runtime.stops == [] and len(fleet.runtime.starts) == 1
