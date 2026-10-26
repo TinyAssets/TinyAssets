@@ -34,11 +34,14 @@ class Box:
 
 class OwnerDaemons:
     def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
-                 memory_bytes=1024**3, startup_timeout=60, images=None):
+                 memory_bytes=1024**3, startup_timeout=60, images=None, answer_grace=20):
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
         self.directory = Path(directory)
         self.memory_bytes, self.startup_timeout = memory_bytes, startup_timeout
+        # How long a running box may go without answering its own status before a
+        # wake replaces it. One slow reply (the RPC allows 2 s) is never enough.
+        self.answer_grace = answer_grace
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
         self.images = images
@@ -179,6 +182,16 @@ class OwnerDaemons:
         (self.directory / "secrets" / str(box.uid)).unlink(missing_ok=True)
         (self.directory / str(box.uid) / "app.sock").unlink(missing_ok=True)
 
+    def _answer(self, box):
+        deadline = time.monotonic() + self.answer_grace
+        while True:
+            try:
+                return self._rpc(box)
+            except (OSError, http.client.HTTPException):
+                if time.monotonic() >= deadline or not self.runtime.alive(box.uid):
+                    return None
+            time.sleep(.5)
+
     def _activity(self, box):
         try:
             status = self._rpc(box)
@@ -217,10 +230,15 @@ class OwnerDaemons:
                     raise BoxError("broker owner reservation changed")
                 if box.error:
                     raise BoxError("owner sandbox has an unverified launch or stop")
-                if self._rpc(box)["draining"]:
-                    raise BoxError("owner daemon is still draining")
-                box.last = time.monotonic()
-                return uid
+                try:
+                    status = self._rpc(box)
+                except (OSError, http.client.HTTPException):
+                    status = None  # Decided under the exclusive lock below.
+                if status is not None:
+                    if status["draining"]:
+                        raise BoxError("owner daemon is still draining")
+                    box.last = time.monotonic()
+                    return uid
         with self.volumes.operation(uid):
             with self.condition:
                 box = self.boxes.setdefault(uid, Box(owner, uid))
@@ -230,10 +248,18 @@ class OwnerDaemons:
             if box.awake and self.runtime.alive(uid):
                 if box.error:
                     raise BoxError("owner sandbox has an unverified launch or stop")
-                if self._rpc(box)["draining"]:
-                    raise BoxError("owner daemon is still draining")
-                box.last = time.monotonic()
-                return uid
+                status = self._answer(box)
+                if status is not None:
+                    if status["draining"]:
+                        raise BoxError("owner daemon is still draining")
+                    box.last = time.monotonic()
+                    return uid
+                # Running, but its own app has not answered for the whole grace: it
+                # can neither serve nor drain, and nothing else ever replaces it.
+                # Replace it like a crash; its volume is reattached as it stands.
+                self.runtime.stop(uid)
+                box.awake = False
+                self._failed(box, BoxError("owner daemon stopped answering"))
             if box.awake:
                 self.runtime.stop(uid)
                 box.awake = False
