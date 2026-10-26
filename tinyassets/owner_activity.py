@@ -45,6 +45,7 @@ class Activity:
         finally:
             with self.lock:
                 self.pending_logins.discard(cancelled)
+                self.last = time.monotonic()  # The lease restarts when sign-in ends.
 
     def _cancel_logins(self):
         for cancelled in self.pending_logins:
