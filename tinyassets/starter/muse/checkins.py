@@ -90,7 +90,10 @@ def check(root, mode, *, now=None, send=notify, acknowledge=False):
                 matched = row.get("matched")
                 if not isinstance(matched, bool):
                     raise ValueError(f"Monitor {key}: matched must be true or false")
-                age = (now - moment(row["observed_at"])).total_seconds()
+                observed = row.get("observed_at")
+                if not isinstance(observed, str):
+                    raise ValueError(f"Monitor {key}: a check needs a fresh observation")
+                age = (now - moment(observed)).total_seconds()
                 if not 0 <= age <= 3600:
                     raise ValueError(f"Monitor {key}: a check needs a fresh observation")
                 if not matched:
