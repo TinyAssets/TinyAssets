@@ -8,7 +8,6 @@ import os
 import socket
 import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -435,10 +434,11 @@ def test_app_me_timeout_and_http_errors_are_distinct_tokens(monkeypatch):
 
     monkeypatch.setattr("scripts.canary_session.access_token", lambda origin: "not-a-real-token")
     secret = "owner-secret-must-not-leak"
+    release = threading.Event()
 
     class Hang(BaseHTTPRequestHandler):
         def do_GET(self):
-            time.sleep(2)
+            release.wait(5)
 
         def log_message(self, *args):
             pass
@@ -448,6 +448,7 @@ def test_app_me_timeout_and_http_errors_are_distinct_tokens(monkeypatch):
         with pytest.raises(RuntimeError) as caught:
             owner_canary_sign_in(origin, 0.2)
     finally:
+        release.set()
         server.shutdown()
         server.server_close()
         thread.join(5)
