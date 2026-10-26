@@ -30,10 +30,11 @@ def _read(path: Path, query: str) -> list:
 
 
 def export(root: Path, owner: str) -> dict | None:
-    """Import this box's authority files once; None when the broker took nothing.
+    """Import this box's authority files once; None when there is nothing to send.
 
-    A box with no old files still sends its (empty) import, so a pending owner
-    settles cleanly instead of on the alarm another first operation raises.
+    KNOWN BLOCKER (N10 PR1, reported): a box's broker channel cannot open
+    while the broker's wake of this box holds the owner lock, so a call made
+    here, before the box answers its readiness probe, waits on that lock.
     """
     from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
     from tinyassets.broker.client import BrokerRefused, owner_policy_operation
@@ -42,6 +43,8 @@ def export(root: Path, owner: str) -> dict | None:
     policy = root / POLICY_FILE
     sources = [policy] if policy.is_file() else []
     sources += sorted((root / UNIVERSE_SIDECARS_DIR).glob("*/" + CONSENTS_FILE))
+    if not sources:
+        return None
     entries, consents, readable = [], [], []
     for path in sources:
         try:
@@ -65,9 +68,8 @@ def export(root: Path, owner: str) -> dict | None:
     try:
         result = owner_policy_operation(root, owner, "import", document=document)
     except BrokerRefused as exc:
-        # Not pending: already imported, a newer owner, or another operation came first.
-        if sources:
-            _LOG.error("ALARM: owner authority import refused (%s); box files kept", exc)
+        # Not pending: already imported, or another operation came first.
+        _LOG.error("ALARM: owner authority import refused (%s); box files kept", exc)
         return None
     for path in readable:
         for suffix in ("", "-wal", "-shm", "-journal"):

@@ -249,9 +249,7 @@ def test_the_exporter_sends_box_files_once_and_removes_them(tmp_path, monkeypatc
     assert [row["destination"] for row in document["consents"]] == ["r-1"]
     assert not (root / authority_export.POLICY_FILE).exists()
     assert not (sidecar / authority_export.CONSENTS_FILE).exists()
-    # A box with nothing left still sends its empty import: a pending owner settles.
-    assert authority_export.export(root, "alice") == {"generation": 2}
-    assert (sent[-1][2]["entries"], sent[-1][2]["consents"]) == ([], [])
+    assert authority_export.export(root, "alice") is None
 
 
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
