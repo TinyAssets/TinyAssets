@@ -7350,7 +7350,7 @@
         // Only an explicit cancel or a server-reported end cancels.
         if(SubscriptionSources.leaving)return;
         if(error.transport&&flow&&!cancelled){ui.status.textContent=error.message;return;}
-        if(error.signIn&&!flow){
+        if(error.signIn&&!flow&&!cancelled){
           // A lapsed owner session refused the start: sign in, then this same
           // source reconnects by itself on return.
           await this.signInAgain(ui.status,null,{id:source.id,name:source.name});return;
