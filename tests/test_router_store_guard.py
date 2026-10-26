@@ -161,6 +161,10 @@ _ROLE_DISPATCH = {
     ('api_keys.py', 'current_store'): (
         'Router opens its key store; the box uses credential RPC.'
     ),
+    ('providers/placement.py', 'execution_for'): (
+        "In a box the owner's own source record overrides the built-in one; elsewhere "
+        'only built-ins exist.'
+    ),
     ('broker/client.py', 'BrokerClient._owner_mode'): (
         'Shared management methods choose router or bound box transport.'
     ),
