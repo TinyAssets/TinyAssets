@@ -1,0 +1,17 @@
+{
+  "desktop": {
+    "minimum": "0.1.1",
+    "latest": "0.1.1",
+    "url": "https://github.com/TinyAssets/TinyAssets/releases"
+  },
+  "android": {
+    "minimum": "1.0.7",
+    "latest": "1.0.7",
+    "url": "https://play.google.com/store/apps/details?id=io.tinyassets.app"
+  },
+  "ios": {
+    "minimum": "1.0.0",
+    "latest": "1.0.0",
+    "url": "https://apps.apple.com/app/id6808434444"
+  }
+}

@@ -758,3 +758,19 @@ def test_a_restarted_broker_counts_no_deferred_stop_as_awake(fleet, monkeypatch)
     assert uid not in fleet.runtime.live and "a" not in fleet.routing.awake
     restarted = BrokerLifecycle(fleet.routing.server)
     assert "a" not in restarted.awake
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_an_idle_box_that_drains_but_does_not_stop_is_not_read_as_busy(fleet, monkeypatch):
+    uid = fleet.wake("a")
+    fleet.states[uid].last -= 10
+    fleet.manager.boxes[uid].last -= 10
+
+    def stuck(uid):
+        raise OSError("shutdown deadline")
+
+    monkeypatch.setattr(fleet.runtime, "shutdown", stuck)
+    fleet.tick()
+    assert fleet.manager.boxes[uid].failures == 1
+    work = fleet.admission.volume("a")["work"]
+    assert work["kind"] == "snapshot" and "stopped_at" not in work  # Owed, not withdrawn.

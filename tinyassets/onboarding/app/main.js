@@ -9601,6 +9601,7 @@
     if(NATIVE||DESKTOP_SHELL)document.querySelectorAll('a[href="/app/owner-sign-in"]').forEach(link=>{
       link.removeAttribute('href');link.textContent=ownerProofUnavailable();
     });
+    if(!(await AppUpdates.init(CFG.app_versions))) return;
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
     // Native shells return from approvals in an external browser. In a web tab,

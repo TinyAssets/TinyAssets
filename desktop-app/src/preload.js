@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('tinyassetsDesktop', {
   openExternal: (url) => ipcRenderer.invoke('tinyassets:open-external', url),
+  getVersion: () => ipcRenderer.invoke('tinyassets:get-version'),
   onAppReturn: (callback) => {
     ipcRenderer.removeAllListeners('tinyassets:app-return');
     ipcRenderer.on('tinyassets:app-return', (_event, url) => callback(url));

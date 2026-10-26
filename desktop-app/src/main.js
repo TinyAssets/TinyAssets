@@ -22,6 +22,8 @@
 const { app, BrowserWindow, session, shell, ipcMain, dialog } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { autoUpdater } = require('electron-updater');
+const updateChannel = require('./update-channel.json');
 const {
   resolveAppUrl,
   BACKGROUND_COLOR,
@@ -168,6 +170,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+  mainWindow.webContents.setUserAgent(
+    `${mainWindow.webContents.getUserAgent()} tinyassets-desktop/${app.getVersion()}`,
+  );
 
   const loadingPage = path.join(__dirname, 'loading.html');
 
@@ -249,6 +254,10 @@ ipcMain.handle('tinyassets:open-external', (event, url) => {
   if (!isAppFrame(event)) throw new Error('Only the app can open the browser.');
   return openExternalIfSafe(url);
 });
+ipcMain.handle('tinyassets:get-version', (event) => {
+  if (!isAppFrame(event)) throw new Error('Only the app can read the shell version.');
+  return app.getVersion();
+});
 ipcMain.on('tinyassets:return-ready', (event) => {
   if (!isAppFrame(event)) return;
   returnReceiver = event;
@@ -268,6 +277,16 @@ app.whenReady().then(() => {
   if (app.isPackaged) app.setAsDefaultProtocolClient('tinyassets-desktop');
   lockDownPermissions(session.defaultSession);
   createWindow();
+  if (app.isPackaged && process.platform === 'win32' && updateChannel.enabled) {
+    // NSIS updates are downloaded quietly and installed on the next normal quit.
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('error', error => console.error('Desktop update:', error));
+    const check = () => autoUpdater.checkForUpdates().catch(error =>
+      console.error('Desktop update check:', error));
+    check();
+    setInterval(check, 4 * 60 * 60 * 1000).unref();
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

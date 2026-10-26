@@ -272,7 +272,10 @@ class HostService:
                         if box and box.awake and "idle_seconds" in document:
                             # Idle stop: the box drains atomically only with no
                             # request or turn inside the interval, else it serves on.
+                            failures = box.failures
                             if not self.daemons._sleep(box, idle=document["idle_seconds"]):
+                                if box.failures != failures:
+                                    raise BoxError("owner box drained but did not stop")
                                 return {"stopped": False}
                         elif box and box.awake:
                             self.daemons._rpc(box, "snapshot-stop")
