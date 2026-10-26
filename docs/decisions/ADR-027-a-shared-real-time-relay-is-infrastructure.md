@@ -41,4 +41,4 @@ about $0.007 per 8-player match-hour.
 - A second runtime vendor (Cloudflare) joins the operated surface. It is
   owned as a thin component rather than a hosted platform, given Hathora's
   and hosted PartyKit's shutdowns.
-- Relay traffic is metered in bytes (N12).
+- Relay traffic is metered in bytes (proposed row N12, metering).

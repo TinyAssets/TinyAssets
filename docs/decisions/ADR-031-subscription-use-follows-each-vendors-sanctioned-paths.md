@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed. Constrains ADR-023 (hosted CLIs), ADR-024 (device runner) and the
+Proposed. Would amend ADR-022 (its P2b row: "CLI packages (token leased for
+one run, ADR-012 D5)") and ADR-012 D5 for consumer subscriptions, and
+constrains ADR-023 (hosted CLIs), ADR-024 (device runner) and the
 outside-agent wake recipes.
 
 ## Date
@@ -56,7 +58,8 @@ the vendors' own terms (sources below) found:
    never part of a TinyAssets product or feature name. Accepting
    Anthropic's Commercial Terms is a precondition for hosting Claude Code.
 4. **Room-triggered work reaches subscription agents through the vendor's
-   own door:** MCP pull and MCP Events for ChatGPT, scheduled-task `/fire`
+   own door,** each one an agent recipe or source record (data), never
+   vendor code in the platform (ADR-007, Direction 2): MCP pull and MCP Events for ChatGPT, scheduled-task `/fire`
    for Claude, Automations webhooks for Cursor-hosted agents, and Claude
    Code Channels on the user's device once the TinyAssets channel is
    allowlisted.
@@ -72,8 +75,14 @@ the vendors' own terms (sources below) found:
 - The paid hosted-CLI tier is for interactive work. Unattended agent work
   is priced in the user's own API usage or the vendor's own automation
   limits.
-- Any vault entry holding a consumer login token is drift and is removed
-  (S28 already tracks the cleartext vault).
+- Broker custody of consumer login tokens is removed: the native
+  subscription custody in `tinyassets/broker/subscription_custody.py`, the
+  `state.location: broker` declarations in
+  `tinyassets/providers/source_records/` (for example `codex.json`'s
+  `.codex/auth.json`), and the custody requirement of the
+  `box-subscription-sources` change. A hosted CLI keeps its sign-in inside
+  the owner's box, written by the vendor's own flow. API keys stay broker
+  custody (S28).
 - A source record whose `invoke` drives a subscription CLI declares
   `trigger: human` and is refused by the placement resolver for unattended
   turns.

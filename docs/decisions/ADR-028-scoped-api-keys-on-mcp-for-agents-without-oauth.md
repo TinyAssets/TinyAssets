@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (founder decision, 2026-10-26). Would amend the rule in
+Proposed: founder-directed (2026-10-26), awaiting acceptance. Would amend the rule in
 `tinyassets/auth/middleware.py` that an API key "is a REST credential only";
 consistent with ADR-016.
 

@@ -46,7 +46,9 @@ ADR-012 already lists conversation stores as platform state outside boxes.
 - Reading or posting a message, moving a task or taking a turn-based move
   never wakes a box.
 - Snapshot or rewind of a box can't roll back delivery state.
-- MCP event callbacks are sent from the trusted side, not from a box (a box
-  has no network: `--network=none`).
+- MCP event subscriptions, callbacks and retries live on the trusted side,
+  because the trusted side owns delivery state; a box's only egress is its
+  proxied, owner-policy path.
 - `app_room.cas` converges onto the conversation store's revision primitive.
-- Registry rows S30 and S33 guard the ledger.
+- New registry rows (proposed S30 and S33), each added with its guard in
+  the slice that builds it, will hold the ledger.

@@ -34,7 +34,7 @@ Proposed. Would clarify ADR-019's lifecycle rule and amend ADR-022's interim
 - **Suspend and restore** (ADR-022's P6) is part of the main build-out.
   Checkpoint images are kept for recently active owners; others cold-start.
 - **Class reservations** start from the G3 gate figures and are replaced by
-  measured receipts (N12).
+  measured receipts (proposed row N12, metering).
 
 ## Consequences
 

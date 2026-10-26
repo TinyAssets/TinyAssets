@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (founder chose option 1, 2026-10-26).
+Proposed: founder-directed (option 1, 2026-10-26), awaiting acceptance.
 
 ## Date
 
@@ -38,7 +38,8 @@ a second source.
 
 ## Consequences
 
-- The other shape is deleted in the same PR, and N11's guard names the
-  survivor.
+- Any manifest field the N11 projection keeps of its own is deleted in the
+  same PR; the projection survives only as a reader of `app.json`, and
+  N11's guard names `app.json` as the one manifest.
 - A game's type doesn't decide how hard it is to serve; its declared
   requirements do.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (founder decision, 2026-10-26). Would amend ADR-019 and ADR-022 on
+Proposed: founder-directed (2026-10-26), awaiting acceptance. Would amend ADR-019 and ADR-022 on
 what a box runs.
 
 ## Date
@@ -33,9 +33,10 @@ that is reading and writing owner files.
 ## Consequences
 
 - Cold start and awake memory drop to the harness's size. ADR-026's class
-  reservations are measured again (N12).
+  reservations are measured again (proposed row N12, metering).
 - `owner_daemon`'s app-server path is deleted, and with it the box-ingress
   websocket pass-through.
 - Requests that don't touch owner files (status, messaging, rooms) never
   wake a box.
-- Registry row S35 also guards that the box imports no server modules.
+- The proposed S35 row's guard also checks that the box imports no server
+  modules.
