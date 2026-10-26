@@ -187,6 +187,10 @@ class OwnerRouter:
             await forward(scope, receive, send, identity, route)
 
 
+#: The largest JSON-RPC answer the router reads from a box for itself.
+BOX_RESULT_BYTES = 65536
+
+
 async def box_result(scope, identity, route: BoxRoute, document):
     """One JSON-RPC request the router composes, forwarded to the box; its result.
 
@@ -199,7 +203,7 @@ async def box_result(scope, identity, route: BoxRoute, document):
     headers = [(name, value) for name, value in scope["headers"]
                if name.lower() != b"content-length"]
     headers.append((b"content-length", str(len(body)).encode("ascii")))
-    status, chunks, delivered = 0, [], False
+    status, chunks, size, delivered = 0, [], 0, False
 
     async def replay():
         nonlocal delivered
@@ -209,13 +213,19 @@ async def box_result(scope, identity, route: BoxRoute, document):
         await anyio.sleep_forever()  # forward() cancels this watcher when the reply ends
 
     async def capture(message):
-        nonlocal status
+        nonlocal status, size
         if message["type"] == "http.response.start":
             status = message["status"]
         elif message["type"] == "http.response.body":
-            chunks.append(message.get("body", b""))
+            size += len(message.get("body", b""))
+            if size <= BOX_RESULT_BYTES:  # keep reading to the end, holding no more
+                chunks.append(message.get("body", b""))
 
-    await forward(dict(scope, headers=headers), replay, capture, identity, route)
+    # A bounded read: a hung box becomes a 503, never a stalled subscribe.
+    await forward(dict(scope, headers=headers, bounded_reply=True), replay, capture,
+                  identity, route)
+    if size > BOX_RESULT_BYTES:
+        raise RuntimeError("owner box answer exceeds its bound")
     try:
         reply = json.loads(b"".join(chunks))
     except ValueError:
@@ -371,7 +381,7 @@ def _forward_timeout(scope) -> httpx.Timeout:
     pool limits stay the same. The inbound read budget is what turns a hung box
     into the 429/503/timeout failure the per-installation breaker counts.
     """
-    if scope.get("inbound_revalidate") is not None:
+    if scope.get("inbound_revalidate") is not None or scope.get("bounded_reply"):
         return httpx.Timeout(connect=5, read=30, write=30, pool=5)
     return httpx.Timeout(connect=5, read=None, write=30, pool=5)
 

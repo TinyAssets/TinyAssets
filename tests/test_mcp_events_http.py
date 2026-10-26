@@ -389,7 +389,8 @@ async def test_box_result_forwards_one_composed_request(monkeypatch):
 
     async def forward(scope, receive, send, identity, route):
         message = await receive()
-        seen.update(body=message["body"], headers=dict(scope["headers"]), identity=identity)
+        seen.update(body=message["body"], headers=dict(scope["headers"]), identity=identity,
+                    scope=scope)
         reply = state["reply"]
         await send({"type": "http.response.start", "status": reply[0], "headers": []})
         await send({"type": "http.response.body", "body": json.dumps(reply[1]).encode()})
@@ -410,6 +411,12 @@ async def test_box_result_forwards_one_composed_request(monkeypatch):
         await owner_router.box_result(scope, identity, None, document)
     assert error.value.code == -32024
     state["reply"] = (503, {"error": "owner_box_unavailable"})
+    with pytest.raises(RuntimeError):
+        await owner_router.box_result(scope, identity, None, document)
+    # The router reads a bounded answer under a read timeout.
+    assert owner_router._forward_timeout(seen["scope"]).read == 30
+    state["reply"] = (200, {"jsonrpc": "2.0", "id": 1, "result": {
+        "authorized": True, "pad": "x" * owner_router.BOX_RESULT_BYTES}})
     with pytest.raises(RuntimeError):
         await owner_router.box_result(scope, identity, None, document)
     # The box's own auth refusing the caller is access, not an outage.

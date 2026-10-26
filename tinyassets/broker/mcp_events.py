@@ -90,6 +90,7 @@ class EventStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA secure_delete=ON")  # erased keys leave no free-page copy
         try:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
