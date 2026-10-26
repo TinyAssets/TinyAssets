@@ -406,6 +406,14 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         raise OSError(ctypes.get_errno(), "private volume mount namespace unavailable")
     subprocess.run(["mount", "--make-rprivate", "/"], check=True, timeout=10)
     os.umask(0o077)
+    # P0-8: each relay stream holds two descriptors (relay.FLEET_STREAMS bounds
+    # them); systemd's default soft limit of 1024 would refuse streams first.
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = 16384 if hard == resource.RLIM_INFINITY else min(hard, 16384)
+    if soft < wanted:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
     RUNTIME.mkdir(mode=0o755, exist_ok=True)
     os.chmod(RUNTIME, 0o755)  # Same mode as systemd RuntimeDirectory, even on first boot.
     broker_dir = RUNTIME / "broker"
