@@ -64,7 +64,8 @@ def test_deploy_drains_real_request_then_router_wakes_published_image(
         assert not thread.is_alive()
 
     asyncio.run(exercise())
-    assert results == [{"slept": 1, "asleep": 0, "busy": 1, "incomplete": 0}]
+    assert results == [{"slept": 1, "asleep": 0, "busy": 1, "unresponsive": 0,
+                         "incomplete": 0}]
     # Alice was left serving; her own ordinary sleep comes later. Bob slept.
     drive(broker.server.routing.sleep("alice"))
     assert original.poll() == 0 and other.poll() == 0

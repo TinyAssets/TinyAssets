@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-OUTCOMES = ("slept", "asleep", "busy", "incomplete")
+OUTCOMES = ("slept", "asleep", "busy", "unresponsive", "incomplete")
 _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}\Z")
 _CONTROL_CODES = frozenset({
     "image_drain_failed", "image_refused", "image_install_failed",
@@ -108,8 +108,9 @@ CANARY_RETRY_SECONDS = 30
 
 def _counts(control):
     counts = control()
-    if isinstance(counts, dict) and "busy" not in counts:
-        counts = {**counts, "busy": 0}  # a broker from before the busy count
+    if isinstance(counts, dict):
+        # A broker from before these counts reports neither.
+        counts = {"busy": 0, "unresponsive": 0, **counts}
     if (not isinstance(counts, dict) or set(counts) != set(OUTCOMES)
             or any(type(n) is not int or n < 0 for n in counts.values())):
         return None
@@ -142,7 +143,12 @@ def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None)
         # A busy owner never blocks a deploy: it was never drained, and it
         # starts the published image at its next ordinary wake. The canary
         # still decides acceptance on that image.
-        receipt["control"] = "deferred" if counts["busy"] else "passed"
+        receipt["control"] = ("deferred" if counts["busy"] or counts["unresponsive"]
+                              else "passed")
+        if counts["unresponsive"]:
+            # Loud, not fatal: the rest of the fleet still gets its update.
+            print(f"::warning::{counts['unresponsive']} owner box(es) awake but not answering "
+                  "their status; left as they are", file=sys.stderr)
         stage = "readiness_failed"
         ready()
         stage = "canary_failed"
