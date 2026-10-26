@@ -715,3 +715,46 @@ def test_a_box_is_charged_its_measured_memory_once_a_pass_reports_it(fleet):
         with fleet.states[b].enter(), pytest.raises(BoxBusy, match="capacity"):
             fleet.wake("c", scheduled=True)
         assert fleet.runtime.live == {a, b}
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_a_request_after_the_idle_read_keeps_the_box_serving(fleet):
+    uid = fleet.wake("a")
+    activity = fleet.states[uid]
+    activity.last -= 10
+    fleet.manager.boxes[uid].last -= 10
+    host = fleet.routing.volumes.host
+
+    async def request_arrives_first(owner, operation, **arguments):
+        if operation == "sleep":
+            with activity.lock:  # The next message lands after the status read.
+                activity.active += 1
+                activity.last = time.monotonic()
+        return await host(owner, operation, **arguments)
+
+    fleet.routing.volumes.host = request_arrives_first
+    try:
+        fleet.tick()
+        assert uid in fleet.runtime.live and not activity.draining
+        assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+    finally:
+        activity.active -= 1
+        fleet.routing.volumes.host = host
+
+
+@pytest.mark.verifies(
+    "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map")
+def test_a_restarted_broker_counts_no_deferred_stop_as_awake(fleet, monkeypatch):
+    from tinyassets.broker import owner_volumes
+    from tinyassets.broker.routing import BrokerLifecycle
+
+    monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
+    for _ in range(2):  # The first stop is copied at once; the second waits.
+        uid = fleet.wake("a")
+        fleet.states[uid].last -= 10
+        fleet.manager.boxes[uid].last -= 10
+        fleet.tick()
+    assert "stopped_at" in fleet.admission.volume("a")["work"]
+    assert uid not in fleet.runtime.live and "a" not in fleet.routing.awake
+    restarted = BrokerLifecycle(fleet.routing.server)
+    assert "a" not in restarted.awake

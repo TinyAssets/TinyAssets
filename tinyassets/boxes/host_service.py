@@ -241,6 +241,8 @@ class HostService:
                     "status": set(), "create": {"quota"}, "snapshot": {"snapshot_id"},
                     "restore": {"snapshot_id", "sha256"}, "evict": set(),
                 }
+                if operation == "sleep" and "idle_seconds" in document:
+                    fields["sleep"] = {"idle_seconds"}
                 if (operation not in fields
                         or set(document) != {"lifecycle", "uid"} | fields[operation]):
                     raise BoxError("invalid bound lifecycle operation")
@@ -267,7 +269,12 @@ class HostService:
                         return {"evicted": True}
                     box = self.daemons.boxes.get(owner_uid)
                     if operation == "sleep":
-                        if box and box.awake:
+                        if box and box.awake and "idle_seconds" in document:
+                            # Idle stop: the box drains atomically only with no
+                            # request or turn inside the interval, else it serves on.
+                            if not self.daemons._sleep(box, idle=document["idle_seconds"]):
+                                return {"stopped": False}
+                        elif box and box.awake:
                             self.daemons._rpc(box, "snapshot-stop")
                             if not self.daemons._sleep(box, idle=0):
                                 raise BoxError("owner work must drain before volume operation")

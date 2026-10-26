@@ -49,6 +49,7 @@ class VolumeLifecycle:
         if work and work["kind"] == "running":
             status = await self.host(owner, "status")
             self.lifecycle.facts[owner] = status
+            idle = False
             if status["awake"]:
                 self.lifecycle.awake.add(owner)
                 active = status.get("active", 0)
@@ -64,11 +65,12 @@ class VolumeLifecycle:
                     return record
                 # ADR-026: no idle tail past the wake lease; unknown activity
                 # never authorizes a sleep. A pending sign-in reads as active.
-                idle = status["idle_seconds"]
-                if not status.get("draining") and (idle is None or (
-                        idle < WAKE_LEASE and status["uptime"] < 86400)):
+                # A draining box or the 24-hour deadline stops it regardless.
+                idle = not status.get("draining") and status["uptime"] < 86400
+                if idle and (status["idle_seconds"] is None
+                             or status["idle_seconds"] < WAKE_LEASE):
                     return record
-            return await self.sleep(owner)
+            return await self.sleep(owner, idle=idle)
         if not work or work["kind"] == "create":
             return record
         if work["kind"] == "evict":
@@ -76,7 +78,10 @@ class VolumeLifecycle:
             return self.volume(owner, "evicted")
         if work["kind"] == "snapshot":
             if "stopped_at" in work and not work.get("restore_snapshot_id"):
-                return record  # Stopped; tick_owner publishes when it is owed.
+                # Stopped (a restarted broker may still count it awake);
+                # tick_owner publishes when the copy is owed.
+                await self.lifecycle.stopped(owner)
+                return record
             if not work.get("restore_snapshot_id"):
                 status = await self.host(owner, "status")
                 active = status.get("active", 0)
@@ -126,9 +131,15 @@ class VolumeLifecycle:
             ready["rewind"] = True
         return ready
 
-    async def sleep(self, owner):
+    async def sleep(self, owner, *, idle=False):
         record = self.volume(owner, "sleep")
-        if await self.host(owner, "sleep") != {"stopped": True}:
+        # An idle stop drains only if the box itself still finds no request or
+        # turn within the lease; one may have arrived after the status read.
+        result = await self.host(owner, "sleep", **(
+            {"idle_seconds": WAKE_LEASE} if idle else {}))
+        if idle and result == {"stopped": False}:
+            return self.volume(owner, "sleep_refused")
+        if result != {"stopped": True}:
             raise RuntimeError("owner sleep remains pending")
         record = self.volume(owner, "stopped")
         await self.lifecycle.stopped(owner)

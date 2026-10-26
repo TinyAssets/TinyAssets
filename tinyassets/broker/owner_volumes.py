@@ -222,11 +222,17 @@ def _has_deletable_excess(db, owner, pins):
 
 
 def awake_owners(identities, *, stopping=False):
-    """Explicit running owners, not the pending-work queue (C15)."""
+    """Explicit running owners, not the pending-work queue (C15).
+
+    ``stopping`` adds intents whose stop is not confirmed. A dated stop is
+    confirmed: a restarted broker that counted it would hold a phantom slot.
+    """
     with closing(identities._connect(write=False)) as db:
         return [row[0] for row in db.execute(
             "SELECT principal FROM owner_volumes WHERE json_extract(work,'$.kind')='running' "
-            "OR (? AND json_extract(work,'$.kind') IN ('snapshot','restore'))", (stopping,))]
+            "OR (? AND json_extract(work,'$.kind') IN ('snapshot','restore') AND NOT ("
+            "json_extract(work,'$.stopped_at') IS NOT NULL AND "
+            "json_extract(work,'$.restore_snapshot_id') IS NULL))", (stopping,))]
 
 
 def reference(snapshot_id, sha256):
