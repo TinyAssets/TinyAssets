@@ -225,6 +225,10 @@ async def box_result(scope, identity, route: BoxRoute, document):
         data = error.get("data")
         raise EventError(error["code"], str(error.get("message", "")),
                          **(data if isinstance(data, dict) else {}))
+    if status == 403:
+        # The box's own auth refused this caller (a revoked client, a key without
+        # the capability): access, not an outage, so no retry is invited.
+        raise PermissionError("owner box refused the caller")
     if status != 200 or not isinstance(reply, dict) or not isinstance(reply.get("result"), dict):
         raise RuntimeError(f"owner box answered {status}")
     return reply["result"]

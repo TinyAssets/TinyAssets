@@ -312,3 +312,36 @@ def test_router_refusals_are_bounded_and_carry_no_callback(broker, router_root):
                                                    "event": {}}))
         answer = rf.read_frame_blocking(channel).control()
     assert answer["op"] == "MCP_EVENTS_ERROR"  # the box's report is not a router op
+
+
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
+def test_a_run_without_a_workflow_is_acknowledged_without_a_report(home, channel):
+    """An activity session's run has no branch_def_id; no subscription can name it."""
+    from tinyassets.mcp_events import capture_terminal
+
+    channel.store.subscribe(OWNER, channel.document)
+    capture_terminal(home, {
+        "status": "completed", "queue_universe_id": UNIVERSE, "actor": f"universe:{UNIVERSE}",
+        "cause_principal": OWNER, "inputs_json": "{}", "output_json": "{}",
+        "branch_def_id": "", "run_id": "r1", "seq": 1, "created_at": time.time()})
+    assert channel.reports == []
+
+
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
+def test_a_changed_grant_generation_ends_the_subscription(home, channel):
+    from tinyassets.outside_authority import OutsideClientAuthority
+
+    outside = OutsideClientAuthority(home)
+    bound = {"client": "test-client", "family": "family", "authenticated_at": time.time()}
+    outside.observe(OWNER, bound)
+    outside.set_enabled(True)
+    scope = [{"universe": UNIVERSE, "agent": "main", "capability": "read_graph"}]
+    outside.change(OWNER, "test-client", expected_generation=0, family="family", scopes=scope)
+    admitted = outside.admit(OWNER, bound)
+    assert admitted["generation"] == 1
+    channel.store.subscribe(OWNER, channel.document, authority=admitted)
+    # Narrowed and widened again: same scopes, a new generation.
+    outside.change(OWNER, "test-client", expected_generation=1, family="family", scopes=scope)
+    run(home, inputs={"operation": "save"})
+    assert rows(channel.store, "subscriptions")[0]["active"] == 0
+    assert rows(channel.store, "deliveries") == []

@@ -126,6 +126,15 @@ def refusal(ident, exc):
     return JSONResponse({"jsonrpc": "2.0", "id": ident, "error": error}, status_code=status)
 
 
+def _same_client(verified, admitted):
+    """The box's admitted outside client is the router's verified one, plus its grant."""
+    if verified is None or admitted is None:
+        return verified is None and admitted is None
+    return isinstance(admitted, dict) and all(
+        admitted.get(key) == verified.get(key)
+        for key in ("client", "family", "authenticated_at"))
+
+
 def routed(scope):
     """Whether the router answers this request itself instead of forwarding it."""
     if scope.get("method") != "POST" or scope.get("path") not in {"/mcp", "/mcp/"}:
@@ -157,14 +166,19 @@ async def door(scope, receive, send, identity, ask_box):
         document, params = parse(headers, headers.get("mcp-protocol-version"), body)
         ident = document["id"]
         action = document["method"].removeprefix("events/")
+        authority = identity.metadata.get("outside_origin")
         if action == "subscribe":
             granted = await ask_box({**document, "params": {
                 key: params[key] for key in ("_meta", "name", "arguments") if key in params}})
-            if granted != {"authorized": True, "resultType": "complete"}:
+            if set(granted) != {"authorized", "authority", "resultType"} or granted[
+                    "authorized"] is not True or not _same_client(authority, granted["authority"]):
                 raise RuntimeError("box authorization answer is malformed")
+            # The box admitted this client against its grants; keep that binding,
+            # generation included, so capture rechecks the grant as it stood.
+            authority = granted["authority"]
         result = await run_in_threadpool(broker, data_dir(), {
             "action": action, "principal": identity.user_id,
-            "authority": identity.metadata.get("outside_origin"), "params": params})
+            "authority": authority, "params": params})
         response = answer(ident, result)
     except Envelope as exc:
         response = refusal(exc.ident, exc)
@@ -268,10 +282,13 @@ class MCPEventsMiddleware:
                     raise EventError(-32602, "Unknown event")
                 from tinyassets.storage import data_dir
 
+                authority = identity.metadata.get("outside_origin")
                 await run_in_threadpool(
                     authorize, data_dir(), identity.user_id, arguments(params.get("arguments")),
-                    identity.metadata.get("outside_origin"))
-                result = {"authorized": True}
+                    authority)
+                # The authority as this box admitted it, grant generation included,
+                # so a later grant change ends the subscription (see door()).
+                result = {"authorized": True, "authority": authority}
             else:
                 # events/unsubscribe is the router's alone; reaching a box is a routing fault.
                 raise EventError(-32601, "Method not found")

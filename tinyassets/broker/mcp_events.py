@@ -44,6 +44,8 @@ DELIVERY_TTL = 86400
 VERIFICATION_LIMIT = 32
 VERIFICATION_WINDOW = 60
 MAX_SUBSCRIPTIONS = 128
+#: Pending deliveries per owner; beyond it a capture is refused and stays owed in the box.
+MAX_PENDING = 512
 #: Deliveries per pass. Each send is bounded at 10 s, so shutdown joins at most this many.
 PASS_LIMIT = 4
 logger = logging.getLogger(__name__)
@@ -230,6 +232,17 @@ class EventStore:
                 self._revoke(conn, ident, owner)
         return {}
 
+    def erase_owner(self, owner):
+        """Account deletion: every subscription, key and delivery of this owner."""
+        if not self.path.exists():
+            return 0
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM deliveries WHERE subscription IN "
+                         "(SELECT id FROM subscriptions WHERE owner=?)", (owner,))
+            conn.execute("DELETE FROM verification_budget WHERE owner=?", (owner,))
+            return conn.execute("DELETE FROM subscriptions WHERE owner=?", (owner,)).rowcount
+
     @staticmethod
     def _revoke(conn, ident, owner):
         conn.execute(
@@ -303,6 +316,13 @@ class EventStore:
         )
         queued = 0
         with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT COUNT(*) FROM deliveries d JOIN subscriptions s ON s.id=d.subscription "
+                "WHERE s.owner=? AND d.state IN ('pending','sending')", (owner,)
+            ).fetchone()[0] + len(allow) > MAX_PENDING:
+                # The source stays owed in the box, inside its one-day horizon.
+                raise EventError(-32025, "Delivery backlog limit reached", limit="deliveries")
             for row, _ in self._candidates(conn, owner, event):
                 if row["id"] in revoke:
                     self._revoke(conn, row["id"], owner)
@@ -339,10 +359,15 @@ class EventStore:
                 "AND (created<? OR attempts>=?) AND due<=?",
                 (now - DELIVERY_TTL, MAX_ATTEMPTS, now),
             )
+            # One due delivery per owner per pass, oldest first, so an owner whose
+            # callback hangs costs the others one bounded send, never the queue.
             rows = conn.execute(
-                "SELECT subscription,event_id FROM deliveries "
-                "WHERE state IN ('pending','sending') AND due<=? "
-                "ORDER BY due LIMIT ?",
+                "SELECT subscription,event_id FROM ("
+                " SELECT d.subscription,d.event_id,d.due,ROW_NUMBER() OVER ("
+                "  PARTITION BY s.owner ORDER BY d.due) AS turn"
+                " FROM deliveries d JOIN subscriptions s ON s.id=d.subscription"
+                " WHERE d.state IN ('pending','sending') AND d.due<=?)"
+                " WHERE turn=1 ORDER BY due LIMIT ?",
                 (now, limit),
             ).fetchall()
         for item in rows:
@@ -443,7 +468,9 @@ class EventDeliveries:
             except Exception:
                 logger.error("MCP event delivery pass failed")
                 return
-            self._again = self._again or sent == PASS_LIMIT
+            # Another pass while anything was due: each owner's next delivery takes
+            # its turn. A sent delivery's next due is in the future, so this ends.
+            self._again = self._again or sent > 0
 
     async def close(self):
         self._stopping = True

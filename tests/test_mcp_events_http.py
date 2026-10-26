@@ -188,7 +188,8 @@ async def test_box_subscribe_only_authorizes_the_verified_caller(monkeypatch):
     document = {k: v for k, v in params().items() if k != "delivery"}
     response = await post_box("events/subscribe", owner="bob", **document)
     assert response.status_code == 200, response.text
-    assert response.json()["result"] == {"authorized": True, "resultType": "complete"}
+    assert response.json()["result"] == {"authorized": True, "authority": {"client": "c"},
+                                         "resultType": "complete"}
     assert observed == [("alice", params()["arguments"], {"client": "c"})]
 
 
@@ -243,7 +244,7 @@ async def test_forwarded_non_json_transport_error_keeps_original_status():
 def router_door(monkeypatch):
     """``door`` with the box and the broker recorded; the identity is the router's."""
     asked, brokered = [], []
-    state = {"box": {"authorized": True, "resultType": "complete"},
+    state = {"box": {"authorized": True, "authority": None, "resultType": "complete"},
              "broker": {"id": "sub_x", "cursor": None, "refreshBefore": "later",
                         "truncated": False}}
 
@@ -277,8 +278,12 @@ def router_door(monkeypatch):
 @pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_router_subscribes_from_the_verified_identity_not_the_body(router_door):
-    post, asked, brokered, _ = router_door
-    identity = Identity("alice", "alice", metadata={"outside_origin": {"client": "c"}})
+    post, asked, brokered, state = router_door
+    verified = {"client": "c", "family": "f", "authenticated_at": 1}
+    identity = Identity("alice", "alice", metadata={"outside_origin": verified})
+    # The box admits that same client and stamps its grant generation.
+    state["box"] = {"authorized": True, "authority": verified | {"generation": 3},
+                    "resultType": "complete"}
     response = await post("events/subscribe", identity, owner="bob", principal="bob",
                           **params())
     assert response.status_code == 200, response.text
@@ -289,7 +294,7 @@ async def test_router_subscribes_from_the_verified_identity_not_the_body(router_
     assert "receiver.example" not in json.dumps(asked) and SECRET not in json.dumps(asked)
     assert asked[0]["method"] == "events/subscribe"
     assert brokered == [{"action": "subscribe", "principal": "alice",
-                         "authority": {"client": "c"},
+                         "authority": verified | {"generation": 3},
                          "params": request("events/subscribe", owner="bob", principal="bob",
                                            **params())["params"]}]
 
@@ -321,10 +326,19 @@ async def test_a_box_refusal_stops_before_the_broker(router_door, refusal, code,
 
 @pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
-async def test_a_malformed_box_answer_fails_loudly(router_door):
+@pytest.mark.parametrize("answer", [
+    {"authorized": "yes", "authority": None, "resultType": "complete"},
+    {"authorized": True, "resultType": "complete"},
+    # The box may add the grant generation, never swap in another client.
+    {"authorized": True, "authority": {"client": "other", "family": "f", "authenticated_at": 1},
+     "resultType": "complete"},
+    {"authorized": True, "authority": {"client": "c", "family": "f", "authenticated_at": 1},
+     "resultType": "complete"},
+])
+async def test_a_malformed_box_answer_fails_loudly(router_door, answer):
     post, _, brokered, state = router_door
-    state["box"] = {"authorized": "yes"}
-    response = await post("events/subscribe", **params())
+    state["box"] = answer
+    response = await post("events/subscribe", **params())  # the caller is the owner
     assert response.json()["error"]["code"] == -32603
     assert brokered == []
 
@@ -397,4 +411,8 @@ async def test_box_result_forwards_one_composed_request(monkeypatch):
     assert error.value.code == -32024
     state["reply"] = (503, {"error": "owner_box_unavailable"})
     with pytest.raises(RuntimeError):
+        await owner_router.box_result(scope, identity, None, document)
+    # The box's own auth refusing the caller is access, not an outage.
+    state["reply"] = (403, {"error": "forbidden"})
+    with pytest.raises(PermissionError):
         await owner_router.box_result(scope, identity, None, document)

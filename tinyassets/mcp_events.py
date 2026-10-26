@@ -167,6 +167,13 @@ def capture_terminal(base, row):
         "event_id": f"{row['run_id']}#{row['seq']}",
         "occurred": row["created_at"],
     }
+    if not all(
+        isinstance(event[field], str) and 1 <= len(event[field]) <= 256
+        for field in ("command_center_id", "branch_def_id", "run_id", "event_id")
+    ):
+        # No subscription can name it (arguments() needs exact IDs): an activity
+        # session's run has no workflow. Nothing to report; the outbox may ack.
+        return
     matched = request("", {"op": "MCP_EVENTS", "action": "match", "event": event})
     allow, revoke = [], []
     for subscription in matched:

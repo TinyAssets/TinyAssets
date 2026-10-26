@@ -559,3 +559,36 @@ def test_a_failed_delivery_is_retried_by_the_clock_alone(harness):
     asyncio.run(tick())  # The next waker tick: no box, no capture, no subscribe.
     assert rows(store, "deliveries")[0]["state"] == "received"
     assert [item[2]["webhook-id"] for item in sent[1:]] == [sent[1][2]["webhook-id"]] * 2
+
+
+@pytest.mark.verifies("native-mcp-events:Deliveries are durable and retried on the broker clock")
+def test_one_owner_backlog_is_capped_and_cannot_starve_another(harness, monkeypatch):
+    monkeypatch.setattr("tinyassets.broker.mcp_events.MAX_PENDING", 2)
+    factory, _, sent = harness
+    store = factory()
+    store.subscribe("alice", params())
+    store.subscribe("bob", params())
+    for index in range(2):
+        capture(store, event_id=f"run{index}#1")
+    with pytest.raises(EventError) as error:
+        capture(store, event_id="run9#1")
+    assert error.value.code == -32025  # the box keeps the source owed
+    capture(store, "bob")
+    # Each pass takes one due delivery per owner, oldest first.
+    assert store.pump() == 2
+    assert sorted(item[4] for item in sent[2:]) == ["alice", "bob"]
+
+
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
+def test_account_deletion_erases_every_subscription_key_and_delivery(harness):
+    factory, _, _ = harness
+    store = factory()
+    store.subscribe("alice", params())
+    store.subscribe("bob", params())
+    capture(store)
+    capture(store, "bob")
+    assert store.erase_owner("alice") == 1
+    assert {r["owner"] for r in rows(store, "subscriptions")} == {"bob"}
+    assert len(rows(store, "deliveries")) == 1
+    assert [r["owner"] for r in rows(store, "verification_budget")] == ["bob"]
+    assert SECRET.encode() in store.path.read_bytes()  # bob's, still live
