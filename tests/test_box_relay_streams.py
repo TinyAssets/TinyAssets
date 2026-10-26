@@ -142,13 +142,21 @@ def test_the_fleet_bound_refuses_and_a_closed_stream_frees_its_slot(rig, monkeyp
 
 @pytest.mark.verifies("owner-daemon-in-box:Owner egress uses the admitted broker channel")
 def test_a_retired_endpoint_frees_its_listener_for_the_next_bind(rig):
-    for round_ in range(3):
-        path = rig.relay.bind("owner", _UID)
-        assert _whoami(path) == {"op": "OWNER_IS", "principal": "owner", "uid": _UID}
-        rig.relay.retire(_UID)
-        assert not path.exists()
-        other = rig.relay.bind(f"next{round_}", _UID + 1 + round_)  # Reuses the descriptor.
-        assert _whoami(other)["principal"] == f"next{round_}"
+    def descriptor(uid):
+        return rig.relay._servers[uid].sockets[0].fileno()
+
+    path = rig.relay.bind("owner", _UID)
+    assert _whoami(path) == {"op": "OWNER_IS", "principal": "owner", "uid": _UID}
+    retired = descriptor(_UID)
+    rig.relay.retire(_UID)
+    assert not path.exists()
+    for n in range(5):  # The next listener on the freed descriptor must still be served.
+        other = rig.relay.bind(f"next{n}", _UID + 1 + n)
+        assert _whoami(other)["principal"] == f"next{n}"
+        if descriptor(_UID + 1 + n) == retired:
+            break
+    else:
+        pytest.fail("no new listener reused the retired descriptor")
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Owner egress uses the admitted broker channel")

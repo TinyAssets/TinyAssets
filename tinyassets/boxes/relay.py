@@ -51,12 +51,15 @@ class OwnerRelays:
             os.chown(path, uid, uid)
             os.chmod(path, 0o600)
             listener.listen(OWNER_STREAMS)  # A burst up to the owner's bound queues.
+            started = asyncio.run_coroutine_threadsafe(asyncio.start_unix_server(
+                lambda reader, writer: self._serve(reader, writer, owner, uid),
+                sock=listener, backlog=OWNER_STREAMS), self._loop)
             try:
-                server = asyncio.run_coroutine_threadsafe(asyncio.start_unix_server(
-                    lambda reader, writer: self._serve(reader, writer, owner, uid),
-                    sock=listener, backlog=OWNER_STREAMS), self._loop).result(5)
+                server = started.result(5)
             except BaseException:
-                listener.close()
+                started.cancel()
+                # The loop owns the listener from here: it closes it, never this thread.
+                asyncio.run_coroutine_threadsafe(self._abandon(started, listener), self._loop)
                 path.unlink(missing_ok=True)
                 raise
             self._bindings[uid] = owner
@@ -148,12 +151,13 @@ class OwnerRelays:
 
     async def _pipe(self, reader, writer, last):
         while True:
+            remaining = _IDLE - (self._loop.time() - last[0])
+            if remaining <= 0:
+                raise TimeoutError("relay stream idle")
             try:
-                data = await asyncio.wait_for(reader.read(65536), _IDLE)
+                data = await asyncio.wait_for(reader.read(65536), remaining)
             except TimeoutError:
-                if self._loop.time() - last[0] < _IDLE:
-                    continue  # The other direction is still moving.
-                raise
+                continue  # Either direction's last byte restarts the idle end.
             if not data:
                 if writer.can_write_eof():
                     writer.write_eof()
@@ -162,6 +166,14 @@ class OwnerRelays:
             writer.write(data)
             # A peer that stops reading cannot hold the stream past the idle end.
             await asyncio.wait_for(writer.drain(), _IDLE)
+
+    async def _abandon(self, started, listener):
+        try:
+            server = await asyncio.wrap_future(started)
+        except BaseException:
+            listener.close()  # The server never started.
+        else:
+            server.close()
 
     async def _stop(self, servers):
         # Only the loop closes its listeners, so its selector never keeps a
