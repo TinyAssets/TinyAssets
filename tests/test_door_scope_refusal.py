@@ -49,6 +49,7 @@ def _websocket():
     return {"type": "websocket", "path": "/mcp", "headers": [], "query_string": b""}
 
 
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
 def test_owner_router_refuses_websocket_scope():
     app, reached = _app()
     assert _call(_router(app), _websocket()) == [
@@ -56,6 +57,7 @@ def test_owner_router_refuses_websocket_scope():
     assert reached == []
 
 
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
 def test_owner_ingress_refuses_websocket_scope(tmp_path):
     app, reached = _app()
     assert _call(_ingress(app, tmp_path), _websocket()) == [
@@ -63,6 +65,7 @@ def test_owner_ingress_refuses_websocket_scope(tmp_path):
     assert reached == []
 
 
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
 def test_lifespan_still_starts_app(tmp_path):
     for make in (_router, lambda app: _ingress(app, tmp_path)):
         app, reached = _app()
@@ -70,6 +73,7 @@ def test_lifespan_still_starts_app(tmp_path):
         assert reached == ["lifespan"]
 
 
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
 def test_unknown_scope_type_fails_loudly(tmp_path):
     for make in (_router, lambda app: _ingress(app, tmp_path)):
         app, reached = _app()
