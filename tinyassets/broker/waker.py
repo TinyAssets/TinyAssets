@@ -12,7 +12,8 @@ POLL_SECONDS = 30
 
 class Waker:
     def __init__(self, index, plans, *, wake, clock=time.time,
-                 poll_seconds=POLL_SECONDS, lifecycle_tick=None, config=None):
+                 poll_seconds=POLL_SECONDS, lifecycle_tick=None, config=None,
+                 routing=None):
         from tinyassets.broker.lifecycle_config import LifecycleConfig
 
         self.config = config or LifecycleConfig()
@@ -21,6 +22,7 @@ class Waker:
         self.index, self.plans, self.wake = index, plans, wake
         self.clock, self.poll_seconds = clock, poll_seconds
         self.lifecycle_tick = lifecycle_tick
+        self._routing = routing
         self.pending = {}
         self.attempted = {}
 
@@ -63,7 +65,14 @@ class Waker:
                     log.exception("next-wake index scan failed" if self.index.identities.work_ready
                                   else "platform recovery failed")
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=self.poll_seconds)
+                    # Before the daemon binds router-credentials.sock, publish
+                    # fails and leaves no snapshot. Retry that install on a
+                    # one-second bound instead of the steady 30s poll.
+                    interval = self.poll_seconds
+                    routing = self._routing
+                    if routing is not None and routing._instance is None:
+                        interval = min(self.poll_seconds, 1.0)
+                    await asyncio.wait_for(stop.wait(), timeout=interval)
                 except TimeoutError:
                     pass
         finally:

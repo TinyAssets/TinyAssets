@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 class LifecycleConfig:
     idle_limit: float = field(default_factory=lambda: float(
         os.environ.get("TINYASSETS_BOX_IDLE_SECONDS", "900")))
+    # 2 GiB is each box's ceiling, not a reservation; boxhostd's MemoryMax=7G
+    # still bounds the fleet. A cap of 3 left no slot to wake anyone while three
+    # owners stayed busy (2026-10-25: the canary could not wake and every deploy
+    # rolled back), so the cap stays at 6.
     awake_cap: int = field(default_factory=lambda: int(
         os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "6")))
     wake_timeout: float = 60

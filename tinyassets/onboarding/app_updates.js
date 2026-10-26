@@ -52,10 +52,6 @@ const AppUpdates = (()=>{
     $('app-update-required-open').onclick=open;
     $('app-update-required-open').focus();
   }
-  function requireDesktopUpdate(versions){
-    platform='desktop';policy=versions?.desktop;
-    if(policy)required();
-  }
   async function init(versions){
     const native=window.Capacitor?.isNativePlatform?.();
     const desktop=!!window.tinyassetsDesktop||/(?:Electron\/|tinyassets-desktop\/)/.test(navigator.userAgent||'');
@@ -72,7 +68,9 @@ const AppUpdates = (()=>{
       // The 0.1.1 preload has openExternal but predates getVersion and the UA stamp.
       if(!version&&window.tinyassetsDesktop?.openExternal)version='0.1.1';
     }
-    const prompt=!native&&!window.tinyassetsDesktop?'required':state(version,policy);
+    // A desktop shell whose version is unknown (0.1.0 has no bridge) keeps working
+    // (#5227) and is offered the update; only a known version under minimum blocks.
+    const prompt=!native&&!parts(version)?'available':state(version,policy);
     if(prompt==='required'){required();return false;}
     if(prompt==='available'){
       const key=`ta_update_dismissed_${platform}`;
@@ -86,5 +84,5 @@ const AppUpdates = (()=>{
     }
     return true;
   }
-  return {compare,state,init,requireDesktopUpdate};
+  return {compare,state,init};
 })();

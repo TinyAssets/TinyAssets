@@ -474,7 +474,8 @@ class MemoryManager:
                 raise ValueError(
                     "extracted_facts entries must include 'fact_id' and 'text'"
                 )
-            self.episodic.store_fact(
+            _write_scene_fact(
+                self.episodic,
                 fact_id=fact_id,
                 entity=fact.get("entity", fact.get("narrator", "unknown")),
                 content=content,
@@ -546,3 +547,27 @@ class MemoryManager:
             current_chapter=current_chapter,
             book=book,
         )
+
+
+def _write_scene_fact(
+    episodic: EpisodicMemory,
+    *,
+    fact_id: str,
+    entity: str,
+    content: str,
+    source_scene: str,
+) -> None:
+    """Selected episodic facts are owner files, not a second SQL authority."""
+    from tinyassets.knowledge_authority import write_memory_fact
+
+    database = str(episodic._db_path)
+    if not database or database == ":memory:":
+        raise ValueError("selected memory facts require an owner directory")
+    write_memory_fact(
+        Path(database).parent,
+        universe_id=episodic._universe_id,
+        fact_id=fact_id,
+        entity=entity,
+        content=content,
+        source_scene=source_scene,
+    )

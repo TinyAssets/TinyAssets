@@ -6,6 +6,25 @@ Define the owner-box erasure boundary and its durable recovery contract.
 
 ## Requirements
 
+### Requirement: Owner session sealing survives box restarts
+Each admitted owner daemon SHALL load its own random 32-byte seal key from
+`.session-seal.key` at the root of its durable owner volume before serving.
+First use SHALL persist the key before returning it. Concurrent starts SHALL
+converge on one key; malformed or unreadable existing keys SHALL fail startup,
+never silently rotate. The file SHALL be private to the owner (0600), and key
+loading SHALL refuse links and non-regular files. No shared seal key SHALL be
+copied into a box or passed through its launch environment. Router authentication
+and its existing seal-key configuration SHALL remain in the shared layer.
+
+#### Scenario: A box sleeps and wakes
+- **WHEN** an owner daemon exits and starts again with the same owner volume
+- **THEN** its seal key and previously sealed owner data remain usable
+- **AND** another owner's independently provisioned volume uses a different key
+
+#### Scenario: A stored key is damaged
+- **WHEN** the stored owner key is malformed or cannot be safely read
+- **THEN** startup fails without replacing it or using an ephemeral key
+
 ### Requirement: Erasure fails closed independently of box availability
 Authentication and every broker box admission SHALL consult the single root-owned
 erasure ledger. Only explicit cutover or fresh-install initialization may create

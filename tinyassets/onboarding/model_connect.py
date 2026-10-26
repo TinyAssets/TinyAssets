@@ -35,18 +35,23 @@ async def handle_model_connect(request):
     if not allowed:
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
-    fields = {"inline_begin": {"preset_id"}, "inline_poll": {"flow"},
+    fields = {"discover_inline": {"source"}, "discover": {"source", "code_challenge"},
+              "inline_begin": {"preset_id"}, "inline_poll": {"flow"},
               "inline_cancel": {"flow"}, "begin": {"preset_id", "code_challenge"},
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
               "deposit_key": {"preset_id", "key"},
               "deposit": {"definition", "secret"},
               "rotate": {"destination", "incarnation", "secret"},
-              "oauth_begin": {"code_challenge"},
+              "oauth_begin": {"code_challenge", "prepared"},
               "source_sign_in": {"preset_id", "code_challenge"},
               "oauth_exchange": {"flow", "code", "code_verifier"}}
     if operation not in fields:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
     optional = {"request_ref"}
+    if operation in {"discover", "discover_inline"}:
+        optional.add("source")
+    if operation in {"discover_inline", "inline_begin"}:
+        optional.add("client")
     if operation == "oauth_begin":
         optional |= {"definition", "destination"}
     if operation == "oauth_exchange":
@@ -57,7 +62,7 @@ async def handle_model_connect(request):
         if (not isinstance(data, dict)
                 or not fields[operation] <= set(data) <= fields[operation] | optional
                 or any(not isinstance(v, str) or not v or len(v) > 2048
-                       for k, v in data.items() if k != "definition")
+                       for k, v in data.items() if k not in {"definition", "source", "prepared"})
                 or len(data.get("request_ref", "")) > 512):
             raise ValueError
         if "definition" in data and (not isinstance(data["definition"], dict)
@@ -65,8 +70,8 @@ async def handle_model_connect(request):
             raise ValueError
     except (ValueError, UnicodeError, RecursionError):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
-    if operation in {"begin", "oauth_begin", "source_sign_in"} and not hosted._HANDLE.fullmatch(
-            data["code_challenge"]):
+    if (operation in {"discover", "begin", "oauth_begin", "source_sign_in"}
+            and not hosted._HANDLE.fullmatch(data["code_challenge"])):
         return JSONResponse({"error": "invalid_pkce_challenge"}, 400, headers=_HEADERS)
     if operation == "deposit_key" and any(not 33 <= ord(c) <= 126 for c in data["key"]):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
@@ -81,9 +86,7 @@ async def handle_model_connect(request):
         from tinyassets.connection_oauth import flow as sign_in
         from tinyassets.onboarding import inline_model_connect as inline
         from tinyassets.onboarding.connection_definition import (
-            oauth_definition,
             preset_definition,
-            sign_in_definition,
         )
         from tinyassets.onboarding.owner_sessions import COOKIE, lookup, require
 
@@ -96,12 +99,59 @@ async def handle_model_connect(request):
             center = owner
             ref = data.get("request_ref", "")
             approval = None
-            if operation in {"oauth_begin", "inline_begin", "source_sign_in"}:
+            if operation in {"discover", "discover_inline", "oauth_begin",
+                             "inline_begin", "source_sign_in"}:
                 try:
                     approval = require(request, owner=owner)
                 except PermissionError:
                     raise FlowError("interactive_approval_required", 403) from None
 
+            if operation in {"discover", "discover_inline"}:
+                from tinyassets.connection_oauth.model_discovery import (
+                    connection_definition,
+                    oauth_offer,
+                )
+                from tinyassets.onboarding.connection_definition import policy
+                from tinyassets.providers.source_record import SourceRecord
+
+                try:
+                    record = SourceRecord.parse(data["source"])
+                except (ValueError, KeyError, TypeError):
+                    raise FlowError("invalid_source_record", 409) from None
+                if "cli_login" in record.sign_in:
+                    return {"status": "cli_login_required", "source_id": record.id}
+                verifier = ""
+                challenge = data.get("code_challenge", "")
+                if operation == "discover_inline":
+                    import secrets
+
+                    verifier = secrets.token_urlsafe(32)
+                    challenge = hosted._challenge(verifier)
+
+                def handoff(result, exchange="oauth_exchange"):
+                    if operation == "discover_inline":
+                        return inline.stage(owner=owner, result=result, verifier=verifier,
+                            owner_session=approval, exchange=exchange,
+                            client=data.get("client", "web"))
+                    return {**result, "exchange": exchange, "source_id": record.id}
+
+                oauth = record.sign_in.get("oauth")
+                if oauth and oauth.get("protocol") == "pkce_user_key_v1":
+                    return handoff(hosted.begin_flow(owner=owner, preset_id=record.id,
+                        challenge=challenge, public_resource=resource,
+                        request_ref=ref), "exchange")
+                found = connection_definition(record)
+                definition = {k: found[k] for k in ("destination", "endpoints")}
+                if "api_key" in record.sign_in:
+                    return {"status": "api_key_required", "definition": definition,
+                            "endpoint": found["inference_url"],
+                            "help_url": record.sign_in["api_key"].get(
+                                "help_url", record.addresses[0])}
+                return handoff(sign_in.begin(owner=owner, request_id=ref,
+                    challenge=challenge, public_resource=resource,
+                    owner_session=approval, definition={"destination": found["destination"],
+                        "policy": policy(found["endpoints"], "oauth2"),
+                        "oauth": oauth_offer(record, sign_in.redirect_uri(resource))}))
             if operation == "rotate":
                 return rotate_connection(base, owner=owner, center=center,
                     destination=data["destination"], incarnation=data["incarnation"],
@@ -130,25 +180,25 @@ async def handle_model_connect(request):
             if operation in {"inline_begin", "inline_poll", "inline_cancel"}:
                 if operation == "inline_begin":
                     return inline.begin(owner=owner, preset_id=data["preset_id"],
-                        resource=resource, owner_session=approval, request_ref=ref)
+                        resource=resource, owner_session=approval, request_ref=ref,
+                        client=data.get("client", "web"))
                 result = inline.take(owner=owner, handle=data["flow"],
                                      cancel=operation == "inline_cancel")
                 if result.get("status") == "ready":
+                    if result.get("exchange") == "oauth_exchange":
+                        return sign_in.complete(owner=owner, handle=data["flow"],
+                            code=result["code"], verifier=result["verifier"],
+                            iss=result.get("iss", ""))
                     return exchange(result["code"], result["verifier"])
                 return result
             if operation in {"oauth_begin", "source_sign_in"}:
-                definition = (sign_in_definition(data["preset_id"], resource)
-                              if operation == "source_sign_in" else data.get("definition"))
-                if definition is None:
-                    rows = connections(base, principal=owner, command_center=center, limit=100)
-                    match = next((r for _, r, _ in rows
-                                  if r.destination == data.get("destination")), None)
-                    if match is None:
-                        raise FlowError("unknown_model_connection", 404)
-                    definition = {"destination": match.destination,
-                                  "endpoints": [e.as_dict() for e in match.allowed_endpoints]}
-                definition = oauth_definition(base, owner=owner, center=center,
-                                               definition=definition, public_resource=resource)
+                if operation == "source_sign_in":
+                    raise FlowError("owner_discovery_required", 409)
+                definition = data["prepared"]
+                if (not isinstance(definition, dict)
+                        or set(definition) != {"destination", "policy", "oauth"}
+                        or definition["policy"].get("auth_scheme") != "oauth2"):
+                    raise FlowError("invalid_connection_definition")
                 return sign_in.begin(owner=owner, request_id=ref,
                     challenge=data["code_challenge"], public_resource=resource,
                     owner_session=approval, definition=definition)
@@ -183,7 +233,8 @@ async def handle_model_connect(request):
         if result.get("status") == "provisioned" and not result.get("request_ref"):
             from tinyassets.onboarding.source_connect import model_source
 
-            if model_source(result.get("allowed_endpoints", [])) is not None:
+            if model_source(result.get("allowed_endpoints", []),
+                            result.get("destination", "")) is not None:
                 result["model_confirmation"] = {"grant_id": result["grant_id"]}
         return JSONResponse(result, headers=_HEADERS)
     except (hosted.HostedAuthError, FlowError) as exc:
@@ -194,7 +245,13 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     except LookupError:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
-    except Exception:  # noqa: BLE001 - credentials and provider payloads never enter errors
+    except Exception as exc:  # noqa: BLE001 - credentials and provider payloads never enter errors
+        import logging
+
+        # Only the exception's type and the operation: never its message or payload.
+        logging.getLogger(__name__).warning(
+            "model connect %s failed: %s.%s", operation,
+            type(exc).__module__, type(exc).__qualname__)
         return JSONResponse({"error": "model_connection_incomplete"}, 503, headers=_HEADERS)
 
 

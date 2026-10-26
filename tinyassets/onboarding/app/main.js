@@ -2,6 +2,7 @@
   // Server-injected config (client_id, AuthKit endpoints, resource). Public values only.
   const CFG = window.__TA_ONBOARDING__ || __TA_ONBOARDING_CONFIG__;
   __TA_MODEL_STREAM__
+  __TA_REALTIME_SESSION__
   const TOKEN_KEY = "ta_access_token";
   const PKCE_KEY = "ta_pkce";
   // Opaque server-side refresh-session handle. Lives in localStorage because the
@@ -51,13 +52,52 @@
   }
   async function openExternal(url){
     if(DESKTOP_SHELL){
-      if(!window.tinyassetsDesktop){ AppUpdates.requireDesktopUpdate(CFG.app_versions); throw new Error('Update required'); }
+      // Shells before 0.1.1 have no bridge, but they hand every window.open to the system browser.
+      if(!window.tinyassetsDesktop){window.open(url,"_blank","noopener");return;}
       await window.tinyassetsDesktop.openExternal(url);return;
     }
     const B = NATIVE ? nativePlugin("Browser") : null;
     if(B){ try{ await B.open({url, presentationStyle:"popover"}); return; }catch(_e){} }
     if(NATIVE) throw new Error("The system browser could not open. Update the app and try again.");
     window.open(url, "_blank", "noopener");
+  }
+  // All sign-in entry points preserve the surface that initiated them.
+  async function signInClient(){
+    if(!NATIVE)return DESKTOP_SHELL?'desktop':'web';
+    const info=await nativePlugin('App').getInfo();
+    if(!['io.tinyassets.app','io.tinyassets.app.debug'].includes(info?.id))
+      throw new Error('Unknown app install. Update the app and try again.');
+    return window.Capacitor.getPlatform()==='ios'?'ios':
+      info.id==='io.tinyassets.app.debug'?'android-debug':'android';
+  }
+  function ownerProofUnavailable(){
+    return 'Open tinyassets.io/app in a regular browser, sign in with the same account, and approve there.';
+  }
+  function ownerProofElement(label){
+    if(NATIVE||DESKTOP_SHELL){
+      const note=document.createElement('span');note.textContent=ownerProofUnavailable();return note;
+    }
+    const link=document.createElement('a');link.href='/app/owner-sign-in';
+    link.textContent=label;return link;
+  }
+  function appendOwnerProof(container,label){ container.append(' ',ownerProofElement(label)); }
+  async function openSignIn(value,{appLogin=false}={}){
+    const url=new URL(value,location.origin);
+    if(url.protocol!=='https:'||url.username||url.password)
+      throw new Error('A secure sign-in URL is required.');
+    if(!NATIVE&&!DESKTOP_SHELL){window.location.assign(url.href);return;}
+    if(url.origin===location.origin&&url.pathname==='/app/owner-sign-in'){
+      throw new Error(ownerProofUnavailable());
+    }
+    if(appLogin&&NATIVE&&window.Capacitor.getPlatform()==='ios'){
+      const auth=nativePlugin('SystemAuth');
+      if(!auth)throw new Error('Update the app to use secure system sign-in.');
+      const returned=await auth.open({url:url.href});
+      if(!returned?.url||!(await handleAppReturn(returned.url)))
+        throw new Error('Sign-in returned to a different session. Start again.');
+      return;
+    }
+    await openExternal(url.href);
   }
   async function closeExternal(){ const B=NATIVE?nativePlugin("Browser"):null; if(B){ try{ await B.close(); }catch(_e){} } }
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
@@ -84,21 +124,13 @@
     if(!NATIVE && !DESKTOP_SHELL){
       // One browser-bound, server-PKCE login establishes app renewal AND owner
       // proof. Never upgrade a page/MCP bearer into an approval session.
-      window.location.href = "/app/owner-sign-in?app=1";
+      await openSignIn("/app/owner-sign-in?app=1");
       return;
     }
     const notice=document.getElementById('signin-notice'),signInButton=document.getElementById('btn-signin');
     if(signInButton.disabled)return;signInButton.disabled=true;
     try{
-      let client='desktop';
-      if(NATIVE){
-        const A=nativePlugin('App');let info;
-        try{info=A&&await A.getInfo();}catch(_e){}
-        if(!info?.id)throw new Error("This app didn't say which install it is. Update it and try again.");
-        if(!['io.tinyassets.app','io.tinyassets.app.debug'].includes(info.id))throw new Error('Unknown app install.');
-        client=window.Capacitor.getPlatform()==='ios'?'ios':
-          (info.id==='io.tinyassets.app.debug'?'android-debug':'android');
-      }
+      const client=await signInClient();
       const verifier=randToken(48), code_challenge=await challengeFor(verifier);
       const response=await fetch('/app/native-sign-in',{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({client,code_challenge})});
@@ -106,12 +138,7 @@
       if(!response.ok||!/^[A-Za-z0-9_-]{43}$/.test(flow.ref))throw new Error(flow.message||'Sign-in could not start. Try again.');
       pkceStore.setItem(PKCE_KEY,JSON.stringify({verifier,native_ref:flow.ref,expires:Date.now()+600000}));
       notice.textContent="Finish signing in in your browser, then return here.";
-      if(client==='ios'){
-        const auth=nativePlugin('SystemAuth');
-        if(!auth)throw new Error('Update the app to use secure system sign-in.');
-        const returned=await auth.open({url:flow.url});
-        if(!returned?.url || !(await handleAppReturn(returned.url)))throw new Error('Sign-in returned to a different session. Start again.');
-      }else await openExternal(flow.url);
+      await openSignIn(flow.url,{appLogin:true});
     }catch(error){
       pkceStore.removeItem(PKCE_KEY);notice.textContent=error.message;
     }finally{signInButton.disabled=false;}
@@ -130,9 +157,17 @@
     if(!saved.return_secret)return; // Focus alone is not proof of the browser return.
     nativeSignInBusy=true;
     try{
-      const response=await withRefreshLock(()=>fetch('/app/token',{method:'POST',credentials:'same-origin',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier,return_secret:saved.return_secret})}));
+      const response=await withRefreshLock(()=>{
+        // Re-read under the lock: a sign-out queued ahead of this exchange drops
+        // the flow, and a sent exchange would set a new session cookie.
+        let leaving=logoutPending;
+        try{leaving=leaving||localStorage.getItem('ta_logout_pending')==='1';}catch(_e){}
+        if(leaving||pkceStore.getItem(PKCE_KEY)!==JSON.stringify(saved))return null;
+        return fetch('/app/token',{method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier,return_secret:saved.return_secret})});
+      });
+      if(!response)return;
       const result=await response.json();
       // A replaced/cancelled flow must never install a late session.
       if(pkceStore.getItem(PKCE_KEY)!==JSON.stringify(saved))return;
@@ -346,6 +381,10 @@
   // resurrect the session on reload) and the next sign-out retries.
   let logoutPending = false;
   async function endServerSession(){
+    // Before the lock: a native sign-in queued behind it re-reads both and
+    // stands down instead of minting a session for the account that left.
+    logoutPending = true;
+    try{ pkceStore.removeItem(PKCE_KEY); }catch(_e){}
     return withRefreshLock(async()=>{
       logoutPending = true;
       try{
@@ -988,8 +1027,9 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main",clientSendId="",onModelEvent=null){
+    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main",clientSendId="",onModelEvent=null,graphId=""){
       const args={message,input_method:turnInputMethod(inputMethod)};
+      if(graphId)args.graph_id=graphId;
       if(clientSendId) args.client_send_id=clientSendId;
       if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
       if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
@@ -1394,7 +1434,19 @@
     };
   }
 
+  // The platform relays a request answer to the agent as a turn of data. The
+  // person sees what they decided, never the relay's JSON.
+  function requestAnswerLine(text){
+    if(typeof text!=="string"||!text.startsWith("The owner answered your request."))return null;
+    try{
+      const outcome=JSON.parse(text.slice(text.indexOf("{"))).outcome||{};
+      const verb=outcome.decision==="allowed"?"You allowed":
+        outcome.decision==="denied"||outcome.decision==="declined"?"You declined":"You answered";
+      return verb+": "+(typeof outcome.title==="string"&&outcome.title?outcome.title:"a request");
+    }catch(_e){return "You answered a request.";}
+  }
   function appendMessage(role,text,extra,instant,queued){
+    if(role==="user"){const line=requestAnswerLine(text);if(line!==null)text=line;}
     if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
     const thread=$("thread"), el=document.createElement("div");
     el.className="msg msg--"+role;
@@ -1480,7 +1532,6 @@
     // did not take (steered lines left undelivered) comes back from the server.
     if(wasLive){ finishActiveTurn(); restoreHeldSteers(); return; }
     // Idle and something waits: send it (a missed transition never strands it).
-    if(sendQueue.length) flushSendQueue();
   }
   function readServerTurnRow(payload){
     const deploy=payload&&payload.deploy_pending;
@@ -1618,13 +1669,10 @@
   // turn began would stop THAT turn. Everything waits, bounded by
   // STOP_REQUEST_MS, and goes out when the request settles.
   function flushAfterTurn(){
-    const batch=takeInterruptFlush();
-    if(!interruptPending) return flushSendQueue(batch);
-    batchAfterStop=batchAfterStop||batch;
+    takeInterruptFlush();
   }
   function drainAfterStop(){
-    const batch=batchAfterStop; batchAfterStop=false;
-    flushSendQueue(batch);
+    batchAfterStop=false;
   }
   async function interruptTurn(){
     if(interruptRequested || !workingSince()) return;
@@ -1643,7 +1691,7 @@
     const sameAccount=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
     const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
-    const waiting=sendQueue.length;
+    const waiting=activeSends.size;
     setStatusLine("Stopping your agent's turn..."+(waiting
       ? " then sending the "+waiting+" waiting message"+(waiting===1?"":"s")+" together."
       : ""));
@@ -1739,7 +1787,7 @@
     // the original one at the bottom" (2026-09-26).
     //
     // A turn THIS page started has already written that line in sendTurn /
-    // sendVoiceTurn / queueTurn, and those know things this does not - the number
+    // queueTurn, and those know things this does not - the number
     // of messages waiting behind the turn, whether the queue failed to save. So
     // this speaks ONLY for a turn the page would otherwise say nothing at all
     // about: another window, a request answered somewhere else, or one still
@@ -1756,7 +1804,7 @@
       // know more; and never rewritten unchanged, so a screen reader hears the
       // minute change and nothing else.
       const detail=waitDetail();
-      const mine=!sendQueue.length&&!seatLineShown&&!interruptRequested;
+      const mine=!activeSends.size&&!seatLineShown&&!interruptRequested;
       if(detail&&mine){
         const text="Your agent is thinking... "+detail;
         if($("status-line").textContent!==text) setStatusLine(text);
@@ -1783,8 +1831,7 @@
     setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
-  // Voice owns only speech transport and turn timing. The command center's actual
-  // words still come from MCP.converse through sendVoiceTurn below.
+  // Capture and playback only. A committed transcript is one session turn.
   const VOICE_LABELS={
     unavailable:"Voice transport is temporarily unavailable. Typed chat still works.",
     checking:"Checking this command center's voice capability...",
@@ -1973,12 +2020,12 @@
         if(expired)throw new Error("voice_status_timeout");
         const options={credentials:"same-origin",headers:authHeaders()};
         if(controller)options.signal=controller.signal;
-        let response=await fetch("/app/voice/status",options);
+        let response=await fetch("/app/session/realtime",options);
         if(response.status===401){
           const refreshed=await refreshAccessToken();
           if(expired)throw new Error("voice_status_timeout");
           if(refreshed){
-            options.headers=authHeaders();response=await fetch("/app/voice/status",options);
+            options.headers=authHeaders();response=await fetch("/app/session/realtime",options);
           }
         }
         let doc={};try{doc=await response.json();}catch(_e){}
@@ -1999,19 +2046,14 @@
     async refreshCapability(){
       try{
         const doc=await this._readCapability();
+        this.capability=doc;
         if(doc.available){
-          this.capability=Object.assign({},doc,{mode:"bridge"});this.state="idle";
+          this.capability=Object.assign({},doc,{mode:"session"});this.state="idle";
           this._render();return true;
         }
-        if(doc.state!=="unpowered"&&browserSpeechAvailable()){
-          this.capability=browserSpeechCapability(doc);this.state="idle";
-          this._render("Voice ready using your browser or device speech service.");return true;
-        }
-        this.capability=doc;
         this.state=doc.state==="unpowered"?"unpowered":"incompatible";
-        const detail=doc.state==="unpowered"?voiceFriendlyError(doc.reason):
-          voiceFriendlyError("browser_speech_unsupported");
-        this._render(detail);return false;
+        this._render(voiceFriendlyError(doc.reason||doc.gap||"unsupported"));
+        return false;
       }catch(_error){
         // Browser speech replaces only a missing media bridge. A failed status
         // read cannot prove that a command center has a writer, so keep this closed
@@ -2099,20 +2141,20 @@
       else if(typeof focusCommandCenter === "function") focusCommandCenter();
       this.returnFocus=null;
     },
-    async _session(offerSdp){
+    async _session(media){
       await ensureFreshToken();
       const options={method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({offer_sdp:offerSdp})};
-      let response=await fetch("/app/voice/session",options);
+        body:JSON.stringify({media:media||"audio"})};
+      let response=await fetch("/app/session/realtime",options);
       if(response.status===401 && await refreshAccessToken()){
         options.headers=Object.assign({"Content-Type":"application/json"},authHeaders());
-        response=await fetch("/app/voice/session",options);
+        response=await fetch("/app/session/realtime",options);
       }
       let doc={}; try{doc=await response.json();}catch(_e){}
-      if(!response.ok) throw new Error(doc.error||"voice_session_failed");
-      if(!doc.answer_sdp||doc.protocol!==(CFG.voice&&CFG.voice.protocol))
-        throw new Error("voice_session_invalid");
+      if(!response.ok || doc.admitted===false) throw new Error(doc.gap||doc.error||"unsupported");
+      const decision=RealtimeCapture.admitBeforeCapture(doc, media||"audio");
+      if(!decision.ok) throw new Error(decision.gap||"unsupported");
       return doc;
     },
     async start(){
@@ -2121,15 +2163,14 @@
       this.stoppedWithPending=false;
       this.handledCalls.clear(); this.expectedReply=""; this.reconnectAttempts=0;
       this.state="idle"; this._event("start");
-      if(this.capability&&this.capability.mode==="browser"){
-        try{await this._startBrowser(generation);}
-        catch(error){if(generation===this.epoch)this.fail(error);}
-        return;
-      }
-      try{ await this._connect(generation,false); }
-      catch(error){ if(generation===this.epoch) this.fail(error); }
+      try{
+        if(browserSpeechAvailable()) await this._startBrowser(generation);
+        else await this._connect(generation,false);
+      }catch(error){ if(generation===this.epoch) this.fail(error); }
     },
     async _startBrowser(generation){
+      const media=(this.capability&&this.capability.media)||"audio";
+      await this._session(media);
       const Constructor=browserSpeechConstructor();
       if(typeof Constructor!=="function"||!browserSpeechAvailable())
         throw new Error("browser_speech_unsupported");
@@ -2190,20 +2231,7 @@
     _queueBrowserUtterance(transcript,generation){
       if(generation!==this.epoch||this.browserSubmitting||this.state!=="listening")return;
       const segment=voiceNormalize(transcript).trim();if(!segment)return;
-      const segmentKey=voiceRecognitionKey(segment);
-      if(segmentKey===this.browserDraftLastSegment)return;
-      this.browserDraftLastSegment=segmentKey;
-      this.browserDraftUtterance=[this.browserDraftUtterance,segment]
-        .filter(Boolean).join(" ");
-      clearTimeout(this.browserCommitTimer);
-      this.browserCommitTimer=setTimeout(()=>{
-        this.browserCommitTimer=null;
-        if(generation!==this.epoch||this.browserSubmitting||this.state!=="listening")return;
-        const message=this.browserDraftUtterance;
-        this.browserDraftUtterance="";this.browserDraftLastSegment="";
-        if(message)this._submitBrowserUtterance(message,generation);
-      },900);
-      this._render("Listening... finish your thought.");
+      this._submitBrowserUtterance(segment,generation);
     },
     _submitBrowserUtterance(transcript,generation){
         if(generation!==this.epoch||this.browserSubmitting)return false;
@@ -2220,7 +2248,7 @@
     async _handleBrowserUtterance(message,generation,turnSerial){
       this.state="thinking";this._render();
       try{
-        const reply=await sendVoiceTurn(message);
+        const reply=await commitRealtimeTurn(message);
         if(generation!==this.epoch)return;
         await this._speakBrowser(reply,generation);
       }catch(error){if(generation===this.epoch)this.fail(error);}
@@ -2245,6 +2273,7 @@
       try{window.speechSynthesis.cancel();}catch(_e){}
       if(finish)finish();
       this.browserSubmitting=false;this.state="listening";
+      RealtimeCapture.bargeIn(this.browserTurn);
       this._render("Listening — reply interrupted.");return true;
     },
     _speakBrowser(reply,generation){
@@ -2313,55 +2342,28 @@
       },250);
     },
     async _connect(generation,isReconnect){
-      let stream=null,pc=null,audio=null,dc=null,channelTimer=null;
+      let stream=null;
+      const media=(this.capability&&this.capability.media)||"audio";
       try{
+        const session=await this._session(media);
+        if(generation!==this.epoch) return;
         if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=="function")
           throw new Error("voice_unsupported");
         if(!isReconnect) this._render();
-        try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});}
-        catch(_error){ throw new Error("voice_permission_denied"); }
+        try{
+          stream=await navigator.mediaDevices.getUserMedia({
+            audio:{echoCancellation:true,noiseSuppression:true},
+            video:media==="video"});
+        }catch(_error){ throw new Error("voice_permission_denied"); }
         if(generation!==this.epoch){ this._disposeTransport(null,null,null,stream); return; }
         this.stream=stream;
-        this._armAuthorityChecks(generation);
-        if(!isReconnect) this._event("permission_granted"); else this._render();
-        if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
-        pc=new RTCPeerConnection(); this.pc=pc;
-        audio=document.createElement("audio"); audio.autoplay=true; audio.muted=true; this.audio=audio;
-        pc.addEventListener("track",event=>{ if(event.streams&&event.streams[0]) audio.srcObject=event.streams[0]; });
-        stream.getTracks().forEach(track=>pc.addTrack(track,stream));
-        dc=pc.createDataChannel("tinyassets-voice"); this.dc=dc;
-        dc.addEventListener("message",event=>this.handleServerEvent(event.data));
-        pc.addEventListener("connectionstatechange",()=>{
-          if(generation!==this.epoch) return;
-          if(["failed","disconnected"].includes(pc.connectionState)) this.reconnect(generation);
-        });
-        const opened=new Promise((resolve,reject)=>{
-          channelTimer=setTimeout(()=>reject(new Error("voice_channel_timeout")),10000);
-          dc.addEventListener("open",()=>{clearTimeout(channelTimer);channelTimer=null;resolve();},{once:true});
-          dc.addEventListener("error",()=>{clearTimeout(channelTimer);channelTimer=null;reject(new Error("voice_channel_failed"));},{once:true});
-        });
-        const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
-        if(pc.iceGatheringState!=="complete"){
-          await new Promise((resolve,reject)=>{
-            const changed=()=>{if(pc.iceGatheringState==="complete"){clearTimeout(timer);pc.removeEventListener("icegatheringstatechange",changed);resolve();}};
-            const timer=setTimeout(()=>{pc.removeEventListener("icegatheringstatechange",changed);reject(new Error("voice_ice_timeout"));},5000);
-            pc.addEventListener("icegatheringstatechange",changed);
-          });
-        }
-        const localSdp=pc.localDescription&&pc.localDescription.sdp;
-        if(!localSdp) throw new Error("voice_session_offer_invalid");
-        const session=await this._session(localSdp);
-        if(generation!==this.epoch){ clearTimeout(channelTimer);this._disposeTransport(pc,dc,audio,stream); return; }
-        await pc.setRemoteDescription({type:"answer",sdp:session.answer_sdp});
-        await opened;
-        if(generation!==this.epoch){ clearTimeout(channelTimer);this._disposeTransport(pc,dc,audio,stream); return; }
         this.reconnecting=false; this.reconnectAttempts=0;
         this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
-        this._render(); this._armSessionLimit(session.max_session_seconds);
+        this._render();
+        this._armSessionLimit(session.max_session_seconds);
         this._armAuthorityChecks(generation);
       }catch(error){
-        clearTimeout(channelTimer);
-        this._disposeTransport(pc,dc,audio,stream);
+        this._disposeTransport(null,null,null,stream);
         throw error;
       }
     },
@@ -2395,25 +2397,8 @@
       }
     },
     _send(event){ if(this.dc&&this.dc.readyState==="open") this.dc.send(JSON.stringify(event)); },
-    async handleToolCall(event){
-      const callId=String(event.call_id||"");
-      if(!callId||this.handledCalls.has(callId)||event.name!=="converse") return;
-      let args; try{args=JSON.parse(event.arguments||"{}");}catch(_e){return this.fail(new Error("voice_tool_invalid"));}
-      if(!args||typeof args.message!=="string"||!args.message.trim()) return this.fail(new Error("voice_tool_invalid"));
-      const generation=this.epoch, channel=this.dc;
-      this.handledCalls.add(callId); this.state="thinking"; this._render();
-      try{
-        const reply=await sendVoiceTurn(args.message.trim());
-        // The canonical turn may finish after Stop or after reconnect replaced
-        // the transport. Keep its text result, but never speak it into a newer
-        // media session or let it pre-authorize that session's audio.
-        if(generation!==this.epoch||channel!==this.dc) return;
-        this.expectedReply=reply; this.canonicalResponsePending=true;
-        this.canonicalResponseInterrupted=false;
-        if(this.audio) this.audio.muted=false;
-        this._send({type:"tool_result",call_id:callId,output:reply});
-        this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});
-      }catch(error){ if(generation===this.epoch&&channel===this.dc) this.fail(error); }
+    async handleToolCall(_event){
+      return;
     },
     handleServerEvent(raw){
       let event; try{event=typeof raw==="string"?JSON.parse(raw):raw;}catch(_e){return;}
@@ -2482,7 +2467,7 @@
       if(dc){try{dc.close();}catch(_e){}}
       if(pc){try{pc.close();}catch(_e){}}
       if(audio){try{audio.pause();audio.srcObject=null;}catch(_e){}}
-      if(stream){try{stream.getTracks().forEach(track=>track.stop());}catch(_e){}}
+      if(stream){try{RealtimeCapture.stopTracks(stream.getTracks());}catch(_e){}}
     },
     _teardownTransport(){
       clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearTimeout(this.browserRestartTimer);
@@ -2659,6 +2644,15 @@
       if(turn)renderedConsumerTurns.add(turn.turn_id);
       throw servedFailureError(payload);
     }
+    if(payload&&Array.isArray(payload.parts)&&payload.parts.length){
+      if(turn)renderedConsumerTurns.add(turn.turn_id);
+      const el=appendMessage("universe",typeof payload.reply==="string"?payload.reply:"",
+        answerExecutionDetail(payload));
+      const body=el.querySelector(".msg-body");
+      if(body&&typeof ChatRender!=="undefined"&&ChatRender.renderParts)
+        ChatRender.renderParts(body,payload.parts);
+      return;
+    }
     if(payload&&typeof payload.reply==="string"){
       if(turn)renderedConsumerTurns.add(turn.turn_id);
       appendMessage("universe",payload.reply,answerExecutionDetail(payload)); return;
@@ -2716,7 +2710,12 @@
     // levels, because the server replaces the whole policy document.
     automatic(){return {version:2,mode:"automatic",saved_default:null,fallbacks:[],efforts:[]};},
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
-    label(ref){return ref.provider_ref+" · "+(ref.model_id||"Provider default");},
+    sourceLabel(provider){
+      const source=(this.snapshot?.sources||[]).find(item=>item.provider_ref===provider);
+      if(typeof source?.display_name==="string"&&source.display_name)return source.display_name;
+      return "Connected source";
+    },
+    label(ref){return this.sourceLabel(ref.provider_ref)+" · "+(ref.model_id||"Provider default");},
     // ---- effort ---------------------------------------------------------
     //
     // "effort level controls should also be avalible" (founder, 2026-10-03).
@@ -2848,20 +2847,47 @@
       // Everything the command center can actually use, then - only if there are any -
       // the ones that cannot be used yet, greyed under one small divider with
       // their reason. A model is never silently absent.
-      const usable=[],blocked=[],refreshing=[];
-      for(const row of this.rows()) (this.usable(row)?usable:
-        (row.reasons||[]).some(r=>this.refreshLabel(r.reason))?refreshing:blocked).push(row);
+      const usable=this.rows().filter(row=>this.usable(row));
       const isCurrent=key=>!!current&&this.key(current)===key;
-      for(const row of usable){
-        const key=this.key(row.reference);
-        this.menuRow(this.label(row.reference),isCurrent(key),pickable?()=>this.choose(key):null);
+      // Models are grouped under their source and start collapsed: Automatic
+      // above already uses the strongest connected source, so most people never
+      // open a group. A group holding the current choice is ticked.
+      this.expanded=this.expanded||new Set();
+      const groups=new Map();
+      for(const row of this.rows()){
+        const provider=row.reference.provider_ref;
+        if(!groups.has(provider))groups.set(provider,[]);
+        groups.get(provider).push(row);
+      }
+      for(const [provider,rows] of groups){
+        const open=this.expanded.has(provider);
+        const holds=rows.some(row=>isCurrent(this.key(row.reference)));
+        const head=this.menuRow((open?"\u25be ":"\u25b8 ")+this.sourceLabel(provider)+
+          " ("+rows.length+")",holds&&!open,()=>{
+            if(open)this.expanded.delete(provider);else this.expanded.add(provider);
+            this.renderMenu();
+            const again=this.menuItems().find(node=>node.dataset.group===provider);
+            if(again)again.focus();
+          });
+        head.dataset.group=provider;head.classList.add("model-menu-group");
+        head.setAttribute("aria-expanded",open?"true":"false");
+        if(!open)continue;
+        for(const row of rows){
+          const key=this.key(row.reference);
+          const item=this.menuRow(row.reference.model_id||"Provider default",isCurrent(key),
+            pickable&&this.usable(row)?()=>this.choose(key):null,
+            this.usable(row)?null:(row.reasons||[]).map(r=>
+              this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", ")||
+              "availability unconfirmed");
+          item.classList.add("model-menu-item--nested");item.style.paddingLeft="2em";
+        }
       }
       // The current choice is ALWAYS shown as current, at the top of the list,
       // even when it can no longer be used - whether its model went away entirely
       // or merely stopped being available. The command center is configured that way and
       // a list that showed it unticked, or only down under "needs access", would
       // misreport what the command center is set to.
-      if(current&&!usable.some(row=>isCurrent(this.key(row.reference)))){
+      if(current&&!this.rows().some(row=>isCurrent(this.key(row.reference)))){
         const row=this.row(current);
         const why=row ? "— currently unavailable" : "— unavailable";
         this.menuRow(this.label(current),true,null,why);
@@ -2871,18 +2897,6 @@
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
         const labels=source.reasons.map(r=>this.refreshLabel(r.reason)).filter(Boolean);
         if(labels.length) this.menuNote(source.provider_ref+" — "+labels.join(", "));
-      }
-      if(refreshing.length){
-        this.menuNote("Checking availability","model-menu-divider");
-        for(const row of refreshing) this.menuRow(this.label(row.reference),false,null,
-          "— "+row.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", "));
-      }
-      if(blocked.length){
-        this.menuNote("Needs access","model-menu-divider");
-        for(const row of blocked){
-          const reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
-          this.menuRow(this.label(row.reference),false,null,"— "+(reasons||"availability unconfirmed"));
-        }
       }
       // Effort for the current model, offering exactly the levels its source
       // advertised. Absent entirely when the model has none, so the control
@@ -3057,7 +3071,7 @@
       const accessList=$("model-access-sources");accessList.replaceChildren();
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
         const proposal=this.accessProposal(source),li=document.createElement("li");
-        const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
+        const label=document.createElement("span");label.textContent=this.sourceLabel(source.provider_ref);li.appendChild(label);
         if(proposal){
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
           btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
@@ -3287,25 +3301,9 @@
   };
   __TA_SEND_JOURNAL__
 
-  // Messages that arrive while a turn is in flight (a relayed rail answer, an
-  // Enter in the composer) wait here and go out in order when the turn ends.
-  // Two overlapping converse calls would each overwrite the other's in-flight
-  // record and could delete each other's recovery (Codex round 1, P1).
-  // The queue is bounded and de-duplicated: Enter held down through a long
-  // turn must not line up copies of one draft (Codex round 2, P1), and an
-  // overflow goes back into the composer rather than vanishing.
-  const sendQueue=[];
-  let sendQueueHeld=false;
-  const SEND_QUEUE_MAX=8;
-  // What is queued is also on disk: a rail answer queued behind a long turn
-  // must survive the founder refreshing before that turn ends (Codex on #2698,
-  // deferred then; founder 2026-08-30: handle it). Only message + display are
-  // kept - a queued item is always already echoed on screen.
-  const QUEUE_KEY="ta_send_queue";
-  // A saved line older than this is offered with a warning (it is as old as
-  // the longest turn the client would ever hold in flight, see
-  // checkForNewBuild); nothing saved is ever sent without a click.
-  const QUEUE_MAX_AGE_MS=3*60*60*1000;
+  // In-flight requests are independently persisted; dispatch ordering belongs to the box.
+  const activeSends=new Map();
+  const QUEUE_KEY="ta_send_queue"; // one-time import of pre-cutover browser drafts
   // The command center this page is talking to, once known (status / history).
   // Saved lines carry it, so another founder's session on this browser does
   // not send them (Codex round 1).
@@ -3347,13 +3345,13 @@
     const id=String((agent&&agent.agent_id)||"main");
     const name=String((agent&&agent.name)||"Your agent");
     if(id!==addressedAgent.agent_id){
-      if(activeTurn||sendQueue.length||interruptPending||pendingSteers)
+      if(activeTurn||activeSends.size||interruptPending)
         throw new Error("finish or stop the current message first, then switch agents");
       if(typeof Voice!=="undefined"&&typeof Voice.stop==="function")
         Voice.stop(Boolean(Voice.browserDraftUtterance||Voice.browserPendingUtterance||Voice.browserRecognizing),
           "The chat switched agents; unsent voice input was discarded.");
       addressedAgent={agent_id:id,name};
-      historyLoaded=false; inflightRestored=false; queueRestored=false;
+      historyLoaded=false; inflightRestored=false;
       renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
       clearThread(); historyFailed(null);
       paintAddressedAgent(); openAddressedChat();
@@ -3466,357 +3464,6 @@
     return !!queueOwner && !!queueScope && !!row &&
       !!row.owner && !!row.scope && row.owner===queueOwner && row.scope===queueScope;
   }
-  let queuePersisted=true;
-  // Saved lines this page holds for later: offers not yet acted on, and
-  // lines queued for another command center (kept for that command center's own page).
-  // They stay on disk until acted on - a second refresh must not lose an
-  // offer nobody clicked (Codex round 3).
-  let retainedItems=[];
-  function savedItem(q){
-    return {message:q.message, display:q.display||q.message, ts:q.ts||Date.now(),
-      inputMethod:turnInputMethod(q.inputMethod||(q.opts&&q.opts.inputMethod)),
-      modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
-        ? q.modelChoice : q.opts&&q.opts.modelChoice),
-      owner:(q.owner!==undefined)?q.owner:queueOwner,
-      scope:(q.scope!==undefined)?q.scope:queueScope,
-      agent:String(q.agent||(q.opts&&q.opts.agentId)||"main")};
-  }
-  function saveQueue(){
-    try{
-      const items=retainedItems.map(savedItem).concat(sendQueue.map(savedItem));
-      if(!items.length){ localStorage.removeItem(QUEUE_KEY); queuePersisted=true; return; }
-      localStorage.setItem(QUEUE_KEY, JSON.stringify(items));
-      queuePersisted=true;
-    }catch(_e){
-      // Say so where the founder is looking, instead of a status line that
-      // claims the line is waiting when a refresh would lose it.
-      queuePersisted=false;
-      setStatusLine("Your agent is thinking... " + sendQueue.length +
-        " waiting (could not be saved in this browser \u2014 do not refresh)");
-    }
-  }
-  function readSavedQueue(){
-    try{
-      const raw=localStorage.getItem(QUEUE_KEY);
-      const items=raw?JSON.parse(raw):[];
-      return Array.isArray(items)?items.filter(i=>i&&typeof i.message==="string"&&i.message):[];
-    }catch(_e){ return []; }
-  }
-  function sameSavedLine(a,b){
-    const left=savedItem(a), right=savedItem(b);
-    return a.message===b.message && (a.ts||0)===(b.ts||0) && left.scope===right.scope &&
-      left.owner===right.owner &&
-      JSON.stringify(left.modelChoice)===JSON.stringify(right.modelChoice);
-  }
-  // Is this line still on disk? Another window may have sent or discarded
-  // it since the offer was drawn here.
-  function stillSaved(item){
-    return readSavedQueue().some(i=>sameSavedLine(i,item));
-  }
-  function forgetSavedItem(item){
-    retainedItems=retainedItems.filter(i=>!sameSavedLine(i,item));
-    saveQueue();
-  }
-  // Another tab that restored while this one waited took the saved queue
-  // and is sending it; this copy must not go out a second time.
-  function claimedElsewhere(item){
-    if(!queuePersisted) return false;
-    try{
-      const raw=localStorage.getItem(QUEUE_KEY);
-      const items=raw?JSON.parse(raw):[];
-      return !(Array.isArray(items) && items.some(i=>i && sameSavedLine(i,item)));
-    }catch(_e){ return false; }
-  }
-  // Lines that were waiting when the page went away come back as an OFFER,
-  // never as a send: the page cannot know whether the turn they waited
-  // behind is still answering, whether another window holds the same line,
-  // or what the founder typed since (Codex rounds 1-2: every auto-send
-  // shape leaked one of those). One click sends it; one click drops it.
-  // Nothing happens until this page knows its command center: a line is offered
-  // only where it belongs (Codex round 3).
-  let queueRestored=false;
-  function restoreQueue(){
-    // BOTH halves, or nothing happens at all: until this page knows the account
-    // AND the home, it cannot tell an own row from a stranger's, so it says
-    // nothing and leaves every row on disk.
-    if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
-    // Read the device's own saved rows FIRST: restoring the server's lines
-    // saves the queue, and must keep every row this device was holding.
-    retainedItems=readSavedQueue();
-    const offer=(serverLines)=>{
-      const now=Date.now();
-      // A line the server holds is already queued again above; its copy saved
-      // on this device is not offered a second time.
-      retainedItems=retainedItems.filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
-      saveQueue();
-      retainedItems.forEach(i=>offerSavedLine(i, now));
-    };
-    if(typeof fetch!=="function"){ offer([]); return; }
-    restoreHeldSteers().then(offer, ()=>offer([]));
-  }
-  function offerSavedLine(item, now){
-    // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
-    // saved line is disclosed, offered or droppable only where BOTH halves are
-    // proved: this account and this home. Anything else - another command center,
-    // another account, or a legacy row that recorded neither - is KEPT on disk
-    // unchanged and never shown, because clicking a button proves that someone
-    // is here, never that this login is the one that saved it.
-    if(!ownsSavedRow(item)){
-      const foreign = !!item.scope && !!item.owner && !!queueScope && !!queueOwner;
-      appendMessage("system", foreign
-        ? "A line queued in another command center's session on this browser is "+
-          "waiting there; open that command center to send or discard it."
-        : "A line saved on this browser is being kept, but it cannot be shown "+
-          "here: this page cannot tell which account and command center saved it. "+
-          "Send your message again if you still need it.",
-        null, now/1000);
-      return;
-    }
-    // A line queued to another of the owner's agents waits for that agent's
-    // own thread; it is never offered, or sent, to the agent on screen.
-    if(String(item.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
-      appendMessage("system","A line queued to another of your agents is waiting; "+
-        "open that agent to send or discard it.", null, now/1000);
-      return;
-    }
-    const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
-    let text = "Still waiting to be sent when the page reloaded: \u201c" +
-      String(item.display||item.message).slice(0, 200) + "\u201d";
-    if(stale) text += " \u2014 queued more than three hours ago";
-    const send=document.createElement("button");
-    send.className="btn btn--link"; send.textContent="Send it now";
-    send.addEventListener("click", ()=>{
-      if(!ownsSavedRow(item)) return;
-      note.remove();
-      if(!stillSaved(item)){
-        appendMessage("system","That line was already sent or discarded in another window.");
-        return;
-      }
-      forgetSavedItem(item);
-      // A side send: it neither takes over an unconfirmed turn's record nor
-      // clears whatever the founder is typing.
-      sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight(),
-        keepComposer:true, inputMethod:turnInputMethod(item.inputMethod),
-        modelChoice:copyModelChoice(item.modelChoice)});
-    });
-    const note=appendMessage("system",text+". ",send,now/1000);
-    note.appendChild(document.createTextNode(" "));
-    const drop=document.createElement("button");
-    drop.className="btn btn--link"; drop.textContent="Discard";
-    drop.addEventListener("click", ()=>{
-      if(!ownsSavedRow(item)) return;
-      note.remove(); forgetSavedItem(item);
-    });
-    note.appendChild(drop);
-  }
-  // After a stop, what was queued goes out as ONE turn, the way Claude Code
-  // sends its queued messages: in the order typed, separated by a blank line.
-  // Only lines that can share a turn are joined -- same account and home, same
-  // model choice, not tied to a chosen conversation; anything else waits and
-  // goes out after, as before.
-  function takeBatch(){
-    const group=[];
-    while(sendQueue.length){
-      const next=sendQueue[0];
-      if((next.owner&&next.owner!==queueOwner)||(next.scope&&next.scope!==queueScope)){
-        sendQueue.shift(); unmarkQueued(next.bubble); continue;
-      }
-      if(claimedElsewhere(next)){ sendQueue.shift(); unmarkQueued(next.bubble); continue; }
-      const first=group[0];
-      if(next.opts.consumerRequest) break;
-      if(first&&JSON.stringify(first.opts.modelChoice)!==JSON.stringify(next.opts.modelChoice)) break;
-      group.push(sendQueue.shift());
-    }
-    return group;
-  }
-  function flushBatch(){
-    const taken=takeBatch();
-    saveQueue();
-    if(!taken.length) return flushSendQueue();
-    if(taken.some(item=>item.heldId)){
-      claimHeldLines(taken).then(kept=>{
-        taken.filter(item=>kept.indexOf(item)<0).forEach(alreadyHandled);
-        sendBatch(kept);
-      });
-      return;
-    }
-    sendBatch(taken);
-  }
-  function sendBatch(group){
-    if(!group.length) return flushSendQueue();
-    group.forEach(item=>unmarkQueued(item.bubble));
-    const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
-    const same=methods.every(m=>m===methods[0]);
-    const message=group.map(item=>item.message).join("\n\n");
-    const display=group.map(item=>item.display||item.message).join("\n\n");
-    // Each line is already on screen as its own bubble; the turn is not drawn again.
-    const opts=Object.assign({},group[0].opts,{echoed:true,keepComposer:true,relay:false,
-      sentAt:Date.now(),inputMethod:same?methods[0]:"unknown"});
-    sendTurn(message, display, opts)
-      .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
-  }
-  function flushSendQueue(batch){
-    // A steer request still on the wire may answer "already heard" for a line
-    // that also sits in this queue: nothing goes out until it does.
-    if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
-    if(InlineConnection.waiting() || sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
-    // A turn this page did not start is still running: everything waits for it.
-    if(!activeTurn && serverTurnLive()) return;
-    if(batch===true) return flushBatch();
-    const next=sendQueue.shift();
-    // A queued line goes out only under the account and home that queued it.
-    // SAME rule as the in-flight record's (restoreInflight): a stamped pair
-    // that disagrees with this page's is refused; a line queued before this
-    // page knew its pair is unstamped and keeps its existing behaviour. It is
-    // dropped from this page's queue rather than sent, and its saved row is
-    // left on disk for a page that can prove it.
-    if((next.owner&&next.owner!==queueOwner)||(next.scope&&next.scope!==queueScope)){
-      // Dropped, not sent. Leaving the bubble marked "queued" would claim it is
-      // still waiting for a turn it will never get.
-      unmarkQueued(next.bubble);
-      return flushSendQueue();
-    }
-    if(claimedElsewhere(next)){ unmarkQueued(next.bubble); saveQueue(); return flushSendQueue(); }
-    saveQueue();
-    if(next.heldId){
-      claimHeldLines([next]).then(kept=>{
-        if(kept.length){
-          unmarkQueued(next.bubble);
-          sendTurn(next.message, next.display, next.opts)
-            .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
-        }else{ alreadyHandled(next); flushSendQueue(); }
-      });
-      return;
-    }
-    // Its turn starts now: from here it is a sent message like any other.
-    unmarkQueued(next.bubble);
-    // A rejection before sendTurn's own try/finally (a missing node) must not
-    // strand what is still queued: note it and move on (Codex round 2, P2).
-    sendTurn(next.message, next.display, next.opts)
-      .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
-  }
-  function queueTurn(message, display, opts){
-    const last=sendQueue[sendQueue.length-1];
-    // The same typed line twice is one line - but two answers to two asks
-    // that happen to share a title are two answers (Codex round 2).
-    // A repeated Enter needs no word (its bubble is already queued). A "Send it
-    // again" click folded into the same queued line showed nothing at all - no
-    // bubble, no mark, no status - so that one is said.
-    if(last && last.message===message && !opts.relay &&
-      JSON.stringify(last.opts.modelChoice)===JSON.stringify(opts.modelChoice)){
-      if(opts.keepComposer)
-        setStatusLine("Your agent is thinking... that message is already waiting to be sent.");
-      return;
-    }
-    const input=$("composer-input");
-    if(sendQueue.length>=SEND_QUEUE_MAX){
-      // ...and never over a draft the founder is typing: put it below it.
-      const draft=input.value.trim();
-      input.value=draft ? draft + "\n" + message : message; autoGrow(input);
-      setStatusLine("Your agent is thinking... too many messages waiting; send this one when it replies.");
-      return;
-    }
-    // From the founder's side the message IS sent: it shows in the thread now
-    // and the composer clears, exactly as an immediate send; it waits its turn
-    // on the wire and is not drawn again when it goes out.
-    const queuedAt=Date.now();
-    // Drawn as QUEUED: the founder's own bubble, at the bottom of the thread,
-    // saying the agent has not seen it yet. The in-flight turn's reply is
-    // still to come and lands ABOVE it (appendMessage), which is the order the
-    // agent will actually read them in.
-    const bubble=opts.echoed
-      ? null : appendMessage("founder", display || message, null, queuedAt/1000, true);
-    // A line that did not come from the composer (a resend, a rail answer)
-    // leaves the draft being typed there alone, queued or not - as sendTurn does.
-    if(!opts.keepComposer){ input.value=""; input.style.height="auto"; }
-    // Stamped with the account and home that queued it, the same pair a saved
-    // row carries, so a line can never go out under a different identity than
-    // the one that wrote it.
-    sendQueue.push({message, display, owner:queueOwner, scope:queueScope, bubble,
-      opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt,
-        recoveryBubble:bubble||opts.recoveryBubble}), ts: queuedAt});
-    setStatusLine("Your agent is thinking... " + sendQueue.length + " waiting");
-    renderWorking();
-    saveQueue();   // last: a failed save replaces the status line with why
-  }
-
-  // ---- Steering a running turn (harness S2) ------------------------------
-  //
-  // A plain line typed while the universe works goes INTO the running turn: it
-  // reaches the agent with the result of its next tool call, the way Claude
-  // Code takes a message mid-task, instead of waiting for the whole turn to
-  // end. Anything that cannot share the turn (a relayed answer, an attachment,
-  // a chosen conversation, a Stop in progress, no running turn on this page)
-  // queues exactly as before. When the turn ends, any steered line the agent
-  // never received comes back from the server and is queued for the next turn,
-  // so nothing typed is lost.
-  let steeredLines=[];
-  // Steer requests on the wire; a batch held behind them; the newest turn's
-  // settlement by line id, so a late steer answer is reconciled exactly.
-  let pendingSteers=0, steerHeldBatch=false, lastSettlement=null;
-  function markSteered(el){
-    if(!el) return el;
-    const note=document.createElement("span");
-    note.className="msg-steered-note";
-    note.textContent="Sent to your agent while it works \u2014 it sees this at its next step.";
-    el.appendChild(note); el.steeredNote=note;
-    return el;
-  }
-  // A queued line's honest state: saved on the server for the next turn, or
-  // kept only on this device because the server could not be reached.
-  function markHeld(el, saved){
-    if(!el) return el;
-    if(el.heldNote&&el.heldNote.remove) el.heldNote.remove();
-    const note=document.createElement("span");
-    note.className="msg-steered-note";
-    note.textContent=saved
-      ? "Saved \u2014 your agent gets this as soon as its current work ends."
-      : "Not saved yet \u2014 kept on this device; it goes out when your agent finishes.";
-    el.appendChild(note); el.heldNote=note;
-    return el;
-  }
-  // Held lines are removed from the server's keeping before this page sends
-  // them itself, atomically: a line another tab or a turn already took comes
-  // back unclaimed and is not sent again. Unreachable server: sent as before
-  // (the next turn's carryover check still drops an exact repeat).
-  async function claimHeldLines(items){
-    const ids=items.filter(i=>i.heldId).map(i=>i.heldId);
-    if(!ids.length) return items;
-    // PINNED before the request suspends. A claim DELETES the server's copy,
-    // and the lines are already out of the queue -- which is what lets
-    // addressAgent switch while this is in flight. So the claim and the send
-    // that follows it must name the one agent the line was held for, or the
-    // line is deleted from one agent's thread and spoken to another's
-    // (gpt-6-astra on #4290, P1). Dropping the line instead is not an option:
-    // its server copy is gone.
-    const agent=pinLineAgent(items);
-    let doc=null;
-    try{
-      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:queueScope,claim:ids,agent_id:agent})});
-      doc=r.ok?await r.json():null;
-    }catch(e){ doc=null; }
-    if(!doc||!Array.isArray(doc.claimed)) return items;
-    return items.filter(i=>!i.heldId||doc.claimed.indexOf(i.heldId)>=0);
-  }
-  // The agent a queued line belongs to, written onto the line itself so every
-  // later step reads the same answer. The precedence is captureTurnOptions's,
-  // so a pinned line and a fresh send resolve their agent identically.
-  function pinLineAgent(items){
-    const live=(typeof addressedAgentId==="function"?addressedAgentId():"main");
-    const held=items.filter(i=>i&&i.heldId);
-    const first=held.length?held[0]:items[0];
-    const agent=String((first&&first.opts&&typeof first.opts.agentId==="string"
-      &&first.opts.agentId)||live);
-    items.forEach(item=>{ if(item&&item.opts) item.opts.agentId=agent; });
-    return agent;
-  }
-  function alreadyHandled(item){
-    unmarkQueued(item.bubble);
-    if(item.bubble&&item.bubble.heldNote) item.bubble.heldNote.textContent=
-      "Already passed to your agent.";
-  }
   // The message a running turn is answering, drawn after a reload with the
   // working state on it (P2, live 2026-10-02: a reload mid-turn showed neither
   // the message nor that it was being worked on, so it was sent twice).
@@ -3857,9 +3504,7 @@
     const turns=(r&&r.recent_conversation&&Array.isArray(r.recent_conversation.turns))
       ? r.recent_conversation.turns : [];
     const at=savedSendIndex(turns,watched);
-    const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
-      !turns.slice(at+1,i).some(row=>row.speaker==="founder")&&
-      (t.speaker==="universe"||t.speaker==="platform"));
+    const reply=turns.findIndex(t=>t.reply_to_client_send_id===watched.client_send_id);
     const held=readInflight();
     if(!watched.client_send_id){
       // Connector/pre-deploy turns have no send id. This is display only:
@@ -3904,116 +3549,6 @@
       return doc;
     }catch(e){ return null; }
   }
-  // After a reload: what the server still holds for this thread comes back on
-  // screen -- a line saved for the next turn is queued again and goes out when
-  // the work ends; one already handed to the running turn shows as sent there.
-  async function restoreHeldSteers(){
-    const doc=await readPendingTurns();
-    if(!doc||!Array.isArray(doc.pending)) return [];
-    if(doc.active && !activeTurn) showActiveTurn(doc.active);
-    const restored=[];
-    // The agent this answer is FOR: readPendingTurns asked for it by name and
-    // refuses an answer that lands after a switch, so a restored line is
-    // stamped with it rather than with whichever agent is on screen later.
-    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
-    for(const line of doc.pending){
-      const text=line&&typeof line.text==="string"?line.text:"";
-      if(!text||sendQueue.some(q=>q.message===text)) continue;
-      if(line.state==="steered"){
-        markSteered(appendMessage("founder", text, null,
-          (typeof line.created_at==="number"?line.created_at:Date.now()/1000)));
-      }else{
-        queueTurn(text, text, {inputMethod:"typed", keepComposer:true, agentId:agent});
-        const item=sendQueue[sendQueue.length-1];
-        if(item&&item.message===text){ item.heldId=line.id; markHeld(item.bubble, true); }
-      }
-      restored.push(text);
-    }
-    if(!activeTurn && !serverTurnLive()) flushSendQueue();
-    return restored;
-  }
-  function unmarkSteered(el){
-    if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
-    if(el) el.steeredNote=null;
-  }
-  async function steerOrQueue(message, display, opts){
-    // Queued first, exactly as before, so the line is on screen and saved the
-    // moment it is sent; it then moves INTO the running turn if the server
-    // takes it.
-    const before=sendQueue.length;
-    queueTurn(message, display, opts);
-    const plain=!interruptPending && (!!activeTurn || serverTurnLive()) && !opts.relay &&
-      !opts.echoed && !opts.consumerRequest && (!display || display===message);
-    const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
-    // Folded into an identical queued line, or returned to the composer when
-    // the queue is full: nothing new to steer.
-    if(!plain || !item || item.message!==message) return;
-    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    let doc=null;
-    pendingSteers++;
-    try{
-      const r=await fetch("/app/turn/steer",{method:"POST",credentials:"same-origin",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify(Object.assign({universe_id:scope,text:message},
-          item.opts&&item.opts.agentId&&item.opts.agentId!=="main"?{agent_id:item.opts.agentId}:{}))});
-      doc=r.ok?await r.json():null;
-    }catch(e){ doc=null; }
-    finally{ pendingSteers--; }
-    const same=epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
-    if(same&&doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
-    // No turn could take it: the server SAVED it for the next one. It stays
-    // queued here too and goes out when the work ends; the next turn does not
-    // repeat a line its own message already carries.
-    else if(same&&doc&&doc.held===true){ item.heldId=doc.steer_id; markHeld(item.bubble, true); }
-    else if(same) markHeld(item.bubble, false);
-    // The turn may have ended while this request was out: what was held goes now.
-    if(pendingSteers===0 && !activeTurn){
-      const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
-    }
-  }
-  // The server took a queued line into the running turn (id = its steer id).
-  function adoptSteered(item, id, owner, scope){
-    const settled=lastSettlement;
-    // That turn already ended without it: it stays queued for the next turn
-    // (the server keeps it as carryover and will not repeat it).
-    if(settled && settled.undelivered.has(id)) return;
-    const at=sendQueue.indexOf(item);
-    if(at<0) return;
-    sendQueue.splice(at,1);
-    unmarkQueued(item.bubble);
-    // Heard before this answer arrived: sent, nothing more to do.
-    if(!(settled && settled.delivered.has(id))){
-      markSteered(item.bubble);
-      steeredLines.push({id, message:item.message, bubble:item.bubble, owner, scope,
-        opts:item.opts});
-    }
-    setStatusLine(activeTurn
-      ? "Your agent is thinking..."+(sendQueue.length?" "+sendQueue.length+" waiting":"")
-      : "");
-    saveQueue();
-  }
-  // The turn ended. ``receipt`` is the server's settlement by id, or null when
-  // the answer never arrived: then every steered line is queued again (said
-  // twice beats lost; the server drops a repeat of its own carryover).
-  function settleSteered(receipt){
-    const lost=!receipt;
-    const delivered=new Set(receipt&&Array.isArray(receipt.delivered)?receipt.delivered:[]);
-    const undelivered=new Map((receipt&&Array.isArray(receipt.undelivered)?receipt.undelivered:[])
-      .map(u=>[u&&u.id,u&&u.text]));
-    lastSettlement={delivered, undelivered};
-    const lines=steeredLines; steeredLines=[];
-    lines.forEach(line=>{
-      unmarkSteered(line.bubble);
-      if(!lost && !undelivered.has(line.id)) return;
-      if(line.owner!==queueOwner||line.scope!==queueScope) return;
-      markQueued(line.bubble);
-      sendQueue.push({message:line.message, display:line.message, owner:line.owner,
-        scope:line.scope, bubble:line.bubble,
-        opts:Object.assign({}, line.opts, {echoed:true,sentAt:Date.now()}), ts:Date.now()});
-    });
-    if(lines.length) saveQueue();
-  }
-
   __TA_DURABLE_SEND__
 
   // Explain a failed turn in the user's own terms and hand back a working
@@ -4066,10 +3601,9 @@
     const turns=(conv&&Array.isArray(conv.turns))?conv.turns:[];
     const at=savedSendIndex(turns,sent);
     // Paint every saved arrival, even if this particular send is still unknown.
-    // Only this send's own saved founder row confirms delivery; a different
-    // answer cannot. Existence is sufficient, including exchanges with steers.
+    // Admission is not completion. Only a causally linked terminal settles it.
     drawHistoryTurns(turns);
-    if(at>=0){
+    if(at>=0&&turns.some(t=>t.reply_to_client_send_id===sent.client_send_id)){
       if(sent.record) forgetInflightIf(sent.record);
       note.remove();
       return;
@@ -4153,7 +3687,7 @@
     again.addEventListener("click", ()=>{
       // The retry is the same send: same options (a side send stays a side
       // send and keeps the earlier unconfirmed record - Codex round 3).
-      if(err&&err.received){note.checkSavedConversation().catch(()=>{});return;}
+      if(err&&err.received&&note.checkSavedConversation){note.checkSavedConversation().catch(()=>{});return;}
       note.remove(); sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true,returnReply:false}));
     });
     const note=appendMessage("system",notice+" ",again);
@@ -4295,7 +3829,6 @@
       // only thing that tells a tab which did not send about a live turn, and
       // the only thing left after a reload.
       readServerTurn(s); renderWorking(); pulseHeartbeat();
-      restoreQueue();   // no-op once done, or until the scope is known
       restoreUploadRecords();   // same rule, and it makes no request of its own
       // A held message waits for the same thing the queue does. If the history
       // peek failed, THIS is where the page finally learns its command center, so
@@ -4409,6 +3942,22 @@
   // platform's own blank one when the owner has chosen nothing (AppUI
   // mountDefault) -- so this only ever targets the frame. The #cc-blank
   // in-document stand-in it used to fall back to is gone with cc-package.
+  function copyButton(value,label){
+    const button=document.createElement("button");button.type="button";
+    button.className="btn btn--ghost";button.textContent=label||"Copy";
+    button.addEventListener("click",async()=>{
+      try{await navigator.clipboard.writeText(String(value));button.textContent="Copied";}
+      catch(_e){
+        const range=document.createRange();const holder=document.createElement("span");
+        holder.textContent=String(value);button.after(holder);range.selectNodeContents(holder);
+        const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+        button.textContent="Press Ctrl+C";
+      }
+      setTimeout(()=>{button.textContent=label||"Copy";},2000);
+    });
+    return button;
+  }
+
   function focusCommandCenter(){
     const frame=$("ui-frame");
     if(frame){
@@ -4686,11 +4235,16 @@
 
   function wireCommandCenter(){
     $("view-chat").addEventListener("pointerdown",event=>{
-      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
-        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
-        if(!event.target.closest("button")) event.preventDefault();
-        focusCommandCenter();
-      }
+      const target=event.target;
+      if(target.closest("#chat-cloud, #chat-cloud-bubble")) return;
+      // Text, fields and dialogs keep the browser's own selection and copy.
+      if(target.closest("a,input,textarea,select,label,dialog,[role=dialog],[role=status],"+
+        "p,span,li,pre,code,h1,h2,h3,h4,td,th,[contenteditable]")) return;
+      if(target.closest("button")){ focusCommandCenter(); return; }
+      if(Array.from(target.childNodes).some(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim())) return;
+      // Avoid the pointer's default focus step undoing the handoff.
+      event.preventDefault();
+      focusCommandCenter();
     });
     $("chat-cloud").addEventListener("pointerdown",event=>{
       if(event.target===$("chat-cloud")) event.preventDefault();
@@ -5369,9 +4923,9 @@
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
     // the sign-out path only would miss every other caller of this.
     if(typeof AppUI!=="undefined") AppUI.reset();
-    historyLoaded=false; queueRestored=false; inflightRestored=false;
+    historyLoaded=false; inflightRestored=false;
     uploadsRestored=false;
-    sendQueue.length=0; sendQueueHeld=false; retainedItems=[];
+    activeSends.clear();
     renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
     clearComposerState();
     clearThread();
@@ -5473,6 +5027,13 @@
     if(panel&&!panel.hidden&&panel.scrollIntoView) panel.scrollIntoView({block:"nearest",behavior:"smooth"});
   }
 
+  function closeConnectRequest(){
+    railOpen=null;
+    const dialog=$("connect-panel").closest("dialog");
+    if(dialog&&dialog.open)dialog.close();
+    renderRail(railCache);
+  }
+
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
@@ -5495,7 +5056,7 @@
       if(!record||!ownsSavedRow(record)) throw new Error('Could not retain your message.');
       const already=this.waiting()&&sameInflight(this.record,record);
       record.needsConnection=request;
-      localStorage.setItem(INFLIGHT_KEY,JSON.stringify(record));
+      writeInflight(record);
       this.record=record;this.epoch=MCP._loginEpoch;
       if(already&&this.card&&this.card.isConnected)return;
       const box=document.createElement('section');box.className='needs-connection';
@@ -5525,7 +5086,7 @@
       };
       this.schedule();
     },
-    save(){if(this.current()&&sameInflight(readInflight(),this.record))localStorage.setItem(INFLIGHT_KEY,JSON.stringify(this.record));},
+    save(){if(this.current()&&sameInflight(readInflight(this.record.client_send_id),this.record))writeInflight(this.record);},
     failed(text){this.note.textContent=text+' Tap Retry to continue.';this.connect.textContent='Retry';this.connect.disabled=false;this.cancel.hidden=true;this.record.connectionFlow=null;this.save();},
     schedule(){clearTimeout(this.timer);this.timer=setTimeout(()=>this.check(),1500);},
     async begin(primary){
@@ -5541,27 +5102,20 @@
         finally{this.busy=false;this.schedule();}
         return;
       }
-      // Reserve the popup inside the gesture, before network or token renewal.
-      const popup=NATIVE?null:window.open('about:blank','_blank');
-      if(!NATIVE&&!popup){this.failed('Allow the sign-in popup to connect.');return;}
-      if(popup)popup.opener=null;
       this.busy=true;this.connect.disabled=true;this.note.textContent='Opening sign-in. Free models only; no paid access is approved.';
       try{
-        const result=await HostedModelConnect.post('inline_begin',{preset_id:primary.preset_id});
-        if(!this.current(record)){if(popup)popup.close();return;}
+        const result=await HostedModelConnect.post('inline_begin',{preset_id:primary.preset_id,client:await signInClient()});
+        if(!this.current(record))return;
         if(!/^\/app\/model-callback\/[A-Za-z0-9_-]{43}\?launch=1$/.test(result.launch_path))throw new Error('Invalid sign-in response.');
         record.connectionFlow=result.flow;this.save();this.cancel.hidden=false;
         const url=new URL(result.launch_path,CFG.resource||location.origin).href;
-        if(NATIVE)await openExternal(url);else popup.location.href=url;
-        this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
+        await openSignIn(url);
+        this.note.textContent='Finish signing in, then return here. Your message is kept.';
       }catch(error){
-        if(popup)popup.close();
         if(this.current(record)){
           this.failed('Sign-in could not start. Your message is kept.');
           if(error.signIn){
-            const link=document.createElement('a');link.href='/app/owner-sign-in';
-            link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
-            this.note.append(' ',link);
+            appendOwnerProof(this.note,'Sign in to approve');
           }
         }
       }
@@ -5585,9 +5139,6 @@
           }else if(result.status==='cancelled')this.failed('Sign-in was cancelled. Your message is kept.');
           else if(result.status==='consumed'){
             this.failed('Connection needs recovery. Use Other AI to finish the saved setup.');
-          }else if(this.popup&&this.popup.closed){
-            await HostedModelConnect.post('inline_cancel',{flow:record.connectionFlow});
-            if(this.current(record))this.failed('The sign-in window closed. Your message is kept.');
           }
         }
         const response=await fetch('/app/me',{headers:authHeaders(),credentials:'same-origin',cache:'no-store'});
@@ -5604,14 +5155,14 @@
     async resume(record){
       const send=async()=>{
         if(!this.current(record)||activeTurn)return;
-        const saved=readInflight();
+        const saved=readInflight(record.client_send_id);
         if(!sameInflight(saved,record)||!saved.needsConnection)return;
         this.note.textContent='Connected';this.connect.disabled=true;this.cancel.hidden=true;
         delete record.needsConnection;delete record.connectionFlow;
         this.save(); // claim before awaiting a send; ambiguity uses normal recovery
         this.record=null;clearTimeout(this.timer);
         await sendTurn(record.message,record.display,{echoed:true,keepComposer:true,
-          sentAt:record.ts,inputMethod:record.inputMethod,modelChoice:record.modelChoice,
+          sentAt:record.ts,clientSendId:record.client_send_id,inputMethod:record.inputMethod,modelChoice:record.modelChoice,
           consumerRequest:record.consumerRequest,agentId:record.agent});
       };
       if(navigator.locks)await navigator.locks.request('ta-model-connect-resume',send);
@@ -5785,7 +5336,7 @@
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset,
           center:typeof queueScope!=="undefined"?queueScope:"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
-        window.location.assign(url.href);
+        await openSignIn(url.href);
       }catch(_e){
         if(epoch!==this.epoch) return;
         sessionStorage.removeItem(this.storageKey);
@@ -5816,12 +5367,20 @@
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
            !req.action||req.action.type!=="bind_model_access") throw new Error("invalid_connection_response");
         this.setup="recovery";this.request=req;
+        await refreshRail();closeConnectRequest();
       }catch(error){
         if(epoch!==this.epoch) return;
         req=null;this.busy=false;
         await enterSignedIn();
         if(epoch!==this.epoch) return;
         const code=error&&error.message;
+        // Nothing left to resume (the saved connection is gone, e.g. after a
+        // migration): the setup is disconnected, so start a fresh sign-in
+        // instead of offering a resume that can never finish.
+        if(!callback&&code==="model_authorization_required"&&this.preset){
+          this.setup="disconnected";this.status("Starting a fresh sign-in…");
+          await this.begin();return;
+        }
         if(code==="no_eligible_free_agent_model"){
           this.status("Your account there offers no free model that can run your command center right now. Check its model and privacy settings, then tap Finish connecting, or connect another way below. Nothing paid was approved.");
         }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
@@ -5869,9 +5428,7 @@
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
         if(error.signIn){
           this.status(error.message||"Sign in to approve.");
-          const link=document.createElement("a");link.href="/app/owner-sign-in";
-          link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";
-          $("hosted-model-status").append(" ",link);
+          appendOwnerProof($("hosted-model-status"),"Sign in to approve");
           return;
         }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
@@ -6553,9 +6110,12 @@
     // pinch-zoom only rescales it, and only the keyboard should shrink the app.
     // Phones only: desktop and the Electron app keep 100dvh exactly as before.
     const vv=window.visualViewport, root=document.documentElement;
-    if(vv && (NATIVE || window.matchMedia("(pointer:coarse)").matches || window.matchMedia("(max-width:600px)").matches))
-      root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
-    else root.style.removeProperty("--app-h");
+    if(vv && (NATIVE || window.matchMedia("(pointer:coarse)").matches || window.matchMedia("(max-width:600px)").matches)){
+      const height=vv.height*(vv.scale||1);
+      root.style.setProperty("--app-h",height+"px");
+      // The keyboard is up: the composer needs the recovery bar's room.
+      root.classList.toggle("app-short",height<520);
+    }else{root.style.removeProperty("--app-h");root.classList.remove("app-short");}
   }
   function paintRailChip(){}
   function wirePhoneConversation(){
@@ -6651,8 +6211,8 @@
       // away what the founder typed: the draft and the chips both stay put.
       if(turn.blocked){ setStatusLine(turn.reason); return; }
       if(!turn.send) return;            // nothing typed and no usable attachment
-      Uploads.clear();
-      sendTurn(turn.send, turn.display, {inputMethod:"typed"});
+      sendTurn(turn.send, turn.display, {inputMethod:"typed",consumeUploads:true})
+        .catch(err=>console.error("message not sent",err));
       if(cloudCoversStage()) $("composer-input").focus();
       else if(typeof focusCommandCenter === "function") focusCommandCenter(); });
     const input=$("composer-input");
@@ -6781,7 +6341,9 @@
         let link=$('memory-owner-sign-in');
         if(!link){link=document.createElement('a');link.id='memory-owner-sign-in';
           link.href='/app/owner-sign-in';link.target='_blank';link.rel='noopener';
-          link.textContent='Sign in to save memory';$('memory-status').after(link);}
+          link.textContent='Sign in to save memory';
+          if(NATIVE||DESKTOP_SHELL){link.removeAttribute('href');link.textContent=ownerProofUnavailable();}
+          $('memory-status').after(link);}
       }
       return {ok:r.ok,status:r.status,doc};
     }
@@ -6907,6 +6469,7 @@
     $("btn-wakes-reload").addEventListener("click",()=>loadWakes());
     // One account policy, edited as a complete document under the owner cookie.
     let ownerPolicy=null;
+    $("policy-scope").onchange=()=>{ownerPolicy=null;loadRules();};
     function rulesSay(message){ $("rules-status").textContent=message||""; }
     function renderPolicy(snapshot){
       ownerPolicy=snapshot;
@@ -6921,11 +6484,11 @@
       if(!activity.childNodes.length)activity.textContent="No policy activity yet.";
     }
     async function loadRules(){
-      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
-      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch,scope=$("policy-scope").value;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch&&scope===$("policy-scope").value;
       rulesSay("");
       try{
-        const response=await fetch("/app/api/policy",{credentials:"same-origin",
+        const response=await fetch("/app/api/policy?scope="+$("policy-scope").value,{credentials:"same-origin",
           headers:authHeaders()});
         const result=await response.json();
         if(!current())return;
@@ -6935,12 +6498,12 @@
     }
     $("btn-policy-save").onclick=async()=>{
       if(!ownerPolicy){rulesSay("Load the policy before saving.");return;}
-      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
-      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch,scope=$("policy-scope").value;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch&&scope===$("policy-scope").value;
       const button=$("btn-policy-save");button.disabled=true;rulesSay("Saving...");
       try{
         const policy=JSON.parse($("policy-json").value);
-        const response=await fetch("/app/api/policy",{method:"POST",credentials:"same-origin",
+        const response=await fetch("/app/api/policy?scope="+$("policy-scope").value,{method:"POST",credentials:"same-origin",
           headers:{...authHeaders(),"Content-Type":"application/json"},
           body:JSON.stringify({expected_generation:ownerPolicy.generation,policy})});
         const result=await response.json();
@@ -7493,6 +7056,19 @@
       MCP._assertLogin(epoch);
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
+      if(operation==="oauth_begin"||operation==="source_sign_in"){
+        const discovery=await fetch("/app/connection-discovery",{
+          method:"POST",credentials:"same-origin",cache:"no-store",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+          body:JSON.stringify(payload.preset_id?{preset_id:payload.preset_id}:
+            payload.definition?{definition:payload.definition}:{destination:payload.destination})});
+        const prepared=await discovery.json();
+        MCP._assertLogin(epoch);
+        if(!discovery.ok||prepared.error)throw new Error(prepared.error||"discovery_failed");
+        payload={code_challenge:payload.code_challenge,prepared:prepared.definition,
+          ...(payload.request_ref?{request_ref:payload.request_ref}:{})};
+        operation="oauth_begin";
+      }
       const {center:localCenter,...ownerPayload}=payload;
       void localCenter;
       const response=await fetch("/app/model-connect/"+operation,{
@@ -7538,14 +7114,12 @@
         }
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
           center:req.universe_id||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
-        window.location.assign(url.href);
+        await openSignIn(url.href);
       }catch(err){
         sessionStorage.removeItem(this.storageKey);
         note.textContent="Could not start the sign-in: "+((err&&err.message)||"unknown error")+".";
         if(err&&err.signIn){
-          const link=document.createElement('a');link.href='/app/owner-sign-in';
-          link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
-          note.append(' ',link);
+          appendOwnerProof(note,'Sign in to approve');
         }
         button.disabled=false;
       }
@@ -7565,7 +7139,7 @@
         const result=await this.post("oauth_exchange",payload);
         if(result.status==="confirmation_required"){
           HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
-          HostedModelConnect.paint();openConnectRequest("Connection saved. Review model access, then confirm.");
+          HostedModelConnect.paint();await refreshRail();closeConnectRequest();
           return;
         }
         if(result.status==="provisioned"){
@@ -7625,46 +7199,174 @@
   // Sources completed by SIGNING IN (installed data on the setup request). One tap
   // asks the server for the platform's own connect request, then hands it to the
   // generic sign-in client: the browser names only the source's id.
-  const SignInSourceCards={
-    signature:"",busy:false,
-    render(sources){
-      const host=$("connect-sign-in-sources");
-      const valid=(Array.isArray(sources)?sources:[]).filter(s=>s&&typeof s.id==="string"&&
-        /^[a-z0-9_]{1,64}$/.test(s.id)&&typeof s.name==="string"&&typeof s.label==="string"&&
-        s.label.length>0&&s.label.length<=80);
-      const signature=JSON.stringify(valid);
-      if(this.signature===signature) return;
-      this.signature=signature;host.replaceChildren();
-      for(const source of valid){
-        const card=document.createElement("div");card.className="connect-source";
-        const name=document.createElement("strong");name.className="connect-source-name";
-        name.textContent=source.name;card.appendChild(name);
-        const offer=document.createElement("p");offer.className="connect-terms";
-        offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
-        const terms=document.createElement("p");terms.className="connect-terms";
-        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
-        card.appendChild(terms);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
-        button.textContent=source.label;card.appendChild(button);
-        const status=document.createElement("p");status.className="rtab-note";
-        status.setAttribute("role","status");card.appendChild(status);
-        button.addEventListener("click",()=>this.start(source,button,status));
-        host.appendChild(card);
+  const SubscriptionSources={
+    busy:false,storageKey:"ta_cli_login",leaving:false,
+    saved(){
+      try{const saved=JSON.parse(pkceStore.getItem(this.storageKey)||"null");
+        return saved&&saved.owner===queueOwner&&saved.expires>Date.now()?saved:null;
+      }catch(_e){return null;}
+    },
+    async post(operation,body,epoch){
+      await ensureFreshToken();
+      if(epoch!==MCP._loginEpoch||!token())throw new Error("Sign in again to continue.");
+      let response,result;
+      try{
+        response=await fetch("/app/subscription-connect/"+operation,{
+          method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify(body)});
+        result=await response.json();
+      }catch(_error){
+        // No answer (dropped connection, aborted by a reload): not a refusal.
+        const error=new Error("Connection interrupted. Reload this page to continue.");
+        error.transport=true;throw error;
+      }
+      if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
+      if(!response.ok||result.error){
+        const error=new Error("Connection did not finish. Sign in to the owner view and retry.");
+        error.signIn=result.error==="interactive_approval_required";throw error;
+      }
+      try{sessionStorage.removeItem("ta_owner_again");}catch(_e){}
+      return result;
+    },
+    // A lapsed owner session is a sign-in, not a dead end: go straight to the
+    // one sign-in, which returns to the app. A refusal within minutes of that
+    // sign-in is one signing in cannot cure, so it is reported, never looped;
+    // a later lapse redirects again.
+    async signInAgain(note,address,source){
+      if(NATIVE||DESKTOP_SHELL){note.textContent=ownerProofUnavailable();return;}
+      let again=false;
+      try{
+        const at=Number(sessionStorage.getItem("ta_owner_again"));
+        again=at>0&&Date.now()-at<600000;
+        if(!again)sessionStorage.setItem("ta_owner_again",String(Date.now()));
+      }catch(_e){}
+      if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
+      // Come back to the same Connect, not an empty app.
+      if((address||source)&&queueOwner){try{sessionStorage.setItem("ta_connect_resume",
+        JSON.stringify({address:address||"",source:source||null,owner:queueOwner,
+          at:Date.now()}));}catch(_e){}}
+      await openSignIn("/app/owner-sign-in?app=1");
+    },
+    async poll(flow,epoch){
+      try{return await this.post("poll",{flow},epoch);}
+      catch(error){
+        if(error.transport)throw error;
+        throw new Error("Sign-in was interrupted. Tap Connect to try again.");
       }
     },
-    async start(source,button,status){
-      if(this.busy||NATIVE) return;
-      this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
+    async start(source,ui,resume=null){
+      if(this.busy)return;
+      if(!this.watching){this.watching=true;
+        // pagehide is the departure itself (not a cancellable prompt). A page the
+        // back-forward cache restores is live again; reload it so a saved flow
+        // resumes the ordinary way.
+        addEventListener("pagehide",()=>{this.leaving=true;});
+        addEventListener("pageshow",event=>{this.leaving=false;
+          if(event.persisted&&this.saved())location.reload();});}
+      const external=NATIVE||DESKTOP_SHELL;
+      const epoch=MCP._loginEpoch;let flow=resume?resume.flow:"",opened=!!resume?.opened,cancelled=false,pending=false;
+      this.busy=true;ui.button.disabled=true;ui.cancel.hidden=false;
+      ui.shown=null;
+      ui.status.textContent="Setting up "+source.name+" for your agent. The first time takes about a minute…";
+      ui.cancel.onclick=()=>{cancelled=true;};
       try{
-        await ConnectOAuth.begin({title:source.name,origin:"platform"},status,button,
-          {source:true,preset_id:source.id});
+        let state=resume?await this.poll(flow,epoch):await this.post("begin",{source_id:source.id},epoch);flow=state.flow;
+        source.name=state.display_name||source.name||"this source";
+        if(state.status==="installing"){
+          pending=true;
+          appendMessage("system","Installing "+source.name+"? you'll be asked to sign in when it's ready");
+          closeConnectRequest();
+        }
+        pkceStore.setItem(this.storageKey,JSON.stringify({flow,source_id:source.id,
+          owner:queueOwner,opened,expires:Date.now()+900000}));
+        ui.submit.onclick=async()=>{
+          if(!ui.input.value.trim())return;
+          ui.submit.disabled=true;
+          try{await this.post("code",{flow,code:ui.input.value.trim()},epoch);ui.input.value="";}
+          catch(error){ui.status.textContent=error.message;}
+          finally{ui.submit.disabled=false;}
+        };
+        const deadline=Date.now()+900000;
+        while(Date.now()<deadline){
+          if(cancelled)throw new Error("Sign-in cancelled.");
+          if(epoch!==MCP._loginEpoch)throw new Error("The signed-in account changed.");
+          if(state.status==="cancelled")throw new Error("Sign-in was interrupted. Tap Connect to try again.");
+          if(state.status==="failed")throw new Error("Sign-in did not complete. Retry to connect.");
+          if(state.authorize_url&&(!opened||(!external&&!pending&&!ui.link))){
+            const url=new URL(state.authorize_url);if(url.protocol!=="https:")throw new Error("Invalid sign-in link.");
+            if(pending){
+              const signIn=document.createElement("button");signIn.type="button";
+              signIn.textContent="Sign in to "+source.name;
+              signIn.onclick=()=>{signIn.disabled=true;
+                const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
+                  JSON.stringify({...saved,opened:true}));
+                openConnectRequest();
+                if(external)void openSignIn(url.href);
+                else window.open(url.href,"_blank","noopener,noreferrer");};
+              appendMessage("system",source.name+" is ready to sign in.",signIn);
+            }else if(!external){
+              // A tab of its own: leaving this one lost the code and the flow.
+              const open=document.createElement("a");open.href=url.href;open.target="_blank";
+              open.rel="noopener noreferrer";open.className="btn";
+              open.textContent="Open "+source.name+" sign-in";
+              open.addEventListener("click",()=>{const saved=this.saved();
+                if(saved)pkceStore.setItem(this.storageKey,JSON.stringify({...saved,opened:true}));});
+              ui.link?.remove();ui.link=open;ui.status.after(open);
+            }else{
+              const saved=this.saved();if(saved)pkceStore.setItem(this.storageKey,
+                JSON.stringify({...saved,opened:true}));
+              await openSignIn(url.href);
+            }
+            opened=true;
+          }
+          ui.input.hidden=ui.submit.hidden=!(state.accepts_code&&opened&&state.status==="waiting");
+          const shown=state.status==="installing"?"installing":state.code?"code:"+state.code:"browser";
+          if(ui.shown!==shown){
+            ui.shown=shown;
+            if(state.status==="installing")
+              ui.status.textContent="Setting up "+source.name+
+                " for your agent. The first time takes about a minute…";
+            else if(state.code){
+              const value=document.createElement("code");value.textContent=state.code;
+              value.style.userSelect="all";value.style.fontSize="1.1em";
+              ui.status.replaceChildren("Approve sign-in using code: ",value," ",copyButton(state.code));
+            }
+            else ui.status.textContent="Finish sign-in in your browser.";
+          }
+          if(state.status==="connected"){
+            const result=await this.post("finish",{flow},epoch);
+            if(result.status!=="connected")throw new Error("Signed in. Model setup still needs attention.");
+            ui.status.textContent="Connected. Your agent can use this subscription.";
+            appendMessage("system","Connected "+source.name+". Your agent is ready — say hello.");
+            pkceStore.removeItem(this.storageKey);
+            await closeExternal();await refreshRail();closeConnectRequest();return;
+          }
+          await sleep(1000);state=await this.poll(flow,epoch);
+        }
+        throw new Error("Sign-in expired. Retry to connect.");
       }catch(error){
-        status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
-          "). Nothing was connected; try again in a moment.";
-        button.disabled=false;
-      }finally{this.busy=false;}
-    },
+        // A dropped or aborted request (a reload aborts the in-flight poll) is not
+        // a failed sign-in: keep the saved flow so the next load resumes it.
+        // Only an explicit cancel or a server-reported end cancels.
+        if(SubscriptionSources.leaving)return;
+        if(error.transport&&flow&&!cancelled){ui.status.textContent=error.message;return;}
+        if(error.signIn&&!flow&&!cancelled){
+          // A lapsed owner session refused the start: sign in, then this same
+          // source reconnects by itself on return.
+          await this.signInAgain(ui.status,null,{id:source.id,name:source.name});return;
+        }
+        ui.status.textContent=error.message;
+        if(pending)appendMessage("system",source.name+": "+error.message);
+        pkceStore.removeItem(this.storageKey);
+        if(flow&&epoch===MCP._loginEpoch){try{await this.post("cancel",{flow},epoch);}catch(_e){}}
+      }finally{
+        ui.link?.remove();ui.link=null;
+        ui.input.value="";ui.input.hidden=ui.submit.hidden=ui.cancel.hidden=true;
+        ui.button.disabled=false;this.busy=false;
+      }
+    }
   };
+
 
   // Under a turn that stopped because a source spent its free requests for the
   // day: what happened, and the three honest ways on. The limit, the credit and
@@ -8255,12 +7957,7 @@
     ref:new URLSearchParams(location.search).get('approval'), requestId:null, returnUrl:null,
     async start(id,ready=()=>true){
       const epoch=MCP._loginEpoch;
-      let client=DESKTOP_SHELL?'desktop':'web';
-      if(NATIVE){
-        const info=await nativePlugin('App').getInfo();
-        client=window.Capacitor.getPlatform()==='ios'?'ios':
-          info.id==='io.tinyassets.app.debug'?'android-debug':'android';
-      }
+      const client=await signInClient();
       if(epoch!==MCP._loginEpoch)throw new Error('Account changed.');
       const response=await fetch('/app/approval-handoff',{
         method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},
@@ -8273,7 +7970,7 @@
       if(url.origin!==location.origin||!url.pathname.startsWith('/app/approval-handoff/'))
         throw new Error('Invalid request link. Try again.');
       if(!ready(url.href))return;
-      await openExternal(url.href);
+      await openSignIn(url.href);
     },
     async restore(){
       if(!this.ref)return true;
@@ -8281,6 +7978,11 @@
         method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:'{}'
       });
       const value=await response.json();
+      if(response.status===409&&value.error==='handoff_expired_or_wrong_account'){
+        const clean=new URL(window.location.href);clean.searchParams.delete('approval');
+        history.replaceState(history.state,'',clean.pathname+clean.search+clean.hash);
+        this.ref=null;this.requestId=null;this.returnUrl=null;return false;
+      }
       if(!response.ok)throw new Error(value.error||'This request link expired.');
       this.requestId=value.request_id;this.returnUrl=value.return_url;railLink=value.request_id;
       return true;
@@ -8314,6 +8016,7 @@
       const controls=document.createElement('div');controls.className='browser-login-controls';
       const signIn=document.createElement('a');signIn.href='/app/owner-sign-in';
       signIn.target='_blank';signIn.rel='noopener';signIn.textContent='Sign in to the protected view';
+      if(NATIVE||DESKTOP_SHELL){signIn.removeAttribute('href');signIn.textContent=ownerProofUnavailable();}
       signIn.hidden=true;
       privateForm.append(credential,fill);
       box.append(note,image,privateForm,typing,controls,signIn);
@@ -8452,6 +8155,7 @@
       let preview=null, busy=false, originalDraft='', dirty=false;
       const signIn=document.createElement('a'); signIn.href='/app/owner-sign-in';
       signIn.target='_blank'; signIn.rel='noopener'; signIn.textContent='Sign in to approve'; signIn.hidden=true;
+      if(NATIVE||DESKTOP_SHELL){signIn.removeAttribute('href');signIn.textContent=ownerProofUnavailable();}
       box.append(title,destination,draft,details,scope,predicate,controls,signIn,note);
       function show(value){
         preview=value;
@@ -8693,7 +8397,7 @@
         busy=true;retry.disabled=true;error.hidden=true;
         status.textContent='Opening this request in your browser…';
         try{
-          if(reuse)await openExternal(link.href);
+          if(reuse)await openSignIn(link.href);
           else await ApprovalHandoff.start(req.request_id,url=>{
             if(!current())return false;
             link.href=url;link.hidden=false;return true;
@@ -8855,7 +8559,7 @@
   // The setup request's body: the panel node, configured from the request.
   function connectBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
-    if(req.body){
+    if(req.body && (req.action?.setup?.service || req.action?.type==="policy_proposal")){
       const why = document.createElement("p");
       why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
     }
@@ -8873,75 +8577,223 @@
     // The connect screen is every setup card that names no source; a reconnect
     // card names the one it repairs and shows only that.
     const screen = !setup.service;
-    $("connect-intro").hidden = !screen;
-    if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
-    const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
-    $("connect-paste").hidden = !keyCards.length;
-    $("connect-paste-summary").textContent = keyCards.length
-      ? "Paste a key: " + keyCards.map(s => s && s.name).filter(Boolean).join(", ") : "Paste a key";
-    if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
-    ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
+    for(const child of panel.children){
+      if(child.id!=="model-discovery")child.style.display=screen?"none":"";
+    }
+    ModelDiscovery.render(panel, screen);
     panel.hidden = false;
     box.appendChild(panel);
     return box;
   }
 
-  // "Other ways to connect": each shape is explicit fields completed through
-  // the same connect request an agent would raise. Nothing is inferred - an
-  // unpowered command center has no model to infer with - and no provider is named.
-  const FreeSourceCards={
-    signature:"",busy:false,
-    render(sources){
-      const host=$("free-source-cards");
-      const signature=JSON.stringify(sources);
-      if(this.signature===signature) return;
-      this.signature=signature;host.replaceChildren();
-      for(const source of sources){
-        const card=document.createElement("details");
-        const title=document.createElement("summary");title.textContent=source.name;card.appendChild(title);
-        const offer=document.createElement("p");offer.textContent=source.offer;card.appendChild(offer);
-        const help=document.createElement("a");help.textContent="Get your API key";
-        help.href=source.help_url;help.target="_blank";help.rel="noopener noreferrer";card.appendChild(help);
-        const label=document.createElement("label");label.textContent="API key";
-        const input=document.createElement("input");input.type="password";input.autocomplete="off";
-        label.appendChild(input);card.appendChild(label);
-        if(typeof source.terms==="string"&&source.terms){
-          // The provider's own terms that matter before connecting, inline.
-          const caveat=document.createElement("p");caveat.className="connect-terms";
-          caveat.textContent=source.terms;card.appendChild(caveat);
+  // ---- Connected AI: what is connected, and Disconnect beside each ----
+  const ConnectedAI={
+    seq:0,
+    async load(host){
+      if(!host)return;
+      const seq=++this.seq;
+      let http={connections:[]},subs={sources:[]};
+      try{
+        await ensureFreshToken();
+        const headers=Object.assign({"Content-Type":"application/json"},authHeaders());
+        [http,subs]=await Promise.all([
+          fetch("/app/connections",{headers:authHeaders(),credentials:"same-origin",cache:"no-store"})
+            .then(r=>r.ok?r.json():{connections:[]}).catch(()=>({connections:[]})),
+          fetch("/app/subscription-connect/list",{method:"POST",credentials:"same-origin",
+            cache:"no-store",headers,body:"{}"})
+            .then(r=>r.ok?r.json():{sources:[]}).catch(()=>({sources:[]}))]);
+      }catch(_e){}
+      if(seq!==this.seq)return;
+      const rows=[];
+      for(const c of (http&&Array.isArray(http.connections)?http.connections:[]))
+        rows.push({name:typeof c.label==="string"&&c.label?c.label:c.destination,
+          path:"/app/connections",body:{destination:c.destination,incarnation:c.incarnation}});
+      for(const s of (subs&&Array.isArray(subs.sources)?subs.sources:[]))
+        rows.push({name:s.name,path:"/app/subscription-connect/disconnect",body:{source_id:s.id},
+          reconnect:s.signed_in===false?{id:s.id,name:s.name}:null});
+      host.replaceChildren();host.hidden=!rows.length;
+      if(!rows.length)return;
+      const title=document.createElement("p");title.textContent="Connected";host.append(title);
+      for(const row of rows)host.append(this.row(row,host));
+    },
+    row(row,host){
+      const item=document.createElement("div");item.className="connection-row";
+      const name=document.createElement("span");name.textContent=row.name+" ";
+      const go=document.createElement("button");go.type="button";go.className="btn btn--ghost";
+      go.textContent="Disconnect";
+      const cancel=document.createElement("button");cancel.type="button";cancel.className="btn btn--ghost";
+      cancel.textContent="Cancel";cancel.hidden=true;
+      const note=document.createElement("span");note.setAttribute("role","status");
+      let armed=false;
+      cancel.onclick=()=>{armed=false;go.textContent="Disconnect";go.className="btn btn--ghost";
+        cancel.hidden=true;note.textContent="";};
+      go.onclick=async()=>{
+        if(!armed){armed=true;go.textContent="Confirm disconnect";go.className="btn btn--danger";
+          cancel.hidden=false;note.textContent=" Removes "+row.name+
+            "'s sign-in from TinyAssets. Your provider account and your conversations stay.";return;}
+        go.disabled=cancel.disabled=true;note.textContent=" Disconnecting…";
+        try{
+          await ensureFreshToken();
+          const response=await fetch(row.path,{method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify(row.body)});
+          const result=await response.json().catch(()=>({}));
+          if(!response.ok||result.error)throw new Error("unconfirmed");
+          appendMessage("system","Disconnected "+row.name+". Connect it again any time from Change model.");
+          this.load(host);refreshRail();
+        }catch(_e){
+          note.textContent=" Disconnect is not confirmed. Close and reopen this to check.";
+          go.disabled=cancel.disabled=false;
         }
-        const terms=document.createElement("p");
-        terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
-        card.appendChild(terms);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--primary";
-        button.textContent="Connect this source";card.appendChild(button);
-        const status=document.createElement("p");status.setAttribute("role","status");card.appendChild(status);
-        button.addEventListener("click",async()=>{
-          if(this.busy)return;
-          let key=input.value;input.value="";
-          if(!key||key.length>2048||!/^[!-~]+$/.test(key)){key="";status.textContent="Paste only your API key.";return;}
-          const epoch=MCP._loginEpoch;
-          this.busy=true;button.disabled=true;status.textContent="Checking your models…";
-          try{
-            const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
-            const result=await pending;
-            if(epoch!==MCP._loginEpoch)return;
-            if(result.status!=="confirmation_required"||!result.request)
-              throw new Error("invalid_connection_response");
-            HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
-            HostedModelConnect.paint();
-            status.textContent="Connection saved. Review model access, then confirm.";
-            refreshRail();
-          }catch(error){
-            if(epoch===MCP._loginEpoch)status.textContent="Not connected yet ("+(error.message||"unknown error")+"). Check your key and model access, then try again.";
-          }finally{key="";this.busy=false;button.disabled=false;}
-        });
-        host.appendChild(card);
+      };
+      item.append(name);
+      if(row.reconnect){
+        // Listed but unusable: say so and offer the one action that fixes it.
+        const state=document.createElement("span");state.textContent="Sign-in expired ";
+        const again=document.createElement("button");again.type="button";again.className="btn";
+        again.textContent="Reconnect";
+        const code=document.createElement("input");code.type="text";code.hidden=true;
+        code.setAttribute("aria-label","Code returned after sign-in");
+        const send=document.createElement("button");send.type="button";send.textContent="Finish sign-in";
+        send.hidden=true;
+        const stop=document.createElement("button");stop.type="button";stop.textContent="Cancel";
+        stop.hidden=true;
+        again.onclick=()=>SubscriptionSources.start({...row.reconnect},
+          {button:again,status:note,input:code,submit:send,cancel:stop});
+        item.append(state,again,code,send,stop);
       }
+      item.append(go,cancel,note);return item;
     },
   };
 
+  // ---- Unified address connection ----
+  const ModelDiscovery={
+    incoming:new URLSearchParams(window.location.search).get("connect_ai"),
+    resume:(()=>{try{
+      const saved=JSON.parse(sessionStorage.getItem("ta_connect_resume")||"null");
+      sessionStorage.removeItem("ta_connect_resume");
+      return saved&&typeof saved.address==="string"&&typeof saved.owner==="string"
+        &&(saved.address||(saved.source&&typeof saved.source.id==="string"))
+        &&Date.now()-saved.at<600000?saved:null;
+    }catch(_e){return null;}})(),
+    render(panel,visible){
+      let card=$("model-discovery");
+      if(card){card.hidden=!visible;if(visible)ConnectedAI.load($("connected-ai"));return;}
+      card=document.createElement("div");card.id="model-discovery";card.hidden=!visible;
+      const address=document.createElement("input");address.type="text";
+      address.setAttribute("aria-label","Provider address");address.autocomplete="url";
+      address.value=CFG.model_source_address||"";
+      const go=document.createElement("button");go.type="button";
+      go.className="btn btn--primary";go.textContent="Connect";
+      const note=document.createElement("p");note.setAttribute("role","status");
+      note.textContent="Enter your AI provider's address.";
+      const keyLabel=document.createElement("label");keyLabel.textContent="API key";keyLabel.hidden=true;
+      const keyInput=document.createElement("input");keyInput.type="password";keyInput.autocomplete="off";
+      keyLabel.appendChild(keyInput);
+      const help=document.createElement("a");help.textContent="Get an API key";
+      help.target="_blank";help.rel="noopener noreferrer";help.hidden=true;
+      const input=document.createElement("input");input.type="text";input.autocomplete="off";
+      input.setAttribute("aria-label","Code returned after sign-in");
+      const submit=document.createElement("button");submit.type="button";submit.textContent="Finish sign-in";
+      const cancel=document.createElement("button");cancel.type="button";cancel.textContent="Cancel";
+      input.hidden=submit.hidden=cancel.hidden=true;
+      const ui={button:go,status:note,input,submit,cancel};
+      let fallback=null;
+      address.addEventListener("input",()=>{fallback=null;keyInput.value="";keyLabel.hidden=help.hidden=true;});
+      go.addEventListener("click",async()=>{
+        if(go.disabled)return;
+        const selected=address.value.trim();if(!selected)return;
+        let key=keyInput.value;keyInput.value="";
+        go.disabled=true;address.disabled=true;note.textContent="Connecting?";
+        try{
+          if(fallback){
+            if(!key)throw new Error("key_required");
+            const pending=ConnectOAuth.post("deposit",{definition:fallback,secret:key});key="";
+            await this.finish(await pending);return;
+          }
+          const local=await SubscriptionSources.post("resolve",{address:selected},MCP._loginEpoch);
+          if(local.source_id){await SubscriptionSources.start({id:local.source_id},ui);return;}
+          const external=NATIVE||DESKTOP_SHELL;
+          const client=external?await signInClient():null;
+          const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+          const detected=await fetch("/app/model-discovery",{
+            method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify({address:selected,...(local.source?{source:local.source}:{})})});
+          if(!detected.ok)throw new Error("discovery_failed");
+          const {source}=await detected.json();
+          const result=await ConnectOAuth.post(external?"discover_inline":"discover",
+            {source,...(external?{client}:{code_challenge})});
+          if(result.status==="cli_login_required"){
+            await SubscriptionSources.start({id:result.source_id},ui);return;
+          }
+          if(result.status==="api_key_required"){
+            fallback=result.definition;keyLabel.hidden=help.hidden=false;
+            const url=new URL(result.help_url||selected);
+            if(url.protocol!=="https:"||url.username||url.password)throw new Error("invalid_help_url");
+            help.href=url.href;note.textContent="Enter your API key.";keyInput.focus();return;
+          }
+          if(external){
+            if(!/^\/app\/model-callback\/[A-Za-z0-9_-]{43}\?launch=1$/.test(result.launch_path))
+              throw new Error("invalid_sign_in_response");
+            await openSignIn(new URL(result.launch_path,CFG.resource||location.origin).href);
+            const deadline=Date.now()+result.expires_in*1000;
+            while(Date.now()<deadline){
+              await sleep(1000);
+              const state=await ConnectOAuth.post("inline_poll",{flow:result.flow});
+              if(state.status==="waiting")continue;
+              await this.finish(state);await closeExternal();return;
+            }
+            throw new Error("sign_in_expired");
+          }
+          const url=new URL(result.authorize_url),hosted=result.exchange==="exchange";
+          if(url.protocol!=="https:"||url.username||url.password||
+             !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||(!hosted&&url.searchParams.get("state")!==result.flow)||
+             !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600)
+            throw new Error("invalid_sign_in_response");
+          sessionStorage.setItem(hosted?HostedModelConnect.storageKey:ConnectOAuth.storageKey,
+            JSON.stringify({verifier,preset:result.source_id,title:"Connect "+selected,
+              source:true,center:queueScope||"",flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+          await openSignIn(url.href);
+        }catch(_error){
+          if(_error&&_error.signIn){await SubscriptionSources.signInAgain(note,selected);return;}
+          note.textContent="That address has no AI we can connect to";
+        }
+        finally{key="";go.disabled=false;address.disabled=false;}
+      });
+      address.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();go.click();}});
+      const connected=document.createElement("div");connected.id="connected-ai";connected.hidden=true;
+      card.append(connected,address,keyLabel,help,go,note,input,submit,cancel);panel.prepend(card);
+      if(visible)ConnectedAI.load(connected);
+      const incoming=this.incoming;
+      if(incoming){address.value=incoming;const clean=new URL(window.location.href);
+        clean.searchParams.delete("connect_ai");history.replaceState({},"",clean.pathname+clean.search);}
+      const saved=SubscriptionSources.saved();
+      if(visible&&saved)SubscriptionSources.start({id:saved.source_id},ui,saved);
+      else if(visible&&this.resume){
+        const resume=this.resume;this.resume=null;
+        // Another account signed in during the step-up: its Connect is its own.
+        if(resume.owner===queueOwner){
+          if(resume.source)setTimeout(()=>SubscriptionSources.start(resume.source,ui),0);
+          else{address.value=resume.address;setTimeout(()=>go.click(),0);}
+        }
+      }
+    },
+    async finish(result){
+      if(result.status==="confirmation_required"){
+        HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+        HostedModelConnect.paint();await refreshRail();closeConnectRequest();return;
+      }
+      if(!["connected","provisioned","serving"].includes(result.status))throw new Error("connection_incomplete");
+      await refreshRail();closeConnectRequest();
+    },
+  };
+  // ---- End unified address connection ----
+
+  // "Other ways to connect": each shape is explicit fields completed through
+  // the same connect request an agent would raise. Nothing is inferred - an
+  // unpowered command center has no model to infer with - and no provider is named.
   const ConnectShapes={
     shape:"",
     labels:{api_key:"API key", local:"Your own server"},
@@ -9404,9 +9256,7 @@
       if(err.authRequired) return enterSignedOut();
       note.textContent = "Couldn't do that: " + err.message;
       if(err.signIn){
-        const link=document.createElement("a"); link.href="/app/owner-sign-in";
-        link.target="_blank"; link.rel="noopener"; link.textContent=" Sign in to decide this request";
-        note.appendChild(link);
+        appendOwnerProof(note,"Sign in to decide this request");
       }
     }finally{ buttons.forEach(b=>{ b.disabled = itemAnswered; }); }
   }
@@ -9544,7 +9394,7 @@
         }
       };
       const founder=ordered.slice(0,index).reverse().find(row=>row.speaker==="founder");
-      const replySendId=t.speaker!=="founder"&&founder&&founder.client_send_id;
+      const replySendId=t.reply_to_client_send_id||(t.speaker!=="founder"&&founder&&founder.client_send_id);
       const existing=Array.from($("thread").children).find(n=>n.savedTurnKey===key||
         (t.client_send_id&&n.clientSendId===t.client_send_id)||
         (replySendId&&n.replyToClientSendId===replySendId));
@@ -9644,132 +9494,34 @@
   // most once per page.
   let inflightRestored = false;
   async function restoreInflight(turns){
-    const restoreEpoch=MCP._loginEpoch, restoreOwner=queueOwner, restoreScope=queueScope;
-    const restoreAgent=typeof addressedAgentId==="function"?addressedAgentId():"main";
-    const stillOwner=()=>restoreEpoch===MCP._loginEpoch&&restoreOwner===queueOwner&&
-      restoreScope===queueScope&&restoreAgent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
-    const pending = readInflight();
-    // Whatever was queued behind the in-flight turn goes out after it has been
-    // accounted for below (its bubble and resend offer come first).
-    if(inflightRestored){ restoreQueue(); return; }
-    // The saved queue's rule, applied to the in-flight record: nothing about a
-    // held message - not its text, not a filename it names - is shown or even
-    // OBSERVED until this page knows which command center it is, and never for
-    // another account or home.
-    if(!queueScope||!queueOwner){ restoreQueue(); return; }
-    // Nothing held, and the pair is known: this page's one restore pass is
-    // DONE. Left unmarked, the heartbeat repeated it every 30 seconds, and
-    // the first pass to find the page's own live turn on disk offered it back
-    // as a previous page's (live, 2026-09-20). A reload is a new page and a
-    // new pass, so nothing durable is ever locked out.
-    if(!pending){ inflightRestored = true; restoreQueue(); return; }
-    if((pending.scope && pending.scope!==queueScope)||
-       (pending.owner && pending.owner!==queueOwner)){
-      inflightRestored = true;
-      appendMessage("system","An unconfirmed message from another command center's session "+
-        "on this browser is waiting there; open that command center to see it.");
-      restoreQueue(); return;   // preserved on disk for that command center's own page
-    }
-    // Another agent's unconfirmed message waits for that agent's own thread,
-    // where its reply would land; it is never resent to the agent on screen.
-    if((pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
-      inflightRestored = true;
-      appendMessage("system","An unconfirmed message to another of your agents is waiting; "+
-        "open that agent to see it.");
-      restoreQueue(); return;
-    }
-    if(pending.needsConnection&&ownsSavedRow(pending)){
-      inflightRestored=true;
-      if(!InlineConnection.waiting()){
-        appendMessage('founder',pending.display||pending.message,null,pending.ts/1000);
-        InlineConnection.hold(pending.needsConnection,pending);
+    if(inflightRestored||!queueOwner||!queueScope)return;
+    inflightRestored=true;
+    await importSavedQueue();
+    for(const pending of readInflights()){
+      if(!ownsSavedRow(pending))continue;
+      if(activeSends.has(pending.client_send_id))continue;
+      if(pending.legacy){
+        const old=Array.from($("thread").children).find(n=>n.legacySendId===pending.client_send_id);
+        if(old)continue;
+        const button=document.createElement("button");button.textContent="Send saved draft";
+        const note=appendMessage("system","An earlier version saved this draft without a delivery receipt: "+pending.display,button);
+        note.legacySendId=pending.client_send_id;
+        button.addEventListener("click",()=>{
+          note.remove();pending.legacy=false;writeInflight(pending);
+          sendTurn(pending.message,pending.display,{clientSendId:pending.client_send_id,
+            agentId:pending.agent,keepComposer:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice});
+        });
+        const discard=document.createElement("button");discard.textContent="Discard";
+        discard.addEventListener("click",()=>{forgetInflightIf(pending);note.remove();});note.appendChild(discard);
+        continue;
       }
-      return;
+      const existing=Array.from($("thread").children).find(n=>n.clientSendId===pending.client_send_id);
+      sendTurn(pending.message,pending.display,{clientSendId:pending.client_send_id,
+        sentAt:pending.ts,agentId:pending.agent,inputMethod:pending.inputMethod,
+        modelChoice:pending.modelChoice,consumerRequest:pending.consumerRequest,
+        keepComposer:true,echoed:!!existing,recoveryBubble:existing,restored:true,
+        background:(pending.agent||"main")!==addressedAgentId()});
     }
-    if(!pending.scope||!pending.owner){
-      // Written before this page recorded its command center, so it may belong to
-      // another account signed in on this browser. CLICKING A BUTTON DOES NOT
-      // PROVE OWNERSHIP: a confirmation only says someone is here, never that
-      // this login is the one that saved it. So nothing about it is disclosed
-      // - not its text, not a filename it names, not its request key - and it
-      // is neither observed nor replayed. It is KEPT on disk, unchanged, for a
-      // page that can prove it; this one says only that something is held.
-      inflightRestored = true;
-      appendMessage("system","An unconfirmed message saved on this browser before "+
-        "the page had recorded its command center is being kept, but it cannot be shown "+
-        "here: this page cannot tell which account saved it. Send your message "+
-        "again if you still need it.");
-      restoreQueue(); return;
-    }
-    // Written by THIS page for a turn it still owns (in flight, or failed here
-    // with its own notice and offer): not held state, nothing to restore. The
-    // pass is not marked done; the record stays the live turn's and the turn's
-    // own code retires it. Nothing about it is drawn, observed or offered.
-    if(sameInflight(pending, liveInflight)){ restoreQueue(); return; }
-    if(pending.consumerRequest){
-      inflightRestored=true;
-      const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
-      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner&&
-        (pending.agent||"main")===(typeof addressedAgentId==="function"?addressedAgentId():"main");
-      try{
-        const observed=await Owner.read({target:"conversation_turn",
-          request_key:pending.consumerRequest.request_key});
-        // A reply that lands after a sign-in or home change paints nothing.
-        if(!stillOwner())return;
-        const turn=observed&&observed.consumer_turn;
-        if(turn){
-          if(!renderedConsumerFounders.has(turn.turn_id)){
-            appendMessage("founder",pending.display,null,pending.ts/1000);
-            renderedConsumerFounders.add(turn.turn_id);
-          }
-          if(turn.projection==="committed"){
-            if(!renderedConsumerTurns.has(turn.turn_id)){
-              if(observed.reply)renderConverse(observed);
-              else if(observed.turn_failure){
-                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code,
-                  observed.turn_failure);
-                renderedConsumerTurns.add(turn.turn_id);
-              }
-            }
-            forgetInflightIf(pending);restoreQueue();return;
-          }
-          // Keep this exact request available for a user-requested observation
-          // or terminal projection repair, never a new workflow invocation.
-          offerResend(pending.message,pending.display,new Error("Conversation is still pending."),
-            {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
-             consumerRequest:pending.consumerRequest});
-          restoreQueue();return;
-        }
-      }catch(_e){ /* Unknown status retains the exact durable local request. */ }
-      if(!stillOwner())return;
-      offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
-        {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
-         consumerRequest:pending.consumerRequest});
-      restoreQueue();return;
-    }
-    // A running send takes precedence over saved history. Both require the
-    // exact echoed identity; an old client/server must keep the cautious offer.
-    const running=await readPendingTurns();
-    if(!stillOwner()) return;
-    if(running&&running.active&&pending.client_send_id&&
-       running.active.client_send_id===pending.client_send_id&&showActiveTurn(running.active)){
-      inflightRestored=true; restoreQueue(); return;
-    }
-    const already=savedSendIndex(turns||[],pending)>=0;
-    if(already){ forgetInflightIf(pending); restoreQueue(); return; }
-    inflightRestored = true;
-    const recoveryBubble=appendMessage("founder", pending.display, null,
-      typeof pending.ts==="number"?pending.ts/1000:null);
-    const note=appendMessage("system",
-      "This message was never confirmed — the reply did not arrive here. The request may already have acted. ");
-    // A reload must retain the same read-only recovery as a live transport
-    // failure. The server can finish after this history/active-turn snapshot;
-    // foreground/online events then refresh the saved conversation here too.
-    attachSavedConversationCheck(note, pending.message, pending, pending.ts, recoveryBubble);
-    // A line queued behind the unconfirmed turn (an approval, typically) is
-    // offered below it, never sent on its own: the founder decides what goes
-    // out, and in what order, once they see both.
-    restoreQueue();
   }
 
   // Proactive renewal: keep the ~5-minute access token fresh in the background so
@@ -9846,6 +9598,9 @@
   __TA_CREDENTIAL_REQUESTS__
 
   async function boot(){
+    if(NATIVE||DESKTOP_SHELL)document.querySelectorAll('a[href="/app/owner-sign-in"]').forEach(link=>{
+      link.removeAttribute('href');link.textContent=ownerProofUnavailable();
+    });
     if(!(await AppUpdates.init(CFG.app_versions))) return;
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
@@ -9859,8 +9614,6 @@
     if(typeof AppUI!=="undefined") AppUI.init();
     HostedModelConnect.wire();
     wireNativeReturn();
-    // A vendor sign-in card once kept a verifier here; nothing reads it now.
-    try{ localStorage.removeItem("ta_openai_flow"); }catch(_e){}
     const ownerCompletion = new URLSearchParams((window.location.hash||'').slice(1)).has('owner_completion');
     const signedInNow = modelCallback ? false : await completeSignInIfCallback();
     if(ownerCompletion) return; // Preserve refusal text or wait for the protected return navigation.
@@ -9880,6 +9633,8 @@
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){
       await enterSignedIn();
+      if(ModelDiscovery.incoming||ModelDiscovery.resume||SubscriptionSources.saved())
+        openConnectRequest();
       if(modelCallback) await HostedModelConnect.complete(modelCallback);
     } else {
       enterSignedOut();
@@ -9919,4 +9674,13 @@
       $("composer-input").focus();
     }
   });
+  document.addEventListener('click',event=>{
+    const link=event.target.closest?.('a[href]');
+    if(!link)return;
+    const url=new URL(link.href,location.origin);
+    if(url.origin!==location.origin||url.pathname!=='/app/owner-sign-in')return;
+    event.preventDefault();event.stopImmediatePropagation();
+    openSignIn(url.href).catch(error=>AppRecovery.fail(error));
+  },true);
+  __TA_UNDO__
   boot().then(()=>AppRecovery.started(),error=>AppRecovery.fail(error));

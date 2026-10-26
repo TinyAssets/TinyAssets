@@ -102,6 +102,20 @@ RESET_TABLES = {
 
 
 def reset_credentials(staged, now):
+    from tinyassets.broker.admission import admission
+    from tinyassets.router_account_deletion import revocation_path, revoke_local_tokens
+
+    _safe(staged, ".workos-revocations.sqlite3")
+    # Offline root phase: the broker must not write the router's auth store.
+    # This fence precedes the upstream revocations in platform_recovery.
+    with closing(sqlite3.connect(staged / ".broker/state/owner-identities.db")) as db:
+        owners = [row[0] for row in db.execute("SELECT principal FROM owner_identities")]
+        for owner in owners:
+            revoke_local_tokens(staged, owner, now=now,
+                                deleted=admission(db, owner).state == "erased")
+    if owners:
+        revocation_path(staged).chmod(0o600)
+        os.chown(revocation_path(staged), 1001, 1001)
     for relative, tables in RESET_TABLES.items():
         present = _read(staged, relative)
         if not present:
@@ -127,17 +141,15 @@ def reset_credentials(staged, now):
     for pattern in (
         ".runtime/app_refresh_sessions/*.json",
         ".broker/accounts/*/credentials/.credential-vault.json",
+        ".broker/accounts/*/credentials/.subscription-state.json",
     ):
         for path in staged.glob(pattern):
             _safe(staged, path.relative_to(staged)).unlink()
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV
-    from tinyassets.onboarding.canary_sign_in import KEY_ENV
 
     operational = _safe(staged, ".router-credentials.json")
     operational.unlink(missing_ok=True)
-    operational.write_text(
-        json.dumps({name: secrets.token_urlsafe(48) for name in (WIKI_CANARY_TOKEN_ENV, KEY_ENV)})
-    )
+    operational.write_text(json.dumps({WIKI_CANARY_TOKEN_ENV: secrets.token_urlsafe(48)}))
     operational.chmod(0o600)
     os.chown(operational, 1001, 1001)
     from tinyassets.cutover_control import close_admission

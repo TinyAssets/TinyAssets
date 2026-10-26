@@ -22,8 +22,10 @@ selects how the turn executes:
   owner's normal budget as a durable activity session, so the parent
   turn is never blocked and the child's lineage is its activity record.
 
-The executors underneath (the served writer turn, the workflow agent turn)
-are C9's one loop in waiting; nothing starts them except this function.
+Both parents run :class:`tinyassets.agent_turn_coordinator.AgentTurnCoordinator`.
+Admission is that loop's scope check, a yield journals the unsent planned
+tool, and a work adapter maps provider exhaustion. There is no second
+executor class.
 """
 
 from __future__ import annotations
@@ -90,7 +92,17 @@ class ChildOf:
     inside_activity: bool = False
 
 
-Parent = OwnerTurn | RunStep | ChildOf
+@dataclass(frozen=True)
+class Inbound:
+    """A verified, box-local receipt awaiting durable send admission."""
+
+    base_path: Path
+    universe_id: str
+    owner: str
+    receipt: str
+
+
+Parent = OwnerTurn | RunStep | ChildOf | Inbound
 
 
 def _universe_dir(parent: Parent) -> Path:
@@ -113,13 +125,25 @@ def start(agent_ref: str, input: str, parent: Parent):
     The agent is resolved among the parent's admitted account's agents only:
     on a shared command center, a co-admin's own agent is not this account's.
     """
-    if not isinstance(parent, (OwnerTurn, RunStep, ChildOf)):
+    if not isinstance(parent, (OwnerTurn, RunStep, ChildOf, Inbound)):
         raise TypeError(f"unknown parent {type(parent).__name__}")
     try:
         agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
     except (LookupError, ValueError, OSError) as exc:
         raise AgentUnavailable(
             f"no agent named {agent_ref!r} in this command center") from exc
+    if isinstance(parent, Inbound):
+        from tinyassets.addressed_agents import memory_session
+        from tinyassets.owner_door.send import admit_owner_input
+        from tinyassets.owner_runtime import require
+
+        home = _universe_dir(parent)
+        require(home, parent.owner)
+        if not parent.receipt.startswith("inb_"):
+            raise ValueError("inbound receipt required")
+        thread = memory_session(parent.owner, agent.agent_id)
+        admit_owner_input(home, thread, parent.receipt, input, {})
+        return {"session": thread, "client_send_id": parent.receipt, "state": "pending"}
     if isinstance(parent, OwnerTurn):
         return _owner_turn(agent, input, parent)
     if isinstance(parent, RunStep):

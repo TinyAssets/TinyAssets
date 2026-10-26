@@ -283,7 +283,6 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
     from tinyassets.auth import middleware as auth
     from tinyassets.auth.provider import Identity
     from tinyassets.control_plane.binding import current_binding
-    from tinyassets.providers import call
 
     def forbidden(*args, **kwargs):
         raise AssertionError("shared box binding/provider must not be called")
@@ -291,7 +290,7 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
     assert not hasattr(served_chat, "configured_box_provider")
     assert not hasattr(owner_mode.runtime.tools, "start_exec")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    monkeypatch.setattr(call, "make_interactive_agent_turn", agent.factory)
+    monkeypatch.setattr(served_chat, "open_served_turn", agent.factory)
     monkeypatch.setattr(model.engine_tool_client, "_make_client", _real_engine_client)
     agent.tool_call = (
         "write",
@@ -458,6 +457,140 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
             process.wait(timeout=30)
         # Uvicorn restores and re-raises SIGTERM after its graceful lifespan exit.
         assert process.returncode in (0, -signal.SIGTERM)
+
+
+def test_mcp_scope_gates_without_a_box_auth_provider(owner_mode, agent, monkeypatch):
+    """Router-authenticated MCP calls that go through require_action_scope.
+
+    ``_provider`` is unset and the box has neither ``UNIVERSE_SERVER_AUTH`` nor
+    ``UNIVERSE_SERVER_DEV_USER``. Reads succeed. A read-only identity is refused
+    at the scope gate instead of the dev-provider crash.
+    """
+    import base64
+    import secrets
+    from dataclasses import asdict
+
+    from tinyassets.auth import middleware as auth
+    from tinyassets.auth.provider import Identity
+    from tinyassets.owner_ingress import OwnerIngress
+    from tinyassets.universe_server import create_streamable_http_app
+
+    created = []
+
+    def create_provider():
+        created.append("provider")
+        raise AssertionError("owner box instantiated an auth provider")
+
+    monkeypatch.setattr(auth, "_provider", None)
+    monkeypatch.setattr(auth, "create_provider", create_provider)
+    monkeypatch.delenv("UNIVERSE_SERVER_AUTH", raising=False)
+    monkeypatch.delenv("UNIVERSE_SERVER_DEV_USER", raising=False)
+    graph_id = agent.served.context.universe_dir.name
+    secret = secrets.token_urlsafe(32)
+    secret_file = owner_mode.directory / "scope-secret"
+    secret_file.write_text(secret)
+
+    def headers_for(*capabilities):
+        identity = Identity(user_id="owner", username="owner", capabilities=list(capabilities))
+        return {
+            "x-box-secret": secret,
+            "x-owner": "owner",
+            "x-owner-identity": base64.urlsafe_b64encode(
+                json.dumps(asdict(identity)).encode()
+            ).decode(),
+        }
+
+    app = OwnerIngress(create_streamable_http_app(), secret_file)
+    uds = owner_mode.directory / "scope.sock"
+    server = uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 30
+        while not server.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server.started
+
+        async def exercise():
+            from fastmcp import Client
+            from fastmcp.client.transports import StreamableHttpTransport
+
+            def client_for(headers):
+                def http_client(**kwargs):
+                    return httpx.AsyncClient(
+                        transport=httpx.AsyncHTTPTransport(uds=str(uds)),
+                        headers=headers,
+                        timeout=60,
+                    )
+
+                return Client(
+                    StreamableHttpTransport(
+                        "http://localhost/mcp", httpx_client_factory=http_client
+                    )
+                )
+
+            async def call(client, name, arguments):
+                result = await client.call_tool(name, arguments)
+                assert not result.is_error, result
+                return json.loads(result.content[0].text)
+
+            authorized = headers_for("read", "write", "costly", "submit_request", "list")
+            async with client_for(authorized) as client:
+                branches = await call(client, "read_graph", {"target": "branches", "limit": 5})
+                assert isinstance(branches.get("branches"), list), branches
+                graphs = await call(client, "read_graph", {"target": "graphs", "limit": 5})
+                centers = graphs.get("command_centers")
+                assert isinstance(centers, list) and any(
+                    row.get("id") == graph_id for row in centers
+                ), graphs
+                graph = await call(
+                    client, "read_graph", {"target": "graph", "graph_id": graph_id}
+                )
+                assert graph.get("command_center_id") == graph_id, graph
+                page = await call(client, "read_page", {"query": "owner"})
+                assert isinstance(page.get("results"), list), page
+                for name, arguments in (
+                    ("write_graph", {
+                        "target": "branch", "operation": "create", "payload_json": "{}",
+                    }),
+                    ("run_graph", {"branch_def_id": "missing-branch", "graph_id": graph_id}),
+                    ("write_page", {
+                        "scope": "commons",
+                        "page": "owner-box-scope",
+                        "category": "notes",
+                        "content": "owner box scope",
+                    }),
+                ):
+                    body = await call(client, name, arguments)
+                    assert body.get("auth_scope_required") is not True, (name, body)
+
+            readonly = headers_for("read", "list")
+            async with client_for(readonly) as client:
+                still_readable = await call(
+                    client, "read_graph", {"target": "branches", "limit": 5}
+                )
+                assert "branches" in still_readable, still_readable
+                for name, arguments in (
+                    ("write_graph", {
+                        "target": "branch", "operation": "create", "payload_json": "{}",
+                    }),
+                    ("run_graph", {"branch_def_id": "missing-branch", "graph_id": graph_id}),
+                    ("write_page", {
+                        "scope": "commons",
+                        "page": "owner-box-scope-denied",
+                        "category": "notes",
+                        "content": "must not land",
+                    }),
+                ):
+                    body = await call(client, name, arguments)
+                    assert body.get("auth_scope_required") is True, body
+
+        asyncio.run(exercise())
+        assert created == []
+    finally:
+        server.should_exit = True
+        thread.join(30)
+        assert not thread.is_alive()
 
 
 def test_refuses_to_start_without_the_boxhostd_owner_mount(tmp_path, monkeypatch):

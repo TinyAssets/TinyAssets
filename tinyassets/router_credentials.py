@@ -68,19 +68,20 @@ class HookOwners:
         if not self.path.exists():
             return None
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='hook_owners'").fetchone():
+                return None
             row = db.execute("SELECT owner FROM hook_owners WHERE token_hash=?",
                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
         return row[0] if row and active_owner(row[0], self.path.parent) else None
 
+    def shared_endpoint(self, binding: str) -> bool:
+        if not self.path.exists():
+            return False
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS inbound_endpoints (binding TEXT PRIMARY KEY)")
+            return db.execute("SELECT 1 FROM inbound_endpoints WHERE binding=?",
+                              (binding,)).fetchone() is not None
 
-def hook_identity(root: Path, token: str):
-    from tinyassets.auth.provider import Identity
-    from tinyassets.webhook_inbound import inbound_enabled
-
-    if not inbound_enabled():
-        return None
-    owner = HookOwners(root).resolve(token)
-    return Identity(user_id=owner, username=owner) if owner else None
 
 
 def credential_socket(root: Path) -> Path:
@@ -142,17 +143,13 @@ def revoke_account(root: Path, owner: str):
 
 
 def _revoke_account(root: Path, owner: str, keys):
-    from tinyassets.onboarding import (
-        approval_handoff,
-        canary_sign_in,
-        owner_sessions,
-        session_store,
-    )
+    from tinyassets.onboarding import approval_handoff, owner_sessions, session_store
+    from tinyassets.router_account_deletion import revoke_local_tokens
 
+    revoke_local_tokens(root, owner, deleted=True)
     # This process's data_dir is the router root, never the requesting box.
     owner_sessions.revoke_owner(owner)
     session_store.revoke_owner(owner)
-    canary_sign_in.revoke_owner(owner)
     with approval_handoff.flows() as db:
         db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
     for key in keys.list(owner, authority=None)["keys"]:
@@ -219,6 +216,32 @@ def _dispatch(root: Path, owner: str, request: dict) -> dict:
 
 def routing_dispatch(root, request):
     from tinyassets.routing_snapshot import snapshot
+
+    if (request.get("operation") == "inbound_state"
+            and set(request) == {"operation", "owner"}):
+        from tinyassets.inbound_routing import DeliveryBreakers
+
+        snapshot(root).route(request["owner"])
+        return {"breakers": DeliveryBreakers(root).for_owner(request["owner"])}
+
+    if (request.get("operation") == "inbound_ready"
+            and set(request) == {"operation", "owner", "binding", "revision"}
+            and isinstance(request.get("owner"), str) and request["owner"]
+            and isinstance(request.get("binding"), str) and request["binding"]
+            and type(request.get("revision")) is int and request["revision"] >= 1):
+        from tinyassets.inbound_routing import DeliveryBreakers
+
+        snapshot(root).route(request["owner"])
+        DeliveryBreakers(root).ready(request["owner"], request["binding"], request["revision"])
+        return {"ready": True}
+
+    if (request.get("operation") == "inbound_endpoint"
+            and set(request) == {"operation", "binding"}
+            and isinstance(request["binding"], str) and request["binding"]):
+        with closing(sqlite3.connect(HookOwners(root).path)) as db, db:
+            db.execute("CREATE TABLE IF NOT EXISTS inbound_endpoints (binding TEXT PRIMARY KEY)")
+            db.execute("INSERT OR IGNORE INTO inbound_endpoints VALUES (?)", (request["binding"],))
+        return {"published": True}
 
     if request == {"operation": "routing_instance"}:
         return snapshot(root).installed()

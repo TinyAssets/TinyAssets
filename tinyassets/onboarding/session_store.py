@@ -16,9 +16,8 @@ cross-user disclosure wearing a different hat.
 dir* that is not this process: a stray backup, a detached volume, a container
 sidecar, a mounted-in tool, a restored snapshot. It is **not** a boundary against
 code executing inside this process — that reader can call ``read()`` itself. That
-is a separate, already-filed finding
-(``docs/concerns/2026-08-28-user-code-runs-in-process.md``) whose fix is a process
-split, and encryption must not be sold as a substitute for it. Likewise the
+is the owner-box process split (ADR-019; S8 in docs/architecture.md), and
+encryption must not be sold as a substitute for it. Likewise the
 compose ``worker*`` fleet services mount ``/data`` and copy the environment; they
 are being retired under ``openspec/changes/user-owned-automations`` and are
 deliberately out of scope here.
@@ -34,6 +33,12 @@ branch of the provider child env copy ``os.environ`` wholesale.
 the scrub precedes the app build, the reconciler threads and uvicorn — the
 onboarding route being dark (``TINYASSETS_ONBOARDING_APP`` off) must not leave the
 key sitting in the environment.
+
+Inside an admitted owner box the key instead lives in that owner's durable
+volume, loaded before the app serves, without entering the environment. The
+box is the isolation boundary: a backup of the entire owner volume includes
+its key as well as ciphertext, so encryption does not protect against a reader
+of that whole volume. Shared authentication continues to use the router key.
 
 **Handles rotate.** A refresh mints a NEW handle and replaces the old record with
 a sealed tombstone naming the successor, expiring after a short grace. So a
@@ -153,10 +158,25 @@ def _load_key() -> bytes:
     # without the key. Popping BEFORE the parse means even a rejected value
     # does not survive in the environment.
     raw = os.environ.pop(SEAL_KEY_ENV, "")
+    from tinyassets.owner_runtime import current
+
+    runtime = current()
+    if runtime is not None:
+        from tinyassets.boxes.session_key import load
+
+        key = load(runtime.root)
+        _durable_key = True
+        return key
+
+    from tinyassets.boxes.layout import BROKER_UID
     from tinyassets.storage import data_dir
     from tinyassets.universe_files import read_data_path
 
-    restored_key = read_data_path(data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
+    # The broker holds no sessions and is barred from the router's .runtime;
+    # importing this module there must not read it (2026-10-22: that read
+    # refused every model sign-in exchange).
+    restored_key = None if os.geteuid() == BROKER_UID else read_data_path(
+        data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
     if restored_key is not None:
         raw = restored_key.decode("ascii").strip()
     if raw.strip():

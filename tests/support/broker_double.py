@@ -440,9 +440,9 @@ def install_owner_transport(monkeypatch, in_process_broker, *, patch_egress=True
 
     channel_request = owner_channel.request
 
-    def channel(center, document):
+    def channel(center, document, **options):
         if owner_runtime.current() is not None or document.get("op") != "MODEL_SOURCE":
-            return channel_request(center, document)
+            return channel_request(center, document, **options)
         from tinyassets.broker.supervisor import get_supervisor
         from tinyassets.storage import data_dir
 

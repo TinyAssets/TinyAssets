@@ -1,0 +1,8 @@
+{
+  "name": "owner-subscription-source",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@openai/codex": "0.163.0"
+  }
+}

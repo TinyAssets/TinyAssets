@@ -386,8 +386,9 @@ def seed_okf_bundle(
     """Seed the blank OKF soul bundle into ``universe_dir`` and return the
     parsed :class:`UniverseSoul` view of the new ``soul.md``.
 
-    Idempotent-safe on a fresh directory; callers create the directory first.
-    Does not create ``self/``, ``soul/``, ``notes.json``, or ``activity.log``.
+    A fresh directory receives the bundle. An existing file is left as the
+    owner wrote it. Does not create ``self/``, ``soul/``, ``notes.json``,
+    or ``activity.log``.
     """
     soul_text = _soul_md(purpose, loop_branch_def_id)
 
@@ -409,11 +410,12 @@ def seed_okf_bundle(
     }
 
     for rel, content in files.items():
-        # Link-free: a seed over an existing folder never writes through a link.
-        write_data_path(universe_dir / rel, content)
+        # Files are the authority. A repeated seed keeps an owner edit.
+        try:
+            write_data_path(universe_dir / rel, content, mode="exclusive")
+        except FileExistsError:
+            pass
 
-    # Creation only, not a turn-time default or an existing-center upgrade.
-    # Preserve an existing skill if a caller repeats provisioning.
     try:
         write_data_path(universe_dir / CONNECT_SKILL_PATH, connect_skill(), mode="exclusive")
     except FileExistsError:

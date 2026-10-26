@@ -22,6 +22,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets.capability_health import observed
+from tinyassets.sqlite_schema import ensure_table
 
 COOKIE = "__Host-ta-owner"
 FLOW_COOKIE = "__Host-ta-owner-login"
@@ -53,19 +54,26 @@ def store():
         os.chown(path, -1, 1102)
         os.chmod(path, 0o640)
     conn.row_factory = sqlite3.Row
-    conn.execute(
+    # Ephemeral: a layout change signs everyone out.
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_sessions "
-        "(session_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, expires_at REAL NOT NULL)"
+        "(session_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_login_flows "
         "(state_hash TEXT PRIMARY KEY, cookie_hash TEXT NOT NULL, verifier BLOB NOT NULL, "
-        "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)"
+        "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS owner_login_completions "
         "(handle_hash TEXT PRIMARY KEY, state_hash TEXT UNIQUE NOT NULL, "
-        "payload BLOB NOT NULL, expires_at REAL NOT NULL)"
+        "payload BLOB NOT NULL, expires_at REAL NOT NULL)",
+        kind="ephemeral",
     )
     conn.execute("DELETE FROM owner_login_completions WHERE expires_at<=?", (time.time() - 600,))
     # Keep expired rows briefly so a late callback can explain expiry and age.
@@ -134,6 +142,23 @@ def require(request, *, owner=None, optional=False):
     if owner is not None and json.loads(session["identity_json"])["user_id"] != owner:
         raise PermissionError("The signed-in account changed; sign in again.")
     return session
+
+
+def extend(cookie, owner):
+    """Slide a live protected session while its own browser keeps renewing.
+
+    Only the HttpOnly owner cookie this browser already holds is extended, and
+    only for the account the renewal just proved; nothing here mints proof from
+    a bearer or a page-held handle. An owner who keeps using the app is never
+    sent through sign-in again mid-task; one who returns after the window is.
+    """
+    session = lookup(cookie)
+    if session is None or json.loads(session["identity_json"])["user_id"] != owner:
+        return False
+    with store() as conn:
+        conn.execute("UPDATE owner_sessions SET expires_at=? WHERE session_hash=?",
+                     (time.time() + 28800, hashed(cookie)))
+    return True
 
 
 def revoke(cookie):

@@ -1,6 +1,7 @@
 """boxhostd executes broker-authorized sandbox operations and reports facts."""
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import logging
@@ -27,17 +28,24 @@ class Box:
     started: float = 0
     failures: int = 0
     error: str = ""
+    answered: float = 0.0  # monotonic time of the last status the box's own app gave
     image: str = ""
     launch: dict = field(default_factory=dict)
 
 
 class OwnerDaemons:
     def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
-                 memory_bytes=1024**3, startup_timeout=60, images=None):
+                 memory_bytes=1024**3, startup_timeout=60, images=None,
+                 answer_probe=4, answer_silence=600):
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
         self.directory = Path(directory)
         self.memory_bytes, self.startup_timeout = memory_bytes, startup_timeout
+        # A wake retries a silent box's status for answer_probe seconds. It is
+        # replaced only once nothing has answered for answer_silence seconds,
+        # counted from the last good status (routine broker checks refresh it), so
+        # a turn that stalls the app for less than that is never killed for it.
+        self.answer_probe, self.answer_silence = answer_probe, answer_silence
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
         self.images = images
@@ -104,8 +112,35 @@ class OwnerDaemons:
         if not record:
             raise BoxAuthError("broker launch authorization is missing")
         launch_options = {}
+        from tinyassets.boxes.images import harness_lease
+
+        lease = (harness_lease(self.images.directory) if self.images is not None
+                 else contextlib.nullcontext())
+        with lease:
+            self._start_sandbox(box, record, launch_options)
+        while True:
+            if not self.runtime.alive(box.uid):
+                raise BoxError("owner daemon exited during startup")
+            try:
+                status = self._rpc(box)
+                if not status["draining"]:
+                    box.started = box.last = box.answered = time.monotonic()
+                    box.error = ""
+                    return
+            except (OSError, http.client.HTTPException):
+                pass
+            if time.monotonic() >= deadline:
+                raise BoxError("owner app socket did not become ready")
+            time.sleep(.05)
+
+    def _start_sandbox(self, box, record, launch_options):
+        """Image selection through the written bundle, under the harness lease."""
         if self.images is not None:
             image = self.images.current
+            selected = self.images.directory / image
+            current_link = self.images.directory / "harness-current"
+            if not selected.is_dir() and current_link.is_symlink():
+                image = current_link.resolve(strict=True).name
             if not self.images.compatible(image):
                 raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
             launch_options["rootfs"] = self.images.path(image)
@@ -122,24 +157,12 @@ class OwnerDaemons:
         # Mark execution started before touching runsc; uncertain cleanup stays visible.
         box.awake = True
         box.started = time.monotonic()
+        if record.get("rewind"):
+            launch_options["rewind"] = True
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
                            volume_generation=record["volume_generation"], **launch_options)
-        while True:
-            if not self.runtime.alive(box.uid):
-                raise BoxError("owner daemon exited during startup")
-            try:
-                status = self._rpc(box)
-                if not status["draining"]:
-                    box.started = box.last = time.monotonic()
-                    box.error = ""
-                    return
-            except (OSError, http.client.HTTPException):
-                pass
-            if time.monotonic() >= deadline:
-                raise BoxError("owner app socket did not become ready")
-            time.sleep(.05)
 
     def _failed(self, box, error):
         box.failures += 1
@@ -163,9 +186,24 @@ class OwnerDaemons:
         (self.directory / "secrets" / str(box.uid)).unlink(missing_ok=True)
         (self.directory / str(box.uid) / "app.sock").unlink(missing_ok=True)
 
+    def _status(self, box):
+        status = self._rpc(box)
+        box.answered = time.monotonic()
+        return status
+
+    def _answer(self, box):
+        deadline = time.monotonic() + self.answer_probe
+        while True:
+            try:
+                return self._status(box)
+            except (OSError, http.client.HTTPException):
+                if time.monotonic() >= deadline or not self.runtime.alive(box.uid):
+                    return None
+            time.sleep(.5)
+
     def _activity(self, box):
         try:
-            status = self._rpc(box)
+            status = self._status(box)
             box.last = max(box.last, time.monotonic() - status["idle_seconds"])
             return status
         except (OSError, http.client.HTTPException):
@@ -192,6 +230,27 @@ class OwnerDaemons:
             raise BoxAuthError("broker launch authorization is missing")
         record = launch
         uid = record["uid"]
+        # One budget for the whole wake, a replacement's stop included, so it stays
+        # inside the router's 70 s wake socket.
+        deadline = time.monotonic() + self.startup_timeout
+        with self.volumes.operation(uid, shared=True):
+            with self.condition:
+                box = self.boxes.get(uid)
+            if box is not None and box.awake and self.runtime.alive(uid):
+                box.launch = record
+                if box.owner != owner:
+                    raise BoxError("broker owner reservation changed")
+                if box.error:
+                    raise BoxError("owner sandbox has an unverified launch or stop")
+                try:
+                    status = self._status(box)
+                except (OSError, http.client.HTTPException):
+                    status = None  # Decided under the exclusive lock below.
+                if status is not None:
+                    if status["draining"]:
+                        raise BoxError("owner daemon is still draining")
+                    box.last = time.monotonic()
+                    return uid
         with self.volumes.operation(uid):
             with self.condition:
                 box = self.boxes.setdefault(uid, Box(owner, uid))
@@ -201,16 +260,26 @@ class OwnerDaemons:
             if box.awake and self.runtime.alive(uid):
                 if box.error:
                     raise BoxError("owner sandbox has an unverified launch or stop")
-                if self._rpc(box)["draining"]:
-                    raise BoxError("owner daemon is still draining")
-                box.last = time.monotonic()
-                return uid
+                status = self._answer(box)
+                if status is not None:
+                    if status["draining"]:
+                        raise BoxError("owner daemon is still draining")
+                    box.last = time.monotonic()
+                    return uid
+                if time.monotonic() - box.answered < self.answer_silence:
+                    raise BoxError("owner daemon is not answering")
+                # Running, but its own app has answered nothing for answer_silence:
+                # it can neither serve nor drain, and nothing else ever replaces it.
+                # Replace it like a crash; its volume is reattached as it stands.
+                self.runtime.stop(uid)
+                box.awake = False
+                self._failed(box, BoxError("owner daemon stopped answering"))
             if box.awake:
                 self.runtime.stop(uid)
                 box.awake = False
                 self._failed(box, BoxError("owner daemon crashed"))
             try:
-                self._start(box, time.monotonic() + self.startup_timeout, launch=record)
+                self._start(box, deadline, launch=record)
                 return uid
             except Exception as exc:
                 self._failed(box, exc)
@@ -255,7 +324,9 @@ class OwnerDaemons:
                 self.boxes.pop(uid, None)
 
     def status(self, uid):
-        with self.volumes.operation(uid):
+        # A copy can hold this lock for hours. Refuse promptly so the broker
+        # retries instead of leaving timed-out status threads queued behind it.
+        with self.volumes.operation(uid, blocking=False, shared=True):
             box = self.boxes.get(uid)
             awake = bool(box and box.awake and self.runtime.alive(uid))
             activity = self._activity(box) if awake else None
@@ -264,19 +335,27 @@ class OwnerDaemons:
                     "error": box.error if box else "",
                     "idle_seconds": time.monotonic() - box.last if activity else None,
                     "active": activity["active"] if activity else None,
+                    "draining": activity["draining"] if activity else None,
                     "uptime": time.monotonic() - box.started if awake else 0,
                     "volume_size": self.volumes.size(uid) if awake else None}
 
     def maintain(self):
         """Observe exited processes; only the broker selects the next transition."""
         with self.condition:
-            boxes = list(self.boxes.values())
+            boxes = [box for box in self.boxes.values() if box.awake]
         for box in boxes:
-            with self.volumes.operation(box.uid):
-                if box.awake and not self.runtime.alive(box.uid):
-                    self.runtime.stop(box.uid)
-                    box.awake = False
-                    self._failed(box, BoxError("owner daemon crashed"))
+            try:
+                with self.volumes.operation(box.uid, blocking=False, shared=True):
+                    crashed = box.awake and not self.runtime.alive(box.uid)
+                if not crashed:
+                    continue
+                with self.volumes.operation(box.uid, blocking=False):
+                    if box.awake and not self.runtime.alive(box.uid):
+                        self.runtime.stop(box.uid)
+                        box.awake = False
+                        self._failed(box, BoxError("owner daemon crashed"))
+            except BlockingIOError:
+                continue
 
     def close(self):
         with self.condition:

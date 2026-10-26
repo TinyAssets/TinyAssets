@@ -27,9 +27,15 @@ def live_shared(data):
     (data / '.connect').mkdir(exist_ok=True)
     (data / '.connect/client_id').write_text('synthetic')
     (data / '.runtime/app_refresh_sessions').mkdir()
+    # The published definition must already have the current required columns.
+    # A one-column stub is refused before publish, which these custody proofs
+    # never meant to exercise.
     _sql(data / '.tinyassets.db',
-         "CREATE TABLE author_definitions (id TEXT); "
-         "INSERT INTO author_definitions VALUES ('synthetic-public-definition');")
+         "CREATE TABLE author_definitions ("
+         "author_id TEXT, display_name TEXT DEFAULT 'name', "
+         "soul_text TEXT DEFAULT 'soul', soul_hash TEXT DEFAULT 'hash', "
+         "created_at REAL DEFAULT 1); "
+         "INSERT INTO author_definitions (author_id) VALUES ('synthetic-public-definition');")
     (data / '.published').mkdir()
     shapes = {'.runtime': (1001, 1102, 0o710),
               '.runtime/app_refresh_sessions': (1001, 1001, 0o700),

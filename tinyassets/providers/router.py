@@ -937,7 +937,6 @@ class ProviderRouter:
                 or cfg.max_tokens > served_authority.max_tokens
             ):
                 raise PermissionError("provider call exceeds served token ceiling")
-            chain = [served_authority.provider]
         elif invocation_carrier is not None:
             if invocation_carrier.max_tokens < 1:
                 raise PermissionError("armed provider invocation has no positive token budget")
@@ -972,7 +971,6 @@ class ProviderRouter:
                 or cfg.max_tokens > invocation_carrier.max_tokens
             ):
                 raise PermissionError("provider call exceeds armed token ceiling")
-            chain = [invocation_carrier.provider]
         else:
             # Unreachable past ``call``'s entry gate; kept as a hard stop so a
             # future internal caller cannot rebuild a platform fallback chain.
@@ -1004,30 +1002,14 @@ class ProviderRouter:
                     required_tokens=required_context + (cfg.max_tokens or 1),
                 )
 
-        # Q6.3 — apply per-universe allowlist (privacy primitive).
-        if served_authority is not None:
-            # The served authority is the explicitly-bound provider, but it must ALSO
-            # sit within the universe's privacy allowlist — a minted served authority
-            # must NOT bypass allowed_providers (Codex serve-open-compute review #2).
-            # No ceiling set = allow (backwards-compatible); a ceiling that excludes the
-            # served provider empties the chain -> fail closed below.
-            _served_ceiling = _effective_universe_provider_ceiling(
-                universe_context,
-                resolved_config,
-                carrier_armed=False,
-            )
-            allowlist = (
-                [served_authority.provider]
-                if _served_ceiling is None
-                or served_authority.provider in _served_ceiling
-                else []
-            )
-        else:
-            allowlist = _effective_universe_provider_ceiling(
-                universe_context,
-                resolved_config,
-                carrier_armed=invocation_carrier is not None,
-            )
+        # Admission selects from the owner's connected sources. This transport
+        # executes one authorized attempt; declared fallbacks re-enter model_call
+        # and acquire their own authority instead of widening this reservation.
+        chain = [model_authority.provider]
+        allowlist = _effective_universe_provider_ceiling(
+            universe_context, resolved_config,
+            carrier_armed=invocation_carrier is not None,
+        )
         if allowlist is not None:
             filtered = self._apply_allowlist(chain, allowlist)
             if not filtered:
@@ -1076,7 +1058,7 @@ class ProviderRouter:
                     invocation_carrier is not None
                     and provider_name == invocation_carrier.provider
                 )
-            ) and provider_name.startswith("api_key_http:"):
+            ) and provider_name.startswith(("api_key_http:", "subscription_cli:")):
                 # Do NOT trust the mutable registry for an authorized OPEN provider.
                 # A substituted same-name object could receive the prompt without
                 # using the definition's current grant or credential-blind proxy.
@@ -1096,7 +1078,7 @@ class ProviderRouter:
                         raise PermissionError(
                             "open provider invocation requires a command center context"
                         )
-                    _def_id = provider_name.split("api_key_http:", 1)[-1]
+                    _def_id = provider_name.split(":", 1)[-1]
                     _definition = get_definition(_uid, _def_id)
                     if _definition is None:
                         raise PermissionError(

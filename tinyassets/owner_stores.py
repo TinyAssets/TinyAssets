@@ -26,6 +26,7 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/storage/owner_fence.py",
     # Router identity state, never written by an owner's execution generation.
     "tinyassets/router_credentials.py",
+    "tinyassets/router_account_deletion.py",
     # Broker-held shared state (plans, credential-free source descriptors),
     # likewise outside every owner's box.
     "tinyassets/broker/vault.py",
@@ -35,6 +36,10 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/admission.py",
     # C5: broker-only persistent ingress secrets and routing publication sequence.
     "tinyassets/broker/routing.py",
+    # Broker-held shared-app installation metadata. Boxes read a filtered view.
+    "tinyassets/broker/inbound_installations.py",
+    # Router delivery failure budget. Never an envelope or an owner path.
+    "tinyassets/inbound_routing.py",
     # C6: job-owned snapshot catalog cleanup; no owner data.
     "tinyassets/broker/deletion_jobs.py",
     # T4 one-shot migration consumes old deletion obligations before publication.
@@ -45,6 +50,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/owner_volumes.py",
     # Offline C3 recovery writes shared staging with services stopped.
     "tinyassets/restore_recovery.py",
+    # One-shot operator restore of the shared credential ledger, broker stopped.
+    "tinyassets/restore_credentials.py",
     # C1/T4 one-shot cutover verifies old-layout databases inside its attachments.
     "tinyassets/cutover_sqlite.py",
 })
@@ -64,7 +71,8 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/agent_steering.py",
     "tinyassets/control_plane/agent_wakes.py",
     "tinyassets/api/command_center_updates.py",
-    "tinyassets/api/market.py",
+    "tinyassets/outcomes/actions.py",
+    "tinyassets/attribution/actions.py",
     "tinyassets/api/publish_requests.py",
     "tinyassets/api_keys.py",
     "tinyassets/auth/provider.py",
@@ -111,9 +119,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/idempotency.py",
     "tinyassets/knowledge/knowledge_graph.py",
     "tinyassets/memory/episodic.py",
-    "tinyassets/memory/project.py",
     "tinyassets/memory/promises.py",
-    "tinyassets/memory/temporal.py",
     "tinyassets/memory/versioning.py",
     "tinyassets/mcp_events.py",
     "tinyassets/node_eval.py",
@@ -122,10 +128,9 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/onboarding/approval_handoff.py",
     "tinyassets/onboarding/owner_sessions.py",
     "tinyassets/onboarding/native_sign_in.py",
-    # Its own attempt budget, in the owner-sessions store the two above share.
-    "tinyassets/onboarding/canary_sign_in.py",
     "tinyassets/outcomes/schema.py",
     "tinyassets/provider_assignment.py",
+    "tinyassets/provider_assignment_departure.py",
     "tinyassets/provider_assignment_manifest.py",
     "tinyassets/providers/connection_lifecycle.py",
     "tinyassets/control_plane/continuations.py",
@@ -149,7 +154,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/deliveries.py",
     "tinyassets/storage/effector_consents.py",
     "tinyassets/storage/external_write_receipts.py",
-    "tinyassets/storage/ingress_journal.py",
+    "tinyassets/storage/inbound_events.py",
     "tinyassets/storage/model_preferences.py",
     "tinyassets/storage/outbound_connections.py",
     "tinyassets/storage/owner_devices.py",
@@ -183,6 +188,8 @@ MIGRATES_ON_OPEN_BEFORE_C2: dict[str, str] = {
     "tinyassets/storage/agent_turn_journal.py":
         "ensure_schema adds owner_generation: additive, re-checked under BEGIN "
         "IMMEDIATE, so race-free; listed until the startup boundary exists",
+    "tinyassets/storage/inbound_events.py":
+        "_connect adds universe and completed_at on every open",
 }
 
 #: Set by slice C2 when a second owner process can exist. Never before

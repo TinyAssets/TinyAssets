@@ -70,6 +70,10 @@ def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_pat
 
     seed(tmp_path)
     tmp_path.chmod(0o1775)
+    from tinyassets.router_account_deletion import revocation_path, revoke_local_tokens
+
+    revoke_local_tokens(tmp_path, "alice", now=1)
+    os.chown(revocation_path(tmp_path), 1001, 1001)
     marker = tmp_path / ".layout.json"
     os.chown(marker, 1001, 1001)
     marker.chmod(0o644)
@@ -153,6 +157,9 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
         report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert fingerprint(owners) == before
     assert events == ["deletion", "billing", "identity", "revoke"]
+    from tinyassets.router_account_deletion import local_revocation
+
+    assert local_revocation("alice", platform) == (2000000000, 0)
     assert "credential_roots_reset" not in report
     assert "broker_replay_cutoff_advanced" not in report
     preparation = json.loads((platform / ".layout.json").read_text())["preparation"]
@@ -360,7 +367,8 @@ def test_router_admission_is_positive_and_has_no_restore_predicates(tmp_path, mo
     assert not admits(tmp_path, "canary")
     close_admission(tmp_path)
     assert admits(tmp_path, "canary")
-    assert admits(tmp_path, "probe-owner")
+    # The canary user is an ordinary account: no admission exception.
+    assert not admits(tmp_path, "probe-owner")
     assert not admits(tmp_path, "alice")
     assert not admits(tmp_path, None)
     (tmp_path / NAME).write_text(json.dumps({"ordinary": True}))
@@ -384,7 +392,7 @@ def test_router_admission_is_positive_and_has_no_restore_predicates(tmp_path, mo
         ("/app", "POST", 503),
         ("/app", "GET", 200),
         ("/app/m/build/main.js", "GET", 200),
-        ("/app/canary-sign-in", "POST", 200),
+        ("/app/owner-sign-in/complete", "POST", 503),
     ],
 )
 def test_closed_admission_blocks_anonymous_writers(tmp_path, monkeypatch, path, method, status):
@@ -473,39 +481,32 @@ def test_missing_current_operational_credential_never_uses_environment(
     source,
 ):
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV, wiki_canary_token_matches
-    from tinyassets.onboarding import canary_sign_in as door
-
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(WIKI_CANARY_TOKEN_ENV, "old" * 32)
-    monkeypatch.setenv(door.KEY_ENV, "old" * 32)
-    monkeypatch.setenv(door.USER_ENV, "user_fixture")
     if source is not None:
         values = {
             "missing_key": "{}",
-            "empty": json.dumps({WIKI_CANARY_TOKEN_ENV: "", door.KEY_ENV: ""}),
+            "empty": json.dumps({WIKI_CANARY_TOKEN_ENV: ""}),
             "malformed": "{",
-            "wrong_type": json.dumps({WIKI_CANARY_TOKEN_ENV: 42, door.KEY_ENV: 42}),
+            "wrong_type": json.dumps({WIKI_CANARY_TOKEN_ENV: 42}),
         }
         (tmp_path / ".router-credentials.json").write_text(values[source])
     assert not wiki_canary_token_matches("old" * 32)
-    assert door.configured() is None
+    # No current value means no bearer matches at all, not just the old one.
+    assert not wiki_canary_token_matches("new" * 32)
 
 
 def test_current_operational_credentials_replace_previous_environment(tmp_path, monkeypatch):
     from tinyassets.auth.wiki_canary import WIKI_CANARY_TOKEN_ENV, wiki_canary_token_matches
-    from tinyassets.onboarding import canary_sign_in as door
-
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(WIKI_CANARY_TOKEN_ENV, "old" * 32)
-    monkeypatch.setenv(door.KEY_ENV, "old" * 32)
-    monkeypatch.setenv(door.USER_ENV, "user_fixture")
     current = "new" * 32
     (tmp_path / ".router-credentials.json").write_text(
-        json.dumps({WIKI_CANARY_TOKEN_ENV: current, door.KEY_ENV: current})
+        json.dumps({WIKI_CANARY_TOKEN_ENV: current})
     )
     assert wiki_canary_token_matches(current)
     assert not wiki_canary_token_matches("old" * 32)
-    assert door.configured() == (current, "user_fixture")
+    assert not wiki_canary_token_matches(current + "x")
 
 
 def test_platform_recovery_uses_current_admission_not_erased_identity_history(
@@ -513,11 +514,15 @@ def test_platform_recovery_uses_current_admission_not_erased_identity_history(
 ):
     with sqlite3.connect(platform / ".broker/state/owner-identities.db") as db:
         db.execute("INSERT INTO owner_identities VALUES ('erased', 300002)")
+        admission.mutate(db, "erased", "erase")
     calls = []
     adapters = providers(monkeypatch, calls)
     report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert report["owners_reconciled"] == 1
     assert calls == ["deletion", "billing", "identity", "revoke"]
+    from tinyassets.router_account_deletion import local_revocation
+
+    assert local_revocation("erased", platform) == (2000000000, 1)
     with sqlite3.connect(platform / ".broker/state/owner-identities.db") as db:
         assert db.execute(
             "SELECT machine_id FROM owner_identities WHERE principal='erased'"
@@ -955,3 +960,11 @@ def test_recovery_tick_returns_while_per_owner_deletion_is_blocked(startup, monk
 
 
 pytestmark = pytest.mark.verifies('owner-daemon-in-box:C3')
+
+
+def test_platform_recovery_resets_native_custody(platform):
+    target = platform / ".broker/accounts/synthetic/credentials/.subscription-state.json"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"fixture":"stale token"}')
+    recovery.reset_credentials(platform, now=2000000000)
+    assert not target.exists()

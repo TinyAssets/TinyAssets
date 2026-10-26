@@ -83,7 +83,7 @@ else:
 
 @pytest.mark.verifies('owner-daemon-in-box:C3')
 def test_installed_service_publishes_shared_backup_without_owner_bytes(shared_backup, tmp_path):
-    from tests.test_host_uptime_installers import _install_env, _run_installer
+    from tests.host_uptime_helpers import _install_env, _run_installer
 
     root, remote, owners, binary = shared_backup
     installation = tmp_path / "installation"
@@ -145,6 +145,33 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     with pytest.raises(ValueError):
         volumes.delete_snapshots(300001, ["a" * 32], [])
     assert snapshot.read_bytes() == b"retained snapshot"
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_absent_snapshot_object_is_deleted_and_a_pin_is_not(shared_backup, monkeypatch):
+    root, remote, _, _ = shared_backup
+    backup.publish(root, str(remote))
+    volumes = object.__new__(OwnerVolumes)
+    volumes.remote = str(remote)
+    monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
+    codes = []
+
+    def run(*args):
+        if args[:2] == ("rclone", "deletefile"):
+            raise subprocess.CalledProcessError(codes.pop(0), args)
+        return OwnerVolumes._run(*args)
+
+    monkeypatch.setattr(volumes, "_run", run)
+    codes.append(3)
+    assert volumes.delete_snapshots(300001, ["c" * 32], []) is True
+    codes.append(4)
+    assert volumes.delete_snapshots(300001, ["d" * 32], []) is True
+    codes.append(1)
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        volumes.delete_snapshots(300001, ["e" * 32], [])
+    assert raised.value.returncode == 1
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) is False
+    assert codes == []
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C2')

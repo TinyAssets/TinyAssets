@@ -2458,7 +2458,7 @@ def _run_due_automation(
 
         # Settlement identity only, never a refusal: this run already holds its
         # account seat (`run_due_automation`), which is the only bound.
-        from tinyassets.engine_mcp_server import _engine_run_admit
+        from tinyassets.universe_tools import _engine_run_admit
 
         ticket = _engine_run_admit(universe_id=automation.universe_id)
 

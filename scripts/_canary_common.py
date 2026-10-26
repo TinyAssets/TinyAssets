@@ -1,11 +1,9 @@
 """Shared helpers for the canary script family.
 
 Eliminates triplicate copies of `_post`, `_extract_tool_text`,
-`_INIT_PAYLOAD`, `_INITIALIZED_NOTIF` across mcp_tool_canary,
-last_activity_canary, revert_loop_canary, and wiki_canary. A bug fix
-to the JSON-RPC POST path (e.g. SSE/JSON parser, retry-after handling,
-header tweak) now lands in one place — the partial-fix landmine that
-BUG-028 demonstrated for the wiki path.
+`_INIT_PAYLOAD`, `_INITIALIZED_NOTIF` across mcp_tool_canary and
+last_activity_canary. A bug fix to the JSON-RPC POST path (e.g.
+SSE/JSON parser, retry-after handling, header tweak) lands in one place.
 
 Scope (intentionally tight):
     - HTTP POST + parse logic.
@@ -13,8 +11,8 @@ Scope (intentionally tight):
     - Tool-result text / structured payload extraction.
 
 Out of scope (per Task #14 conservative-scope rule):
-    - Per-canary exception classes (ToolCanaryError, LastActivityError,
-      RevertLoopError). Callers do `except XError as e` and depend on
+    - Per-canary exception classes (ToolCanaryError, LastActivityError).
+      Callers do `except XError as e` and depend on
       the type identity. Each canary keeps its own.
     - Each canary's main() body, CLI shape, exit codes. Pure
       import-substitution.
@@ -27,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -107,7 +106,7 @@ def _post(
     Network/HTTP/TLS failures raise `error_factory(step_code, msg)` so
     the caller's exit code matches its own failure ladder. The caller
     passes its own exception constructor (e.g. `ToolCanaryError`,
-    `LastActivityError`, `RevertLoopError`) and User-Agent string —
+    `LastActivityError`) and User-Agent string —
     these are the only meaningful per-canary differences in the
     pre-consolidation `_post` copies.
 
@@ -162,30 +161,43 @@ def _post(
     return parsed, new_sid
 
 
-def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
-    """Use the existing pinned-account router door and ordinary bearer session.
+def _sign_in_http_token(status: int) -> str:
+    """A fixed status class. The code and the body stay off the failure."""
+    klass = status // 100
+    if klass in (4, 5):
+        return f"canary_sign_in_http_{klass}xx"
+    return "canary_sign_in_failed"
 
-    Values come from load_secrets.sh's environment (CI injects the same keys).
+
+def _sign_in_timed_out(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", None)
+    return isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+
+
+def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
+    """Renew the canary's ordinary app session, then read ``/app/me``.
+
+    ``scripts/canary_session.py`` holds the session like a signed-in phone app.
     No credentials, upstream text or owner rows are included in errors.
+    A read that hits ``timeout`` is ``canary_sign_in_timeout``. An HTTP error
+    is ``canary_sign_in_http_4xx`` or ``canary_sign_in_http_5xx``.
     """
-    names = {"key": "DOOR_KEY", "email": "EMAIL", "password": "PASSWORD"}
-    fields = {key: os.environ.get("TINYASSETS_CANARY_" + name, "")
-              for key, name in names.items()}
-    if not all(fields.values()):
-        raise RuntimeError("canary_credentials_missing")
-    request = urllib.request.Request(origin + "/app/canary-sign-in",
-                                     data=json.dumps(fields).encode(),
-                                     headers={"Content-Type": "application/json",
-                                              "Origin": origin})
+    from scripts.canary_session import USER_AGENT, CanarySessionError, access_token
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            token = json.load(response)["access_token"]
-        if not isinstance(token, str) or not token:
-            raise ValueError("missing session")
+        token = access_token(origin)
         request = urllib.request.Request(origin + "/app/me", headers={
-            "Authorization": "Bearer " + token, "Origin": origin})
+            "Authorization": "Bearer " + token, "Origin": origin, "User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return token, json.load(response), response.headers
+    except CanarySessionError as exc:
+        raise RuntimeError(str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(_sign_in_http_token(exc.code)) from None
+    except (TimeoutError, urllib.error.URLError) as exc:
+        if _sign_in_timed_out(exc):
+            raise RuntimeError("canary_sign_in_timeout") from None
+        raise RuntimeError("canary_sign_in_failed") from None
     except Exception:
         raise RuntimeError("canary_sign_in_failed") from None
 

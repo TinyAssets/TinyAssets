@@ -13,11 +13,11 @@ Typical usage
 -------------
 ::
 
-    from tinyassets.checkpointing import create_checkpointer, compile_all_graphs
+    from tinyassets.checkpointing import create_checkpointer
 
     # Option 1: Context manager (preferred for long-running daemon)
     with create_checkpointer("data/checkpoints.db") as checkpointer:
-        graphs = compile_all_graphs(checkpointer)
+        graph = builder.compile(checkpointer=checkpointer)
         result = graphs["scene"].invoke(input_state, config)
 
     # Option 2: In-memory for tests
@@ -39,7 +39,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from tinyassets.exceptions import CheckpointError
 
 if TYPE_CHECKING:
-    from langgraph.graph.state import CompiledStateGraph
+    pass
 
 
 DEFAULT_CHECKPOINT_RETENTION_KEEP_LAST = 500
@@ -143,45 +143,6 @@ def create_checkpointer(
 
     with SqliteSaver.from_conn_string(db_path) as checkpointer:
         yield checkpointer
-
-
-# ---------------------------------------------------------------------------
-# Graph compilation helper
-# ---------------------------------------------------------------------------
-
-
-def compile_all_graphs(
-    checkpointer: SqliteSaver,
-) -> dict[str, CompiledStateGraph]:
-    """Compile all 4 nested StateGraphs with a shared checkpointer.
-
-    This is the main entry point for other agents to get ready-to-run
-    compiled graphs.
-
-    Parameters
-    ----------
-    checkpointer : SqliteSaver
-        An active SqliteSaver instance (from ``create_checkpointer``).
-
-    Returns
-    -------
-    dict[str, CompiledStateGraph]
-        Mapping from graph name to compiled graph:
-        ``{"scene", "chapter", "book", "universe"}``.
-    """
-    from domains.fantasy_daemon.graphs import (
-        build_book_graph,
-        build_chapter_graph,
-        build_scene_graph,
-        build_universe_graph,
-    )
-
-    return {
-        "scene": build_scene_graph().compile(checkpointer=checkpointer),
-        "chapter": build_chapter_graph().compile(checkpointer=checkpointer),
-        "book": build_book_graph().compile(checkpointer=checkpointer),
-        "universe": build_universe_graph().compile(checkpointer=checkpointer),
-    }
 
 
 # ---------------------------------------------------------------------------

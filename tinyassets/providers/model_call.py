@@ -7,11 +7,12 @@ caller the same request, parent, result and receipt contract.
 from __future__ import annotations
 
 import contextvars
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
 from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.execution_receipt import (
     ExecutionReceipt,
@@ -22,6 +23,7 @@ from tinyassets.providers.model_policy import ModelRef
 _last_provider: contextvars.ContextVar[str] = contextvars.ContextVar(
     "last_model_source", default="",
 )
+_LOG = logging.getLogger(__name__)
 _helper_runner: contextvars.ContextVar[BoundModelCall | None] = contextvars.ContextVar(
     "owner_model_helper_runner", default=None,
 )
@@ -58,6 +60,9 @@ class ModelContext:
     agent_execution_kind: str | None = None
     router: Any = None
     launch_reference: str | None = None
+    streaming: bool = False
+    media_cap: Any = None
+    cancel_event: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +86,12 @@ class Parent:
 class ModelResult:
     response: ProviderResponse
     receipt: ExecutionReceipt
+    parts: tuple = ()
 
     @property
     def text(self) -> str:
+        if self.parts:
+            return "".join(part.text for part in self.parts if part.kind == "text")
         return self.response.text
 
 
@@ -132,7 +140,112 @@ def _result(response: ProviderResponse, request: ModelCall, parent: Parent) -> M
         receipt = replace(receipt, requested_model=request.model.model_id)
     if parent.usage_id is not None:
         receipt = replace(receipt, parent_usage_id=parent.usage_id)
-    return ModelResult(response=response, receipt=receipt)
+    return ModelResult(
+        response=replace(response, execution_receipt=receipt), receipt=receipt,
+    )
+
+
+def _reserve_media(context: ModelContext) -> None:
+    cap = context.media_cap
+    if cap is None:
+        return
+    cap.reserve()
+
+
+def _budget_result(request: ModelCall, parent: Parent, context: ModelContext,
+                   exc) -> ModelResult:
+    """Admitted, but the cap could not fund a slice. No provider answer is invented."""
+    del request
+    budget = context.config.request_budget if context.config is not None else None
+    usage_id = budget.usage_id if budget is not None else (parent.usage_id or "")
+    unknown = exc.measured is None
+    media: dict[str, Any] = {
+        "part_refs": [], "outcome": "budget_exhausted",
+        "usage": "unknown" if unknown else "measured",
+    }
+    if not unknown:
+        media["input_bytes"] = 0
+        media["output_bytes"] = exc.measured
+    receipt = ExecutionReceipt(
+        provider="unsent", model="", model_status="unknown",
+        outcome="budget_exhausted", execution="model_response",
+        usage_id=usage_id, parent_usage_id=usage_id, media=media,
+    )
+    response = ProviderResponse(
+        text="", provider="unsent", model="", family="", latency_ms=0.0,
+        degraded=True, failure_class="budget_exhausted", execution_receipt=receipt,
+    )
+    return ModelResult(response=response, receipt=receipt, parts=())
+
+
+def _apply_media(response: ProviderResponse, request: ModelCall, parent: Parent,
+                 context: ModelContext) -> ModelResult:
+    raw = getattr(response, "source_parts", None)
+    cap = context.media_cap
+    meter = getattr(response, "media_meter", None) or {}
+    if raw is None and cap is None and not context.streaming:
+        result = _result(response, request, parent)
+        if context.cancel_event is not None and context.cancel_event.is_set():
+            return _cancelled(result)
+        return result
+    from tinyassets.providers.media_budget import BudgetExhausted
+    from tinyassets.providers.media_parts import ModelMediaError, media_link, normalize_parts
+    from tinyassets.storage.owner_media import OwnerMediaStore
+
+    unknown = False
+    status = "succeeded"
+    if cap is not None and meter.get("renew"):
+        try:
+            cap.renew(meter.get("renew_bytes"))
+        except BudgetExhausted as exc:
+            status = "budget_exhausted"
+            unknown = exc.measured is None
+    parts: tuple = ()
+    if raw is not None:
+        universe = context.universe_context
+        store = OwnerMediaStore(universe.universe_dir)
+        contract = getattr(response, "media_contract", None)
+        try:
+            parts, part_status = normalize_parts(
+                contract, raw, store=store, owner=parent.owner,
+                command_center=parent.command_center,
+            )
+        except ModelMediaError as exc:
+            link = media_link(exc.committed, "incomplete", meter)
+            result = _with_media(response, request, parent, exc.committed, link)
+            exc.result = result
+            raise
+        if part_status != "succeeded":
+            status = part_status
+    if status != "budget_exhausted" and context.cancel_event is not None \
+            and context.cancel_event.is_set():
+        status = "cancelled"
+    if meter.get("unknown") is True:
+        unknown = True
+        status = status if status != "succeeded" else "unknown"
+    link = media_link(parts, status, meter, unknown=unknown)
+    return _with_media(response, request, parent, parts, link)
+
+
+def _with_media(response, request, parent, parts, link: dict) -> ModelResult:
+    result = _result(response, request, parent)
+    receipt = result.receipt
+    if parent.usage_id and not receipt.usage_id:
+        receipt = replace(receipt, usage_id=parent.usage_id)
+    receipt = replace(receipt, outcome=link["outcome"], media=link)
+    return ModelResult(
+        response=replace(response, execution_receipt=receipt), receipt=receipt, parts=parts,
+    )
+
+
+def _cancelled(result: ModelResult) -> ModelResult:
+    media = dict(result.receipt.media or {"part_refs": [], "usage": "measured"})
+    media["outcome"] = "cancelled"
+    receipt = replace(result.receipt, outcome="cancelled", media=media)
+    return ModelResult(
+        response=replace(result.response, execution_receipt=receipt),
+        receipt=receipt, parts=result.parts,
+    )
 
 
 @contextmanager
@@ -205,26 +318,125 @@ def _allocation(context: ModelContext, parent: Parent):
             budget.close()
 
 
+def _admit(request: ModelCall, parent: Parent):
+    try:
+        return _dispatch_args(request, parent)
+    except (ProviderAuthorityHeldError, PermissionError) as exc:
+        exc.outcome = "not_sent"
+        raise
+
+
 async def call(request: ModelCall, parent: Parent) -> ModelResult:
-    router, context = _dispatch_args(request, parent)
+    router, context = _admit(request, parent)
+    from tinyassets.providers.media_budget import BudgetExhausted
+
     with _allocation(context, parent) as context:
-        response = await router.call(
-            context.role, context.prompt, context.system, context.config,
-            operation=context.operation, universe_context=context.universe_context,
-            _agent_observer=context.agent_observer,
-            _agent_execution_kind=context.agent_execution_kind,
-        )
-    return _result(response, request, parent)
+        try:
+            _reserve_media(context)
+        except BudgetExhausted as exc:
+            return _budget_result(request, parent, context, exc)
+        for attempt, selected, next_model in _attempts(request, context):
+            try:
+                response = await router.call(
+                    attempt.role, attempt.prompt, attempt.system, attempt.config,
+                    operation=attempt.operation, universe_context=attempt.universe_context,
+                    _agent_observer=attempt.agent_observer,
+                    _agent_execution_kind=attempt.agent_execution_kind,
+                )
+                break
+            except AllProvidersExhaustedError as exc:
+                if (not _has_open_request(context.universe_context)
+                        or not _can_fallback(
+                            router, context.config.request_budget.owner,
+                            selected, next_model, exc,
+                        )):
+                    raise
+        return _apply_media(response, request, replace(
+            parent, usage_id=context.config.request_budget.usage_id,
+        ), context)
 
 
 def call_sync(request: ModelCall, parent: Parent) -> ModelResult:
-    router, context = _dispatch_args(request, parent)
+    router, context = _admit(request, parent)
+    from tinyassets.providers.media_budget import BudgetExhausted
+
     with _allocation(context, parent) as context:
-        response = router.call_sync(
-            context.role, context.prompt, context.system, context.config,
-            operation=context.operation, universe_context=context.universe_context,
+        try:
+            _reserve_media(context)
+        except BudgetExhausted as exc:
+            return _budget_result(request, parent, context, exc)
+        for attempt, selected, next_model in _attempts(request, context):
+            try:
+                response = router.call_sync(
+                    attempt.role, attempt.prompt, attempt.system, attempt.config,
+                    operation=attempt.operation, universe_context=attempt.universe_context,
+                )
+                break
+            except AllProvidersExhaustedError as exc:
+                if (not _has_open_request(context.universe_context)
+                        or not _can_fallback(
+                            router, context.config.request_budget.owner,
+                            selected, next_model, exc,
+                        )):
+                    raise
+        return _apply_media(response, request, replace(
+            parent, usage_id=context.config.request_budget.usage_id,
+        ), context)
+
+
+def _has_open_request(universe: UniverseContext) -> bool:
+    return (universe.provider_request is not None
+            and universe.provider_invocation is None
+            and universe.served_provider is None)
+
+
+def _attempts(request: ModelCall, context: ModelContext):
+    """Only a request carrier can authorize a fresh choice on each attempt."""
+    universe = context.universe_context
+    choices = ((request.model, *request.fallbacks)
+               if _has_open_request(universe) else (request.model,))
+    for index, model in enumerate(choices):
+        attempt = replace(context, universe_context=replace(
+            universe, model_selection=model or universe.model_selection,
+        ))
+        yield attempt, attempt.universe_context.model_selection, (
+            choices[index + 1] if index + 1 < len(choices) else None
         )
-    return _result(response, request, parent)
+
+
+def _can_fallback(router: Any, owner: str, selected: ModelRef | None,
+                  next_model: ModelRef | None,
+                  exc: AllProvidersExhaustedError) -> bool:
+    """Use the chat/work evidence boundary before moving to another source."""
+    from tinyassets.providers.agent_capacity_boundary import (
+        capacity_boundary,
+        refusal_boundary,
+        uniform_pre_generation_failure,
+    )
+    from tinyassets.providers.model_capacity import free_sibling_retry
+
+    attempts = exc.attempts
+    if (selected is None or not attempts
+            or any(getattr(item, "side_effect_state", None) != "none" for item in attempts)):
+        return False
+    if refusal_boundary(selected, attempts) is not None:
+        return next_model is not None
+    if uniform_pre_generation_failure(attempts, "auth_invalid"):
+        return next_model is not None
+    kind = router.selected_agent_execution_kind(selected)
+    boundary = capacity_boundary(selected, attempts, execution_kind=kind)
+    if boundary is None:
+        return False
+    if ((next_model is None or selected.connection_id != next_model.connection_id)
+            and free_sibling_retry(scope=boundary.observed_scope,
+                                   failure_class=boundary.failure_class)):
+        try:
+            router.cool_source(selected.connection_id, owner=owner,
+                               retry_after_s=boundary.retry_after_s,
+                               reason=boundary.failure_class or "")
+        except Exception:  # noqa: BLE001 - cooling must not replace the call result
+            _LOG.warning("could not cool an abandoned model source")
+    return next_model is not None
 
 
 def _policy_models(policy: dict[str, Any] | None) -> tuple[ModelRef | None, tuple[ModelRef, ...]]:

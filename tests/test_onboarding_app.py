@@ -8,7 +8,6 @@ user against the DEPLOYED cloud daemon (tinyassets.io) — never a local run.
 from __future__ import annotations
 
 import time
-from functools import lru_cache
 
 import pytest
 
@@ -98,25 +97,25 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app", "/app/token", "/app/me", "/app/apps", "/app/ui-frame", "/app/native-sign-in",
         "/app/run/{listing}", "/app/run/{listing}/preview.png", "/app/unread",
         "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/approvals/{operation}",
-        # The deploy canary's own sign-in: 404 unless the host pins that one
-        # synthetic account (onboarding/canary_sign_in.py).
-        "/app/canary-sign-in",
         "/app/approval-handoff", "/app/approval-handoff/{ref}",
         # K1: owner-session-only grant/revoke control for outside clients.
         "/app/outside-clients", "/app/api-keys",
-        "/app/model-connect/{operation}", "/app/model-callback/{flow}",
+        "/app/model-connect/{operation}", "/app/subscription-connect/{operation}",
+        "/app/model-discovery", "/app/connection-discovery",
+        "/app/model-callback/{flow}",
         # The public OAuth client metadata document a sign-in source names.
         "/app/oauth/client-metadata.json",
 
         "/app/trace",
-        "/app/voice/status", "/app/voice/session",
+        "/app/session/realtime",
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/deletion/{key}/{token}",
+        "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
         "/app/account/timezone", "/app/ui-prefs",
         "/app/api/policy", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
-        "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
+        "/app/turn/interrupt", "/app/turn/pending",
         # The activities live projection (harness D2a).
         "/app/live",
         "/app/connections", "/app/files",
@@ -128,6 +127,8 @@ def test_route_is_apex_app_get(monkeypatch):
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
         "/app/api/ui-asset",
         "/app/api/file",
+        # One published app in its owner's box: document, room, and publication.
+        "/app/{slug}", "/app/{slug}/state", "/app/{slug}/publish",
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
     assert by_path["/app/wakes"].methods == {"GET", "HEAD", "POST"}
@@ -144,7 +145,10 @@ def test_route_is_apex_app_get(monkeypatch):
     assert "GET" in by_path["/app/billing/status"].methods
     assert "GET" in by_path["/app/me"].methods
     assert by_path["/app/profile"].methods == {"GET", "HEAD"}
-    assert "GET" in by_path["/app/voice/status"].methods
+    assert {"GET", "POST"} <= by_path["/app/session/realtime"].methods
+    assert {"GET", "HEAD", "POST"} <= by_path["/app/{slug}"].methods
+    assert {"GET", "POST"} <= by_path["/app/{slug}/state"].methods
+    assert by_path["/app/{slug}/publish"].methods == {"POST"}
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
     for path in ("/app/api/policy", "/app/memory"):
@@ -152,11 +156,10 @@ def test_route_is_apex_app_get(monkeypatch):
     for post_only in (
         "/app/token",
         "/app/trace",
-        "/app/voice/session",
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",
-        "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
+        "/app/turn/interrupt", "/app/turn/pending",
         "/app/live",
     ):
         assert "POST" in by_path[post_only].methods
@@ -783,401 +786,6 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
     )
     assert proc.returncode == 0, f"voice adapter harness crashed:\n{proc.stderr}"
     return json.loads(proc.stdout)
-
-
-
-
-
-
-
-
-
-
-# The real send/resend/build-check code, run in Node against a DOM shim. A
-# string assertion could not tell "the in-flight record is kept" from "kept,
-# then forgotten one line later" (Codex round 1, P2: that mutation passed the
-# old test); this drives the functions and reads the state they leave behind.
-_APP_SHIM = r"""
-const store={};
-const localStorage={
-  getItem:k=>(k in store?store[k]:null),
-  setItem:(k,v)=>{store[k]=String(v);},
-  removeItem:k=>{delete store[k];},
-};
-class El{
-  constructor(tag){
-    this.tagName=tag.toUpperCase(); this.children=[]; this.className="";
-    this.textContent=""; this.value=""; this.style={}; this.disabled=false;
-    this.listeners={}; this.scrollTop=0; this.scrollHeight=0;
-  }
-  appendChild(c){ this.children.push(c); c.parentNode=this; return c; }
-  remove(){ this.removed=true;
-    if(this.parentNode&&this.tagName==="BUTTON")
-      this.parentNode.children=this.parentNode.children.filter(c=>c!==this);
-    this.parentNode=null; }
-  addEventListener(n,f){ this.listeners[n]=f; }
-  click(){ (this.listeners.click||(()=>{}))(); }
-}
-const document={
-  createElement:t=>new El(t),
-  createTextNode:t=>{const e=new El("#text"); e.textContent=t; return e;},
-  activeElement:null,
-};
-const els={
-  "composer-input":new El("textarea"), "btn-send":new El("button"),
-  "thread":new El("div"), "status-line":new El("div"),
-};
-const $=id=>els[id];
-const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{},turnStarted:()=>{}};
-const messages=[], executionDetails=[];
-const observedModels=[];
-const ModelPicker={observe(text){observedModels.push(text);}};
-function appendMessage(role,text,extra){
-  if(role!=="system") messages.push({role,text});
-  if(role==="universe"&&extra) executionDetails.push({
-    tag:extra.tagName,cls:extra.className,text:extra.textContent,children:extra.children.length});
-  const el=new El("div"); el.className="msg msg--"+role; el.textContent=text;
-  if(extra) el.appendChild(extra);
-  if(role==="system"||role==="platform") els.thread.appendChild(el);
-  return el;
-}
-function setStatusLine(t){ els["status-line"].textContent=t||""; }
-// The working indicator and the queued-bubble mark are collaborators these
-// scenarios do not exercise, stubbed the way healServing/autoGrow are. A
-// harness that DOES exercise them appends the page's own definitions after this
-// shim, and the later function declaration is the one that runs
-// (tests/test_app_working_indicator.py).
-function readServerTurn(){}
-function serverTurnLive(){ return false; }
-function renderWorking(){}
-function pulseHeartbeat(){}
-function markQueued(el){ return el; }
-function unmarkQueued(){}
-function firstQueuedBubble(){ return null; }
-function autoGrow(el){ el.style.height="auto"; }
-function sessionExpired(){ messages.push({role:"session-expired"}); }
-function showConnect(){ messages.push({role:"connect"}); }
-const SCENARIO=__SCENARIO__;
-const converseCalls=[], converseMethods=[], converseChoices=[], consumerRequests=[], statusCalls=[];
-let active=0, maxActive=0;
-// The owner door (reads). This harness has ONE fake server, `MCP` below, so
-// the owner door's reads are answered by it: a read the page makes is
-// recorded and stubbed exactly where the scenario already records it.
-const Owner={
-  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
-  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
-  getStatus(...x){return MCP.getStatus(...x);},
-  getConversation(...x){return MCP.getConversation(...x);},
-  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
-  getModelOptions(...x){return MCP.getModelOptions(...x);},
-  listRequests(...x){return MCP.listRequests(...x);}};
-const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
-  converseCalls.push(m);
-  converseMethods.push(inputMethod);
-  converseChoices.push(copyModelChoice(modelChoice));
-  consumerRequests.push(consumerRequest?JSON.parse(JSON.stringify(consumerRequest)):null);
-  active++; maxActive=Math.max(maxActive, active);
-  try{
-    if(SCENARIO.transportError){ const e=new Error("offline");
-      e.transport=true; e.notSent=!!SCENARIO.notSent; throw e; }
-    if(SCENARIO.slowFirst && converseCalls.length===1){ await new Promise(r=>setTimeout(r, 40)); }
-    const payloads=SCENARIO.payloads||[SCENARIO.payload];
-    return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
-  } finally { active--; }
-}};
-MCP.callTool=async(name,args)=>{statusCalls.push({name,args});return SCENARIO.consumerStatus;};
-const CFG={build: SCENARIO.build||"b1",shell_version:SCENARIO.shellVersion};
-const token=()=>"t";
-Owner.getConversation=async()=>{
-  if(SCENARIO.historyError) throw new Error("peek failed");
-  return {universe_id: SCENARIO.universe||"u-1", recent_conversation:{turns: SCENARIO.history||[]}};
-};
-if(SCENARIO.storageFull){ localStorage.setItem=()=>{ throw new Error("QuotaExceededError"); }; }
-const answered=[];
-MCP.answerRequest=async(payload)=>{
-  answered.push(payload); return SCENARIO.answerReply||{receipt:"Sent."};
-};
-let refreshed=0; async function refreshRail(){ refreshed++; }
-function enterSignedOut(){ messages.push({role:"signed-out"}); }
-let reloaded=false; const location={reload:()=>{ reloaded=true; }};
-const AppRecovery={upgrade:()=>location.reload()};
-let fetched=0;
-async function fetch(){ fetched++; return {ok:true,headers:{get:name=>
-  name==="X-TinyAssets-Shell" ? SCENARIO.liveShell||null : SCENARIO.liveBuild||null}}; }
-__APP_FUNCTIONS__
-(async()=>{
-  const out={};
-  // The account half of a saved row's ownership. The page learns it from
-  // /app/me at sign-in; here a scenario states it, and `principal: null`
-  // is a page that never resolved one.
-  setQueueOwner(SCENARIO.principal===null?"":(SCENARIO.principal||"p-1"));
-  modelChoiceForNextTurn=SCENARIO.modelChoice||null;
-  if(SCENARIO.kind==="send"){
-    const turnOpts=SCENARIO.inputMethod?{inputMethod:SCENARIO.inputMethod}:undefined;
-    if(SCENARIO.secondMessage){
-      const first=sendTurn(SCENARIO.message,undefined,turnOpts);
-      if(SCENARIO.secondModelChoice) modelChoiceForNextTurn=SCENARIO.secondModelChoice;
-      els["composer-input"].value=SCENARIO.secondMessage;
-      // ...arriving while the first is in flight
-      for(let i=0;i<(SCENARIO.repeatSecond||1);i++)
-        sendTurn(SCENARIO.secondMessage,undefined,turnOpts);
-      (SCENARIO.extraMessages||[]).forEach(m=>{
-        const full=sendQueue.length>=SEND_QUEUE_MAX, box=els["composer-input"];
-        // the draft is typed once the queue is full
-        const draft=SCENARIO.draftBeforeOverflow;
-        if(draft && full && !box.value) box.value=draft;
-        sendTurn(m,undefined,turnOpts);
-      });
-      out.composerWhileQueued=els["composer-input"].value;
-      out.statusWhileQueued=els["status-line"].textContent;
-      out.savedWhileQueued=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
-      if(SCENARIO.mutateQueuedChoice) modelChoiceForNextTurn.saved_default.model_id="mutated";
-      if(SCENARIO.afterQueueModelChoice) modelChoiceForNextTurn=SCENARIO.afterQueueModelChoice;
-      if(SCENARIO.claimElsewhere) localStorage.removeItem(QUEUE_KEY);   // another tab restored it
-      out.queuedWhileInFlight=sendQueue.length;
-      // every queued send now rejects before its try/finally
-      if(SCENARIO.breakComposer) els["composer-input"]=undefined;
-      await first; await new Promise(r=>setTimeout(r, 60));
-      out.queueLeft=sendQueue.length;
-    } else {
-      await sendTurn(SCENARIO.message,undefined,turnOpts);
-    }
-    if(SCENARIO.clickResend){
-      if(SCENARIO.beforeRetryModelChoice) modelChoiceForNextTurn=SCENARIO.beforeRetryModelChoice;
-      const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
-      btn.click();                                   // the listener fires sendTurn (async)
-      await new Promise(r=>setTimeout(r, 20));
-    }
-    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
-    out.maxActive=maxActive;
-    out.notesRemoved=els.thread.children.filter(n=>n.removed).length;
-    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
-    out.messages=messages;
-    out.notes=els.thread.children.map(n=>({cls:n.className,
-      text:n.textContent+n.children.map(c=>c.textContent).join(""),
-      buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
-    out.sendDisabled=els["btn-send"].disabled;
-    out.status=els["status-line"].textContent;
-    out.composer=els["composer-input"] ? els["composer-input"].value : null;
-    out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
-  }else if(SCENARIO.kind==="voice"){
-    try{out.spokenReply=await sendVoiceTurn(SCENARIO.message);}
-    catch(error){if(!SCENARIO.expectFailure)throw error;out.voiceError=error.message;}
-    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
-    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
-    out.messages=messages;
-  }else if(SCENARIO.kind==="rail"){
-    const req=SCENARIO.request;
-    els["fb_"+req.request_id]=new El("input");
-    els["fb_"+req.request_id].value=SCENARIO.feedback||"";
-    els["mute_"+req.request_id]=new El("input");
-    els["mute_"+req.request_id].checked=!!SCENARIO.mute;
-    (req.fields||[]).forEach(f=>{ els["f_"+req.request_id+"_"+f.name]=new El("input");
-      els["f_"+req.request_id+"_"+f.name].value=(SCENARIO.values||{})[f.name]||""; });
-    let release=null;
-    if(SCENARIO.turnInFlight){
-      // a real turn in flight: sendTurn is awaiting a converse that we release later
-      MCP.converse=async (m,inputMethod)=>{
-        converseCalls.push(m);
-        converseMethods.push(inputMethod);
-        if(m==="first"){ await new Promise(r=>{ release=r; }); }
-        return {reply:"ok "+m};
-      };
-      sendTurn("first");
-    }
-    if(SCENARIO.draft) els["composer-input"].value=SCENARIO.draft;
-    const note=new El("div"); const buttons=[new El("button"), new El("button")];
-    await answerRail(req, SCENARIO.mode || (SCENARIO.dismiss ? "clear" : "accept"),
-      note, buttons);
-    out.composer=els["composer-input"].value;
-    if(SCENARIO.secondRequest){
-      const r2=SCENARIO.secondRequest;
-      els["fb_"+r2.request_id]=new El("input"); els["mute_"+r2.request_id]=new El("input");
-      await answerRail(r2, "accept", new El("div"), [new El("button")]);
-    }
-    await new Promise(r=>setTimeout(r, 20));
-    out.noteBeforeRelease=note.textContent; out.callsBeforeRelease=converseCalls.slice();
-    out.statusBeforeRelease=els["status-line"].textContent;
-    out.rolesBeforeRelease=messages.map(m=>m.role);
-    if(release){ release(); await new Promise(r=>setTimeout(r, 30)); }
-    out.answered=answered; out.refreshed=refreshed; out.note=note.textContent;
-    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
-    out.messages=messages;
-    out.buttonsEnabled=buttons.every(b=>!b.disabled);
-  }else if(SCENARIO.kind==="restore"){
-    if(SCENARIO.pending) localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
-      message:SCENARIO.pending, display:SCENARIO.pending,
-      inputMethod:SCENARIO.pendingInputMethod,
-      modelChoice:SCENARIO.pendingModelChoice,
-      consumerRequest:SCENARIO.pendingConsumerRequest,
-      client_send_id:SCENARIO.pendingSendId,
-      owner: SCENARIO.pendingOwner===null?undefined:(SCENARIO.pendingOwner||"p-1"),
-      // The record is universe-scoped like a saved queue line. A scenario that
-      // wants the LEGACY unscoped shape asks for it explicitly.
-      scope: SCENARIO.pendingScope===null?undefined
-        :(SCENARIO.pendingScope||SCENARIO.universe||"u-1"),
-      ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
-    if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
-    if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
-    if(SCENARIO.consumerStatusFirst){await restoreInflight([]);}
-    await loadHistory();
-    await loadHistory();                                 // a second pass must not double-restore
-    await new Promise(r=>setTimeout(r, 30));             // let restored sends settle
-    out.callsAfterRestore=converseCalls.slice();
-    out.statusAfterRestore=els["status-line"].textContent;
-    out.composerAfterRestore=els["composer-input"].value;
-    out.savedAfterRestore=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
-    const clickNamed=async(label)=>{
-      // the NEWEST button with that label (a failure note is appended last)
-      const btn=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
-        .filter(c=>c.tagName==="BUTTON" && c.textContent===label).pop();
-      btn.click(); await new Promise(r=>setTimeout(r, 60));
-    };
-    if(SCENARIO.claimBeforeClick) localStorage.removeItem(QUEUE_KEY);   // another window acted
-    if(SCENARIO.clickAfterRestore) await clickNamed(SCENARIO.clickAfterRestore);
-    if(SCENARIO.clickAfterRestore2) await clickNamed(SCENARIO.clickAfterRestore2);
-    out.composerAfterClick=els["composer-input"].value;
-    out.notesAfterClick=els.thread.children.filter(n=>!n.removed).map(n=>n.textContent);
-    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
-    out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
-    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
-    out.messages=messages;
-    out.notes=els.thread.children.map(n=>({cls:n.className, text:n.textContent,
-      buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
-  }else{
-    const min=60*1000;
-    if(SCENARIO.pendingAgeMin!=null){
-      localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
-        {message:"m", display:"m", scope: SCENARIO.universe||"u-1",
-         ts: Date.now()-SCENARIO.pendingAgeMin*min}));
-    }
-    if(SCENARIO.inflightAgeMin!=null){
-      els["btn-send"].disabled=true; turnStartedAt=Date.now()-SCENARIO.inflightAgeMin*min;
-    }
-    await checkForNewBuild();
-    out.reloaded=reloaded; out.fetched=fetched;
-  }
-  out.executionDetails=executionDetails;
-  out.observedModels=observedModels;
-  out.converseChoices=converseChoices;
-  out.consumerRequests=consumerRequests;out.statusCalls=statusCalls;
-  console.log(JSON.stringify(out));
-})().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
-"""
-
-
-@lru_cache(maxsize=1)
-def _app_functions() -> str:
-    """Assemble immutable shipped JS once; each scenario still gets a fresh Node VM."""
-    import re
-
-    html, _csp = onboarding.render_app_html()
-    decls = "\n".join(
-        re.search(pat, html).group(0)
-        for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
-                    r"let activeTurn=[^\n]*;",
-                    r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
-                    r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
-                    r"let sendQueueHeld=[^\n]*;",
-                    r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
-                    r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
-                    r"let queueScope=[^\n]*;", r"let queueOwner=[^\n]*;",
-                    r"let queuePersisted=[^\n]*;",
-                    r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;",
-                    r"let liveInflight=[^\n]*;",
-                    r"const renderedConsumerTurns=[^\n]*;",
-                    r"const renderedConsumerFounders=[^\n]*;",
-                    r"let Uploads=[^\n]*;",
-                    r"let interruptRequested=[^\n]*;",
-                    r"let steeredLines=[^\n]*;",
-                    r"let watchedActive=[^\n]*;",
-                    r"let pendingSteers=[^\n]*;")
-    )
-    decls += "\nconst InlineConnection=" + html.split("  const InlineConnection=", 1)[1].split(
-        "  const HostedModelConnect=", 1)[0]
-    funcs = "\n".join(_js_function(html, f) for f in (
-        "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
-        "sameInflight", "forgetInflightIf",
-        "copyModelChoice", "captureTurnOptions",
-        "sendConversationRequest",
-        "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
-        "offerResend", "noteHeldQueue", "offerSavedConversationCheck", "savedSendIndex",
-        "attachSavedConversationCheck",
-        "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
-        "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
-        # loadHistory now offers the rest of a turn the peek bounded; without
-        # these the call is a ReferenceError its own catch swallows, and the
-        # rest of the thread silently stops rendering.
-        "messageBody", "expansionHandle", "offerFullMessage", "loadFullMessage",
-        "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
-        "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
-        "flushSendQueue", "queueTurn",
-        "takeInterruptFlush", "flushAfterTurn", "drainAfterStop", "takeBatch", "flushBatch",
-        "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
-        "sameSavedLine",
-        "restoreQueue", "claimedElsewhere", "offerSavedLine",
-        # Harness S2: a line typed mid-turn steers the running turn when it can.
-        "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered", "adoptSteered",
-        # A held line (no turn could take it) and its return after a reload.
-        "markHeld", "restoreHeldSteers", "readServerTurnRow",
-        "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
-        "readPendingTurns", "sendBatch",
-    ))
-    return decls + "\n" + funcs
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _clear_app_functions():
-    yield
-    _app_functions.cache_clear()
-
-
-def _run_app(tmp_path, scenario: dict) -> dict:
-    import json
-    import os
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    if not node:  # pragma: no cover - environment dependent
-        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
-            pytest.skip("node absent; skip explicitly requested via env")
-        pytest.fail("node executable not found - the app's send/resend behaviour is "
-                    "JavaScript; install Node or set TINYASSETS_SKIP_JS_PROBE_TESTS=1")
-    app_functions = _app_functions()
-    program = (_APP_SHIM
-               .replace("__SCENARIO__", json.dumps(scenario))
-               .replace("__APP_FUNCTIONS__", app_functions))
-    script = tmp_path / "app_case.js"
-    script.write_text(program, encoding="utf-8")
-    proc = subprocess.run([node, str(script)], capture_output=True, text=True,
-                          encoding="utf-8", timeout=60)
-    assert proc.returncode == 0, f"app harness crashed:\n{proc.stderr}"
-    return json.loads(proc.stdout)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

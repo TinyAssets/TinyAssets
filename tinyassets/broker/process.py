@@ -134,7 +134,7 @@ async def serve(args: argparse.Namespace) -> None:
         import json
         import secrets
 
-        from tinyassets.boxes.bootstrap import register_broker
+        from tinyassets.boxes.bootstrap import BrokerRegistration
 
         marker = json.loads((Path(args.data_root) / ".layout.json").read_text())
         if (marker.get("state") not in {"stable", "recovering"}
@@ -144,7 +144,7 @@ async def serve(args: argparse.Namespace) -> None:
         if args.proof_sha256:
             raise RuntimeError("owner-box broker cannot adopt legacy bootstrap")
         proof = secrets.token_urlsafe(48)
-        registration = register_broker(proof)
+        registration = BrokerRegistration(proof)
         args.proof_sha256 = hashlib.sha256(proof.encode()).hexdigest()
         del proof
     from tinyassets.broker.box_admission import provision
@@ -176,12 +176,9 @@ async def serve(args: argparse.Namespace) -> None:
         loop.add_signal_handler(signum, stop.set)
     async with listener:
         if registration:
-            from tinyassets.boxes.control_channel import receive, send
-
-            channel, identity = registration
-            send(channel, {"ready": True})
-            if receive(channel, identity) != {"ready": True}:
-                raise RuntimeError("host did not accept broker readiness")
+            await asyncio.to_thread(registration.ready)
+        registration_task = (asyncio.create_task(registration.maintain(stop))
+                             if registration else None)
         waker_task = None
         if registration:
             from tinyassets.broker.waker import Waker
@@ -189,7 +186,8 @@ async def serve(args: argparse.Namespace) -> None:
             plans.initialize()
             waker_task = asyncio.create_task(Waker(
                 server.next_wakes, plans, wake=routing.wake, config=routing.config,
-                poll_seconds=args.wake_poll_seconds, lifecycle_tick=routing.tick).run(stop))
+                poll_seconds=args.wake_poll_seconds, lifecycle_tick=routing.tick,
+                routing=routing).run(stop))
         try:
             await stop.wait()
         finally:
@@ -197,8 +195,8 @@ async def serve(args: argparse.Namespace) -> None:
             if waker_task is not None:
                 await waker_task
                 await routing.close()
-            if registration:
-                registration[0].close()
+            if registration_task is not None:
+                await registration_task
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from tinyassets.onboarding.owner_sessions import COOKIE, HEADERS, hashed, lookup, require, store
+from tinyassets.sqlite_schema import ensure_table
 
 RETURN_COOKIE = "__Host-ta-approval-return"
 PREFIX = "/app/approval-handoff/"
@@ -21,11 +22,10 @@ MAX_HANDOFFS_PER_OWNER = 20
 @contextmanager
 def flows():
     with store() as conn:
-        conn.execute(
+        ensure_table(conn,
             "CREATE TABLE IF NOT EXISTS approval_handoffs ("
             "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, request_id TEXT NOT NULL, "
-            "client TEXT NOT NULL, expires REAL NOT NULL)"
-        )
+            "client TEXT NOT NULL, expires REAL NOT NULL)", kind="ephemeral")
         conn.execute("DELETE FROM approval_handoffs WHERE expires<=?", (time.time(),))
         yield conn
 

@@ -852,6 +852,11 @@
       <div class="connect-body">
         <p>Your account is your sign-in plus the one command center bound to it. There is nothing
         else to sign into here — no separate website account, no profile.</p>
+        <h3>Undo</h3>
+        <p>Save a restore point, or rewind the whole box to a retained sleep snapshot.</p>
+        <button id="btn-save-restore-point" class="btn" type="button">Save a restore point</button>
+        <div id="restore-points"></div>
+        <p id="restore-status" class="notice" role="status"></p>
         <h3>Your command center's connections</h3>
         <details><summary>External agents with API keys</summary>
           <p>Ask your agent to create a key. Review and copy it in Needs You.
@@ -900,6 +905,8 @@
         <p>Approval rules, egress hosts and spend caps for this account. Only your protected
         owner session can save changes. Your agent can send a proposal for you to review.</p>
         <p>A spend cap pauses model requests whose maximum cost is unknown.</p>
+        <label>Policy <select id="policy-scope"><option value="actions">Actions</option><option value="egress">Internet and spending</option></select></label>
+        <p>Internet modes: open, allowlist, or ask. Destination rules allow future connections until removed.</p>
         <textarea id="policy-json" aria-label="Owner policy JSON" spellcheck="false"></textarea>
         <button id="btn-policy-save" class="btn btn--primary" type="button">Save policy</button>
         <div id="rules-status" class="notice" role="status"></div>
@@ -939,6 +946,7 @@
     <a href="/app" data-app-recovery="refresh">Refresh command center</a>
     <a href="/app" data-app-recovery="browse">Browse / Switch</a>
     <a href="/app" data-app-recovery="chat">Open chat</a>
+    <a href="/app" data-app-recovery="logout">Log out</a>
     <span id="app-recovery-failed" role="alert" hidden>Something went wrong - <a href="/app" data-app-recovery="reload">Reload</a></span>
   </nav>
   </main>
@@ -948,8 +956,15 @@
     .app-update-banner button{min-height:44px;padding:0 14px;cursor:pointer}
     .app-update-required{position:fixed;z-index:1001;inset:0;display:grid;place-items:center;background:#0f1020;padding:24px;text-align:center}
     .app-update-required .card{max-width:420px;width:100%}
-    #app-recovery-controls{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;padding-bottom:max(6px,env(safe-area-inset-bottom));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:12px}
-    #app-recovery-controls a{color:var(--ink,#111)}
+    /* Always at the bottom, even when nothing above it loaded (it used to rise
+       under the phone's status bar), clear of notches, with 44px tap targets. */
+    #app-recovery-controls{flex:0 0 auto;margin-top:auto;display:flex;flex-wrap:nowrap;overflow-x:auto;align-items:center;gap:8px;padding:0 max(10px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(10px,env(safe-area-inset-left));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:14px;white-space:nowrap}
+    #app-recovery-controls a{color:var(--ink,#111);display:inline-flex;align-items:center;min-height:44px;padding:0 8px}
+    /* While the app works and the keyboard leaves little visible height (main.js
+       fitToVisualViewport sets .app-short from the visual viewport), the composer
+       needs the room. A failed start (every view hidden) or a reported failure
+       (#app-recovery-failed shown) always shows the bar. */
+    .app-short .app:has(.view:not([hidden])):not(:has(#app-recovery-failed:not([hidden]))) #app-recovery-controls{display:none}
   </style>
   <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
   <script nonce="__TA_NONCE__">__TA_APP_UPDATES__</script>

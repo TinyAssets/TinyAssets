@@ -4,7 +4,6 @@ from pathlib import Path
 
 from tinyassets.onboarding.hosted_model_auth import (
     AcquisitionPreset,
-    HostedAuthError,
 )
 
 
@@ -13,8 +12,8 @@ def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
     """Redisplay this owner's existing free-only request after partial activation.
 
     Read-only: never redeposit (which could rotate custody), recreate consent or
-    relax the existing answer action's revision/home/authority checks. Ambiguity
-    holds instead of picking a request. Revoked access may be shown for recovery;
+    relax the existing answer action's revision/home/authority checks. When
+    duplicate requests exist, redisplay the newest. Revoked access may be shown for recovery;
     only the existing answer path decides whether it can actually activate.
     """
     from tinyassets.api.model_access_requests import grant_sentence
@@ -55,9 +54,9 @@ def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
                     "catalogue_url": preset.catalogue_url,
                     "benchmark_url": preset.benchmark_url}):
             matches.append({**request, "grant_sentence": grant_sentence(action)})
-    if len(matches) > 1:
-        raise HostedAuthError("model_confirmation_requires_review", 409)
     if not matches:
         return None
+    newest = max(matches, key=lambda request: (request.get("created_at", ""),
+                                               request["request_id"]))
     return {"status": "confirmation_required", "universe_id": uid,
-            "request_id": matches[0]["request_id"], "request": matches[0]}
+            "request_id": newest["request_id"], "request": newest}

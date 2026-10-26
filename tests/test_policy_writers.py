@@ -15,6 +15,10 @@ def test_policy_writers():
     for path in (ROOT / "tinyassets").rglob("*.py"):
         relative = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and "UPDATE outbound_connections SET owner_egress_json" in node.value):
+                assert relative == "tinyassets/broker/http_connect.py", relative
         for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
             fn = call.func
             if isinstance(fn, ast.Attribute) and fn.attr == "write":

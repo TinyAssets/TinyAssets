@@ -168,3 +168,72 @@ Nothing deploys until slice 7.
       - [ ] Real-data census and rehearsal on both copies; CI green.
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.
+
+## 8. After the cutover (live 2026-10-22): close the gap between live and the shape
+
+The cutover is live, but fixes went live as hotfixes and some drifted from the
+target shape. Every item names the rule (T1-T10, design.md) it serves. An item
+that would add a check to shared code is reshaped or dropped: the router,
+broker and waker get no new business logic.
+
+- [ ] 8.1 Subscription CLI logins in broker custody, leased into a per-run tmpfs,
+      refresh written back, nothing persistent in the box (T6; ADR-022 P2b;
+      subscription credentials stay in broker custody, #5227, ADR-012). Branch `conv/source-custody`.
+      Existing logins move into custody on first use.
+- [ ] 8.2 Address discovery runs in the owner's box through its egress path; the
+      broker keeps only the OAuth code exchange, client registration and deposit.
+      Delete broker discovery and its time-budget guard (T1, T2).
+- [ ] 8.3 Delete the runtime "dead member" pruning (source_connect,
+      connection_uses, model_access_requests). The lead runs a one-shot repair of
+      assignment members whose grants the migration dropped; the repair is
+      deleted with the other one-shot migrations (6a part 2).
+- [ ] 8.4 Subscription CLIs ship once in the shared box image, built only from
+      committed per-record lockfiles (T4; no per-owner installs).
+- [ ] 8.5 Deploy `conv/source-records` (with #5210, `conv/source-custody` and the
+      lanes below) after one review scoped to the router, broker and waker. Assert
+      the deployed sha, run the 8.3 repair (`--dry-run` per owner first, then the
+      write run), then empty the hotfix ledger
+      (`/var/lib/tinyassets-deploy/hotfixes/`): every live hotfix is in the
+      deployed sha or deleted. Live-only diagnostics are deleted, not folded.
+- [ ] 8.6 The deploy carries its own config: the broker's outbound-HTTP flag, the
+      box's public URL and the liveness directory's group mode come from the
+      repo's compose, env templates or migration, never from host edits.
+- [ ] 8.7 A box that cannot serve gives the router a 503 with Retry-After, never a
+      500; the router only maps and forwards (T1). Branch `conv/router-503-schema-drift`.
+- [ ] 8.8 Pending sign-ins never hold a box awake; cancelled login processes exit
+      before the box reports idle (T7, T9; in the box).
+- [ ] 8.9 Schema drift is handled once, by the store: an ephemeral table with an
+      old layout is rebuilt, a durable one fails loudly. The per-table special
+      cases are deleted. Branch `conv/router-503-schema-drift`.
+- [ ] 8.10 A turn always ends with a reply or a clear stop: the last attempt is a
+      tools-off reply, and a model that fails before reaching its provider moves
+      the turn to the next candidate (T8, in the box). Branch `conv/turn-reply-budget`.
+- [x] 8.11 C11/S24 durable send: one box-local admission before publication and
+      dispatch; independent browser send identities survive busy turns and reloads.
+      Removed steering intake, destructive claims, browser batch replay and the
+      experimental ingress adapter. `send-path` is a mandatory structural guard.
+      Targeted Linux proofs cover concurrency, replay, storage failure, process
+      death, setup resume, selected-run projection and the shipped browser code.
+      No production access or cutover in this lane. The page's self-reload never
+      drops a send or repeats "Still waiting to be sent" notices.
+- [ ] 8.12 Sign-in stays in the user's context: the same tab on the web, an in-app
+      sheet on phones, the system browser in the matching profile on desktop with
+      return to the app.
+- [ ] 8.13 Fold the remaining open PRs into `conv/source-records`: #5219's last
+      round (no preferred provider; `_first_power_preset`), #5199 (router
+      canary credentials). #5213 (app update prompts) rebases onto it.
+- [ ] 8.14 Redo #4949 (broker credentials under a KMS key hierarchy) on the
+      post-C6 broker custody, after 8.1 (registry S28).
+- [ ] 8.15 Naive-user pass per surface (app, MCP, a scheduled run) on both test
+      accounts, through the agent, after 8.5 (task 7).
+
+### Next, once C6 closes
+
+The founder-approved primitives (docs/architecture.md, Shape registry N rows)
+that wait only on C6: N4 live takeover view, N5 owner egress gate, N6 undo by
+snapshot, N8 optional PC link, N10 owner-only policy. N1 (inbound door) is
+unblocked now. Specs first: N1 on `spec/n1-inbound-door`, N5 and N6 on
+`spec/n5-n6-egress-undo`. N2, N3, N7 and N9 wait on the C3 and C11 tails.
+
+Status of shape convergence lives in the Shape registry, not in the
+`shape-convergence` checkboxes, which lag what has merged.

@@ -145,6 +145,7 @@ class _Stream:
     upload: Any = None
     authority: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
+    duplex: Any = None
 
 
 class BrokerServer:
@@ -168,7 +169,7 @@ class BrokerServer:
         self._data_root = data_root
         from tinyassets.broker.public_egress import PublicEgress
 
-        self._public_egress = PublicEgress(owner_identities, data_root)
+        self._public_egress = PublicEgress(owner_identities, data_root, binding=self.egress_binding)
         self._connections = set()
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
@@ -203,6 +204,16 @@ class BrokerServer:
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         self._loop = asyncio.get_running_loop()
+        try:
+            # A count only: saved sign-ins that vanish across a restart or deploy
+            # show up as a drop between two starts.
+            from tinyassets.broker.subscription_custody import FILENAME
+
+            saved = sum(1 for _ in (Path(self._data_root) / ".broker" / "accounts").glob(
+                "*/credentials/" + FILENAME))
+            _LOG.warning("subscription custody at start: %d saved", saved)
+        except OSError:
+            _LOG.warning("subscription custody at start: unreadable")
         return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
 
     async def _connection(self, reader: asyncio.StreamReader,
@@ -246,6 +257,10 @@ class BrokerServer:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
             writer.close()
+
+    def egress_binding(self, owner):
+        return (self._owner_identities, owner, self._policy_store,
+                self._ledger_for(owner) if self._ledger_for else None)
 
     def close_owner(self, principal):
         self._public_egress.close_owner(principal)
@@ -342,6 +357,14 @@ class _Connection:
         if frame.kind == rf.DATA:
             with self._server._streams_lock:
                 stream = self._server._streams.get((self._key, frame.stream))
+            if stream is not None and stream.duplex is not None:
+                from tinyassets.providers.media_budget import BudgetExhausted
+
+                try:
+                    stream.duplex.frame("up", frame.payload)
+                except BudgetExhausted:
+                    stream.duplex.upstream = False
+                return
             if stream is None or stream.upload is None:
                 raise rf.FrameError("unexpected request data")
             stream.upload.put(frame.payload)
@@ -361,9 +384,13 @@ class _Connection:
             stream.upload.finish()
         elif op == "CREDIT" and stream is not None:
             amount = doc.get("n")
+            direction = doc.get("direction", "")
             if type(amount) is int and amount > 0:
                 with stream.wake:
-                    stream.credit = min(stream.credit + amount, MAX_WINDOW)
+                    if stream.duplex is not None and direction in {"up", "down"}:
+                        stream.duplex.grant(direction, amount)
+                    elif not direction:
+                        stream.credit = min(stream.credit + amount, MAX_WINDOW)
                     stream.wake.notify_all()
         elif op == "CANCEL" and stream is not None:
             await asyncio.to_thread(self._server.cancel, stream)
@@ -376,6 +403,7 @@ class _Connection:
                 if set(doc) != {"op", "operation", "arguments"}:
                     raise ValueError("invalid lifecycle command")
                 operations = {"deploy": self._server.routing.deploy,
+                              "readiness": self._server.routing.readiness,
                               "wake": self._server.routing.wake,
                               "sleep": self._server.routing.sleep,
                               "restore": self._server.routing.restore}
@@ -434,13 +462,18 @@ class _Connection:
                 await self.send_async(rf.control(rf.CONNECTION, {
                     "op": "BOX_RESULT", "result": {"principal": self._box_owner}}))
                 return
+            if op == "OWNER_VOLUME":
+                await self.send_async(rf.control(rf.CONNECTION, {
+                    "op": "OWNER_VOLUME_REFUSED",
+                    "reason": "restore is not available on the box channel"}))
+                return
             if op == "OWNER_POLICY":
                 if doc.get("action") not in {"read", "receipts", "decide", "proposal", "write"}:
                     raise rf.FrameError("unsupported box policy operation")
                 if doc["action"] == "write" and "session_proof" not in doc:
                     raise rf.FrameError("protected policy changes require shared door proof")
                 doc = {**doc, "principal": self._box_owner}
-                answer = await asyncio.to_thread(self._owner_policy, doc)
+                answer = await self._policy_operation(doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op == "BOX_PING" and self._usage_leases:
@@ -477,13 +510,70 @@ class _Connection:
             if op == "USAGE_LEASE":
                 await self._usage_lease(doc)
                 return
+            if op == "SUBSCRIPTION_CUSTODY":
+                from tinyassets.broker.subscription_custody import operation
+
+                self._box_scope(doc)
+                try:
+                    if set(doc) != {"op", "document"}:
+                        raise ValueError("invalid native custody fields")
+                    result = await asyncio.to_thread(
+                        operation, self._server._data_root, self._box_owner, doc["document"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception as exc:  # credentials must never enter an error payload
+                    # A refused save strands a sign-in, so name it in the log:
+                    # the action and the error class only, never the message.
+                    document = doc.get("document")
+                    action = document.get("action") if isinstance(document, dict) else None
+                    if not (isinstance(action, str)
+                            and action in {"read", "begin", "save", "delete"}):
+                        action = "invalid"
+                    _LOG.warning("subscription custody %s refused: %s",
+                                 action, type(exc).__name__)
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
+            if op == "INBOUND_INSTALLATIONS":
+                from tinyassets.broker.inbound_installations import owner_operation
+
+                self._box_scope(doc)
+                try:
+                    if set(doc) != {"op", "request"}:
+                        raise ValueError("invalid installation request")
+                    result = await asyncio.to_thread(
+                        owner_operation, self._server._data_root, self._box_owner, doc["request"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
                           "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")
             doc = self._box_scope(doc)
         elif self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "DELETION_JOB":
+        if op == "INBOUND_VERIFY":
+            import base64
+
+            from tinyassets.broker.inbound_verification import MAX_BODY_BYTES, verify_shared
+
+            try:
+                if (set(doc) != {"op", "binding", "headers", "body"}
+                        or not isinstance(doc["binding"], str)
+                        or not isinstance(doc["headers"], dict)
+                        or not isinstance(doc["body"], str)):
+                    raise ValueError("invalid inbound verification request")
+                body = base64.b64decode(doc["body"], validate=True)
+                if len(body) > MAX_BODY_BYTES:
+                    raise ValueError("inbound body too large")
+                result = await asyncio.to_thread(
+                    verify_shared, self._server._data_root, doc["binding"], doc["headers"], body)
+                answer = {"op": "INBOUND_VERIFY_IS", "result": result}
+            except Exception:
+                answer = {"op": "INBOUND_VERIFY_UNAVAILABLE"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "DELETION_JOB":
             from tinyassets.broker.deletion_jobs import WithdrawalPending
 
             try:
@@ -550,7 +640,10 @@ class _Connection:
             answer = await asyncio.to_thread(self._http_connect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_POLICY":
-            answer = await asyncio.to_thread(self._owner_policy, doc)
+            answer = await self._policy_operation(doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "OWNER_VOLUME":
+            answer = await self._volume_operation(doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "DISCONNECT":
             answer = await asyncio.to_thread(self._disconnect, doc)
@@ -688,6 +781,12 @@ class _Connection:
 
     async def _admit_owner(self, doc):
         try:
+            from tinyassets.broker.admission import read
+
+            # A deleted account's late request must not queue behind its own
+            # deletion job's owner lock; the lock-free record answers it.
+            if read(self._server._owner_identities, doc["principal"]).state == "erased":
+                return {"op": "OWNER_ADMIT_REFUSED"}
             return await owner_call(self._server._owner_identities.path, doc["principal"],
                                     self._admit_owner_locked, doc)
         except Exception:
@@ -708,16 +807,22 @@ class _Connection:
             return {"op": "OWNER_ADMIT_IS", "machine": identity.uid}
 
     def _model_source(self, doc):
-        from tinyassets.broker.owner_sources import publish
+        from tinyassets.broker.owner_sources import publish, retract
 
+        fixed = {"op", "principal", "generation", "token"}
         try:
-            if set(doc) != {"op", "principal", "generation", "token",
-                            "definition"}:
+            # One op, two directions: a descriptor is published with the
+            # definition that registered it and withdrawn by the ref the owner
+            # disconnected. Either way the principal is the channel's bind.
+            if set(doc) not in ({*fixed, "definition"}, {*fixed, "retract"}):
                 raise ValueError("unsupported source fields")
             _owner(doc["principal"])
             with self._server._fence.send(doc["generation"], doc["token"]):
-                result = publish(self._server._ledger_for(doc["principal"]),
-                                 doc["principal"], doc["principal"], doc["definition"])
+                ledger = self._server._ledger_for(doc["principal"])
+                result = (retract(ledger, doc["principal"], doc["retract"])
+                          if "retract" in doc else
+                          publish(ledger, doc["principal"], doc["principal"],
+                                  doc["definition"]))
             return {"op": "BOX_RESULT", "result": result}
         except Exception:
             return {"op": "BOX_REFUSED"}
@@ -817,6 +922,76 @@ class _Connection:
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
 
+    async def _volume_operation(self, doc):
+        from tinyassets.broker.policy import PolicyRefused
+        from tinyassets.broker.volume_restore import operation
+
+        try:
+            if not isinstance(doc, dict) or not self._server._fence.admits(
+                    doc.get("generation"), doc.get("token")):
+                raise PermissionError("invalid fence")
+            result = await operation(self._server, doc)
+            answer = {"op": "OWNER_VOLUME_RESULT", "result": result}
+            rf.control(rf.CONNECTION, answer)
+            return answer
+        except (PermissionError, PolicyRefused, LookupError, ValueError, RuntimeError) as exc:
+            try:
+                if (isinstance(doc, dict) and doc.get("action") in {"restore", "checkpoint"}
+                        and self._server._policy_store is not None):
+                    self._server._policy_store.receipt_refusal(
+                        doc.get("principal"), doc.get("action"),
+                        {key: value for key, value in doc.items()
+                         if key not in {"session_proof", "generation", "token"}})
+            except Exception:  # noqa: BLE001 - refuse regardless of receipt failure
+                _LOG.exception("restore refusal receipt unavailable")
+            reason = str(exc) if isinstance(exc, (PermissionError, PolicyRefused, LookupError)) \
+                else "volume restore unavailable"
+            return {"op": "OWNER_VOLUME_REFUSED", "reason": reason}
+
+    async def _policy_operation(self, doc):
+        if doc.get("action") != "write":
+            return await asyncio.to_thread(self._owner_policy, doc)
+        from tinyassets.broker.admission import owner_lock, thread_work
+
+        owner = doc.get("principal")
+        async with owner_lock(self._server._owner_identities.path, owner):
+            # Close public tunnels before the row changes. A failed close is
+            # never effective: generation and document stay as they were.
+            ready = await self._policy_write_ready(doc, owner)
+            if not ready:
+                return await thread_work(self._owner_policy, doc)
+            public = self._server._public_egress
+            closing = [task for task, (principal, _) in public.channels.items()
+                       if principal == owner]
+            try:
+                public.close_owner(owner)
+                await asyncio.wait_for(asyncio.gather(*closing, return_exceptions=True), 15)
+            except (OSError, TimeoutError):
+                return {"op": "OWNER_POLICY_REFUSED",
+                        "reason": "policy change pending connection closure"}
+            return await thread_work(self._owner_policy, doc)
+
+    async def _policy_write_ready(self, doc, owner):
+        """True when this write would commit, so tunnels may close first."""
+        from tinyassets.broker.admission import thread_work
+        from tinyassets.broker.policy import PolicyRefused
+
+        store = self._server._policy_store
+        if store is None or not isinstance(doc, dict) or doc.get("op") != "OWNER_POLICY":
+            return False
+        proof_key = "session_proof" if "session_proof" in doc else "cookie"
+        if set(doc) != {"op", "action", "principal", proof_key, "expected_generation",
+                        "policy"}:
+            return False
+        if proof_key == "session_proof" and not isinstance(doc.get(proof_key), dict):
+            return False
+        try:
+            await thread_work(store.prepare_write, owner, doc[proof_key],
+                              doc["expected_generation"], doc["policy"])
+        except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError):
+            return False
+        return True
+
     def _owner_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Recheck the protected-session proof against the router's live rows."""
         from tinyassets.broker.owner_identities import validate_principal
@@ -843,8 +1018,14 @@ class _Connection:
                 result = store.receipt_proposal(owner, owner, doc["change"])
             elif action == "write" and set(doc) == {
                     "op", "action", "principal", proof_key, "expected_generation", "policy"}:
-                result = store.write(owner, doc[proof_key], doc["expected_generation"],
-                                     doc["policy"]).projection()
+                with store.lock(owner):
+                    result = store.write(owner, doc[proof_key], doc["expected_generation"],
+                                         doc["policy"]).projection()
+                    with self._server._streams_lock:
+                        streams = [s for s in self._server._streams.values()
+                                   if s.namespace == owner]
+                    for stream in streams:
+                        self._server.cancel(stream)
             elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
                 request = doc["request"]
                 if not isinstance(request, dict) or set(request) != {
@@ -903,15 +1084,22 @@ class _Connection:
         from tinyassets.broker.http_connect import local_operation, validate
 
         try:
-            if set(doc) != {"op", "principal", "generation", "token",
+            if set(doc) - {"session_proof"} != {"op", "principal", "generation", "token",
                             "document"}:
                 raise ValueError("unsupported connect fields")
             _owner(doc["principal"])
             validate(doc["document"])
+            committed_via = "door" if self._role == OWNER else "box"
+            if "session_proof" in doc:
+                self._server._policy_store._session(doc["principal"], doc["session_proof"])
+                committed_via = "door"
             if self._role == BOX and ("request_ref" in doc["document"]
                     or doc["document"].get("secret")
                     or doc["document"]["action"] in {
-                        "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
+                        "rotate", "oauth_exchange",
+                        "preset_exchange"}
+                    or (doc["document"]["action"] == "oauth_offer"
+                        and doc["document"].get("registration_url"))
                     or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
                 raise PermissionError("credential deposits require the door")
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
@@ -922,13 +1110,15 @@ class _Connection:
                 require_admitted(self._server._owner_identities, doc["principal"])
                 from tinyassets.broker.egress import identity
 
-                binding = identity.set((self._server._owner_identities, doc["principal"]))
+                binding = identity.set(self._server.egress_binding(doc["principal"]))
                 try:
-                    result = local_operation(self._server._ledger_for(doc["principal"]),
-                                        principal=doc["principal"],
-                                        command_center=doc["principal"],
-                                        document=doc["document"],
-                                        committed_via="door" if self._role == OWNER else "box")
+                    store = self._server._policy_store
+                    with store.lock(doc["principal"]) if store else contextlib.nullcontext():
+                        result = local_operation(self._server._ledger_for(doc["principal"]),
+                                            principal=doc["principal"],
+                                            command_center=doc["principal"],
+                                            document=doc["document"],
+                                            committed_via=committed_via)
                 finally:
                     identity.reset(binding)
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
@@ -937,6 +1127,14 @@ class _Connection:
         except OwnerErased:
             return {"op": "HTTP_CONNECT_RESULT", "result": {"error": "deposit_failed"}}
         except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            import logging
+            import traceback
+
+            frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
+            logging.getLogger(__name__).warning(
+                "http connect refused: %s.%s at %s:%s", type(exc).__module__,
+                type(exc).__qualname__, frame.filename if frame else "?",
+                frame.lineno if frame else "?")
             return {"op": "HTTP_CONNECT_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
@@ -1102,7 +1300,7 @@ class _Connection:
                 try:
                     from tinyassets.broker.egress import identity
 
-                    binding = identity.set((self._server._owner_identities, principal))
+                    binding = identity.set(self._server.egress_binding(principal))
                     try:
                         dispatch = self._server._dispatch_for(
                             principal, command_center, grant_id, resource)
@@ -1173,7 +1371,7 @@ class _Connection:
         from tinyassets.broker.egress import identity
         from tinyassets.broker.owner_sources import BOX_REQUEST
 
-        binding = identity.set((self._server._owner_identities, stream.namespace))
+        binding = identity.set(self._server.egress_binding(stream.namespace))
         box_token = BOX_REQUEST.set(self._role == BOX)
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
@@ -1183,29 +1381,48 @@ class _Connection:
             stream.marked = True
             self.send(rf.control(stream.id, {"op": "ADMITTED", "op_id": stream.op_id}),
                       stream)
-            if stream.upload is not None:
-                self.send(rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream)
-            upstream = dispatch(
-                grant_id, verb, request, stream=True,
-                idle_s=(min(idle_s, DEFAULT_IDLE_S)
-                        if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
-                guard=lambda: self._guard(stream),
-                on_connect=lambda sock: self._connected(stream, sock),
-                checkpoint=lambda: self._checkpoint(stream),
-                deadline_at=stream.deadline,
-                **({"body": stream.upload} if stream.upload is not None else {}),
-                **({"inference_usage": inference_usage, "operation_id": stream.op_id}
-                   if inference_usage is not None else {}),
-            )
-            stream.upstream = upstream
-            if stream.cancelled:
-                raise _Cancelled
-            self.send(rf.control(stream.id, {
-                "op": "HEAD", "status": upstream.status, "reason": upstream.reason,
-                "headers": upstream.headers, "redirect_count": upstream.redirect_count,
-            }), stream)
-            self._pump_body(stream, upstream)
-            outcome, error_class = "completed", None
+            if verb == "model_duplex":
+                from tinyassets.broker.duplex import DuplexRefused, _duplex_end, accept_duplex
+
+                try:
+                    receipt = accept_duplex(stream, request, fence=self._server._fence)
+                except DuplexRefused as exc:
+                    outcome, error_class = "refused", exc.code
+                    if exc.code == "fenced":
+                        outcome = "cancelled"
+                else:
+                    outcome, error_class = _duplex_end(receipt)
+                    extra = {"duplex_receipt": receipt}
+                    if receipt.get("side_effect_state") == "none":
+                        stream.marked = False
+                        stream.wrote = False
+            else:
+                if stream.upload is not None:
+                    self.send(rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream)
+                store = self._server._policy_store
+                with store.lock(stream.namespace) if store else contextlib.nullcontext():
+                    self._checkpoint(stream)
+                    upstream = dispatch(
+                        grant_id, verb, request, stream=True,
+                        idle_s=(min(idle_s, DEFAULT_IDLE_S)
+                                if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
+                        guard=lambda: self._guard(stream),
+                        on_connect=lambda sock: self._connected(stream, sock),
+                        checkpoint=lambda: self._checkpoint(stream),
+                        deadline_at=stream.deadline,
+                        **({"body": stream.upload} if stream.upload is not None else {}),
+                        **({"inference_usage": inference_usage, "operation_id": stream.op_id}
+                           if inference_usage is not None else {}),
+                    )
+                stream.upstream = upstream
+                if stream.cancelled:
+                    raise _Cancelled
+                self.send(rf.control(stream.id, {
+                    "op": "HEAD", "status": upstream.status, "reason": upstream.reason,
+                    "headers": upstream.headers, "redirect_count": upstream.redirect_count,
+                }), stream)
+                self._pump_body(stream, upstream)
+                outcome, error_class = "completed", None
         except _Cancelled:
             outcome, error_class = "cancelled", None
         except (_Expired, TimeoutError):
@@ -1222,6 +1439,11 @@ class _Connection:
 
                 name = type(exc).__name__
                 error_class = name if name in ERROR_CLASSES else "ProxyRequestError"
+                from tinyassets.broker.egress import EgressPolicyRefused
+
+                if isinstance(exc, EgressPolicyRefused):
+                    error_class = "EgressPolicyRefused"
+                    extra = {"egress": exc.detail}
                 if isinstance(exc, RequestBudgetExceeded):
                     error_class = "InferenceUsageStopped"
                     extra = {"reason": exc.reason,

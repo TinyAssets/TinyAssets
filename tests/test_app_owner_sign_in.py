@@ -122,6 +122,44 @@ def test_app_callback_requires_original_browser_and_unexpired_purpose(login, kin
     asyncio.run(run())
 
 
+@pytest.mark.verifies("onboarding-web-app:Connecting never loses the app")
+@pytest.mark.parametrize("state", ["live", "expired", "other_account"])
+def test_renewal_slides_only_the_live_protected_session_of_the_same_account(login, monkeypatch,
+                                                                            state):
+    import time
+
+    async def run():
+        async with browser() as client:
+            await client.get("/app", params=await begin(client))
+            cookie = client.cookies.get(sessions.COOKIE)
+            soon = time.time() + 60
+            with sessions.store() as conn:
+                conn.execute("UPDATE owner_sessions SET expires_at=?",
+                             (time.time() - 1 if state == "expired" else soon,))
+            if state == "other_account":
+                # A renewal proving another account never slides this owner's proof.
+                assert sessions.extend(cookie, "someone-else") is False
+            else:
+                renewed = await client.post("/app/token",
+                                            json={"grant_type": "refresh_token"},
+                                            headers={"origin": "https://tinyassets.io"})
+                assert renewed.status_code == 200
+            with sessions.store() as conn:
+                expires = conn.execute("SELECT expires_at FROM owner_sessions").fetchone()
+            if state == "live":
+                # Still using the app: no sign-in again mid-task.
+                assert expires[0] > time.time() + 28000
+                assert sessions.lookup(cookie)
+            elif state == "expired":
+                # Lapsed proof is never revived: the store sweeps it and nothing returns.
+                assert expires is None
+                assert sessions.lookup(cookie) is None
+            else:
+                # Another account never inherits or extends this owner's proof.
+                assert expires[0] < soon + 1
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("bad_refresh", [None, "", "x" * 4097])
 def test_app_login_fails_without_usable_renewal(login, bad_refresh):
     _, payload = login
@@ -210,6 +248,7 @@ let ref='old-account-handle', cookieOnly=false;
 function clearSessionRef(){ref='';}
 async function refreshAccessToken(value){cookieOnly=value; return true;}
 const window={location:{href:'',search:'?owner_login=1'}};
+async function openSignIn(url){window.location.href=url;}
 const history={replaceState:()=>{}};
 function redirectUri(){return 'https://tinyassets.io/app';}
 """ + "async function beginSignIn(){" + start +

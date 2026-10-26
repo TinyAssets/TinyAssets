@@ -72,8 +72,10 @@ def shell_source(html_path: Path) -> str:
         return source
     main = (MODULE_DIR / "main.js").read_text(encoding="utf-8")
     for marker, name in (("__TA_MODEL_STREAM__", "model_stream.js"),
+                         ("__TA_REALTIME_SESSION__", "realtime_session.js"),
                          ("__TA_SEND_JOURNAL__", "send_journal.js"),
-                         ("__TA_DURABLE_SEND__", "durable_send.js")):
+                         ("__TA_DURABLE_SEND__", "durable_send.js"),
+                         ("__TA_UNDO__", "undo.js")):
         main = main.replace(marker, (MODULE_DIR / name).read_text(encoding="utf-8"))
     return source.replace("__TA_APP_MAIN__", main)
 
@@ -101,6 +103,18 @@ def recovery_source() -> str:
 def credential_requests_source() -> str:
     """Trusted packaged card script; no owner storage or request-provided path."""
     return (MODULE_DIR.parent / "credential_requests.js").read_text(encoding="utf-8")
+
+
+def app_updates_source() -> str:
+    """Trusted packaged update banner script; no owner storage."""
+    return (MODULE_DIR.parent / "app_updates.js").read_text(encoding="utf-8")
+
+
+def app_versions() -> dict[str, Any]:
+    """The packaged public version policy for each app shell."""
+    import json
+
+    return json.loads((MODULE_DIR.parent / "app_versions.json").read_text(encoding="utf-8"))
 
 
 def is_module_path(path: str) -> bool:

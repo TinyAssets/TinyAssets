@@ -137,8 +137,8 @@ user. Getting the id is a founder step: `docs/host-actions.md`.
 
 PR #4267 classifies deployment credentials by their actual readers (2026-10-04).
 Compose injects `daemon.env` (rendered from `tinyassets-env.template`),
-`request-idempotency.env`, `agent-interchange.env`, and `app-ingress.env`.
-The latter three use their matching `*-env.template` files. Optional credentials
+`request-idempotency.env`, and `agent-interchange.env`.
+The latter two use their matching `*-env.template` files. Optional credentials
 from this catalog are also declared as commented assignments in the shared
 template, so the Compose-derived inventory test covers them even when unset.
 The daemon's explicit Compose `environment` block contains configuration only.
@@ -151,9 +151,7 @@ The daemon's explicit Compose `environment` block contains configuration only.
 | `WORKOS_API_KEY` | shared env | Removed; `account_deletion.py`, daemon account deletion. |
 | `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` | request-idempotency.env | Removed; `storage/request_admissions.py:mint_idempotency_key_hash`, called by `api/universe.py` admission, plus the interchange fallback below. Engine `run_graph` admission uses `engine_admissions`, not this minter. |
 | `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` | agent-interchange.env | Removed; no Python reader remains under `tinyassets/` since C8 deleted `agent_interchange.py` (agents are files). The deploy template, compose env file and workflow validator still provision it; a deploy lane retires them. |
-| `TINYASSETS_APP_INGRESS_HMAC_KEY` | app-ingress.env | Removed; template reserves it for daemon ingress and the slack-agent caller. No Python reader remains under `tinyassets/` at this head, including the engine. Compose still injects it. |
 | `TINYASSETS_WIKI_CANARY_TOKEN` | shared env | Removed; `auth/wiki_canary.py` verifies the daemon's canary principal, and external health probes send it. Engine HTTP uses a fresh per-engine bearer and binds its owner directly. |
-| `TINYASSETS_CANARY_DOOR_KEY` | shared env, optional | Removed; `onboarding/canary_sign_in.py` is a daemon HTTP route. With `TINYASSETS_CANARY_USER_ID` (an account id, not a credential) it enables the canary-only sign-in; unset, that route 404s. |
 | `TINYASSETS_SESSION_SEAL_KEY` | shared env | Removed even before `session_store.arm()` pops it; `onboarding/session_store.py` seals daemon app refresh sessions. |
 | `TINYASSETS_IDENTITY_FINGERPRINT_KEY` | shared env | Retained with an explicit reason: engine `get_status` delegates to `api/status.py`, which computes the principal fingerprint; `engine_read_views.py` preserves identity evidence. |
 | `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` | shared env, optional | Retained with an explicit reason: engine `write_graph` request-from-user calls `api/pending_requests.py:request_from_user` → `_notify_owner` → `owner_notifications.py` → `notify.resolve_transports` → FCM. |
@@ -307,10 +305,9 @@ A request reaches its owner's registered devices as a notification. Each channel
 
 Installation is disabled by default even when the credential pair is present.
 Before setting `TINYASSETS_OAUTH_CREDENTIALS_INSTALL=true`, verify deployment of
-#4441 and resolve `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md` with
-its Linux isolation proof. Environment filtering alone does not prevent a
-same-UID engine from recovering daemon/PID1 secrets. Until those prerequisites
-are proven, unrelated deploys continue with OAuth disabled. Disabled mode does
+#4441. Engine endpoints run in the owner box without platform credentials
+(ADR-019, #5182); environment filtering is not that isolation boundary. Until
+that deployment is verified, unrelated deploys continue with OAuth disabled. Disabled mode does
 not consume or validate the credential pair and selects removal of retained
 keys; setting the variable false is the deactivation path on the next deploy.
 No activation or production proof is claimed by this change.

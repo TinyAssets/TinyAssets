@@ -50,26 +50,13 @@ completion events, the probe job SHALL run only after a successful deploy,
 while the alarm sink SHALL distinguish
 the probe result as literal red, literal green, or unknown. The bundle SHALL
 probe the canonical MCP handshake, a real tool call, daemon last activity,
-sustained revert-loop state, and wiki persistence plus authorization policy.
-The wiki sub-probe SHALL require `TINYASSETS_WIKI_CANARY_TOKEN` before network
-access, assert that a separate tokenless `initialize` receives the OAuth 401
-challenge, then use the named `canary` service principal for the MCP session,
-an exact reserved `write_page` call, and its matching `read_page`. It SHALL
-write a fresh per-run marker, require a successful response for
-`drafts/notes/uptime-probe.md`, and verify the same marker and path through the
-authenticated read. A missing or rejected credential, an accepted write to a
-non-exact path, a read mismatch, an invalid tokenless challenge, or another
-HTTP/network failure SHALL remain red with the existing step-specific
-diagnostics. There is no unsigned fallback. The
-`live-mcp-connector-surface` capability owns the underlying pre-dispatch
-challenge and canary confinement; this requirement owns its uptime evidence
-and workflow diagnostic propagation.
+and shared disk pressure through the canary-only `GET /mcp/pulse`. Owner
+read, write and edit are the core capability canary's evidence, not this
+bundle's.
 
 The bundle SHALL combine sub-probes as follows: any measured failure is red;
 otherwise absent required observations are unknown; only positive green
-observations for every required sub-probe establish green. Missing private
-legacy REVERT evidence SHALL be unknown and SHALL NOT authorize access to user
-logs or become fabricated empty evidence. Transport failures SHALL remain red
+observations for every required sub-probe establish green. Transport failures SHALL remain red
 even when they share an exit code with missing evidence. Diagnostics SHALL
 distinguish those causes explicitly, not by parsing human-readable text.
 
@@ -114,36 +101,16 @@ incident state.
 - **THEN** the alarm sink records an Actions warning and summary without creating or querying labels or issues, without paging, and without failing the canary workflow
 - **AND** an open `p0-outage` issue remains open until a literal green result is observed
 
-#### Scenario: Missing legacy evidence leaves coverage explicitly incomplete
-
-- **WHEN** the current named canary projection lacks the legacy private activity tail while the other probes pass
-- **THEN** the result is unknown with the current-engine execution-quality observation named as an open prerequisite, not green or a platform outage
-
 #### Scenario: A real failure outranks a separate unavailable observation
 
-- **WHEN** a current endpoint, tool, expected coordinator, or wiki probe measures failure while legacy revert evidence is unavailable
+- **WHEN** a current endpoint, tool, or expected coordinator probe measures failure while the disk observation is unavailable
 - **THEN** Layer-1 remains red with the real failure diagnostic and the unavailable coverage remains visible
 
 #### Scenario: Downstream sub-probes respect upstream health
 
 - **WHEN** the MCP handshake or real-tool probe fails
-- **THEN** dependent activity, revert-loop, and wiki probes are skipped where they cannot produce meaningful evidence
+- **THEN** the dependent activity probe is skipped
 - **AND** the upstream failure keeps the combined result red
-
-#### Scenario: Canary wiki write is read back
-
-- **WHEN** the scoped service token is present and the reserved `write_page`
-  call reports `drafts/notes/uptime-probe.md`
-- **THEN** the wiki sub-probe reads that page as the same `canary` principal and requires the
-  written canary content to match
-- **AND** any rejected write, different path, or read mismatch is red
-
-#### Scenario: Missing credential fails before network access
-
-- **WHEN** the scoped service token is absent or empty in the canary environment
-- **THEN** the wiki sub-probe exits 2 naming
-  `TINYASSETS_WIKI_CANARY_TOKEN` before making a network request
-- **AND** it does not attempt an anonymous read or write
 
 ### Requirement: Community Watch Preserves Typed Canary Observation
 

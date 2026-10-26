@@ -26,6 +26,16 @@ def test_shape_registry():
     assert not (problems := check_shapes.check()), "\n".join(problems)
 
 
+def test_s2_retains_executor_measure_and_s3_tracks_duplicate(tmp_path):
+    root = tmp_path / 'tinyassets'
+    root.mkdir()
+    (root / 'second.py').write_text(
+        '_call_writer()\nmake_interactive_agent_turn()\n'
+        'class WorkflowAgentTurn(AgentTurnCoordinator): pass\n')
+    assert check_shapes.old_count(check_shapes.SHAPES['S2'], tmp_path) >= 2
+    assert check_shapes.old_count(check_shapes.SHAPES['S3'], tmp_path) >= 1
+
+
 def test_registry_parity_catches_added_row():
     rows = check_shapes.registry_rows(
         "| S1 | one | path | old | drifted | guard | C3 |\n"
@@ -41,6 +51,40 @@ def test_old_count_is_a_ceiling(tmp_path: Path):
     (path / "old.py").write_text("call_provider(x)\ncall_provider(y)\n", encoding="utf-8")
     shape = check_shapes.Shape((), (("tinyassets/**/*.py", r"call_provider\("),), ceiling=1)
     assert check_shapes.old_count(shape, tmp_path) == 2
+
+
+def test_c3_owner_helpers_are_not_platform_calls(tmp_path):
+    owner = tmp_path / "tinyassets/memory"
+    owner.mkdir(parents=True)
+    (owner / "manager.py").write_text("from tinyassets.memory.reflexion import ReflexionEngine\n")
+    shape = check_shapes.SHAPES["S13"]
+    assert check_shapes.old_count(shape, tmp_path) == 0
+    shared = tmp_path / "tinyassets/broker"
+    shared.mkdir()
+    (shared / "worker.py").write_text("from tinyassets.memory.reflexion import ReflexionEngine\n")
+    assert check_shapes.old_count(shape, tmp_path) == 1
+    for bypass in ("from tinyassets.providers.router import ProviderRouter",
+                   "router.call_sync(prompt)", "provider.complete(prompt)",
+                   "call_provider(prompt)",
+                   "from tinyassets.providers import call as bridge; "
+                   "bridge.get_provider_router().call(prompt)"):
+        assert any(re.search(pattern, bypass) for pattern in shape.forbid)
+
+
+def test_s13_ceiling_counts_async_router_bridge(tmp_path):
+    path = tmp_path / "tinyassets" / "shared.py"
+    path.parent.mkdir()
+    path.write_text("await bridge.get_provider_router().call('writer')\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S13"], tmp_path) == 1
+
+
+def test_c3_sampling_and_mock_fallbacks_cannot_return(tmp_path):
+    path = tmp_path / "tinyassets"
+    path.mkdir()
+    (path / "review.py").write_text("session.create_message(prompt)\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S1"], tmp_path) == 1
+    for mock in ("_force_mock = True", "return '[MOCK] success'"):
+        assert any(re.search(pattern, mock) for pattern in check_shapes.SHAPES["S23"].forbid)
 
 
 def test_s8_public_forwarder_belongs_only_to_the_owner_daemon(tmp_path):
@@ -158,8 +202,8 @@ def test_public_route_and_opt_in_flag_on_existing_file():
         {"tinyassets/onboarding/__init__.py": 'Route("/other", handler)'}
     ) == ["public-routes: tinyassets/onboarding/__init__.py mounts /other"]
     assert check_shapes.added_line_problems(
-        {"tinyassets/api/extensions.py": 'Route("/.well-knownness/evil", handler)'}
-    ) == ["public-routes: tinyassets/api/extensions.py mounts /.well-knownness/evil"]
+        {"tinyassets/api/workflow_actions.py": 'Route("/.well-knownness/evil", handler)'}
+    ) == ["public-routes: tinyassets/api/workflow_actions.py mounts /.well-knownness/evil"]
 
 
 def test_new_model_call_entry_symbol_is_detected_outside_registered_path():

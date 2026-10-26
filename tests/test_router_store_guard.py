@@ -14,12 +14,12 @@ from tinyassets.auth.provider import OAuthProvider
 from tinyassets.connection_oauth.pkce import flows_db
 from tinyassets.onboarding import (
     approval_handoff,
-    canary_sign_in,
     inline_model_connect,
     native_sign_in,
     owner_sessions,
     session_store,
 )
+from tinyassets.router_account_deletion import revocation_path
 from tinyassets.router_credentials import HookOwners
 
 
@@ -36,10 +36,10 @@ OPENERS = [
     ("owner_sessions", lambda root: approval_handoff.flows()),
     ("refresh_sessions", lambda root: session_store.store_dir()),
     ("native_sign_in", lambda root: native_sign_in.flows()),
-    ("canary_sign_in", lambda root: canary_sign_in._limits()),
     ("oauth_pkce", flows_db),
     ("api_keys", lambda root: ApiKeyStore(root).db()),
     ("hook_owners", HookOwners),
+    ("workos_revocations", revocation_path),
     ("mcp_oauth", lambda root: OAuthProvider(root / ".auth.db")),
     ("mcp_oauth", oauth_connection),
 ]
@@ -47,7 +47,7 @@ OPENERS = [
 
 @pytest.mark.parametrize("name,opener", OPENERS, ids=[
     "plans", "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
-    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "mcp_oauth",
+    "oauth_pkce", "api_keys", "hook_owners", "workos_revocations", "mcp_oauth",
     "mcp_oauth_connect",
 ])
 @pytest.mark.parametrize("inside", [True, False], ids=["box", "router"])
@@ -86,6 +86,8 @@ _ROUTER_IMPORTS = {
     "tinyassets.auth.middleware",
     "tinyassets.auth.provider",
     "tinyassets.broker.owner_identities",
+    "tinyassets.broker.inbound_verification",  # Router asks the broker to verify; no profile.
+    "tinyassets.inbound_routing",  # Router-owned per-installation breaker, not an owner store.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
     "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.
@@ -143,6 +145,12 @@ def test_router_guard_detects_owner_store_imports_and_file_access(source):
 # D7: the reviewed process boundaries, by module and qualified function.
 # Owner-runtime's own lifecycle is intrinsic to that module, not a second path.
 _ROLE_DISPATCH = {
+    ('onboarding/session_store.py', '_load_key'): (
+        'A box seals sessions with its own volume key; the router keeps its host seal key.'
+    ),
+    ('router_account_deletion.py', 'revocation_path'): (
+        'Router owns bearer revocation authority; direct box access must refuse.'
+    ),
     ('operation_epoch.py', 'new_identity'): (
         'Box operations bind to their durable journal epoch; router identities have no box journal.'
     ),
@@ -215,14 +223,14 @@ _ROLE_DISPATCH = {
     ('connection_oauth/pkce.py', 'flows_db'): (
         'Router owns OAuth flows; direct box access must refuse.'
     ),
-    ('onboarding/canary_sign_in.py', '_limits'): (
-        'Router owns sign-in limits; direct box access must refuse.'
-    ),
     ('onboarding/native_sign_in.py', 'flows'): (
         'Router owns native sign-in flows; direct box access must refuse.'
     ),
     ('onboarding/owner_sessions.py', 'store'): (
         'Router owns sessions; box uses forwarded proof.'
+    ),
+    ('onboarding/__init__.py', '_owner_volume_route'): (
+        'Router submits owner undo; a box cannot confirm a restore.'
     ),
     ('onboarding/session_store.py', 'store_dir'): (
         'Router owns refresh sessions; direct box access must refuse.'

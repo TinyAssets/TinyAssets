@@ -98,35 +98,29 @@ def _sign(keypair: rsa.RSAPrivateKey, **claims: object) -> str:
     return jwt.encode(payload, keypair, algorithm="RS256", headers={"kid": "test"})
 
 
-@pytest.fixture(autouse=True)
-def current_provider_sessions(monkeypatch):
-    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", lambda owner: [
-        {"id": "session_test"}, {"id": "session_fixture"}])
-
-
 @pytest.mark.verifies('owner-daemon-in-box:C3')
-@pytest.mark.parametrize("active,accepted", [(True, True), (False, False), (None, False)])
+@pytest.mark.parametrize("offset,accepted", [(-1, False), (0, True), (1, True)])
 def test_revoked_original_session_refuses_even_a_fresh_access_token(
-        monkeypatch, keypair, active, accepted):
-    from tinyassets.router_account_deletion import AccountDeletionError
+        tmp_path, monkeypatch, keypair, offset, accepted):
+    from tinyassets.router_account_deletion import revoke_local_tokens
 
-    def sessions(owner):
-        assert owner == "user_123"
-        if active is None:
-            raise AccountDeletionError("unreachable")
-        return [{"id": "session_original"}] if active else []
-
-    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", sessions)
-    token = _sign(keypair, sub="user_123", sid="session_original")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    now = int(time.time())
+    revoke_local_tokens(tmp_path, "user_123", now=now)
+    # A second writer cannot move the fence backwards; another owner is unaffected.
+    revoke_local_tokens(tmp_path, "user_123", now=now - 100)
+    token = _sign(keypair, sub="user_123", iat=now + offset)
     assert (_provider(keypair).resolve_token(token) is not None) is accepted
+    assert _provider(keypair).resolve_token(_sign(keypair, sub="user_other")) is not None
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C3')
 @pytest.mark.parametrize("rotated", ["rotated-refresh", ""])
 def test_pre_restore_raw_cookie_refresh_is_refused(tmp_path, monkeypatch, keypair, rotated):
     from tests.test_onboarding_session_refresh import _drive, _ok
+    from tinyassets.router_account_deletion import revoke_local_tokens
 
-    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", lambda owner: [])
+    revoke_local_tokens(tmp_path, "user_123", now=int(time.time()) - 1)
     access = _sign(keypair, sub="user_123", sid="session_original")
     status, body, cookies, calls = _drive(
         {"grant_type": "refresh_token"}, cookie="ta_rt=pre-restore-refresh",
@@ -140,8 +134,61 @@ def test_pre_restore_raw_cookie_refresh_is_refused(tmp_path, monkeypatch, keypai
 
 @pytest.mark.verifies('owner-daemon-in-box:C3')
 @pytest.mark.parametrize("sid", [None, "", "unknown", "session_absent"])
-def test_missing_current_provider_session_denies(keypair, sid):
-    assert _provider(keypair).resolve_token(_sign(keypair, sid=sid)) is None
+def test_missing_current_provider_session_denies(keypair, sid, monkeypatch):
+    # Production regression: AuthKit OAuth tokens are absent from this API.
+    calls = []
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions",
+                        lambda owner: calls.append(owner) or [])
+    assert _provider(keypair).resolve_token(_sign(keypair, sid=sid)) is not None
+    assert calls == []
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C3')
+@pytest.mark.parametrize("issued", [None, True, "123", float("inf")])
+def test_unusable_issue_time_is_refused(keypair, issued):
+    assert _provider(keypair).resolve_token(_sign(keypair, iat=issued)) is None
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C3')
+def test_corrupt_local_revocation_store_fails_closed(tmp_path, monkeypatch, keypair):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (tmp_path / ".workos-revocations.sqlite3").write_bytes(b"corrupt")
+    assert _provider(keypair).resolve_token(_sign(keypair)) is None
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C3')
+def test_fresh_login_and_cookie_refresh_after_restore(tmp_path, monkeypatch, keypair):
+    from http.cookies import SimpleCookie
+
+    from tests.support.broker_double import seed_owner_admission
+    from tests.test_onboarding_session_refresh import _drive, _ok
+    from tinyassets.router_account_deletion import revoke_local_tokens
+
+    seed_owner_admission(tmp_path, principal="user_123", center="cc-user")
+    revoke_local_tokens(tmp_path, "user_123", now=int(time.time()) - 1)
+    access = _sign(keypair, sub="user_123")
+    args = dict(data_dir=str(tmp_path), monkeypatch=monkeypatch,
+                upstream=lambda form: _ok(access, "refresh"), provider=_provider(keypair))
+    status, body, cookies, calls = _drive(
+        {"grant_type": "authorization_code", "code": "fresh", "code_verifier": "v",
+         "redirect_uri": "https://tinyassets.io/app"}, **args)
+    assert status == 200
+    cookie = SimpleCookie(cookies[0])["ta_rt"].value
+    assert cookie == "local:" + body["session_ref"]
+    status, body, cookies, calls = _drive(
+        {"grant_type": "refresh_token"}, cookie="ta_rt=" + cookie, **args)
+    assert status == 200
+    assert calls[0]["refresh_token"] == "refresh"
+
+    # Restore removes sealed handles; an old cookie must not reach upstream.
+    from tinyassets.onboarding import session_store
+
+    session_store.revoke_owner("user_123")
+    status, body, cookies, calls = _drive(
+        {"grant_type": "refresh_token"}, cookie="ta_rt=local:" + body["session_ref"],
+        **args)
+    assert status == 401 and body == {"error": "no_refresh_token"}
+    assert not calls
 
 
 # --- derive_endpoints ------------------------------------------------------

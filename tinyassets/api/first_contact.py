@@ -44,28 +44,6 @@ def home_is_complete(base: Path, universe_id: str) -> bool:
     return universe_dir is not None and (universe_dir / "soul.md").is_file()
 
 
-def principal_is_deleted(base: Path, founder: str) -> bool:
-    """Whether this principal deleted their account (account-deletion tombstone).
-
-    Storage failures propagate. The tombstone is keyed by a one-way digest,
-    never the principal itself, and is written before deletion touches anything.
-    """
-    from tinyassets.account_deletion import principal_digest
-    from tinyassets.daemon_server import _connect, initialize_author_server
-    from tinyassets.principals import named_principal
-
-    subject = named_principal(founder)
-    if not subject:
-        return False
-    initialize_author_server(base)
-    with _connect(base) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM deleted_principals WHERE founder_sub = ?",
-            (principal_digest(subject),),
-        ).fetchone()
-    return row is not None
-
-
 def ensure_founder_home(base: Path, founder: str) -> str:
     """Resolve or atomically create the authenticated founder's home universe.
 
@@ -83,18 +61,6 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     home = get_founder_home(base, founder)
     if home_is_complete(base, home):
         return home
-
-    # A deleted account does not come back on the next request. The principal's
-    # already-issued token stays valid here until it expires and until the
-    # identity provider removes the user, so a second device would otherwise be
-    # handed a brand-new universe seconds after the person deleted their
-    # account. Fail closed and loudly rather than silently re-founding them.
-    if principal_is_deleted(base, founder):
-        logger.warning(
-            "first-contact refused: principal %s is tombstoned by account deletion",
-            founder,
-        )
-        return _no_home("deleted")
 
     from tinyassets.auth.middleware import require_action_scope
 

@@ -114,12 +114,46 @@ def _collect(base, owner, uid):
     sources = {}
     definitions = [item for item in list_definitions(uid) if item.owner_user_id == owner]
     for item in definitions:
-        if item.access_method != "api_key_http":
+        if item.access_method not in {"api_key_http", "subscription_cli"}:
             continue
-        provider = "api_key_http:" + item.id
+        provider = item.access_method + ":" + item.id
         sources[provider] = {"provider_ref": provider, "bind_key": item.id,
-                             "access_method": "api_key_http",
-                             "accepted": provider in runnable, "reasons": []}
+                             "access_method": item.access_method,
+                             "accepted": provider in runnable, "reasons": [],
+                             "display_name": "Connected source"}
+        if item.access_method == "subscription_cli":
+            from tinyassets.providers.subscription_source import sources as native_sources
+
+            source = native_sources(base).get(item.ref)
+            if source is not None:
+                sources[provider]["display_name"] = source["display_name"]
+        else:
+            # A connection is named by what it connects: a sign-in preset by its
+            # display name, anything else by its host. Never by an internal id.
+            try:
+                from urllib.parse import urlsplit
+
+                from tinyassets.broker.ledger_queries import granted_resource_row
+
+                resource = granted_resource_row(
+                    base, principal=owner, command_center=uid, grant_id=item.ref,
+                )
+                destination = str(resource["destination"] or "")
+                if destination.startswith("model:"):
+                    from tinyassets.onboarding.hosted_model_auth import load_preset
+
+                    name = load_preset(destination.removeprefix("model:")).display_name
+                else:
+                    import json
+
+                    endpoints = json.loads(resource["allowed_endpoints_json"])
+                    name = next((ep["host"] for ep in endpoints if ep.get("host")), "")
+                    if not name and "://" in destination:
+                        name = urlsplit(destination).hostname or ""
+                if name:
+                    sources[provider]["display_name"] = name
+            except Exception:  # noqa: BLE001 - a name is display only
+                pass
         if provider in planned_sources:
             continue
         try:
@@ -143,8 +177,9 @@ def _collect(base, owner, uid):
     for provider in accepted:
         sources.setdefault(provider, {"provider_ref": provider,
                                       "access_method": None,
-                                      "bind_key": provider.removeprefix("api_key_http:"),
-                                      "accepted": provider in runnable, "reasons": []})
+                                      "bind_key": provider.split(":", 1)[-1],
+                                      "accepted": provider in runnable, "reasons": [],
+                             "display_name": "Connected source"})
     failed = {}
     with provider_assignment_admission().shared(universe):
         current_bindings = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
@@ -205,9 +240,9 @@ def _collect(base, owner, uid):
         provider = legacy_provider
         source = sources.get(provider)
         configured_model = ""
-        if provider.startswith("api_key_http:"):
+        if provider.startswith(("api_key_http:", "subscription_cli:")):
             registered = next((item for item in definitions
-                               if "api_key_http:" + item.id == provider), None)
+                               if item.access_method + ":" + item.id == provider), None)
             if registered is not None:
                 configured_model = registered.model
             else:
@@ -226,7 +261,7 @@ def _collect(base, owner, uid):
         "choice_authority": ("accepted_manifest" if assignment and assignment.manifest_digest
                              else "legacy_single_provider"
                              if legacy_provider and legacy_provider not in failed else "none"),
-        "accepted_model_access": {provider.removeprefix("api_key_http:"): access.document()
+        "accepted_model_access": {provider.split(":", 1)[-1]: access.document()
                                   for provider, access in accepted.items()},
         "sources": list(sources.values()),
         **model_options_document(Catalog(owner, uid, models), plan, tuple(rejected)),

@@ -123,6 +123,7 @@ def test_repository_scan_detects_an_unreviewed_root(tmp_path: Path) -> None:
 
 def test_inventory_covers_every_required_source_family() -> None:
     assert set(REQUIRED_BACKGROUND_ROOTS) == {
+        "owner_send_recovery",
         "activities",
         "schedule_and_event",
         "event_subscription",

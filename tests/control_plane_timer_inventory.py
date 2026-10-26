@@ -37,16 +37,22 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/providers/subscription_lease.py::save_state": (
+        CALL_SCOPED, "at most three custody writeback attempts within one owner-box call",
+    ),
 
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons._launch": (
         CALL_SCOPED, "one broker-authorized launch waits for its bounded readiness deadline",
+    ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons._answer": (
+        CALL_SCOPED, "one wake retries a silent box's status for at most answer_probe seconds",
     ),
 
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
         "reports and the 24-hour floor; the broker reserves wake capacity",
     ),
-    "tinyassets/broker/routing.py::BrokerLifecycle.wake": (
+    "tinyassets/broker/routing.py::BrokerLifecycle._wake": (
         CALL_SCOPED, "one broker wake waits for capacity notifications until its fixed deadline",
     ),
     "tinyassets/broker/routing.py::BrokerLifecycle.deploy": (
@@ -125,9 +131,18 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/boxes/bootstrap.py::BrokerRegistration.maintain": (
+        CONTROL_PLANE,
+        "the broker re-registers with the root box host after a host restart",
+    ),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
         "root box host observes exited processes; only the broker selects lifecycle work",
+    ),
+    "tinyassets/boxes/host_service.py::BrokerLifecycleSlots.claim": (
+        CALL_SCOPED,
+        "one host lifecycle claim waits on the slot condition until its caller timeout, "
+        "then ends; request wakes are waited ahead of background work",
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.destroy": (
         CALL_SCOPED,
@@ -139,6 +154,14 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.read_many": (
         CALL_SCOPED, "one coherent read waits for pending mutations up to busy_wait_s",
+    ),
+    "tinyassets/boxes/volumes.py::OwnerVolumes._detach": (
+        CALL_SCOPED,
+        "bounded wait for deferred Linux loop-device teardown after losetup --detach",
+    ),
+    "tinyassets/boxes/daemon_control.py::broker_bootstrap": (
+        CALL_SCOPED,
+        "bounded wait for the credential broker to finish registering with boxhostd",
     ),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
@@ -160,7 +183,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/broker/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/effectors/__init__.py::EffectChain.settle": (CALL_SCOPED, "effect settle wait"),
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
-    "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
+    "tinyassets/universe_tools.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
     "tinyassets/universe_tools.py::_bash": (
         CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
     ),
@@ -223,6 +246,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_assignment.py::_acquire_windows_file_lock": (
         CALL_SCOPED, "lock acquisition",
     ),
+    "tinyassets/providers/definition.py::_store_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/run_file_upload.py::StreamBridge.chunks#2": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push#2": (CALL_SCOPED, "upload stream"),
     "tinyassets/storage/automation_activations.py::AutomationActivationStore.connection": (

@@ -122,7 +122,7 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
             continue
         snapshot = refresh_model_discovery(
             owner_user_id=owner, universe_id=universe,
-            definition_id=provider.removeprefix("api_key_http:"),
+            definition_id=provider.split(":", 1)[-1],
         )
         member = SimpleNamespace(provider=provider, access=access)
         _snapshot, catalog, required, caps, _rejected = _http_models(

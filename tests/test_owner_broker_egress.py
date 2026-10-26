@@ -38,6 +38,276 @@ SECRET = "broker-only-synthetic-provider-secret"
 
 
 @pytest.fixture
+def egress_policy(tmp_path):
+    from tests.test_owner_policy import _session, admissions
+    from tinyassets.broker.policy import PolicyStore
+
+    identities = admissions(tmp_path)
+    store = PolicyStore(tmp_path, identities)
+    store.bootstrap()
+    cookie = "owner-session-" + "e" * 40
+    _session(tmp_path, "alice", cookie)
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "alice")
+    return SimpleNamespace(store=store, cookie=cookie, ledger=ledger,
+                           binding=(identities, "alice", store, ledger))
+
+
+def _egress_mode(rig, mode, destinations=()):
+    policy = rig.store.read("alice")
+    policy.document["egress"] = {"mode": mode, "destinations": list(destinations)}
+    rig.store.write("alice", rig.cookie, policy.generation, policy.document)
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+@pytest.mark.parametrize("mode", ["allowlist", "ask"])
+@pytest.mark.parametrize("action,initial", [
+    ("commit", "box"), ("extend", "box"), ("full", "box"),
+    ("extend", "door"), ("full", "door"),
+])
+def test_box_committed_binding_does_not_satisfy_allowlist_or_ask(egress_policy, mode,
+                                                               action, initial):
+    from tinyassets.broker.egress import EgressPolicyRefused, destination
+    from tinyassets.broker.http_connect import local_operation
+
+    rig = egress_policy
+    endpoint = {"host": "first.example.com", "path_template": "/", "methods": ["GET"]}
+    extra = {**endpoint, "host": "new.example.com"}
+    document = {"action": "prepare", "destination": "fixture", "expected": "", "secret": "",
+                "policy": {"auth_scheme": "none", "scopes": ["GET"], "endpoints": [endpoint],
+                           "access_mode": "exact", "git_host": ""}}
+
+    def call(doc, via):
+        return local_operation(rig.ledger, principal="alice", command_center="alice",
+                               document=doc, committed_via=via)
+
+    revision = call(document, initial)["revision"]
+    assert "projection" in call({**document, "action": "commit", "expected": revision}, initial)
+    if action != "commit":
+        with rig.ledger._connect() as db:
+            row = db.execute("SELECT * FROM outbound_connections").fetchone()
+        expected = {"endpoints_json": row["allowed_endpoints_json"],
+                    "scopes_json": row["scopes_json"], "access_mode": row["access_mode"],
+                    "incarnation": row["incarnation"]}
+        assert call({"action": action, "destination": "fixture", "expected": expected,
+                     "endpoints": [endpoint, extra] if action == "extend" else [],
+                     "scopes": ["GET"] if action == "extend" else [], "git_host": ""},
+                    "box") == {"updated": True}
+    _egress_mode(rig, mode)
+    with rig.ledger._connect() as db:
+        assert db.execute("SELECT committed_via FROM outbound_connections").fetchone()[0] == "box"
+    target = "first.example.com" if initial == "box" and action != "extend" else "new.example.com"
+    with pytest.raises(EgressPolicyRefused) as denied:
+        destination(rig.binding, target, 443, resolver=lambda *_: ["8.8.8.8"])
+    assert denied.value.detail["decision"] == ("ask" if mode == "ask" else "deny")
+    if initial == "door":
+        assert destination(rig.binding, "first.example.com", 443,
+                           resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+@pytest.mark.parametrize("mode", ["allowlist", "ask"])
+@pytest.mark.parametrize("later", ["host", "approved", "scope"])
+def test_box_widen_never_becomes_owner_egress_on_later_door_extend(egress_policy, mode, later):
+    """A box-added host stays refused after the owner door-approves something else.
+
+    1. Door commit api.example.com. Restrictive mode allows only that host.
+    2. Box extend evil.example.com. Egress refuses it.
+    3. Door extend other.example.com, or only that ask's endpoints, or a scope.
+    4. evil.example.com is not owner egress, and destination still refuses it.
+    """
+    from tinyassets.broker.egress import EgressPolicyRefused, destination
+    from tinyassets.broker.http_connect import local_operation
+
+    rig = egress_policy
+    api = {"host": "api.example.com", "path_template": "/", "methods": ["GET"]}
+    evil = {"host": "evil.example.com", "path_template": "/", "methods": ["GET"]}
+    other = {"host": "other.example.com", "path_template": "/", "methods": ["GET"],
+             "port": 8443}
+    document = {"action": "prepare", "destination": "fixture", "expected": "", "secret": "",
+                "policy": {"auth_scheme": "none", "scopes": ["GET"], "endpoints": [api],
+                           "access_mode": "exact", "git_host": ""}}
+
+    def call(doc, via):
+        return local_operation(rig.ledger, principal="alice", command_center="alice",
+                               document=doc, committed_via=via)
+
+    def open_host(host, port=443):
+        return destination(rig.binding, host, port, resolver=lambda *_: ["8.8.8.8"])
+
+    revision = call(document, "door")["revision"]
+    assert "projection" in call({**document, "action": "commit", "expected": revision}, "door")
+    _egress_mode(rig, mode)
+    assert open_host("api.example.com") == ["8.8.8.8"]
+    with pytest.raises(EgressPolicyRefused):
+        open_host("evil.example.com")
+
+    def snapshot():
+        with rig.ledger._connect() as db:
+            row = db.execute("SELECT * FROM outbound_connections").fetchone()
+        return {"endpoints_json": row["allowed_endpoints_json"],
+                "scopes_json": row["scopes_json"], "access_mode": row["access_mode"],
+                "incarnation": row["incarnation"]}
+
+    assert call({"action": "extend", "destination": "fixture", "expected": snapshot(),
+                 "endpoints": [api, evil], "scopes": ["GET"], "git_host": ""},
+                "box") == {"updated": True}
+    with pytest.raises(EgressPolicyRefused) as denied:
+        open_host("evil.example.com")
+    assert denied.value.detail["decision"] == ("ask" if mode == "ask" else "deny")
+
+    door = {"action": "extend", "destination": "fixture", "expected": snapshot(),
+            "git_host": "", "scopes": ["GET"], "endpoints": [api, evil, other]}
+    if later == "approved":
+        # The approval path sends the credential superset plus only the ask's
+        # own endpoints. evil is in the superset and must not be endorsed.
+        door["approved_endpoints"] = [other]
+    elif later == "scope":
+        door["endpoints"] = [api, evil]
+        door["scopes"] = ["GET", "POST"]
+    assert call(door, "door") == {"updated": True}
+
+    with rig.ledger._connect() as db:
+        granted = json.loads(db.execute(
+            "SELECT owner_egress_json FROM outbound_connections").fetchone()[0])
+    assert {"host": "api.example.com", "port": 443} in granted
+    assert all(item["host"] != "evil.example.com" for item in granted)
+    with pytest.raises(EgressPolicyRefused) as still:
+        open_host("evil.example.com")
+    assert still.value.detail["decision"] == ("ask" if mode == "ask" else "deny")
+    assert open_host("api.example.com") == ["8.8.8.8"]
+    if later == "scope":
+        assert all(item["host"] != "other.example.com" for item in granted)
+    else:
+        assert {"host": "other.example.com", "port": 8443} in granted
+        assert open_host("other.example.com", 8443) == ["8.8.8.8"]
+        with pytest.raises(EgressPolicyRefused):
+            open_host("other.example.com", 443)
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
+@pytest.mark.parametrize("host", [
+    "my_host.example.com", "_sip._tcp.example.com", "my_host.example.com.",
+])
+def test_underscore_dns_labels_resolve_in_open_mode(egress_policy, host):
+    from tinyassets.broker.egress import destination, normalize_destination
+
+    normalized = host.rstrip(".").lower()
+    assert normalize_destination(host, 443) == {"host": normalized, "port": 443}
+    assert destination(egress_policy.binding, host, 443,
+                       resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
+@pytest.mark.parametrize("host", [
+    "*.example.com", "foo..bar", "-bad.example.com", "bad-.example.com",
+    "exa mple.com", "foo/bar.example.com", "bad\x00.example.com",
+    "a" * 64 + ".example.com", "", ".",
+])
+def test_unsafe_destination_hosts_rejected_before_resolution(host):
+    from tinyassets.broker.egress import normalize_destination
+
+    with pytest.raises(ValueError):
+        normalize_destination(host, 443)
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Owner policy participates in the single egress decision')
+@pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
+def test_egress_standing_entries_remain_subject_to_public_address_safety(egress_policy, mode):
+    from tinyassets.broker.egress import destination
+    from tinyassets.storage.outbound_connections import SsrfValidationError
+
+    rig = egress_policy
+    _egress_mode(rig, mode, [{"host": "example.com", "port": 443}])
+    assert destination(rig.binding, "EXAMPLE.COM.", 443,
+                       resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
+    with pytest.raises(SsrfValidationError):
+        destination(rig.binding, "example.com", 443, resolver=lambda *_: ["127.0.0.1"])
+    assert rig.store.receipts("alice")[0]["decision"] == "deny_public_address"
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+def test_missing_policy_cannot_reopen_egress(egress_policy):
+    from tinyassets.broker.egress import destination
+    from tinyassets.broker.policy import PolicyRefused
+
+    rig = egress_policy
+    rig.store._path("alice").unlink()
+    with pytest.raises(PolicyRefused):
+        destination(rig.binding, "8.8.8.8", 443)
+    rig.store.bootstrap_owner("alice")
+    with pytest.raises(PolicyRefused):
+        rig.store.read("alice")
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Ask uses existing owner consent')
+@pytest.mark.parametrize("mode", ["allowlist", "ask"])
+@pytest.mark.parametrize("host", ["service.example.com", "git.example.com"])
+def test_owner_scope_revocation_and_missing_provenance(egress_policy, mode, host):
+    from tinyassets.broker.egress import EgressPolicyRefused, destination
+    from tinyassets.broker.http_connect import local_operation
+
+    rig = egress_policy
+    document = {"action": "prepare", "destination": "owner-service", "expected": "",
+                "secret": "", "policy": {"auth_scheme": "none",
+                    "scopes": ["GET", "git_read:owner/repo"],
+                    "access_mode": "exact", "git_host": "git.example.com", "endpoints": [{
+                        "host": "service.example.com", "path_template": "/", "methods": ["GET"]}]}}
+    args = dict(principal="alice", command_center="alice", committed_via="door")
+    revision = local_operation(rig.ledger, **args, document=document)["revision"]
+    local_operation(rig.ledger, **args,
+                    document={**document, "action": "commit", "expected": revision})
+    _egress_mode(rig, mode)
+
+    def open_service():
+        return destination(rig.binding, host, 443,
+                           resolver=lambda *_: ["8.8.8.8"])
+
+    assert open_service() == ["8.8.8.8"]
+    with rig.ledger._connect() as db:
+        db.execute("UPDATE outbound_connections SET revoked_at=1")
+    with pytest.raises(EgressPolicyRefused):
+        open_service()
+    with rig.ledger._connect() as db:
+        db.execute("UPDATE outbound_connections SET revoked_at=NULL, committed_via='', "
+                   "owner_egress_json='[]'")
+    with pytest.raises(EgressPolicyRefused):
+        open_service()
+    _egress_mode(rig, mode, [{"host": host, "port": 443}])
+    assert open_service() == ["8.8.8.8"]
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+def test_provisioning_upgrades_once_without_importing_legacy_egress(egress_policy):
+    from tinyassets.broker.policy import PolicyRefused, _canonical, _digest
+
+    rig = egress_policy
+    policy = rig.store.read("alice")
+    policy.document.pop("egress")
+    with rig.store._connect("alice") as db:
+        db.execute("UPDATE policy SET document=?,digest=?", (
+            _canonical(policy.document), _digest(policy.document)))
+        db.execute("PRAGMA user_version=0")
+    rig.store.bootstrap_owner("alice")
+    upgraded = rig.store.read("alice")
+    assert upgraded.document["egress"] == {"mode": "open", "destinations": []}
+    assert upgraded.generation == policy.generation + 1
+    with rig.store._connect("alice") as db:
+        db.execute("DELETE FROM policy")
+    rig.store.bootstrap_owner("alice")
+    with pytest.raises(PolicyRefused):
+        rig.store.read("alice")
+
+
+@pytest.fixture
 def box(broker, tmp_path, monkeypatch):  # noqa: F811
     from tinyassets import owner_public_egress
     from tinyassets.boxes import layout
@@ -701,6 +971,48 @@ def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_
             client.owner_policy("write", **fields)
         assert client.owner_policy("read")["generation"] == before["generation"]
     assert not list(box.root.rglob("owner-sessions.db"))
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+@pytest.mark.parametrize("proof_kind", ["valid", "foreign", "expired", "missing"])
+def test_connection_committer_comes_from_live_owner_session(box, monkeypatch, proof_kind):
+    import hashlib
+
+    from tinyassets.broker.client import BrokerClient, BrokerRefused
+
+    root = box.shared / ".runtime"
+    root.mkdir(exist_ok=True)
+    proof = hashlib.sha256(b"synthetic-owner-connect-session").hexdigest()
+    session = {"session_hash": proof, "identity_json": json.dumps({
+        "user_id": "other" if proof_kind == "foreign" else "owner"}),
+        "expires_at": 0 if proof_kind == "expired" else time.time() + 1000}
+    with sqlite3.connect(root / "owner-sessions.db") as db:
+        db.execute("CREATE TABLE owner_sessions (session_hash TEXT PRIMARY KEY, "
+                   "identity_json TEXT, expires_at REAL)")
+        db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", tuple(session.values()))
+    monkeypatch.setattr("tinyassets.onboarding.owner_sessions.router_owner_session",
+                        lambda: None if proof_kind == "missing" else session)
+    client = BrokerClient(box.runtime.relay, principal="owner", command_center="center",
+                          fence=lambda: (0, ""))
+    document = {"action": "prepare", "destination": "session-test", "expected": "",
+                "secret": "", "policy": {"auth_scheme": "none", "scopes": ["GET"],
+                    "endpoints": [{"host": "session.example.com", "path_template": "/",
+                                   "methods": ["GET"]}], "access_mode": "exact", "git_host": ""}}
+    if proof_kind in {"foreign", "expired"}:
+        with pytest.raises(BrokerRefused):
+            client.http_connect(document)
+        return
+    revision = client.http_connect(document)["revision"]
+    client.http_connect({**document, "action": "commit", "expected": revision})
+    with box.ledger._connect() as db:
+        row = db.execute("SELECT committed_via,owner_egress_json FROM outbound_connections "
+                         "WHERE destination='session-test'").fetchone()
+    assert row["committed_via"] == ("door" if proof_kind == "valid" else "box")
+    assert json.loads(row["owner_egress_json"]) == (
+        [{"host": "session.example.com", "port": 443}] if proof_kind == "valid" else [])
+    with pytest.raises(ValueError):
+        client.http_connect({**document, "committed_via": "door"})
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T6')

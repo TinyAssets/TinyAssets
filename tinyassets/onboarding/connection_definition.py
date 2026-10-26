@@ -53,7 +53,14 @@ def oauth_definition(base, *, owner, center, definition, public_resource):
         "callback": redirect_uri(public_resource), "registration_url": ""})
     offer = answer["offer"]
     if offer is None:
-        raise FlowError(answer["reason"], 409)
+        from tinyassets.connection_oauth.discovery import discover_offer
+        from tinyassets.connection_oauth.model_discovery import transport_fetch
+
+        offer, reason = discover_offer(requested, definition.get("discovery_hosts") or resources,
+                                       callback=redirect_uri(public_resource), use_cache=False,
+                                       fetch=transport_fetch)
+        if offer is None:
+            raise FlowError(reason, 409)
     return {"destination": definition["destination"], "policy": selected, "oauth": offer}
 
 

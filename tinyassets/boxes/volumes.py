@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -76,7 +77,7 @@ class OwnerVolumes:
         return self.store / f"{uid}.img"
 
     @contextmanager
-    def _lock(self, uid: int):
+    def _lock(self, uid: int, *, blocking=True, shared=False):
         import fcntl
 
         self._image(uid)
@@ -84,17 +85,18 @@ class OwnerVolumes:
         if uid in held:
             yield
             return
+        mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         with (self.locks / str(uid)).open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, mode | (0 if blocking else fcntl.LOCK_NB))
             self._held.uids = held | {uid}
             try:
                 yield
             finally:
                 self._held.uids = held
 
-    def operation(self, uid: int):
+    def operation(self, uid: int, *, blocking=True, shared=False):
         """C1/C2: serialize local execution only; the broker owns lifecycle authority."""
-        return self._lock(uid)
+        return self._lock(uid, blocking=blocking, shared=shared)
 
     def size(self, uid: int) -> int:
         """Opaque image length, never a filesystem path inside a volume."""
@@ -121,7 +123,15 @@ class OwnerVolumes:
                 if (uid, snapshot_id) in pins and snapshot_id not in released:
                     deleted = False
                     continue
-                self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
+                try:
+                    self._run("rclone", "deletefile",
+                              f"{self.remote}/{uid}/{snapshot_id}.img.gz")
+                except subprocess.CalledProcessError as exc:
+                    # rclone 3 is directory not found and 4 is file not found.
+                    # The object is already gone, so the broker may forget the
+                    # row. Any other failure stays raised and the row remains.
+                    if exc.returncode not in {3, 4}:
+                        raise
             return deleted
 
     @staticmethod
@@ -211,6 +221,15 @@ class OwnerVolumes:
         for device in devices:
             self._run("losetup", "--detach", device)
         # Linux loop detach can defer even when losetup exits successfully.
+        if devices:
+            deadline = time.monotonic() + 5.0
+            while (remaining := self._loops(uid)) and time.monotonic() < deadline:
+                time.sleep(0.05)
+                for device in remaining:
+                    try:
+                        self._run("losetup", "--detach", device)
+                    except subprocess.CalledProcessError:
+                        pass
         self._detached(uid)
 
     def detach(self, uid: int) -> None:
@@ -264,6 +283,8 @@ class OwnerVolumes:
             snapshot_id = snapshot_id or uuid.uuid4().hex
             if not re.fullmatch(r"[a-f0-9]{32}", snapshot_id):
                 raise VolumeError("snapshot reference is required")
+            if not self._image(uid).is_file():
+                raise VolumeError("local image is absent")
             clone = self.store / f".{uid}.clone"
             packed = self.store / f".{uid}.gz"
             readback = self.store / f".{uid}.readback"

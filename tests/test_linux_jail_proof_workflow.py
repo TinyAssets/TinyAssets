@@ -161,7 +161,7 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "tests/test_owner_box_process_boundary.py",
         "tests/test_owner_tools.py",
         "tinyassets/universe_tools.py",
-        "tinyassets/engine_mcp_server.py",
+        "tinyassets/universe_tools.py",
         "tinyassets/storage_accounting.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
@@ -598,6 +598,31 @@ def test_only_files_needs_a_marker(tmp_path):
             "--junit", str(_junit(tmp_path)), "--nodeid", "tests/a.py::t",
             "--only-files", str(_only(tmp_path, "tests/a.py")),
         ])
+
+
+def test_oracle_sets_protected_regular_before_the_container(tmp_path, monkeypatch):
+    from scripts import linux_oracle
+
+    knob = tmp_path / "protected_regular"
+    knob.write_text("0\n")
+    monkeypatch.setattr(linux_oracle.os, "geteuid", lambda: 0)
+    linux_oracle._ensure_protected_regular(knob)
+    assert knob.read_text().strip() == "2"
+    linux_oracle._ensure_protected_regular(knob)
+    assert knob.read_text().strip() == "2"
+
+    delegated = tmp_path / "delegated"
+    delegated.write_text("0\n")
+    monkeypatch.setattr(linux_oracle.os, "geteuid", lambda: 1001)
+
+    def fake_run(command, input, check, stdout):  # noqa: A002
+        assert command == ["sudo", "-n", "tee", str(delegated)]
+        assert check is True
+        delegated.write_bytes(input)
+
+    monkeypatch.setattr(linux_oracle.subprocess, "run", fake_run)
+    linux_oracle._ensure_protected_regular(delegated)
+    assert delegated.read_text().strip() == "2"
 
 
 pytestmark = pytest.mark.verifies(

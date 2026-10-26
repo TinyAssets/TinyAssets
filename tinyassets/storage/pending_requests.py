@@ -575,6 +575,20 @@ def get_request(universe_dir: Path, request_id: str) -> dict[str, Any] | None:
         return None
 
 
+def invalidate_pending(universe_dir: Path) -> int:
+    """Restored approvals are not still a yes. They need a fresh owner decision."""
+    path = Path(universe_dir) / _DB_NAME
+    if not path.is_file():
+        return 0
+    with sqlite3.connect(path, timeout=30.0) as conn:
+        cursor = conn.execute(
+            "UPDATE pending_requests SET status='invalidated', resolved_at=? "
+            "WHERE status='pending'",
+            (time.time(),))
+        conn.commit()
+        return cursor.rowcount
+
+
 def list_pending(universe_dir: Path) -> list[dict[str, Any]]:
     """EVERY pending row, oldest first: the rail reads top to bottom in the order asked.
 

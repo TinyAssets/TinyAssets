@@ -28,10 +28,10 @@ import json
 from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.commons_catalog import commons_catalog as _commons_catalog_impl
-from tinyassets.api.extensions import _extensions_impl
-from tinyassets.api.market import goals as _goals_impl
+from tinyassets.api.goals import goals as _goals_impl
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import _universe_impl
+from tinyassets.api.workflow_actions import _extensions_impl
 from tinyassets.command_center_names import internal_value
 
 #: Targets that list rows and so take a page size. The dispatch has no default
@@ -102,7 +102,7 @@ def read_graph(
     if normalized == "conversation":
         # The lossless read of the caller's OWN retained thread -- the same
         # reader and the same binding the engine route uses
-        # (engine_mcp_server.read_graph), exposed here because the app speaks
+        # (universe_tools.read_graph), exposed here because the app speaks
         # only this surface. get_status's peek bounds each turn at 4000 chars
         # and says so (`truncated` + `total_chars`); this is how a client gets
         # the rest instead of drawing a preview as if it were the message.

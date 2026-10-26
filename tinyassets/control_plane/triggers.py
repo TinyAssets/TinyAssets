@@ -266,6 +266,18 @@ class TriggerStore:
         assert updated is not None
         return updated
 
+    def pause_all(self) -> int:
+        """Restored schedules stay off until the owner turns one back on."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return 0
+        try:
+            cursor = conn.execute("UPDATE triggers SET enabled=0 WHERE enabled!=0")
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
     def set_enabled(self, key: str, *, principal_id: str, enabled: bool, now: datetime) -> Trigger:
         return self._owner_update(
             key, principal_id,

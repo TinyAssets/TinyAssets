@@ -18,6 +18,20 @@ from tinyassets.boxes.provider import BoxError
 from tinyassets.owner_activity import Activity
 
 
+def _other_turn(activity, errors):
+    """Probe a turn that does not already hold this admission.
+
+    Nested ``enter`` on the admitted turn is that turn finishing. The next
+    turn is a different task, which an owner server may schedule on the same
+    OS thread.
+    """
+    try:
+        with activity.enter():
+            errors.append("admitted")
+    except RuntimeError as exc:
+        errors.append(exc)
+
+
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
     class Runtime:
@@ -28,7 +42,9 @@ def fleet(tmp_path, monkeypatch):
             self.starts = []
             self.stops = []
 
-        def start(self, uid, gid, **kwargs):
+        def start(self, uid, gid, *, rewind: bool = False, **kwargs):
+            if rewind:
+                kwargs["rewind"] = True
             self.starts.append((uid, kwargs))
             self.live.add(uid)
 
@@ -134,9 +150,12 @@ def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(flee
         fleet.tick()
         assert activity.draining and activity.active == 1
         assert not fleet.runtime.stops
-        with pytest.raises(RuntimeError, match="draining"):
-            with activity.enter():
-                pytest.fail("new turn admitted after snapshot deadline")
+        refused = []
+        thread = threading.Thread(target=_other_turn, args=(activity, refused))
+        thread.start()
+        thread.join()
+        assert isinstance(refused[0], RuntimeError)
+        assert "draining" in str(refused[0])
     fleet.tick()
     assert fleet.runtime.stops == [uid]
     manager.maintain()
@@ -159,6 +178,104 @@ def test_restore_executor_accepts_only_broker_bound_uid(fleet):
         assert "error" in service.lifecycle(request, peer)
     assert "error" in service.lifecycle({**request, "owner": "b"}, 1002)
     assert service.lifecycle(request, 1002) == {"restored": True}
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("recover_by", ["wake", "tick"])
+def test_failed_drain_retains_intent_until_stop_and_recovers(fleet, recover_by):
+    uid = fleet.wake("a")
+    activity = fleet.states[uid]
+    with activity.enter():
+        with pytest.raises(BoxError, match="must drain"):
+            drive(fleet.routing.sleep("a"))
+        pending = fleet.admission.volume("a")["work"]
+        assert pending["kind"] == "snapshot" and activity.draining
+        with pytest.raises(BoxError, match="must drain"):
+            fleet.wake("a", scheduled=True)
+        assert fleet.admission.volume("a")["work"] == pending
+    if recover_by == "tick":
+        fleet.tick()
+        assert fleet.admission.volume("a")["work"] is None
+        assert fleet.admission.volume("a")["snapshot_id"] == pending["snapshot_id"]
+    assert fleet.wake("a", scheduled=True) == uid
+    assert not fleet.states[uid].draining
+    assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+    assert fleet.runtime.stops == [uid]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_status_does_not_queue_behind_real_volume_lock(fleet, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets.boxes.volumes import OwnerVolumes
+
+    # Exercise the production flock, without requiring an XFS image for a
+    # stopped box. A held copy lock must not consume a status socket deadline.
+    volumes = OwnerVolumes.__new__(OwnerVolumes)
+    volumes.store = tmp_path
+    volumes.locks = tmp_path / "locks"
+    volumes.locks.mkdir()
+    volumes._held = threading.local()
+    fleet.manager.volumes = volumes
+    uid = fleet.identities.owner_machine("a")
+    with ThreadPoolExecutor(1) as pool:
+        with volumes.operation(uid):
+            result = pool.submit(fleet.manager.status, uid)
+            with pytest.raises(BlockingIOError):
+                result.result(timeout=2)
+        assert pool.submit(fleet.manager.status, uid).result(timeout=2)["awake"] is False
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+def test_shared_volume_lock_lets_status_maintain_and_awake_wake_proceed(fleet, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets.boxes.volumes import OwnerVolumes
+
+    uid = fleet.wake("a")
+    record = fleet.manager.boxes[uid].launch
+    volumes = OwnerVolumes.__new__(OwnerVolumes)
+    volumes.store = tmp_path / "store"
+    volumes.store.mkdir()
+    (volumes.store / f"{uid}.img").write_bytes(b"img")
+    volumes.locks = tmp_path / "locks"
+    volumes.locks.mkdir()
+    volumes._held = threading.local()
+    fleet.manager.volumes = volumes
+    with volumes.operation(uid, shared=True):
+        with ThreadPoolExecutor(3) as pool:
+            status = pool.submit(fleet.manager.status, uid)
+            maintained = pool.submit(fleet.manager.maintain)
+            woken = pool.submit(
+                fleet.manager.ensure_awake, "a", scheduled=True, launch=record,
+            )
+            assert status.result(timeout=2)["awake"] is True
+            assert maintained.result(timeout=2) is None
+            assert woken.result(timeout=2) == uid
+    with ThreadPoolExecutor(1) as pool:
+        with volumes.operation(uid):
+            with pytest.raises(BlockingIOError):
+                pool.submit(fleet.manager.status, uid).result(timeout=2)
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C15')
+@pytest.mark.parametrize("recover_by", ["wake", "tick"])
+def test_preexisting_running_record_with_draining_box_recovers(fleet, recover_by):
+    uid = fleet.wake("a")
+    with fleet.states[uid].enter():
+        with pytest.raises(BoxError, match="must drain"):
+            drive(fleet.routing.sleep("a"))
+        # Reproduce the old wake path losing the pending stop before launch
+        # refused a still-draining box. Host facts must repair that old state.
+        fleet.routing.volumes.volume("a", "wake")
+    assert fleet.manager.status(uid)["draining"]
+    assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+    if recover_by == "tick":
+        fleet.tick()
+        assert fleet.admission.volume("a")["work"] is None
+    fleet.wake("a", scheduled=True)
+    assert not fleet.states[uid].draining
+    assert fleet.runtime.stops == [uid]
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
@@ -430,53 +547,139 @@ def test_slow_owner_execution_does_not_hold_fleet_registry(fleet, monkeypatch, s
 
 @pytest.mark.verifies('owner-daemon-in-box:C15')
 def test_fifth_broker_connection_gets_explicit_refusal(tmp_path, monkeypatch):
+    """A fifth broker connection is admitted. Lifecycle work is queued with a
+    deadline, so a held registration cannot exhaust the transport pool. The
+    shared pool for every other peer still refuses the next connection."""
     import queue
     import socket
 
     from tinyassets.boxes.control_channel import receive
 
-    service = HostService(None, None, None, None)
+    peers = {"uid": 1002}
     monkeypatch.setattr("tinyassets.boxes.host_service.peer",
-                        lambda sock: (os.getpid(), 1002, 1002))
-    stop, release = threading.Event(), threading.Event()
-    listening = threading.Event()
-    entered = queue.Queue()
-    path = tmp_path / "host.sock"
+                        lambda sock: (os.getpid(), peers["uid"], peers["uid"]))
+    monkeypatch.setattr("tinyassets.boxes.host_service.os.chown", lambda *_: None)
+    state = {"listening": threading.Event()}
     listen = socket.socket.listen
 
     def ready(sock, backlog):
         listen(sock, backlog)
-        listening.set()
+        state["listening"].set()
     monkeypatch.setattr(socket.socket, "listen", ready)
 
-    def handler(sock):
-        entered.put(True)
+    def open_clients(service, path, count):
+        stop, release = threading.Event(), threading.Event()
+        entered = queue.Queue()
+
+        def handler(sock):
+            entered.put(True)
+            try:
+                assert release.wait(10)
+            finally:
+                sock.close()
+
+        thread = threading.Thread(target=service.serve, args=(path, 1002, handler, stop))
+        thread.start()
+        clients = []
         try:
-            assert release.wait(10)
-        finally:
-            sock.close()
-    thread = threading.Thread(target=service.serve, args=(path, 1002, handler, stop))
-    thread.start()
-    clients = []
-    try:
-        assert listening.wait(2)
-        for _ in range(4):
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            clients.append(client)
-            client.connect(str(path))
-            entered.get(timeout=2)
-        fifth = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        clients.append(fifth)
-        fifth.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        fifth.settimeout(2)
-        fifth.connect(str(path))
-        assert receive(fifth, (os.getpid(), os.geteuid(), os.getegid())) == {
-            "error": "boxhostd connection limit exceeded"}
-        assert entered.empty()
-    finally:
+            assert state["listening"].wait(2)
+            for _ in range(count):
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                clients.append(client)
+                client.connect(str(path))
+                assert entered.get(timeout=2) is True
+            return stop, release, entered, thread, clients
+        except Exception:
+            release.set()
+            stop.set()
+            for client in clients:
+                client.close()
+            thread.join(3)
+            raise
+
+    def finish(stop, release, thread, clients):
         release.set()
         stop.set()
         for client in clients:
             client.close()
         thread.join(3)
-    assert not thread.is_alive()
+        assert not thread.is_alive()
+
+    service = HostService(None, None, None, None)
+    broker = open_clients(service, tmp_path / "broker.sock", 5)
+    try:
+        assert broker[2].empty()
+    finally:
+        finish(*broker[:2], *broker[3:])
+    peers["uid"] = 1001
+    state["listening"] = threading.Event()
+    limited = HostService(None, None, None, None)
+    limited._slots = threading.BoundedSemaphore(4)
+    stop, release, entered, thread, clients = open_clients(
+        limited, tmp_path / "root.sock", 4)
+    try:
+        fifth = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        clients.append(fifth)
+        fifth.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        fifth.settimeout(2)
+        fifth.connect(str(tmp_path / "root.sock"))
+        assert receive(fifth, (os.getpid(), os.geteuid(), os.getegid())) == {
+            "error": "boxhostd connection limit exceeded"}
+        assert entered.empty()
+    finally:
+        finish(stop, release, thread, clients)
+
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_running_box_that_stops_answering_is_replaced_on_the_next_wake(fleet, monkeypatch):
+    manager = fleet.manager
+    uid = fleet.wake("a")
+    answering = manager._rpc
+    silent = {uid}
+
+    def rpc(box, operation="status", **body):
+        if box.uid in silent:
+            raise OSError("owner app does not answer")
+        return answering(box, operation, **body)
+
+    monkeypatch.setattr(manager, "_rpc", rpc)
+    manager.answer_probe = 0.2
+    silent.add(uid)
+    assert fleet.runtime.alive(uid)
+    # Silent, but it answered moments ago: a stalled turn is never killed for it.
+    with pytest.raises(BoxError, match="not answering"):
+        manager.ensure_awake("a", launch=manager.boxes[uid].launch)
+    assert fleet.runtime.stops == [] and manager.boxes[uid].awake
+    # Nothing has answered for the whole silence: replaced rather than failing forever.
+    manager.boxes[uid].answered -= manager.answer_silence
+
+    def restart(*args, **kwargs):
+        silent.discard(uid)  # The fresh box answers.
+        return started(*args, **kwargs)
+
+    started = fleet.runtime.start
+    monkeypatch.setattr(fleet.runtime, "start", restart)
+    assert fleet.wake("a") == uid
+    assert fleet.runtime.stops == [uid] and len(fleet.runtime.starts) == 2
+    assert manager.boxes[uid].error == "" and manager.boxes[uid].awake
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_one_slow_answer_never_replaces_a_running_box(fleet, monkeypatch):
+    manager = fleet.manager
+    uid = fleet.wake("a")
+    answering = manager._rpc
+    misses = [1, 1]
+
+    def rpc(box, operation="status", **body):
+        if misses:
+            misses.pop()
+            raise OSError("slow reply")
+        return answering(box, operation, **body)
+
+    monkeypatch.setattr(manager, "_rpc", rpc)
+    manager.answer_probe = 5
+    manager.boxes[uid].answered -= manager.answer_silence  # Even long after an answer.
+    assert fleet.wake("a") == uid
+    assert fleet.runtime.stops == [] and len(fleet.runtime.starts) == 1

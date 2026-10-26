@@ -53,6 +53,22 @@ class ModelSourceUnavailable(PermissionError):
     """A named source cannot serve this allocation's next model attempt."""
 
 
+def public_model_part(part):
+    """Typed part view for `ta`. Media bytes stay behind the owner-box reference."""
+    kind = part.kind
+    if kind == "text":
+        return {"kind": "text", "text": part.text}
+    if kind == "tool_call":
+        return {"kind": "tool_call", "name": part.name, "arguments": part.arguments}
+    view = {
+        "kind": kind, "mime": part.mime, "byte_length": part.byte_length,
+        "digest": part.digest, "reference": part.reference,
+    }
+    if part.timing is not None:
+        view["timing"] = list(part.timing)
+    return view
+
+
 def _propose_policy(universe_dir: Path, expected_generation: int, policy: dict) -> dict:
     """Give the owner a literal policy proposal; the agent never applies it."""
     from tinyassets.api.pending_requests import request_from_user
@@ -249,10 +265,14 @@ class Capabilities:
             if arguments:
                 return {"error": "policy show takes no arguments"}
             from tinyassets.action_policy import owner_policy_operation
+            from tinyassets.broker.client import owner_policy_operation as broker_policy
 
-            return {"result": await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 owner_policy_operation, self.root.parent, self.context.owner, "read",
-                center=self.root.name)}
+                center=self.root.name)
+            result["account"] = await asyncio.to_thread(
+                broker_policy, self.root.parent, self.context.owner, "read")
+            return {"result": result}
         if name == "policy:propose":
             if not self._bound_policy_owner():
                 return {"error": "owner policy unavailable"}
@@ -350,22 +370,9 @@ class Capabilities:
         return {"result": result}
 
     async def call_model(self, arguments):
-        from tinyassets.exceptions import AllProvidersExhaustedError
         from tinyassets.providers.model_call import call
 
-        fallbacks = (arguments.get("fallbacks", []) if isinstance(arguments, dict)
-                     else None)
-        if not isinstance(fallbacks, list):
-            return await self._model_request(arguments, call)
-        for index in range(len(fallbacks) + 1):
-            trial = (arguments if index == 0 else
-                     {**arguments, "model": fallbacks[index - 1], "fallbacks": []})
-            try:
-                return await self._model_request(trial, call)
-            except (ModelSourceUnavailable, AllProvidersExhaustedError):
-                if index == len(fallbacks):
-                    raise
-        raise AssertionError("unreachable model fallback sequence")
+        return await self._model_request(arguments, call)
 
     def _model_request(self, arguments, invoke, *, purpose="reply"):
         """The request carries content only; its authority comes from this launch."""
@@ -386,6 +393,8 @@ class Capabilities:
 
         def model_result(completed):
             result = {"text": completed.text, "receipt": asdict(completed.receipt)}
+            if completed.parts:
+                result["parts"] = [public_model_part(part) for part in completed.parts]
             reply = completed.response.agent_reply
             if reply is not None and reply.tool_requests:
                 result["tool_requests"] = [
@@ -419,8 +428,7 @@ class Capabilities:
         fallbacks = arguments.get("fallbacks", [])
         if not isinstance(fallbacks, list):
             raise ValueError("model fallbacks must be a list")
-        for value in fallbacks:
-            parse_ref(value)
+        fallbacks = tuple(parse_ref(value) for value in fallbacks)
         row = UsageStore(self.root.parent).resolve_launch_reference(
             self.context.owner, self.context.universe, self.model_reference)
         from tinyassets.providers.served_model_plan import connected_sources
@@ -469,6 +477,8 @@ class Capabilities:
         binding_revision = int(binding["revision"])
         if model is not None and model.connection_id not in admitted:
             raise ModelSourceUnavailable("requested model is not an admitted live source")
+        if any(ref.connection_id not in admitted for ref in fallbacks):
+            raise ModelSourceUnavailable("fallback model is not an admitted live source")
         if model is None:
             from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 
@@ -480,7 +490,8 @@ class Capabilities:
                 if candidate.ref.connection_id in admitted), None)
             if model is None:
                 raise PermissionError("allocation has no admitted live model")
-        if tools and not model.connection_id.startswith("api_key_http:"):
+        if tools and any(not ref.connection_id.startswith("api_key_http:")
+                         for ref in (model, *fallbacks)):
             raise ValueError("model tools require an HTTP model connection")
         budget = TurnRequestBudget.join(self.root.parent, self.context.owner,
                                         self.context.universe, row["usage_id"])
@@ -497,8 +508,13 @@ class Capabilities:
                                if item["role"] == "system")
             prompt = "\n".join(f"{item['role']}: {item['content']}" for item in messages
                                if item["role"] != "system")
+            # S1 inference, not an S2 agent start: caller-supplied tool schemas
+            # go to one model request; model_result returns tool calls to the
+            # caller. This path neither dispatches tools nor repeats inference.
+            # agent_request keeps the router on structured inference rather
+            # than constructing an engine-tool executor.
             request = ModelCall(
-                model=model, fallbacks=(), purpose=purpose, origin="ta",
+                model=model, fallbacks=fallbacks, purpose=purpose, origin="ta",
                 context=ModelContext(
                     prompt=prompt, system=system,
                     config=ModelConfig(
@@ -558,7 +574,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
         from fastmcp.exceptions import ValidationError as MCPValidationError
         from pydantic import ValidationError
 
-        from tinyassets.engine_mcp_server import bounded_tool_error
+        from tinyassets.universe_tools import bounded_tool_error
 
         try:
             result = await server.mcp.call_tool(name, arguments)

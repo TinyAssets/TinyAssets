@@ -142,7 +142,7 @@ def _notify(base_path: Path, owner: str, universe: str, turn, agent_id="main") -
     * **One platform row, not a founder+platform pair.** The pair needs the
       founder's text and nothing persisted it -- the journal's ``prompt`` is
       ``history_block + founder_message`` for a granted turn
-      (``universe_intelligence._call_writer``), so writing it back would re-post
+      (``agent_loop.served_chat.run_served_writer``), so writing it back would re-post
       the rendered conversation history into the thread as if the founder had
       typed it. A notice with no founder half is honest about a message that was
       never stored; inventing the half is not.

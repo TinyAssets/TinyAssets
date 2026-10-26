@@ -234,7 +234,6 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
     from tinyassets.onboarding import (
         app_config,
         approval_handoff,
-        canary_sign_in,
         inline_model_connect,
         owner_sessions,
         session_store,
@@ -258,9 +257,6 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
     monkeypatch.setattr(boxes.runtime, "stop", checked_stop)
     drive(admitted.admit("alice", routing=projection(admitted.path)))
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
-    monkeypatch.setenv(canary_sign_in.USER_ENV, "alice")
-    with canary_sign_in._limits() as db:
-        db.execute("INSERT INTO canary_door_limits VALUES ('ip',1,?)", (time.time() + 600,))
     refresh_handles = {}
     for owner in ("alice", "bob"):
         first = session_store.mint(owner + "-refresh", owner=owner)
@@ -355,8 +351,8 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             monkeypatch=monkeypatch, upstream=_boom, data_dir=str(tmp_path))
         assert status == 401 and body["error"] == "no_refresh_token"
         assert not calls
-    with canary_sign_in._limits() as db:
-        assert db.execute("SELECT COUNT(*) FROM canary_door_limits").fetchone()[0] == 0
+    # The other owner's separate device session is untouched, value and all.
+    assert session_store.read(refresh_handles["bob"][2])[0] == "bob-other-device"
     assert owner_sessions.lookup("alice-cookie") is None
     assert owner_sessions.lookup("bob-cookie") is not None
     assert approval_handoff.load("a" * 43) is None

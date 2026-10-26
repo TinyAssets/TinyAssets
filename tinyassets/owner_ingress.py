@@ -32,7 +32,8 @@ class OwnerIngress:
         try:
             for name, value in scope["headers"]:
                 name = name.lower()
-                if name in {b"x-owner", b"x-box-secret", b"x-owner-identity"}:
+                if name in {b"x-owner", b"x-box-secret", b"x-owner-identity",
+                            b"x-tinyassets-caller-user-id"}:
                     if name in headers:
                         raise ValueError("duplicate router header")
                     headers[name] = value
@@ -60,6 +61,7 @@ class OwnerIngress:
                 return await JSONResponse(result)(scope, receive, send)
             identity = Identity(**json.loads(base64.b64decode(
                 headers[b"x-owner-identity"], altchars=b"-_", validate=True)))
+            authenticated = identity.user_id
             # The only source is the authenticated router, never a public bearer.
             identity.user_id = headers[b"x-owner"].decode("utf-8")
             if not identity.user_id:
@@ -71,10 +73,31 @@ class OwnerIngress:
             runtime = current()
             if identity.user_id != runtime.principal:
                 raise ValueError("request is not for this box's owner")
+            raw_caller = headers.get(b"x-tinyassets-caller-user-id")
+            if raw_caller is None:
+                if authenticated != identity.user_id:
+                    raise ValueError("caller header required")
+                caller = identity.user_id
+            else:
+                try:
+                    caller = raw_caller.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise ValueError("caller is not text") from None
+                if not caller or caller != authenticated:
+                    raise ValueError("caller does not match the authenticated account")
+            identity.metadata = {**dict(identity.metadata or {}), "caller_user_id": caller}
+            if caller != runtime.principal:
+                from tinyassets.app_access import visitor_surface
+
+                if not visitor_surface(scope["path"], scope["method"]):
+                    return await JSONResponse(
+                        {"error": "private_surface"}, status_code=403)(
+                            scope, receive, send)
         except (ValueError, KeyError, TypeError):
             return await JSONResponse({"error": "router_required"}, status_code=401)(
                 scope, receive, send)
-        scope = dict(scope, tinyassets_router_identity=identity)
+        scope = dict(scope, tinyassets_router_identity=identity,
+                     tinyassets_caller_user_id=caller)
         async def proven_send(message):
             if message["type"] == "http.response.start":
                 # Provenance comes from this running box and its immutable image,
@@ -88,26 +111,19 @@ class OwnerIngress:
                      (b"x-tinyassets-box-sha", sha.encode())]}
             await send(message)
 
-        if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
-            # Close admission before waiting. The deletion itself is a control
-            # call, so it can retry while draining and never waits on itself.
-            from starlette.concurrency import run_in_threadpool
-
-            if not await run_in_threadpool(activity.quiesce, 20):
-                return await JSONResponse({"error": "deletion_incomplete", "receipt": {
-                    "unfinished_phases": ["drain"]}}, status_code=503)(scope, receive, proven_send)
-            response = await delete_local_account(identity)
-            if response.status_code == 409:
-                activity.deletion_refused()
-            return await response(scope, receive, proven_send)
         # Admission and drain share a lock: a successful drain cannot race a
         # new request or background turn. No control request counts as activity.
-        gate = activity.enter()
+        # Waiting for an external sign-in is passive, including its page polls.
+        polling_login = (scope["method"] == "POST"
+                         and scope["path"] == "/app/subscription-connect/poll")
+        gate = activity.enter(keep_awake=not polling_login)
         try:
             gate.__enter__()
         except RuntimeError:
-            return await JSONResponse({"error": "box_draining"}, status_code=503)(
-                scope, receive, proven_send)
+            body = {"error": "box_draining"}
+            if activity.snapshot_stop:
+                body["retry"] = True
+            return await JSONResponse(body, status_code=503)(scope, receive, proven_send)
         # A passive MCP event subscription is not a running turn. Actual MCP
         # calls and detached turns hold their own gate; an idle subscription
         # may reconnect after its box sleeps.
@@ -118,28 +134,3 @@ class OwnerIngress:
             await self.app(scope, receive, proven_send)
         finally:
             gate.__exit__(None, None, None)
-
-
-async def delete_local_account(identity):
-    from starlette.concurrency import run_in_threadpool
-
-    from tinyassets.account_deletion import (
-        AccountDeletionBlocked,
-        AccountDeletionError,
-        delete_account,
-    )
-    from tinyassets.auth.middleware import identity_context
-    from tinyassets.owner_runtime import current
-
-    def erase():
-        with identity_context(identity):
-            return delete_account(current().root, founder_sub=identity.user_id)
-
-    try:
-        receipt = await run_in_threadpool(erase)
-        return JSONResponse(receipt)
-    except AccountDeletionBlocked as exc:
-        return JSONResponse({"error": "deletion_blocked", "reasons": str(exc).split("; ")},
-                            status_code=409)
-    except AccountDeletionError as exc:
-        return JSONResponse({"error": "deletion_refused", "detail": str(exc)}, status_code=409)

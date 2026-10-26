@@ -1,4 +1,4 @@
-"""Resolve an owner definition to the broker-backed HTTP executor."""
+"""Resolve an owner definition to its shared access-method executor."""
 
 from __future__ import annotations
 
@@ -11,9 +11,15 @@ if TYPE_CHECKING:
     from tinyassets.providers.router import ProviderRouter
 
 def provider_for_definition(definition: ProviderDefinition) -> BaseProvider:
-    """Return the broker-backed HTTP executor for a registered definition."""
+    """Return the HTTP or owner-box CLI executor for a registered definition."""
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
+    if definition.access_method == "subscription_cli":
+        from tinyassets.providers.subscription_provider import SubscriptionProvider
+
+        return SubscriptionProvider(definition)
+    if definition.access_method != "api_key_http":
+        raise ValueError("unsupported source access method")
     return ApiKeyHttpProvider(definition)
 
 

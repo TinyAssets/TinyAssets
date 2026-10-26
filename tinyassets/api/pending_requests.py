@@ -799,7 +799,7 @@ def _validated_fields(
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
-    if action["type"] in {"bind_model_access", "credential_request"}:
+    if action["type"] in {"bind_model_access", "credential_request", "policy_proposal"}:
         if raw not in (None, []):
             raise ValueError("this action is a fieldless owner confirmation")
         return []
@@ -1157,8 +1157,13 @@ def request_from_user(
         from tinyassets.owner_centers import admitted_owner
 
         owner = admitted_owner(udir.parent, center=_uid)
-        owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
-                               change=action)
+        if "egress" in action["policy"]:
+            from tinyassets.broker.client import owner_policy_operation as broker_policy
+
+            broker_policy(udir.parent, owner, "proposal", change=action)
+        else:
+            owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
+                                   change=action)
     if action.get("type") == "rotate_http":
         # BEFORE the fields are validated, because the connection's stored auth
         # scheme is what decides how many boxes the card has and what they are
@@ -1264,18 +1269,24 @@ def request_from_user(
                     "cannot be granted; reconnect it with git_host"
                 )
             action = {**action, "git_scope_host": scope_host}
-        if any(e.get("redirect_mode") == "public_https_get" for e in action["endpoints"]):
-            # Capture the same preview that admitted the ask. Agent-supplied
-            # snapshots are never accepted by action normalization.
+        if action.get("access") != "full":
+            # Pin the connection the owner will read. A later yes swaps against
+            # this snapshot, so a box widen while the tab is open cannot become
+            # part of the approved reach. Agent-supplied snapshots are dropped
+            # by action normalization; this one comes from the admitting preview.
             snapshot = {
                 "access_mode": captured_preview.get("expected_access_mode"),
                 "endpoints_json": captured_preview.get("stored_json"),
                 "scopes_json": captured_preview.get("stored_scopes_json"),
                 "incarnation": captured_preview.get("stored_incarnation"),
             }
-            if not all(isinstance(v, str) and v for v in snapshot.values()):
+            redirecting = any(
+                isinstance(e, dict) and e.get("redirect_mode") == "public_https_get"
+                for e in action["endpoints"])
+            if redirecting and not all(isinstance(v, str) and v for v in snapshot.values()):
                 return _bad("Could not capture this connection's redirect approval policy.")
-            action = {**action, "policy_snapshot": snapshot}
+            if all(isinstance(v, str) and v for v in snapshot.values()):
+                action = {**action, "policy_snapshot": snapshot}
         if action.get("access") == "full":
             # The sentence has to name the hosts this key actually reaches, and
             # only the CONNECTION knows them -- a full ask carries no endpoints
@@ -1963,23 +1974,14 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
 _MODEL_CONNECT_SHAPES = ("api_key", "local")
 
 def _first_power_preset() -> dict[str, object] | None:
-    """The bundled guided sign-in the setup request offers first, as display data.
-
-    It is installed data (``acquisition_presets.json``), not code: the app shows
-    whatever preset is installed and names no provider itself. An unreadable
-    preset drops the button rather than offering one that cannot work.
-    """
-    import json as _json
-    from pathlib import Path
-
+    """Compatibility projection for existing guided-sign-in recovery flows."""
     from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
+    from tinyassets.providers.source_record import records
 
     try:
-        path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
-        docs = _json.loads(path.read_text(encoding="utf-8"))
-        preset_id = next(iter(docs))
-        preset = load_preset(preset_id)
-        manual = docs[preset_id].get("manual_key_entry") is True
+        record = next(r for r in records().values() if r.suggested and r.free)
+        preset = load_preset(record.id)
+        manual = record.sign_in["oauth"].get("manual_key_entry") is True
     except (OSError, ValueError, StopIteration, HostedAuthError, KeyError, TypeError):
         return None
     return {
@@ -2003,18 +2005,9 @@ def _model_connect_request(*, connected: bool = False) -> dict[str, object]:
     entry stays -- it is the only route to a second source -- but it is
     ``optional``: offered, answerable, and outstanding to nobody.
     """
-    from tinyassets.providers.free_sources import (
-        daily_cap_offers,
-        sign_in_cards,
-        source_cards,
-    )
+    from tinyassets.providers.free_sources import daily_cap_offers
 
-    # One connect screen: the guided sign-in (``primary``), the sources completed
-    # by signing in, the key cards, the subscriptions, and the provider-stated daily
-    # limits the app's daily-cap card is worded from. All data, none in the page.
-    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
-                                "sign_in_sources": sign_in_cards(),
-                                "daily_caps": daily_cap_offers()}
+    setup: dict[str, object] = {"daily_caps": daily_cap_offers()}
     primary = None if connected else _first_power_preset()
     if primary is not None:
         setup["primary"] = primary
@@ -2995,24 +2988,23 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     if action.get("type") == "extend_http":
         from tinyassets.api.http_connection import extend_http
 
-        widened = extend_http(
-            universe_id=universe_id,
-            payload=json.dumps({
-                "destination": action["destination"],
-                "endpoints": action["endpoints"],
-                "scopes": action.get("scopes") or [],
-                # The mode the owner read on the tab and accepted. Dropping it
-                # here recorded an exact widening for a full yes.
-                "access": action.get("access") or "exact",
-                # ...and the policy that mode was read against, so the write
-                # cannot land on a reach that grew while the tab was open.
-                "policy_snapshot": action.get("policy_snapshot") or None,
-                # The git host the owner read beside the git scope. The write
-                # refuses if the connection now resolves somewhere else.
-                **({"expected_git_host": action.get("git_scope_host") or ""}
-                   if _grants_git(action) else {}),
-            }),
-        )
+        payload = {
+            "destination": action["destination"],
+            "endpoints": action["endpoints"],
+            "scopes": action.get("scopes") or [],
+            # The mode the owner read on the tab and accepted. Dropping it
+            # here recorded an exact widening for a full yes.
+            "access": action.get("access") or "exact",
+        }
+        # Only a snapshot captured when the ask was raised pins the yes.
+        # Sending null would look like a broken approval.
+        if action.get("policy_snapshot"):
+            payload["policy_snapshot"] = action["policy_snapshot"]
+        if _grants_git(action):
+            # The git host the owner read beside the git scope. The write
+            # refuses if the connection now resolves somewhere else.
+            payload["expected_git_host"] = action.get("git_scope_host") or ""
+        widened = extend_http(universe_id=universe_id, payload=json.dumps(payload))
         if widened.get("error"):
             return widened
         resolve_request(udir, request_id, status="answered", answer=answer,

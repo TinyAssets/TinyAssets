@@ -41,6 +41,23 @@ def current() -> OwnerRuntime | None:
     return _runtime
 
 
+def in_owner_box() -> bool:
+    """Whether this process is the startup-admitted owner daemon.
+
+    The shared door authenticates bearers and forwards the verified Identity.
+    This process does not host an AuthProvider and does not read
+    ``UNIVERSE_SERVER_AUTH``.
+    """
+    return current() is not None
+
+
+def admitted() -> OwnerRuntime:
+    runtime = current()
+    if runtime is None:
+        raise PermissionError("operation requires an admitted owner box")
+    return runtime
+
+
 def refuse_router_store(name: str) -> None:
     if current() is not None:
         raise RuntimeError(f"router store {name} is never opened inside an owner box")
@@ -123,8 +140,12 @@ def start(relay: Path) -> OwnerRuntime:
                      volume_generation=int(os.environ["TINYASSETS_VOLUME_GENERATION"]),
                      relay=relay)
     try:
-        tools._state.verify_volume(int(os.environ["TINYASSETS_VOLUME_GENERATION"]),
-                                   lambda: validate_databases(root))
+        generation = int(os.environ["TINYASSETS_VOLUME_GENERATION"])
+        tools._state.verify_volume(generation, lambda: validate_databases(root))
+        if os.environ.get("TINYASSETS_VOLUME_REWIND") == "1":
+            from tinyassets.boxes.restore_settle import settle_rewind
+
+            settle_rewind(root, generation)
     except BaseException:
         tools.close()
         raise
@@ -243,12 +264,16 @@ def serving():
         runtime.root, stop_event=stop, stopped_event=stopped,
     )
     consumer = AssignedQueueConsumer(runtime.root)
+    from tinyassets.owner_door.send import start_recovery
+
+    send_recovery = start_recovery(runtime, stop)
     try:
         consumer.start()
         yield
     finally:
         consumer.stop()
         stop.set()
+        send_recovery.join(5)
         if watcher is not None:
             watcher.set()
         if maintenance is not None:

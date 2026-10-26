@@ -93,19 +93,6 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
             assert kwargs["json_body"]["token_endpoint_auth_method"] == "none"
             registrations.append((url, os.getpid()))
             return 201, {"client_id": "public-client", "token_endpoint_auth_method": "none"}
-        if url == "https://api.example.com/data":
-            return 401, {}
-        if "/.well-known/oauth-protected-resource" in url:
-            return 200, {"resource": "https://api.example.com",
-                         "authorization_servers": ["https://auth.example.com"]}
-        if "/.well-known/" in url:
-            return 200, {"issuer": "https://auth.example.com",
-                         "authorization_endpoint": "https://auth.example.com/authorize",
-                         "token_endpoint": "https://auth.example.com/token",
-                         "registration_endpoint": "https://auth.example.com/register",
-                         "code_challenge_methods_supported": ["S256"],
-                         "response_types_supported": ["code"],
-                         "grant_types_supported": ["authorization_code", "refresh_token"]}
         raise AssertionError((method, url))
 
     discovery.request_json = public_provider
@@ -422,9 +409,10 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
     if rig.kind == "preset":
         body["preset_id"] = PRESET
     else:
-        body["definition"] = {"destination": "fixture", "endpoints": [
-            {"host": "api.example.com", "path_template": "/data", "methods": ["POST"]}],
-            "oauth": {"scopes": ["tasks.write"]}}
+        body["prepared"] = _box_operation(rig, "discover", {
+            "destination": "fixture", "endpoints": [
+                {"host": "api.example.com", "path_template": "/data", "methods": ["POST"]}],
+            "oauth": {"scopes": ["tasks.write"]}})
     begin_op = "begin" if rig.kind == "preset" else "oauth_begin"
     foreign = rig.post(begin_op, {**body, "center": "foreign-center"})
     assert foreign.status_code == 400
@@ -508,7 +496,26 @@ runtime = owner_runtime.start(Path(relay))
 try:
     data = json.loads(payload)
     args = dict(principal="owner", command_center="center")
-    if operation == "forge_reference":
+    if operation == "discover":
+        from tinyassets.connection_oauth import model_discovery
+        from tinyassets.onboarding.connection_definition import oauth_definition
+        def fetch(url, **kwargs):
+            if "/.well-known/oauth-protected-resource" in url:
+                return 200, {"resource": "https://api.example.com",
+                    "authorization_servers": ["https://auth.example.com"]}, {}
+            if "/.well-known/" in url:
+                return 200, {"issuer": "https://auth.example.com",
+                    "authorization_endpoint": "https://auth.example.com/authorize",
+                    "token_endpoint": "https://auth.example.com/token",
+                    "registration_endpoint": "https://auth.example.com/register",
+                    "code_challenge_methods_supported": ["S256"],
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"]}, {}
+            return 401, {}, {}
+        model_discovery.transport_fetch = fetch
+        result = oauth_definition(root, owner="owner", center="center", definition=data,
+                                  public_resource="https://tinyassets.io/mcp")
+    elif operation == "forge_reference":
         from tinyassets.broker.http_connect import connect_operation
         from tinyassets.broker.client import BrokerRefused
         ref = data.pop("request_ref")

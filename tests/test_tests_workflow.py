@@ -37,7 +37,11 @@ transitive.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -784,6 +788,107 @@ def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
 # ---- PR-time affected tests ----------------------------------------------------
 
 
+@pytest.mark.parametrize("oracle", [False, True])
+def test_affected_shard_accepts_passing_cases_from_each_invocation(
+    tmp_path, monkeypatch, oracle,
+):
+    """Leaf testcase elements must count in direct and merged venue reports."""
+    if oracle and os.name != "posix":
+        pytest.skip("oracle venue coordinator requires POSIX")
+    junit = tmp_path / "junit.xml"
+    user_file = "tests/test_owner_box_deploy.py"
+    root_file = "tests/test_owner_volumes_proof.py"
+    selection = [user_file, root_file] if oracle else [user_file]
+    monkeypatch.setattr(_ci, "_read_selection", lambda args: selection)
+    calls = []
+    real_run = subprocess.run
+
+    def run(cmd, **kwargs):
+        if cmd[:3] != [sys.executable, "-m", "pytest"]:
+            return real_run(cmd, **kwargs)
+        report = Path(next(arg.split("=", 1)[1] for arg in cmd
+                           if arg.startswith("--junitxml=")))
+        files = [file for file in selection if file in cmd]
+        calls.append(files)
+        suites = ET.Element("testsuites")
+        suite = ET.SubElement(suites, "testsuite")
+        for file in files:
+            for index in range(2):
+                ET.SubElement(suite, "testcase", file=file, name=f"test_pass_{index}")
+        ET.ElementTree(suites).write(report, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    # Exercise the real venue merger; only the child pytest processes and
+    # privileged identity operations are replaced in this focused regression.
+    monkeypatch.setattr(_ci.subprocess, "run", run)
+    if oracle:
+        monkeypatch.setattr(_ci.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(_ci.os, "chown", lambda *args: None)
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py", "--junit", str(junit),
+        "--affected", str(tmp_path / "affected.txt"),
+        "--shard", "1/1", "--profile", "affected",
+        *(["--oracle-venues"] if oracle else []),
+    ])
+
+    assert _ci.main() == 0
+    assert calls == ([[user_file], [root_file]] if oracle else [[user_file]])
+    cases = list(ET.parse(junit).getroot().iter("testcase"))
+    assert len(cases) == 2 * len(selection)
+    assert all(len(case) == 0 for case in cases)
+    assert _ci.json.loads(junit.with_suffix(".json").read_text())["pytest_exit"] == 0
+
+
+@pytest.mark.parametrize("oracle", [False, True])
+@pytest.mark.parametrize(
+    ("selection", "pytest_exit", "slow_only", "expected"),
+    [
+        ([], None, [], 0),
+        (["tests/test_slow.py"], 5, ["tests/test_slow.py"], 0),
+        (["tests/test_slow.py"], 5, [], 1),
+        (["tests/test_slow.py"], 0, [], 1),
+        (["tests/test_slow.py"], 1, ["tests/test_slow.py"], 1),
+        (["tests/test_slow.py"], 2, ["tests/test_slow.py"], 1),
+        (["tests/test_slow.py"], 4, ["tests/test_slow.py"], 1),
+    ],
+)
+def test_affected_shard_only_waives_proven_empty_runs(
+    tmp_path, monkeypatch, capsys, oracle, selection, pytest_exit, slow_only, expected,
+):
+    junit = tmp_path / "junit.xml"
+    monkeypatch.setattr(_ci, "_read_selection", lambda args: selection)
+    monkeypatch.setattr(
+        _ci, "collectible_under_gate", lambda files: ([], slow_only),
+    )
+
+    def run(cmd, **kwargs):
+        ET.ElementTree(ET.Element("testsuites")).write(junit, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, pytest_exit)
+
+    monkeypatch.setattr(_ci, "run_oracle_venues", lambda cmd, **kwargs: run(cmd))
+    monkeypatch.setattr(_ci.subprocess, "run", run)
+    monkeypatch.setattr(
+        sys, "argv", [
+            "ci_required_tests.py", "--junit", str(junit),
+            "--affected", str(tmp_path / "affected.txt"),
+            "--shard", "2/4", "--profile", "affected",
+            *(["--oracle-venues"] if oracle else []),
+        ],
+    )
+
+    assert _ci.main() == expected
+    assert _ci.json.loads(junit.with_suffix(".json").read_text())["pytest_exit"] == (
+        0 if expected == 0 else pytest_exit
+    )
+    output = capsys.readouterr().out
+    if expected == 0:
+        assert "nothing to run" in output
+    elif pytest_exit == 0:
+        assert "non-empty selection reported no test cases" in output
+    else:
+        assert f"pytest exited {pytest_exit}" in output
+
+
 def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> None:
     """PR shards report through the required aggregate; queue shards check integration."""
     job = _load()["jobs"]["affected-tests"]
@@ -855,6 +960,39 @@ def test_the_gate_asks_for_the_conservative_selection() -> None:
     )
     assert "ci_required_tests.py --ci-select gate --base" in run
     assert 'f"--{tier}"' in _SCRIPT.read_text(encoding="utf-8")
+
+
+def test_selector_runs_only_files_with_test_cases(tmp_path) -> None:
+    from scripts.affected_tests import gate_selection, select
+
+    tests = tmp_path / "tests"
+    source = tmp_path / "tinyassets"
+    tests.mkdir()
+    source.mkdir()
+    (source / "thing.py").write_text("VALUE = 1\n")
+    (tests / "test_helper.py").write_text(
+        "from tinyassets.thing import VALUE\n"
+        "def fixture_value(): return VALUE\n"
+    )
+    (tests / "test_consumer.py").write_text(
+        "from tests.test_helper import fixture_value\n"
+        "def test_value(): assert fixture_value() == 1\n"
+    )
+    (tests / "test_stale.py").write_text(
+        "from pathlib import Path\n"
+        "def files(): return list(Path('.').rglob('*.md'))\n"
+    )
+    (tests / "test_walker.py").write_text(
+        "from pathlib import Path\n"
+        "def test_walk(): assert list(Path('.').rglob('*.md')) is not None\n"
+    )
+
+    selected, _ = select(["tinyassets/thing.py"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_consumer.py"]
+    selected, _ = select(["tests/test_helper.py"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_consumer.py"]
+    selected, _ = gate_selection(["docs/example.md"], root=tmp_path, shared=set())
+    assert selected == ["tests/test_walker.py"]
 
 
 def test_the_selection_is_pruned_before_it_is_digested() -> None:
@@ -931,7 +1069,11 @@ def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
     step = next(s for s in structural["steps"]
                 if "scripts.ci_structural_guards" in s.get("run", ""))
     assert "if" not in step and not step.get("continue-on-error")
-    slow_run = "\n".join(s.get("run", "") for s in jobs["slow-tests"]["steps"])
+    slow = jobs["slow-tests"]
+    # Playwright 1.58 cannot install chromium on ubuntu 26.04, which is
+    # what ubuntu-latest is now. The queue runs this install before pytest.
+    assert slow["runs-on"] == "ubuntu-24.04"
+    slow_run = "\n".join(s.get("run", "") for s in slow["steps"])
     assert "pip install -e '.[dev,browser]'" in slow_run
     assert "python -m playwright install --with-deps chromium" in slow_run
 

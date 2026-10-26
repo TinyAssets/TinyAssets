@@ -187,14 +187,14 @@ class ModelConfig:
 
     engine_mcp_enabled: bool = False
     """When True, the founder-facing universe-intelligence turn gets a LOCAL,
-    founder-scoped TinyAssets MCP server (``tinyassets.engine_mcp_server``) wired
+    founder-scoped TinyAssets MCP server (``tinyassets.universe_tools``) wired
     in via ``--mcp-config`` + ``--strict-mcp-config``, so the command center agent has
     the SAME MCP handles the founder's browser chatbot has (read_graph /
     write_graph / run_graph / read_page / write_page / get_status), acting AS the
     founder, scoped to its OWN command center. Requires ``engine_mcp_actor_id`` +
     ``engine_mcp_graph_id`` — the wiring FAILS CLOSED (no tools) if either is
     empty. Only ever set for a FOUNDER-tier turn; never for the learning
-    extractor or a non-founder caller. See ``engine_mcp_server`` for the identity
+    extractor or a non-founder caller. See ``universe_tools`` for the identity
     binding + graph pin."""
 
     engine_mcp_actor_id: str = ""
@@ -391,6 +391,12 @@ class ProviderResponse:
     """Detached local dispatch accounting, never a confirmed provider quota."""
     execution_receipt: object | None = field(default=None, repr=False, compare=False)
     """Detached requested/resolved/reported identity and usage for this call."""
+    source_parts: object | None = field(default=None, repr=False, compare=False)
+    """Ordered parts from the connected source, before owner-box normalization."""
+    media_contract: object | None = field(default=None, repr=False, compare=False)
+    """That source's declared or discovered media contract. Not a vendor parser."""
+    media_meter: object | None = field(default=None, repr=False, compare=False)
+    """Input and output bytes already counted for this one call."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.

@@ -135,6 +135,40 @@ def test_idle_script_enters_the_production_entry(monkeypatch):
     assert calls == [1]
 
 
+def test_import_path_follows_the_harness_current_symlink(monkeypatch, tmp_path):
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(sys, "argv", ["boxhostd", "--data-root", str(tmp_path)])
+    parent = Path("/sys/fs/cgroup/system.slice/boxhostd.service")
+    monkeypatch.setattr(boxhostd, "prepare_delegation", lambda: parent)
+    monkeypatch.setattr(boxhostd, "owner_box_committed", lambda root: True)
+    monkeypatch.setitem(sys.modules, "boxhostd_idle", SimpleNamespace(main=lambda: None))
+    target = tmp_path / ("harness-" + "ab" * 32)
+    (target / "app").mkdir(parents=True)
+    link = tmp_path / "harness-current"
+    link.symlink_to(target.name)
+    monkeypatch.setattr(boxhostd, "HARNESS", link)
+    seen = []
+
+    def serve(**kwargs):
+        assert kwargs == {
+            "rootfs": link.resolve(strict=True),
+            "data_root": tmp_path,
+            "cgroup_parent": parent,
+        }
+        seen.append(sys.path[0])
+
+    monkeypatch.setitem(
+        sys.modules, "tinyassets.boxes.host_service", SimpleNamespace(main=serve))
+    old = sys.path[:]
+    try:
+        boxhostd.main()
+    finally:
+        sys.path[:] = old
+    assert seen == [str(link / "app")]
+    assert Path(seen[0]).resolve() == target / "app"
+    assert seen[0] != str(target / "app")
+
+
 def test_systemd_allows_delegation_and_does_not_move_main_to_a_leaf():
     unit = (Path(__file__).resolve().parents[1] / "deploy/boxhostd.service").read_text()
     assert "Delegate=yes" in unit

@@ -1,31 +1,8 @@
-"""Owner messages that steer a running turn (harness S2).
+"""Active-turn observation and draining of pre-cutover steering records.
 
-Founder, 2026-10-01: the agent should work like Claude Code, where a message
-typed while it works reaches it at the next tool boundary instead of waiting for
-the whole turn to end (design #4172, Appendix A.3). Before this, the app held a
-message sent mid-turn in the browser, marked "Queued -- your universe sees this
-when its current turn ends", and the agent never heard it until it was done.
-
-How a steering message travels:
-
-* A served turn of the owner's thread OPENS itself here under its live id
-  (``turn_interrupt.LiveTurn.live_id``) and every launch names that id on its
-  engine route, beside the session (``engine_steering.route_with_session``).
-* The owner's app posts a line while the turn runs. It is admitted only while a
-  turn of that thread is open, and it is bound to that turn, in one transaction,
-  so a line can never land after the turn has settled and wait unseen.
-* The universe's engine tools run in a separate per-universe process that also
-  serves the universe's own agent nodes. It hands a bound line only to a tool
-  result of the same session AND the same turn, and within a per-result budget.
-* When the turn ends it settles: lines its agent received are returned to be
-  recorded between the message and the reply; lines it never received become
-  CARRYOVER, kept here until a later turn takes them, so a page that is closed
-  or reloaded before it re-sends them loses nothing. The next served turn folds
-  any carryover its own message does not already repeat into that message.
-
-The store sits beside the session records in the data root's
-``.agent-sessions/<universe>/``, outside every universe folder, so no process
-the universe runs can plant or read a message here.
+New owner messages enter only through owner_door.send. No producer or destructive
+browser claim remains here. Existing steering records are retained for the in-box
+turn's legacy drain; active-turn observations serve the page's working indicator.
 """
 
 from __future__ import annotations
@@ -41,8 +18,6 @@ from tinyassets import agent_sessions
 
 #: One message, at most. Longer text is refused, not cut.
 MAX_STEER_CHARS = 16_000
-#: Messages waiting for one session (bound and carried over), at most.
-MAX_PENDING = 20
 #: Characters handed to one tool result. More waits for the next result; a
 #: single message larger than this still goes alone, never cut.
 DELIVERY_BUDGET_CHARS = 6_000
@@ -62,10 +37,6 @@ _SCHEMA = (
     opened_at REAL NOT NULL,
     PRIMARY KEY(session_key, live_id))""",
 )
-
-
-class SteeringRefused(ValueError):
-    """The message cannot be queued: empty, too long, or too many waiting."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,42 +114,6 @@ def open_turn(universe_dir: Path, session_key: str, live_id: str,
         conn.execute("COMMIT")
 
 
-def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer | None:
-    """Queue ``text`` for the open turn of ``session_key``; ``None`` if none is open.
-
-    Admission and binding happen in one transaction with the turn's settle, so
-    a line is either bound to a turn that will settle it or refused.
-    """
-    key = _key(session_key)
-    body = str(text or "").strip()
-    if not body:
-        raise SteeringRefused("the message is empty")
-    if len(body) > MAX_STEER_CHARS:
-        raise SteeringRefused(f"the message is over {MAX_STEER_CHARS} characters")
-    now = time.time()
-    with closing(_connect(universe_dir)) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        turn = conn.execute(
-            "SELECT live_id FROM open_turns WHERE session_key = ? "
-            "ORDER BY opened_at DESC LIMIT 1", (key,),
-        ).fetchone()
-        if turn is None:
-            conn.execute("ROLLBACK")
-            return None
-        waiting = conn.execute(
-            "SELECT COUNT(*) FROM steer WHERE session_key = ?", (key,),
-        ).fetchone()[0]
-        if waiting >= MAX_PENDING:
-            conn.execute("ROLLBACK")
-            raise SteeringRefused(f"{MAX_PENDING} messages are already waiting")
-        cursor = conn.execute(
-            "INSERT INTO steer (session_key, live_id, text, created_at) VALUES (?, ?, ?, ?)",
-            (key, turn[0], body, now),
-        )
-        conn.execute("COMMIT")
-    return Steer(int(cursor.lastrowid), body, now)
-
-
 @dataclass(frozen=True, slots=True)
 class Pending:
     """A line the owner sent that no turn has handled yet, as the page shows it."""
@@ -186,34 +121,6 @@ class Pending:
     text: str
     created_at: float
     state: str  # "steered": bound to the running turn; "held": the next turn takes it
-
-
-def hold(universe_dir: Path, session_key: str, text: str) -> Steer:
-    """Keep ``text`` for the next turn of ``session_key`` (no turn is open to
-    steer). Saved here before the page is told, so a reload or a closed page
-    loses nothing: the next served turn folds it in, and a page that re-sends it
-    as that turn's own message is not repeated (``take_carryover``)."""
-    key = _key(session_key)
-    body = str(text or "").strip()
-    if not body:
-        raise SteeringRefused("the message is empty")
-    if len(body) > MAX_STEER_CHARS:
-        raise SteeringRefused(f"the message is over {MAX_STEER_CHARS} characters")
-    now = time.time()
-    with closing(_connect(universe_dir)) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        waiting = conn.execute(
-            "SELECT COUNT(*) FROM steer WHERE session_key = ?", (key,),
-        ).fetchone()[0]
-        if waiting >= MAX_PENDING:
-            conn.execute("ROLLBACK")
-            raise SteeringRefused(f"{MAX_PENDING} messages are already waiting")
-        cursor = conn.execute(
-            "INSERT INTO steer (session_key, live_id, text, created_at) VALUES (?, NULL, ?, ?)",
-            (key, body, now),
-        )
-        conn.execute("COMMIT")
-    return Steer(int(cursor.lastrowid), body, now)
 
 
 def pending(universe_dir: Path, session_key: str) -> list[Pending]:
@@ -241,28 +148,6 @@ def active(universe_dir: Path, session_key: str) -> dict | None:
         return None
     return {"text": row[0], "started_at": float(row[1]),
             **({"client_send_id": row[2]} if row[2] else {})}
-
-
-def claim(universe_dir: Path, session_key: str, ids: Iterable[int]) -> list[int]:
-    """The page is about to send held lines ``ids`` as a turn of its own: each is
-    removed here first, atomically, and only the ids actually removed come back.
-    A line another tab claimed, or a turn already folded in, is not returned, so
-    it is never sent twice."""
-    key = _key(session_key)
-    wanted = sorted({int(i) for i in ids if isinstance(i, int) and i > 0})
-    if not wanted:
-        return []
-    claimed = []
-    with closing(_connect(universe_dir)) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        for steer_id in wanted:
-            cursor = conn.execute(
-                "DELETE FROM steer WHERE id = ? AND session_key = ? AND live_id IS NULL "
-                "AND delivered_at IS NULL", (steer_id, key))
-            if cursor.rowcount == 1:
-                claimed.append(steer_id)
-        conn.execute("COMMIT")
-    return claimed
 
 
 def take(universe_dir: Path, session_key: str, live_id: str,

@@ -88,6 +88,8 @@ def test_fix_forward_on_pretraffic_skips_moves_and_resumes_acceptance(box):
     result = box.run(NEW_IMAGE, **env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _result(result) == "deployed"
+    assert "-d -o 1001 -g 1102 -m 2770 -- " in box.install_calls_text()
+    assert "chown 1001:1102 -- " in box.install_calls_text()
     assert "cutover_admission_pending=true" in result.stdout
     assert "tinyassets.box_layout_migration apply" not in box.docker_calls_text()
     assert "tinyassets.agent_file_migration apply" not in box.docker_calls_text()
@@ -241,11 +243,32 @@ def test_legacy_cutover_without_original_bundle_refuses_before_stopping(box, mon
 
 def test_fix_forward_preflight_failure_holds_bundle_and_admission(box):
     _, env, control = committed(box)
-    result = box.run(NEW_IMAGE, CORE_CANARY_PROVISIONED="0", **env)
+    box.set_docker_state(turns_rc=10)
+    result = box.run(NEW_IMAGE, **env)
     assert _result(result) == "post_commit_held", result.stdout + result.stderr
     assert (box.runtime / "compose.yml").read_bytes() == (box.stage / "compose.yml").read_bytes()
     assert not _daemon_starts(box)
     assert json.loads((control / "state.json").read_text())["state"] == "pre_traffic"
+
+
+def test_consumed_owner_box_deploy_without_canary_warns_and_continues(box):
+    _, env, control = committed(box)
+    state = json.loads((control / "state.json").read_text())
+    (control / "state.json").write_text(json.dumps({**state, "state": "consumed"}))
+
+    result = box.run(NEW_IMAGE, CORE_CANARY_PROVISIONED="0", **env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _result(result) == "deployed"
+    assert "WARNING: core canary is not provisioned" in result.stdout
+    assert "::warning::core canary is not provisioned" in result.stderr
+    assert "box layout: already owner-box; no move" in result.stdout
+    calls = box.docker_calls_text()
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+    assert _daemon_starts(box)
+    assert json.loads((control / "state.json").read_text())["state"] == "consumed"
 
 
 @pytest.mark.parametrize("receipt", ["consumed", "archived"])
@@ -307,3 +330,97 @@ def test_unreadable_cutover_state_cannot_fall_through_to_rollback(box, receipt, 
     assert result.returncode == 3, result.stdout + result.stderr
     assert _result(result) == "rollback_needs_restore"
     assert (box.runtime / "compose.yml").read_bytes() == expected
+
+
+def test_restart_stack_removes_services_before_one_compose_up():
+    script = (REPO / "deploy/deploy_fail_safe.sh").read_text(encoding="utf-8")
+    start = script.index("restart_stack() {")
+    body = script[start:script.index("\n# Compose recreates a container", start)]
+    positions = [
+        body.index('systemctl stop "$UNIT"'),
+        body.index('docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"'),
+        body.index("docker stop tinyassets-broker"),
+        body.index("rm -f -s broker daemon cloudflared logs"),
+        body.index('up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs'),
+    ]
+    assert positions == sorted(positions)
+    assert body.count(
+        'up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs'
+    ) == 1
+    assert 'up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" broker' not in body
+    temps = script[script.index("remove_compose_temp_daemons() {"):
+                   script.index("\n# `up -d` does NOT recreate")]
+    assert "tinyassets-broker" in temps
+    unit = (REPO / "deploy/tinyassets-autoheal.service").read_text(encoding="utf-8")
+    assert "exec 9>>/var/lock/tinyassets-host-mutation.lock" in unit
+    assert "/usr/bin/flock -n 9" in unit
+    assert unit.index("/usr/bin/flock -n 9") < unit.index("docker restart")
+
+
+def test_autoheal_stands_down_while_the_deploy_lock_is_held(tmp_path):
+    import fcntl
+
+    unit = (REPO / "deploy/tinyassets-autoheal.service").read_text(encoding="utf-8")
+    command = unit.split("ExecStart=/bin/bash -c '", 1)[1].rsplit("'", 1)[0]
+    lock_path = tmp_path / "host-mutation.lock"
+    command = command.replace("/var/lock/tinyassets-host-mutation.lock", str(lock_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "docker.log"
+    (bin_dir / "docker").write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "if [ \"$1\" = ps ]; then printf 'abc\\n'; fi\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "docker").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+           "DOCKER_LOG": str(log)}
+    held = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        blocked = subprocess.run(
+            ["bash", "-c", command], env=env, capture_output=True, text=True, check=False,
+        )
+        assert blocked.returncode == 0, blocked.stderr
+        assert not log.exists()
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        os.close(held)
+    free = subprocess.run(
+        ["bash", "-c", command], env=env, capture_output=True, text=True, check=False,
+    )
+    assert free.returncode == 0, free.stderr
+    assert "restart abc" in log.read_text(encoding="utf-8")
+
+
+def test_source_env_file_exports_an_unquoted_private_key(tmp_path):
+    env = tmp_path / "env"
+    env.write_text(
+        "\n# comment\n"
+        "BACKUP_DEST=spaces:/snapshots/owner-snapshots\n"
+        "BOX_KEY=-----BEGIN PRIVATE KEY-----\n"
+        'export QUOTED="-----BEGIN PRIVATE KEY-----"\n'
+        "not a assignment\n",
+        encoding="utf-8",
+    )
+    script = REPO / "deploy/deploy_fail_safe.sh"
+    text = script.read_text(encoding="utf-8")
+    assert 'source "$ENV_FILE"' not in text
+    assert '. "$ENV_FILE"' not in text
+    assert text.count('source_env_file "$ENV_FILE"') == 3
+    completed = subprocess.run(
+        ["bash", "-c", """
+set -euo pipefail
+eval "$(sed -n '/^source_env_file() {$/,/^}$/p' "$1")"
+source_env_file "$2"
+printf 'BACKUP_DEST=%s\\n' "$BACKUP_DEST"
+printf 'BOX_KEY=%s\\n' "$BOX_KEY"
+printf 'QUOTED=%s\\n' "$QUOTED"
+""", "bash", str(script), str(env)],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "PRIVATE: command not found" not in completed.stderr
+    assert "BACKUP_DEST=spaces:/snapshots/owner-snapshots" in completed.stdout
+    assert "BOX_KEY=-----BEGIN PRIVATE KEY-----" in completed.stdout
+    assert "QUOTED=-----BEGIN PRIVATE KEY-----" in completed.stdout

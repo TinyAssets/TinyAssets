@@ -1,0 +1,86 @@
+name: Diagnose connected sources
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Read-only host observation. It does not restart a service or edit host
+# config, so it shares the observation lock and leaves the host-mutation
+# lock to installs and deploys.
+concurrency:
+  group: production-host-observation
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify production SSH secrets
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${DO_DROPLET_HOST}" ]
+          [ -n "${DO_SSH_USER}" ]
+          [ -n "${SSH_KEY}" ]
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Read every owner connection check
+        run: |
+          set -euo pipefail
+          [[ "${DO_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                mktemp -d /tmp/tinyassets-diagnose-sources.XXXXXX
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-diagnose-sources[.][A-Za-z0-9]+$ ]]
+          cleanup() {
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "rm -rf -- $(printf '%q' "${remote_stage}")" || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              scripts/diagnose_connected_sources.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/diagnose_connected_sources.py"
+          set +e
+          timeout 25m ssh -i ~/.ssh/do_deploy \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=50 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 -B $(printf '%q' "${remote_stage}")/diagnose_connected_sources.py"
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            echo "connected-sources diagnostic failed"
+            exit 1
+          fi

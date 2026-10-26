@@ -35,6 +35,7 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
 
     shared = tmp_path / "shared"
     (shared / ".broker/state").mkdir(parents=True, mode=0o700)
+    (shared / ".broker").chmod(0o700)
 
     identities = OwnerIdentities(shared / ".broker/state/owner-identities.db", initialize=True,
                                  plans=Plans(shared))
@@ -48,7 +49,17 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
     broker.server._roles = {os.getuid(): BOX_HOST}
     broker.server._data_root = shared
     broker.server._owner_identities = identities
-    proxy = broker.server._public_egress = PublicEgress(identities, shared)
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    broker.server._ledger_for = lambda owner: ConnectionLedger(
+        shared / ".broker/outbound.db", data_root=shared,
+        verify_authenticated_principal=lambda: owner)
+    from tinyassets.broker.policy import PolicyStore
+
+    broker.server._policy_store = PolicyStore(shared, identities)
+    broker.server._policy_store.bootstrap()
+    proxy = broker.server._public_egress = PublicEgress(
+        identities, shared, binding=broker.server.egress_binding)
     # Same-uid protocol rig only. Production pins the broker's kernel role uid.
     monkeypatch.setattr(bootstrap, "peer", lambda sock: (os.getpid(), 1002, 1002))
     monkeypatch.setattr(relay, "peer", lambda sock: (os.getpid(), 1002, 1002))
@@ -85,6 +96,105 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
 def run(native, code, **kwargs):
     return native.core.run([sys.executable, "-c", code], cwd=native.home,
                            wall_seconds=5, output_bytes=16384, **kwargs)
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Ask uses existing owner consent')
+@pytest.mark.parametrize("method", ["GET", "CONNECT"])
+@pytest.mark.parametrize("answer", ["approve", "deny", "clear", "mute"])
+def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, method, answer):
+    import hashlib
+
+    from tests.test_owner_policy import _session
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.egress import destination
+    from tinyassets.daemon_server import grant_universe_ownership
+    from tinyassets.storage.pending_requests import list_pending
+
+    grant_universe_ownership(native.home.parent, universe_id="center", owner_id="alice")
+    store = native.broker.server._policy_store
+    cookie = "raw-proxy-owner-" + "r" * 40
+    _session(native.broker.server._data_root, "alice", cookie)
+    proof = {"session_hash": hashlib.sha256(cookie.encode()).hexdigest()}
+    client = BrokerClient(native.relay, principal="alice", command_center="center",
+                          fence=lambda: (0, ""))
+    snapshot = client.owner_policy("read")
+    snapshot["policy"]["egress"]["mode"] = "ask"
+    client.owner_policy("write", session_proof=proof,
+                        expected_generation=snapshot["generation"], policy=snapshot["policy"])
+    monkeypatch.setattr("tinyassets.broker.public_egress.destination",
+                        lambda binding, host, port: destination(
+                            binding, host, port, resolver=lambda *_: ["8.8.8.8"]))
+    target = "example.test:443" if method == "CONNECT" else "http://example.test:443/"
+    head = f"{method} {target} HTTP/1.1\r\n\r\n".encode()
+    code = ("import socket; s=socket.create_connection(('127.0.0.1',3128)); "
+            f"s.sendall({head!r}); "
+            "print(s.recv(16384).decode()); s.close()")
+    for _ in range(2):
+        done = run(native, code)
+        assert done.returncode == 0, done.stdout
+        assert b"403 Forbidden" in done.stdout
+    rows = list_pending(native.home)
+    rows = [row for row in rows if row["action"].get("type") == "policy_proposal"]
+    assert len(rows) == 1
+    proposal = rows[0]["action"]
+    assert "until you remove this rule" in rows[0]["body"]
+    from starlette.requests import Request
+
+    from tinyassets import onboarding
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://app.test/mcp"})
+    monkeypatch.setattr(onboarding, "_read_home", lambda *_: "center")
+    session = {**proof, "expires_at": time.time() + 1000,
+               "identity_json": json.dumps({"user_id": "alice"})}
+    if answer != "approve":
+        from tinyassets.api.pending_requests import _answer_request
+
+        with identity_context(Identity(user_id="alice", username="alice")):
+            result = _answer_request(universe_id="center", owner_session=session, payload={
+                "request_id": rows[0]["request_id"], "decision": "declined",
+                "dismiss": answer == "clear", "dont_ask_again": answer == "mute"})
+        assert "error" not in result, result
+        assert client.owner_policy("read")["generation"] == proposal["expected_generation"]
+        assert not client.owner_policy("read")["policy"]["egress"]["destinations"]
+        assert b"403 Forbidden" in run(native, code).stdout
+        return
+
+    async def approve(row):
+        async def receive():
+            return {"type": "http.request", "body": json.dumps({
+                "action": "apply_proposal", "center": "center",
+                "request_id": row["request_id"]}).encode()}
+
+        request = Request({"type": "http", "method": "POST", "path": "/app/api/policy",
+                           "query_string": b"scope=egress", "headers": [
+                               (b"host", b"app.test"), (b"origin", b"https://app.test"),
+                               (b"content-type", b"application/json")]}, receive)
+        with identity_context(Identity(user_id="alice", username="alice",
+                                       metadata={"router_owner_session": session})):
+            return await onboarding._handle_policy(request)
+
+    # An intervening owner edit makes the displayed proposal stale.
+    current = client.owner_policy("read")
+    client.owner_policy("write", session_proof=proof,
+                        expected_generation=current["generation"], policy=current["policy"])
+    assert asyncio.run(approve(rows[0])).status_code == 409
+    assert not client.owner_policy("read")["policy"]["egress"]["destinations"]
+    assert b"403 Forbidden" in run(native, code).stdout
+    refreshed = list_pending(native.home)[-1]
+    response = asyncio.run(approve(refreshed))
+    assert response.status_code == 200, response.body
+    with pytest.raises(PermissionError):
+        client.owner_policy("write", session_proof=proof,
+                            expected_generation=proposal["expected_generation"],
+                            policy=proposal["policy"])
+    assert destination(native.broker.server.egress_binding("alice"), "example.test", 443,
+                       resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
+    assert store.read("alice").document["egress"]["destinations"] == [
+        {"host": "example.test", "port": 443}]
 
 
 @pytest.fixture
@@ -381,8 +491,14 @@ def git_origin(native, tmp_path, monkeypatch):
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T6')
-def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(native, git_origin):
+@pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
+def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(
+        native, git_origin, mode):
+    import hashlib
+
+    from tests.test_owner_policy import _session
     from tinyassets.broker.client import BrokerClient
+    from tinyassets.daemon_server import grant_universe_ownership
     from tinyassets.owner_git import routes
 
     # Keep the real registry, BOX_HOST admission and relay from the native
@@ -391,7 +507,26 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(nativ
     native.broker.server._dispatch_for = lambda *_: git_origin.dispatch
     client = BrokerClient(native.relay, principal="alice", command_center="center",
                           fence=lambda: (0, ""))
+    grant_universe_ownership(native.home.parent, universe_id="center", owner_id="alice")
+    cookie = "git-owner-session-" + "g" * 40
+    _session(native.broker.server._data_root, "alice", cookie)
+    proof = {"session_hash": hashlib.sha256(cookie.encode()).hexdigest()}
+
+    def policy(destinations):
+        current = client.owner_policy("read")
+        current["policy"]["egress"] = {"mode": mode, "destinations": destinations}
+        client.owner_policy("write", session_proof=proof,
+                            expected_generation=current["generation"], policy=current["policy"])
+
+    policy([])
     with routes(client, [git_origin.record], "developer") as env:
+        if mode != "open":
+            denied = native.core.run(["git", "ls-remote", "https://git.test/owner/repo.git"],
+                                    cwd=native.home, env=env, wall_seconds=5, output_bytes=16384)
+            assert denied.returncode != 0
+            assert not git_origin.state["seen"]
+            assert git_origin.secret.encode() not in denied.stdout
+            policy([{"host": "git.test", "port": 443}])
         done = native.core.run(["git", "ls-remote", "https://git.test/owner/repo.git"],
                                cwd=native.home, env=env, wall_seconds=5, output_bytes=16384)
         assert done.returncode == 0, done.stdout

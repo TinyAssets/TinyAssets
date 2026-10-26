@@ -56,6 +56,8 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Required reviewed CLASSIFICATION of canonical execution callsites.
 # New boundaries must be reviewed.
 CLASSIFICATION: tuple[CallSite, ...] = (
+    # Owner-box unauthenticated discovery through the broker's public egress proxy.
+    CallSite("tinyassets/connection_oauth/model_discovery.py", "transport_fetch", "client.stream"),
     # K1 remote MCP transport uses the governed connection effector stream, not
     # a graph executor. Exact launch/connection authority is rechecked per reply.
     CallSite("tinyassets/mcp_remote.py", "RemoteMcp._exchange", "self.stream"),
@@ -106,6 +108,9 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     CallSite("tinyassets/broker/acquisition.py", "exchange_key", "client.stream"),
     # The router relays opaque HTTP bytes to an admitted Unix socket; neither
     # stream invokes a model or executes an owner's work in the shared process.
+    # Inbound proof reads the raw body once, capped at 1 MiB, before broker
+    # verification or the admitted forward. It grants no execution authority.
+    CallSite("tinyassets/owner_router.py", "inbound", "Request().stream"),
     CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),
     CallSite("tinyassets/owner_router.py", "forward", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
@@ -124,9 +129,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # Starlette `request.stream()`. It grants no execution authority; the
     # owner authenticates the forwarded request exactly as it would directly.
     CallSite("tinyassets/frontend.py", "Frontend.__call__", "request.stream"),
-    # L7 durable ingress: bounded Starlette HTTP-body reads, not graph streams.
-    # Acceptance grants no execution authority; register both shipped copies.
-    CallSite("tinyassets/ingress.py", "AppIngressMiddleware.__call__", "request.stream"),
     # Reviewed 2026-08-05 (added by 64f27fe7, "Wire cloud drain epoch-2 Branch
     # consumer" #2182, without registration here). `recover_expired()` is
     # queue-owner maintenance over the canonical store: it grants no execution
@@ -166,7 +168,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # `stream` is also Starlette's request-body API. These reviewed sites only
     # enforce bounded request bodies and grant no Branch execution authority.
     CallSite(
-        "tinyassets/api/market.py",
+        "tinyassets/api/goals.py",
         "_action_goal_run_canonical",
         "_action_run_branch_version",
     ),
@@ -236,6 +238,13 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = CLASSIFICATION
 
 
 REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
+    "owner_send_recovery": (
+        SourceReference("tinyassets/owner_runtime.py", "start_recovery(runtime, stop)"),
+        SourceReference("tinyassets/owner_send_recovery.py", "principal_id=runtime.principal"),
+        SourceReference("tinyassets/owner_send_recovery.py", "revoke_provider_request(capability)"),
+        SourceReference("tinyassets/owner_door/send.py",
+                        "store.owner_send_records(home, pending_only=True)"),
+    ),
     "activities": (
         SourceReference("tinyassets/control_plane/activity_session.py",
                         "with owner_run_identity(base, universe, owner) as bound:\n"
@@ -299,7 +308,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
             "tinyassets/api/quality_leaderboard.py",
             "def recommend_parent_for_fork(",
         ),
-        SourceReference("tinyassets/api/market.py", "def _action_goal_run_canonical("),
+        SourceReference("tinyassets/api/goals.py", "def _action_goal_run_canonical("),
     ),
     "retired_wiki_forwarding": (
         # Hard Rule 15 (2026-09-24) deleted the enqueue helper; only the

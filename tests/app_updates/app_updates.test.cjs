@@ -43,13 +43,21 @@ test('numeric versions compare by component and invalid versions require an upda
   assert.equal(updates.state('1.0.8', { ...versions.android, latest: '1.0.10' }), 'available');
 });
 
-test('old desktop without bridge is blocked and Update opens download page', async () => {
+test('the 0.1.0 desktop shell keeps working and is offered the update (#5227)', async () => {
+  // 0.1.0 has no bridge and no version stamp: it is never walled off.
+  const p = page({ ua: 'Electron/43', bridge: false });
+  assert.equal(await p.updates.init(versions), true);
+  assert.equal(p.elements.get('app-update-required').hidden, true);
+  assert.equal(p.elements.get('app-update-banner').hidden, false);
+  await p.elements.get('app-update-banner-open').onclick();
+  assert.equal(p.opened[0], versions.desktop.url);
+});
+
+test('a stamped desktop version under minimum is blocked', async () => {
   const p = page({ ua: 'Electron/43 tinyassets-desktop/0.1.0', bridge: false });
   assert.equal(await p.updates.init(versions), false);
   assert.equal(p.elements.get('app-update-required').hidden, false);
   assert.equal(p.elements.get('app').inert, true);
-  await p.elements.get('app-update-required-open').onclick();
-  assert.equal(p.opened[0], versions.desktop.url);
 });
 
 test('the 0.1.1 desktop bridge without a version stays usable', async () => {

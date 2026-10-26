@@ -210,6 +210,15 @@ def provider(monkeypatch):
     fake = FakeProvider()
     _install_loopback_driver(monkeypatch, fake.port)
     monkeypatch.setattr(discovery, "DISCOVERY_ENABLED", True)
+    from tinyassets.connection_oauth import model_discovery
+
+    def probe(url, **kwargs):
+        parts = urlsplit(url)
+        response = httpx.get(f"http://127.0.0.1:{fake.port}" + parts.path,
+                             headers={"Host": parts.hostname}, trust_env=False)
+        return response.status_code, response.json(), dict(response.headers)
+
+    monkeypatch.setattr(model_discovery, "transport_fetch", probe)
     yield fake
     fake.stop()
 
@@ -281,6 +290,23 @@ def _post(operation, data, *, home=UID, cookie=None):
             data["definition"]["oauth"]["client_id"] = offer["client_id"]
     from tests.owner_answer import session_cookie
     from tinyassets import onboarding
+
+    if operation in {"oauth_begin", "source_sign_in"}:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.auth.middleware import current_identity
+        from tinyassets.connection_oauth.flow import FlowError
+        from tinyassets.onboarding.connection_definition import oauth_definition, sign_in_definition
+
+        try:
+            definition = (sign_in_definition(data["preset_id"], RESOURCE)
+                          if operation == "source_sign_in" else data["definition"])
+            prepared = oauth_definition(_base_path(), owner=current_identity().user_id,
+                center=home, definition=definition, public_resource=RESOURCE)
+        except FlowError as exc:
+            return httpx.Response(exc.status, json={"error": exc.code})
+        data = {"code_challenge": data["code_challenge"], "prepared": prepared,
+                **({"request_ref": data["request_ref"]} if "request_ref" in data else {})}
+        operation = "oauth_begin"
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(

@@ -11,6 +11,9 @@ def create_app(*, relay: Path, secret_file: Path):
     from tinyassets.owner_runtime import start
 
     start(relay)
+    from tinyassets.providers.subscription_lease import sweep_stale_leases
+
+    sweep_stale_leases()
     from tinyassets.owner_ingress import OwnerIngress
     from tinyassets.universe_server import create_streamable_http_app
 

@@ -76,7 +76,7 @@ _GROUNDING_IS_CURRENT = (
 
 #: The persona half of the untrusted envelope. Content another USER authored
 #: reaches the universe wrapped as ``{"untrusted": true, "source": ...,
-#: "notice": ..., "content": ...}`` (``engine_mcp_server._untrusted``); this is
+#: "notice": ..., "content": ...}`` (``universe_tools._untrusted``); this is
 #: the one line that tells it what that wrapper means. The universe keeps writing
 #: its own brain as it learns from its founder and the world -- the boundary is
 #: between users, not on learning.
@@ -967,127 +967,6 @@ def _brain_recording_tools(http_turn) -> set:
     return names
 
 
-def _call_writer(
-    turn_input, *, system, universe_context, config, response_observer=None,
-    tools_observer=None,
-):
-    """Run one served writer turn; retry ONCE immediately only if nothing ran.
-
-    ``tools_observer``, when given, is called with the set of brain-recording tool
-    names this turn PROVED wrote something (see :func:`_wrote_its_brain` — a
-    returned refusal is not a write) — how the caller learns whether the turn
-    recorded its own lesson instead of spending another round-trip discovering it.
-
-    Streamed attempts now classify their own outcome (idle-timeout /
-    interactive-deadline / rate-limit) and the router no longer cools the sole
-    served writer on a transient attempt timeout, so the old 30/60s synchronous
-    backoff sleeps are gone — the interactive request must NEVER block a worker
-    slot on a sleep (design.md § "Router health/cooldown model"). The sole-writer
-    retry policy is: one immediate FRESH-process retry only when every provider
-    was SKIPPED (pure cooldown/quota, nothing executed, no possible side effect);
-    otherwise end the turn honestly and let the caller post an accurate notice.
-    """
-    from tinyassets.exceptions import AllProvidersExhaustedError
-    from tinyassets.providers.agent_inference import AgentInferenceRequest
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.request_budget import RequestBudgetExceeded
-
-    config = config or ModelConfig()
-    ordinary_text = (type(config.agent_request) is AgentInferenceRequest
-                     and config.agent_request.text_only)
-    http_turn = None
-    selection = getattr(universe_context, "model_selection", None)
-    if (selection is not None and universe_context.agent_model_plan is not None
-            and not (getattr(config, "engine_mcp_enabled", False) or ordinary_text)):
-        from tinyassets.exceptions import ProviderAuthorityHeldError
-
-        raise ProviderAuthorityHeldError("selected interactive model requires engine tools")
-    if ((getattr(config, "engine_mcp_enabled", False) or ordinary_text) and selection is not None
-            and (universe_context.agent_model_plan is not None
-                 or selection.connection_id.startswith("api_key_http:"))):
-        from tinyassets.providers.call import make_interactive_agent_turn
-
-        http_turn = make_interactive_agent_turn(
-            prompt=turn_input, system=system, universe_context=universe_context, config=config,
-        )
-
-    def _attempt():
-        if http_turn is not None:
-            from tinyassets.providers.call import call_interactive_agent_turn
-
-            return call_interactive_agent_turn(http_turn, response_observer=response_observer)
-        observe = {} if response_observer is None else {"response_observer": response_observer}
-        return text_sync(
-            turn_input,
-            system=system,
-            role="writer",
-            universe_context=universe_context,
-            config=config,
-            operation="converse",
-            # The interactive path must not sleep on aggregated exhaustion; the
-            # tenacity backoff in call.py is disabled here (retry policy below).
-            retry_on_exhaustion=False,
-            **observe,
-        )
-
-    try:
-        return _attempt()
-    except RequestBudgetExceeded as exc:
-        completed = getattr(exc, "completed_tools", ())
-        detail = f" Completed tool calls: {len(completed)}." if completed else ""
-        answer = exc.continuation + detail
-        if response_observer is not None:
-            from tinyassets.providers.base import ProviderResponse
-
-            try:
-                response_observer(ProviderResponse(
-                    text=answer, provider="", model="", family="", latency_ms=0,
-                    degraded=True, request_receipt=exc.request_receipt,
-                ))
-            except Exception:  # noqa: BLE001 - telemetry cannot lose earned progress
-                logger.warning("writer budget stop could not be reported")
-        return answer
-    except AllProvidersExhaustedError as exc:
-        # Codex 2026-08-09: the writer call is an AGENTIC loop (it may run
-        # tools), so retrying blindly could re-execute tools it already ran.
-        # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
-        # cooldown/quota), so nothing ran and no side effect is possible. Any
-        # actual attempt (status != skipped) → re-raise for the honest notice.
-        attempts = getattr(exc, "attempts", None) or []
-        all_skipped = bool(attempts) and all(
-            getattr(a, "status", "") == "skipped" for a in attempts
-        )
-        if not all_skipped or (http_turn is not None and (
-            http_turn.plan is not None or http_turn.turn.rounds
-        )):
-            raise  # something ran / real failure class → caller's honest notice
-        logger.warning(
-            "writer chain fully cooled (all providers skipped, nothing ran); "
-            "one immediate fresh-process retry (no sleep)",
-        )
-        if http_turn is not None:
-            # Its own request budget and root closed on exit. Caller-owned
-            # budgets remain in config and are shared with the fresh coordinator.
-            http_turn = make_interactive_agent_turn(
-                prompt=turn_input, system=system, universe_context=universe_context, config=config,
-            )
-        return _attempt()
-
-    finally:
-        if http_turn is not None:
-            if tools_observer is not None:
-                try:
-                    tools_observer(_brain_recording_tools(http_turn))
-                except Exception:  # noqa: BLE001 - evidence never breaks the turn
-                    # No evidence means the lesson is still owed, which costs the
-                    # extraction, never the lesson.
-                    logger.warning("could not read this turn's brain writes")
-            try:
-                http_turn.close_quiescent()
-            except Exception:
-                logger.exception("could not close quiescent interactive agent progress")
-
-
 #: Engine tools whose completion proves the turn recorded its own lesson. Only the
 #: governed brain-write handle counts: `write`/`edit` can touch a brain file too,
 #: but they are not the governed path and their target is not checked here, so
@@ -1436,7 +1315,9 @@ def converse(
         universe_seats.clear_chat_allocation_failure(account, uid, db=ledger)
         recorded: set = set()
         responses = []
-        reply = _call_writer(
+        from tinyassets.agent_loop.served_chat import run_served_writer
+
+        reply = run_served_writer(
             turn_input,
             system=system,
             universe_context=ctx,

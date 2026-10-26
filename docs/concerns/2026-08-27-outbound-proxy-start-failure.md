@@ -33,7 +33,7 @@ Still open, and the reason this file is not deleted:
 1. **The intermittent proxy-start failure was never diagnosed.** It stopped on
    its own. #2596 makes the next occurrence name its cause; nothing prevents it.
 2. **`source_code` nodes remain permanently unrunnable.** Re-checked today:
-   `mark_approved` (`tinyassets/branches.py:537`) still has **zero** callers
+   `mark_approved` (`tinyassets/branches.py:569`) still has **zero** callers
    outside `tests/`, so there is no handle that approves one.
 3. Served onboarding copy is still guessed rather than read from the live app.
 

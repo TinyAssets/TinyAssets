@@ -1,31 +1,11 @@
-"""Per-branch inbound webhook tokens + atomic inbound gates (channel-agnostic inbound).
-
-A hook token is an unguessable secret that binds ONE public URL to exactly one
-(universe, branch): a `POST /hooks/<token>` runs that branch as that universe. The
-token is the ONLY authority — nothing in the request can redirect the run.
-
-Secret-free at rest: a row holds identifiers plus the token's SHA-256 HASH (never the raw
-token) and a short non-secret prefix for display (Codex #6). This module also owns the
-three ATOMIC inbound gates, each serialized by a single `BEGIN IMMEDIATE` transaction so
-they hold under CONCURRENCY (Codex round-2):
-
-- ``claim_delivery`` — server-side replay dedupe by INSERT-under-PRIMARY-KEY (Codex #4).
-- ``reserve_dispatch`` — one transaction that re-checks the token is ACTIVE (serializing
-  with a concurrent ``revoke`` on the same DB — closes the revocation TOCTOU, Codex #3) AND
-  reserves an in-flight slot IFF the universe is under its cap (closes the count-then-act
-  back-pressure race, Codex #5). Both the plain and source paths reserve here, so one
-  counter bounds both.
-- ``admit`` — durable per-token/per-universe rolling-window RATE limit (Codex #3), atomic.
-"""
+"""Owner-local webhook URL management; inbound admission lives in inbound_events."""
 
 from __future__ import annotations
 
 import hashlib
-import secrets
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -174,6 +154,7 @@ def mint(
     branch_def_id: str,
     owner_principal_id: str,
     source_id: str | None = None,
+    agent_ref: str | None = None,
     now: float | None = None,
 ) -> str:
     """Mint a fresh unguessable hook token. Returns the RAW token (shown once); only its
@@ -215,6 +196,10 @@ def mint(
             ),
         )
         conn.commit()
+        if agent_ref:
+            from tinyassets.storage.inbound_events import configure
+
+            configure(Path(base_path), _hash_token(token), 1, universe_id, agent_ref)
         return token
     except Exception:
         router_credential("hook_revoke", token_hash=_hash_token(token))
@@ -285,132 +270,6 @@ def admit(
         conn.close()
 
 
-def claim_delivery(
-    base_path: str | Path,
-    *,
-    dedupe_key: str,
-    window_s: float,
-    now: float | None = None,
-) -> bool:
-    """ATOMIC replay dedupe (Codex #4). True if this delivery is NEW (claimed), False if it
-    is a replay. The claim is an INSERT under the ``dedupe_key`` PRIMARY KEY, so N concurrent
-    identical deliveries produce exactly ONE winner; the losers get IntegrityError → replay.
-    Deliveries older than the window are pruned first, so an identical body far apart re-runs."""
-    ts = time.time() if now is None else now
-    conn = _connect(base_path)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM webhook_deliveries WHERE ts <= ?", (ts - window_s,))
-        try:
-            conn.execute(
-                "INSERT INTO webhook_deliveries (dedupe_key, ts) VALUES (?, ?)",
-                (dedupe_key, ts),
-            )
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            return False
-        conn.commit()
-        return True
-    finally:
-        conn.close()
-
-
-def release_delivery(base_path: str | Path, *, dedupe_key: str) -> None:
-    """Un-claim a delivery so a legitimate retry can proceed (called when a downstream gate
-    rejects AFTER the claim — rate-limited/busy/revoked/enqueue-failed)."""
-    conn = _connect(base_path)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM webhook_deliveries WHERE dedupe_key = ?", (dedupe_key,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def reserve_dispatch(
-    base_path: str | Path,
-    *,
-    token: str,
-    universe_id: str,
-    ttl_s: float,
-    terminal_run_ids: Iterable[str] = (),
-    now: float | None = None,
-) -> tuple[str | None, str]:
-    """ATOMIC combined active-check + in-flight reservation (Codex #3).
-
-    In ONE ``BEGIN IMMEDIATE`` transaction: (1) re-verify the token is still ACTIVE — this
-    serializes with a concurrent ``revoke`` on the same DB, so a revoke cannot land between
-    the check and the reservation; (2) reconcile away reservations whose run finished
-    (``terminal_run_ids``) or that were abandoned (unlinked past TTL); (3) reserve.
-    Returns ``(reservation_id, "ok")`` on success, else ``(None, "revoked")``.
-
-    There is no in-flight ceiling. The ``cap`` this took used to answer ``"busy"``
-    and drop the delivery with a 503 past 20 concurrent runs; an inbound-triggered
-    run now queues for a seat like any other run (founder, 2026-09-30: over the
-    seat count work WAITS and is never refused). The reservation row stays: it is
-    what serializes against revoke and what ``link_dispatch`` binds to a run."""
-    token_hash = _hash_token(token)
-    ts = time.time() if now is None else now
-    terminal = [t for t in terminal_run_ids if t]
-    conn = _connect(base_path)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        active = conn.execute(
-            "SELECT 1 FROM webhook_hooks WHERE token_hash = ? AND revoked_at IS NULL",
-            (token_hash,),
-        ).fetchone()
-        if active is None:
-            conn.commit()
-            return None, "revoked"
-        if terminal:
-            conn.execute(
-                "DELETE FROM webhook_inflight WHERE run_id IN "
-                f"({','.join('?' * len(terminal))})",
-                tuple(terminal),
-            )
-        conn.execute(
-            "DELETE FROM webhook_inflight WHERE run_id IS NULL AND ts <= ?",
-            (ts - ttl_s,),
-        )
-        reservation_id = secrets.token_hex(16)
-        conn.execute(
-            "INSERT INTO webhook_inflight (reservation_id, universe_id, run_id, ts) "
-            "VALUES (?, ?, ?, ?)",
-            (reservation_id, universe_id, None, ts),
-        )
-        conn.commit()
-        return reservation_id, "ok"
-    finally:
-        conn.close()
-
-
-def link_dispatch(base_path: str | Path, *, reservation_id: str, run_id: str) -> None:
-    """Bind a reservation to the run it authorized, so it is released when the run finishes."""
-    conn = _connect(base_path)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "UPDATE webhook_inflight SET run_id = ? WHERE reservation_id = ?",
-            (run_id, reservation_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def release_dispatch(base_path: str | Path, *, reservation_id: str) -> None:
-    """Release a reservation immediately (a downstream step failed before/without a run)."""
-    conn = _connect(base_path)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "DELETE FROM webhook_inflight WHERE reservation_id = ?", (reservation_id,)
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def list_active_for_branch(base_path: str | Path, *, branch_def_id: str) -> list[dict[str, Any]]:
     """Active (unrevoked) hooks that would enqueue this branch on delivery.
     Returns non-secret rows: ``{token_prefix, universe_id, source_id}``."""
@@ -438,6 +297,9 @@ def _revoke_routes(conn, where: str, values: tuple):
 
     for row in conn.execute(f"SELECT token_hash FROM webhook_hooks WHERE {where}", values):
         router_credential("hook_revoke", token_hash=row["token_hash"])
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='inbound_bindings'").fetchone():
+            conn.execute("UPDATE inbound_bindings SET enabled=0 WHERE binding=?",
+                         (row["token_hash"],))
 
 
 def revoke(base_path: str | Path, *, token: str, now: float | None = None) -> bool:

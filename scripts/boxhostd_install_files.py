@@ -96,11 +96,12 @@ def ship_list(root: Path) -> list[str]:
         if path not in seen:
             seen.add(path)
             unique.append(path)
-    from scripts.host_service_bundle import service_bundle
+    from scripts.host_service_bundle import BOXHOSTD_HOST_PROBES, service_bundle
 
     units = [root / path for path in unique if path.endswith(".service")]
     unique = list(dict.fromkeys([*unique, "scripts/host_service_bundle.py",
-                                *service_bundle(root, units)]))
+                                *service_bundle(root, units,
+                                                entrypoints=BOXHOSTD_HOST_PROBES)]))
     basenames = [Path(path).name for path in unique
                  if Path(path).parts[0] in SEARCH_ROOTS]
     if len(basenames) != len(set(basenames)):

@@ -1844,7 +1844,7 @@ class SQLiteProviderWorkAuthorityStore:
         if type(model_snapshot) is not DiscoverySnapshot:
             raise PermissionError("workflow model requires fresh discovery")
         definition = get_definition(
-            receipt.universe_id, selection.provider.removeprefix("api_key_http:"),
+            receipt.universe_id, selection.provider.split(":", 1)[-1],
         )
         if definition is None:
             raise PermissionError("workflow model source is unavailable")

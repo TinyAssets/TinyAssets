@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import re
@@ -10,16 +11,53 @@ from pathlib import Path
 
 from tinyassets.boxes.provider import BoxError
 
+#: Shared with deploy/deploy_fail_safe.sh and scripts/daemon_image_retention.py.
+HARNESS_LOCK = ".harness.lock"
+
+
+@contextlib.contextmanager
+def harness_lease(directory: Path):
+    """Hold a harness from image selection until the sandbox bundle names it.
+
+    Pruning takes this lock exclusively from its bundle scan through deletion, so
+    a launch that chose an image is either visible in a bundle or not yet started.
+    """
+    import fcntl
+
+    fd = os.open(Path(directory) / HARNESS_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(fd)
+
 
 class Images:
     def __init__(self, directory: Path, state: Path, initial: Path):
         self.directory, self.state = directory.resolve(strict=True), state
         self.lock = threading.RLock()
-        self.current = initial.name
+        # initial is the resolved harness-current target at process start.
+        # The recorded name can still be on disk then; prune deletes it later.
+        self._initial = initial.name
+        self._current = self._initial
         if state.exists():
             document = json.loads(state.read_text())
-            self.current = document["current"]
+            recorded = document.get("current")
+            if isinstance(recorded, str) and (self.directory / recorded).is_dir():
+                self._current = recorded
         self.path(self.current)
+
+    @property
+    def current(self) -> str:
+        if (not (self.directory / self._current).is_dir()
+                and (self.directory / self._initial).is_dir()):
+            self._current = self._initial
+            self._write(self._current)
+        return self._current
+
+    @current.setter
+    def current(self, image: str) -> None:
+        self._current = image
 
     def path(self, image: str) -> Path:
         if not isinstance(image, str) or not re.fullmatch(r"harness-[0-9a-f]{64}", image):
@@ -45,11 +83,11 @@ class Images:
                    and isinstance(node.value, ast.Constant)
                    and node.value.value == "owner-box" for node in tree.body)
 
-    def save(self):
+    def _write(self, image: str) -> None:
         self.state.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.state.with_suffix(".new")
         with temporary.open("w", encoding="utf-8") as stream:
-            json.dump({"current": self.current}, stream)
+            json.dump({"current": image}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, self.state)
@@ -58,6 +96,9 @@ class Images:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    def save(self):
+        self._write(self._current)
 
     def select(self, image):
         with self.lock:

@@ -89,7 +89,9 @@ def main() -> None:
     app = rootfs / "app"
     if not app.is_dir() or app.is_symlink():
         raise RuntimeError("harness application is unavailable")
-    sys.path.insert(0, str(app))
+    # Import through the harness-current symlink. prune_old_harnesses deletes
+    # the resolved harness-<id>/app directory while this process is still up.
+    sys.path.insert(0, str(HARNESS / "app"))
     from tinyassets.boxes.host_service import main as serve
 
     serve(rootfs=rootfs, data_root=root, cgroup_parent=cgroup_parent)

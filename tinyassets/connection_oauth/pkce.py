@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from tinyassets.sqlite_schema import ensure_table
+
 FLOW_TTL_SECONDS = 600
 CALLBACK_PREFIX = "/app/model-callback/"
 #: The one fixed redirect URI path of the generic flow. A standard client is
@@ -52,17 +54,23 @@ def is_callback_path(path: str) -> bool:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("CREATE TABLE IF NOT EXISTS hosted_model_flows ("
-                 "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                 "preset_id TEXT NOT NULL, preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
-                 "callback_origin TEXT NOT NULL, created_at REAL NOT NULL, "
-                 "expires_at REAL NOT NULL, request_ref TEXT NOT NULL DEFAULT '')")
-    conn.execute("CREATE TABLE IF NOT EXISTS connection_oauth_flows ("
-                 "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                 "request_id TEXT NOT NULL, action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
-                 "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
-                 "created_at REAL NOT NULL, expires_at REAL NOT NULL, "
-                 "definition_json TEXT NOT NULL DEFAULT '{}', approved_owner TEXT NOT NULL)")
+    ensure_table(
+        conn, "CREATE TABLE IF NOT EXISTS hosted_model_flows ("
+        "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
+        "preset_id TEXT NOT NULL, preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+        "callback_origin TEXT NOT NULL, created_at REAL NOT NULL, "
+        "expires_at REAL NOT NULL, request_ref TEXT NOT NULL DEFAULT '')",
+        kind="ephemeral",
+    )
+    ensure_table(
+        conn, "CREATE TABLE IF NOT EXISTS connection_oauth_flows ("
+        "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
+        "request_id TEXT NOT NULL, action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+        "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
+        "created_at REAL NOT NULL, expires_at REAL NOT NULL, "
+        "definition_json TEXT NOT NULL DEFAULT '{}', approved_owner TEXT NOT NULL)",
+        kind="ephemeral",
+    )
 
 
 @contextmanager
@@ -94,11 +102,13 @@ def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
 
 
 def _registration_table(conn):
-    conn.execute(
+    ensure_table(
+        conn,
         "CREATE TABLE IF NOT EXISTS oauth_public_clients ("
         "issuer TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
         "client_id TEXT NOT NULL, method TEXT NOT NULL, expires_at REAL NOT NULL, "
-        "PRIMARY KEY (issuer, redirect_uri))"
+        "PRIMARY KEY (issuer, redirect_uri))",
+        kind="ephemeral",
     )
 
 

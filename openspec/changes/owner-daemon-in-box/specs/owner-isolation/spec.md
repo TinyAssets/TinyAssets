@@ -1,5 +1,60 @@
 ## ADDED Requirements
 
+### Requirement: One durable owner send intake (S24)
+The box SHALL commit a send identity and its verbatim owner message before
+publication or dispatch. App, voice and connector sends SHALL use `converse`.
+The browser SHALL retain each unacknowledged identity independently and retry
+that identity after reload; it SHALL NOT claim/delete server messages to resend
+them, batch distinct identities, or infer delivery from matching text.
+Dispatch in a thread SHALL serialize inside the box. Selected conversation runs
+SHALL attach their transcript result to the same admitted owner row.
+
+#### Scenario: Send while working and reload
+- **WHEN** a second message arrives during a turn and the page reloads
+- **THEN** both identities remain independently recoverable
+- **AND** retrying either returns its receipt without a second execution or owner row
+- **AND** the page displays no legacy waiting notice for an acknowledged identity
+
+#### Scenario: Interrupted dispatch
+- **WHEN** a box stops after committing a message but before starting dispatch
+- **THEN** replay of that identity resumes the pending dispatch
+- **WHEN** it stops after dispatch starts without a saved result
+- **THEN** replay reports uncertain execution and never repeats its effects
+
+#### Scenario: Intake fails
+- **WHEN** the message cannot be committed
+- **THEN** nothing is published or dispatched and the browser retains the request
+
+#### Scenario: Connection setup is incomplete
+- **WHEN** dispatch proves no effects occurred and requires a model connection
+- **THEN** the send remains held under its original identity
+- **AND** completing setup resumes that identity without another owner row
+
+#### Scenario: Legacy browser draft has no receipt identity
+- **WHEN** a previous version's queued draft is imported
+- **THEN** one stable recovery entry offers send or discard
+- **AND** it is not automatically replayed based on matching message text
+
+#### Scenario: Structural regression
+- **WHEN** another browser send transport or steering/claim intake is introduced
+- **THEN** the `send-path` CI guard fails
+
+### Requirement: Owner boxes know the platform public URL
+The env renderer SHALL derive the origin (scheme and authority) from the existing
+`WORKOS_MCP_RESOURCE` and write it as `UNIVERSE_SERVER_URL` in `boxhostd.env`.
+The preflight installer SHALL render and require that value before installing
+boxhostd code or starting/restarting it; changes to the rendered env SHALL also
+trigger a restart. No additional source variable or secret is required.
+The production gVisor launcher SHALL pass that public value from its own
+environment into every box and SHALL refuse startup if it is absent or empty.
+Owner app origin checks SHALL use that configured public resource even when
+the internal transport uses HTTP and an internal Host.
+
+#### Scenario: Browser writes through the internal socket
+- **WHEN** the public URL is `https://tinyassets.io` and the box receives an HTTP request
+- **THEN** preferences and uploads accept that public Origin and reject a foreign Origin
+- **AND** the router retains its public Host rewrite during rollout
+
 ### Requirement: The wake index holds only the next owner wake
 The shared wake index SHALL have exactly two columns, `owner` and `next_wake_at`.
 Schedule definitions, pause state and occurrence execution SHALL live in the box.
@@ -229,6 +284,8 @@ admission closed.
 #### Scenario: Shared-layer restore invalidates old bearer credentials
 - **WHEN** the shared layer is restored from a backup
 - **THEN** no session, API key, hook token or operational credential issued before the restore is accepted
+- **AND** router-local durable per-owner not-before times reject older bearer `iat` values without listing WorkOS sessions; deletion permanently refuses the owner
+- **AND** upstream refresh revocation remains required, legacy raw refresh cookies cannot bypass the local fence, and fresh sign-ins and sealed refresh handles work after restore
 - **AND** owners reconnect their model sources
 
 #### Scenario: Stripe decides billing while other reasons survive

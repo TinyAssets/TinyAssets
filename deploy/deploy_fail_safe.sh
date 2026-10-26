@@ -69,8 +69,8 @@
 # make the mixed state the next rollback target. `--restore-bundle` is the way
 # out, and clears it.
 #
-# An absent stage directory is not an error: it means "image-only deploy" (a
-# manual run, or `--restore-bundle` on a box that never staged one). A PARTIAL
+# An absent stage directory means "image-only deploy" only when the caller did
+# not require the box-host bundle. A PARTIAL
 # stage directory is an error — half a bundle is the 2026-08 502. An image-only
 # deploy that FAILS never touches the bundle: a surviving pointer belongs to an
 # earlier deploy and names a state this run did not create.
@@ -128,8 +128,9 @@
 #   3  manual intervention required — the rollback itself did not complete
 #      (`rollback_failed`, `rollback_env_write_failed`, `rollback_unhealthy`,
 #      `failed_no_rollback_target`, `rollback_needs_restore`). On `rollback_failed` the
-#      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
-#      clears it. On `rollback_needs_restore` the daemon is left stopped.
+#      bundle-dirty marker stays set until a later converge clears it. `--restore-bundle`
+#      clears it only after the restored stack has converged. On `rollback_needs_restore`
+#      the daemon is left stopped, the candidate bundle stays, and the marker stays set.
 set -uo pipefail
 
 # The disposable archive harness calls this exact container builder. Normal
@@ -157,6 +158,36 @@ thaw_writers() {
     fi
   done
   FROZEN_WRITERS=()
+}
+
+# systemd EnvironmentFile / compose env-file lines are not shell. `source` of
+# an unquoted `-----BEGIN PRIVATE KEY-----` splits on spaces and runs PRIVATE.
+source_env_file() {
+  local file="$1" line key val
+  [ -n "$file" ] && [ -f "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    case "$line" in
+      \#*) continue ;;
+    esac
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    if [[ "$val" == \"*\" ]]; then
+      val="${val#\"}"
+      val="${val%\"}"
+    elif [[ "$val" == \'*\' ]]; then
+      val="${val#\'}"
+      val="${val%\'}"
+    fi
+    export "$key=$val"
+  done < "$file"
 }
 
 box_migration_container() {  # $1 = check|preflight|apply, then module arguments
@@ -198,7 +229,7 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
           >/dev/null || return 1
         extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots")
       else
-        snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
+        snapshot_dest="$(source_env_file "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
       fi
       # The image bakes HOME=/home/tinyassets, so rclone must be pointed at
       # root's mounted config explicitly (cutover attempt 6, 2026-10-21).
@@ -253,6 +284,11 @@ DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
 
 RESTORE_BUNDLE=0
 POST_DEPLOY_FAILURE=0
+# A failed rollback leaves bundle-dirty after the snapshot files are already
+# restored. The next forward deploy restores those files in-process and
+# continues, instead of restarting the previous image (which cannot pass
+# health without hotfixes that are no longer on the box).
+RECOVER_DIRTY_BUNDLE="${RECOVER_DIRTY_BUNDLE:-0}"
 case "${1:-}" in
   --post-deploy-failure)
     POST_DEPLOY_FAILURE=1
@@ -297,7 +333,7 @@ BUNDLE_STATE_DIR="${BUNDLE_STATE_DIR:-/var/lib/tinyassets-deploy}"
 SNAPSHOT_ROOT="${BUNDLE_STATE_DIR}/bundle-snapshots"
 BUNDLE_POINTER="${BUNDLE_STATE_DIR}/bundle-previous"
 # Durable "a bundle install did not finish cleanly" flag. Written before the
-# first install byte and cleared only by a completed install or a completed
+# first install byte and cleared only by accepted deployment or a verified
 # restore. While it exists a normal deploy REFUSES: the alternative is that the
 # next deploy snapshots the mixed state and legitimizes it as the rollback
 # target (Codex round 2, §1). `--restore-bundle` runs regardless — it is the way
@@ -345,6 +381,7 @@ BUNDLE_FILES=(
   vector-entrypoint.sh
   tinyassets-daemon.service
 )
+HOST_BUNDLE_NAME=boxhostd-install.tar
 
 # snapshot-relative path | live destination | mode | owner class
 # The claimed source for each row is $BUNDLE_WORK/<basename of the rel path>,
@@ -373,6 +410,12 @@ INSTALLED_THIS_RUN=0     # 1 only after install_bundle has written a byte
 BUNDLE_WORK=""           # private copy of the stage, made under the lock
 MARKER_STALE=0           # 1 if the dirty marker could not be cleared
 RESTORE_SNAPSHOT=""      # the snapshot restore_previous_bundle resolved
+HOST_INSTALL_STAGE=""
+HOST_INSTALL_MANIFEST=""
+RESTORE_VERIFIED=0
+RESTORE_ATTEMPTED=0
+MIGRATION_REFUSED_RESTART=0
+HOLD_CANDIDATE=0         # 1: keep the candidate tree; the EXIT trap must not restore
 
 log() { printf '%s %s\n' "[deploy-fail-safe]" "$*"; }
 err() { printf '::error::%s\n' "$*" >&2; }
@@ -550,8 +593,11 @@ CANDIDATE_LAYOUT_PY
 }
 # Refuse and leave the service DOWN: the remedy is restore-from-backup, and an
 # older image serving on newer data is the failure this guard exists to stop.
+# HOLD_CANDIDATE stops the EXIT trap from putting the pre-set_image snapshot
+# (previous image pointer, previous tree) back over this candidate.
 refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
   local why
+  HOLD_CANDIDATE=1
   if [ $# -ge 2 ]; then why="$2"; else
     why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. For pre-traffic rollback use deployment-owned cutover_control and its recorded backup/image; after traffic use independent platform recovery (deploy/RESTORE.md)"
   fi
@@ -559,6 +605,25 @@ refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the mar
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
   echo "deploy_result=rollback_needs_restore"
   exit 3
+}
+
+# Step 6 hold. The snapshot was taken before set_image, so restoring it would
+# point ENV_FILE and daemon.env at the previous image. Keep the candidate tree
+# and, when this run installed one, record the candidate image before refusing.
+hold_candidate_release() {  # $1 = image that must not start; $2 = why
+  local current=""
+  HOLD_CANDIDATE=1
+  if [ "$INSTALLED_THIS_RUN" = 1 ]; then
+    current="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+    if [ "$current" != "$NEW_IMAGE" ]; then
+      if ! set_image "$NEW_IMAGE"; then
+        err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}; holding the candidate bundle"
+        echo "deploy_result=failed_env_write"
+        exit 3
+      fi
+    fi
+  fi
+  refuse_on_layout "$@"
 }
 
 # The container must actually be RUNNING the requested image. A healthy daemon
@@ -716,7 +781,8 @@ guard_cutover_recovery() {
   case "$state_rc" in
     0) post_commit_failure ;;
     1) return 0 ;;
-    *) err "could not read this run's cutover state or layout; refusing image-only recovery"
+    *) HOLD_CANDIDATE=1
+       err "could not read this run's cutover state or layout; refusing image-only recovery"
        echo "deploy_result=rollback_needs_restore"
        exit 3 ;;
   esac
@@ -743,6 +809,7 @@ post_commit_failure() {
     exit 2
   fi
   [ "$policy" = hold ] || err "invalid post-commit policy: ${policy}; holding"
+  HOLD_CANDIDATE=1
   echo "deploy_result=post_commit_held"
   exit 3
 }
@@ -784,29 +851,65 @@ restart_stack() {
   local image
   image="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1)"
   bundle_matches_image "$image" || return 1
+  # The broker starts before the daemon and must create usage lease locks.
+  local data_mount liveness
+  data_mount="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)" || return 1
+  [ -d "$data_mount" ] && [ ! -L "$data_mount" ] || return 1
+  liveness="$data_mount/.consumer_liveness"
+  [ ! -L "$liveness" ] || return 1
+  install -d -o 1001 -g 1102 -m 2770 -- "$liveness" || return 1
+  chown 1001:1102 -- "$liveness" || return 1
+  chmod 2770 -- "$liveness" || return 1
   systemctl reset-failed "$UNIT" 2>/dev/null || true
+  # Stop the unit before removing containers. Restart=always would otherwise
+  # recreate a container id that compose is deleting, and autoheal stands down
+  # only while this script holds the host-mutation lock.
+  systemctl stop "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
-  # image's startup. Docker SIGKILLs after --time; reaching that bound means
-  # a live turn may have been cut, even when docker stop returns success.
-  # Compose keeps its own bound in case another writer recreated the daemon.
-  local started elapsed
+  # image's startup. Docker SIGKILLs after --time. That cuts a turn only when
+  # a healthy daemon may still be serving one. A proved-idle probe, or a
+  # daemon that is already unhealthy, means the process is wedged and not
+  # serving: SIGKILL must not refuse the swap (the 143b1a92 rollback image
+  # never exits on SIGTERM, so every forward deploy deadlocked on this bound).
+  # A non-zero `docker stop` still refuses. Compose keeps its own bound in
+  # case another writer recreated the daemon.
+  local started elapsed prior_state=""
   if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+    prior_state="$(container_state "$DAEMON_CONTAINER")"
     started="$SECONDS"
     if ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"; then
       err "the old daemon did not stop cleanly"
       return 1
     fi
     elapsed=$((SECONDS - started))
-    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s)"
+    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s, prior ${prior_state:-unknown})"
     if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
-      err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
-      return 1
+      if [ "$TURNS_IDLE_PROVED" = "1" ] || [ "$prior_state" = "unhealthy" ]; then
+        log "old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound (prior ${prior_state:-unknown}, idle proved ${TURNS_IDLE_PROVED}); no in-flight turn, continuing the swap"
+      else
+        err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
+        return 1
+      fi
     fi
   fi
+  # A boxhostd restart during rollback replaces /run/tinyassets-boxhostd with a
+  # new directory inode. A broker left running keeps the old inode bind-mounted,
+  # so compose sees an unchanged running broker and does not recreate it, and
+  # the daemon then starts with no broker socket. Stop it first so `up -d`
+  # attaches the mount to the current inode and the broker re-registers.
+  if [ -n "$(docker ps -q --filter "name=^tinyassets-broker\$")" ]; then
+    docker stop tinyassets-broker >/dev/null 2>&1 || true
+  fi
+  # A stopped container id can disappear while compose recreates it (autoheal
+  # or the unit). Remove the service containers first so the following
+  # converge creates them again. Compose starts broker from the daemon's
+  # depends_on; broker_bootstrap waits until that broker finishes registering.
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+    rm -f -s broker daemon cloudflared logs >/dev/null 2>&1 || true
   started="$SECONDS"
-  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
-        --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
+  if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+        up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
     elapsed=$((SECONDS - started))
     err "docker compose up -d failed after ${elapsed}s"
     return 1
@@ -831,7 +934,7 @@ remove_compose_temp_daemons() {
   local name state
   while read -r name state; do
     [ -n "$name" ] || continue
-    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_${DAEMON_CONTAINER}\$" || continue
+    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_(${DAEMON_CONTAINER}|tinyassets-broker)\$" || continue
     case "$state" in
       created|exited|dead)
         log "removing stray compose temp container ${name} (${state})"
@@ -906,7 +1009,47 @@ cleanup_bundle_work() {
   fi
   return 0
 }
-trap cleanup_bundle_work EXIT
+
+# All nonzero exits after the first install byte converge on one recovery path.
+# This includes later preflight and harness failures. A hold keeps the candidate
+# tree and leaves the marker set. Any other exit restores, then clears the
+# marker only after that restore verifies. An interrupted restore stays dirty.
+bundle_exit() {
+  local rc=$? saved="$SNAPSHOT_PATH" recovery_failed=0
+  trap - EXIT
+  # A candidate harness is a full unshared rootfs. Early exits and a rollback
+  # that dies inside restart_stack never reached the post-accept discard.
+  # The function exists only after the harness helpers are defined; nothing
+  # before that has installed one. A hold keeps the tree for fix-forward.
+  if [ "$rc" -ne 0 ] && [ "$HOLD_CANDIDATE" != 1 ]; then
+    if declare -F discard_candidate_harness >/dev/null 2>&1; then
+      discard_candidate_harness || true
+    fi
+  fi
+  if [ "$rc" -ne 0 ] && [ "$HOLD_CANDIDATE" != 1 ] &&
+     [ "$INSTALLED_THIS_RUN" = 1 ] &&
+     [ "$RESTORE_VERIFIED" != 1 ] && [ "$RESTORE_ATTEMPTED" != 1 ] &&
+     [ -n "$saved" ]; then
+    err "post-install failure: restoring ${saved} before exit"
+    if ! mark_dirty "$saved" || ! restore_bundle_from "$saved" || ! clear_dirty; then
+      rc=3
+      recovery_failed=1
+    fi
+    if [ "$recovery_failed" = 1 ]; then
+      err "bundle recovery failed; dirty marker names ${saved}"
+      echo "deploy_result=rollback_failed"
+    fi
+  fi
+  if [ "$MIGRATION_REFUSED_RESTART" = 1 ] && [ "$rc" -ne 3 ]; then
+    if ! docker start "$DAEMON_CONTAINER" >/dev/null 2>&1; then
+      err "migration refused: ${DAEMON_CONTAINER} did not restart"
+      rc=3
+    fi
+  fi
+  cleanup_bundle_work
+  exit "$rc"
+}
+trap bundle_exit EXIT
 
 # Atomic: a truncating redirect that dies half-written leaves a pointer naming
 # nothing, and the rollback that reads it restores nothing while reporting
@@ -991,6 +1134,9 @@ clear_dirty() {
 # printed because the image DID change and the operator has to know which.
 finish() {
   local result="$1" image="$2" code="$3"
+  if [ "$result" = deployed ] && { [ "$INSTALLED_THIS_RUN" = 1 ] || [ "$RESTORE_BUNDLE" = 1 ]; }; then
+    clear_dirty || true
+  fi
   if [ "$MARKER_STALE" = "1" ]; then
     err "the run reached '${result}' but ${BUNDLE_DIRTY} is still present"
     [ -n "$image" ] && echo "deployed_image=${image}"
@@ -1002,15 +1148,22 @@ finish() {
   exit "$code"
 }
 
-# "absent"  no stage directory at all -> image-only deploy, not an error
+# "absent"  no stage directory at all -> image-only only when not required
 # "ready"   all five staged files present
 # "partial" the directory exists but is incomplete -> refuse
 bundle_state() {
   local f
-  if [ ! -d "$BUNDLE_DIR" ]; then printf 'absent'; return 0; fi
+  if [ ! -d "$BUNDLE_DIR" ]; then
+    if [ "${BOXHOSTD_BUNDLE_REQUIRED:-0}" = 1 ]; then printf 'partial';
+    else printf 'absent'; fi
+    return 0
+  fi
   for f in "${BUNDLE_FILES[@]}"; do
     if [ ! -f "${BUNDLE_DIR}/${f}" ]; then printf 'partial'; return 0; fi
   done
+  if [ "${BOXHOSTD_BUNDLE_REQUIRED:-0}" = 1 ] && [ ! -f "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" ]; then
+    printf 'partial'; return 0
+  fi
   printf 'ready'
 }
 
@@ -1033,6 +1186,9 @@ claim_bundle() {
       return 1
     fi
   done
+  if [ -f "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" ]; then
+    cp -p "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" || return 1
+  fi
   log "claimed the staged bundle into ${BUNDLE_WORK} (validating and installing from there)"
   return 0
 }
@@ -1502,6 +1658,229 @@ PY
   return $rc
 }
 
+# Host-service code and its rootfs selector are one release with the broker.
+# The large immutable harness-* and pinned release-* trees remain in place;
+# only the mutable code, entrypoint links, env and units are snapshotted.
+host_managed_name() {
+  case "$1" in
+    harness-current) return 0 ;;
+    ''|.|..|*/*|harness-*|release-*|.restore-*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Compute the exact install set from the same shipped closure builder used by
+# install-boxhostd-preflight.sh. Include the previous manifest as well: the new
+# installer can remove an old path. Every top-level name is snapshotted, even
+# when it is absent before this release creates it.
+prepare_host_bundle() {
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  HOST_INSTALL_STAGE="${BUNDLE_WORK}/host-install"
+  mkdir -p "$HOST_INSTALL_STAGE" || return 1
+  python3 - "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" <<'HOST_TAR_PY' || return 1
+import pathlib
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1]) as archive:
+    for member in archive:
+        path = pathlib.PurePosixPath(member.name)
+        if (path.is_absolute() or ".." in path.parts or
+                not (member.isfile() or member.isdir())):
+            sys.exit("invalid box host install archive")
+HOST_TAR_PY
+  tar -xf "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" -C "$HOST_INSTALL_STAGE" || return 1
+  [ -f "${HOST_INSTALL_STAGE}/deploy/install-boxhostd-preflight.sh" ] || return 1
+  [ -f "${HOST_INSTALL_STAGE}/scripts/host_service_bundle.py" ] || return 1
+  HOST_INSTALL_MANIFEST="${BUNDLE_WORK}/host-install-paths"
+  python3 "${HOST_INSTALL_STAGE}/scripts/host_service_bundle.py" \
+    --root "$HOST_INSTALL_STAGE" --flat-scripts --list-install-paths --boxhostd-probes \
+    boxhostd.service box-store-device.service box-store-grow.service \
+    >"$HOST_INSTALL_MANIFEST" || return 1
+}
+
+host_snapshot_names() {
+  { printf '%s\n' current harness-current
+    python3 - "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/.host-service-files.json" \
+      "$HOST_INSTALL_MANIFEST" <<'HOST_NAMES_PY'
+import json
+import pathlib
+import sys
+
+old = pathlib.Path(sys.argv[1])
+if old.exists():
+    for path in json.loads(old.read_text()):
+        print(path)
+for path in pathlib.Path(sys.argv[2]).read_text().splitlines():
+    print(path)
+HOST_NAMES_PY
+  } | while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    name="${path%%/*}"
+    host_managed_name "$name" || return 1
+    printf '%s\n' "$name"
+  done | sort -u
+}
+
+host_file_paths() {
+  printf '%s\n' \
+    "${BOXHOSTD_UNIT_FILE:-/etc/systemd/system/boxhostd.service}" \
+    "${BOX_STORE_DEVICE_UNIT_FILE:-/etc/systemd/system/box-store-device.service}" \
+    "${BOX_STORE_MOUNT_UNIT_FILE:-/etc/systemd/system/var-lib-boxhostd-owners.mount}" \
+    "${BOX_STORE_GROW_UNIT_FILE:-/etc/systemd/system/box-store-grow.service}" \
+    "${BOX_STORE_GROW_TIMER_FILE:-/etc/systemd/system/box-store-grow.timer}" \
+    "${BOXHOSTD_ENV_FILE:-/etc/tinyassets/boxhostd.env}" \
+    "${BROKER_ENV_FILE:-/etc/tinyassets/broker.env}" \
+    "${BROKER_RCLONE_FILE:-/etc/tinyassets/broker-rclone.conf}" \
+    "${ENV_FILE}" \
+    "${DAEMON_ENV_FILE}" \
+    "${BOX_STORE_CONFIG_FILE:-/etc/tinyassets/box-store.conf}" \
+    "${BOX_IMAGE_STATE_FILE:-/var/lib/boxhostd/state/images.json}"
+}
+
+legacy_host_file_paths() {
+  printf '%s\n' \
+    "${BOXHOSTD_UNIT_FILE:-/etc/systemd/system/boxhostd.service}" \
+    "${BOX_STORE_DEVICE_UNIT_FILE:-/etc/systemd/system/box-store-device.service}" \
+    "${BOX_STORE_MOUNT_UNIT_FILE:-/etc/systemd/system/var-lib-boxhostd-owners.mount}" \
+    "${BOX_STORE_GROW_UNIT_FILE:-/etc/systemd/system/box-store-grow.service}" \
+    "${BOX_STORE_GROW_TIMER_FILE:-/etc/systemd/system/box-store-grow.timer}" \
+    "${BOXHOSTD_ENV_FILE:-/etc/tinyassets/boxhostd.env}" \
+    "${BROKER_ENV_FILE:-/etc/tinyassets/broker.env}" \
+    "${BROKER_RCLONE_FILE:-/etc/tinyassets/broker-rclone.conf}"
+}
+
+snapshot_host_file_paths() {
+  if [ -f "$1/host/file-paths" ]; then cat "$1/host/file-paths";
+  else legacy_host_file_paths; fi
+}
+
+snapshot_host_bundle() {
+  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  prepare_host_bundle || return 1
+  mkdir -p "${snap}/host/root" "${snap}/host/files" || return 1
+  host_snapshot_names >"${snap}/host/root-manifest" || return 1
+  host_file_paths >"${snap}/host/file-paths" || return 1
+  while IFS= read -r name; do
+    path="${root}/${name}"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a -- "$path" "${snap}/host/root/${name}" || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a -- "$path" "${snap}/host/files/${index}" || return 1
+      printf 'present\n' >"${snap}/host/files/${index}.state" || return 1
+    else
+      printf 'absent\n' >"${snap}/host/files/${index}.state" || return 1
+    fi
+    index=$((index + 1))
+  done <"${snap}/host/file-paths"
+  printf 'complete\n' >"${snap}/host/complete"
+}
+
+restore_host_bundle() {
+  local snap="$1" root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}" path name index=0 state file_paths
+  [ -d "${snap}/host" ] || return 0  # Pre-host snapshots remain restorable.
+  [ "$(cat "${snap}/host/complete" 2>/dev/null)" = complete ] || {
+    err "restore: host bundle snapshot is incomplete"; return 1;
+  }
+  [ -f "${snap}/host/root-manifest" ] || return 1
+  file_paths="$(snapshot_host_file_paths "$snap")" || return 1
+  [ -n "$file_paths" ] || return 1
+  while IFS= read -r name; do
+    host_managed_name "$name" || return 1
+    # Absence is a recorded state: this install may have created the path.
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
+    case "$state" in
+      present) [ -e "${snap}/host/files/${index}" ] ||
+               [ -L "${snap}/host/files/${index}" ] || return 1 ;;
+      absent) ;;
+      *) return 1 ;;
+    esac
+    index=$((index + 1))
+  done <<<"$file_paths"
+  local stage old
+  mkdir -p "$root" || return 1
+  stage="$(mktemp -d "${root}/.restore-stage.XXXXXXXX")" || return 1
+  old="$(mktemp -d "${root}/.restore-old.XXXXXXXX")" || return 1
+  # Finish all large copies before touching a live tree.
+  while IFS= read -r name; do
+    if [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ]; then
+      cp -a -- "${snap}/host/root/${name}" "${stage}/${name}" || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  index=0
+  systemctl stop boxhostd.service || return 1
+  mkdir -p "$root" || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    host_managed_name "$name" || return 1
+    if [ -e "${root}/${name}" ] || [ -L "${root}/${name}" ]; then
+      mv -T -- "${root}/${name}" "${old}/${name}" || return 1
+    fi
+    if [ -e "${stage}/${name}" ] || [ -L "${stage}/${name}" ]; then
+      mv -T -- "${stage}/${name}" "${root}/${name}" || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state" 2>/dev/null)" || return 1
+    if [ "$state" = present ]; then
+      [ -e "${snap}/host/files/${index}" ] || [ -L "${snap}/host/files/${index}" ] || return 1
+      mkdir -p "$(dirname "$path")" || return 1
+      local staged
+      staged="$(mktemp "$(dirname "$path")/.restore-file.XXXXXXXX")" || return 1
+      cp -a -- "${snap}/host/files/${index}" "$staged" || return 1
+      mv -fT -- "$staged" "$path" || return 1
+    elif [ "$state" = absent ]; then
+      rm -f -- "$path" || return 1
+    else
+      return 1
+    fi
+    index=$((index + 1))
+  done <<<"$file_paths"
+  while IFS= read -r name; do
+    if [ -e "${snap}/host/root/${name}" ] || [ -L "${snap}/host/root/${name}" ]; then
+      if [ -L "${snap}/host/root/${name}" ]; then
+        [ "$(readlink "${snap}/host/root/${name}")" = "$(readlink "${root}/${name}")" ] || return 1
+      elif [ -d "${snap}/host/root/${name}" ]; then
+        diff -qr -- "${snap}/host/root/${name}" "${root}/${name}" >/dev/null || return 1
+      else
+        cmp -s -- "${snap}/host/root/${name}" "${root}/${name}" || return 1
+      fi
+    else
+      [ ! -e "${root}/${name}" ] && [ ! -L "${root}/${name}" ] || return 1
+    fi
+  done <"${snap}/host/root-manifest"
+  index=0
+  while IFS= read -r path; do
+    state="$(cat "${snap}/host/files/${index}.state")" || return 1
+    if [ "$state" = present ]; then
+      cmp -s -- "${snap}/host/files/${index}" "$path" || return 1
+      [ "$(stat -c '%u:%g:%a' "${snap}/host/files/${index}")" = \
+        "$(stat -c '%u:%g:%a' "$path")" ] || return 1
+    else
+      [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+    fi
+    index=$((index + 1))
+  done <<<"$file_paths"
+  systemctl daemon-reload || return 1
+  if [ "$(cat "${snap}/host/files/0.state")" = present ]; then
+    systemctl restart boxhostd.service && systemctl is-active --quiet boxhostd.service || return 1
+  fi
+  rm -rf -- "$old" "$stage" || return 1
+  log "restored box host before broker and daemon convergence"
+}
+
+install_host_bundle() {
+  [ -f "${BUNDLE_WORK}/${HOST_BUNDLE_NAME}" ] || return 0
+  [ -n "$HOST_INSTALL_STAGE" ] || return 1
+  bash "${HOST_INSTALL_STAGE}/deploy/install-boxhostd-preflight.sh"
+}
+
 # Copy what is LIVE into a stamped snapshot directory. Runs before install, so
 # the snapshot is exactly the state a rollback has to get back to. A destination
 # that does not exist yet is recorded as a `.absent` marker so a restore removes
@@ -1556,6 +1935,7 @@ snapshot_bundle() {
       }
     fi
   done
+  snapshot_host_bundle "$snap" || return 1
   SNAPSHOT_PATH="$snap"
   log "bundle snapshot written to ${snap}"
   return 0
@@ -1608,6 +1988,10 @@ install_bundle() {
     fi
     log "installed ${dest} (mode ${mode}, owner ${file_owner}:${file_group})"
   done
+  if ! install_host_bundle; then
+    err "box host bundle installation failed"
+    return 1
+  fi
   if ! systemctl daemon-reload; then
     err "systemctl daemon-reload failed after installing ${UNIT_FILE}"
     return 1
@@ -1625,6 +2009,9 @@ restore_bundle_from() {
     err "restore: snapshot ${snap} has no manifest; refusing to guess ownership"
     return 1
   fi
+  mark_dirty "$snap" || return 1
+  RESTORE_ATTEMPTED=1
+  restore_host_bundle "$snap" || return 1
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
     # Exact key match on field 1. `grep -F "${rel}|"` was a SUBSTRING match, so a
@@ -1663,10 +2050,25 @@ restore_bundle_from() {
     fi
     log "restored ${dest} (mode ${perms}, owner ${uid}:${gid})"
   done
+  for entry in "${BUNDLE_MAP[@]}"; do
+    IFS='|' read -r rel dest mode owner <<<"$entry"
+    line="$(awk -F'|' -v k="$rel" '$1 == k { print; exit }' "${snap}/manifest")"
+    state="$(printf '%s' "$line" | cut -d'|' -f2)"
+    if [ "$state" = absent ]; then
+      [ ! -e "$dest" ] && [ ! -L "$dest" ] || rc=1
+    elif [ "$state" = present ]; then
+      meta="$(printf '%s' "$line" | cut -d'|' -f3)"
+      cmp -s -- "${snap}/${rel}" "$dest" || rc=1
+      [ "$(stat -c '%u %g %a' "$dest" 2>/dev/null)" = "$meta" ] || rc=1
+    else
+      rc=1
+    fi
+  done
   if ! systemctl daemon-reload; then
     err "systemctl daemon-reload failed during bundle restore"
     rc=1
   fi
+  if [ "$rc" = 0 ]; then RESTORE_VERIFIED=1; fi
   return $rc
 }
 
@@ -1729,7 +2131,14 @@ restore_previous_bundle() {
 if [ "$POST_DEPLOY_FAILURE" = 1 ] || [ "$RESTORE_BUNDLE" = 1 ]; then
   guard_cutover_recovery
   if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
-    [ "${IMAGE_ROLLBACK_ALLOWED:-0}" = 1 ] || exit 0
+    if [ "${IMAGE_ROLLBACK_ALLOWED:-0}" != 1 ]; then
+      if [ -f "$BUNDLE_DIRTY" ]; then
+        err "post-deploy hold found an interrupted bundle install"
+        echo "deploy_result=bundle_dirty"
+        exit 3
+      fi
+      exit 0
+    fi
     NEW_IMAGE="${ROLLBACK_IMAGE:-}"
     case "$NEW_IMAGE" in *@sha256:*) ;; *) err "no immutable rollback image"; exit 3 ;; esac
     RESTORE_BUNDLE=1
@@ -1757,13 +2166,26 @@ fi
 # Recheck under the host lock: a timer may have reclaimed the prefetch while
 # waiting for turns. Cached immutable images do not need another pull reserve.
 if [ -n "${DISK_HEADROOM_HELPER:-}" ]; then
-  if ! (set -a; source "$ENV_FILE"; set +a
+  if ! (source_env_file "$ENV_FILE"
         python3 "$DISK_HEADROOM_HELPER" --check-headroom --image-ref "$NEW_IMAGE"); then
     err "insufficient disk headroom for candidate pull; prod untouched"; exit 1
   fi
 fi
 if ! docker pull "$NEW_IMAGE" >/dev/null 2>&1; then
   err "failed to pull ${NEW_IMAGE}; prod untouched"; exit 1
+fi
+
+# The workflow stages the shared helper beside this script. Local transaction
+# tests and repository callers use the same source from scripts/.
+HOTFIX_HELPER="${HOTFIX_HELPER:-$(dirname "${BASH_SOURCE[0]}")/hotfix.py}"
+if [ ! -f "$HOTFIX_HELPER" ]; then
+  HOTFIX_HELPER="$(dirname "${BASH_SOURCE[0]}")/../scripts/hotfix.py"
+fi
+# Under the host lock, check actual candidate bytes or a runner-attested merged
+# PR included in this image revision. The same reader handles legacy records.
+if ! HOTFIX_STATE_DIR="$BUNDLE_STATE_DIR" python3 "$HOTFIX_HELPER" \
+    --host guard-image "$NEW_IMAGE" "${HOTFIX_PROOF:-}"; then
+  err "hotfix guard refused candidate; prod untouched"; exit 1
 fi
 
 # --- 3. prove the new image LOADS before touching prod --------------------
@@ -1792,39 +2214,65 @@ if ! ensure_state_dir; then
   exit 1
 fi
 
-# Restore the snapshot recorded before the failed install, and clear the dirty
-# marker only if that restore completes. Used by every post-install failure
-# path so none of them can report success over a mixed tree.
-recover_from_failed_install() {
-  local result="$1"
-  err "restoring ${SNAPSHOT_PATH} and leaving the pointer where it was"
-  if restore_bundle_from "$SNAPSHOT_PATH"; then
-    clear_dirty || true
-    finish "$result" "" 1
-  fi
-  err "restore from ${SNAPSHOT_PATH} ALSO failed — ${BUNDLE_DIRTY} stays, and the next normal deploy will refuse until --restore-bundle clears it"
-  echo "deploy_result=rollback_failed"
-  exit 3
-}
-
 if [ "$RESTORE_BUNDLE" = "1" ]; then
   # Undoing an install, never performing one: the staged bundle (if it is even
   # still on the box) is exactly what this run is rolling back. This path runs
   # even with the dirty marker set — it is the way out of that state.
+  # A post-canary rollback starts from a candidate that already passed health.
+  # Snapshot that tree first so a rollback image that cannot converge can be
+  # put back, instead of leaving the tunnel on the image that just failed.
+  if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+    CANDIDATE_HOLD_IMAGE="$PREV_IMAGE"
+    if [ -z "$BUNDLE_WORK" ] && [ -f "${BUNDLE_DIR}/${HOST_BUNDLE_NAME}" ]; then
+      claim_bundle || {
+        err "could not read the staged host bundle to snapshot the healthy candidate"
+        echo "deploy_result=rollback_failed"
+        exit 3
+      }
+    fi
+    if ! snapshot_bundle; then
+      err "could not snapshot the healthy candidate before image rollback"
+      echo "deploy_result=rollback_failed"
+      exit 3
+    fi
+    CANDIDATE_HOLD_SNAPSHOT="$SNAPSHOT_PATH"
+    log "candidate hold snapshot ${CANDIDATE_HOLD_SNAPSHOT} image ${CANDIDATE_HOLD_IMAGE}"
+  fi
   if ! restore_previous_bundle; then
     err "--restore-bundle could not restore the previous bundle; refusing to converge an image over a bundle in an unknown state"
     [ -n "$RESTORE_SNAPSHOT" ] && { mark_dirty "$RESTORE_SNAPSHOT" || true; }
     echo "deploy_result=rollback_failed"
     exit 3
   fi
-  clear_dirty || true
+  # The marker stays until restart_stack has converged. Clearing it here would
+  # hide a restored tree whose containers are still the candidate, including
+  # when this process is killed before that converge.
 else
   if [ -f "$BUNDLE_DIRTY" ]; then
-    err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
-    err "refusing: snapshotting this tree would legitimize a mixed bundle as the rollback target."
-    err "run: sudo bash $0 --restore-bundle <image ref>"
-    echo "deploy_result=bundle_dirty"
-    exit 1
+    # Consumed cutover is not pending (cutover_pending exits 1). pre_traffic
+    # on a stable owner-box marker exits 0 and stays a refusal: recovering
+    # over an unfinished cutover would snapshot the wrong baseline.
+    if [ "$RECOVER_DIRTY_BUNDLE" = "1" ] && ! cutover_pending; then
+      log "recovering dirty runtime bundle before forward deploy"
+      if ! restore_previous_bundle || ! clear_dirty || ! render_daemon_env; then
+        echo "deploy_result=bundle_dirty"
+        exit 1
+      fi
+      PREV_IMAGE="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1 || true)"
+      # restore_previous_bundle set these for the dirty snapshot. The forward
+      # deploy must snapshot the restored baseline as its own rollback target,
+      # and bundle_exit must still restore THAT snapshot if a later step fails.
+      RESTORE_SNAPSHOT=""
+      RESTORE_VERIFIED=0
+      RESTORE_ATTEMPTED=0
+      VECTOR_CHANGED=0
+    else
+      err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
+      err "refusing: snapshotting this tree would legitimize a mixed bundle as the rollback target."
+      err "run: sudo bash $0 --restore-bundle <image ref>"
+      echo "deploy_result=bundle_dirty"
+      exit 1
+    fi
   fi
   BUNDLE_STATE="$(bundle_state)"
   case "$BUNDLE_STATE" in
@@ -1832,7 +2280,7 @@ else
       log "bundle: absent, image-only deploy"
       ;;
     partial)
-      err "bundle: ${BUNDLE_DIR} exists but is incomplete; refusing to install a partial bundle (prod untouched)"
+      err "bundle: ${BUNDLE_DIR} is missing or incomplete; refusing to install a partial bundle"
       echo "deploy_result=bundle_invalid"
       exit 1
       ;;
@@ -1860,7 +2308,8 @@ else
       BUNDLE_VECTOR_BEFORE="$(vector_fingerprint)"
       if ! install_bundle; then
         err "bundle install failed part-way"
-        recover_from_failed_install bundle_install_failed
+        echo "deploy_result=bundle_install_failed"
+        exit 1
       fi
       if [ "$BUNDLE_VECTOR_BEFORE" != "$(vector_fingerprint)" ]; then
         VECTOR_CHANGED=1
@@ -1872,9 +2321,9 @@ else
       # previous deploy's snapshot and restore a bundle that was never live.
       if ! write_pointer "$SNAPSHOT_PATH"; then
         err "could not advance ${BUNDLE_POINTER} to ${SNAPSHOT_PATH}; a rollback would restore a stale bundle"
-        recover_from_failed_install bundle_pointer_failed
+        echo "deploy_result=bundle_pointer_failed"
+        exit 1
       fi
-      clear_dirty || true
       prune_snapshots
       ;;
     *)
@@ -1891,11 +2340,11 @@ fi
 BOX_CANDIDATE_LAYOUT="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m \
   --network=none --entrypoint python "$NEW_IMAGE" -c \
   'from tinyassets import storage_layout as l; print(getattr(l, "ACTIVE_BOX_LAYOUT", "owner-split"))')" || {
-  err "cannot read candidate box layout; prod untouched"; exit 1;
+  err "cannot read candidate box layout"; exit 1;
 }
 case "$BOX_CANDIDATE_LAYOUT" in
   owner-split|owner-box) ;;
-  *) err "candidate has invalid box layout; prod untouched"; exit 1 ;;
+  *) err "candidate has invalid box layout"; exit 1 ;;
 esac
 log "candidate box layout: ${BOX_CANDIDATE_LAYOUT}"
 # #4920 installs the static box harness before an owner-box move. The call is
@@ -1961,13 +2410,74 @@ discard_candidate_harness() {  # a refused or rolled-back run keeps only the har
   elif [ "$(readlink "${root}/harness-current" 2>/dev/null || true)" = "$name" ]; then
     rm -f -- "${root}/harness-current"
   fi
+  if harness_in_use "$name"; then
+    log "kept candidate harness ${name}: a running owner still reads it"
+    return 0
+  fi
   case "$name" in
     harness-[0-9a-f]*)
-      # extract_box_harness made the tree read-only; writable again before rm.
-      chmod -R u+w -- "${root:?}/${name}" 2>/dev/null || true
+      # Directories need write to unlink children. chmod -R follows symlinks
+      # and would hit ELOOP or change a host path named by an absolute link.
+      find -P "${root:?}/${name}" -type d -exec chmod u+rwx {} + 2>/dev/null || true
       rm -rf -- "${root:?}/${name}" && log "removed candidate harness ${name} (refused run)" \
         || err "could not remove candidate harness ${name}" ;;
   esac
+}
+harness_in_use() {  # a running owner sandbox still reads it (or that is unknowable)
+  local bundles="${BOX_BUNDLE_ROOT:-/var/lib/boxhostd/state/bundles}" config
+  [ -e "$bundles" ] || return 1
+  [ -d "$bundles" ] && [ -r "$bundles" ] || return 0
+  for config in "$bundles"/owner-*/config.json; do
+    [ -e "$config" ] || continue
+    [ -L "$config" ] || [ ! -r "$config" ] && return 0
+    grep -qF -- "/${1}\"" "$config" && return 0
+  done
+  return 1
+}
+prune_old_harnesses() {  # successful deploys must not keep every historical rootfs
+  local root link name previous
+  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
+  [ -d "$root" ] || return 0
+  link="$(readlink "${root}/harness-current" 2>/dev/null || true)"
+  # The public canary runs after this script returns. Its image rollback
+  # restores the harness-current symlink captured before this install, so the
+  # rootfs that symlink names has to still be here. The next successful deploy
+  # prunes it, once it is no longer the rollback target.
+  previous="${HARNESS_PREVIOUS_LINK:-}"
+  previous="${previous##*/}"
+  # Launches hold .harness.lock shared from image selection until their bundle
+  # names the image; hold it exclusively from the bundle scan through deletion.
+  local lock_fd
+  exec {lock_fd}>"${root}/.harness.lock" || return 0
+  if ! flock -x -w 120 "$lock_fd"; then
+    log "kept every harness: owner launches held the harness lock"
+    exec {lock_fd}>&-
+    return 0
+  fi
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$name" = "harness-current" ] && continue
+    if [ -n "$link" ] && { [ "$name" = "$link" ] || [ "$name" = "${link##*/}" ]; }; then
+      continue
+    fi
+    if [ -n "$previous" ] && [ "$name" = "$previous" ]; then
+      continue
+    fi
+    # An owner left serving through a deploy runs its image until its own sleep.
+    if harness_in_use "$name"; then
+      log "kept harness ${name}: a running owner still reads it"
+      continue
+    fi
+    # Directories need write to unlink children. Do not follow symlinks.
+    find -P "${root}/${name}" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+    if rm -rf -- "${root}/${name}"; then
+      log "removed old harness ${name}"
+    else
+      err "could not remove old harness ${name}"
+    fi
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name 'harness-[0-9a-f]*' -printf '%f\n')
+  exec {lock_fd}>&-
+  return 0
 }
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
@@ -2028,7 +2538,7 @@ migration_snapshot() {  # prints the archive name backup.sh took
     migration_detail "check=backup_script path=${BACKUP_SCRIPT} present=no"
     return 1
   fi
-  out="$( (set -a; . "$ENV_FILE"; set +a; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"
+  out="$( (source_env_file "$ENV_FILE"; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"
   backup_rc=$?
   if [ "$backup_rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
@@ -2063,19 +2573,9 @@ migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic 
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   POST_COMMIT_REASON="$1" guard_cutover_recovery
   log "migration refused: $1"
-  err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  if [ "${2:-}" != "pre_stop" ]; then
-    start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
-    start_line="$(printf '%s\n' "$start_out" | one_line)"
-    [ -n "$start_line" ] || start_line="<none>"
-    log "migration refused: check=daemon_restart container=${DAEMON_CONTAINER} output=${start_line}"
-    err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
-    }
-  fi
+  err "migration: $1; the volume is unchanged, refusing and restoring the bundle"
   discard_candidate_harness
-  if [ "$INSTALLED_THIS_RUN" = "1" ]; then
-    recover_from_failed_install migration_refused
-  fi
+  [ "${2:-}" = pre_stop ] || MIGRATION_REFUSED_RESTART=1
   rm -f "$MIGRATION_DETAIL_FILE"
   echo "deploy_result=migration_refused"
   exit 1
@@ -2164,16 +2664,13 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
   MIGRATION_RC=0  # a rollback never migrates and does not take this snapshot
   probe_out=""
 else
-  # A missing canary blocks only a deploy that would move data. An owner-box
-  # candidate is one. A pending migration and the box move are checked at the
-  # step that would apply them. Every other deploy warns and continues.
+  # A missing canary blocks only a deploy that would move data. Pending
+  # agent-files and box-layout moves refuse at their apply step, before any
+  # stop or snapshot. An already-committed owner-box layout warns and continues.
   # Only the literal 1 from verify_core_canary_provision.py counts; anything
   # else, including an unset value, is not provisioned.
-  if [ "$CORE_CANARY_PROVISIONED" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
-    migration_refused "check=core_canary_not_provisioned move=owner-box_candidate"
-  fi
   if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
-    log "WARNING: core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned); continuing because this deploy is not an owner-box candidate. A pending migration or other data move still refuses."
+    log "WARNING: core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned); continuing read-only probes. A pending agent-files or box-layout move still refuses before any stop or snapshot."
     printf '%s\n' "::warning::core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned). Data-moving deploys refuse; this deploy continues only if it does not move data." >&2
   fi
   # Read-only probes stay up. The stop and the verified snapshot happen inside
@@ -2285,7 +2782,15 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
         migration_refused "check=box_store_mount; required mounted XFS project-quota store unavailable"
       fi
       case "$box_probe_rc" in
-        0) log "box layout: already owner-box; no move" ;;
+        0)
+          # install_bundle restarted boxhostd before install_box_harness moved
+          # harness-current. Reload it before compose recreates the broker.
+          log "box layout: already owner-box; no move"
+          if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+            MIGRATION_OK=0
+            err "boxhostd could not start on the updated harness"
+          fi
+          ;;
         10)
           # The candidate constant selects this step. It does not authorize it.
           # Apply runs only after every gate has passed in this run: a
@@ -2380,15 +2885,6 @@ if [ "$MIGRATION_OK" = "1" ]; then
     if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
       refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
     fi
-    if [ "$INSTALLED_THIS_RUN" = "1" ]; then
-      err "restoring the runtime bundle so the box is not left on a new config under the old image"
-      if ! restore_bundle_from "$SNAPSHOT_PATH"; then
-        err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
-        mark_dirty "$SNAPSHOT_PATH" || true
-        echo "deploy_result=rollback_failed"
-        exit 3
-      fi
-    fi
     if [ "$MIGRATION_COMMITTED" = "1" ]; then
       err "a layout migration committed and ${DAEMON_CONTAINER} is stopped: deploy ${NEW_IMAGE} again, or $(migration_restore_command); never start ${PREV_IMAGE} on this data"
     fi
@@ -2429,33 +2925,58 @@ if [ "$MIGRATION_OK" = "1" ]; then
     fi
     log "deploy healthy on ${NEW_IMAGE}"
     if [ "$POST_DEPLOY_FAILURE" = 1 ]; then
+      clear_dirty || true
       finish rolled_back "$NEW_IMAGE" 2
     fi
+    prune_old_harnesses
     finish deployed "$NEW_IMAGE" 0
   fi
 fi
 
-# --- 6. unhealthy -> restore the bundle, then roll back the image ---------
+# --- 6. unhealthy -> hold the candidate, or restore then roll back --------
 if [ "$RESTORE_BUNDLE" = 1 ]; then
+  if [ "$POST_DEPLOY_FAILURE" = 1 ] && [ -n "${CANDIDATE_HOLD_SNAPSHOT:-}" ] \
+     && [ -d "$CANDIDATE_HOLD_SNAPSHOT" ] && [ -n "${CANDIDATE_HOLD_IMAGE:-}" ]; then
+    err "requested rollback did not become healthy; returning to ${CANDIDATE_HOLD_IMAGE}"
+    if restore_bundle_from "$CANDIDATE_HOLD_SNAPSHOT" \
+       && set_image "$CANDIDATE_HOLD_IMAGE" && restart_stack; then
+      clear_dirty || true
+      log "candidate held: ${CANDIDATE_HOLD_IMAGE} is the last image that passed health"
+      finish candidate_held "$CANDIDATE_HOLD_IMAGE" 2
+    fi
+    err "could not return to the candidate that passed health"
+  fi
   err "requested rollback failed; refusing to pair its restored bundle with another image"
   echo "deploy_result=rollback_failed"
   exit 3
 fi
 guard_cutover_recovery
-# Never put the old compose under the candidate after a committed or uncertain
-# migration, even when the previous image would subsequently be refused.
+# Hold BEFORE restore_previous_bundle. With the host tar staged, the snapshot
+# includes ENV_FILE and daemon.env from before set_image. Restoring it, or
+# letting the EXIT trap restore it, would put the previous image over data this
+# candidate already committed and then clear the marker on that split.
 if [ "$BOX_CANDIDATE_LAYOUT" = owner-box ] && { [ "$MIGRATION_COMMITTED" = 1 ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = 1 ]; }; then
-  refuse_on_layout "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
+  hold_candidate_release "$PREV_IMAGE" "migration committed or unverifiable; keeping candidate bundle; $(migration_restore_command)"
+fi
+if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
+  hold_candidate_release "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command)"
+fi
+if [ -z "$PREV_IMAGE" ]; then
+  HOLD_CANDIDATE=1
+  err "no previous image recorded; cannot roll back automatically"
+  echo "deploy_result=failed_no_rollback_target"
+  exit 3
+fi
+# The failed candidate may have migrated (or begun migrating) the data while it
+# booted: decide before any restore, so a layout refusal keeps the candidate.
+LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"; then
+  hold_candidate_release "${PREV_IMAGE}"
 fi
 if [ "${MIGRATION_OK:-1}" = "1" ]; then
   err "new image did not become acceptable; rolling back"
 else
   err "the storage migration did not complete; restoring the bundle and checking whether the previous image may start"
-fi
-if [ -z "$PREV_IMAGE" ]; then
-  err "no previous image recorded; cannot roll back automatically"
-  echo "deploy_result=failed_no_rollback_target"
-  exit 3
 fi
 # Config first, then the image: converging the previous image against the NEW
 # compose file is what left 2026-08's rollbacks running a config prod had never
@@ -2465,6 +2986,9 @@ fi
 # touch a pointer left by an earlier bundle deploy — that pointer names the
 # state before THAT deploy, so restoring it here would change a bundle this run
 # never modified (Codex round 2, §1).
+# Restore harness-current and delete this run's rootfs before restart_stack
+# can exit 3 and skip the post-accept discard.
+discard_candidate_harness
 VECTOR_CHANGED=0
 if [ "$INSTALLED_THIS_RUN" = "1" ]; then
   if ! restore_previous_bundle; then
@@ -2473,20 +2997,8 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     echo "deploy_result=rollback_failed"
     exit 3
   fi
-  clear_dirty || true
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
-fi
-# A committed or unverifiable move cannot safely start the previous image.
-# The snapshot step 3c took is the rollback point.
-if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
-  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command)"
-fi
-# The failed candidate may have migrated (or begun migrating) the data while it
-# booted: re-check before the previous image starts on it.
-LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"; then
-  refuse_on_layout "${PREV_IMAGE}"
 fi
 if ! set_image "$PREV_IMAGE"; then
   err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"
@@ -2498,6 +3010,15 @@ if ! restart_stack; then
   echo "deploy_result=rollback_failed"
   exit 3
 fi
+# Recreating PREV_IMAGE discards its writable container layer. Restore active
+# hotfix bytes before accepting that rollback; the originals remain available
+# for hotfix.py revert. This runs under the existing host-mutation lock.
+if ! HOTFIX_STATE_DIR="$BUNDLE_STATE_DIR" python3 "$HOTFIX_HELPER" --host restore
+then
+  err "could not restore active hotfixes onto rollback container"
+  echo "deploy_result=rollback_failed"
+  exit 3
+fi
 if [ "$VECTOR_CHANGED" = "1" ] && ! recreate_logs; then
   err "the restored vector config could not be brought up; log forwarding is down on the rolled-back stack"
   echo "deploy_result=rollback_failed"
@@ -2506,6 +3027,7 @@ fi
 if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
   discard_candidate_harness
+  clear_dirty || true
   finish rolled_back "$PREV_IMAGE" 2
 fi
 

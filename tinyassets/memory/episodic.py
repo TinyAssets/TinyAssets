@@ -522,56 +522,6 @@ class EpisodicMemory:
     # Episodic facts
     # ------------------------------------------------------------------
 
-    def store_fact(
-        self,
-        fact_id: str,
-        entity: str,
-        content: str,
-        source_scene: str = "",
-        scope: "MemoryScope | None" = None,
-    ) -> None:
-        """Insert or increment evidence for a fact.
-
-        Memory-scope Stage 2b: ``scope`` tags new rows with the
-        caller's sub-tiers. Existing rows' scope columns are left
-        untouched on evidence increment — re-tagging a fact mid-
-        evidence-chain is a semantic we don't want yet (would need a
-        conflict policy Stage 2c can define).
-        """
-        goal_id, branch_id, user_id = self._scope_tiers(scope)
-        existing = self._conn.execute(
-            "SELECT evidence_count, source_scenes FROM episodic_facts "
-            "WHERE universe_id = ? AND fact_id = ?",
-            (self._universe_id, fact_id),
-        ).fetchone()
-
-        if existing is not None:
-            count = existing[0] + 1
-            scenes = json.loads(existing[1])
-            if source_scene and source_scene not in scenes:
-                scenes.append(source_scene)
-            self._conn.execute(
-                "UPDATE episodic_facts "
-                "SET evidence_count = ?, source_scenes = ? "
-                "WHERE universe_id = ? AND fact_id = ?",
-                (count, json.dumps(scenes), self._universe_id, fact_id),
-            )
-        else:
-            scenes = [source_scene] if source_scene else []
-            self._conn.execute(
-                """
-                INSERT INTO episodic_facts
-                    (universe_id, fact_id, entity, content,
-                     evidence_count, source_scenes,
-                     goal_id, branch_id, user_id)
-                VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
-                """,
-                (self._universe_id, fact_id, entity, content,
-                 json.dumps(scenes),
-                 goal_id, branch_id, user_id),
-            )
-        self._conn.commit()
-
     def get_facts_for_entity(self, entity: str) -> list[dict[str, Any]]:
         """Return all episodic facts mentioning *entity*."""
         rows = self._conn.execute(
@@ -612,15 +562,6 @@ class EpisodicMemory:
             }
             for r in rows
         ]
-
-    def mark_promoted(self, fact_id: str) -> None:
-        """Mark a fact as promoted to archival/canonical."""
-        self._conn.execute(
-            "UPDATE episodic_facts SET promoted = 1 "
-            "WHERE universe_id = ? AND fact_id = ?",
-            (self._universe_id, fact_id),
-        )
-        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Style observations

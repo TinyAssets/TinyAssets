@@ -11,7 +11,7 @@ are ``extensions`` *actions*, never new advertised MCP handles, and the
 kwarg, the same technique the effector-consent and authoring actions use.
 
 Router field reuse (also documented at the call site in
-``tinyassets/api/extensions.py``):
+``tinyassets/api/workflow_actions.py``):
 
 =========================  ====================================================
 ``extensions`` kwarg       handoff meaning

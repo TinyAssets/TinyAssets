@@ -179,8 +179,10 @@ final class ReviewVideoTests: XCTestCase {
         let safari = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
         let email = auth.webViews.textFields.firstMatch
         let secure = auth.webViews.secureTextFields.firstMatch
-        // AuthKit labels its email step "Continue with email".
-        let next = auth.buttons.matching(NSPredicate(format: "label IN %@",
+        // AuthKit labels its email step "Continue with email". On iOS 26 the
+        // sheet lives in the app's own tree, beside the app's disabled
+        // "Sign in" button, so only enabled buttons count.
+        let next = auth.buttons.matching(NSPredicate(format: "label IN %@ AND enabled == true",
             ["Continue with email", "Continue", "Next", "Sign in"])).firstMatch
         let go = auth.keyboards.buttons.matching(NSPredicate(format: "label IN %@",
             ["Go", "go", "Continue", "continue", "Return", "return", "Done", "done"])).firstMatch
@@ -231,9 +233,13 @@ final class ReviewVideoTests: XCTestCase {
             return value.count == password.count && value.allSatisfy { $0 == "•" || $0 == "●" }
         }
         UIPasteboard.general.items = []
-        let submit = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Sign in", "Continue", "Log in"])).firstMatch
+        let submit = auth.buttons.matching(NSPredicate(format: "label IN %@ AND enabled == true",
+            ["Sign in", "Continue", "Log in"])).firstMatch
         XCTAssertTrue(submit.waitForExistence(timeout: 30), "password submit missing")
         submit.tap()
+        // A tap swallowed by the keyboard accessory leaves the password page
+        // up: submit with the Go key instead.
+        if !poll(timeout: 15, { !secure.exists }), go.exists { go.tap() }
         let signedIn = poll(timeout: 180) {
             self.app.state == .runningForeground && (
                 self.app.buttons["Command center menu"].exists ||

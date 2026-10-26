@@ -1,6 +1,5 @@
 """Read deployment's ordinary-admission decision; no restore authority."""
 import json
-import os
 
 NAME = ".ordinary-admission.json"
 
@@ -14,6 +13,4 @@ def admits(root, owner):
         return False
     if gate["ordinary"] is True:
         return True
-    return gate["ordinary"] is False and bool(owner) and owner in {
-        "canary", os.environ.get("TINYASSETS_CANARY_USER_ID"),
-    }
+    return gate["ordinary"] is False and owner == "canary"

@@ -15,6 +15,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from tinyassets.onboarding import hosted_model_auth as hosted
 from tinyassets.onboarding.owner_sessions import HEADERS, hashed, store
 from tinyassets.onboarding.session_store import seal_key
+from tinyassets.sqlite_schema import ensure_table
 
 RETURN_COOKIE = "__Host-ta-model-return"
 
@@ -32,24 +33,33 @@ def return_path(request, owner):
 
 
 def discard_hosted(handle, owner):
+    discard_hosted_digest(hashed(handle), owner)
+
+
+def discard_hosted_digest(digest, owner):
     from tinyassets.api.helpers import _base_path
-    from tinyassets.connection_oauth.pkce import handle_digest
 
     with hosted._flows(_base_path()) as (conn, _):
+        conn.execute("DELETE FROM connection_oauth_flows WHERE handle_digest=? "
+                     "AND owner_user_id=?", (digest, owner))
         conn.execute("DELETE FROM hosted_model_flows WHERE handle_digest=? "
                      "AND owner_user_id=?",
-                     (handle_digest(handle), owner))
+                     (digest, owner))
 
 
 @contextmanager
 def flows():
     with store() as conn:
-        conn.execute(
+        ensure_table(conn,
             "CREATE TABLE IF NOT EXISTS inline_model_flows ("
             "handle_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, "
             "sealed BLOB NOT NULL, browser_hash TEXT NOT NULL DEFAULT '', "
-            "status TEXT NOT NULL, expires REAL NOT NULL)"
-        )
+            "status TEXT NOT NULL, expires REAL NOT NULL)", kind="ephemeral")
+        expired = conn.execute("SELECT handle_hash,owner FROM inline_model_flows "
+                               "WHERE expires<=? AND status IN ('waiting','ready')",
+                               (time.time(),)).fetchall()
+        for row in expired:
+            discard_hosted_digest(row["handle_hash"], row["owner"])
         conn.execute("DELETE FROM inline_model_flows WHERE expires<=?", (time.time(),))
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
@@ -66,7 +76,7 @@ def unseal(handle, value):
     return json.loads(AESGCM(seal_key()).decrypt(value[:12], value[12:], handle.encode()))
 
 
-def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
+def begin(*, owner, preset_id, resource, owner_session=None, request_ref="", client="web"):
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise hosted.HostedAuthError("interactive_approval_required", 403)
@@ -74,16 +84,32 @@ def begin(*, owner, preset_id, resource, owner_session=None, request_ref=""):
     result = hosted.begin_flow(owner=owner, preset_id=preset_id,
                                challenge=hosted._challenge(verifier), public_resource=resource,
                                request_ref=request_ref)
+    return stage(owner=owner, result=result, verifier=verifier,
+                 owner_session=owner_session, exchange="exchange", client=client)
+
+
+def stage(*, owner, result, verifier, owner_session, exchange, client="web"):
+    from tinyassets.onboarding.approval_handoff import CLIENTS
+
+    if client not in CLIENTS:
+        raise ValueError("invalid return client")
     handle = result["flow"]
     with flows() as conn:
+        previous = conn.execute("SELECT handle_hash FROM inline_model_flows "
+                                "WHERE owner=? AND status IN ('waiting','ready')",
+                                (owner,)).fetchall()
+        for row in previous:
+            discard_hosted_digest(row["handle_hash"], owner)
+        conn.execute("UPDATE inline_model_flows SET status='cancelled',sealed=? "
+                     "WHERE owner=? AND status IN ('waiting','ready')", (b"", owner))
         conn.execute("INSERT INTO inline_model_flows "
                      "(handle_hash,owner,sealed,status,expires) VALUES (?,?,?,?,?)",
                      (hashed(handle), owner, seal(handle, {
                          "verifier": verifier, "authorize_url": result["authorize_url"],
-                         "preset_id": preset_id, "owner_session": owner_session}),
+                         "exchange": exchange, "client": client, "owner_session": owner_session}),
                       "waiting", time.time() + result["expires_in"]))
-    return {"flow": handle, "authorize_url": hosted.load_preset(preset_id).authorize_url,
-            "launch_path": hosted.CALLBACK_PREFIX + handle + "?launch=1",
+    return {"flow": handle, "launch_path": hosted.CALLBACK_PREFIX + handle + "?launch=1",
+            "authorize_url": result["authorize_url"].split("?", 1)[0],
             "expires_in": result["expires_in"]}
 
 
@@ -113,6 +139,11 @@ def take(*, owner, handle, cancel=False):
 def callback(request):
     """Public navigation, browser-bound; never exchange or grant on GET."""
     handle = request.url.path.rsplit("/", 1)[-1]
+    if handle == "connect":
+        states = request.query_params.getlist("state")
+        if len(states) != 1 or not hosted._HANDLE.fullmatch(states[0]):
+            return None
+        handle = states[0]
     cookie_name = "__Host-ta-model-" + handle
     from tinyassets.onboarding.owner_sessions import COOKIE, lookup
 
@@ -154,13 +185,17 @@ def callback(request):
                  and 0 < len(codes[0]) <= 2048)
         if valid:
             data["code"] = codes[0]
+            data["iss"] = request.query_params.get("iss", "")
         conn.execute("UPDATE inline_model_flows SET status=?,sealed=? WHERE handle_hash=?",
                      ("ready" if valid else "cancelled", seal(handle, data if valid else {}),
                       hashed(handle)))
         if not valid:
             discard_hosted(handle, row["owner"])
-        response = HTMLResponse("You can return to chat. " + (
-            "Your connection will finish there." if valid else "Sign-in was cancelled."),
-            headers=HEADERS)
+        from tinyassets.onboarding.approval_handoff import completion_url
+        from tinyassets.onboarding.native_sign_in import app_return_page
+
+        target = completion_url(handle, data.get("client", "web"))
+        response = (RedirectResponse(target, status_code=303, headers=HEADERS)
+                    if data.get("client", "web") == "web" else app_return_page(target))
         response.delete_cookie(cookie_name, secure=True, httponly=True, samesite="lax")
         return response
