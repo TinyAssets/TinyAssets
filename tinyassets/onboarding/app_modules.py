@@ -84,7 +84,7 @@ def shell_version(html_path: Path) -> str:
     """Hash the packaged shell sources, independently of release-receipt timing."""
     digest = hashlib.sha256(build_segment().encode())
     names = ("app.html", "app_ui.js", "app_recovery.js", "chat_render.js", "request_theme.json",
-             "credential_requests.js")
+             "credential_requests.js", "app_updates.js", "app_versions.json")
     for name in names:
         digest.update(name.encode() + b"\0" + html_path.with_name(name).read_bytes() + b"\0")
     return digest.hexdigest()[:24]
@@ -103,6 +103,18 @@ def recovery_source() -> str:
 def credential_requests_source() -> str:
     """Trusted packaged card script; no owner storage or request-provided path."""
     return (MODULE_DIR.parent / "credential_requests.js").read_text(encoding="utf-8")
+
+
+def app_updates_source() -> str:
+    """Trusted packaged update banner script; no owner storage."""
+    return (MODULE_DIR.parent / "app_updates.js").read_text(encoding="utf-8")
+
+
+def app_versions() -> dict[str, Any]:
+    """The packaged public version policy for each app shell."""
+    import json
+
+    return json.loads((MODULE_DIR.parent / "app_versions.json").read_text(encoding="utf-8"))
 
 
 def is_module_path(path: str) -> bool:
