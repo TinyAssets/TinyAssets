@@ -225,10 +225,18 @@ def _source_closed(path):
     return path is not None and _source_key(path) in _CLOSED_SOURCES
 
 
-def _decode_text(raw):
-    """Text stays text. One undecodable cell is empty, not a refusal of every center.
+# An owner cell that will not decode. It is not the same as SQL NULL: NULL
+# names nobody, and these bytes may name someone we cannot read.
+_UNREADABLE = object()
 
-    The default factory raises, and its message includes the cell bytes.
+
+def _decode_text(raw):
+    """Text stays text. One undecodable cell is empty.
+
+    Only for cells a caller skips: definitions, capabilities, and convert
+    reads such as ``_keep_vault_backed``. Owner columns that choose a center's
+    owner are read as blobs and decoded by ``_owner_identity`` instead. The
+    default factory raises, and its message includes the cell bytes.
     """
     if isinstance(raw, str):
         return raw
@@ -238,6 +246,25 @@ def _decode_text(raw):
         return raw.decode("utf-8")
     except UnicodeError:
         return None
+
+
+def _owner_identity(raw):
+    """Owner text from a blob. Undecodable bytes are not an absent owner."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            return raw.decode("utf-8")
+        except UnicodeError:
+            return _UNREADABLE
+    return _UNREADABLE
+
+
+def _refuse_center(owners):
+    """Two sentinels: the center matches neither one owner nor none."""
+    owners.update(("\0unreadable-a", "\0unreadable-b"))
 
 
 def _open_ro(path):
@@ -744,13 +771,18 @@ def _owner_groups(db_path, centers):
             if center_col is None or owner_col is None:
                 return groups, False
             query = (
-                f"SELECT {_quote(center_col)}, {_quote(owner_col)} "
+                f"SELECT {_quote(center_col)}, CAST({_quote(owner_col)} AS BLOB) "
                 f"FROM {_quote('llm_credential_deposit_owners')}"
             )
-            for center, owner in db.execute(query):
+            for center, owner_raw in db.execute(query):
                 if not isinstance(center, str) or not _CENTER_RE.fullmatch(center):
                     continue
                 slot = groups.setdefault(center, set())
+                owner = _owner_identity(owner_raw)
+                # A second owner we cannot read must not leave the readable one.
+                if owner is _UNREADABLE:
+                    _refuse_center(slot)
+                    continue
                 if isinstance(owner, str) and owner and not owner.startswith("\0"):
                     slot.add(owner)
     except Exception:
@@ -1121,7 +1153,8 @@ def _confirmed_definition_owner(db, center, document, dests):
     universe_sql = "g.universe_id" if "universe_id" in grant_cols else "NULL"
     dest_sql = "c.destination" if "destination" in conn_cols else "NULL"
     rows = list(db.execute(
-        "SELECT g.owner_user_id, c.owner_user_id, c.credential_ref, "
+        "SELECT CAST(g.owner_user_id AS BLOB), CAST(c.owner_user_id AS BLOB), "
+        "c.credential_ref, "
         f"{universe_sql}, {dest_sql} "
         "FROM outbound_connection_grants g "
         "JOIN outbound_connections c ON c.connection_id = g.connection_id "
@@ -1131,6 +1164,10 @@ def _confirmed_definition_owner(db, center, document, dests):
     if len(rows) != 1:
         return None
     grant_owner, conn_owner, ref_value, grant_universe, stored_dest = rows[0]
+    grant_owner = _owner_identity(grant_owner)
+    conn_owner = _owner_identity(conn_owner)
+    if grant_owner is _UNREADABLE or conn_owner is _UNREADABLE:
+        return _UNREADABLE
     if grant_owner != owner or conn_owner != owner:
         return None
     if "universe_id" in grant_cols and grant_universe != center:
@@ -1157,13 +1194,19 @@ def _add_grant_owners(db, groups, center_dests, evidence):
         return
     dest_sql = "c.destination" if "destination" in conn_cols else "NULL"
     query = (
-        "SELECT g.universe_id, g.owner_user_id, c.owner_user_id, "
+        "SELECT g.universe_id, CAST(g.owner_user_id AS BLOB), "
+        "CAST(c.owner_user_id AS BLOB), "
         f"c.credential_ref, {dest_sql} "
         "FROM outbound_connection_grants g "
         "JOIN outbound_connections c ON c.connection_id = g.connection_id"
     )
-    for universe_id, grant_owner, conn_owner, ref, stored_dest in db.execute(query):
+    for universe_id, grant_raw, conn_raw, ref, stored_dest in db.execute(query):
         if not isinstance(universe_id, str) or universe_id not in center_dests:
+            continue
+        grant_owner = _owner_identity(grant_raw)
+        conn_owner = _owner_identity(conn_raw)
+        if grant_owner is _UNREADABLE or conn_owner is _UNREADABLE:
+            _refuse_center(groups[universe_id])
             continue
         if (not isinstance(grant_owner, str) or not grant_owner
                 or grant_owner != conn_owner):
@@ -1186,6 +1229,9 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
         confirmed = _confirmed_definition_owner(
             db, center, document, center_dests.get(center, set()),
         )
+        if confirmed is _UNREADABLE:
+            _refuse_center(groups[center])
+            continue
         if confirmed is not None:
             owner, dest = confirmed
             groups[center].add(owner)
@@ -1195,7 +1241,8 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
     columns = set(_columns(db, "box_model_sources"))
     if not {"owner", "definition"} <= columns:
         return
-    for row_owner, raw in db.execute("SELECT owner, definition FROM box_model_sources"):
+    for row_raw, raw in db.execute(
+            "SELECT CAST(owner AS BLOB), definition FROM box_model_sources"):
         try:
             document = json.loads(raw) if isinstance(raw, str) else None
         except (ValueError, UnicodeError):
@@ -1205,6 +1252,10 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
         center = document.get("universe_id")
         if not isinstance(center, str) or center not in groups:
             continue
+        row_owner = _owner_identity(row_raw)
+        if row_owner is _UNREADABLE:
+            _refuse_center(groups[center])
+            continue
         doc_owner = document.get("owner_user_id")
         if (isinstance(row_owner, str) and isinstance(doc_owner, str)
                 and row_owner and doc_owner and row_owner != doc_owner):
@@ -1213,6 +1264,9 @@ def _add_definition_owners(db, groups, center_dests, docs, evidence):
         confirmed = _confirmed_definition_owner(
             db, center, document, center_dests.get(center, set()),
         )
+        if confirmed is _UNREADABLE:
+            _refuse_center(groups[center])
+            continue
         if confirmed is not None:
             owner, dest = confirmed
             groups[center].add(owner)
