@@ -158,6 +158,10 @@ authenticate every incoming request with its own per-box credential.
 - **WHEN** a request reaches a box with a missing, wrong-box or forged caller credential
 - **THEN** the box refuses it
 
+#### Scenario: Neither door forwards a non-HTTP scope
+- **WHEN** a websocket, or any ASGI scope other than HTTP and lifespan, reaches the router or a box's ingress
+- **THEN** the door closes the websocket, or fails loudly on any other type, before routing, admission or any handler runs; lifespan still starts the app
+
 ### Requirement: Admission is one record and deletion is one resumable job
 Each owner SHALL have one admission record with one writer. The router, waker
 and egress proxy SHALL decide on that record alone, with the authenticated
