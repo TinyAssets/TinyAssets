@@ -147,22 +147,6 @@ def consent_is_active(universe_dir: str | Path, receiver_id: str) -> bool:
     )
 
 
-def grant_send_consent(
-    universe_dir: str | Path, *, receiver_id: str, granted_by: str
-) -> dict[str, Any]:
-    """Record the one grant. Raises for an id that is not an address."""
-    from tinyassets.storage.effector_consents import grant_consent
-
-    if not _RECEIVER_ID_RE.match(str(receiver_id or "")):
-        raise ValueError("a patch-intake grant names one receiver id")
-    return grant_consent(
-        universe_dir,
-        sink=PATCH_INTAKE_SINK,
-        destination=receiver_id,
-        granted_by=granted_by,
-    )
-
-
 def require_send_consent(*, universe_dir: str | Path, receiver_id: str) -> None:
     """Fence the configured intake behind its grant. Other receivers untouched.
 
@@ -607,7 +591,6 @@ __all__ = [
     "REQUEST_KIND",
     "configured_intake",
     "consent_is_active",
-    "grant_send_consent",
     "rail_entry",
     "request_payload",
     "require_send_consent",

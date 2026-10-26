@@ -491,6 +491,11 @@ def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
     from tinyassets.storage.outbound_connections import _broker_channel
 
     assert read(box.ledger, "center") == []
+    from tests.support.broker_double import grant_consent
+
+    # N10: until it is a model source, a POST is an ordinary call the owner consents to.
+    grant_consent(box.shared, owner="owner", sink="authenticated_external_call",
+                  destination="compute:conn-model")
     channel = _broker_channel(box.root, principal="owner", command_center="center",
                               grant_id="grant-model", connection_id="conn-model")
     assert not box.ledger.grant_requires_inference_usage("grant-model")
@@ -784,16 +789,16 @@ finally:
 
 @pytest.mark.verifies('owner-daemon-in-box:T6')
 def test_authenticated_effector_uses_channel_policy_and_grant(box, monkeypatch):
+    from tests.support.broker_double import grant_consent
     from tinyassets.effectors.authenticated_external_call import (
         run_authenticated_external_call_effector,
     )
-    from tinyassets.storage.effector_consents import grant_consent
     from tinyassets.ta_capabilities import ExecutionContext
 
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     home = box.root / "center"
-    grant_consent(home, sink="authenticated_external_call", destination="compute:conn-model",
-                  granted_by="owner")
+    grant_consent(box.shared, owner="owner", sink="authenticated_external_call",
+                  destination="compute:conn-model")
     packet = {"sink": "authenticated_external_call", "connection_id": "conn-model",
               "grant_id": "grant-model", "verb": "GET", "request": {"path": "/v1/chat"}}
     result = run_authenticated_external_call_effector(
@@ -934,9 +939,11 @@ def test_box_channel_refuses_removed_refresh_operations(box, operation):
         assert rf.read_frame_blocking(channel) is None
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8')
+@pytest.mark.verifies('owner-daemon-in-box:C8',
+                      'owner-daemon-in-box:Owner authority is held by the broker and gated at OPEN')
 @pytest.mark.parametrize("proof_kind", ["valid", "foreign", "expired", "missing"])
-def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_kind):
+def test_box_channel_policy_write_is_refused_whatever_the_proof(box, proof_kind):
+    """N10 reversed this: a box never writes owner policy, even with a live door proof."""
     import hashlib
 
     from tinyassets.broker.client import BrokerClient, BrokerRefused
@@ -960,16 +967,11 @@ def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_
         fields["session_proof"] = {"session_hash": hashlib.sha256(proof.encode()).hexdigest()}
     else:
         fields["cookie"] = proof
-    if proof_kind == "valid":
-        result = client.owner_policy("write", **fields)
-        assert result["generation"] == before["generation"] + 1
-        assert client.owner_policy("read")["generation"] == result["generation"]
-    else:
-        from tinyassets.storage.outbound_connections import ProxyRequestError
+    from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        with pytest.raises((BrokerRefused, ProxyRequestError)):
-            client.owner_policy("write", **fields)
-        assert client.owner_policy("read")["generation"] == before["generation"]
+    with pytest.raises((BrokerRefused, ProxyRequestError)):
+        client.owner_policy("write", **fields)
+    assert client.owner_policy("read")["generation"] == before["generation"]
     assert not list(box.root.rglob("owner-sessions.db"))
 
 

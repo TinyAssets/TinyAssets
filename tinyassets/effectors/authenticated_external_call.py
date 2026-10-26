@@ -752,6 +752,27 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
     }
 
 
+#: The broker's binding refusals (N10), as the dry runs the box's own checks give.
+_AUTHORITY_REFUSALS = {
+    "policy_ask": {
+        "reason": "rule_ask_first", "error_kind": "rule_ask_first",
+        "hint": ("Your owner's rules ask first for this action: raise one request "
+                 "describing it and continue other work until they answer."),
+    },
+    "policy_hand_off": {
+        "reason": "rule_hand_off", "error_kind": "rule_hand_off",
+        "hint": ("Your owner's rules hand this action to them: ask them to do it "
+                 "themselves; do not perform it."),
+    },
+    "consent_missing": {
+        "reason": "missing_consent", "error_kind": "missing_consent",
+        "hint": ("A live authenticated_external_call requires the owner's consent for "
+                 "this connection's destination; the owner grants it in the protected "
+                 "view before the effect can fire."),
+    },
+}
+
+
 def _check_consent(universe_dir: Path, destination: str) -> bool:
     """Whether an active effector-consent grant exists for this destination.
 
@@ -1215,11 +1236,7 @@ def _run(
             "destination": destination,
             "connection_id": connection_id,
             "matched_output_key": matched_key,
-            "hint": (
-                "A live authenticated_external_call requires an active effector-"
-                "consent grant for this connection's destination; grant it through "
-                "the internal consent surface before the effect can fire."
-            ),
+            "hint": _AUTHORITY_REFUSALS["consent_missing"]["hint"],
         }
 
     host, host_error = _resolve_host(request, view)
@@ -1292,18 +1309,16 @@ def _run(
     from tinyassets.bound_requests import take_policy_approval
 
     policy_approval = take_policy_approval() if approved_agent else None
+    # The broker's OPEN is the binding check (N10): it spends the one-use
+    # approval or matches the standing grant itself. These are labels only.
+    authority = {"agent": rule_agent} if rule_agent else {}
+    if policy_approval is not None:
+        authority["approval"] = policy_approval
+    if isinstance(scoped, dict):
+        authority["binding_revision"] = str(scoped.get("binding_revision") or "")
+        if scoped.get("task_id"):
+            authority["task_id"] = str(scoped["task_id"])
     try:
-        if policy_approval is not None:
-            from tinyassets.action_policy import ActionPolicyStore
-            from tinyassets.broker.server import request_digest
-
-            local_policy = ActionPolicyStore(universe_dir)
-            owner = local_policy.runtime.principal
-            digest = request_digest(grant_id=grant_id, connection_id=connection_id,
-                                    verb=verb, request=wire_request)
-            if not local_policy.consume_once(owner, policy_approval, digest,
-                                             local_policy.read(owner).generation):
-                raise PermissionError("action approval is stale or already consumed")
         proxy = _open_connection_proxy(
             data_root=data_root,
             universe_id=universe_id,
@@ -1314,15 +1329,19 @@ def _run(
         from tinyassets.outside_authority import effect_admission
 
         with effect_admission():
-            response = proxy.request(
-                verb, wire_request)
+            response = proxy.request(verb, wire_request, authority=authority)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.
         from urllib.parse import urlsplit
 
+        from tinyassets.broker.client import AuthorityRefused
         from tinyassets.storage.outbound_connections import GrantPathRefused
 
+        if isinstance(exc, AuthorityRefused):
+            return {**_AUTHORITY_REFUSALS[exc.error_class], "dry_run": True,
+                    "destination": destination, "connection_id": connection_id,
+                    "matched_output_key": matched_key}
         if isinstance(exc, GrantPathRefused):
             # Echo only the request the caller already supplied, never a broker
             # message, query, credential substitution, redirect or allowlist.

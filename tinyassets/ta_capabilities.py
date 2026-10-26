@@ -264,14 +264,10 @@ class Capabilities:
                 return {"error": "owner policy unavailable"}
             if arguments:
                 return {"error": "policy show takes no arguments"}
-            from tinyassets.action_policy import owner_policy_operation
-            from tinyassets.broker.client import owner_policy_operation as broker_policy
+            from tinyassets.broker.client import owner_policy_operation
 
             result = await asyncio.to_thread(
-                owner_policy_operation, self.root.parent, self.context.owner, "read",
-                center=self.root.name)
-            result["account"] = await asyncio.to_thread(
-                broker_policy, self.root.parent, self.context.owner, "read")
+                owner_policy_operation, self.root.parent, self.context.owner, "read")
             return {"result": result}
         if name == "policy:propose":
             if not self._bound_policy_owner():
@@ -280,8 +276,6 @@ class Capabilities:
                     or type(arguments["expected_generation"]) is not int
                     or not isinstance(arguments["policy"], dict)):
                 return {"error": "policy proposal requires a generation and document"}
-            from tinyassets.action_policy import owner_policy_operation
-
             encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
             if len(encoded.encode()) > 12000:
                 return {"error": "policy proposal is too large"}

@@ -164,9 +164,14 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     outbound._TrustedNetworkDriver = lambda *_: network
     dispatchers = _Dispatchers(root, allow_test_fixtures=True)
     fence = Fence(root / ".broker/fence.json", verify_lease_proof=lambda *_: True)
+    from tinyassets.broker.policy import PolicyStore
+
+    # N10: the broker holds the owner's rules and consents and gates box OPENs.
+    policy_store = PolicyStore(root, identities)
+    policy_store.bootstrap()
     args = dict(ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
                 ops=OpStore(root / ".broker/ops.db"), fence=fence,
-                owner_identities=identities, data_root=root)
+                owner_identities=identities, data_root=root, policy_store=policy_store)
     door_server = BrokerServer(**args, roles={os.getuid(): OWNER})
     box_server = BrokerServer(**args, roles={os.getuid(): BOX_HOST})
 
@@ -351,7 +356,6 @@ from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL as SINK,
     run_authenticated_external_call_effector,
 )
-from tinyassets.storage.effector_consents import grant_consent
 root, relay, grant, connection, url, succeeds, kind = sys.argv[1:]
 root = Path(root)
 home = root / "center"
@@ -360,12 +364,11 @@ owner_runtime.OWNER_MOUNT = root
 os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
 owner_runtime._is_owner_mount = lambda p: p == root
 os.environ["TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"] = "1"
-# Reuse the effector rig's explicit owner-approved rule and real consent store.
+# Reuse the effector rig's explicit owner-approved rule; the parent granted the
+# consent in the broker's store, as the router does (N10).
 policy_rules.configured_agents = lambda _: {"main"}
 policy_rules.classify = lambda *_: ("app.write", "POST")
 policy_rules.decide = lambda *_a, **_k: policy_rules.Decision(policy_rules.DO, None, "test_policy")
-destination = "model:openrouter_user_models_v1" if "openrouter.ai" in url else "fixture"
-grant_consent(home, sink=SINK, destination=destination, granted_by="owner")
 from tinyassets.owner_centers import Centers
 Centers(root).create("center")
 runtime = owner_runtime.start(Path(relay))
@@ -388,6 +391,12 @@ finally:
     url = ("https://openrouter.ai/api/v1/chat/completions" if rig.kind == "preset"
            else "https://api.example.com/data/{secret}" if rig.kind == "url_secret"
            else "https://api.example.com/data")
+    from tests.support.broker_double import grant_consent
+
+    grant_consent(rig.router.parent / "custody", owner="owner",
+                  sink="authenticated_external_call",
+                  destination=("model:openrouter_user_models_v1" if rig.kind == "preset"
+                               else "fixture"))
     environment = child_env(os.environ)
     for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
         environment.pop(name, None)

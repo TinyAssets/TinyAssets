@@ -3,6 +3,7 @@
 import pytest
 
 from tests.support.admission import drive, projection
+from tests.support.broker_double import grant_consent
 from tests.test_box_git_bridge import git_server  # noqa: F401
 from tests.test_http_redirect_chain import _driver, chain  # noqa: F401
 from tests.test_owner_broker_egress import box, broker  # noqa: F401
@@ -10,12 +11,18 @@ from tinyassets.broker.admission import local_mutate
 from tinyassets.storage import outbound_connections as oc
 from tinyassets.storage.outbound_connections import _classify_global_address
 
+N10_AUTHORITY = 'owner-daemon-in-box:Owner authority is held by the broker and gated at OPEN'
+
 
 @pytest.mark.verifies('owner-daemon-in-box:C7')
 @pytest.mark.parametrize("verb", ["GET", "POST"])
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"])
 def test_model_and_connector_real_broker_refuse_private_before_dial(box, chain, monkeypatch,
                                                                    verb, address):
+    # N10: a non-read call through the box needs the owner's consent at the broker.
+    grant_consent(box.shared, owner="owner", sink="authenticated_external_call",
+                  destination="compute:conn-model")
+
     def dispatch_for(owner, center, grant, resource):
         driver = _driver(chain, resolver=lambda host, port: [address],
                          validator=oc._classify_global_address,
@@ -70,36 +77,35 @@ def test_public_broker_destination_uses_only_its_own_credential(box, chain, host
     assert len(chain.state["requests"]) == 1
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8')
-def test_broker_neither_stores_nor_decides_owner_actions(box):
+@pytest.mark.verifies('owner-daemon-in-box:C8', N10_AUTHORITY)
+def test_the_broker_stores_and_decides_owner_actions(box):
     store = box.broker.server._policy_store
     document = store.read("owner").document
     assert set(document) == {"entries", "spend", "egress"}
     for action in ("workspace.files", "workspace.shell", "workspace.workflows", "app.read",
                    "app.write"):
-        with pytest.raises(PermissionError, match="spending action required"):
-            store.decide("owner", center="center", action_class=action)
-        with pytest.raises(PermissionError, match="invalid approval rule"):
-            store._validate("owner", {**document, "entries": [{"scope": "account",
-                "table": "rules", "values": {"action_class": action, "behaviour": "do"}}]})
+        assert store.decide("owner", center="owner", action_class=action)["decision"] == "allow"
+        store._validate("owner", {**document, "entries": [{"scope": "account",
+            "table": "rules", "values": {"action_class": action, "behaviour": "do"}}]})
+    with pytest.raises(PermissionError, match="unknown action class"):
+        store.decide("owner", center="owner", action_class="anything.else")
+    assert not (box.root / ".action-policy.db").exists()
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8')
+@pytest.mark.verifies('owner-daemon-in-box:C8', N10_AUTHORITY)
 @pytest.mark.parametrize("missing", ["row", "file"])
-def test_missing_local_policy_is_never_recreated_by_a_decision(box, missing):
+def test_missing_owner_policy_is_never_recreated_by_a_decision(box, missing):
     import sqlite3
 
-    from tinyassets.action_policy import ActionPolicyStore
-
-    path = box.root / ".action-policy.db"
+    store = box.broker.server._policy_store
+    path = store._path("owner")
     if missing == "row":
         with sqlite3.connect(path) as db:
             db.execute("DELETE FROM policy")
     else:
         path.unlink()
-    store = ActionPolicyStore(box.root / "center")
-    with pytest.raises((PermissionError, sqlite3.OperationalError)):
-        store.decide("owner", center="center", action_class="workspace.shell")
+    with pytest.raises((PermissionError, RuntimeError)):
+        store.decide("owner", center="owner", action_class="workspace.shell")
     assert path.exists() == (missing == "row")
 
 
@@ -149,6 +155,8 @@ def test_git_public_destination_scopes_credential_to_service(git_server, chain, 
 @pytest.mark.parametrize("missing", ["operation", "credential"])
 def test_public_operation_without_credential_authority_uses_no_secret(box, chain, missing):
     resolved = []
+    grant_consent(box.shared, owner="owner", sink="authenticated_external_call",
+                  destination="compute:conn-model")
     with box.ledger._connect() as db:
         db.execute("UPDATE outbound_connections SET scopes_json='[\"POST\"]'")
 
@@ -183,11 +191,15 @@ def test_public_operation_without_credential_authority_uses_no_secret(box, chain
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C1')
-def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch):
+def test_authority_export_releases_the_volume_handle(tmp_path, monkeypatch):
     import sqlite3
 
-    from tinyassets.action_policy import initialize
+    from tinyassets import authority_export
+    from tinyassets.broker import client
 
+    with sqlite3.connect(tmp_path / authority_export.POLICY_FILE) as db:
+        db.execute("CREATE TABLE policy (singleton INTEGER, document TEXT)")
+        db.execute("INSERT INTO policy VALUES (1, '{\"entries\": []}')")
     opened = []
     connect = sqlite3.connect
 
@@ -197,7 +209,8 @@ def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch)
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", track)
-    initialize(tmp_path / ".action-policy.db")
+    monkeypatch.setattr(client, "owner_policy_operation", lambda *args, **kwargs: {})
+    authority_export.export(tmp_path, "owner")
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         opened[0].execute("SELECT 1")

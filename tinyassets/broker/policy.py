@@ -1,10 +1,11 @@
-"""Broker-owned egress/spending policy and interactive session verification.
+"""Broker-owned owner authority: rules, approvals, consents, egress and spending (N10).
 
-The policy database is never opened by the daemon or by a box. All mutation
-methods here are called only by the broker's policy RPC after it has received
-a protected-session proof (the router's hash, or a legacy owner cookie).
-The broker checks the live router row itself. Owner action policy lives in
-action_policy.py, which reuses document receipts with its own local storage.
+The policy database is never opened by the daemon or by a box. Every widening
+(a policy write, a one-use approval, a consent grant) is called only by the
+broker's policy RPC on the router's owner channel after it has received a
+protected-session proof; the broker checks the live router row itself. The box
+channel reads, previews, decides and narrows. The binding gate for a box's
+OPEN is ``broker/authority_gate.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import stat
 import threading
@@ -26,7 +28,19 @@ from tinyassets.broker.owner_identities import validate_principal
 _LOG = logging.getLogger(__name__)
 
 BEHAVIOURS = ("do", "do_if_preapproved", "ask_first", "hand_off")
-DEFAULT_RULES = {"spend": "ask_first", "money.move": "hand_off"}
+DEFAULT_RULES = {
+    "workspace.files": "do", "workspace.shell": "do", "workspace.workflows": "do",
+    "shell.egress": "do", "app.read": "do", "app.write": "do",
+    "people.message": "ask_first", "commons.publish": "ask_first", "share": "ask_first",
+    "browser.action": "ask_first", "spend": "ask_first", "money.move": "hand_off",
+    "security.change": "hand_off", "access.grant": "hand_off",
+}
+OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.write",
+                   "message": "people.message", "payment": "money.move",
+                   "security": "security.change", "access": "access.grant"}
+TABLES = {"rules", "approval_grants", "operation_kinds", "review_on", "review_off"}
+#: The import of box-held authority (N10 cutover): pending once, then done or none.
+IMPORT_STATES = ("none", "pending", "done")
 
 def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -34,6 +48,27 @@ def _canonical(value: object) -> str:
 
 def _digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(_canonical(value).encode()).hexdigest()
+
+
+def _validate_entry(entry: object) -> None:
+    if (not isinstance(entry, dict) or set(entry) != {"scope", "table", "values"}
+            or entry["scope"] != "account" or entry["table"] not in TABLES
+            or not isinstance(entry["values"], dict)):
+        raise PolicyRefused("invalid scoped policy entry")
+    values = entry["values"]
+    if entry["table"] == "rules" and (values.get("behaviour") not in BEHAVIOURS
+                                      or values.get("action_class") not in DEFAULT_RULES):
+        raise PolicyRefused("invalid approval rule")
+    if entry["table"] == "operation_kinds" and values.get("kind") not in OPERATION_KINDS:
+        raise PolicyRefused("invalid declared operation")
+
+
+def _consent_key(sink: object, destination: object) -> tuple[str, str]:
+    if (not isinstance(sink, str) or not isinstance(destination, str)
+            or not sink.strip() or not destination.strip()
+            or len(sink) > 128 or len(destination) > 1024):
+        raise PolicyRefused("invalid consent")
+    return sink, destination
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +95,7 @@ class PolicyStore:
         self._admissions = admissions
         self._unavailable: dict[str, str] = {}
         self._locks = {}
+        self._import_settled: set[str] = set()
 
     def lock(self, owner):
         return self._locks.setdefault(owner, threading.RLock())
@@ -118,15 +154,27 @@ class PolicyStore:
             CREATE TABLE IF NOT EXISTS spend_reservations (
                 request_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
                 day TEXT NOT NULL, month TEXT NOT NULL, amount INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS once_approvals (
+                token_hash TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
+                session_id TEXT NOT NULL, generation INTEGER NOT NULL,
+                expires_at REAL NOT NULL, consumed_at REAL);
+            CREATE TABLE IF NOT EXISTS consents (
+                sink TEXT NOT NULL, destination TEXT NOT NULL, granted_at REAL NOT NULL,
+                granted_by TEXT NOT NULL, revoked_at REAL, PRIMARY KEY (sink, destination));
+            CREATE TABLE IF NOT EXISTS import_state (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), state TEXT NOT NULL);
         """)
         document = {"entries": [], "egress": {"mode": "open", "destinations": []},
                     "spend": {"daily": None, "monthly": None, "transaction": None,
                               "ask_above": None, "source_ceilings": {}}}
+        version = db.execute("PRAGMA user_version").fetchone()[0]
         if provision and fresh:
             db.execute("INSERT OR IGNORE INTO policy VALUES (1,1,?,?)",
                        (_digest(document), _canonical(document)))
-            db.execute("PRAGMA user_version=1")
-        elif provision and db.execute("PRAGMA user_version").fetchone()[0] == 0:
+            db.execute("INSERT OR IGNORE INTO import_state VALUES (1,'none')")
+            db.execute("PRAGMA user_version=2")
+            version = 2
+        if provision and version == 0:
             # One explicit provisioning upgrade, never a read-time default.
             # No retired egress source is opened or imported.
             db.execute("BEGIN IMMEDIATE")
@@ -147,11 +195,22 @@ class PolicyStore:
                        (time.time(), "provision", owner, row["digest"], digest, generation, "open"))
             db.execute("PRAGMA user_version=1")
             db.commit()
+            version = 1
+        if provision and version == 1:
+            # N10: an owner admitted before authority moved here imports its
+            # box-held rules and consents once, at its box's next start.
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT OR REPLACE INTO import_state VALUES (1,'pending')")
+            db.execute("INSERT INTO receipts(at,kind,owner,outcome) VALUES (?,?,?,?)",
+                       (time.time(), "import", owner, "pending"))
+            db.execute("PRAGMA user_version=2")
+            db.commit()
         return db
 
     def erase(self, owner: str) -> int:
         """Erase policy custody under terminal admission."""
         path = self._path(owner)
+        self._import_settled.discard(owner)
         existed = path.exists()
         for suffix in ("", "-wal", "-shm", "-journal"):
             path.with_name(path.name + suffix).unlink(missing_ok=True)
@@ -200,6 +259,7 @@ class PolicyStore:
             self.bootstrap_owner(owner)
 
     def bootstrap_owner(self, owner: str) -> None:
+        self._import_settled.discard(owner)
         try:
             with closing(self._connect(owner, provision=True)):
                 pass
@@ -346,15 +406,7 @@ class PolicyStore:
         if not isinstance(document["entries"], list):
             raise PolicyRefused("invalid policy entries")
         for entry in document["entries"]:
-            if (not isinstance(entry, dict) or set(entry) != {"scope", "table", "values"}
-                    or entry["scope"] != "account"
-                    or entry["table"] != "rules"
-                    or not isinstance(entry["values"], dict)):
-                raise PolicyRefused("invalid scoped policy entry")
-            if entry["table"] == "rules":
-                if (entry["values"].get("behaviour") not in BEHAVIOURS
-                        or entry["values"].get("action_class") not in DEFAULT_RULES):
-                    raise PolicyRefused("invalid approval rule")
+            _validate_entry(entry)
         spend = document["spend"]
         if not isinstance(spend, dict) or set(spend) != {
                 "daily", "monthly", "transaction", "ask_above", "source_ceilings"}:
@@ -375,15 +427,14 @@ class PolicyStore:
                connection: str = "", operation: str = "", destination: str = "",
                amount: int = 0, source: str = "", agent: str = "*",
                request_id: str = "", approved: bool = False) -> dict:
-        """Classify a broker request, apply the fixed floor, and receipt its decision.
+        """Apply the owner's rules and the fixed floor, and receipt the decision.
 
-        A later box-channel gate calls this same method.  Present connector and
-        spend paths can call it already, so they share one decision source.
-        Amounts are minor currency units; a nonzero amount is reserved only
-        after all rules permit the request.
+        The box's advisory checks and the binding gate in OPEN call this same
+        method, so they share one decision source. Amounts are minor currency
+        units; a nonzero amount is reserved only after all rules permit it.
         """
         if action_class not in DEFAULT_RULES:
-            raise PolicyRefused("spending action required")
+            raise PolicyRefused("unknown action class")
         if (type(amount) is not int or amount < 0
                 or (amount and (not isinstance(request_id, str) or not request_id))):
             raise PolicyRefused("invalid spend amount")
@@ -470,3 +521,283 @@ class PolicyStore:
                         ("ask", "hold") else "refused" if decision == "deny" else "allowed"))
             db.commit()
         return result
+
+    def declared_kind(self, owner: str, connection: str, method: str,
+                      path: str) -> str | None:
+        """The owner's most severe declared kind for this call, or None."""
+        policy = self.read(owner).document
+        method = str(method or "").upper()
+        path = str(path or "/").rstrip("/") or "/"
+        matches = []
+        for entry in policy["entries"]:
+            if entry["table"] != "operation_kinds":
+                continue
+            values = entry["values"]
+            prefix = str(values.get("path_prefix") or "/").rstrip("/") or "/"
+            if (values.get("connection") == connection
+                    and values.get("method", "") in ("", method)
+                    and (prefix == "/" or path == prefix or path.startswith(prefix + "/"))):
+                matches.append(values.get("kind"))
+        severity = {"read": 0, "write": 1, "delete": 2, "message": 3,
+                    "payment": 4, "security": 4, "access": 4}
+        return max(matches, key=lambda kind: severity.get(kind, 4), default=None)
+
+    def classify(self, owner: str, connection: str, method: str,
+                 path: str) -> tuple[str, str]:
+        """Declared HTTP meaning; undeclared calls conservatively count as writes."""
+        kind = self.declared_kind(owner, connection, method, path)
+        return OPERATION_KINDS.get(kind, "app.write"), str(method or "").upper()
+
+    def receipt_gate(self, owner: str, request_digest: str, rule: str, decision: str) -> None:
+        """One receipt for the binding gate's outcome on a box OPEN."""
+        with closing(self._connect(owner)) as db, db:
+            row = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
+            db.execute("INSERT INTO receipts(at,kind,owner,request_digest,generation,rule,"
+                       "decision,outcome) VALUES (?,?,?,?,?,?,?,?)",
+                       (time.time(), "gate", owner, request_digest,
+                        row["generation"] if row else 0, rule, decision,
+                        "allowed" if decision == "allow" else "refused"))
+
+    @staticmethod
+    def _advance(db: sqlite3.Connection) -> int:
+        """One generation for every authority change, consents included."""
+        db.execute("UPDATE policy SET generation=generation+1 WHERE singleton=1")
+        row = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
+        if row is None:
+            raise PolicyRefused("owner policy has not been bootstrapped")
+        return row["generation"]
+
+    def issue_once(self, owner: str, proof: dict, expected_generation: int,
+                   request_digest: str) -> dict:
+        session_id = self._session(owner, proof)
+        if (type(expected_generation) is not int or not isinstance(request_digest, str)
+                or not request_digest.startswith("sha256:") or len(request_digest) != 71):
+            raise PolicyRefused("invalid once approval")
+        token = secrets.token_urlsafe(32)
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
+            if row is None or row["generation"] != expected_generation:
+                raise PolicyRefused("policy changed before approval")
+            db.execute("INSERT INTO once_approvals VALUES (?,?,?,?,?,NULL)",
+                       (hashlib.sha256(token.encode()).hexdigest(), request_digest,
+                        session_id, expected_generation, time.time() + 300))
+            db.execute("INSERT INTO receipts(at,kind,owner,session_id,request_digest,"
+                       "generation,decision,outcome) VALUES (?,?,?,?,?,?,?,?)",
+                       (time.time(), "once_approval", owner, session_id, request_digest,
+                        expected_generation, "allow_once", "issued"))
+            db.commit()
+        return {"token": token, "generation": expected_generation}
+
+    def consume_once(self, owner: str, token: object, request_digest: str) -> bool:
+        """Spend one approval of exactly this request at the current generation."""
+        if not isinstance(token, str) or not token or len(token) > 512:
+            return False
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
+            if current is None:
+                return False
+            cursor = db.execute(
+                "UPDATE once_approvals SET consumed_at=? WHERE token_hash=? "
+                "AND request_digest=? AND generation=? AND expires_at>? "
+                "AND consumed_at IS NULL",
+                (time.time(), hashlib.sha256(token.encode()).hexdigest(), request_digest,
+                 current["generation"], time.time()),
+            )
+            if cursor.rowcount != 1:
+                return False
+            db.execute("INSERT INTO receipts(at,kind,owner,request_digest,generation,"
+                       "decision,outcome) VALUES (?,?,?,?,?,?,?)",
+                       (time.time(), "once_approval", owner, request_digest,
+                        current["generation"], "allow_once", "consumed"))
+            db.commit()
+        return True
+
+    def standing_grant(self, owner: str, candidate: dict, *, task_id: str = "") -> str | None:
+        """The decision id of a live owner-issued grant covering ``candidate``."""
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
+                             ).fetchone()
+            if row is None:
+                raise PolicyRefused("owner policy has not been bootstrapped")
+            document = json.loads(row["document"])
+            if _digest(document) != row["digest"]:
+                raise RuntimeError("policy digest mismatch")
+            for entry in document["entries"]:
+                values = entry["values"]
+                if (entry["table"] not in ("rules", "approval_grants")
+                        or values.get("record_kind", "behavior") != "preapproval"):
+                    continue
+                try:
+                    grant = json.loads(values.get("grant_json") or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if (not isinstance(grant, dict) or grant.get("revoked")
+                        or any(grant.get(key) != value for key, value in candidate.items())
+                        or grant.get("scope") not in ("task", "site", "always")):
+                    continue
+                expires = grant.get("expires_at")
+                if expires is not None and (type(expires) not in (int, float)
+                                            or expires <= time.time()):
+                    continue
+                if grant["scope"] == "task" and (not task_id or grant.get("task_id") != task_id):
+                    continue
+                decision_id = str(values.get("decision_id") or values.get("id") or "")
+                db.execute("INSERT INTO receipts(at,kind,owner,generation,rule,decision,outcome)"
+                           " VALUES (?,?,?,?,?,?,?)",
+                           (time.time(), "standing_grant", owner, row["generation"],
+                            decision_id, "allow", "matched"))
+                db.commit()
+                return decision_id
+        return None
+
+    def consents(self, owner: str, *, sink: str | None = None,
+                 active_only: bool = True) -> list[dict]:
+        clauses, params = [], []
+        if sink:
+            clauses.append("sink=?")
+            params.append(sink)
+        if active_only:
+            clauses.append("revoked_at IS NULL")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with closing(self._connect(owner)) as db:
+            rows = db.execute(
+                "SELECT sink,destination,granted_at,granted_by,revoked_at FROM consents "
+                f"{where} ORDER BY granted_at DESC, sink, destination", params).fetchall()
+        return [dict(row) for row in rows]
+
+    def consent_active(self, owner: str, sink: str, destination: str) -> bool:
+        if not sink or not destination:
+            return False
+        with closing(self._connect(owner)) as db:
+            return db.execute("SELECT 1 FROM consents WHERE sink=? AND destination=? "
+                              "AND revoked_at IS NULL", (sink, destination)).fetchone() is not None
+
+    def grant_consent(self, owner: str, proof: dict, sink: str, destination: str) -> dict:
+        """Widening: only an interactive owner session on the router's channel."""
+        session_id = self._session(owner, proof)
+        sink, destination = _consent_key(sink, destination)
+        now = time.time()
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO consents VALUES (?,?,?,?,NULL) ON CONFLICT(sink,destination) "
+                       "DO UPDATE SET granted_at=excluded.granted_at,"
+                       "granted_by=excluded.granted_by,revoked_at=NULL",
+                       (sink, destination, now, owner))
+            generation = self._advance(db)
+            db.execute("INSERT INTO receipts(at,kind,owner,session_id,request_digest,"
+                       "generation,rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?)",
+                       (now, "consent_grant", owner, session_id,
+                        _digest({"sink": sink, "destination": destination}), generation,
+                        sink, "allow", "committed"))
+            db.commit()
+        return {"sink": sink, "destination": destination, "granted_at": now,
+                "granted_by": owner, "revoked_at": None}
+
+    def revoke_consent(self, owner: str, sink: str, destination: str) -> bool:
+        """Narrowing: either channel may take a consent back."""
+        sink, destination = _consent_key(sink, destination)
+        now = time.time()
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            hit = db.execute("UPDATE consents SET revoked_at=? WHERE sink=? AND destination=? "
+                             "AND revoked_at IS NULL", (now, sink, destination)).rowcount
+            if hit:
+                generation = self._advance(db)
+                db.execute("INSERT INTO receipts(at,kind,owner,request_digest,generation,"
+                           "rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?)",
+                           (now, "consent_revoke", owner,
+                            _digest({"sink": sink, "destination": destination}), generation,
+                            sink, "deny", "committed"))
+            db.commit()
+        return bool(hit)
+
+    def import_pending(self, owner: str) -> bool:
+        if owner in self._import_settled:
+            return False
+        with closing(self._connect(owner)) as db:
+            row = db.execute("SELECT state FROM import_state WHERE singleton=1").fetchone()
+        if row is None or row["state"] != "pending":
+            self._import_settled.add(owner)
+            return False
+        return True
+
+    def abandon_import(self, owner: str) -> None:
+        """Another box operation came first: the owner keeps defaults, loudly."""
+        if not self.import_pending(owner):
+            return
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM import_state WHERE singleton=1").fetchone()
+            if row is not None and row["state"] == "pending":
+                db.execute("UPDATE import_state SET state='none' WHERE singleton=1")
+                db.execute("INSERT INTO receipts(at,kind,owner,decision,outcome) "
+                           "VALUES (?,?,?,?,?)",
+                           (time.time(), "import", owner, "alarm", "abandoned"))
+                _LOG.error("ALARM: owner authority import abandoned for %s", owner)
+            db.commit()
+        self._import_settled.add(owner)
+
+    def import_authority(self, owner: str, document: object) -> dict:
+        """Accept the box's one export while pending; invalid entries are counted."""
+        if (not isinstance(document, dict)
+                or set(document) != {"source_digest", "entries", "consents"}
+                or not isinstance(document["source_digest"], str)
+                or len(document["source_digest"]) > 80
+                or not isinstance(document["entries"], list)
+                or not isinstance(document["consents"], list)):
+            raise PolicyRefused("invalid authority import")
+        kept, consents, dropped = [], [], 0
+        for entry in document["entries"]:
+            try:
+                _validate_entry(entry)
+            except PolicyRefused:
+                dropped += 1
+                continue
+            kept.append(entry)
+        for row in document["consents"]:
+            try:
+                if (not isinstance(row, dict)
+                        or set(row) != {"sink", "destination", "granted_at", "granted_by"}
+                        or type(row["granted_at"]) not in (int, float)
+                        or not isinstance(row["granted_by"], str)):
+                    raise PolicyRefused("invalid consent")
+                _consent_key(row["sink"], row["destination"])
+            except PolicyRefused:
+                dropped += 1
+                continue
+            consents.append(row)
+        consents.sort(key=lambda row: -row["granted_at"])
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            state = db.execute("SELECT state FROM import_state WHERE singleton=1").fetchone()
+            if state is None or state["state"] != "pending":
+                raise PolicyRefused("authority import is not pending")
+            row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
+                             ).fetchone()
+            if row is None:
+                raise PolicyRefused("owner policy has not been bootstrapped")
+            policy = json.loads(row["document"])
+            if _digest(policy) != row["digest"]:
+                raise RuntimeError("policy digest mismatch")
+            policy["entries"] = policy["entries"] + kept
+            self._validate(owner, policy)
+            generation, digest = row["generation"] + 1, _digest(policy)
+            db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
+                       (generation, digest, _canonical(policy)))
+            inserted = sum(db.execute(
+                "INSERT OR IGNORE INTO consents VALUES (?,?,?,?,NULL)",
+                (item["sink"], item["destination"], item["granted_at"], item["granted_by"]),
+            ).rowcount for item in consents)
+            db.execute("UPDATE import_state SET state='done' WHERE singleton=1")
+            counts = {"entries": len(kept), "consents": inserted, "dropped": dropped}
+            db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,request_digest,"
+                       "generation,rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (time.time(), "import", owner, row["digest"], digest,
+                        document["source_digest"], generation, _canonical(counts), "allow",
+                        "committed"))
+            db.commit()
+        self._import_settled.add(owner)
+        return {"generation": generation, **counts}

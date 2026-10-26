@@ -61,13 +61,14 @@ from tinyassets.agent_definition import (
     parse_settings,
 )
 from tinyassets.storage import db_path
-from tinyassets.storage.platform_state_move import MIGRATING
 from tinyassets.universe_files import (
     list_universe_dir,
     unlink_universe_file,
     write_universe_file,
 )
 
+#: The layout marker's in-progress state for a one-way data move.
+MIGRATING = "migrating"
 MIGRATION = "agent-files"
 NOT_AN_AGENT_ROLES = frozenset({"app_experience"})
 #: ``check``'s exit status while the volume still holds bindings to move.

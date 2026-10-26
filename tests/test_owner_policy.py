@@ -86,7 +86,7 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(
     before = store.read("alice")
     assert before.generation == 1
     assert before.document["entries"] == []
-    assert store._path("alice") == tmp_path / ".action-policy.db"
+    assert store._path("alice").parent.parent == tmp_path / ".broker" / "accounts"
     assert store.decide("alice", center="alpha", action_class="app.write")["decision"] == "allow"
     assert legacy.read_bytes() == original
 
@@ -206,13 +206,13 @@ def test_once_approval_is_exact_and_stale_generation_refused(tmp_path, local_act
     digest = "sha256:" + "1" * 64
     token = store.issue_once("alice", local_action_policy.proof,
                              current.generation, digest)["token"]
-    assert not store.consume_once("alice", token, "sha256:" + "2" * 64, current.generation)
-    assert store.consume_once("alice", token, digest, current.generation)
-    assert not store.consume_once("alice", token, digest, current.generation)
+    assert not store.consume_once("alice", token, "sha256:" + "2" * 64)
+    assert store.consume_once("alice", token, digest)
+    assert not store.consume_once("alice", token, digest)
     token = store.issue_once("alice", local_action_policy.proof,
                              current.generation, digest)["token"]
     store.write("alice", local_action_policy.proof, current.generation, current.document)
-    assert not store.consume_once("alice", token, digest, current.generation)
+    assert not store.consume_once("alice", token, digest)
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T2')
@@ -226,6 +226,7 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     store.bootstrap()
     current = store.read("alice")
     peer = object.__new__(_Connection)
+    peer._role = "owner"  # the router's owner channel
     peer._server = SimpleNamespace(_policy_store=store, _streams={},
                                    _streams_lock=__import__("threading").Lock())
     document = json.loads(json.dumps(current.document))
@@ -274,21 +275,19 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path, lo
         "id": 5, "agent": "main", "record_kind": "preapproval",
         "decision_id": "grant-5", "grant_json": json.dumps(grant)}})
     written = store.write("alice", local_action_policy.proof, current.generation, document)
-    query = {"center": "alpha", "generation": written.generation,
-             "decision_id": "grant-5", "action_class": "app.write",
-             "connection": "conn", "operation": "POST",
-             "origin": "https://example.com", "agent": "main"}
-    assert store.allows_grant("alice", **query)
-    assert not store.allows_grant("alice", **{**query, "agent": "worker"})
-    assert store.allows_grant("alice", **{**query, "center": "beta"})
+    query = {"owner": "alice", "action_class": "app.write", "connection": "conn",
+             "operation": "POST", "origin": "https://example.com", "agent": "main"}
+    assert store.standing_grant("alice", query) == "grant-5"
+    assert store.standing_grant("alice", {**query, "agent": "worker"}) is None
     edited = json.loads(json.dumps(document))
     edited["entries"].append({"scope": "account", "table": "review_on",
                               "values": {"agent": "worker"}})
-    later = store.write("alice", local_action_policy.proof, written.generation, edited)
-    assert store.allows_grant("alice", **{**query, "generation": later.generation})
+    store.write("alice", local_action_policy.proof, written.generation, edited)
+    assert store.standing_grant("alice", query) == "grant-5"
+    later = store.read("alice")
     edited["entries"].pop(0)
-    revoked = store.write("alice", local_action_policy.proof, later.generation, edited)
-    assert not store.allows_grant("alice", **{**query, "generation": revoked.generation})
+    store.write("alice", local_action_policy.proof, later.generation, edited)
+    assert store.standing_grant("alice", query) is None
 
 
 @pytest.mark.verifies('owner-daemon-in-box:T2')
@@ -317,22 +316,12 @@ def test_spend_caps_stay_under_approvals_without_egress_policy(tmp_path):
 
 
 @pytest.fixture
-def local_action_policy(tmp_path, monkeypatch):
-    import os
-
-    from tinyassets import owner_runtime
-    from tinyassets.action_policy import ActionPolicyStore, initialize
-    from tinyassets.auth.middleware import identity_context
-    from tinyassets.auth.provider import Identity
-
-    initialize(tmp_path / ".action-policy.db")
-    runtime = owner_runtime.OwnerRuntime("alice", os.getuid(), tmp_path, os.getpid(), None)
-    monkeypatch.setattr(owner_runtime, "_runtime", runtime)
-    proof = {"session_hash": "a" * 64}
-    session = {**proof, "identity_json": json.dumps({"user_id": "alice"}),
-               "expires_at": time.time() + 3600}
-    with identity_context(Identity(user_id="alice", username="alice",
-                                   metadata={"router_owner_session": session})):
-        store = ActionPolicyStore(tmp_path / "alpha")
-        store.proof = proof
-        yield store
+def local_action_policy(tmp_path):
+    """N10: action rules and approvals live in the broker's per-owner store."""
+    cookie = "router-session-" + "r" * 32
+    _session(tmp_path, "alice", cookie)
+    _session(tmp_path, "bob", "router-session-" + "s" * 32)
+    store = PolicyStore(tmp_path, admissions(tmp_path))
+    store.bootstrap()
+    store.proof = {"session_hash": hashlib.sha256(cookie.encode()).hexdigest()}
+    return store

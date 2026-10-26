@@ -81,7 +81,7 @@ PLATFORM_NAMES = frozenset({
 PLATFORM_DB_NAMES: frozenset[str] = frozenset({
     ".conversation_memory.db", ".conversation_attention.db", ".subscription_state.db",
     ".pending_requests.db", ".usage_ledger.db", ".wiki_write_back_destination_markers.db",
-    ".authoring.db", ".effector_consents.db", ".external_write_receipts.db",
+    ".authoring.db", ".external_write_receipts.db",
     ".idempotency.db", "rules.db", "steering.db",
 })
 

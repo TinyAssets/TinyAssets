@@ -36,6 +36,11 @@ def removal(discovery, monkeypatch):
     (discovery.root / "cc-alice").mkdir()
     grant_universe_access(discovery.root, universe_id="cc-alice", actor_id="alice",
                           permission="admin")
+    # N10: removal takes back the owner's broker-held consents, so the box
+    # serving this center must be alice's.
+    from tinyassets.daemon_server import grant_universe_ownership
+
+    grant_universe_ownership(discovery.root, universe_id="cc-alice", owner_id="alice")
     connection, grant = _ids(owner="alice", destination="fixture")
     discovery.ledger.create_connection(
         connection_id=connection, owner_user_id="alice", connection_class="http",

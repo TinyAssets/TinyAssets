@@ -114,7 +114,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/account/delete", "/app/account/deletion/{key}/{token}",
         "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
         "/app/account/timezone", "/app/ui-prefs",
-        "/app/api/policy", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
+        "/app/api/policy", "/app/api/consents",
+        "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
         "/app/turn/interrupt", "/app/turn/pending",
         # The activities live projection (harness D2a).
         "/app/live",
@@ -151,7 +152,7 @@ def test_route_is_apex_app_get(monkeypatch):
     assert by_path["/app/{slug}/publish"].methods == {"POST"}
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
-    for path in ("/app/api/policy", "/app/memory"):
+    for path in ("/app/api/policy", "/app/api/consents", "/app/memory"):
         assert by_path[path].methods == {"GET", "HEAD", "POST"}
     for post_only in (
         "/app/token",

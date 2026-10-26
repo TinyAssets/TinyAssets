@@ -1144,119 +1144,122 @@ async def _handle_profile(request: Any) -> Any:
         return JSONResponse({"error": "profile_unavailable"}, status_code=503, headers=_NO_STORE)
     return JSONResponse(profile, headers=_NO_STORE)
 
-async def _handle_policy(request: Any) -> Any:
-    """Edit local action rules, or the separately broker-held spending policy."""
-    from functools import partial
-
-    from starlette.concurrency import run_in_threadpool
+async def _owner_authority_session(request: Any) -> tuple[Any, Any]:
+    """Router-served N10 owner authority: (owner, refusal). Never inside a box."""
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.action_policy import PolicyRefused
-    from tinyassets.action_policy import owner_policy_operation as action_policy
-    from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.broker.client import BrokerRefused
-    from tinyassets.broker.client import owner_policy_operation as spending_policy
-    from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.owner_runtime import current
 
     if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
+        return None, PlainTextResponse("Not Found", status_code=404)
     denied = _app_identity_required()
     if denied is not None:
-        return denied
-    identity = current_identity()
-    owner = identity.user_id
-    center = await run_in_threadpool(_read_home, identity)
-    if not center:
-        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
-    scope = request.query_params.get("scope", "actions")
-    if scope not in {"actions", "spend", "egress"}:
-        return JSONResponse({"error": "invalid_policy_scope"}, status_code=400)
-    owner_policy_operation = (partial(action_policy, center=center)
-                              if scope == "actions" else spending_policy)
-    if request.method == "GET":
-        result = await run_in_threadpool(owner_policy_operation, _base_path(), owner, "read")
-        receipts = await run_in_threadpool(
-            owner_policy_operation, _base_path(), owner, "receipts")
-        return JSONResponse({**result, **receipts, "center": center}, headers=_NO_STORE)
+        return None, denied
+    if current() is not None:
+        # The session proof is presented by the router only; a box never widens.
+        return None, JSONResponse({"error": "owner_authority_requires_router"},
+                                  status_code=403, headers=_NO_STORE)
+    return current_identity().user_id, None
+
+
+def _owner_proof(request: Any, owner: str) -> Any:
+    """The protected-view proof, or the refusal response."""
+    from starlette.responses import JSONResponse
+
+    from tinyassets.onboarding.owner_sessions import require
+
     if not _same_origin_json(request, str(app_config().get("resource") or "")):
-        return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
-                            headers=_NO_STORE)
+        return None, JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
+                                  headers=_NO_STORE)
     try:
         session = require(request, owner=owner)
     except PermissionError:
-        return JSONResponse({"error": "interactive_owner_session_required"},
-                            status_code=403, headers=_NO_STORE)
-    session_proof = {"session_hash": session["session_hash"]}
-    data = await _read_small_json(request)
-    if not isinstance(data, dict):
-        return JSONResponse({"error": "invalid_policy"}, status_code=400,
-                            headers=_NO_STORE)
-    if set(data) == {"expected_generation", "policy"}:
-        action, fields = "write", dict(expected_generation=data["expected_generation"],
-                                       policy=data["policy"])
-    elif data.get("action") == "apply_proposal" and set(data) == {
-            "action", "center", "request_id"}:
-        from tinyassets.api.pending_requests import displayed_row_matches
-        from tinyassets.owner_centers import admitted_owner
-        from tinyassets.storage.pending_requests import get_request, resolve_request
+        return None, JSONResponse({"error": "interactive_owner_session_required"},
+                                  status_code=403, headers=_NO_STORE)
+    return {"session_hash": session["session_hash"]}, None
 
-        proposed_center = data["center"]
-        if (not isinstance(proposed_center, str)
-                or not isinstance(data["request_id"], str)
-                or await run_in_threadpool(admitted_owner, _base_path(), center=proposed_center)
-                != owner):
-            return JSONResponse({"error": "proposal_not_found"}, status_code=404,
-                                headers=_NO_STORE)
-        pending_home = _base_path() / proposed_center
-        row = await run_in_threadpool(get_request, pending_home, data["request_id"])
-        if (row is None or row["status"] != "pending" or not displayed_row_matches(row)
-                or row["action"].get("type") != "policy_proposal"):
-            return JSONResponse({"error": "proposal_not_found"}, status_code=404,
-                                headers=_NO_STORE)
-        proposal = row["action"]
-        if "egress" in proposal["policy"]:
-            owner_policy_operation = spending_policy
-        if "egress" in proposal["policy"]:
-            owner_policy_operation = spending_policy
-        try:
-            result = await run_in_threadpool(
-                owner_policy_operation, _base_path(), owner, "write",
-                session_proof=session_proof,
-                expected_generation=proposal["expected_generation"],
-                policy=proposal["policy"])
-        except (BrokerRefused, PolicyRefused):
-            return JSONResponse({"error": "policy_changed_or_session_required"},
-                                status_code=409, headers=_NO_STORE)
-        resolved = await run_in_threadpool(
-            resolve_request, pending_home, data["request_id"], status="answered",
-            answer={"policy_digest": result["digest"]}, decision="accepted")
-        if not resolved:
-            return JSONResponse({"error": "policy_applied_request_unresolved",
-                                 "generation": result["generation"]}, status_code=503,
-                                headers=_NO_STORE)
-        return JSONResponse({**result, "center": proposed_center,
-                             "request_id": data["request_id"]}, headers=_NO_STORE)
-    elif data.get("action") == "issue_once" and set(data) == {
-            "action", "expected_generation", "center", "grant_id", "connection_id",
-            "verb", "request", "destination"}:
-        action = "issue_once"
-        fields = {key: value for key, value in data.items() if key != "action"}
-    else:
-        return JSONResponse({"error": "invalid_policy"}, status_code=400,
-                            headers=_NO_STORE)
+
+async def _owner_authority_submit(owner: str, action: str, **fields: Any) -> Any:
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse
+
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.broker.policy_submit import submit
+
     try:
-        result = await run_in_threadpool(
-            owner_policy_operation, _base_path(), owner, action,
-            session_proof=session_proof, **fields)
-    except (BrokerRefused, PolicyRefused):
-        return JSONResponse({"error": "interactive_owner_session_required"},
-                            status_code=403, headers=_NO_STORE)
-    if action == "write":
-        receipts = await run_in_threadpool(
-            owner_policy_operation, _base_path(), owner, "receipts")
-        result = {**result, **receipts}
-    return JSONResponse({**result, "center": center}, headers=_NO_STORE)
+        return await run_in_threadpool(submit, _base_path(), owner, action, **fields), None
+    except PolicyRefused as exc:
+        reason = str(exc)
+        status = 409 if "changed" in reason else 403
+        return None, JSONResponse({"error": "owner_authority_refused", "reason": reason},
+                                  status_code=status, headers=_NO_STORE)
+    except RuntimeError:
+        return None, JSONResponse({"error": "owner_authority_unavailable"},
+                                  status_code=503, headers=_NO_STORE)
+
+
+async def _handle_policy(request: Any) -> Any:
+    """The owner's one broker-held policy: read, write, and one-use approvals (N10)."""
+    from starlette.responses import JSONResponse
+
+    owner, refused = await _owner_authority_session(request)
+    if refused is not None:
+        return refused
+    if request.method == "GET":
+        result, refused = await _owner_authority_submit(owner, "read")
+        if refused is None:
+            receipts, refused = await _owner_authority_submit(owner, "receipts")
+        return refused or JSONResponse({**result, **receipts}, headers=_NO_STORE)
+    proof, refused = _owner_proof(request, owner)
+    if refused is not None:
+        return refused
+    data = await _read_small_json(request)
+    if isinstance(data, dict) and set(data) == {"expected_generation", "policy"}:
+        action = "write"
+    elif isinstance(data, dict) and data.get("action") == "issue_once" and set(data) == {
+            "action", "expected_generation", "grant_id", "connection_id", "verb",
+            "request", "destination"}:
+        action = "issue_once"
+    else:
+        return JSONResponse({"error": "invalid_policy"}, status_code=400, headers=_NO_STORE)
+    fields = {key: value for key, value in data.items() if key != "action"}
+    result, refused = await _owner_authority_submit(owner, action, session_proof=proof,
+                                                    **fields)
+    if refused is None and action == "write":
+        receipts, refused = await _owner_authority_submit(owner, "receipts")
+        result = {**result, **(receipts or {})}
+    return refused or JSONResponse(result, headers=_NO_STORE)
+
+
+async def _handle_consents(request: Any) -> Any:
+    """The owner's broker-held effector consents: read, grant, revoke (N10)."""
+    from starlette.responses import JSONResponse
+
+    owner, refused = await _owner_authority_session(request)
+    if refused is not None:
+        return refused
+    if request.method == "GET":
+        result, refused = await _owner_authority_submit(owner, "consents_read", sink="",
+                                                        active_only=True)
+        return refused or JSONResponse(result, headers=_NO_STORE)
+    proof, refused = _owner_proof(request, owner)
+    if refused is not None:
+        return refused
+    data = await _read_small_json(request)
+    if (not isinstance(data, dict) or set(data) != {"action", "sink", "destination"}
+            or data["action"] not in {"grant", "revoke"}
+            or not isinstance(data["sink"], str) or not isinstance(data["destination"], str)):
+        return JSONResponse({"error": "invalid_consent"}, status_code=400, headers=_NO_STORE)
+    if data["action"] == "grant":
+        result, refused = await _owner_authority_submit(
+            owner, "consent_grant", session_proof=proof, sink=data["sink"],
+            destination=data["destination"])
+    else:
+        result, refused = await _owner_authority_submit(
+            owner, "consent_revoke", sink=data["sink"], destination=data["destination"])
+    return refused or JSONResponse(result, headers=_NO_STORE)
 
 
 async def _handle_account_timezone(request: Any) -> Any:
@@ -2083,6 +2086,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),
+        Route("/app/api/consents", _handle_consents, methods=["GET", "POST"]),
         Route("/app/wakes", handle_wakes, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/soul", handle_soul, methods=["GET", "POST"]),

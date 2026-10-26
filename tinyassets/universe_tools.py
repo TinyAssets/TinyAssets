@@ -4968,12 +4968,9 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     if act == "approve" and named & person_only_sinks():
         # The `workspace` sink was admitted to the served build surface BECAUSE
         # its consents are typed per (op, connection, repo) and answered by the
-        # owner on the request rail. This verb writes into the same
-        # `effector_consents` store the workspace effector reads
-        # (`_approve_sink` -> `grant_consent`; `is_consent_active` on the way
-        # out), so leaving it open here would let the agent grant itself the
-        # repository access the rail exists to gate -- and the justification for
-        # widening the allowlist would be circular.
+        # owner on the request rail. Since N10 `_approve_sink` grants nothing at
+        # all (consents are broker-held and only the router grants them); this
+        # keeps the clearer, sink-specific message for the person-only sinks.
         #
         # Found by a Codex refute review of PR #2742 (Q1) and confirmed against
         # this tree. Current serving-owner admission does not substitute for

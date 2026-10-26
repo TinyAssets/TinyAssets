@@ -61,7 +61,6 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
 #: Owner-written stores not fenced yet. Safe while exactly one owner tree runs
 #: (today's deploy shape); each must move to :data:`FENCED` before C2.
 FENCE_BEFORE_C2: frozenset[str] = frozenset({
-    "tinyassets/action_policy.py",
     "tinyassets/owner_centers.py",
     "tinyassets/account_deletion.py",
     "tinyassets/agent_activities.py",
@@ -153,7 +152,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/conversation_custody.py",
     "tinyassets/storage/conversation_run_admissions.py",
     "tinyassets/storage/deliveries.py",
-    "tinyassets/storage/effector_consents.py",
     "tinyassets/storage/external_write_receipts.py",
     "tinyassets/storage/inbound_events.py",
     "tinyassets/storage/model_preferences.py",

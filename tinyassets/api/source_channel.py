@@ -41,10 +41,8 @@ CHANNEL_SOURCE_CODE = "source_code"
 def person_only_sinks() -> frozenset[str]:
     """Consent sinks the OWNER answers on the request rail, never self-approved.
 
-    This verb writes into the very ``effector_consents`` store those rails feed,
-    so a sink whose whole point is a person's tap must be refused here or the
-    rail is a formality the agent can walk around -- it shares the owner's
-    principal, so no authorization check downstream can tell the two apart.
+    Since N10 this verb grants no sink at all (``_approve_sink``); these keep
+    their earlier, more specific refusal at the served handle.
 
     ``workspace`` was the first (Codex refute review of PR #2742, Q1);
     ``patch_intake`` is the second, and it was missed in exactly the same way --
@@ -373,65 +371,24 @@ def _approve_sink(
     channel_type: str,
     fields: dict[str, Any],
 ) -> str:
-    """Approve a sink/effector channel via the shared effector-consent store.
+    """Refused for every sink: an agent-reachable verb never grants consent (N10).
 
-    ``channel_type`` is the sink name (e.g. ``authenticated_external_call``), or the
-    caller may pass ``sink`` explicitly. ``granted_by`` is the authenticated
-    owner — stronger than the legacy ``grant_effector_consent`` which derived it
-    from the ambient ``UNIVERSE_SERVER_USER`` env.
+    Consents are broker-held, and the broker accepts a grant only from the
+    router with the owner's protected-session proof. This verb shares the
+    owner's principal with the agent, so it can only point the owner there.
     """
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.storage.effector_consents import grant_consent
+    from tinyassets.api.extensions_consent_actions import PERSON_ONLY_DETAIL
 
     sink = (fields.get("sink") or channel_type or "").strip()
-    destination = (fields.get("destination") or "").strip()
-    if not sink:
-        return json.dumps({
-            "error": "sink (or channel_type) is required for a sink channel",
-            "failure_class": "missing_sink",
-            "actionable_by": "chatbot",
-        })
-    if not destination:
-        return json.dumps({
-            "error": "destination is required for a sink channel",
-            "failure_class": "missing_destination",
-            "actionable_by": "chatbot",
-        })
-    # THE authority check, in the one function that writes the grant. The served
-    # handle refuses these earlier with a friendlier message, but a refusal that
-    # lives only at one entry point is a refusal with a way around it.
-    if sink in person_only_sinks():
-        return json.dumps({
-            "error": "consent_is_person_only",
-            "failure_class": "consent_is_person_only",
-            "actionable_by": "user",
-            "detail": (
-                ('The owner approves patch_intake in their app. Once approved, use '
-                 'write_graph target="patch_request" operation="send".')
-                if sink == "patch_intake" else
-                f'"{sink}" consent is answered by the command center\'s owner on the '
-                "request rail, not granted here. Ask for it there."
-            ),
-        })
-    try:
-        universe_dir = _universe_dir(uid)
-    except ValueError:
-        return json.dumps({
-            "error": f"Invalid universe_id: {uid}",
-            "failure_class": "invalid_universe",
-            "actionable_by": "chatbot",
-        })
-    record = grant_consent(
-        universe_dir,
-        sink=sink,
-        destination=destination,
-        granted_by=actor,
-    )
     return json.dumps({
-        "status": "granted",
+        "error": "consent_is_person_only",
+        "failure_class": "consent_is_person_only",
+        "actionable_by": "user",
         "channel_type": sink,
-        "universe_id": uid,
-        "consent": record,
+        "detail": (
+            'The owner approves patch_intake in their app. Once approved, use '
+            'write_graph target="patch_request" operation="send".'
+            if sink == "patch_intake" else PERSON_ONLY_DETAIL),
     })
 
 

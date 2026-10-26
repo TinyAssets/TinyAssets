@@ -905,13 +905,19 @@
         <p>Approval rules, egress hosts and spend caps for this account. Only your protected
         owner session can save changes. Your agent can send a proposal for you to review.</p>
         <p>A spend cap pauses model requests whose maximum cost is unknown.</p>
-        <label>Policy <select id="policy-scope"><option value="actions">Actions</option><option value="egress">Internet and spending</option></select></label>
         <p>Internet modes: open, allowlist, or ask. Destination rules allow future connections until removed.</p>
         <textarea id="policy-json" aria-label="Owner policy JSON" spellcheck="false"></textarea>
         <button id="btn-policy-save" class="btn btn--primary" type="button">Save policy</button>
         <div id="rules-status" class="notice" role="status"></div>
         <h4>Recent policy activity</h4>
         <div id="policy-activity" aria-label="Policy activity"></div>
+        <h4>Consents</h4>
+        <p>Your agent makes live calls through a connection only after you allow it here.</p>
+        <div id="consent-list" aria-label="Consents"></div>
+        <label>Connection <input id="consent-destination" type="text" autocomplete="off"></label>
+        <button id="btn-consent-grant" class="btn btn--ghost"
+          type="button">Allow live calls</button>
+        <div id="consent-status" class="notice" role="status"></div>
         <h3>Request notifications</h3>
         <p>Get notified when your agent is waiting on you. Turning this off stops notifications on all your devices.</p>
         <button id="btn-notifications" class="btn btn--ghost" type="button" disabled>Loading notifications...</button>

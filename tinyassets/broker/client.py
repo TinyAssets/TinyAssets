@@ -30,6 +30,15 @@ class BrokerRefused(PermissionError):
     """The broker refused the stream before anything was sent."""
 
 
+class AuthorityRefused(BrokerRefused):
+    """N10: the owner's rules or consents refused a box OPEN; nothing was sent."""
+
+    def __init__(self, error_class: str) -> None:
+        super().__init__(f"owner authority refused the request ({error_class})")
+        self.error_class = error_class
+        self.side_effect_state = "none"
+
+
 def _raise_for(end: dict[str, Any]) -> None:
     from tinyassets.storage.outbound_connections import (
         AmbiguousProxyOutcome,
@@ -51,6 +60,9 @@ def _raise_for(end: dict[str, Any]) -> None:
         raise EgressPolicyRefused({"host": detail["host"], "port": detail["port"]},
                                   detail["generation"], detail["decision"])
     outcome = end.get("outcome")
+    if outcome == "refused" and error_class in {"policy_ask", "policy_hand_off",
+                                                "consent_missing"}:
+        raise AuthorityRefused(error_class)
     if error_class == "GrantPathRefused":
         raise GrantPathRefused("requested method and path are not covered by the connection grant")
     if error_class == "InferenceUsageStopped":
@@ -213,7 +225,8 @@ class BrokerClient:
         """Forward policy requests; the broker verifies write cookies itself."""
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        if action not in {"read", "write", "receipts", "proposal", "decide"}:
+        if action not in {"read", "write", "receipts", "proposal", "decide", "classify",
+                          "consents_read", "consent_revoke", "import"}:
             raise ValueError("unsupported owner policy operation")
         wire = {"op": "OWNER_POLICY", "action": action, "principal": self._principal,
                 **fields}
@@ -384,7 +397,8 @@ class BrokerClient:
     @observed('connected_service', owner=lambda self, **kwargs: self._principal)
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
-                inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
+                inference_usage: dict[str, Any] | None = None,
+                authority: dict[str, str] | None = None) -> dict[str, Any]:
 
         generation, token = self._fence()
         open_doc = {
@@ -395,6 +409,8 @@ class BrokerClient:
         }
         if inference_usage is not None:
             open_doc["inference_usage"] = inference_usage
+        if authority:
+            open_doc["authority"] = authority
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
         from tinyassets.storage.outbound_connections import (

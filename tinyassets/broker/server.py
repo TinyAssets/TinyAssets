@@ -86,7 +86,11 @@ ERROR_CLASSES = frozenset({
     "GrantPathRefused",
     "SsrfValidationError", "fenced", "duplicate", "expired", "refused",
     "InferenceUsageStopped", "InferenceUsageRequired", "ProviderAuthorityHeldError",
+    "policy_ask", "policy_hand_off", "consent_missing",
 })
+#: N10: the box channel's policy operations. None of them widens authority.
+BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify",
+                                "consents_read", "consent_revoke", "import"})
 
 
 def peer_uid(sock: socket.socket) -> int:
@@ -479,12 +483,13 @@ class _Connection:
                     "reason": "restore is not available on the box channel"}))
                 return
             if op == "OWNER_POLICY":
-                if doc.get("action") not in {"read", "receipts", "decide", "proposal", "write"}:
+                # N10: the box reads, previews, decides and narrows. Every
+                # widening is the router's, whatever proof the box presents.
+                if (doc.get("action") not in BOX_POLICY_ACTIONS
+                        or "session_proof" in doc or "cookie" in doc):
                     raise rf.FrameError("unsupported box policy operation")
-                if doc["action"] == "write" and "session_proof" not in doc:
-                    raise rf.FrameError("protected policy changes require shared door proof")
                 doc = {**doc, "principal": self._box_owner}
-                answer = await self._policy_operation(doc)
+                answer = await asyncio.to_thread(self._owner_policy, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op == "BOX_PING" and self._usage_leases:
@@ -986,6 +991,11 @@ class _Connection:
             return {"op": "OWNER_VOLUME_REFUSED", "reason": reason}
 
     async def _policy_operation(self, doc):
+        if "generation" in doc or "token" in doc:
+            # The router's owner-role calls carry the fence (policy_submit).
+            if not self._server._fence.admits(doc.get("generation"), doc.get("token")):
+                return {"op": "OWNER_POLICY_REFUSED", "reason": "fenced"}
+            doc = {k: v for k, v in doc.items() if k not in {"generation", "token"}}
         if doc.get("action") != "write":
             return await asyncio.to_thread(self._owner_policy, doc)
         from tinyassets.broker.admission import owner_lock, thread_work
@@ -1046,6 +1056,11 @@ class _Connection:
             proof_key = "session_proof" if "session_proof" in doc else "cookie"
             if proof_key == "session_proof" and not isinstance(doc[proof_key], dict):
                 raise PolicyRefused("interactive owner session required")
+            if self._role != OWNER and action in {"write", "issue_once", "consent_grant"}:
+                raise PolicyRefused("owner authority widens only through the router")
+            if self._role == BOX and action != "import":
+                # N10 cutover: the one import is this owner's first box operation.
+                store.abandon_import(owner)
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
@@ -1070,13 +1085,62 @@ class _Connection:
                         "amount", "source", "agent", "request_id"}:
                     raise PolicyRefused("invalid policy decision request")
                 result = store.decide(owner, center=owner, **request)
+            elif action == "classify" and set(doc) == {
+                    "op", "action", "principal", "connection", "method", "path"}:
+                if not all(isinstance(doc[k], str) for k in ("connection", "method", "path")):
+                    raise PolicyRefused("invalid classification request")
+                action_class, operation = store.classify(
+                    owner, doc["connection"], doc["method"], doc["path"])
+                result = {"action_class": action_class, "operation": operation}
+            elif action == "consents_read" and set(doc) == {
+                    "op", "action", "principal", "sink", "active_only"}:
+                if not isinstance(doc["sink"], str) or type(doc["active_only"]) is not bool:
+                    raise PolicyRefused("invalid consent read")
+                result = {"consents": store.consents(owner, sink=doc["sink"] or None,
+                                                     active_only=doc["active_only"])}
+            elif action == "consent_revoke" and set(doc) == {
+                    "op", "action", "principal", "sink", "destination"}:
+                result = {"revoked": store.revoke_consent(owner, doc["sink"],
+                                                          doc["destination"])}
+            elif action == "consent_grant" and set(doc) == {
+                    "op", "action", "principal", proof_key, "sink", "destination"}:
+                from tinyassets.broker.authority_gate import require_grantable
+
+                store._session(owner, doc[proof_key])
+                try:
+                    require_grantable(self._server._ledger_for(owner), owner, doc["sink"],
+                                      doc["destination"])
+                except PermissionError as exc:
+                    raise PolicyRefused(str(exc)) from None
+                result = store.grant_consent(owner, doc[proof_key], doc["sink"],
+                                             doc["destination"])
+            elif action == "issue_once" and set(doc) == {
+                    "op", "action", "principal", proof_key, "expected_generation", "grant_id",
+                    "connection_id", "verb", "request", "destination"}:
+                if (not isinstance(doc["request"], dict)
+                        or not all(isinstance(doc[k], str) for k in (
+                            "grant_id", "connection_id", "verb", "destination"))):
+                    raise PolicyRefused("invalid once approval")
+                # The exact wire request the box's OPEN will carry, digested
+                # the way OPEN digests it.
+                wire = {"url": doc["destination"]}
+                wire.update({k: v for k, v in doc["request"].items()
+                             if k in {"headers", "body", "header_name"}})
+                result = store.issue_once(owner, doc[proof_key], doc["expected_generation"],
+                                          request_digest(grant_id=doc["grant_id"],
+                                                         connection_id=doc["connection_id"],
+                                                         verb=doc["verb"], request=wire))
+            elif action == "import" and set(doc) == {"op", "action", "principal", "document"}:
+                if self._role != BOX:
+                    raise PolicyRefused("authority import comes from the owner's box")
+                result = store.import_authority(owner, doc["document"])
             else:
                 raise PolicyRefused("unsupported policy operation")
             answer = {"op": "OWNER_POLICY_RESULT", "result": result}
             rf.control(rf.CONNECTION, answer)
             return answer
         except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError) as exc:
-            if action == "write":
+            if action in {"write", "issue_once", "consent_grant"}:
                 try:
                     self._server._policy_store.receipt_refusal(
                         owner, action, {k: v for k, v in doc.items()
@@ -1321,6 +1385,21 @@ class _Connection:
                     except Exception:  # noqa: BLE001 - policy unavailability never permits a send
                         self._server._ops.finish(namespace, op_id, "refused")
                         return "refused"
+                if self._role == BOX:
+                    # N10: the binding gate. The box's own checks are advisory.
+                    from tinyassets.broker.authority_gate import authority_fields, check
+
+                    try:
+                        refusal = check(self._server._policy_store, ledger, owner=principal,
+                                        grant_id=grant_id, connection_id=connection_id,
+                                        verb=verb, request=request, request_digest=digest,
+                                        authority=authority_fields(doc.get("authority")))
+                    except Exception:  # noqa: BLE001 - unreadable authority never permits a send
+                        _LOG.exception("owner authority gate unavailable")
+                        refusal = "refused"
+                    if refusal is not None:
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return refusal
                 stream = _Stream(stream_id, generation, token, namespace, op_id,
                                  deadline=time.monotonic() + _stream_budget(request),
                                  credit=credit)

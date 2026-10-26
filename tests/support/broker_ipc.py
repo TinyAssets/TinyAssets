@@ -63,6 +63,11 @@ def discovery(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
                                 verify_authenticated_principal=lambda: principal)
 
     broker.server._ledger_for = ledger_for
+    # N10: consents and rules are broker-held; the served broker has its store.
+    from tinyassets.broker.policy import PolicyStore
+
+    broker.server._policy_store = PolicyStore(tmp_path, broker.server._owner_identities)
+    broker.server._policy_store.bootstrap()
     broker.upstreams["next"] = lambda: Script([b'{"data":', b'["alice"]}'])
 
     def verify_peer(sock):

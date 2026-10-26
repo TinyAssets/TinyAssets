@@ -1153,17 +1153,11 @@ def request_from_user(
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     if action.get("type") == "policy_proposal":
-        from tinyassets.action_policy import owner_policy_operation
+        from tinyassets.broker.client import owner_policy_operation
         from tinyassets.owner_centers import admitted_owner
 
         owner = admitted_owner(udir.parent, center=_uid)
-        if "egress" in action["policy"]:
-            from tinyassets.broker.client import owner_policy_operation as broker_policy
-
-            broker_policy(udir.parent, owner, "proposal", change=action)
-        else:
-            owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
-                                   change=action)
+        owner_policy_operation(udir.parent, owner, "proposal", change=action)
     if action.get("type") == "rotate_http":
         # BEFORE the fields are validated, because the connection's stored auth
         # scheme is what decides how many boxes the card has and what they are
@@ -2274,7 +2268,7 @@ def _grant_workspace_consent(
     feedback: str,
     dont_ask_again: bool,
 ) -> dict[str, Any]:
-    """Write the typed workspace consents the owner just agreed to.
+    """Close a workspace consent ask once the broker holds the owner's grants.
 
     One row per operation under the ``workspace`` sink, at the destination
     :func:`workspace_consent_destination` spells - the same string the sink
@@ -2294,7 +2288,7 @@ def _grant_workspace_consent(
 
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
-    from tinyassets.storage.effector_consents import grant_consent
+    from tinyassets.storage.effector_consents import is_consent_active
     from tinyassets.storage.pending_requests import resolve_request
     from tinyassets.storage.workspace_authority import (
         WORKSPACE_SINK,
@@ -2343,13 +2337,14 @@ def _grant_workspace_consent(
         )
         for consent in action["consents"]
     ]
-    for destination in destinations:
-        grant_consent(
-            udir,
-            sink=WORKSPACE_SINK,
-            destination=destination,
-            granted_by=actor,
-        )
+    # N10: the owner grants these in the protected view (the router's
+    # /app/api/consents); this answer closes the request once all are held.
+    missing = [destination for destination in destinations
+               if not is_consent_active(udir, sink=WORKSPACE_SINK, destination=destination)]
+    if missing:
+        return {"error": "consent_route_required", "request_pending": True,
+                "consents": [{"sink": WORKSPACE_SINK, "destination": destination}
+                             for destination in missing]}
     resolve_request(
         udir,
         request_id,
@@ -2381,7 +2376,7 @@ def _grant_patch_intake(
     answer: dict[str, Any],
     feedback: str,
 ) -> dict[str, Any]:
-    """Record the one send-only grant the owner just gave, and prove it can work.
+    """Close the patch-intake ask once its grant is held, and prove it can work.
 
     Three things are checked before anything is written, and each one leaves the
     request PENDING rather than consuming the owner's yes on a grant that would
@@ -2407,8 +2402,9 @@ def _grant_patch_intake(
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
     from tinyassets.patch_intake import (
+        PATCH_INTAKE_SINK,
         _intake_or_none,
-        grant_send_consent,
+        consent_is_active,
     )
     from tinyassets.storage import receiver_links as receiver_store
     from tinyassets.storage.pending_requests import resolve_request
@@ -2453,35 +2449,17 @@ def _grant_patch_intake(
             ),
             "request_pending": True,
         }
-    # RESOLVE FIRST, then grant. `resolve_request` is a guarded UPDATE that moves
-    # only a still-pending row, so it is the election: exactly one caller wins,
-    # and a concurrent Clear or a second tap loses. Granting first inverted that
-    # -- the loser's consent was written and committed while the request stayed
-    # pending, which is authority with no recorded decision behind it
-    # (gpt-6-astra refute round on PR #4121, P1).
-    #
-    # The residual asymmetry is deliberate. If the grant then fails, the owner
-    # has an answered request and no connection, and they are TOLD so; the
-    # alternative leaves authority nobody can see. Both stores are files in the
-    # same universe directory, so a failure that hits one almost certainly hits
-    # the other first, which is the resolution call above.
+    # N10: the broker holds the grant, and only the owner's protected view
+    # (the router's /app/api/consents) writes it. This answer closes the
+    # request once that grant is observed; until then it names what to grant.
+    if not consent_is_active(udir, receiver_id):
+        return {"error": "consent_route_required", "request_pending": True,
+                "consents": [{"sink": PATCH_INTAKE_SINK, "destination": receiver_id}]}
     if not resolve_request(
         udir, request_id, status="answered", answer=answer, feedback=feedback,
         dont_ask_again=False, decision="allowed",
     ):
         return {"error": "request_resolution_unconfirmed", "request_pending": True}
-    try:
-        grant = grant_send_consent(udir, receiver_id=receiver_id, granted_by=actor)
-    except Exception as exc:  # noqa: BLE001 - say what happened; grant nothing
-        logger.exception("patch intake: the grant did not land after the owner's yes")
-        return {
-            "error": "patch_intake_grant_unavailable",
-            "detail": (
-                "your approval was recorded but the connection could not be "
-                f"saved ({exc}); nothing can be sent yet -- ask your command center to "
-                "raise the request again"
-            ),
-        }
     return {
         "status": "answered",
         "decision": "allowed",
@@ -2492,7 +2470,7 @@ def _grant_patch_intake(
         "receiver_id": receiver_id,
         "receiver_generation": receiver.get("generation"),
         "contract": receiver.get("contract"),
-        "grant": {"sink": grant["sink"], "destination": grant["destination"]},
+        "grant": {"sink": PATCH_INTAKE_SINK, "destination": receiver_id},
         "receipt": _grant_sentence(row),
         "secret_reused": True,
         "suppressed": False,
@@ -2643,6 +2621,17 @@ def _start_approved_proposal(universe_id: str, row: dict[str, Any]) -> dict[str,
             "request_pending": True}
 
 
+def _proposal_applied(udir: Any, row: dict[str, Any]) -> str:
+    """The broker policy digest when it now holds exactly this pending proposal."""
+    from tinyassets import policy_rules
+    from tinyassets.broker.policy import _digest
+
+    if row["status"] != "pending" or not displayed_row_matches(row):
+        return ""
+    digest = policy_rules.projection(udir)["digest"]
+    return digest if digest == _digest(row["action"]["policy"]) else ""
+
+
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Submit ordinary field values, dismiss, or open a connection door link.
 
@@ -2736,9 +2725,17 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
                 "request_pending": row["status"] == "pending"}
     if (action_type == "policy_proposal" and document.get("dismiss") is not True
             and str(document.get("decision") or "").lower() != "declined"):
-        return {"error": "policy_route_required", "detail":
-                "Apply this proposal in the protected policy card.",
-                "request_pending": row["status"] == "pending"}
+        # N10: the owner applies it through the router's protected policy
+        # route; this answer only closes the card once the broker holds it.
+        applied = _proposal_applied(udir, row) if owner_session is not None else ""
+        if not applied:
+            return {"error": "policy_route_required", "detail":
+                    "Apply this proposal in the protected policy card.",
+                    "request_pending": row["status"] == "pending"}
+        if not resolve_request(udir, request_id, status="answered",
+                               answer={"policy_digest": applied}, decision="accepted"):
+            return {"error": "request_storage_unavailable", "request_pending": True}
+        return {"status": "answered", "request_id": request_id, "policy_digest": applied}
     if action_type not in NON_CONSENT_ACTIONS and owner_session is None:
         return {"error": "interactive_approval_required",
                 "detail": CONSENT_REQUIRED_DETAIL,

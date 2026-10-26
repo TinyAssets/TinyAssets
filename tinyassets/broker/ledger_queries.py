@@ -182,6 +182,18 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
                 "profile": json.loads(profile[0]) if profile is not None else None}
 
 
+def owner_connection(ledger, principal: str, connection_id: str):
+    """Broker-local: this owner's live connection resource, or None."""
+    from tinyassets.storage.outbound_connections import _resource_from_row
+
+    with ledger._connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM outbound_connections WHERE connection_id=? "
+            "AND owner_user_id=? AND revoked_at IS NULL", (connection_id, principal),
+        ).fetchone()
+    return _resource_from_row(row) if row is not None else None
+
+
 def query_ledger(data_root: Path, *, query: str, principal: str, command_center: str,
                  grant_id: str, connection_id: str = "") -> dict[str, Any]:
     """Ask the broker. A broker that is not running is fatal, never a local read."""
@@ -222,6 +234,15 @@ def granted_resource_row(data_root: Path, *, principal: str, command_center: str
 def authorized_connection(data_root: Path, *, principal: str, command_center: str,
                           grant_id: str, connection_id: str):
     """Live grant, resource and incarnation from one exact scoped snapshot."""
+    facts = query_ledger(data_root, query=AUTHORIZED_CONNECTION, principal=principal,
+                         command_center=command_center, grant_id=grant_id,
+                         connection_id=connection_id)
+    return authority_from_facts(facts, principal=principal, grant_id=grant_id,
+                                connection_id=connection_id)
+
+
+def authority_from_facts(facts, *, principal: str, grant_id: str, connection_id: str):
+    """One parse of an AUTHORIZED_CONNECTION answer, in the box and in the broker."""
     from tinyassets.storage.outbound_connections import (
         ActionCap,
         ConnectionGrant,
@@ -229,9 +250,6 @@ def authorized_connection(data_root: Path, *, principal: str, command_center: st
         _resource_from_row,
     )
 
-    facts = query_ledger(data_root, query=AUTHORIZED_CONNECTION, principal=principal,
-                         command_center=command_center, grant_id=grant_id,
-                         connection_id=connection_id)
     try:
         row, grant_row = facts["resource"], facts["grant"]
         if not isinstance(row, dict) or not isinstance(grant_row, dict):

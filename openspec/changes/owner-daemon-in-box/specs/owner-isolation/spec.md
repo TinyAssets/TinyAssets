@@ -260,23 +260,37 @@ connections from a box SHALL be impossible.
 - **THEN** the proxy sends the request with no credential
 - **AND** no adapter or discovery reader independently refuses the destination or operation
 
-### Requirement: Owner action policy belongs to the box
-The owner box SHALL store and decide workspace file, shell and workflow rules,
-private app reads and writes, action classifications and action approvals. The
-broker SHALL retain credential scope and spending controls only. A local action
-policy request SHALL NOT require a shared policy decision. The stopped cutover
-SHALL move retained account action rules into the owner volume, retain spending
-rules in broker custody, and remove the egress section and shared action approvals.
+### Requirement: Owner authority is held by the broker and gated at OPEN
+The broker SHALL hold each owner's action rules, operation kinds, standing
+grants, one-use approvals and effector consents in that owner's broker-private
+policy store, under one generation, with every change receipted in the same
+transaction (N10). Only the router SHALL widen that authority (a policy write,
+a one-use approval, a consent grant), on its owner channel with the owner's
+protected-session proof; the box channel SHALL refuse every widening whatever
+proof it presents, and MAY read, preview, decide and narrow. The broker SHALL
+decide a box's OPEN by the owner's rules for every call except a model source
+known from its own ledger, SHALL spend a matching one-use approval or match a
+standing grant for an ask, and SHALL require the owner's consent for every
+non-read call. An owner admitted before this change SHALL import its box-held
+rules and consents once, as its box's first operation.
 
-#### Scenario: Action rules do not require shared authority
-- **WHEN** the owner changes a workspace shell rule through the protected owner session
-- **THEN** the box stores and applies the rule without contacting the broker policy service
-- **AND** the broker policy document contains no owner-local action rule
+#### Scenario: A box cannot widen its owner's authority
+- **WHEN** a box sends a policy write, a one-use approval or a consent grant, with or without a session proof
+- **THEN** the broker refuses it and the owner's policy generation is unchanged
 
-#### Scenario: A cutover separates policy ownership
-- **WHEN** the stopped cutover retains an account policy
-- **THEN** action rules move into the box and monetary rules and spend limits remain in the broker
-- **AND** neither policy has an egress mode or destination allowlist
+#### Scenario: An agent's direct OPEN meets the owner's rules
+- **WHEN** a box opens a non-model call that the owner's rules ask first for, without an approval
+- **THEN** the broker refuses the stream before any byte is sent and receipts the refusal
+- **AND** a one-use approval of exactly that request admits it once, and not after the policy generation changes
+
+#### Scenario: A non-read call needs the owner's consent
+- **WHEN** a box pushes to a repository through a connection with exact access and no push consent
+- **THEN** the broker refuses the stream; with full access it is admitted
+
+#### Scenario: The box's old authority is imported once
+- **WHEN** a box starts with its old rules and consents and its owner's import is pending
+- **THEN** the broker imports the valid entries, counts the invalid ones in one receipt, and refuses a second import
+- **AND** any other box operation first ends the pending import with defaults and an alarm
 
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before

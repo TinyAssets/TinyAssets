@@ -1,24 +1,12 @@
-"""MCP action handlers for effector consent grants — PR-122 Phase 2 Slice 1.
+"""MCP action handlers for effector consents (PR-122 Phase 2 Slice 1; N10).
 
-Wires the per-universe consent table (``tinyassets.storage.effector_consents``)
-into the ``extensions`` MCP tool surface so chatbots can grant / revoke /
-list the user's "this universe may write to repo X via sink S" grants.
+Consents are broker-held per owner (``tinyassets.storage.effector_consents``
+reads and narrows them). Three actions on the ``extensions`` MCP tool surface:
 
-Three actions:
-
-- ``grant_effector_consent(sink, destination, granted_by)`` — records
-  an active grant. Re-granting after revoke clears ``revoked_at``.
-- ``revoke_effector_consent(sink, destination)`` — flips ``revoked_at``.
-- ``list_effector_consents(sink?, active_only?)`` — returns rows.
-
-Slice 1 scope intentionally narrow:
-
-- No wildcard / org-level grants — exact ``destination`` match only.
-- No expiry — grants persist until explicitly revoked.
-- No per-actor grant scoping — a grant authorizes the whole universe
-  regardless of which actor invokes the run that triggers the effector.
-  (Per-actor scoping is a Slice 2 refinement once we see real grant
-  shape from the chatbot.)
+- ``grant_effector_consent`` -- refused: granting is the owner's act in the
+  protected view (``/app/api/consents``), never an agent-reachable call.
+- ``revoke_effector_consent(sink, destination)`` -- takes a consent back.
+- ``list_effector_consents(sink?, active_only?)`` -- returns rows.
 
 The dispatch dict shape matches the other ``_*_ACTIONS`` modules under
 ``tinyassets/api/``: each handler takes a single ``kwargs: dict`` and
@@ -33,85 +21,31 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
-def _base_universe_dir():
-    """Resolve the active universe directory for storage I/O.
-
-    Lazy import so this module is safe to import at extensions.py
-    top-of-module without dragging the helpers chain into a cycle.
-    """
-    from tinyassets.api.helpers import _base_path
-    return _base_path()
+#: The one refusal every agent-reachable consent grant gives (N10).
+PERSON_ONLY_DETAIL = (
+    "Consent is the owner's own act: they grant it in the protected TinyAssets "
+    "view, not through an agent call. Ask them there.")
 
 
-def _current_actor() -> str:
-    from tinyassets.api.engine_helpers import _current_actor as _actor
-    return _actor()
+def _command_center_dir():
+    """The calling owner's command center, resolved like every other MCP read."""
+    from tinyassets.api.helpers import _request_universe, _universe_dir
+
+    return _universe_dir(_request_universe(""))
 
 
 def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
-    """Insert / refresh an active consent grant.
-
-    Required kwargs:
-      - ``sink``: sink name, e.g. ``"authenticated_external_call"``.
-      - ``destination``: per-sink destination, e.g. the connection's own
-        destination label.
-
-    Optional:
-      - ``granted_by``: actor recording the grant. Defaults to the
-        current MCP actor when omitted.
-
-    Returns the inserted row as JSON.
-    """
-    sink = (kwargs.get("sink") or "").strip()
-    destination = (kwargs.get("destination") or "").strip()
-    from tinyassets.principals import named_principal
-
-    granted_by = named_principal(kwargs.get("granted_by")) or _current_actor()
-    if not sink:
-        return json.dumps({
-            "error": "grant_effector_consent requires 'sink'",
-            "failure_class": "missing_sink",
-            "actionable_by": "chatbot",
-        })
-    if not destination:
-        return json.dumps({
-            "error": "grant_effector_consent requires 'destination'",
-            "failure_class": "missing_destination",
-            "actionable_by": "chatbot",
-        })
-    if not granted_by:
-        return json.dumps({
-            "error": (
-                "grant_effector_consent requires 'granted_by' "
-                "(could not derive current actor)"
-            ),
-            "failure_class": "missing_granted_by",
-            "actionable_by": "user",
-        })
-    try:
-        from tinyassets.storage.effector_consents import grant_consent
-        record = grant_consent(
-            _base_universe_dir(),
-            sink=sink,
-            destination=destination,
-            granted_by=granted_by,
-        )
-    except Exception as exc:
-        logger.exception("grant_effector_consent failed")
-        return json.dumps({
-            "error": f"grant_effector_consent failed: {exc}",
-            "failure_class": "storage_error",
-            "actionable_by": "host",
-        })
+    """Refused: an agent-reachable surface never grants consent (N10)."""
     return json.dumps({
-        "status": "granted",
-        "consent": record,
+        "error": "consent_is_person_only",
+        "failure_class": "consent_is_person_only",
+        "actionable_by": "user",
+        "detail": PERSON_ONLY_DETAIL,
     })
 
 
 def _action_revoke_effector_consent(kwargs: dict[str, Any]) -> str:
-    """Flip ``revoked_at`` on an existing grant.
+    """Take back an active grant.
 
     Required: ``sink`` + ``destination``. Returns ``status="revoked"``
     on hit, ``status="no_active_grant"`` when no row matched (the
@@ -136,7 +70,7 @@ def _action_revoke_effector_consent(kwargs: dict[str, Any]) -> str:
     try:
         from tinyassets.storage.effector_consents import revoke_consent
         hit = revoke_consent(
-            _base_universe_dir(),
+            _command_center_dir(),
             sink=sink,
             destination=destination,
         )
@@ -174,7 +108,7 @@ def _action_list_effector_consents(kwargs: dict[str, Any]) -> str:
     try:
         from tinyassets.storage.effector_consents import list_consents
         rows = list_consents(
-            _base_universe_dir(),
+            _command_center_dir(),
             sink=sink_filter,
             active_only=active_only,
         )
@@ -200,6 +134,7 @@ _EFFECTOR_CONSENT_ACTIONS: dict[str, Any] = {
 
 
 __all__ = [
+    "PERSON_ONLY_DETAIL",
     "_EFFECTOR_CONSENT_ACTIONS",
     "_action_grant_effector_consent",
     "_action_revoke_effector_consent",

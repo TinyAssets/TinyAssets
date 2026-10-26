@@ -118,10 +118,18 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
     proof = {"session_hash": hashlib.sha256(cookie.encode()).hexdigest()}
     client = BrokerClient(native.relay, principal="alice", command_center="center",
                           fence=lambda: (0, ""))
+
+    def router_write(expected_generation, policy):
+        """N10: owner writes reach the broker from the router's owner channel only."""
+        from tinyassets import owner_runtime
+
+        with monkeypatch.context() as router:
+            router.setattr(owner_runtime, "_runtime", None)  # the router process
+            return store.write("alice", proof, expected_generation, policy)
+
     snapshot = client.owner_policy("read")
     snapshot["policy"]["egress"]["mode"] = "ask"
-    client.owner_policy("write", session_proof=proof,
-                        expected_generation=snapshot["generation"], policy=snapshot["policy"])
+    router_write(snapshot["generation"], snapshot["policy"])
     monkeypatch.setattr("tinyassets.broker.public_egress.destination",
                         lambda binding, host, port: destination(
                             binding, host, port, resolver=lambda *_: ["8.8.8.8"]))
@@ -139,7 +147,6 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
     assert len(rows) == 1
     proposal = rows[0]["action"]
     assert "until you remove this rule" in rows[0]["body"]
-    from starlette.requests import Request
 
     from tinyassets import onboarding
     from tinyassets.auth.middleware import identity_context
@@ -163,31 +170,32 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
         assert b"403 Forbidden" in run(native, code).stdout
         return
 
-    async def approve(row):
-        async def receive():
-            return {"type": "http.request", "body": json.dumps({
-                "action": "apply_proposal", "center": "center",
-                "request_id": row["request_id"]}).encode()}
+    from tinyassets.api.pending_requests import _answer_request
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        request = Request({"type": "http", "method": "POST", "path": "/app/api/policy",
-                           "query_string": b"scope=egress", "headers": [
-                               (b"host", b"app.test"), (b"origin", b"https://app.test"),
-                               (b"content-type", b"application/json")]}, receive)
-        with identity_context(Identity(user_id="alice", username="alice",
-                                       metadata={"router_owner_session": session})):
-            return await onboarding._handle_policy(request)
+    def approve(row):
+        """The app applies the proposal on the router, then closes the box card."""
+        action = row["action"]
+        try:
+            router_write(action["expected_generation"], action["policy"])
+        except PolicyRefused:
+            return {"error": "policy_changed"}
+        with identity_context(Identity(user_id="alice", username="alice")):
+            return _answer_request(universe_id="center", owner_session=session, payload={
+                "request_id": row["request_id"], "values": {}})
 
     # An intervening owner edit makes the displayed proposal stale.
     current = client.owner_policy("read")
-    client.owner_policy("write", session_proof=proof,
-                        expected_generation=current["generation"], policy=current["policy"])
-    assert asyncio.run(approve(rows[0])).status_code == 409
+    router_write(current["generation"], current["policy"])
+    assert approve(rows[0]) == {"error": "policy_changed"}
     assert not client.owner_policy("read")["policy"]["egress"]["destinations"]
     assert b"403 Forbidden" in run(native, code).stdout
     refreshed = list_pending(native.home)[-1]
-    response = asyncio.run(approve(refreshed))
-    assert response.status_code == 200, response.body
-    with pytest.raises(PermissionError):
+    answered = approve(refreshed)
+    assert answered["status"] == "answered", answered
+    with pytest.raises(ProxyRequestError):
+        # The box channel refuses every owner write, whatever proof it shows.
         client.owner_policy("write", session_proof=proof,
                             expected_generation=proposal["expected_generation"],
                             policy=proposal["policy"])
@@ -493,10 +501,11 @@ def git_origin(native, tmp_path, monkeypatch):
 @pytest.mark.verifies('owner-daemon-in-box:T6')
 @pytest.mark.parametrize("mode", ["open", "allowlist", "ask"])
 def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(
-        native, git_origin, mode):
+        native, git_origin, mode, monkeypatch):
     import hashlib
 
     from tests.test_owner_policy import _session
+    from tinyassets import owner_runtime
     from tinyassets.broker.client import BrokerClient
     from tinyassets.daemon_server import grant_universe_ownership
     from tinyassets.owner_git import routes
@@ -515,8 +524,11 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(
     def policy(destinations):
         current = client.owner_policy("read")
         current["policy"]["egress"] = {"mode": mode, "destinations": destinations}
-        client.owner_policy("write", session_proof=proof,
-                            expected_generation=current["generation"], policy=current["policy"])
+        # N10: the router's owner channel writes; the box channel only reads.
+        with monkeypatch.context() as router:
+            router.setattr(owner_runtime, "_runtime", None)  # the router process
+            native.broker.server._policy_store.write(
+                "alice", proof, current["generation"], current["policy"])
 
     policy([])
     with routes(client, [git_origin.record], "developer") as env:

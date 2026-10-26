@@ -280,6 +280,12 @@ def test_a_card_raised_for_one_deposit_cannot_rotate_a_different_one(base):
     """The tab sat open while the owner removed the key and deposited another.
     Answering it now would replace a key they never saw this card for."""
     _make_universe(base, "u-1", admin="alice")
+    # N10: removal takes back alice's broker-held consents, so the box is hers.
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.daemon_server import grant_universe_ownership
+
+    seed_owner_admission(base, principal="alice", center="u-1")
+    grant_universe_ownership(base, universe_id="u-1", owner_id="alice")
     _login("alice")
     _deposit("u-1")
 

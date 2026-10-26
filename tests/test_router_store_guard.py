@@ -239,6 +239,9 @@ _ROLE_DISPATCH = {
     ('onboarding/__init__.py', '_owner_volume_route'): (
         'Router submits owner undo; a box cannot confirm a restore.'
     ),
+    ('onboarding/__init__.py', '_owner_authority_session'): (
+        'Router submits owner authority (N10); a box never widens it.'
+    ),
     ('onboarding/session_store.py', 'store_dir'): (
         'Router owns refresh sessions; direct box access must refuse.'
     ),

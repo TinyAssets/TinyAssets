@@ -553,6 +553,15 @@ longer decides an owner's app action. Cutover moves retained account action rule
 into the box and drops shared one-use approvals. The owner route selects actions
 by default and spending explicitly with `scope=spend`.
 
+**Superseded by N10 PR1:** the agent's shell could open the broker directly and
+skip every in-box check, so authority moved back out of the box. The broker's
+per-owner `policy.db` holds one document (action rules, operation kinds,
+standing grants, egress, spend), one-use approvals and effector consents; the
+router alone widens them (`/app/api/policy`, `/app/api/consents`); the box
+channel reads, previews, decides and narrows; and `broker/authority_gate.py`
+decides every box OPEN. `.action-policy.db` and the box consent files are
+imported once by `authority_export.py` and deleted.
+
 ### C9. Wake index is two columns (T7)
 Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, and drop the
 24-hour floor query at `:41–55`. The box reports its next locally scheduled

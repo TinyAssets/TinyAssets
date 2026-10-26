@@ -129,13 +129,13 @@ def _setup(
         # authenticated_external_call also requires an active effector-consent
         # grant for the destination (soul authority is UNDECLARED here, which
         # passes the soul gate). Negative tests pass grant_consent_for=False.
-        from tinyassets.storage.effector_consents import grant_consent
+        from tests.support.broker_double import grant_consent
 
         grant_consent(
-            universe_dir,
+            data_root,
+            owner="user-1",
             sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
             destination=destination,
-            granted_by="test",
         )
     return data_root, universe_dir, db_path
 

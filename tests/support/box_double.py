@@ -272,9 +272,6 @@ def install(monkeypatch):
         if key not in local_cores:
             state = Path(double._state) / ("local-" + hashlib.sha256(str(key).encode()).hexdigest())
             root.parent.mkdir(parents=True, exist_ok=True)
-            from tinyassets.action_policy import initialize
-
-            initialize(root.parent / ".action-policy.db")
             core = OwnerBoxd(owner_id=owner, owner_root=root.parent, state_dir=state)
             original_run = core.run
 

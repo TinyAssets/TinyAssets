@@ -127,10 +127,6 @@ def start(relay: Path) -> OwnerRuntime:
     from tinyassets.boxes.boxd import OwnerBoxd
     from tinyassets.owner_centers import Centers
 
-    if not (root / ".centers.db").exists():
-        from tinyassets.action_policy import initialize
-
-        initialize(root / ".action-policy.db")
     for center in Centers(root).active():
         (root / center).mkdir(mode=0o700, exist_ok=True)
     (root / ".agent-home").mkdir(mode=0o700, exist_ok=True)
@@ -155,6 +151,11 @@ def start(relay: Path) -> OwnerRuntime:
     _runtime = OwnerRuntime(doc["principal"], doc["uid"], root, os.getpid(), tools,
                             Path(relay).resolve())
     install_outbound_guard()
+    # N10: the owner's first box operation hands old authority files to the
+    # broker, once, before this box serves anything.
+    from tinyassets.authority_export import export
+
+    export(root, doc["principal"])
     return _runtime
 
 

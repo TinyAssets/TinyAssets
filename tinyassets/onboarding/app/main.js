@@ -6468,8 +6468,8 @@
     }
     $("btn-wakes-reload").addEventListener("click",()=>loadWakes());
     // One account policy, edited as a complete document under the owner cookie.
+    // The router serves it (N10): the box never writes owner authority.
     let ownerPolicy=null;
-    $("policy-scope").onchange=()=>{ownerPolicy=null;loadRules();};
     function rulesSay(message){ $("rules-status").textContent=message||""; }
     function renderPolicy(snapshot){
       ownerPolicy=snapshot;
@@ -6484,11 +6484,12 @@
       if(!activity.childNodes.length)activity.textContent="No policy activity yet.";
     }
     async function loadRules(){
-      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch,scope=$("policy-scope").value;
-      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch&&scope===$("policy-scope").value;
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
       rulesSay("");
+      loadConsents();
       try{
-        const response=await fetch("/app/api/policy?scope="+$("policy-scope").value,{credentials:"same-origin",
+        const response=await fetch("/app/api/policy",{credentials:"same-origin",
           headers:authHeaders()});
         const result=await response.json();
         if(!current())return;
@@ -6498,12 +6499,12 @@
     }
     $("btn-policy-save").onclick=async()=>{
       if(!ownerPolicy){rulesSay("Load the policy before saving.");return;}
-      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch,scope=$("policy-scope").value;
-      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch&&scope===$("policy-scope").value;
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
       const button=$("btn-policy-save");button.disabled=true;rulesSay("Saving...");
       try{
         const policy=JSON.parse($("policy-json").value);
-        const response=await fetch("/app/api/policy?scope="+$("policy-scope").value,{method:"POST",credentials:"same-origin",
+        const response=await fetch("/app/api/policy",{method:"POST",credentials:"same-origin",
           headers:{...authHeaders(),"Content-Type":"application/json"},
           body:JSON.stringify({expected_generation:ownerPolicy.generation,policy})});
         const result=await response.json();
@@ -6512,6 +6513,36 @@
         renderPolicy(result);rulesSay("Saved at generation "+result.generation+".");
       }catch(error){if(current())rulesSay("Policy was not saved: "+error.message);}
       finally{if(current())button.disabled=false;}
+    };
+    async function loadConsents(){
+      const host=$("consent-list"),epoch=MCP._loginEpoch;
+      try{
+        const response=await fetch("/app/api/consents",{credentials:"same-origin",
+          headers:authHeaders()});
+        const result=await response.json();
+        if(epoch!==MCP._loginEpoch)return;
+        if(!response.ok)throw new Error(result.error||"unavailable");
+        host.replaceChildren();
+        for(const consent of result.consents||[]){
+          const row=document.createElement("p"),revoke=document.createElement("button");
+          row.textContent=consent.sink+" · "+consent.destination+" ";
+          revoke.type="button";revoke.className="btn btn--link";revoke.textContent="Revoke";
+          revoke.onclick=async()=>{
+            try{await postConsent("revoke",consent.sink,consent.destination);loadConsents();}
+            catch(error){$("consent-status").textContent="Not revoked: "+error.message;}
+          };
+          row.appendChild(revoke);host.appendChild(row);
+        }
+        if(!host.childNodes.length)host.textContent="No consents yet.";
+      }catch(error){$("consent-status").textContent="Consents could not be loaded: "+error.message;}
+    }
+    $("btn-consent-grant").onclick=async()=>{
+      const destination=$("consent-destination").value.trim();
+      if(!destination){$("consent-status").textContent="Name the connection first.";return;}
+      try{
+        await postConsent("grant","authenticated_external_call",destination);
+        $("consent-destination").value="";$("consent-status").textContent="Allowed.";loadConsents();
+      }catch(error){$("consent-status").textContent="Not allowed: "+error.message;}
     };
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
@@ -8197,7 +8228,7 @@
             const issue=await fetch('/app/api/policy',{method:'POST',credentials:'same-origin',
               headers:{'Content-Type':'application/json','Authorization':'Bearer '+token()},
               body:JSON.stringify({action:'issue_once',expected_generation:policy.generation,
-                center:env.subject.home,grant_id:call.grant_id,
+                grant_id:call.grant_id,
                 connection_id:call.connection_id,verb:call.verb,request:call.request,
                 destination:env.destination})});
             if(!issue.ok){const err=new Error('Sign in to the protected owner view to approve.');
@@ -8216,7 +8247,7 @@
               const policy=await read.json(), doc=JSON.parse(JSON.stringify(policy.policy));
               const grant={...prior.predicate,request_id:prior.request_id,
                 decision_id:prior.request_id+':'+prior.revision};
-              doc.entries.push({scope:prior.action.envelope.subject.home,
+              doc.entries.push({scope:'account',
                 table:'approval_grants',values:{id:Date.now(),agent:grant.agent,
                   action_class:grant.action_class,connection:grant.connection,
                   operation:grant.operation,behaviour:'hand_off',note:grant.scope,
@@ -9146,6 +9177,15 @@
     return "Could not grant \"" + frameTitle(req) + "\": " + String(detail || "").replace(new RegExp("\\s+", "g"), " ").trim().slice(0, 600);
   }
 
+  // The owner's consents are router-served (N10); a box answer only observes them.
+  async function postConsent(action,sink,destination){
+    const response=await fetch("/app/api/consents",{method:"POST",credentials:"same-origin",
+      headers:{...authHeaders(),"Content-Type":"application/json"},
+      body:JSON.stringify({action,sink,destination})});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(result.reason||result.error||"consent refused");
+    return result;
+  }
   async function answerRail(req, mode, note, buttons){
     let itemAnswered=false;
     const installAsk=!!(req.action&&req.action.type==="install");
@@ -9195,10 +9235,11 @@
       if(req.action?.type==='policy_proposal'&&mode==='accept'){
         const response=await fetch('/app/api/policy',{method:'POST',credentials:'same-origin',
           headers:Object.assign({'Content-Type':'application/json'},authHeaders()),
-          body:JSON.stringify({action:'apply_proposal',center:req.universe_id||queueScope,
-            request_id:req.request_id})});
+          body:JSON.stringify({expected_generation:req.action.expected_generation,
+            policy:req.action.policy})});
         r=await response.json().catch(()=>({error:'policy_response_unavailable'}));
         if(!response.ok&&!r.error)r.error='policy_apply_failed';
+        if(response.ok)r=await InlineApprovals.post('answer',payload);
       }else if(req.action?.type==='policy_proposal'){
         r=await InlineApprovals.post('answer',payload);
       }else if(req.action?.type==='grant_patch_intake'){
@@ -9220,6 +9261,13 @@
             scopes:action.scopes||[],git_host:action.git_host||""}});
         await refreshRail();
       }else r=await MCP.answerRequest(payload);
+      if(mode==='accept'&&r&&r.error==='consent_route_required'&&Array.isArray(r.consents)){
+        try{
+          for(const consent of r.consents)
+            await postConsent('grant',consent.sink,consent.destination);
+          r=await InlineApprovals.post('answer',payload);
+        }catch(error){r={error:'consent_not_granted',detail:error.message,request_pending:true};}
+      }
       if(installAsk&&(installLogin!==MCP._loginEpoch||installScope!==queueScope))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";

@@ -1,4 +1,4 @@
-"""Read-only rule projection; owner action decisions stay inside the box."""
+"""Read-only rule projection and advisory decisions; the broker holds and gates (N10)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from tinyassets.action_policy import owner_policy_operation
+from tinyassets.broker.client import owner_policy_operation
 from tinyassets.broker.policy import BEHAVIOURS
 from tinyassets.owner_centers import admitted_owner
 
@@ -39,7 +39,7 @@ class Decision:
 def projection(home: Path) -> dict:
     home = Path(home)
     owner = admitted_owner(home.parent, center=home.name)
-    return owner_policy_operation(home.parent, owner, "read", center=home.name)
+    return owner_policy_operation(home.parent, owner, "read")
 
 
 def entries(home: Path, table: str) -> list[dict]:
@@ -72,13 +72,8 @@ def decide(home: Path, action_class: str, *, connection: str = "",
            request_id: str = "") -> Decision:
     home = Path(home)
     owner = admitted_owner(home.parent, center=home.name)
-    operation_fn = owner_policy_operation
-    if action_class in {"spend", "money.move"}:
-        from tinyassets.broker.client import owner_policy_operation as spending_policy
-
-        operation_fn = spending_policy
-    result = operation_fn(home.parent, owner, "decide", center=home.name, request={
-        "center": home.name, "action_class": action_class, "connection": connection,
+    result = owner_policy_operation(home.parent, owner, "decide", request={
+        "action_class": action_class, "connection": connection,
         "operation": operation, "destination": destination, "amount": amount,
         "source": source, "agent": agent, "request_id": request_id})
     behavior = {"allow": result["behaviour"], "hold": DO_IF_PREAPPROVED,
@@ -89,6 +84,6 @@ def decide(home: Path, action_class: str, *, connection: str = "",
 def classify(home: Path, connection: str, method: str, path: str) -> tuple[str, str]:
     home = Path(home)
     owner = admitted_owner(home.parent, center=home.name)
-    result = owner_policy_operation(home.parent, owner, "classify", center=home.name,
+    result = owner_policy_operation(home.parent, owner, "classify",
                                     connection=connection, method=method, path=path)
     return result["action_class"], result["operation"]

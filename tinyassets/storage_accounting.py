@@ -571,7 +571,8 @@ STORES: dict[str, Store] = {
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
     ".ta-cli": "platform: owner-box source declarations and connection state; volume quota applies",
-    ".action-policy.db": "platform: box-local action policy, charged by owner volume quota",
+    ".action-policy.db": "platform: retired box action policy; authority_export reads it "
+                         "once into the broker and deletes it (N10)",
     ".centers.db": "platform: box-local center membership, charged by owner volume quota",
     "credential-custody.db": "platform: broker credential ownership",
     "plans.db": "platform: broker billing plan state",
@@ -658,7 +659,8 @@ ROOT_ENTRIES: dict[str, str] = {
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
-    ".effector_consents.db": "platform: consent records",
+    ".effector_consents.db": ("platform: retired consent records; authority_export reads "
+                              "them once into the broker and deletes them (N10)"),
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
     ".inbound-routing.sqlite3": (
@@ -713,7 +715,7 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".provider-assignment-admission.lock", ".runtime_status.json",
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
-    ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+    ".external_write_receipts.db", ".idempotency.db",
     ".manifest.json",  # canon/.manifest.json, inside the universe walk
     # The agent's own workspace (harness W2): user bytes, counted by the walk.
     ".agent-workspace",

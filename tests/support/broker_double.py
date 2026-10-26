@@ -97,6 +97,43 @@ def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> Non
                                  plans=Plans(data_root))
     identities.resolve(principal, allocate=True)
     drive(identities.admit(principal, routing=projection(identities.path)))
+    # Production admission provisions the owner's broker policy (ADMIT_OWNER).
+    from tinyassets.broker.policy import PolicyStore
+
+    PolicyStore(Path(data_root), identities).bootstrap_owner(principal)
+
+
+def grant_consent(data_root: Path, *, owner: str, sink: str, destination: str) -> dict:
+    """Grant a consent the way the router does (N10): broker store, live owner session."""
+    import hashlib
+    import json
+    import sqlite3
+    import time
+
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.policy import PolicyStore
+
+    data_root = Path(data_root)
+    cookie = "test-owner-session-" + hashlib.sha256(owner.encode()).hexdigest()
+    sessions = data_root / ".runtime"
+    sessions.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(sessions / "owner-sessions.db") as db:
+        db.execute("CREATE TABLE IF NOT EXISTS owner_sessions (session_hash TEXT PRIMARY KEY, "
+                   "identity_json TEXT NOT NULL, expires_at REAL NOT NULL)")
+        db.execute("INSERT OR REPLACE INTO owner_sessions VALUES (?,?,?)",
+                   (hashlib.sha256(cookie.encode()).hexdigest(),
+                    json.dumps({"user_id": owner}), time.time() + 3600))
+    from tinyassets import owner_runtime
+
+    # The router's process grants, even when the test process also plays a box.
+    saved, owner_runtime._runtime = owner_runtime._runtime, None
+    try:
+        store = PolicyStore(data_root, OwnerIdentities(
+            data_root / ".broker/state/owner-identities.db"))
+        store.bootstrap_owner(owner)
+        return store.grant_consent(owner, cookie, sink, destination)
+    finally:
+        owner_runtime._runtime = saved
 
 
 def _peer_uid(sock: socket.socket) -> int:
@@ -123,12 +160,12 @@ class _InProcessBroker:
         from tests.support.admission import Plans
 
         identity_path = state / "state/owner-identities.db"
-        seeded_admission = identity_path.exists()
         identity_path.parent.mkdir(mode=0o700, exist_ok=True)
         self.identities = OwnerIdentities(identity_path, initialize=True, plans=Plans(data_root))
-        policy_store = PolicyStore(data_root, self.identities) if seeded_admission else None
-        if policy_store is not None:
-            policy_store.bootstrap()
+        # N10: owner authority is broker-held, so the broker always has its store;
+        # owners seeded later are provisioned by seed_owner_admission.
+        policy_store = PolicyStore(data_root, self.identities)
+        policy_store.bootstrap()
         # The same dispatcher factory the broker process uses, so the ledger
         # root and the dispatch config are production's, not the test's.
         self._dispatchers = _Dispatchers(data_root, allow_test_fixtures=True)

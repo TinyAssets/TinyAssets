@@ -17,16 +17,17 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def rig(discovery):
-    from tinyassets.storage.effector_consents import grant_consent
+    from tests.support.broker_double import grant_consent
     from tinyassets.storage.workspace_authority import workspace_consent_destination
 
     base = discovery.root / "cc-alice"
     base.mkdir()
     with discovery.ledger._connect() as conn:
         conn.execute("UPDATE outbound_connections SET scopes_json=?", ('["git_read:owner/repo"]',))
-    grant_consent(base, sink="workspace", destination=workspace_consent_destination(
-        "workspace_checkout", "owner/repo", connection_id="conn-a", host="models.example.com"),
-        granted_by="alice")
+    grant_consent(discovery.root, owner="alice", sink="workspace",
+                  destination=workspace_consent_destination(
+                      "workspace_checkout", "owner/repo", connection_id="conn-a",
+                      host="models.example.com"))
     discovery.base = base
     return discovery
 
