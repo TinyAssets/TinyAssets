@@ -228,6 +228,34 @@ def test_unrelated_symlink_does_not_reject_the_archive(tmp_path):
     assert (dest / ".broker" / "outbound.db").is_file()
 
 
+def test_an_oversized_shared_database_still_reaches_the_assignment_pass(tmp_path, monkeypatch):
+    """The snapshot's provider assignments live in the shared database, often over the cap."""
+    monkeypatch.setattr(rc, "EXTRACT_CAP", 16)
+    archive = tmp_path / "tinyassets-snapshot-2026-10-22T04-41-03Z.tar.gz"
+    shared, other = tmp_path / ".tinyassets.db", tmp_path / "provider_definitions.json"
+    shared.write_bytes(b"x" * 64)
+    other.write_bytes(b"y" * 64)
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(shared, arcname="_data/.tinyassets.db")
+        tar.add(other, arcname="_data/center/provider_definitions.json")
+    dest = rc.extract_needed(archive, tmp_path / "out")
+    assert (dest / ".tinyassets.db").read_bytes() == b"x" * 64
+    assert not (dest / "center" / "provider_definitions.json").exists()
+
+
+def test_an_assignment_pass_that_cannot_read_its_inputs_says_why(tmp_path):
+    source, mounts, ledger = tmp_path / "source", tmp_path / "mounts", tmp_path / "ledger.db"
+    source.mkdir()
+    assert rc.restore_assignments(tmp_path, source, mounts, ledger, write=False) == {
+        "skipped_reason": "source_missing"}
+    (source / ".tinyassets.db").write_bytes(b"")
+    assert rc.restore_assignments(tmp_path, source, mounts, ledger, write=False) == {
+        "skipped_reason": "mounts_missing"}
+    mounts.mkdir()
+    assert rc.restore_assignments(tmp_path, source, mounts, ledger, write=False) == {
+        "skipped_reason": "ledger_missing"}
+
+
 def test_dry_run_does_not_change_the_live_ledger(tmp_path):
     live = _tree(tmp_path, "live", {"outbound_connections": [_conn(OWNER_A, "c-live")]})
     source = _tree(tmp_path, "source", {"outbound_connections": [_conn(OWNER_B, "c-b")]},
@@ -389,8 +417,8 @@ def test_inspect_counts_accounts_and_hides_private_values(tmp_path, monkeypatch,
 def test_assignment_restore_reports_counts_and_writes_only_on_apply(tmp_path):
     from tests.test_restore_legacy_credentials import (
         _assignment_world,
-        _restored_assignment,
         _restore,
+        _restored_assignment,
         _tree_bytes,
     )
 

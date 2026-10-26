@@ -78,7 +78,7 @@ _FUNCTION_TOKENS = frozenset({
 _FIXED_STRINGS = frozenset({
     "inspect", "inspect-legacy", "dry-run", "apply", "auto", "archive", "retained",
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
-    "ledger_missing", "source_missing", "broker_stop_failed",
+    "ledger_missing", "source_missing", "mounts_missing", "broker_stop_failed",
     "broker_start_failed", "package_unavailable",
     *_STAGE_TOKENS, *_EXCEPTION_TOKENS, *_FUNCTION_TOKENS,
 })
@@ -106,7 +106,7 @@ _KEYS = frozenset({
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
     "assignments", "members_readded", "skipped_no_grant", "skipped_no_definition",
-    "refused_mismatch", "centers_changed",
+    "refused_mismatch", "centers_changed", "skipped_reason",
     "stage", "exception", "function",
 })
 
@@ -724,8 +724,14 @@ def _wanted(parts):
     return None
 
 
+#: Members larger than this are skipped, except the stores the restore must read whole:
+#: the ledger and the shared database that holds the snapshot's provider assignments.
+EXTRACT_CAP = 8 * 1024 * 1024
+UNCAPPED = {(".broker", "outbound.db"), (".tinyassets.db",), (".tinyassets.db-wal",)}
+
+
 def extract_needed(archive, dest):
-    """Copy only credential members. Rejects links and paths that escape."""
+    """Copy only credential members, streamed. Rejects links and paths that escape."""
     try:
         handle = tarfile.open(archive, "r:gz")
     except (OSError, tarfile.TarError) as error:
@@ -741,15 +747,15 @@ def extract_needed(archive, dest):
                 continue
             if member.issym() or member.islnk() or not member.isfile():
                 raise SourceRefused("unsafe_member")
+            if relative not in UNCAPPED and member.size > EXTRACT_CAP:
+                continue
             stream = handle.extractfile(member)
             if stream is None:
                 continue
-            data = stream.read()
-            if relative[-1] != "outbound.db" and len(data) > 8 * 1024 * 1024:
-                continue
             target = dest.joinpath(*relative)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            with stream, target.open("wb") as out:
+                shutil.copyfileobj(stream, out)
     return dest
 
 
@@ -2884,16 +2890,18 @@ def restore_assignments(live_root, source_root, mounts, ledger, *, write):
     """Re-seat snapshot members whose definition and grant now exist.
 
     Dry-run applies the same writer to disposable copies of the owner databases.
-    Returns None when the snapshot has no assignment database. Counts only.
+    Counts only. A pass that cannot read its inputs names why in ``skipped_reason``.
     """
     from tinyassets.sqlite_readonly import readonly_db
 
     source_db = Path(source_root) / ".tinyassets.db"
     mounts = Path(mounts) if mounts else None
-    if (source_db.is_symlink() or not source_db.is_file()
-            or mounts is None or mounts.is_symlink() or not mounts.is_dir()
-            or ledger is None or Path(ledger).is_symlink() or not Path(ledger).is_file()):
-        return None
+    if source_db.is_symlink() or not source_db.is_file():
+        return {"skipped_reason": "source_missing"}
+    if mounts is None or mounts.is_symlink() or not mounts.is_dir():
+        return {"skipped_reason": "mounts_missing"}
+    if ledger is None or Path(ledger).is_symlink() or not Path(ledger).is_file():
+        return {"skipped_reason": "ledger_missing"}
     counts = _assignment_counts()
     disposable = None
     write_mounts = mounts
@@ -3007,12 +3015,10 @@ def apply_tree(live_root, source_root, rollback_dir, *, mounts=None, run=_run):
         kept = take_rollback(live_root, rollback_dir)
         plan = merge(live_root, source_root)
         if isinstance(plan, dict) and not plan.get("error"):
-            assignments = restore_assignments(
+            plan["assignments"] = restore_assignments(
                 live_root, source_root, mounts,
                 live_root / ".broker" / "outbound.db", write=True,
             )
-            if assignments is not None:
-                plan["assignments"] = assignments
         if isinstance(plan, dict) and plan.get("error"):
             merge_error = plan["error"]
         restored = restore_markers(mounts, source_root)
@@ -3418,12 +3424,10 @@ def _plan_only(live_root, source_root, mounts=None):
                 shutil.copyfile(path, target)
         plan = merge(staging, source_root)
         if isinstance(plan, dict) and not plan.get("error"):
-            assignments = restore_assignments(
+            plan["assignments"] = restore_assignments(
                 live_root, source_root, mounts,
                 staging / ".broker" / "outbound.db", write=False,
             )
-            if assignments is not None:
-                plan["assignments"] = assignments
         return plan
 
 
