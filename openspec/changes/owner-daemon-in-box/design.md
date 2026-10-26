@@ -898,7 +898,7 @@ Target:
     operation; no new behaviour.
   - (Settled 2026-10-20, from b8's stop under rule 4.) Victim facts come from the
   `status` that idle-sleep selection (`recover`) already fetches. The capacity
-  constants (`idle_limit`, `awake_cap`, `wake_timeout`) are broker configuration.
+  constants (`awake_cap`, `wake_timeout`) are broker configuration.
   boxhostd holds no cap check and exports none of them. **Deleted:** boxhostd's
   `awake_cap` check in `ensure_awake`, those three `status` fields, and the
   per-candidate `status` RPC loop under `_capacity`.

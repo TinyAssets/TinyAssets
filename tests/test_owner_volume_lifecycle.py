@@ -1276,11 +1276,10 @@ def _age(storage, sql, seconds):
         db.execute(sql, (seconds,))
 
 
-_DURABILITY = "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map"
-_SLEEP = "owner-daemon-in-box:Boxes sleep and wake without a person"
 
 
-@pytest.mark.verifies(_DURABILITY)
+@pytest.mark.verifies(
+    "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map")
 def test_a_pause_between_turns_is_not_an_offsite_copy(storage, monkeypatch):
     monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
     routing = storage.lifecycle.lifecycle
@@ -1310,7 +1309,8 @@ def test_a_pause_between_turns_is_not_an_offsite_copy(storage, monkeypatch):
     assert _published(storage) == [stopped["snapshot_id"], first["snapshot_id"]]  # Newest first.
 
 
-@pytest.mark.verifies(_DURABILITY)
+@pytest.mark.verifies(
+    "owner-daemon-in-box:Owner durability is off-host snapshots referenced in the map")
 def test_a_day_old_snapshot_is_replaced_on_the_next_stop(storage, monkeypatch):
     monkeypatch.setattr(owner_volumes, "SNAPSHOT_QUIET", 900)
     start(storage)
@@ -1321,7 +1321,7 @@ def test_a_day_old_snapshot_is_replaced_on_the_next_stop(storage, monkeypatch):
     assert second["work"] is None and second["snapshot_id"] != first["snapshot_id"]
 
 
-@pytest.mark.verifies(_SLEEP)
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
 def test_a_woken_box_is_not_stopped_inside_its_wake_lease(storage):
     from tinyassets.broker import volume_lifecycle
 
@@ -1349,7 +1349,7 @@ def test_a_woken_box_is_not_stopped_inside_its_wake_lease(storage):
     assert storage.lifecycle.volume("alice")["work"] is None  # The first stop is copied.
 
 
-@pytest.mark.verifies(_SLEEP)
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
 def test_a_pending_sign_in_holds_the_idle_clock_but_never_a_drain():
     from tinyassets.owner_activity import Activity
 
