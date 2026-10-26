@@ -44,6 +44,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons._launch": (
         CALL_SCOPED, "one broker-authorized launch waits for its bounded readiness deadline",
     ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons._answer": (
+        CALL_SCOPED, "one wake retries a silent box's status for at most answer_probe seconds",
+    ),
 
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
