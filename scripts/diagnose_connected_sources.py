@@ -181,7 +181,7 @@ def _digest(value):
 
 def legacy_digests(source) -> set[str]:
     """Digests upgrade_connection() would accept. This does not write the marker."""
-    old = source.document()
+    old = source.digest_document()
     old["state"] = dict(old["state"])
     old["state"]["location"] = "owner_box"
     accepted = {_digest(old)}

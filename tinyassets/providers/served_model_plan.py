@@ -113,8 +113,10 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
             if refused is not None:
                 refused.append(exc)
             continue
-        except PermissionError:
-            continue  # No declared record: not a usable source.
+        except PermissionError as exc:  # No owner box, or no declared record.
+            if refused is not None:
+                refused.append(PlacementRefused(name, {placement: str(exc)}))
+            continue
         sources.add(name)
     return frozenset(sources)
 

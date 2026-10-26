@@ -54,8 +54,8 @@ def register_universe_open_providers(
     for definition in list_definitions(universe_id):
         try:
             provider = provider_for_definition(definition)
-        except (ValueError, KeyError):
-            continue
+        except (ValueError, KeyError, PermissionError):
+            continue  # Planning already left it out and named why.
         router.register(provider)
         names.append(provider.name)
     return names

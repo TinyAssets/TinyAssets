@@ -116,8 +116,8 @@ class SourceRecord(Mapping):
             # a CLI in the owner's box on its plan, HTTP on the thin loop.
             cli = "cli_login" in doc.get("sign_in", {})
             doc["execution"] = {"placement": ["hosted_box" if cli else "thin_loop"],
-                                "billing": ["plan" if cli else "free" if free is True
-                                            else "metered"],
+                                "billing": ["free" if free is True
+                                            else "plan" if cli else "metered"],
                                 "serves": "owner_only"}
         record = cls(**doc)
         if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,63}", record.id)

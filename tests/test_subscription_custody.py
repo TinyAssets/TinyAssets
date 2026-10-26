@@ -59,7 +59,7 @@ def test_connection_upgrade_accepts_record_before_lock_digest(connected):
     from tinyassets.providers.source_record import SourceRecord
     from tinyassets.providers.subscription_source import digest
 
-    old = connected.source.document()
+    old = connected.source.digest_document()  # A marker from before placement.
     old["state"]["location"] = "owner_box"
     old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)
     current = connected.source.document()
@@ -83,7 +83,7 @@ def test_interrupted_upgrade_leaves_a_marker_the_next_tap_accepts(connected, mon
     from tinyassets.providers.source_record import SourceRecord
     from tinyassets.providers.subscription_source import digest
 
-    old = connected.source.document()
+    old = connected.source.digest_document()
     old["sign_in"]["cli_login"]["install"].pop("lock_sha256", None)
     current = connected.source.document()
     current["sign_in"]["cli_login"]["install"]["lock_sha256"] = "a" * 64
@@ -190,7 +190,7 @@ def test_lease_writeback_retries_when_the_broker_drops_the_channel(connected, mo
 
 def test_legacy_login_moves_to_custody_and_status_uses_tmpfs(connected, monkeypatch):
     runtime = connected
-    old = runtime.source.document()
+    old = runtime.source.digest_document()  # A file and marker from before placement.
     old["state"]["location"] = "owner_box"
     declaration = runtime.home / ".ta-cli/sources/fake-cli.json"
     declaration.write_text(json.dumps(old))

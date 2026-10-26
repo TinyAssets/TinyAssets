@@ -95,12 +95,12 @@ def execution_for(definition) -> dict:
     is linked to the grant.
     """
     if _placement(definition.access_method) == "hosted_box":
-        from tinyassets.owner_runtime import current
-        from tinyassets.providers.source_record import records
+        from tinyassets.providers.subscription_runtime import SubscriptionRuntime
 
-        owner = current()  # An owner's own record overrides the built-in one.
-        record = records(owner.root if owner is not None else None).get(definition.ref)
-        if record is None:
-            raise PermissionError("model source has no declared record")
-        return record.execution
+        # The owner box's runtime reads its records, owner overrides included,
+        # and refuses outside an admitted box: hosted_box means nothing there.
+        try:
+            return SubscriptionRuntime(definition.ref).source.execution
+        except KeyError:
+            raise PermissionError("model source has no declared record") from None
     return DETECTED

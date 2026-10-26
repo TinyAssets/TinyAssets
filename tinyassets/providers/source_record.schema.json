@@ -322,20 +322,6 @@
     {
       "if": {
         "properties": {
-          "origin": {
-            "const": "declared"
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "execution"
-        ]
-      }
-    },
-    {
-      "if": {
-        "properties": {
           "sign_in": {
             "required": [
               "cli_login"
@@ -354,6 +340,48 @@
                     "device"
                   ]
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "execution"
+        ],
+        "properties": {
+          "execution": {
+            "anyOf": [
+              {
+                "properties": {
+                  "placement": {
+                    "contains": {
+                      "const": "device"
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "billing": {
+                    "contains": {
+                      "const": "plan"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "properties": {
+              "serves": {
+                "const": "owner_only"
               }
             }
           }

@@ -88,9 +88,16 @@ def test_the_plan_leaves_out_an_unplaceable_source_and_says_why(tmp_path, monkey
                             access_method="subscription_cli", ref="codex")
     monkeypatch.setattr(definitions, "list_definitions", lambda name: [codex])
 
-    def unavailable(*args):
-        raise PermissionError("no box")
+    refused = []  # Outside an owner box a hosted_box source has nowhere to run.
+    assert served_model_plan.connected_sources(tmp_path, universe, "alice",
+                                               refused=refused) == frozenset()
+    assert [exc.tried for exc in refused] == [
+        {"hosted_box": "subscription CLI requires an admitted owner box"}]
 
+    def unavailable(*args):
+        raise PermissionError("no sign-in")
+
+    monkeypatch.setattr(placement, "execution_for", lambda definition: _CLI)  # In its box.
     monkeypatch.setattr(subscription_catalog, "context", unavailable)
     refused = []
     assert served_model_plan.connected_sources(tmp_path, universe, "alice",
@@ -103,6 +110,27 @@ def test_the_plan_leaves_out_an_unplaceable_source_and_says_why(tmp_path, monkey
 
 
 @pytest.mark.verifies("model-source-discovery:Placement is source data")
+def test_one_unplaceable_definition_never_stops_the_others_registering(monkeypatch):
+    from tinyassets.providers import definition as definitions
+    from tinyassets.providers.provider_resolver import register_universe_open_providers
+
+    cli = SimpleNamespace(id="cli", owner_user_id="alice", universe_id="center",
+                          access_method="subscription_cli", ref="codex")
+    http = SimpleNamespace(id="http", owner_user_id="alice", universe_id="center",
+                           access_method="api_key_http", ref="grant")
+    monkeypatch.setattr(definitions, "list_definitions", lambda name: [cli, http])
+    built = []
+
+    class Router:
+        def register(self, provider):
+            built.append(provider)
+
+    monkeypatch.setattr("tinyassets.providers.api_key_http_provider.ApiKeyHttpProvider",
+                        lambda definition: SimpleNamespace(name=definition.id))
+    assert register_universe_open_providers(Router(), "center") == ["http"]
+
+
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_an_owner_only_source_serves_only_its_owner():
     placement.require_serves(_CLI, owner="alice", caller="alice")
     with pytest.raises(PermissionError):
@@ -110,23 +138,67 @@ def test_an_owner_only_source_serves_only_its_owner():
     placement.require_serves({**_CLI, "serves": "may_serve_others"}, owner="alice", caller="bob")
 
 
-@pytest.mark.verifies("model-source-discovery:Placement is source data")
-def test_connected_cli_digests_are_unchanged():
-    """The pre-placement document, byte for byte, so no owner is asked to reconnect."""
-    import subprocess
+#: Digests of each CLI record on main before placement: the connection marker,
+#: the catalogue fingerprint, and the three older shapes upgrade_connection accepts.
+_MAIN_DIGESTS = {
+    "codex": {
+        "plain": "3133eb4e3f094a8d8af6fc814dfb654e183bf3d166ffa127926f933b181643b8",
+        "catalog": "c0c499881953e0b47b437f4f25e8c575373f184c47b0b1cd1c5d031fd37117b3",
+        "upgrade": [
+            "6e3546e2915bdd0c43614596f0a7d2f6b645e66a9d0b0a2d42618322288bf915",
+            "225bf3334873aa8714be57cd5306c6e8e60bdcffbee43e5f83907973c1170375",
+            "32aa42190f727426b4ab6b6221bb1920e8a706693596b128ae55aae38c0066fe",
+        ],
+    },
+    "claude-code": {
+        "plain": "1a72496c07cc1d1bd71005fc562bb41f81e57ecee291ff860d279d4e12375e89",
+        "catalog": "38d68fc05e486bb5d32127544d58380d3c760a0c54c0697394e9a8d2c9231e00",
+        "upgrade": [
+            "e4da6d4d8fafa4865638df70ddd2fec27e8c242a3cbf1deca9c9e570dda96148",
+            "f31f7719c160082e6772b1d08ad4ec2a5887414eaab0c268338cabd9e4550e44",
+            "187ac777379b55e93964b8e2ca0b21d294ea56a2258c31ac3a34b16a3e35f606",
+        ],
+    },
+    "gemini": {
+        "plain": "45181b7334565f9aa88bfa177804970c98d8a2b4cc9047c94b9192ab9e9927f9",
+        "catalog": "a80d7710f5939d1e1b05820b50f3bbc375071cc0f13045302575eb6917c3e886",
+        "upgrade": [
+            "c2e53d44b91bfaf4ed00c166503c01e5ea497e862e6ec363039f6f22e2a0ca4d",
+            "c160b85b1d86dd32baefb428eed19bbe6ac4405739ef92d22db6c4c2ec636dc8",
+            "ac4e9c99cc728c718a300ce621199c2404879d20100afcc124e6f4501c35c431",
+        ],
+    },
+    "kimi": {
+        "plain": "0fb5a6fc370ec069d419c1b83b1815ae728f183655187f8453e78ecd521140e1",
+        "catalog": "e3cdb5980beae351aee397460f283cdf7fbc33663aec17242cdb91f11371fa11",
+        "upgrade": [
+            "30edb6fbe977d6668bc783f7156fe07de4f0a9084e45c283d771665e50ee0373",
+            "383a09b43bea2ff2640a67360500ff8931921e64195e33e6a5ff97150aa39c28",
+            "c7f7fb58f3a9643f5984167a2f4e87b0e0a23b5bb8cb03c08e631bd610249c03",
+        ],
+    },
+}
 
-    fields = ["id", "display_name", "origin", "addresses", "sign_in", "invoke", "egress",
-              "state", "suggested", "free", "models", "ranking"]
-    defaults = {"suggested": False, "free": False, "models": [], "ranking": None}
-    for record in records(strict=True).values():
-        before = json.loads(subprocess.run(
-            ["git", "show", f"origin/main:tinyassets/providers/source_records/{record.id}.json"],
-            capture_output=True, text=True, check=False).stdout or "null")
-        if before is None or "free" not in before:
-            continue  # Not on main, or main already carries the block.
-        expected = {key: before.get(key, defaults.get(key)) for key in fields}
-        assert json.dumps(record.digest_document(), sort_keys=True) == json.dumps(
-            expected, sort_keys=True)
+
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
+def test_connected_cli_digests_are_unchanged(tmp_path):
+    """Byte for byte, so no connected CLI source is asked to reconnect."""
+    from tinyassets.providers.subscription_lease import upgrade_connection
+    from tinyassets.providers.subscription_source import digest
+
+    shipped = records(strict=True)
+    assert set(_MAIN_DIGESTS) == {key for key, r in shipped.items() if "cli" in r.invoke}
+    for key, expected in _MAIN_DIGESTS.items():
+        record = shipped[key]
+        assert digest(record) == expected["plain"]
+        assert digest({"source": record, "connection": "x"}) == expected["catalog"]
+        for legacy in expected["upgrade"]:  # A marker from before custody or the lock pin.
+            runtime = SimpleNamespace(source=record, directory=tmp_path)
+            marker = {"source": legacy}
+            upgrade_connection(runtime, marker)
+            assert marker["source"] == expected["plain"]
+            assert json.loads((tmp_path / "connection").read_text())["source"] == (
+                expected["plain"])
 
 
 @pytest.mark.verifies("model-source-discovery:Placement is source data")
