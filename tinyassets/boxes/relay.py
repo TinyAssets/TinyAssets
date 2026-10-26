@@ -30,9 +30,10 @@ class OwnerRelays:
         self.directory, self.admission = directory, admission
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._bindings = {}
-        self._listeners = {}
         self._servers = {}
-        self._open = {}
+        self._open = {}  # Touched only on the loop thread.
+        # Serializes bind/retire/close. The loop thread never takes it, so a
+        # caller may wait on the loop while holding it.
         self._lock = threading.Lock()
         self._loop = asyncio.new_event_loop()
         threading.Thread(target=self._loop.run_forever, daemon=True).start()
@@ -49,27 +50,30 @@ class OwnerRelays:
             listener.bind(str(path))
             os.chown(path, uid, uid)
             os.chmod(path, 0o600)
-            listener.listen(16)
+            listener.listen(OWNER_STREAMS)  # A burst up to the owner's bound queues.
+            try:
+                server = asyncio.run_coroutine_threadsafe(asyncio.start_unix_server(
+                    lambda reader, writer: self._serve(reader, writer, owner, uid),
+                    sock=listener, backlog=OWNER_STREAMS), self._loop).result(5)
+            except BaseException:
+                listener.close()
+                path.unlink(missing_ok=True)
+                raise
             self._bindings[uid] = owner
-            self._listeners[uid] = listener
-            self._servers[uid] = asyncio.run_coroutine_threadsafe(asyncio.start_unix_server(
-                lambda reader, writer: self._serve(reader, writer, owner, uid),
-                sock=listener), self._loop).result(5)
+            self._servers[uid] = server
             return path
 
     def _admit(self, uid):
-        with self._lock:
-            if (sum(self._open.values()) >= FLEET_STREAMS
-                    or self._open.get(uid, 0) >= OWNER_STREAMS):
-                return False
-            self._open[uid] = self._open.get(uid, 0) + 1
-            return True
+        if (sum(self._open.values()) >= FLEET_STREAMS
+                or self._open.get(uid, 0) >= OWNER_STREAMS):
+            return False
+        self._open[uid] = self._open.get(uid, 0) + 1
+        return True
 
     def _release(self, uid):
-        with self._lock:
-            self._open[uid] -= 1
-            if not self._open[uid]:
-                del self._open[uid]
+        self._open[uid] -= 1
+        if not self._open[uid]:
+            del self._open[uid]
 
     async def _serve(self, guest_reader, guest, owner, uid):
         if not self._admit(uid):
@@ -94,8 +98,9 @@ class OwnerRelays:
                 from tinyassets.router_credentials import relay_request
 
                 # Fixed endpoint binding; C13 post-write admission orders mints.
-                with self._lock:
-                    bound_owner = self._bindings[uid]
+                bound_owner = self._bindings.get(uid)
+                if bound_owner is None:
+                    raise BoxAuthError("relay endpoint is retired")
                 answer = await asyncio.to_thread(
                     relay_request, self.admission.data_root, bound_owner, doc["request"])
                 guest.write(rf.control(rf.CONNECTION, answer))
@@ -155,23 +160,27 @@ class OwnerRelays:
                 return
             last[0] = self._loop.time()
             writer.write(data)
-            await writer.drain()
+            # A peer that stops reading cannot hold the stream past the idle end.
+            await asyncio.wait_for(writer.drain(), _IDLE)
+
+    async def _stop(self, servers):
+        # Only the loop closes its listeners, so its selector never keeps a
+        # closed descriptor that the next bind would reuse.
+        for server in servers:
+            server.close()
 
     def close(self):
-        for listener in self._listeners.values():
-            listener.close()
+        with self._lock:
+            servers = list(self._servers.values())
+            self._servers.clear()
+            self._bindings.clear()
+            asyncio.run_coroutine_threadsafe(self._stop(servers), self._loop).result(5)
+            self._loop.call_soon_threadsafe(self._loop.stop)
 
     def retire(self, uid):
         with self._lock:
-            listener = self._listeners.pop(uid, None)
             server = self._servers.pop(uid, None)
-            if server is not None:
-                self._loop.call_soon_threadsafe(server.close)
-            if listener is not None:
-                try:
-                    listener.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass  # Already stopped; close and remove the socket below.
-                listener.close()
             self._bindings.pop(uid, None)
+            if server is not None:
+                asyncio.run_coroutine_threadsafe(self._stop([server]), self._loop).result(5)
             (self.directory / f"{uid}.sock").unlink(missing_ok=True)
