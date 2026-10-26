@@ -12,11 +12,10 @@ from scripts import check_shapes
 from tinyassets.providers import placement
 from tinyassets.providers.source_record import SourceRecord, records
 
-_PLACED = "model-source-discovery:Placement is source data"
 _CLI = {"placement": ["hosted_box"], "billing": ["plan"], "serves": "owner_only"}
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 @pytest.mark.parametrize("execution, cli", [
     ({"placement": ["thin_loop"], "billing": ["plan"], "serves": "owner_only"}, True),
     ({"placement": ["device"], "billing": ["free"], "serves": "may_serve_others"}, False),
@@ -30,7 +29,7 @@ def test_execution_rules_refuse_a_malformed_block(execution, cli):
         placement.validate(execution, cli=cli)
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_every_shipped_record_declares_where_it_runs():
     for record in records(strict=True).values():
         assert set(record.execution) == {"placement", "billing", "serves"}
@@ -38,7 +37,7 @@ def test_every_shipped_record_declares_where_it_runs():
             assert record.execution == _CLI
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_a_record_without_the_block_runs_where_its_mechanism_ran():
     codex = records()["codex"].document()
     detected = {**records()["groq"].document(), "origin": "detected", "execution": None}
@@ -49,7 +48,7 @@ def test_a_record_without_the_block_runs_where_its_mechanism_ran():
     assert SourceRecord.parse({**legacy, "free": True}).execution["billing"] == ["free"]
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_no_available_placement_is_refused_naming_each_one_tried():
     execution = {"placement": ["device", "hosted_box"], "billing": ["plan"],
                  "serves": "owner_only"}
@@ -63,7 +62,7 @@ def test_no_available_placement_is_refused_naming_each_one_tried():
     assert placement.resolve_placement("s", execution, {"hosted_box": None}) == "hosted_box"
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_dispatch_reaches_only_an_executor_the_record_allows(monkeypatch):
     from tinyassets.providers.provider_resolver import provider_for_definition
 
@@ -78,7 +77,7 @@ def test_dispatch_reaches_only_an_executor_the_record_allows(monkeypatch):
     assert placement.execution_for(http) == placement.DETECTED
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_the_plan_leaves_out_an_unplaceable_source_and_says_why(tmp_path, monkeypatch):
     from tinyassets.providers import definition as definitions
     from tinyassets.providers import served_model_plan, subscription_catalog
@@ -103,7 +102,7 @@ def test_the_plan_leaves_out_an_unplaceable_source_and_says_why(tmp_path, monkey
         {"subscription_cli:codex-1"})
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_an_owner_only_source_serves_only_its_owner():
     placement.require_serves(_CLI, owner="alice", caller="alice")
     with pytest.raises(PermissionError):
@@ -111,7 +110,7 @@ def test_an_owner_only_source_serves_only_its_owner():
     placement.require_serves({**_CLI, "serves": "may_serve_others"}, owner="alice", caller="bob")
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_connected_cli_digests_are_unchanged():
     """The pre-placement document, byte for byte, so no owner is asked to reconnect."""
     import subprocess
@@ -130,7 +129,7 @@ def test_connected_cli_digests_are_unchanged():
             expected, sort_keys=True)
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_an_owner_file_written_before_placement_keeps_its_mechanism(tmp_path):
     codex = records()["codex"].document()
     legacy = {key: value for key, value in codex.items() if key != "execution"}
@@ -144,7 +143,7 @@ def test_an_owner_file_written_before_placement_keeps_its_mechanism(tmp_path):
     assert records(tmp_path)["codex"].execution == _CLI
 
 
-@pytest.mark.verifies(_PLACED)
+@pytest.mark.verifies("model-source-discovery:Placement is source data")
 def test_placement_branching_only_falls_and_has_one_resolver():
     shape = check_shapes.SHAPES["S29"]
     assert check_shapes.old_count(shape, check_shapes.ROOT) <= shape.ceiling
