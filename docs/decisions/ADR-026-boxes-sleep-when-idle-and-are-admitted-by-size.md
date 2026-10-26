@@ -28,13 +28,17 @@ Proposed. Would clarify ADR-019's lifecycle rule and amend ADR-022's interim
 
 - **Zero idle tail.** A box sleeps as soon as no turn, tool, CLI, browser or
   resident process is running. There is no idle timer.
-- **Admission by size class.** Each wake reserves memory for its class
-  (`thin`, `cli` or `chromium`) against the host's budget. Over budget, it
-  queues with an honest "waiting for capacity" status rather than failing.
+- **Admission by memory.** Each wake reserves the thin class (256 MiB)
+  against the host's memory budget, and every awake box is charged what its
+  cgroup reports, never less, from the next lifecycle pass. A wake cannot
+  know its class: a CLI or Chromium starts later, at the agent's choice.
+  A box that grows past the budget before then is killed by the kernel
+  first (`oomScoreAdj`), never the host. Over budget, an interactive wake
+  evicts an idle box and a scheduled wake waits (#5319).
 - **Suspend and restore** (ADR-022's P6) is part of the main build-out.
   Checkpoint images are kept for recently active owners; others cold-start.
-- **Class reservations** start from the G3 gate figures and are replaced by
-  measured receipts (proposed row N12, metering).
+- **The thin reservation** starts from the measured idle box (95 to 145 MiB
+  awake) and is replaced by metering receipts (proposed row N12).
 
 ## Consequences
 

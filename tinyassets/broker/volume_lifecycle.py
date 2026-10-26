@@ -48,7 +48,7 @@ class VolumeLifecycle:
         work = record["work"]
         if work and work["kind"] == "running":
             status = await self.host(owner, "status")
-            self.lifecycle.facts[owner] = status
+            await self.lifecycle.observed(owner, status)
             idle = False
             if status["awake"]:
                 self.lifecycle.awake.add(owner)

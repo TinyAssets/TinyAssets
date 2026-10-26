@@ -14,6 +14,7 @@ from tests.support.admission import drive, projection
 from tinyassets.boxes.daemon_control import REQUEST_DRIVEN
 from tinyassets.broker import admission, box_admission, owner_volumes
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs
+from tinyassets.broker.lifecycle_config import THIN_BYTES
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.routing import BrokerLifecycle
 
@@ -69,7 +70,7 @@ def authority(tmp_path, monkeypatch):
 
     def host(operation, owner=None, **fields):
         if operation == "status":
-            return {"awake": False, "awake_count": 0, "wake_timeout": 60, "awake_cap": 6}
+            return {"awake": False, "awake_count": 0, "wake_timeout": 60}
         if operation == "wake":
             events.append("wake:" + owner)
             return {"uid": fields["record"]["uid"]}
@@ -369,7 +370,7 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
     lifecycle = a.server.routing.volumes
     lifecycle.volume("alice", "created")
     lifecycle.volume("alice", "sleep")
-    a.server.routing.config.awake_cap = 1
+    a.server.routing.config.memory_budget = THIN_BYTES
     a.server.routing.awake.add("alice")
     awake = {"alice": True, "bob": False}
     owners = {a.identities.owner_machine(owner): owner for owner in awake}
@@ -379,7 +380,7 @@ def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(auth
         bound = owner if owner is not None else owners[fields["uid"]]
         if operation == "status":
             return {"awake": awake[bound], "awake_count": sum(awake.values()),
-                    "awake_cap": 1, "wake_timeout": 10, "active": 0,
+                    "wake_timeout": 10, "active": 0,
                     "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
                     "volume_size": 1024**3}
         if operation == "sleep":

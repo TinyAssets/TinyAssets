@@ -33,6 +33,9 @@ class ProcessRuntime:
     def alive(self, uid):
         return uid in self.processes and self.processes[uid].poll() is None
 
+    def memory(self, uid):
+        return None  # A plain process has no box cgroup; the broker charges thin.
+
     def stop(self, uid):
         process = self.processes.get(uid)
         if process is not None and process.poll() is None:

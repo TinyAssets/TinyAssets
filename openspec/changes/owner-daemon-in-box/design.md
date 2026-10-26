@@ -898,7 +898,7 @@ Target:
     operation; no new behaviour.
   - (Settled 2026-10-20, from b8's stop under rule 4.) Victim facts come from the
   `status` that idle-sleep selection (`recover`) already fetches. The capacity
-  constants (`awake_cap`, `wake_timeout`) are broker configuration.
+  constants (`memory_budget`, `wake_timeout`) are broker configuration.
   boxhostd holds no cap check and exports none of them. **Deleted:** boxhostd's
   `awake_cap` check in `ensure_awake`, those three `status` fields, and the
   per-candidate `status` RPC loop under `_capacity`.
@@ -1318,7 +1318,8 @@ are described in the 3c-2 as-built contract above.
 - **Defaults.** No idle threshold (ADR-026): a box stops on the first lifecycle pass with no
   running work and no pending sign-in, ten seconds after its last request (the wake lease); its
   off-host snapshot waits until it stays stopped for 900 seconds, or a day since the last one,
-  awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`; 2 GiB is a ceiling, and MemoryMax bounds the fleet), memory 2 GiB per box
+  a 6 GiB wake budget (`TINYASSETS_BOX_MEMORY_BUDGET`, ADR-026: each box charged its reported
+  cgroup memory, at least the 256 MiB thin class; the flat awake cap is deleted), memory 2 GiB per box
   (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB; raised
   2026-10-25 for the agent plus one subscription CLI run).
   The service's aggregate MemoryMax is 7G. Interactive wakes evict the least
@@ -1772,8 +1773,8 @@ explicit classes refuse. Shared tables are not split.
 - The waker keeps the last reported `next_wake_at` until it is replaced, and
   wakes every admitted, unsuspended owner at least once every 24 hours. A box
   that dies before reporting is still woken.
-- At the awake cap, an interactive request evicts the least recently used
-  idle box. Scheduled wakes queue behind interactive requests.
+- When the memory budget is full, an interactive request evicts the least
+  recently used idle box. Scheduled wakes queue behind interactive requests.
 
 ## D11. Deploys, canary and rollback
 
