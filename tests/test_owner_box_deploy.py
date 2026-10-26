@@ -508,3 +508,18 @@ def test_a_sign_in_timeout_is_the_roll_reason():
     assert code == 1
     assert receipt["reason"] == "canary_sign_in_timeout"
     assert "owner" not in receipt["reason"]
+
+
+def test_a_retry_drain_that_fails_is_recorded_with_where_it_stopped():
+    probes = iter([RuntimeError("canary_box_revision_mismatch")])
+    drains = iter([{"slept": 0, "asleep": 1, "busy": 1, "incomplete": 0},
+                   {"slept": 0, "asleep": 1, "incomplete": 1, "incomplete_sleep": 1}])
+
+    def canary():
+        raise next(probes)
+
+    receipt, code = driver.run(lambda: next(drains), canary, lambda: None,
+                               pause=lambda _s: None, clock=lambda: 0)
+    assert code == 1 and receipt["reason"] == "incomplete_drain"
+    assert receipt["counts"]["incomplete"] == 1 and receipt["counts"]["incomplete_sleep"] == 1
+    assert receipt["counts"]["busy"] == 1 and receipt["counts"]["asleep"] == 2

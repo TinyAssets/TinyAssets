@@ -170,11 +170,13 @@ def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None)
             pause(CANARY_RETRY_SECONDS)
             stage = "control_failed"
             again = _counts(control)
+            if again is not None:
+                # Every drain is in the receipt, including one that fails.
+                receipt["counts"] = {k: receipt["counts"][k] + again[k] for k in OUTCOMES}
             if again is None or again["incomplete"]:
                 receipt["reason"] = "invalid_drain" if again is None else "incomplete_drain"
                 receipt["control"] = "incomplete" if again else "failed"
                 return receipt, 1
-            receipt["counts"] = {k: receipt["counts"][k] + again[k] for k in OUTCOMES}
             stage = "readiness_failed"
             ready()
             stage = "canary_failed"
