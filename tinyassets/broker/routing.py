@@ -15,6 +15,15 @@ from tinyassets.broker.admission import owner_call, owner_lock, read, thread_wor
 
 log = logging.getLogger(__name__)
 
+# A per-owner drain failure may name one of these. The message is never kept.
+_DRAIN_STAGES = frozenset({"lock", "status", "sleep"})
+_DRAIN_CLASSES = frozenset({
+    "TimeoutError", "BlockingIOError", "InterruptedError", "OSError", "BoxError",
+    "BoxBusy", "KeyError", "RuntimeError", "LookupError", "PermissionError",
+    "ValueError", "TypeError", "AttributeError", "OperationalError",
+    "IntegrityError", "DatabaseError", "ProgrammingError", "Error", "error",
+})
+
 
 class BrokerLifecycle:
     def __init__(self, server):
@@ -236,7 +245,69 @@ class BrokerLifecycle:
             return {"ready": True}
         return {"ready": False, "tasks": tasks, "pending": counts}
 
-    async def deploy(self, image):
+    def _drain_cause(self, stage, exc):
+        """Fixed ``stage:Class`` token. The exception text is not part of it."""
+        if stage not in _DRAIN_STAGES:
+            stage = "sleep"
+        kind = "error"
+        for base in type(exc).__mro__:
+            name = base.__name__
+            if name in _DRAIN_CLASSES and name != "error":
+                kind = name
+                break
+        return f"{stage}:{kind}"
+
+    async def _failed_sleep_outcome(self, owner):
+        """Whether a failed sleep left an intent readiness would wait on.
+
+        ``sleep`` records ``kind=snapshot`` before the host stop. An awake box
+        did not stop, so that intent is withdrawn back to ``running`` (which
+        ``pending`` does not count) and the owner is deferred. A box that
+        already stopped keeps the intent for the ordinary publish. Anything
+        else, including a restore intent, still blocks.
+        """
+        try:
+            async with owner_lock(self.identities.path, owner):
+                work = self.volumes.volume(owner, "pending")["work"] or {}
+                kind = work.get("kind")
+                if kind != "snapshot":
+                    return "block" if kind in {"restore", "evict", "erase"} else "defer"
+                if work.get("restore_snapshot_id"):
+                    return "block"
+                status = await self.volumes.host(owner, "status")
+                if not isinstance(status, dict) or "awake" not in status:
+                    return "block"
+                if not status["awake"]:
+                    return "slept"
+                self.volumes.volume(owner, "sleep_refused")
+                after = self.volumes.volume(owner, "pending")["work"] or {}
+                if after.get("kind") == "running":
+                    return "defer"
+                return "block"
+        except Exception:
+            log.warning("owner drain sleep:error")
+            return "block"
+
+    async def _drain_outcome(self, owner, stage):
+        """Defer only when this owner leaves readiness nothing to wait on."""
+        if stage == "sleep":
+            return await self._failed_sleep_outcome(owner)
+        try:
+            async with owner_lock(self.identities.path, owner):
+                work = self.volumes.volume(owner, "pending")["work"] or {}
+                kind = work.get("kind")
+                if kind in {"restore", "evict", "erase"} or work.get("restore_snapshot_id"):
+                    return "block"
+                if kind != "snapshot":
+                    return "defer"
+        except Exception:
+            log.warning("owner drain sleep:error")
+            return "block"
+        # A prior sleep already recorded a plain snapshot. Withdraw it only
+        # when the box is still awake, same as a sleep that just failed.
+        return await self._failed_sleep_outcome(owner)
+
+    async def deploy(self, image, canary=None):
         """C12: publish once, then use ordinary sleep; wake remains demand-driven."""
         from tinyassets.boxes.daemon_control import request
 
@@ -244,9 +315,13 @@ class BrokerLifecycle:
         with closing(self.identities._connect(write=False)) as db:
             owners = [row[0] for row in db.execute("SELECT principal FROM owner_volumes")]
         counts = {"slept": 0, "asleep": 0, "busy": 0, "unresponsive": 0, "incomplete": 0}
+        causes = {}
+        canary_incomplete = 0
         for owner in owners:
+            stage = "lock"
             try:
                 async with owner_lock(self.identities.path, owner):
+                    stage = "status"
                     status = await self.volumes.host(owner, "status")
                     if not status["awake"]:
                         counts["asleep"] += 1
@@ -266,11 +341,32 @@ class BrokerLifecycle:
                         # image at its next ordinary sleep and wake.
                         counts["busy"] += 1
                         continue
+                    stage = "sleep"
                     await self.volumes.sleep(owner)
                     counts["slept"] += 1
-            except Exception:
-                # Unknown activity or a real failure is never mistaken for busy.
-                counts["incomplete"] += 1
+            except Exception as exc:
+                # A lock or status error writes no sleep intent. A sleep error
+                # may have, and an earlier sleep may have left one. Only an
+                # owner with nothing for readiness to wait on is deferred; the
+                # canary is never deferred.
+                outcome = await self._drain_outcome(owner, stage)
+                token = self._drain_cause(stage, exc)
+                log.warning("owner drain %s", token)
+                if outcome == "slept":
+                    counts["slept"] += 1
+                    continue
+                causes[token] = causes.get(token, 0) + 1
+                is_canary = isinstance(canary, str) and owner == canary
+                if outcome == "defer" and not is_canary:
+                    counts["unresponsive"] += 1
+                else:
+                    counts["incomplete"] += 1
+                    if is_canary:
+                        canary_incomplete = 1
+        if causes:
+            counts["incomplete_causes"] = causes
+        if canary_incomplete:
+            counts["canary_incomplete"] = 1
         return counts
 
     async def sleep(self, owner):
