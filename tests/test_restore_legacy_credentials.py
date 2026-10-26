@@ -6,8 +6,11 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -2592,10 +2595,18 @@ def test_workflow_modes_include_inspect_legacy():
     assert 'if mode not in {"inspect", "inspect-legacy", "dry-run", "apply"}:' in workflow
     assert "[[ \"$mode\" =~ ^(inspect|inspect-legacy|dry-run|apply)$ ]]" in workflow
     assert "inspect|inspect-legacy|dry-run|apply" in shell
+    assert "PACKAGE_FILES" in workflow
+    assert "restore-package.tar" in workflow
+    assert 'export PYTHONPATH="$here"' in shell
+    assert "package_unavailable" in (ROOT / "tinyassets/restore_credentials.py").read_text()
     for banned in ("reset_credentials(", "rotate_box_secrets(", "close_admission(",
                    "backup-restore.sh"):
         assert banned not in workflow
         assert banned not in shell
+    for rel in rc.PACKAGE_FILES:
+        path = ROOT / rel
+        assert path.is_file() and not path.is_symlink()
+        assert rel.endswith(".py") and "__pycache__" not in rel and "/tests/" not in rel
 
 
 def _owned_definition(owner, center, ref):
@@ -3001,6 +3012,128 @@ def test_capabilities_without_connection_id_do_not_refuse(tmp_path):
     assert measured["outbound_connection_grants"] == 12
     assert measured["connection_capabilities"] == 3
     _assert_legacy_dry_run_keeps_http(tmp_path, source)
+
+
+def _clean_env(stage):
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin"),
+        "PYTHONPATH": str(stage),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+def _run_staged(stage, args, cwd):
+    """The script with only the stage on the path and no site-packages."""
+    return subprocess.run(
+        ["env", "-i",
+         "PATH=" + os.environ.get("PATH", "/usr/bin"),
+         "PYTHONPATH=" + str(stage),
+         "PYTHONDONTWRITEBYTECODE=1",
+         sys.executable, "-B", "-S", str(stage / "restore_credentials.py"), *args],
+        cwd=cwd, capture_output=True, text=True, timeout=90,
+    )
+
+
+def _package_tar(path):
+    with tarfile.open(path, "w") as archive:
+        for rel in rc.PACKAGE_FILES:
+            archive.add(ROOT / rel, arcname=rel)
+
+
+def test_failure_token_names_a_missing_module():
+    try:
+        raise ModuleNotFoundError("No module named 'tinyassets.private'")
+    except ModuleNotFoundError as exc:
+        kind, _function = rc._failure_tokens(exc)
+    assert kind == "ModuleNotFoundError"
+    assert "private" not in kind
+    try:
+        raise ImportError("No module named tinyassets")
+    except ImportError as exc:
+        kind, _function = rc._failure_tokens(exc)
+    assert kind == "ImportError"
+
+
+def test_missing_package_refuses_before_any_read(tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    shutil.copyfile(ROOT / "tinyassets/restore_credentials.py", stage / "restore_credentials.py")
+    root = tmp_path / "live"
+    root.mkdir()
+    secret = b"LEAK-TOKEN-must-not-be-read"
+    ledger = root / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(secret)
+    log = tmp_path / "backup.log"
+    log.write_bytes(secret)
+    before = {path.relative_to(tmp_path): path.read_bytes()
+              for path in tmp_path.rglob("*") if path.is_file()}
+    result = _run_staged(stage, [
+        "--mode", "dry-run", "--root", str(root),
+        "--backup-log", str(log), "--snapshot-dir", str(tmp_path / "snaps"),
+        "--mounts", str(tmp_path / "mounts"),
+    ], stage)
+    after = {path.relative_to(tmp_path): path.read_bytes()
+             for path in tmp_path.rglob("*") if path.is_file()}
+    assert result.returncode == 2
+    report = json.loads(result.stdout)
+    assert report == {"mode": "dry-run", "error": "package_unavailable"}
+    assert secret.decode() not in result.stdout and secret.decode() not in result.stderr
+    assert "No module named" not in result.stdout and "No module named" not in result.stderr
+    assert before == after
+
+
+def test_staged_package_dry_run_resolves_the_http_secret(tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    shutil.copyfile(ROOT / "deploy/restore-credentials.sh", stage / "restore-credentials.sh")
+    shutil.copyfile(ROOT / "tinyassets/restore_credentials.py", stage / "restore_credentials.py")
+    _package_tar(stage / "restore-package.tar")
+    assert not (stage / "tinyassets").exists()
+    parent = tmp_path / "data"
+    parent.mkdir()
+    live = parent / "live"
+    ledger = live / ".broker" / "outbound.db"
+    ledger.parent.mkdir(parents=True)
+    with sqlite3.connect(ledger) as db:
+        db.executescript(SCHEMA)
+    source = parent / ".tinyassets-restore-old.Ab12"
+    source_ledger = source / ".broker" / "outbound.db"
+    source_ledger.parent.mkdir(parents=True)
+    source_ledger.write_bytes(_universe_ledger(
+        [_conn_universe(OWNER_A, "c-alpha", DEST_OK, "alpha")],
+        [_grant_universe(OWNER_A, "ga", "c-alpha", "alpha")],
+    ))
+    alpha = source / "alpha"
+    alpha.mkdir()
+    (alpha / ".credential-vault.json").write_bytes(_vault_bytes([_http(DEST_OK, TOKEN_OK)]))
+    snaps = tmp_path / "snaps"
+    snaps.mkdir()
+    mounts = tmp_path / "mounts"
+    mounts.mkdir()
+    log = tmp_path / "backup.log"
+    log.write_text("", encoding="utf-8")
+    # The shell unpacks the tar and is the only thing that puts the package
+    # on disk. Its own python then sees that directory as PYTHONPATH.
+    unpacked = subprocess.run(
+        ["bash", str(stage / "restore-credentials.sh"), "inspect", "auto"],
+        cwd=stage, env=_clean_env(stage), capture_output=True, text=True, timeout=90,
+    )
+    assert (stage / "tinyassets/storage/outbound_connections.py").is_file()
+    assert "package_unavailable" not in unpacked.stdout
+    direct = _run_staged(stage, [
+        "--mode", "dry-run", "--source", ".tinyassets-restore-old.Ab12",
+        "--root", str(live), "--backup-log", str(log),
+        "--snapshot-dir", str(snaps), "--mounts", str(mounts),
+    ], tmp_path)
+    assert direct.returncode == 0, direct.stderr
+    report = json.loads(direct.stdout)
+    assert "error" not in report
+    assert report["plan"]["legacy"]["http_kept"] == 1
+    assert "stage" not in report["plan"]["legacy"]
+    assert TOKEN_OK not in direct.stdout and TOKEN_OK not in direct.stderr
+    assert OWNER_A not in direct.stdout
+    rc.safe_json(report)
 
 
 def test_undecodable_owner_outside_the_grant_join_does_not_refuse(tmp_path):
