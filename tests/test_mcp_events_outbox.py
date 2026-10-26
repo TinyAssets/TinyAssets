@@ -86,6 +86,7 @@ def owed(home, run_id):
         ).fetchone()[0] is None
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_real_terminal_outbox_survives_failed_fanout_then_deduplicates(home, channel,
                                                                        monkeypatch):
     from tinyassets import runs
@@ -125,6 +126,7 @@ def test_real_terminal_outbox_survives_failed_fanout_then_deduplicates(home, cha
                                      "event_id", "occurred"} for doc in channel.reports)
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 @pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
 def test_terminal_failure_does_not_emit(home, channel, status):
     channel.store.subscribe(OWNER, channel.document)
@@ -133,6 +135,7 @@ def test_terminal_failure_does_not_emit(home, channel, status):
     assert rows(channel.store, "deliveries") == []
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 @pytest.mark.parametrize(
     "inputs,output",
     [
@@ -152,6 +155,7 @@ def test_exact_filters_and_reply_suppression_are_decided_in_the_box(home, channe
     assert rows(channel.store, "subscriptions")[0]["active"] == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), {}, [True]])
 def test_noncanonical_output_is_nonmatch_not_outbox_poison(home, channel, value):
     channel.store.subscribe(OWNER, channel.document)
@@ -161,6 +165,7 @@ def test_noncanonical_output_is_nonmatch_not_outbox_poison(home, channel, value)
     assert rows(channel.store, "subscriptions")[0]["active"] == 1
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_another_principals_run_is_not_reported(home, channel, monkeypatch):
     channel.store.subscribe(OWNER, channel.document)
     monkeypatch.setattr("tinyassets.mcp_events._box_owner", lambda: "acct_other")
@@ -168,6 +173,7 @@ def test_another_principals_run_is_not_reported(home, channel, monkeypatch):
     assert channel.reports == []
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_broker_unavailable_keeps_the_source_owed(home, channel, monkeypatch):
     channel.store.subscribe(OWNER, channel.document)
 
@@ -179,6 +185,7 @@ def test_broker_unavailable_keeps_the_source_owed(home, channel, monkeypatch):
     assert owed(home, run_id)
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_saved_outside_authority_is_rechecked_at_capture(home, channel):
     from tinyassets.outside_authority import OutsideClientAuthority
 
@@ -206,6 +213,7 @@ def test_saved_outside_authority_is_rechecked_at_capture(home, channel):
     assert rows(channel.store, "deliveries")[0]["state"] == "stopped"
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 def test_poisoned_subscription_has_bounded_outbox_lifetime(home, channel):
     channel.store.subscribe(OWNER, channel.document)
     with channel.store.db() as conn:
@@ -244,6 +252,7 @@ def router_root(broker, tmp_path, monkeypatch):  # noqa: F811
     return root
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 def test_router_subscribes_and_box_reports_through_the_broker(broker, router_root):  # noqa: F811
     from tinyassets.broker.mcp_events import request
 
@@ -279,6 +288,7 @@ def test_router_subscribes_and_box_reports_through_the_broker(broker, router_roo
                                  "authority": None, "params": params()}) == {}
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 def test_router_refusals_are_bounded_and_carry_no_callback(broker, router_root):  # noqa: F811
     from tinyassets.broker.mcp_events import request
     from tinyassets.mcp_event_webhooks import EventError

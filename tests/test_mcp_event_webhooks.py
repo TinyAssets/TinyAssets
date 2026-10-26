@@ -35,6 +35,7 @@ def owner_egress(monkeypatch):
     return sender, admitted
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 @pytest.mark.parametrize(
     "address",
     ["127.0.0.1", "10.1.2.3", "169.254.169.254", "::1", "fc00::1", "::ffff:127.0.0.1", "0.0.0.0"],
@@ -77,6 +78,7 @@ class Connection:
         pass
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 def test_rebinding_rechecked_and_redirect_never_followed(monkeypatch, owner_egress):
     sender, _ = owner_egress
     dns = [["8.8.8.8"]]
@@ -94,6 +96,7 @@ def test_rebinding_rechecked_and_redirect_never_followed(monkeypatch, owner_egre
     assert len(Connection.opened) == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 @pytest.mark.parametrize("mode", ["allowlist", "ask"])
 def test_owner_egress_policy_applies_to_callbacks(monkeypatch, owner_egress, mode):
     sender, _ = owner_egress

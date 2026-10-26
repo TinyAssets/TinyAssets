@@ -89,6 +89,7 @@ def rows(store, table):
         return [dict(r) for r in conn.execute("SELECT * FROM " + table)]
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 def test_idempotence_restart_and_owner_isolation(harness):
     factory, now, sent = harness
     store = factory()
@@ -113,6 +114,7 @@ def test_idempotence_restart_and_owner_isolation(harness):
     assert len(sent) == 3
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_match_names_no_callback_or_key(harness):
     factory, _, _ = harness
     store = factory()
@@ -123,6 +125,7 @@ def test_match_names_no_callback_or_key(harness):
     assert "receiver.example" not in json.dumps(matched) and SECRET not in json.dumps(matched)
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_a_box_cannot_aim_a_delivery_outside_its_owner_or_scope(harness):
     factory, _, _ = harness
     store = factory()
@@ -139,6 +142,7 @@ def test_a_box_cannot_aim_a_delivery_outside_its_owner_or_scope(harness):
     assert rows(store, "subscriptions")[0]["active"] == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 @pytest.mark.parametrize(
     "change",
     [{"command_center_id": "other"}, {"branch_def_id": "reply"}, {"occurred": 999}],
@@ -152,6 +156,7 @@ def test_scope_and_start_boundary(harness, change):
     assert rows(store, "deliveries") == []
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 @pytest.mark.parametrize(
     "event",
     [
@@ -174,6 +179,7 @@ def test_a_report_carries_identifiers_only(harness, event):
         store.capture("alice", event, allow=[], revoke=[])
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 def test_stale_source_events_cannot_enter(harness):
     factory, now, _ = harness
     store = factory()
@@ -182,6 +188,7 @@ def test_stale_source_events_cannot_enter(harness):
     assert store.match("alice", EVENT) == []
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 def test_revocation_and_expiry_erase_secrets(harness):
     factory, now, sent = harness
     store = factory()
@@ -200,6 +207,7 @@ def test_revocation_and_expiry_erase_secrets(harness):
     assert len(sent) == 2
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 def test_revocation_stops_a_queued_delivery(harness):
     factory, _, sent = harness
     store = factory()
@@ -211,6 +219,7 @@ def test_revocation_stops_a_queued_delivery(harness):
     assert len(sent) == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 def test_key_rotation_signs_both_keys_then_expires_old(harness):
     factory, now, sent = harness
     store = factory()
@@ -227,6 +236,7 @@ def test_key_rotation_signs_both_keys_then_expires_old(harness):
     assert len(sent[-1][2]["webhook-signature"].split()) == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Deliveries are durable and retried on the broker clock")
 def test_retry_restart_and_crashed_claim_are_bounded(harness):
     factory, now, sent = harness
     store = factory()
@@ -259,6 +269,7 @@ def test_retry_restart_and_crashed_claim_are_bounded(harness):
     assert rows(store, "deliveries")[-1]["state"] == "received"
 
 
+@pytest.mark.verifies("native-mcp-events:Deliveries are durable and retried on the broker clock")
 def test_a_refused_egress_is_retried_not_dropped(harness):
     factory, _, _ = harness
     store = factory()
@@ -275,6 +286,7 @@ def test_a_refused_egress_is_retried_not_dropped(harness):
     assert (record["state"], record["attempts"]) == ("pending", 1)
 
 
+@pytest.mark.verifies("native-mcp-events:Deliveries are durable and retried on the broker clock")
 @pytest.mark.parametrize("status", [301, 400, 401, 403, 410, 413])
 def test_permanent_failures_are_not_retried(harness, status):
     factory, _, _ = harness
@@ -289,6 +301,7 @@ def test_permanent_failures_are_not_retried(harness, status):
         assert rows(store, "subscriptions")[0]["config"] == ""
 
 
+@pytest.mark.verifies("native-mcp-events:Deliveries are durable and retried on the broker clock")
 def test_standard_webhooks_exact_bytes_known_vector():
     body = '{"text":"hello \\u263a"}'.encode()
     header = signed_headers("sub", "evt", body, SECRET, now=1000)
@@ -298,6 +311,7 @@ def test_standard_webhooks_exact_bytes_known_vector():
     assert header["webhook-signature"] == "v1," + expected
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 @pytest.mark.parametrize(
     "url",
     [
@@ -314,6 +328,7 @@ def test_bad_callback_urls(url):
         callback_url(url)
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 @pytest.mark.parametrize(
     "secret",
     [
@@ -328,6 +343,7 @@ def test_invalid_secret(secret):
         signing_key(secret)
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 @pytest.mark.parametrize(
     "status,response",
     [(302, b"{}"), (200, b'{"challenge":"bad"}'), (200, b"[]"), (500, b"private response")],
@@ -339,6 +355,7 @@ def test_verification_fails_closed(status, response):
     assert "private" not in str(error.value)
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 def test_real_authorizer_cross_owner_and_revoked_branch(monkeypatch, tmp_path):
     from tinyassets import daemon_server as ds
 
@@ -363,12 +380,14 @@ def test_real_authorizer_cross_owner_and_revoked_branch(monkeypatch, tmp_path):
         authorize(tmp_path, "alice", args)
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 def test_filters_reject_nonfinite_and_nested():
     for invalid in ({"x": float("nan")}, {"x": {}}, {str(i): i for i in range(17)}):
         with pytest.raises(EventError):
             arguments(params()["arguments"] | {"input_equals": invalid})
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 @pytest.mark.parametrize("expired", [False, True])
 def test_reactivation_cannot_bypass_owner_subscription_limit(harness, expired):
     factory, now, _ = harness
@@ -390,6 +409,7 @@ def test_reactivation_cannot_bypass_owner_subscription_limit(harness, expired):
     assert error.value.code == -32025
 
 
+@pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
 def test_corrupt_subscription_revoked_without_starving_other_subscriptions(harness):
     factory, _, _ = harness
     store = factory()
@@ -406,6 +426,7 @@ def test_corrupt_subscription_revoked_without_starving_other_subscriptions(harne
     assert [r["subscription"] for r in rows(store, "deliveries")] == [good]
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 def test_verification_failures_are_bounded_across_restart_and_owner_scoped(harness):
     factory, now, _ = harness
     calls = []
@@ -429,6 +450,7 @@ def test_verification_failures_are_bounded_across_restart_and_owner_scoped(harne
     assert len(rows(factory(), "subscriptions")) == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 def test_cached_verified_refresh_needs_no_new_verification_budget(harness):
     factory, _, sent = harness
     store = factory()
@@ -439,6 +461,7 @@ def test_cached_verified_refresh_needs_no_new_verification_budget(harness):
     assert len(sent) == 1
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 def test_concurrent_verifications_cannot_overdraw_budget(harness, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -462,6 +485,7 @@ def test_concurrent_verifications_cannot_overdraw_budget(harness, monkeypatch):
     assert codes.count(-32025) == 12
 
 
+@pytest.mark.verifies("native-mcp-events:Only an owner follows an exact workflow; only IDs leave")
 def test_canonical_owner_allows_owned_centers_but_not_delegated_admin(tmp_path, monkeypatch):
     from tinyassets import daemon_server as ds
 
@@ -488,6 +512,7 @@ def test_canonical_owner_allows_owned_centers_but_not_delegated_admin(tmp_path, 
         authorize(tmp_path, "bob", params()["arguments"])
 
 
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
 @pytest.mark.parametrize("doc", [
     {"op": "MCP_EVENTS", "action": "subscribe", "event": EVENT},
     {"op": "MCP_EVENTS", "action": "match", "event": EVENT, "owner": "bob"},
@@ -499,6 +524,7 @@ def test_box_operation_refuses_anything_but_its_two_reports(harness, doc):
         box_operation(factory(), "alice", doc)
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 def test_refusals_never_carry_the_callback_or_key():
     assert error_answer(PermissionError("https://receiver.example " + SECRET)) == {
         "code": -32024, "message": "Event access unavailable"}
@@ -506,6 +532,7 @@ def test_refusals_never_carry_the_callback_or_key():
         "code": -32603, "message": "Event service unavailable"}
 
 
+@pytest.mark.verifies("native-mcp-events:Deliveries are durable and retried on the broker clock")
 def test_a_failed_delivery_is_retried_by_the_clock_alone(harness):
     """P0-5: a delivery that fails is retried on a later tick with nothing else running."""
     factory, now, sent = harness

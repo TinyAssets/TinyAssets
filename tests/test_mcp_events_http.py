@@ -41,6 +41,7 @@ def headers(method, *, owner="alice", name=None):
     }
 
 
+@pytest.mark.verifies("native-mcp-events:Modern envelopes keep legacy compatibility")
 @pytest.mark.asyncio
 async def test_real_fastmcp_stateless_and_legacy_transports(monkeypatch):
     mcp = FastMCP("test")
@@ -156,6 +157,7 @@ async def post_box(method, identity=Identity("alice", "alice"), change=None, **p
                                 json=request(method, **params))
 
 
+@pytest.mark.verifies("native-mcp-events:Modern envelopes keep legacy compatibility")
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "method,change,expected",
@@ -171,6 +173,7 @@ async def test_protocol_validation_precedes_dispatch(method, change, expected):
     assert response.json()["error"]["code"] == expected
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_box_subscribe_only_authorizes_the_verified_caller(monkeypatch):
     observed = []
@@ -189,6 +192,7 @@ async def test_box_subscribe_only_authorizes_the_verified_caller(monkeypatch):
     assert observed == [("alice", params()["arguments"], {"client": "c"})]
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_box_refuses_a_delivery_block_and_unsubscribe(monkeypatch):
     monkeypatch.setattr("tinyassets.mcp_events_http.authorize",
@@ -200,6 +204,7 @@ async def test_box_refuses_a_delivery_block_and_unsubscribe(monkeypatch):
     assert response.json()["error"]["code"] == -32601
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_box_authorization_refusal_is_bounded(monkeypatch):
     def refused(*args):
@@ -212,6 +217,7 @@ async def test_box_authorization_refusal_is_bounded(monkeypatch):
     assert response.json()["error"] == {"code": -32024, "message": "Event access unavailable"}
 
 
+@pytest.mark.verifies("native-mcp-events:Modern envelopes keep legacy compatibility")
 @pytest.mark.asyncio
 async def test_forwarded_non_json_transport_error_keeps_original_status():
     async def transport_error(scope, receive, send):
@@ -268,6 +274,7 @@ def router_door(monkeypatch):
     return post, asked, brokered, state
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_router_subscribes_from_the_verified_identity_not_the_body(router_door):
     post, asked, brokered, _ = router_door
@@ -287,6 +294,7 @@ async def test_router_subscribes_from_the_verified_identity_not_the_body(router_
                                            **params())["params"]}]
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_router_unsubscribe_never_wakes_the_box(router_door):
     post, asked, brokered, state = router_door
@@ -296,6 +304,7 @@ async def test_router_unsubscribe_never_wakes_the_box(router_door):
     assert asked == [] and brokered[0]["action"] == "unsubscribe"
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal,code,status", [
     (EventError(-32024, "Event access unavailable"), -32024, 403),
@@ -310,6 +319,7 @@ async def test_a_box_refusal_stops_before_the_broker(router_door, refusal, code,
     assert brokered == []
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_a_malformed_box_answer_fails_loudly(router_door):
     post, _, brokered, state = router_door
@@ -319,6 +329,7 @@ async def test_a_malformed_box_answer_fails_loudly(router_door):
     assert brokered == []
 
 
+@pytest.mark.verifies("native-mcp-events:Callbacks leave only from the broker via owner egress")
 @pytest.mark.asyncio
 async def test_broker_refusal_is_relayed_bounded(router_door):
     post, _, _, state = router_door
@@ -329,6 +340,7 @@ async def test_broker_refusal_is_relayed_bounded(router_door):
                                          "data": {"reason": "challenge_failed"}}
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_router_validates_the_envelope_before_box_or_broker(router_door):
     post, asked, brokered, _ = router_door
@@ -338,6 +350,7 @@ async def test_router_validates_the_envelope_before_box_or_broker(router_door):
     assert asked == [] and brokered == []
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 def test_only_modern_subscription_posts_are_routed():
     def scope(method="POST", path="/mcp", **head):
         return {"type": "http", "method": method, "path": path,
@@ -353,6 +366,7 @@ def test_only_modern_subscription_posts_are_routed():
     assert not routed(scope(path="/app/x", **modern, **{"mcp-method": "events/subscribe"}))
 
 
+@pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 async def test_box_result_forwards_one_composed_request(monkeypatch):
     from tinyassets import owner_router
