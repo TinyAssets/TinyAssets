@@ -80,6 +80,7 @@ _FIXED_STRINGS = frozenset({
     "digest_mismatch", "unreadable", "unsafe_member", "digest_unknown",
     "ledger_missing", "source_missing", "broker_stop_failed",
     "broker_start_failed", "package_unavailable",
+    "mounts_missing", "owners_unmapped", "live",
     *_STAGE_TOKENS, *_EXCEPTION_TOKENS, *_FUNCTION_TOKENS,
 })
 _KEYS = frozenset({
@@ -106,7 +107,8 @@ _KEYS = frozenset({
     "http_kept",
     "unmatched", "revoked", "definitions", "secret_missing",
     "assignments", "members_readded", "skipped_no_grant", "skipped_no_definition",
-    "refused_mismatch", "centers_changed",
+    "refused_mismatch", "centers_changed", "skipped_no_binding", "volumes_detached",
+    "skipped_reason", "basis",
     "stage", "exception", "function",
 })
 
@@ -745,6 +747,8 @@ def extract_needed(archive, dest):
             if stream is None:
                 continue
             data = stream.read()
+            # outbound.db is exempt. A fleet's shared .tinyassets.db is not:
+            # archive extraction drops it, so assignment reseat cannot read it.
             if relative[-1] != "outbound.db" and len(data) > 8 * 1024 * 1024:
                 continue
             target = dest.joinpath(*relative)
@@ -2741,40 +2745,9 @@ def _subscription_credential(root, owner, ref):
 
 def _project_assignment(center_dir, assignment):
     """Publish the non-authorizing projection. The authority record does not need PyYAML."""
-    from tinyassets.config import write_provider_assignment_projection
-    from tinyassets.provider_authority import write_record
+    from tinyassets.provider_assignment_departure import publish_assignment
 
-    ready = assignment.state == "ready" and bool(assignment.candidates)
-    members = {member.provider: member for member in assignment.candidates} if ready else {}
-    allowed = sorted(members)
-    record = {
-        "allowed_providers": allowed if ready else [],
-        "engine_assignment_generation": assignment.generation,
-        "engine_assignment_state": assignment.state,
-        "provider_authority_bindings": {
-            name: {
-                "binding_id": members[name].binding_id,
-                "generation": members[name].binding_generation,
-                "binding_digest": members[name].binding_digest,
-                "assignment_digest": assignment.assignment_digest,
-            }
-            for name in allowed
-        },
-    }
-    try:
-        write_provider_assignment_projection(
-            center_dir, state=assignment.state, generation=assignment.generation,
-            provider=assignment.provider,
-            binding={
-                "binding_id": assignment.binding_id,
-                "generation": assignment.binding_generation,
-                "binding_digest": assignment.binding_digest,
-                "assignment_digest": assignment.assignment_digest,
-            },
-            assignment_candidates=assignment.candidates if ready else None,
-        )
-    except ImportError:
-        write_record(center_dir, record)
+    publish_assignment(center_dir, assignment)
 
 
 def _seat_members(snapshot, live, snap_defs, live_defs, grants, live_root, counts):
@@ -2861,39 +2834,190 @@ def _load_assignment(conn, center):
 
 
 def _write_assignment(db_path, center, decision):
-    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
-    from tinyassets.provider_assignment_departure import add_members
+    from tinyassets.provider_assignment_departure import apply_member_decision
 
-    conn = sqlite3.connect(db_path)
+    return apply_member_decision(db_path, center, decision)
+
+
+def _assignments_skipped(reason):
+    """A pass that cannot run. The reason is a fixed token, never a path."""
+    counts = _assignment_counts()
+    counts["skipped_no_binding"] = 0
+    counts["volumes_detached"] = 0
+    counts["skipped_reason"] = reason
+    return counts
+
+
+def _grant_facts(db, owner, grant_id):
+    """`(connection_id, credential_ref)` for a live model grant, else None."""
+    if not isinstance(grant_id, str) or not grant_id or not isinstance(owner, str):
+        return None
     try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("BEGIN IMMEDIATE")
-        live = load_provider_assignment_in_transaction(conn, universe_id=center)
-        updated = add_members(conn, live, decision["members"], root=decision["root"])
-        if updated.generation == live.generation:
-            conn.rollback()
+        if not _grant_live(db, owner, grant_id):
             return None
-        conn.commit()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        return updated
-    finally:
-        conn.close()
+        row = db.execute(
+            "SELECT c.connection_id, c.credential_ref "
+            "FROM outbound_connection_grants g "
+            "JOIN outbound_connections c ON c.connection_id=g.connection_id "
+            "WHERE g.grant_id=? AND g.owner_user_id=? AND c.owner_user_id=? "
+            "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
+            (grant_id, owner, owner),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    connection_id, credential_ref = row[0], row[1]
+    if (not isinstance(connection_id, str) or not connection_id
+            or connection_id.strip() != connection_id
+            or not isinstance(credential_ref, str) or not credential_ref
+            or credential_ref.strip() != credential_ref):
+        return None
+    return connection_id, credential_ref
+
+
+def _live_definition_bundle(volume, center, owner, grants):
+    """Volume definitions plus verified ledger rows the volume file does not have.
+
+    A tampered volume file refuses the center. A ledger row that does not verify
+    is ignored, so it cannot hide the definitions the volume already stores.
+    The third item is the ledger-only documents an apply may write onto the volume.
+    """
+    found, foreign = _verified_definitions(
+        Path(volume) / center / "provider_definitions.json", center, owner,
+    )
+    extras = []
+    if found is None or grants is None or not _table_exists(grants, "box_model_sources"):
+        return found, foreign, extras
+    for row_owner, definition_id, raw in _source_definition_rows(grants):
+        if row_owner != owner or not isinstance(definition_id, str):
+            continue
+        document = _json_object(raw)
+        if not isinstance(document, dict) or document.get("universe_id") != center:
+            continue
+        if document.get("owner_user_id") != owner:
+            foreign.add(definition_id)
+            continue
+        if not set(_DEFINITION_FIELDS) <= set(document):
+            continue
+        document = {key: document[key] for key in _DEFINITION_FIELDS}
+        if document.get("id") != definition_id or _definition_id(document) != definition_id:
+            continue
+        if definition_id in found or definition_id in foreign:
+            continue
+        if document.get("access_method") != "api_key_http":
+            continue
+        found[definition_id] = document
+        extras.append(document)
+    return found, foreign, extras
+
+
+def _write_definition_extras(volume, center, extras):
+    """Add ledger definitions the mounted center file does not already store."""
+    directory = Path(volume) / center
+    if not extras or directory.is_symlink() or not directory.is_dir():
+        return
+    path = directory / "provider_definitions.json"
+    if path.is_symlink():
+        return
+    if path.is_file():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(current, list):
+            return
+        present = {item.get("id") for item in current if isinstance(item, dict)}
+        added = [doc for doc in extras if doc.get("id") not in present]
+        if not added:
+            return
+        payload = current + added
+    elif path.exists():
+        return
+    else:
+        payload = list(extras)
+    try:
+        _write_private_json(path, json.dumps(payload, sort_keys=True))
+    except OSError:
+        return
+
+
+def _reseat_live(live_root, mounts, ledger, *, write):
+    """Seat granted http sources from the live ledger. The snapshot database is absent."""
+    from tinyassets.provider_assignment_departure import reseat_volume
+    from tinyassets.sqlite_readonly import readonly_db
+
+    counts = _assignment_counts()
+    counts["skipped_no_binding"] = 0
+    counts["volumes_detached"] = 0
+    counts["basis"] = "live"
+    owners = _uids(live_root)
+    if not owners:
+        counts["skipped_reason"] = "owners_unmapped"
+        del counts["basis"]
+        return counts
+    keys = (
+        "members_readded", "skipped_no_grant", "skipped_no_definition",
+        "refused_mismatch", "centers_changed", "skipped_no_binding",
+        "volumes_detached",
+    )
+    try:
+        with readonly_db(Path(ledger)) as grants:
+            grants.row_factory = sqlite3.Row
+            for uid, owner in owners:
+                if not _UID_RE.fullmatch(str(uid)) or not isinstance(owner, str) or not owner:
+                    counts["refused_mismatch"] += 1
+                    continue
+                volume = mounts / str(uid)
+
+                def definitions_for(center, volume=volume, owner=owner):
+                    found, foreign, extras = _live_definition_bundle(
+                        volume, center, owner, grants,
+                    )
+                    if write and found is not None and extras:
+                        _write_definition_extras(volume, center, extras)
+                    return found, foreign
+
+                def grant_for(_center, ref, owner=owner):
+                    return _grant_facts(grants, owner, ref)
+
+                try:
+                    part = reseat_volume(
+                        volume, owner, grant_for, definitions_for, write=write,
+                    )
+                except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                    counts["refused_mismatch"] += 1
+                    continue
+                for key in keys:
+                    counts[key] += part.get(key, 0)
+    except (OSError, sqlite3.Error, RuntimeError):
+        counts["skipped_reason"] = "ledger_missing"
+        counts.pop("basis", None)
+    return counts
 
 
 def restore_assignments(live_root, source_root, mounts, ledger, *, write):
-    """Re-seat snapshot members whose definition and grant now exist.
+    """Re-seat accepted http sources so a mounted center can serve them.
 
-    Dry-run applies the same writer to disposable copies of the owner databases.
-    Returns None when the snapshot has no assignment database. Counts only.
+    The pre-cutover snapshot keeps assignments in the shared root database.
+    Archive extraction drops that file once it is over 8MB, which is why a
+    fleet dry-run used to return None and omit ``assignments``. A missing
+    snapshot database is not a skip: membership is rebuilt from the live
+    definition and the live grant, and a seated access is never replaced.
+    A volume with no database is counted detached. The owner daemon seats it
+    when the volume is mounted. Counts only. ``skipped_reason`` is set when
+    the mounts or the ledger cannot be read.
     """
     from tinyassets.sqlite_readonly import readonly_db
 
-    source_db = Path(source_root) / ".tinyassets.db"
     mounts = Path(mounts) if mounts else None
-    if (source_db.is_symlink() or not source_db.is_file()
-            or mounts is None or mounts.is_symlink() or not mounts.is_dir()
-            or ledger is None or Path(ledger).is_symlink() or not Path(ledger).is_file()):
-        return None
+    if mounts is None or mounts.is_symlink() or not mounts.is_dir():
+        return _assignments_skipped("mounts_missing")
+    if ledger is None or Path(ledger).is_symlink() or not Path(ledger).is_file():
+        return _assignments_skipped("ledger_missing")
+    source_db = Path(source_root) / ".tinyassets.db"
+    if source_db.is_symlink() or not source_db.is_file():
+        return _reseat_live(live_root, mounts, ledger, write=write)
     counts = _assignment_counts()
     disposable = None
     write_mounts = mounts

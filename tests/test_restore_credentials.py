@@ -418,6 +418,34 @@ def test_assignment_restore_reports_counts_and_writes_only_on_apply(tmp_path):
     assert "provdef_" not in rendered
 
 
+def test_missing_snapshot_reseat_is_reported(tmp_path):
+    from tests.test_restore_legacy_credentials import (
+        _assignment_world,
+        _prepare_live,
+        _restore,
+        _tree_bytes,
+    )
+
+    world = _prepare_live(_assignment_world(tmp_path))
+    before = _tree_bytes(world["volume"])
+    planned = _restore(world, write=False)
+    assert planned["basis"] == "live"
+    assert planned["members_readded"] == 1
+    assert "skipped_reason" not in planned
+    rendered = rc.safe_json({"mode": "dry-run", "plan": {"assignments": planned}})
+    assert "fixture" not in rendered
+    assert "grant-0" not in rendered
+    assert _tree_bytes(world["volume"]) == before
+    skipped = rc.restore_assignments(
+        world["live"], world["source"], tmp_path / "no-mounts", world["ledger"],
+        write=False,
+    )
+    assert skipped["skipped_reason"] == "mounts_missing"
+    assert skipped["members_readded"] == 0
+    rc.safe_json({"mode": "dry-run", "plan": {"assignments": skipped}})
+    assert _tree_bytes(world["volume"]) == before
+
+
 def test_banned_operations_and_workflow_posture():
     module = (ROOT / "tinyassets/restore_credentials.py").read_text(encoding="utf-8")
     shell = (ROOT / "deploy/restore-credentials.sh").read_text(encoding="utf-8")

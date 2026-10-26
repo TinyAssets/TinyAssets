@@ -11,6 +11,11 @@ def create_app(*, relay: Path, secret_file: Path):
     from tinyassets.owner_runtime import start
 
     start(relay)
+    # A volume that was detached during credential restore is mounted now.
+    # The same writer seats granted http sources the restore could not reach.
+    from tinyassets.provider_assignment_departure import reseat_awake_owner
+
+    reseat_awake_owner()
     from tinyassets.providers.subscription_lease import sweep_stale_leases
 
     sweep_stale_leases()
