@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed: founder-directed (2026-10-26), awaiting acceptance. Would amend ADR-019 and ADR-022 on
-what a box runs.
+Accepted (founder, 2026-10-26). Amends ADR-019 and ADR-022 on what a box
+runs.
 
 ## Date
 
@@ -40,3 +40,4 @@ that is reading and writing owner files.
   wake a box.
 - The proposed S35 row's guard also checks that the box imports no server
   modules.
+- Build order: `openspec/changes/device-first-build/`.

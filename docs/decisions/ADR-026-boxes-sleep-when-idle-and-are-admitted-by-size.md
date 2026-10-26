@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed. Would clarify ADR-019's lifecycle rule and amend ADR-022's interim
-"stop on idle".
+Accepted (founder, 2026-10-26). Clarifies ADR-019's lifecycle rule and
+amends ADR-022's interim "stop on idle".
 
 ## Date
 
@@ -47,3 +47,4 @@ Proposed. Would clarify ADR-019's lifecycle rule and amend ADR-022's interim
 - Hosting capacity scales with simultaneous work, not with users.
 - More box hosts are added behind ADR-012's cell seams when receipts show
   the need.
+- Build order: `openspec/changes/device-first-build/`.

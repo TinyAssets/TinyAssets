@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed. Would extend ADR-019 and N10.
+Accepted (founder, 2026-10-26). Extends ADR-019 and N10. Trusted
+per-owner stores are broker-held SQLite (founder, 2026-10-26).
 
 ## Date
 
@@ -52,3 +53,4 @@ ADR-012 already lists conversation stores as platform state outside boxes.
 - `app_room.cas` converges onto the conversation store's revision primitive.
 - New registry rows (proposed S30 and S33), each added with its guard in
   the slice that builds it, will hold the ledger.
+- Build order: `openspec/changes/device-first-build/`.

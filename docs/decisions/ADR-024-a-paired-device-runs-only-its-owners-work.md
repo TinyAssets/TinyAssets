@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Would amend ADR-008.
+Accepted (founder, 2026-10-26). Amends ADR-008.
 
 ## Date
 
@@ -40,3 +40,4 @@ infrastructure.
   founder's PC may pair like any user's device, for the founder's own work
   only.
 - **Code:** `serves: owner_only` is enforced for every device source.
+- Build order: `openspec/changes/device-first-build/`.
