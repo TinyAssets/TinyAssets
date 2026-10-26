@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Amended by ADR-024 (a paired device runs only its owner's work).
 
 ## Date
 

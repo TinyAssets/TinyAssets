@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed. Would amend ADR-022 (its P2b row: "CLI packages (token leased for
-one run, ADR-012 D5)") and ADR-012 D5 for consumer subscriptions, and
-constrains ADR-023 (hosted CLIs), ADR-024 (device runner) and the
-outside-agent wake recipes.
+Accepted (founder, 2026-10-26). Amends ADR-022 (its P2b row: "CLI packages
+(token leased for one run, ADR-012 D5)") and ADR-012 D5 for consumer
+subscriptions, and constrains ADR-023 (hosted CLIs), ADR-024 (device
+runner) and the outside-agent wake recipes.
 
 ## Date
 
@@ -86,6 +86,7 @@ the vendors' own terms (sources below) found:
 - A source record whose `invoke` drives a subscription CLI declares
   `trigger: human` and is refused by the placement resolver for unattended
   turns.
+- Build order: `openspec/changes/device-first-build/`.
 
 ## Sources
 

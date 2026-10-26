@@ -5,7 +5,8 @@
 Accepted. Closes the question ADR-019 left open; supersedes ADR-012's driver
 order ("Firecracker, gVisor where KVM is unusable"). Revised after one
 cross-family round (2026-10-13): S0 is quoted for what it measured, the
-production facts are P2 gates, and P2 is the single cutover.
+production facts are P2 gates, and P2 is the single cutover. Amended by
+ADR-026 (stop on idle) and ADR-031 (P2b CLI packages).
 
 ## Date
 
