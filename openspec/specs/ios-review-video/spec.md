@@ -24,6 +24,10 @@ The dispatch workflow SHALL inject reviewer credentials at runtime, paste the pa
 - **WHEN** Device Farm completes
 - **THEN** non-passing results or missing video/step screenshots fail the workflow and available recording evidence is retained.
 
+#### Scenario: A failed run names its failure in the public summary
+- **WHEN** an XCTest run fails, including Xcode 26 `file:line:column: error:` lines and its failure summary lines
+- **THEN** the public summary keeps those lines, redacted of reviewer credentials, and drops passing noise such as started cases and zero-issue lines.
+
 ### Requirement: Public artifacts require an independent recipient key
 Evidence SHALL use ephemeral X25519, HKDF-SHA256 and AES-256-GCM to a committed public recipient key, never derive a key from reviewer credentials. Key generation SHALL create an owner-only local private key without overwriting or printing it. Decryption SHALL read that private key locally.
 
