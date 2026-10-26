@@ -644,10 +644,15 @@ def test_a_running_box_that_stops_answering_is_replaced_on_the_next_wake(fleet, 
         return answering(box, operation, **body)
 
     monkeypatch.setattr(manager, "_rpc", rpc)
-    manager.answer_grace = 0.2
-    # Still running, never answering: the wake replaces it rather than failing forever.
+    manager.answer_probe = 0.2
     silent.add(uid)
     assert fleet.runtime.alive(uid)
+    # Silent, but it answered moments ago: a stalled turn is never killed for it.
+    with pytest.raises(BoxError, match="not answering"):
+        manager.ensure_awake("a", launch=manager.boxes[uid].launch)
+    assert fleet.runtime.stops == [] and manager.boxes[uid].awake
+    # Nothing has answered for the whole silence: replaced rather than failing forever.
+    manager.boxes[uid].answered -= manager.answer_silence
 
     def restart(*args, **kwargs):
         silent.discard(uid)  # The fresh box answers.
@@ -674,6 +679,7 @@ def test_one_slow_answer_never_replaces_a_running_box(fleet, monkeypatch):
         return answering(box, operation, **body)
 
     monkeypatch.setattr(manager, "_rpc", rpc)
-    manager.answer_grace = 5
+    manager.answer_probe = 5
+    manager.boxes[uid].answered -= manager.answer_silence  # Even long after an answer.
     assert fleet.wake("a") == uid
     assert fleet.runtime.stops == [] and len(fleet.runtime.starts) == 1
