@@ -1,4 +1,7 @@
-"""Standard Webhooks, using the existing public-IP-pinned HTTPS substrate."""
+"""Standard Webhooks, using the existing public-IP-pinned HTTPS substrate.
+
+Only the broker sends (``broker/mcp_events.py``); a box has no network.
+"""
 
 from __future__ import annotations
 
@@ -74,23 +77,23 @@ def signed_headers(subscription_id, event_id, body, secret, *, old_secret=None, 
     }
 
 
-def post(url, body, headers):
+def post(url, body, headers, *, resolve):
+    """One bounded POST. ``resolve(host, port)`` returns pinned public addresses.
+
+    The broker passes ``broker.egress.destination`` bound to the owner, so every
+    connection re-resolves, rejects nonpublic answers and applies owner policy.
+    """
     from tinyassets.storage.outbound_connections import (
-        _classify_global_address,
         _default_open_socket,
         _default_ssl_context,
-        _make_default_resolver,
         _PinnedHTTPSConnection,
-        _resolve_pinned_addresses,
     )
 
     target = urlsplit(callback_url(url))
     if len(body) > MAX_BODY:
         raise EventError(-32602, "Event exceeds 256 KiB")
     deadline = time.monotonic() + 10
-    addresses = _resolve_pinned_addresses(
-        target.hostname, 443, resolver=_make_default_resolver(3), validator=_classify_global_address
-    )
+    addresses = resolve(target.hostname, 443)
     connection = _PinnedHTTPSConnection(
         target.hostname,
         pinned_address=addresses[0],
@@ -116,7 +119,7 @@ def post(url, body, headers):
         connection.close()
 
 
-def verify(subscription_id, url, secret, *, sender=post):
+def verify(subscription_id, url, secret, *, sender):
     challenge = secrets.token_urlsafe(32)
     body = canonical({"type": "verification", "challenge": challenge}).encode()
     ident = "verify_" + secrets.token_hex(16)

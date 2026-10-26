@@ -187,13 +187,14 @@ async def serve(args: argparse.Namespace) -> None:
             waker_task = asyncio.create_task(Waker(
                 server.next_wakes, plans, wake=routing.wake, config=routing.config,
                 poll_seconds=args.wake_poll_seconds, lifecycle_tick=routing.tick,
-                routing=routing).run(stop))
+                routing=routing, events=server.mcp_events).run(stop))
         try:
             await stop.wait()
         finally:
             stop.set()
             if waker_task is not None:
                 await waker_task
+                await server.mcp_events.close()
                 await routing.close()
             if registration_task is not None:
                 await registration_task

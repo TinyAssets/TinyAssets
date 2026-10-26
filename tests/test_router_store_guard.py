@@ -88,6 +88,9 @@ _ROUTER_IMPORTS = {
     "tinyassets.broker.owner_identities",
     "tinyassets.broker.inbound_verification",  # Router asks the broker to verify; no profile.
     "tinyassets.inbound_routing",  # Router-owned per-installation breaker, not an owner store.
+    # The events/subscribe door: envelope checks, then the broker and one box call.
+    "tinyassets.mcp_events_http",
+    "tinyassets.mcp_event_webhooks",  # EventError, the bounded refusal type; no I/O.
     "tinyassets.asgi_scope",  # The non-HTTP refusal both doors share; imports nothing.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
@@ -184,6 +187,9 @@ _ROLE_DISPATCH = {
     ),
     ('commons_catalog.py', 'publish_definition'): (
         'Box publishes over RPC; broker writes its published store.'
+    ),
+    ('mcp_events.py', '_box_owner'): (
+        'Only a box reports completed runs on its relay; outside a box there is no channel.'
     ),
     ('commons_catalog.py', 'get_definition'): (
         'Router reads published data; box reads it over the bound channel.'

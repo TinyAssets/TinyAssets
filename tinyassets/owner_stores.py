@@ -38,6 +38,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/routing.py",
     # Broker-held shared-app installation metadata. Boxes read a filtered view.
     "tinyassets/broker/inbound_installations.py",
+    # Broker-held MCP event subscriptions and deliveries (ADR-025).
+    "tinyassets/broker/mcp_events.py",
     # Router delivery failure budget. Never an envelope or an owner path.
     "tinyassets/inbound_routing.py",
     # C6: job-owned snapshot catalog cleanup; no owner data.
@@ -121,7 +123,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/memory/episodic.py",
     "tinyassets/memory/promises.py",
     "tinyassets/memory/versioning.py",
-    "tinyassets/mcp_events.py",
     "tinyassets/node_eval.py",
     "tinyassets/onboarding/hosted_model_auth.py",
     "tinyassets/onboarding/inline_model_connect.py",
