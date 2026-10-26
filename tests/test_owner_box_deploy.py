@@ -74,7 +74,8 @@ def test_control_ssh_error_code_is_kept_and_other_text_is_not():
     receipt, code = driver.run(coded, lambda: True, lambda: None)
     assert code == 1 and receipt["reason"] == "image_drain_failed"
     assert receipt["counts"] == {"slept": 0, "asleep": 0, "busy": 0, "unresponsive": 0,
-                                 "incomplete": 0}
+                                 "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
 
     def leaked():
         raise subprocess.CalledProcessError(1, ["ssh"], output=json.dumps({"error": secret}))
@@ -101,7 +102,8 @@ def test_deploy_uses_one_control_call_regardless_of_fleet_size():
         return {"slept": 6, "asleep": 1000, "incomplete": 0}
     receipt, code = driver.run(control, lambda: True, lambda: None)
     assert code == 0 and receipt["counts"] == {
-        "slept": 6, "asleep": 1000, "busy": 0, "unresponsive": 0, "incomplete": 0}
+        "slept": 6, "asleep": 1000, "busy": 0, "unresponsive": 0, "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
     assert calls == ["deploy"]
 
 
@@ -377,7 +379,8 @@ def test_a_busy_canary_is_waited_for_then_accepted_on_the_new_image():
     assert code == 0 and receipt["canary"] == "passed" and receipt["reason"] == "passed"
     assert calls == ["drain", "drain", "drain"]
     assert receipt["counts"] == {"slept": 2, "asleep": 6, "busy": 1, "unresponsive": 0,
-                                 "incomplete": 0}
+                                 "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
 
 
 def test_a_canary_still_on_the_old_image_after_the_wait_fails_and_others_fail_at_once():

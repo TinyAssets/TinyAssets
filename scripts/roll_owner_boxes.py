@@ -12,7 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-OUTCOMES = ("slept", "asleep", "busy", "unresponsive", "incomplete")
+OUTCOMES = ("slept", "asleep", "busy", "unresponsive", "incomplete",
+            "incomplete_status", "incomplete_sleep")
 _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}\Z")
 _CONTROL_CODES = frozenset({
     "image_drain_failed", "image_refused", "image_install_failed",
@@ -110,7 +111,8 @@ def _counts(control):
     counts = control()
     if isinstance(counts, dict):
         # A broker from before these counts reports neither.
-        counts = {"busy": 0, "unresponsive": 0, **counts}
+        counts = {"busy": 0, "unresponsive": 0, "incomplete_status": 0,
+                  "incomplete_sleep": 0, **counts}
     if (not isinstance(counts, dict) or set(counts) != set(OUTCOMES)
             or any(type(n) is not int or n < 0 for n in counts.values())):
         return None

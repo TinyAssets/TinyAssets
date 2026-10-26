@@ -654,7 +654,8 @@ def test_deploy_completes_after_sleep_without_copy(authority, monkeypatch):
     lifecycle.execute = host
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
     assert asyncio.run(routing.deploy("image")) == {
-        "slept": 1, "asleep": 1, "busy": 0, "unresponsive": 0, "incomplete": 0}
+        "slept": 1, "asleep": 1, "busy": 0, "unresponsive": 0, "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
     assert calls == ["select_image", "status", "sleep", "status"]
     assert lifecycle.volume("alice")["work"]["kind"] == "snapshot"
 

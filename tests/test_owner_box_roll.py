@@ -36,7 +36,8 @@ def test_deploy_sleeps_awake_owners_without_eager_restart(rolling):
     uid = rolling.wake("a")
     before = len(rolling.runtime.starts)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 1, "asleep": 2, "busy": 0, "unresponsive": 0, "incomplete": 0}
+        "slept": 1, "asleep": 2, "busy": 0, "unresponsive": 0, "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
     assert rolling.runtime.live == set()
     assert rolling.runtime.stops == [uid]
     assert len(rolling.runtime.starts) == before
@@ -49,7 +50,8 @@ def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rol
     drive(rolling.routing.sleep("a"))
     before = len(rolling.runtime.starts), len(rolling.runtime.stops)
     assert drive(rolling.routing.deploy(rolling.new)) == {
-        "slept": 0, "asleep": 3, "busy": 0, "unresponsive": 0, "incomplete": 0}
+        "slept": 0, "asleep": 3, "busy": 0, "unresponsive": 0, "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
     assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == before
     recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
     assert recovered.current == rolling.new
@@ -67,7 +69,8 @@ def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(ro
     with activity.enter(keep_awake=keep_awake):
         result = drive(rolling.routing.deploy(rolling.new))
         assert result == {"slept": 0, "asleep": 2, "busy": 1, "unresponsive": 0,
-                          "incomplete": 0}
+                          "incomplete": 0,
+        "incomplete_status": 0, "incomplete_sleep": 0}
         # Never drained: its turn and new turns keep running on this image.
         assert not activity.draining and activity.active == 1
         assert rolling.runtime.live == {uid} and rolling.runtime.stops == []
@@ -237,7 +240,9 @@ def test_deploy_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
     uid = rolling.wake("a")
     with rolling.states[uid].enter():
         rolling.states[uid].status(deleting=True)
-    assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
+    result = drive(rolling.routing.deploy(rolling.new))
+    # The receipt says where it stopped: the status answered, the sleep refused.
+    assert result["incomplete"] == 1 and result["incomplete_sleep"] == 1
     assert not rolling.runtime.stops and rolling.runtime.live == {uid}
     assert rolling.manager.boxes[uid].image == rolling.old
 

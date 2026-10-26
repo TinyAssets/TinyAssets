@@ -243,8 +243,10 @@ class BrokerLifecycle:
         await self.host_call(request, "select_image", image=image)
         with closing(self.identities._connect(write=False)) as db:
             owners = [row[0] for row in db.execute("SELECT principal FROM owner_volumes")]
-        counts = {"slept": 0, "asleep": 0, "busy": 0, "unresponsive": 0, "incomplete": 0}
+        counts = {"slept": 0, "asleep": 0, "busy": 0, "unresponsive": 0, "incomplete": 0,
+                  "incomplete_status": 0, "incomplete_sleep": 0}
         for owner in owners:
+            phase = "status"
             try:
                 async with owner_lock(self.identities.path, owner):
                     status = await self.volumes.host(owner, "status")
@@ -266,11 +268,15 @@ class BrokerLifecycle:
                         # image at its next ordinary sleep and wake.
                         counts["busy"] += 1
                         continue
+                    phase = "sleep"
                     await self.volumes.sleep(owner)
                     counts["slept"] += 1
-            except Exception:
+            except Exception as exc:
                 # Unknown activity or a real failure is never mistaken for busy.
+                # Where it failed and the error class only; never the owner.
                 counts["incomplete"] += 1
+                counts["incomplete_" + phase] += 1
+                log.warning("deploy drain incomplete at %s: %s", phase, type(exc).__name__)
         return counts
 
     async def sleep(self, owner):
