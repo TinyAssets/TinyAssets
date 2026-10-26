@@ -139,6 +139,7 @@ def app_config(build: str | None = None) -> dict[str, Any]:
     drift from what ``/mcp`` itself accepts. Contains public values only.
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
+    from tinyassets.onboarding.app_modules import app_versions
     from tinyassets.providers.source_record import suggested_address
 
     prm = protected_resource_metadata()
@@ -163,6 +164,7 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
         "model_source_address": suggested_address(),
+        "app_versions": app_versions(),
     }
 
 
@@ -209,6 +211,7 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
     import json
 
     from tinyassets.onboarding.app_modules import (
+        app_updates_source,
         chat_renderer_source,
         credential_requests_source,
         module_url,
@@ -226,6 +229,7 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace("__TA_CREDENTIAL_REQUESTS__", credential_requests_source())
+        .replace("__TA_APP_UPDATES__", app_updates_source())
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
