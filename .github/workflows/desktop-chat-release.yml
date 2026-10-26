@@ -38,11 +38,11 @@ jobs:
           if (-not $env:WIN_CSC_LINK -or -not $env:WIN_CSC_KEY_PASSWORD) { throw 'desktop signing secrets are missing' }
           $latest = (Get-Content tinyassets/onboarding/app_versions.json -Raw | ConvertFrom-Json).desktop.latest
           if ([version]$env:VERSION -le [version]$latest) { throw 'release version must exceed the page policy' }
-      # Dependency install scripts run here, where no signing secret is in scope.
+      # No install scripts, and no signing secret in scope (as desktop-chat-app.yml).
       - name: Install desktop deps (no secrets)
         working-directory: desktop-app
         shell: pwsh
-        run: npm ci --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build signed NSIS update
         working-directory: desktop-app
         shell: pwsh
