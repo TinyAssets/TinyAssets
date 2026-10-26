@@ -13,6 +13,14 @@ import tempfile
 from pathlib import Path
 
 OUTCOMES = ("slept", "asleep", "busy", "unresponsive", "incomplete")
+# Same allowlist as BrokerLifecycle._drain_cause. A test pins the two copies.
+_DRAIN_STAGES = frozenset({"lock", "status", "sleep"})
+_DRAIN_CLASSES = frozenset({
+    "TimeoutError", "BlockingIOError", "InterruptedError", "OSError", "BoxError",
+    "BoxBusy", "KeyError", "RuntimeError", "LookupError", "PermissionError",
+    "ValueError", "TypeError", "AttributeError", "OperationalError",
+    "IntegrityError", "DatabaseError", "ProgrammingError", "Error", "error",
+})
 _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}\Z")
 _CONTROL_CODES = frozenset({
     "image_drain_failed", "image_refused", "image_install_failed",
@@ -106,15 +114,74 @@ CANARY_WAIT_SECONDS = 600
 CANARY_RETRY_SECONDS = 30
 
 
-def _counts(control):
-    counts = control()
-    if isinstance(counts, dict):
-        # A broker from before these counts reports neither.
-        counts = {"busy": 0, "unresponsive": 0, **counts}
-    if (not isinstance(counts, dict) or set(counts) != set(OUTCOMES)
-            or any(type(n) is not int or n < 0 for n in counts.values())):
+def _cause_token(token):
+    if not isinstance(token, str):
+        return False
+    stage, sep, kind = token.partition(":")
+    return bool(sep) and stage in _DRAIN_STAGES and kind in _DRAIN_CLASSES
+
+
+def _control_result(payload):
+    """Counts, cause counts, and whether the canary owner itself failed to drain."""
+    if not isinstance(payload, dict):
         return None
-    return counts
+    allowed = set(OUTCOMES) | {"incomplete_causes", "canary_incomplete"}
+    if (not set(payload) <= allowed or any(
+            name not in payload for name in ("slept", "asleep", "incomplete"))):
+        return None
+    causes = payload.get("incomplete_causes", {})
+    if (not isinstance(causes, dict) or any(
+            not _cause_token(key) or type(count) is not int or count < 1
+            for key, count in causes.items())):
+        return None
+    blocked = payload.get("canary_incomplete", 0)
+    if type(blocked) is not int or blocked not in (0, 1):
+        return None
+    # A broker from before busy/unresponsive reports neither.
+    counts = {"busy": 0, "unresponsive": 0,
+              **{name: payload[name] for name in OUTCOMES if name in payload}}
+    if any(type(count) is not int or count < 0 for count in counts.values()):
+        return None
+    return counts, causes, blocked
+
+
+def _warn_left(counts, causes):
+    if causes:
+        detail = ",".join(f"{token}={causes[token]}" for token in sorted(causes))
+        print("::warning::owner boxes left on their current image (" + detail + ")",
+              file=sys.stderr)
+    elif counts["unresponsive"]:
+        # Loud, not fatal: the rest of the fleet still gets its update.
+        print(f"::warning::{counts['unresponsive']} owner box(es) awake but not answering "
+              "their status; left as they are", file=sys.stderr)
+
+
+def _merge_causes(receipt, causes):
+    if not causes and "incomplete_causes" not in receipt:
+        return
+    merged = dict(receipt.get("incomplete_causes", {}))
+    for token, count in causes.items():
+        merged[token] = merged.get(token, 0) + count
+    if merged:
+        receipt["incomplete_causes"] = merged
+
+
+def _note_drain(receipt, counts, causes, blocked):
+    """Record one drain. True when this pass must fail the deploy."""
+    receipt["counts"] = counts
+    if causes:
+        receipt["incomplete_causes"] = dict(causes)
+    if blocked or counts["incomplete"]:
+        receipt["control"] = "incomplete"
+        receipt["reason"] = "canary_drain_incomplete" if blocked else "incomplete_drain"
+        _warn_left(counts, causes)
+        return True
+    # A busy or unresponsive owner was never drained. It starts the published
+    # image at its next ordinary wake. The canary still decides acceptance.
+    receipt["control"] = ("deferred" if counts["busy"] or counts["unresponsive"]
+                          else "passed")
+    _warn_left(counts, causes)
+    return False
 
 
 def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None):
@@ -130,25 +197,12 @@ def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None)
         # then proves its ordinary sleep before the acceptance request wakes it.
         prepare()
         stage = "control_failed"
-        counts = _counts(control)
-        if counts is None:
+        parsed = _control_result(control())
+        if parsed is None:
             receipt["reason"] = "invalid_drain"
             return receipt, 1
-        receipt["counts"] = counts
-        if counts["incomplete"]:
-            # The control call returned. One owner did not finish ordinary sleep.
-            receipt["control"] = "incomplete"
-            receipt["reason"] = "incomplete_drain"
+        if _note_drain(receipt, *parsed):
             return receipt, 1
-        # A busy owner never blocks a deploy: it was never drained, and it
-        # starts the published image at its next ordinary wake. The canary
-        # still decides acceptance on that image.
-        receipt["control"] = ("deferred" if counts["busy"] or counts["unresponsive"]
-                              else "passed")
-        if counts["unresponsive"]:
-            # Loud, not fatal: the rest of the fleet still gets its update.
-            print(f"::warning::{counts['unresponsive']} owner box(es) awake but not answering "
-                  "their status; left as they are", file=sys.stderr)
         stage = "readiness_failed"
         ready()
         stage = "canary_failed"
@@ -167,12 +221,26 @@ def run(control, canary, prepare, ready=lambda: None, *, pause=None, clock=None)
                     raise
             pause(CANARY_RETRY_SECONDS)
             stage = "control_failed"
-            again = _counts(control)
-            if again is None or again["incomplete"]:
-                receipt["reason"] = "invalid_drain" if again is None else "incomplete_drain"
-                receipt["control"] = "incomplete" if again else "failed"
+            again = _control_result(control())
+            if again is None or again[2] or again[0]["incomplete"]:
+                if again is None:
+                    receipt["reason"] = "invalid_drain"
+                    receipt["control"] = "failed"
+                else:
+                    _merge_causes(receipt, again[1])
+                    receipt["counts"] = {key: receipt["counts"][key] + again[0][key]
+                                         for key in OUTCOMES}
+                    receipt["control"] = "incomplete"
+                    receipt["reason"] = ("canary_drain_incomplete" if again[2]
+                                         else "incomplete_drain")
+                    _warn_left(again[0], receipt.get("incomplete_causes", {}))
                 return receipt, 1
-            receipt["counts"] = {k: receipt["counts"][k] + again[k] for k in OUTCOMES}
+            receipt["counts"] = {key: receipt["counts"][key] + again[0][key]
+                                 for key in OUTCOMES}
+            _merge_causes(receipt, again[1])
+            if receipt["counts"]["busy"] or receipt["counts"]["unresponsive"]:
+                receipt["control"] = "deferred"
+            _warn_left(again[0], again[1])
             stage = "readiness_failed"
             ready()
             stage = "canary_failed"
@@ -203,7 +271,12 @@ def host_control(image_ref):
 
     selected = "harness-" + image[7:]
     install_image(image_ref, image, harness.parent)
-    result = request("deploy", image=selected)
+    # The id is compared inside the broker and never copied into the receipt.
+    canary = os.environ.get("TINYASSETS_CANARY_USER_ID")
+    arguments = {"image": selected}
+    if isinstance(canary, str) and canary:
+        arguments["canary"] = canary
+    result = request("deploy", **arguments)
     link = harness.parent / ".image-current"
     link.unlink(missing_ok=True)
     link.symlink_to(selected)
@@ -234,8 +307,13 @@ def main(argv=None):
     from scripts.owner_box_canary import probe, wake
 
     def control():
-        command = ["sudo", "python3", "-", "--control",
-                   "--image-ref", args.image_ref]
+        command = ["sudo", "python3", "-", "--control", "--image-ref", args.image_ref]
+        canary = os.environ.get("TINYASSETS_CANARY_USER_ID", "")
+        # Printable and strip-stable: the remote command is the only copy.
+        if (isinstance(canary, str) and canary == canary.strip() and canary.isprintable()
+                and 1 <= len(canary) <= 512):
+            command = ["sudo", "env", "TINYASSETS_CANARY_USER_ID=" + canary,
+                       "python3", "-", "--control", "--image-ref", args.image_ref]
         result = subprocess.run(
             ["ssh", "-i", args.ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
              args.ssh_target, shlex.join(command)],

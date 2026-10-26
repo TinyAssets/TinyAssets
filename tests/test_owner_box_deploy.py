@@ -50,6 +50,57 @@ def test_receipt_counts_are_allowlisted_and_incomplete_drain_blocks_canary(count
         assert receipt["reason"] == "invalid_drain"
 
 
+def test_one_deferred_owner_does_not_block_the_fleet_or_the_canary(capsys):
+    events = []
+    payload = {"slept": 2, "asleep": 4, "busy": 0, "unresponsive": 1, "incomplete": 0,
+               "incomplete_causes": {"sleep:TimeoutError": 1}, "canary_incomplete": 0}
+    receipt, code = driver.run(
+        lambda: payload, lambda: events.append("canary") or True, lambda: None,
+        lambda: events.append("ready"))
+    assert code == 0 and events == ["ready", "canary"]
+    assert receipt["control"] == "deferred" and receipt["reason"] == "passed"
+    assert receipt["canary"] == "passed"
+    assert receipt["incomplete_causes"] == {"sleep:TimeoutError": 1}
+    assert set(receipt["counts"]) == set(driver.OUTCOMES)
+    warning = capsys.readouterr().err
+    assert "::warning::owner boxes left on their current image (sleep:TimeoutError=1)" in warning
+    assert "not answering" not in warning
+
+
+def test_canary_owner_drain_failure_is_a_distinct_closed_reason():
+    secret = "canary-owner-private"
+    payload = {"slept": 2, "asleep": 4, "busy": 0, "unresponsive": 0, "incomplete": 1,
+               "incomplete_causes": {"sleep:TimeoutError": 1}, "canary_incomplete": 1}
+
+    def canary():
+        pytest.fail(secret)
+
+    receipt, code = driver.run(lambda: payload, canary, lambda: None,
+                               lambda: pytest.fail("readiness"))
+    assert code == 1
+    assert receipt["control"] == "incomplete"
+    assert receipt["reason"] == "canary_drain_incomplete"
+    assert receipt["canary"] == "failed"
+    assert receipt["incomplete_causes"] == {"sleep:TimeoutError": 1}
+    assert secret not in json.dumps(receipt)
+
+
+def test_a_cause_token_outside_the_allowlist_is_invalid_and_not_copied():
+    payload = {"slept": 1, "asleep": 0, "incomplete": 0,
+               "incomplete_causes": {"sleep:LEAK": 1}}
+    receipt, code = driver.run(lambda: payload, lambda: True, lambda: None)
+    assert code == 1 and receipt["reason"] == "invalid_drain"
+    assert "LEAK" not in json.dumps(receipt)
+    assert "incomplete_causes" not in receipt
+
+
+def test_drain_cause_allowlist_matches_the_broker():
+    from tinyassets.broker.routing import _DRAIN_CLASSES, _DRAIN_STAGES
+
+    assert driver._DRAIN_CLASSES == _DRAIN_CLASSES
+    assert driver._DRAIN_STAGES == _DRAIN_STAGES
+
+
 def test_canary_failure_and_control_failure_are_fatal_and_do_not_leak():
     def broken():
         raise RuntimeError("owner private error")
@@ -229,6 +280,33 @@ def test_canary_fails_closed_on_auth_identity_box_revision_and_reply(router_box,
 def test_canary_missing_credentials_never_contacts_any_router(monkeypatch):
     monkeypatch.delenv("TINYASSETS_CANARY_USER_ID", raising=False)
     assert canary.main(["--origin", "http://unused.invalid", "--expected-sha", SHA]) == 1
+
+
+def test_canary_id_reaches_only_the_remote_env(tmp_path, monkeypatch):
+    calls = []
+
+    def ssh(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout=json.dumps({"slept": 1, "asleep": 0, "incomplete": 0}))
+
+    monkeypatch.setenv("TINYASSETS_CANARY_USER_ID", "canary-owner-id")
+    monkeypatch.setattr(driver.subprocess, "run", ssh)
+    monkeypatch.setattr(canary, "probe", lambda *args: True)
+    monkeypatch.setattr(canary, "wake", lambda *args: True)
+    receipt = tmp_path / "receipt.json"
+    assert driver.main(["--image-ref", "synthetic@sha256:" + "a" * 64,
+                        "--ssh-target", "synthetic", "--ssh-key", "unused",
+                        "--expected-sha", SHA, "--receipt", str(receipt)]) == 0
+    remote = calls[0][-1]
+    assert "TINYASSETS_CANARY_USER_ID=canary-owner-id" in remote
+    assert "canary-owner-id" not in receipt.read_text()
+    monkeypatch.setenv("TINYASSETS_CANARY_USER_ID", "bad\nowner")
+    calls.clear()
+    assert driver.main(["--image-ref", "synthetic@sha256:" + "b" * 64,
+                        "--ssh-target", "synthetic", "--ssh-key", "unused",
+                        "--expected-sha", SHA, "--receipt", str(receipt)]) == 0
+    assert "TINYASSETS_CANARY_USER_ID" not in calls[0][-1]
+    assert "bad" not in calls[0][-1]
 
 
 def test_driver_cli_writes_one_receipt_and_invokes_canary(tmp_path, monkeypatch):
