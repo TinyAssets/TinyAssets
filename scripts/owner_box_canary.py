@@ -20,13 +20,18 @@ from scripts._canary_common import (  # noqa: E402
 )
 
 
+# Broker wake_timeout is 60s. The router holds OWNER_BOX_WAKE for 70s.
+# Sign-in waits longer than both so that wait can finish.
+SIGN_IN_BUDGET = 90
+
+
 def wake(origin: str, *, timeout=180):
     """Reach the canary through the public router before deployment drains it."""
     home = os.environ.get("TINYASSETS_CANARY_UNIVERSE_ID", "")
     owner = os.environ.get("TINYASSETS_CANARY_USER_ID", "")
     if not home or not owner:
         raise RuntimeError("canary_identity_missing")
-    token, me, headers = owner_canary_sign_in(origin, min(timeout, 30))
+    token, me, headers = owner_canary_sign_in(origin, min(timeout, SIGN_IN_BUDGET))
     if me.get("universe_id") != home or me.get("principal_id") != owner:
         raise RuntimeError("canary_identity_mismatch")
     uid = headers.get("x-tinyassets-box-uid", "")
