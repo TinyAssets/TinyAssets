@@ -7232,7 +7232,7 @@
     // one sign-in, which returns to the app. A refusal within minutes of that
     // sign-in is one signing in cannot cure, so it is reported, never looped;
     // a later lapse redirects again.
-    async signInAgain(note,address){
+    async signInAgain(note,address,source){
       if(NATIVE||DESKTOP_SHELL){note.textContent=ownerProofUnavailable();return;}
       let again=false;
       try{
@@ -7242,8 +7242,9 @@
       }catch(_e){}
       if(again){note.textContent="Signing in again did not restore access. Sign out, then sign in.";return;}
       // Come back to the same Connect, not an empty app.
-      if(address&&queueOwner){try{sessionStorage.setItem("ta_connect_resume",
-        JSON.stringify({address,owner:queueOwner,at:Date.now()}));}catch(_e){}}
+      if((address||source)&&queueOwner){try{sessionStorage.setItem("ta_connect_resume",
+        JSON.stringify({address:address||"",source:source||null,owner:queueOwner,
+          at:Date.now()}));}catch(_e){}}
       await openSignIn("/app/owner-sign-in?app=1");
     },
     async poll(flow,epoch){
@@ -7349,6 +7350,11 @@
         // Only an explicit cancel or a server-reported end cancels.
         if(SubscriptionSources.leaving)return;
         if(error.transport&&flow&&!cancelled){ui.status.textContent=error.message;return;}
+        if(error.signIn&&!flow){
+          // A lapsed owner session refused the start: sign in, then this same
+          // source reconnects by itself on return.
+          await this.signInAgain(ui.status,null,{id:source.id,name:source.name});return;
+        }
         ui.status.textContent=error.message;
         if(pending)appendMessage("system",source.name+": "+error.message);
         pkceStore.removeItem(this.storageKey);
@@ -8668,6 +8674,7 @@
       const saved=JSON.parse(sessionStorage.getItem("ta_connect_resume")||"null");
       sessionStorage.removeItem("ta_connect_resume");
       return saved&&typeof saved.address==="string"&&typeof saved.owner==="string"
+        &&(saved.address||(saved.source&&typeof saved.source.id==="string"))
         &&Date.now()-saved.at<600000?saved:null;
     }catch(_e){return null;}})(),
     render(panel,visible){
@@ -8767,7 +8774,10 @@
       else if(visible&&this.resume){
         const resume=this.resume;this.resume=null;
         // Another account signed in during the step-up: its Connect is its own.
-        if(resume.owner===queueOwner){address.value=resume.address;setTimeout(()=>go.click(),0);}
+        if(resume.owner===queueOwner){
+          if(resume.source)setTimeout(()=>SubscriptionSources.start(resume.source,ui),0);
+          else{address.value=resume.address;setTimeout(()=>go.click(),0);}
+        }
       }
     },
     async finish(result){
