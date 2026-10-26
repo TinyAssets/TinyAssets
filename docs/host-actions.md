@@ -14,6 +14,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Lead-only deploy action |
 |---|---|
+| Signed desktop updates | Supply `DESKTOP_WIN_CSC_LINK` (base64 PFX) and `DESKTOP_WIN_CSC_KEY_PASSWORD` in the restricted `production` GitHub Environment. After merging, dispatch `desktop-chat-release.yml` on `main` with version `0.1.2` or higher, verify the signed installer in the `desktop-chat-latest` release, then raise `desktop.latest` in `tinyassets/onboarding/app_versions.json` to that published version. The existing unsigned 0.1.0 shell keeps working and shows an update banner; one manual reinstall from the release page puts it on the update channel. |
 | N1 shared Slack app | Register one TinyAssets Slack app with Events API request URL `https://tinyassets.io/hooks/inbound/slack`, OAuth redirect and required scopes. Deposit its signing secret in broker platform custody as the named `http` credential destination `inbound-slack-signing`; keep its client secret and installation-scoped outbound tokens in broker custody. Publish the platform-owned HMAC profile for binding `slack` only after the app registration is verified. No app registration, token, or production change is performed in the N1 implementation PR. |
 | a2b: 25 GiB box store | In the lead's root shell on the droplet, with authenticated `doctl`: `set -eu; region=$(curl -fsS http://169.254.169.254/metadata/v1/region); droplet=$(curl -fsS http://169.254.169.254/metadata/v1/id); volume=$(doctl compute volume create tinyassets-box-store --region "$region" --size 25GiB --format ID --no-header); doctl compute volume-action attach "$volume" "$droplet" --wait; udevadm settle; device=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store; mkfs.xfs -m reflink=1 "$device"; install -d -m 0700 /etc/tinyassets; install -o root -g root -m 0600 /root/box-store-resize.token /etc/tinyassets/box-store.token; (umask 077; printf 'BOX_STORE_DEVICE=%s\nBOX_STORE_VOLUME_ID=%s\nBOX_STORE_REGION=%s\nBOX_STORE_DROPLET_ID=%s\nBOX_STORE_TOKEN_FILE=/etc/tinyassets/box-store.token\nBOX_STORE_MAX_GIB=100\n' "$device" "$volume" "$region" "$droplet" > /etc/tinyassets/box-store.conf)`. Supply `/root/box-store-resize.token` with only [block_storage_action:create and its required read scopes](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/). The normal deploy installs/enables the growth timer. Do not run the create/format commands against an existing store. |
 
@@ -400,6 +401,24 @@ for orchestration and cleanup. GitHub has no `cancel-timeout-minutes` setting;
 its [cancellation protocol](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation)
 can kill a process before cleanup finishes, so extending the job timeout alone
 does not guarantee cancellation cleanup.
+
+### Exempt the review account from AuthKit's "Verify you are human" check
+
+The App Store review journey stops at Hosted AuthKit's Turnstile widget
+(`https://unassuming-environment-16.authkit.app`), which WorkOS embeds; nothing in
+this repo configures it. The review test must not defeat it. WorkOS support disables
+it per user only with the owner's written permission
+(<https://workos.com/docs/authkit/radar>, "Troubleshoot Turnstile verification").
+
+1. From the WorkOS account owner, email `support@workos.com`.
+2. Name the production environment `unassuming-environment-16.authkit.app`.
+3. Name the user: the App Store review account, whose address is the `app-store`
+   environment secret `APP_STORE_REVIEW_USERNAME`. Send no password or other secret.
+4. Name the clients (GitHub `macos-15` Simulator runners, AWS Device Farm in
+   `us-west-2`) and one example: run `40013667520`, job `120674283255`, 2026-10-23.
+5. Quote the page text `Verify you are human` / `Can't verify the user is human`.
+6. Permit exempting that one account only, not Turnstile for every user. Optionally
+   name the deploy canary account too, for a later fresh-login canary.
 
 ### AWS: credential vault root key (same account as Device Farm)
 

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from starlette.responses import JSONResponse
 
+from tinyassets.asgi_scope import refuse_non_http
+
 BUILD_SHA_FILE = Path("/etc/tinyassets-build-sha")
 
 
@@ -23,8 +25,10 @@ class OwnerIngress:
         return getattr(self.app, name)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] == "lifespan":
             return await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            return await refuse_non_http(scope, send)
         from tinyassets.auth.provider import Identity
         from tinyassets.owner_activity import activity
 
@@ -134,3 +138,4 @@ class OwnerIngress:
             await self.app(scope, receive, proven_send)
         finally:
             gate.__exit__(None, None, None)
+

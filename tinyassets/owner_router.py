@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse
 
+from tinyassets.asgi_scope import refuse_non_http
 from tinyassets.mcp_events_http import door as events_door
 from tinyassets.mcp_events_http import routed as events_routed
 
@@ -108,8 +109,10 @@ class OwnerRouter:
         return getattr(self.app, name)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] == "lifespan":
             return await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            return await refuse_non_http(scope, send)
         from tinyassets.auth.middleware import current_identity_or_none, published_box_owner
         from tinyassets.router_traffic import admits
         from tinyassets.routing_snapshot import snapshot

@@ -91,6 +91,7 @@ _ROUTER_IMPORTS = {
     # The events/subscribe door: envelope checks, then the broker and one box call.
     "tinyassets.mcp_events_http",
     "tinyassets.mcp_event_webhooks",  # EventError, the bounded refusal type; no I/O.
+    "tinyassets.asgi_scope",  # The non-HTTP refusal both doors share; imports nothing.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
     "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.

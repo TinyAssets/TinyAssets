@@ -444,6 +444,17 @@
   </style>
 </head>
 <body>
+  <div id="app-update-banner" class="app-update-banner" role="status" hidden>
+    <span>Update available. Get the latest app.</span>
+    <button id="app-update-banner-open" type="button">Update</button>
+    <button id="app-update-dismiss" type="button" aria-label="Dismiss update notice">Dismiss</button>
+  </div>
+  <div id="app-update-required" class="app-update-required" role="alert" hidden>
+    <div class="card"><h1>Update required</h1><p>Update the app to continue.</p>
+      <button id="app-update-required-open" class="btn btn--primary" type="button">Update</button>
+      <p id="app-update-error" class="notice" role="alert"></p>
+    </div>
+  </div>
   <main id="app" class="app" aria-live="polite">
     <!-- Signed-out: minimal brand, one action. -->
     <section id="view-signin" class="view view--signin" hidden>
@@ -940,6 +951,11 @@
   </nav>
   </main>
   <style nonce="__TA_NONCE__">
+    .app-update-banner{position:fixed;z-index:1000;top:0;left:0;right:0;padding:max(12px,env(safe-area-inset-top)) 16px 12px;background:#29274a;color:#fff;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap}
+    .app-update-banner[hidden],.app-update-required[hidden]{display:none}
+    .app-update-banner button{min-height:44px;padding:0 14px;cursor:pointer}
+    .app-update-required{position:fixed;z-index:1001;inset:0;display:grid;place-items:center;background:#0f1020;padding:24px;text-align:center}
+    .app-update-required .card{max-width:420px;width:100%}
     /* Always at the bottom, even when nothing above it loaded (it used to rise
        under the phone's status bar), clear of notches, with 44px tap targets. */
     #app-recovery-controls{flex:0 0 auto;margin-top:auto;display:flex;flex-wrap:nowrap;overflow-x:auto;align-items:center;gap:8px;padding:0 max(10px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(10px,env(safe-area-inset-left));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:14px;white-space:nowrap}
@@ -951,6 +967,7 @@
     .app-short .app:has(.view:not([hidden])):not(:has(#app-recovery-failed:not([hidden]))) #app-recovery-controls{display:none}
   </style>
   <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
+  <script nonce="__TA_NONCE__">__TA_APP_UPDATES__</script>
   <script nonce="__TA_NONCE__">
   __TA_APP_MAIN__
   </script>
