@@ -334,6 +334,9 @@ def dispatch(identities, document):
                 work = {"kind": "snapshot", "snapshot_id": uuid.uuid4().hex}
             elif work["kind"] != "snapshot":
                 raise PermissionError("restore must complete before sleep")
+            else:
+                # An explicit sleep owes its copy now, even over a deferred idle stop.
+                work = {key: value for key, value in work.items() if key != "stopped_at"}
         elif action == "stopped":
             # The host confirmed the stop. The first confirmation dates it.
             if not work or work["kind"] != "snapshot":

@@ -1359,6 +1359,13 @@ def test_an_explicit_or_crash_stop_is_copied_at_once(storage, monkeypatch):
     drive(storage.lifecycle.tick_owner("alice"))
     explicit = storage.lifecycle.volume("alice")
     assert explicit["work"] is None and explicit["snapshot_id"] != crashed["snapshot_id"]
+    start(storage)
+    deferred = idle_stop(storage)["work"]
+    assert "stopped_at" in deferred  # The idle stop's copy waits...
+    drive(storage.lifecycle.lifecycle.sleep("alice"))
+    drive(storage.lifecycle.tick_owner("alice"))
+    owed = storage.lifecycle.volume("alice")  # ...until an explicit sleep asks for it.
+    assert owed["work"] is None and owed["snapshot_id"] == deferred["snapshot_id"]
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
