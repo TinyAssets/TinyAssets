@@ -190,6 +190,12 @@ class BrokerLifecycle:
         return sum(max(THIN_BYTES, self.facts.get(owner, {}).get("memory_bytes") or 0)
                    for owner in self.awake | self._reservations.keys())
 
+    async def observed(self, owner, status):
+        """Record a pass's facts; lower memory or an idle box can admit a waiting wake."""
+        async with self._capacity:
+            self.facts[owner] = status
+            self._capacity.notify_all()
+
     async def stopped(self, owner):
         # Only called after a completed sleep/stop or recover's stopped fact.
         async with self._capacity:

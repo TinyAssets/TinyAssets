@@ -75,12 +75,12 @@ def fleet(tmp_path, monkeypatch):
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
-    for owner in "abc":
+    for owner in "abcdefgh":
         identities.resolve(owner, allocate=True)
         drive(identities.admit(owner, routing=projection(identities.path)))
         box_admission.provision(identities, tmp_path, owner)
     admission, runtime = Admission(identities), Runtime()
-    admission.secrets = {owner: identities.box_route(owner)[1] for owner in "abc"}
+    admission.secrets = {owner: identities.box_route(owner)[1] for owner in "abcdefgh"}
     volumes = Volumes()
     relays = SimpleNamespace(bind=lambda owner, uid: tmp_path / f"{uid}.sock",
                              retire=lambda uid: None)
@@ -693,10 +693,14 @@ def test_one_slow_answer_never_replaces_a_running_box(fleet, monkeypatch):
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
-def test_the_default_budget_admits_far_more_thin_boxes_than_the_old_cap():
+def test_the_default_budget_admits_far_more_thin_boxes_than_the_old_cap(fleet):
     from tinyassets.broker.lifecycle_config import LifecycleConfig
 
     assert LifecycleConfig().memory_budget // THIN_BYTES >= 4 * 6
+    fleet.routing.config.memory_budget = LifecycleConfig().memory_budget
+    fleet.routing.config.wake_timeout = .5  # Over budget, a wake would fail here.
+    uids = [fleet.wake(owner) for owner in "abcdefgh"]  # Eight, past the old six.
+    assert set(uids) <= fleet.runtime.live and len(set(uids)) == 8
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
@@ -774,3 +778,24 @@ def test_an_idle_box_that_drains_but_does_not_stop_is_not_read_as_busy(fleet, mo
     assert fleet.manager.boxes[uid].failures == 1
     work = fleet.admission.volume("a")["work"]
     assert work["kind"] == "snapshot" and "stopped_at" not in work  # Owed, not withdrawn.
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_a_pass_that_frees_memory_admits_a_waiting_wake(fleet):
+    fleet.routing.config.memory_budget = 2 * THIN_BYTES
+    fleet.routing.config.wake_timeout = 5
+    a = fleet.wake("a")
+    fleet.runtime.measured[a] = 2 * THIN_BYTES  # A CLI holds the whole budget.
+    result = []
+    with fleet.states[a].enter():
+        fleet.tick()
+        waiting = threading.Thread(target=lambda: result.append(fleet.wake("b", scheduled=True)))
+        waiting.start()
+        deadline = time.monotonic() + 2
+        while not fleet.routing._capacity._waiters and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert fleet.routing._capacity._waiters and not result
+        fleet.runtime.measured[a] = THIN_BYTES  # The CLI exits; the turn goes on.
+        drive(fleet.routing.tick())  # The pass's facts wake the waiting wake.
+        waiting.join(4)
+    assert result and not waiting.is_alive()
