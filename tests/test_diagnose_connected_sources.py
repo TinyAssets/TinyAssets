@@ -738,3 +738,45 @@ def test_subscription_runs_keep_only_the_fixed_failure_shape():
                                  "events": "thread.started,turn.started"}
     dumped = json.dumps(runs)
     assert "user_01SECRET" not in dumped and "private" not in dumped
+
+
+
+def test_box_health_reports_only_fixed_command_names_and_error_shapes():
+    outputs = {
+        "ps": " 11 7300 rclone\n 12 30 cp\n 13 9000 secret-owner-tool\n 14 8000 python3\n",
+        "lslocks": ("python3 14 WRITE /srv/box-store/.locks/300001\n"
+                    "rclone 11 READ /srv/box-store/.locks/300002\n"
+                    "cp 12 WRITE* /srv/box-store/.locks/300002\n"
+                    "python3 14 WRITE /home/someone/private.lock\n"),
+        "journalctl": ("owner daemon uid=300001 failures=3: owner app socket did not become "
+                       "ready\n"
+                       "owner daemon uid=300001 failures=4: owner app socket did not become "
+                       "ready\n"
+                       "owner daemon uid=300002 failures=1: open /srv/x/user_01SECRET failed\n"
+                       "owner daemon uid=300003 failures=1: token=abc@def.example leaked\n"
+                       "owner daemon uid=300004 failures=1: token: sk-secretAlphabetic\n"
+                       "owner daemon uid=300004 failures=2: owner daemon startup failed: "
+                       "owner daemon exited during startup\n"),
+    }
+
+    def run(argv, **kwargs):
+        class Done:
+            returncode = 0
+            stdout = outputs[argv[0]].encode()
+            stderr = b""
+        return Done()
+
+    health = diag._box_health(run=run)
+    assert health["long_running"] == [{"command": "rclone", "seconds": 7300}]
+    assert health["volume_locks"] == [
+        {"command": "python3", "mode": "WRITE", "seconds": 8000},
+        {"command": "rclone", "mode": "READ", "seconds": 7300},
+        {"command": "cp", "mode": "WRITE waiting", "seconds": 30}]
+    assert health["box_errors"] == {
+        "owner app socket did not become ready": 2, "other": 3,
+        "owner daemon startup failed: owner daemon exited during startup": 1}
+    assert health["most_failures"] == 4
+    dumped = json.dumps(health)
+    for private in ("SECRET", "someone", "secret-owner-tool", "abc@def", "300001",
+                    "secretAlphabetic", "token"):
+        assert private not in dumped

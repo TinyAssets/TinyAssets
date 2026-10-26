@@ -865,6 +865,83 @@ def _subscription_runs(run=None) -> dict:
     return {"counts": counts, "recent": recent[-10:]}
 
 
+# Host-side box health. Command names come from a fixed list and error text is
+# kept only in a closed shape, so no owner data or path reaches the report.
+_HOLDER_COMMANDS = frozenset({
+    "rclone", "cp", "dd", "gzip", "zstd", "tar", "rsync", "e2fsck", "resize2fs",
+    "fsfreeze", "mount", "umount", "losetup", "sqlite3", "runsc",
+    "runsc-sandbox", "runsc-gofer", "python3", "node",
+})
+_BOX_ERROR = re.compile(r"owner daemon uid=\d{1,9} failures=(\d{1,6}): (.{1,300})\Z")
+# The box host's own fixed lifecycle messages (tinyassets/boxes). Any other text,
+# including an exception's own words, is reported only as "other".
+_BOX_MESSAGES = (
+    "broker launch authorization is missing", "broker owner reservation changed",
+    "cannot prove the owner sandbox stopped", "harness image identity mismatch",
+    "immutable harness image unavailable", "local image is absent",
+    "owner app socket did not become ready", "owner daemon crashed",
+    "owner daemon did not flush before shutdown deadline",
+    "owner daemon exited during startup", "owner daemon is still draining",
+    "owner daemon stopped answering", "owner lifecycle is unavailable",
+    "owner relay socket is unavailable",
+    "owner sandbox has an unverified launch or stop",
+    "owner work must drain before volume operation", "runsc returned no sandbox PID",
+    "runtime filesystem references remain", "the harness rootfs is unavailable or a link",
+    "the pinned runsc binary is unavailable", "unexpected sandbox bundle",
+    "volume must be fully detached", "volume operation requires a stopped box",
+)
+_STARTUP = "owner daemon startup failed: "
+
+
+def _error_shape(text: str) -> str:
+    text = text.strip()
+    prefix = ""
+    if text.startswith(_STARTUP):
+        prefix, text = _STARTUP, text[len(_STARTUP):]
+    return prefix + text if text in _BOX_MESSAGES else prefix + "other"
+
+
+def _box_health(run=None) -> dict:
+    run = run or subprocess.run
+    seconds_by_pid: dict[str, int] = {}
+    long_running: list[dict] = []
+    for line in _capture(["ps", "-eo", "pid=,etimes=,comm="], run).splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        seconds_by_pid[parts[0]] = int(parts[1])
+        command = parts[2].strip()
+        if command in _HOLDER_COMMANDS and command not in ("python3", "node") \
+                and int(parts[1]) >= 60:
+            long_running.append({"command": command, "seconds": int(parts[1])})
+    long_running.sort(key=lambda item: -item["seconds"])
+    locks: list[dict] = []
+    for line in _capture(["lslocks", "--noheadings", "--raw", "-o",
+                          "COMMAND,PID,MODE,PATH"], run).splitlines():
+        parts = line.split(" ", 3)
+        if len(parts) != 4 or not re.search(r"/\.locks/\d{1,9}\Z", parts[3]):
+            continue
+        command = parts[0] if parts[0] in _HOLDER_COMMANDS else "other"
+        locks.append({"command": command,
+                      "mode": {"READ": "READ", "WRITE": "WRITE", "READ*": "READ waiting",
+                               "WRITE*": "WRITE waiting"}.get(parts[2], "other"),
+                      "seconds": seconds_by_pid.get(parts[1])})
+    errors: dict[str, int] = {}
+    worst = 0
+    for line in _capture(["journalctl", "-u", "boxhostd", "--since", "12 hours ago",
+                          "--no-pager", "--output=cat", "-n", "2000",
+                          "-g", "owner daemon uid="],
+                         run).splitlines():
+        match = _BOX_ERROR.search(line.strip())
+        if match is None:
+            continue
+        worst = max(worst, int(match.group(1)))
+        shape = _error_shape(match.group(2))
+        errors[shape] = errors.get(shape, 0) + 1
+    return {"long_running": long_running[:20], "volume_locks": locks[:40],
+            "box_errors": errors, "most_failures": worst}
+
+
 def _canary_container(name: str) -> bool:
     if not _CANARY_NAME.fullmatch(name):
         return False
@@ -1049,6 +1126,7 @@ def collect() -> tuple[dict, set[str]]:
 
 def main() -> None:
     report, private = collect()
+    report["box_health"] = _box_health()
     sys.stdout.write(safe_json(report, private) + "\n")
 
 
