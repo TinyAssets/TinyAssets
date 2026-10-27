@@ -55,6 +55,9 @@ if os.environ.get('FAIL_UPLOAD') == '1' and op == 'copyto':
     raise SystemExit(3)
 if op == 'mkdir':
     Path(args[-1]).mkdir(parents=True, exist_ok=True)
+elif op == 'lsf' and '--include' in args:
+    root, owner = Path(args[-3]), args[-1].strip('/*')
+    print('\\n'.join(f'{owner}/{p.name}' for p in (root / owner).glob('*') if p.is_file()))
 elif op == 'lsf':
     print('\\n'.join(p.name for p in Path(args[-1]).iterdir() if p.is_file()))
 elif op == 'cat':
@@ -68,6 +71,9 @@ elif op in ('copyto', 'moveto'):
     else:
         source.rename(target)
 elif op == 'deletefile':
+    # The installed rclone (before v1.62) exits 1 for a missing object.
+    if not Path(args[-1]).is_file():
+        raise SystemExit(1)
     Path(args[-1]).unlink()
 else:
     raise SystemExit(79)
@@ -149,32 +155,67 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
 
 @pytest.mark.verifies('owner-daemon-in-box:C2')
 def test_absent_snapshot_object_is_deleted_and_a_pin_is_not(shared_backup, monkeypatch):
+    """The installed rclone exits 1 for a missing object, so the listing decides."""
     root, remote, _, _ = shared_backup
     backup.publish(root, str(remote))
+    (remote / "300001").mkdir()
+    (remote / "300001" / ("e" * 32 + ".img.gz")).write_bytes(b"present")
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    codes = []
+    codes, deletes = [], []
 
     def run(*args):
         if args[:2] == ("rclone", "deletefile"):
-            raise subprocess.CalledProcessError(codes.pop(0), args)
+            deletes.append(args[-1])
+            if codes:
+                raise subprocess.CalledProcessError(codes.pop(0), args)
         return OwnerVolumes._run(*args)
 
     monkeypatch.setattr(volumes, "_run", run)
-    codes.append(3)
     assert volumes.delete_snapshots(300001, ["c" * 32], []) == {"c" * 32: "deleted"}
-    codes.append(4)
-    assert volumes.delete_snapshots(300001, ["d" * 32], []) == {"d" * 32: "deleted"}
+    assert deletes == []
+    # A present object's failing exit is a real failure; it does not hide the pin.
     codes.append(1)
-    assert volumes.delete_snapshots(300001, ["e" * 32], []) == {
-        "e" * 32: "failed:rclone_exit_1"}
-    assert volumes.delete_snapshots(300001, ["a" * 32], []) == {"a" * 32: "pinned"}
-    # A failed object is named by exit code; it does not hide the pin beside it.
-    codes.append(5)
     assert volumes.delete_snapshots(300001, ["e" * 32, "a" * 32], []) == {
-        "e" * 32: "failed:rclone_exit_5", "a" * 32: "pinned"}
-    assert codes == []
+        "e" * 32: "failed:rclone_exit_1", "a" * 32: "pinned"}
+    assert (remote / "300001" / ("e" * 32 + ".img.gz")).exists()
+    # Newer rclone: the object went between the listing and the delete.
+    codes.append(4)
+    assert volumes.delete_snapshots(300001, ["e" * 32], []) == {"e" * 32: "deleted"}
+    assert codes == [] and len(deletes) == 2
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_an_unreadable_listing_deletes_nothing_and_erasure_lists_once(
+        shared_backup, monkeypatch):
+    root, remote, _, _ = shared_backup
+    backup.publish(root, str(remote))
+    (remote / "300001").mkdir()
+    objects = [remote / "300001" / (name * 32 + ".img.gz") for name in "ef"]
+    for path in objects:
+        path.write_bytes(b"present")
+    volumes = object.__new__(OwnerVolumes)
+    volumes.remote = str(remote)
+    monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
+    listings = []
+
+    def run(*args):
+        if args[:2] == ("rclone", "lsf") and "--include" in args:
+            listings.append(args)
+            if fail:
+                raise subprocess.CalledProcessError(3, args)
+        return OwnerVolumes._run(*args)
+
+    monkeypatch.setattr(volumes, "_run", run)
+    fail = True
+    assert volumes.delete_snapshots(300001, ["e" * 32, "a" * 32], []) == {
+        "e" * 32: "failed:catalog_unreadable", "a" * 32: "pinned"}
+    assert all(path.exists() for path in objects)
+    fail = False
+    assert volumes.delete_snapshots(300001, None, []) == dict.fromkeys(
+        ["e" * 32, "f" * 32], "deleted")
+    assert not any(path.exists() for path in objects) and len(listings) == 2
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C2')
