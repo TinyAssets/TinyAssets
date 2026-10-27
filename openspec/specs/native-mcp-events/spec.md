@@ -61,7 +61,11 @@ agent registry.
 
 S3b, W4. Subscribe input is `{command_center_id, agent_id}`. It is accepted only
 when the caller's verified outside client is that enabled agent's registry row and
-its delivery method is `mcp_event`; otherwise it is refused (-32024). One callback
+its delivery method is `mcp_event`, and while the outside kill switches are on
+(the router checks them, as a box's admission would); otherwise it is refused
+(-32024). The registry check runs again after the subscription is stored, and a
+failure then revokes it. Only the client that holds a mailbox subscription may
+unsubscribe it. One callback
 per agent: a new subscription revokes the agent's earlier one. The payload is
 `{command_center_id, agent_id, cursor}`, IDs and the mailbox cursor only; the event
 ID is `evt_` plus a SHA-256 of owner, agent and wake. `AGENT_WAKE` sends it once

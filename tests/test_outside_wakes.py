@@ -101,7 +101,7 @@ def test_a_429_keeps_the_mail_queued_and_the_next_wake_waits_retry_after(wk):
     wk.answers.append((429, "120"))
     wk.rig.post(None, f"dm:{muse}", cmid="c1")
     now = time.time()
-    assert wk.tick(now) == 1
+    assert wk.tick(now) == 0 and len(wk.sent) == 1  # only an accepted wake counts
     [wake] = wk.table("ledger_wakes")
     assert wake["state"] == "rate_limited" and wake["due"] == pytest.approx(now + 120)
     wk.rig.post(None, f"dm:{muse}", body="more", cmid="c2")  # extends; still waits
@@ -120,7 +120,7 @@ def test_an_ambiguous_send_is_unknown_and_never_replayed(wk):
     wk.answers.append((None, None))  # the connection drops after the request left
     wk.rig.post(None, f"dm:{muse}", cmid="c1")
     now = time.time()
-    assert wk.tick(now) == 1
+    assert wk.tick(now) == 0 and len(wk.sent) == 1
     [wake] = wk.table("ledger_wakes")
     assert wake["state"] == "unknown" and wk.receipts() == ["wake_sent"]
     record = wk.ops.status("agent_wake:alice", wake["op_id"])
@@ -138,8 +138,15 @@ def test_an_ambiguous_send_is_unknown_and_never_replayed(wk):
         if mark:
             wk.ops.mark_may_have_sent("agent_wake:alice", op_id)
         wk.ops.recover()  # the restart
-        assert wk.tick(at + 30) == 0  # inside the lease nothing moves
-        assert wk.tick(at + 61) == 1  # past it, the journal decides
+
+        def state():
+            return {w["wake_id"]: w["state"] for w in wk.table("ledger_wakes")}[
+                open_wake["wake_id"]]
+
+        wk.tick(at + 30)
+        assert state() == "sending"  # inside the lease nothing moves
+        wk.tick(at + 61)  # past it, the journal decides
+        assert state() == ("unknown" if mark else "pending")
         return open_wake["wake_id"], at
 
     unsent, at = crash_mid_send(mark=False)  # provably never sent: due again, and sent
@@ -186,7 +193,10 @@ def test_subscribe_is_refused_for_anyone_but_the_agents_own_client(wk):
 
 
 @pytest.mark.verifies("native-mcp-events:mailbox.message rings only the agent's own client")
-def test_a_disabled_agent_stops_its_wakes_and_its_callback_is_erased(wk):
+@pytest.mark.parametrize("revoke_fails", [False, True])
+def test_a_disabled_agent_stops_its_wakes_and_its_callback_is_erased(wk, caplog,
+                                                                     revoke_fails):
+    from tinyassets import rpc_frames as rf
     from tinyassets.broker.server import OWNER, _Connection
 
     muse = wk.register(MUSE)
@@ -199,11 +209,23 @@ def test_a_disabled_agent_stops_its_wakes_and_its_callback_is_erased(wk):
         mcp_events=EventDeliveries(wk.store))
 
     async def disable():
-        await _Connection(server, None, OWNER)._connection_op("OUTSIDE_AGENTS", {
+        connection = _Connection(server, None, OWNER)
+        await connection._connection_op("OUTSIDE_AGENTS", {
             "op": "OUTSIDE_AGENTS", "action": "disable", "principal": "alice", "origin": None,
             "session_proof": PROOF, "agent_id": muse, "reason": "revoked"})
+        reader = asyncio.StreamReader()
+        reader.feed_data(connection._queue.get_nowait())
+        return (await rf.read_frame(reader)).control()["op"]
 
-    asyncio.run(disable())
+    if revoke_fails:  # the disable has committed: it is not reported as refused
+        def broken(owner, agent_id):
+            raise OSError("event store unavailable")
+
+        wk.store.revoke_agent = broken
+        assert asyncio.run(disable()) == "OUTSIDE_AGENTS_IS"
+        assert "ALARM: outside agent callbacks not revoked" in caplog.text
+        return
+    assert asyncio.run(disable()) == "OUTSIDE_AGENTS_IS"
     assert [w["state"] for w in wk.table("ledger_wakes")] == ["suppressed"]
     with wk.store.db() as conn:
         [sub] = conn.execute("SELECT active, config FROM subscriptions").fetchall()
@@ -244,7 +266,8 @@ def test_no_wake_or_event_payload_carries_a_message_body(wk):
         wk.answers.append(answer)
         bodies.append("BODY-" + secrets.token_hex(8))
         wk.rig.post(None, f"dm:{muse}", body=bodies[-1], cmid=f"c{step}")
-        assert wk.tick(start + 10 * step) == 1
+        wk.tick(start + 10 * step)
+        assert len(wk.sent) == step
     assert len(wk.sent) == 4
     ledger = account_path(wk.rig.root, "alice", "message_ledger.db")
     stored = b"".join(path.read_bytes() for path in (
@@ -255,3 +278,118 @@ def test_no_wake_or_event_payload_carries_a_message_body(wk):
     for sent in wk.sent:
         assert set(json.loads(sent)["data"]) == set(
             EVENTS[MAILBOX][0]["payloadSchema"]["properties"])
+
+
+@pytest.mark.verifies("trusted-message-ledger:AGENT_WAKE sends once, through the op journal")
+def test_one_owners_many_agents_never_crowd_out_another_owner(wk):
+    """At most one wake per owner per pass, and each pass starts after the last owner."""
+    conversations = Conversations(wk.rig.root, wk.rig.identities)
+    for owner, count in (("alice", 4), ("bob", 1)):
+        for n in range(count):
+            agent = wk.ledger.register(
+                owner, client=f"{owner[0]}{n}" * 32, family="f" * 64, command_center_id="alpha",
+                source="mcp", source_ref="conn-1", display_name="Muse",
+                delivery_method="mcp_event", recipe_id=None)["agent_id"]
+            wk.ledger.post(owner, origin=None, room_id=f"dm:{agent}", client_message_id=f"c{n}",
+                           body="hi", parent_id=None, put_body=partial(conversations.put, owner))
+    now = time.time() + 1
+    assert sorted(w.owner for w in wk.ledger.due_wakes(now, limit=4)) == ["alice", "bob"]
+    first, second = (wk.ledger.due_wakes(now, limit=1) for _ in range(2))
+    assert {first[0].owner, second[0].owner} == {"alice", "bob"}  # the start rotates
+
+
+@pytest.mark.verifies("native-mcp-events:mailbox.message rings only the agent's own client")
+def test_nothing_is_claimed_while_the_outside_switch_is_off(wk, monkeypatch):
+    muse = wk.register(MUSE)
+    wk.subscribe(muse)
+    wk.rig.post(None, f"dm:{muse}", cmid="c1")
+    monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")
+    assert wk.tick() == 0 and wk.sent == []
+    assert [w["state"] for w in wk.table("ledger_wakes")] == ["pending"]  # held, not lost
+    monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY")
+    assert wk.tick() == 1 and len(wk.sent) == 1
+
+
+@pytest.mark.verifies("native-mcp-events:mailbox.message rings only the agent's own client")
+def test_a_subscribe_racing_a_disable_and_a_suppressing_claim_leave_no_live_secret(wk):
+    muse = wk.register(MUSE)
+    checks = []
+
+    def disabled_meanwhile(owner, **fields):
+        checks.append(fields)
+        if len(checks) > 1:
+            raise LedgerRefused("not this caller's mcp_event agent")
+
+    with pytest.raises(LedgerRefused):
+        wk.store.subscribe("alice", mailbox(muse), authority=MUSE, agents=disabled_meanwhile)
+    with wk.store.db() as conn:
+        assert [tuple(r) for r in conn.execute("SELECT active, config FROM subscriptions")] == [
+            (0, "")]
+    wk.subscribe(muse)
+    wk.rig.post(None, f"dm:{muse}", cmid="c1")
+    wk.ledger.disable("alice", agent_id=muse, reason="revoked")  # no server-side revoke here
+    wk.ledger.register("alice", client=MUSE["client"], family=MUSE["family"],
+                       command_center_id="alpha", source="mcp", source_ref="conn-1",
+                       display_name="Muse", delivery_method="mcp_event", recipe_id=None)
+    wk.rig.post(None, f"dm:{muse}", cmid="c2")
+    wk.ledger.disable("alice", agent_id=muse, reason="revoked")
+    with wk.rig.db() as db:  # a wake left open by a direct store change, as a crash would
+        db.execute("UPDATE ledger_wakes SET state='pending' WHERE rowid=(SELECT MAX(rowid) "
+                   "FROM ledger_wakes)")
+    with wk.store.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM subscriptions WHERE active=1").fetchone()[0]
+    assert wk.tick() == 0 and wk.sent == []  # the claim suppresses, and revokes
+    with wk.store.db() as conn:
+        assert {tuple(r) for r in conn.execute("SELECT active, config FROM subscriptions")} == {
+            (0, "")}
+
+
+@pytest.mark.verifies("native-mcp-events:mailbox.message rings only the agent's own client")
+def test_only_the_subscribing_client_can_unsubscribe_a_mailbox(wk):
+    muse = wk.register(MUSE)
+    wk.subscribe(muse)
+    for stranger in (None, DOT):
+        with pytest.raises(PermissionError):
+            wk.store.unsubscribe("alice", mailbox(muse), authority=stranger)
+    assert wk.store.unsubscribe("alice", mailbox(muse), authority=MUSE) == {}
+    with wk.store.db() as conn:
+        assert [tuple(r) for r in conn.execute("SELECT active, config FROM subscriptions")] == [
+            (0, "")]
+
+
+@pytest.mark.verifies("trusted-message-ledger:Outside agents register from a verified identity")
+def test_an_api_key_agent_cannot_take_the_mcp_event_doorbell(wk):
+    from tinyassets.api_keys import _client, _family
+
+    key = "0123456789abcdef"
+    with pytest.raises(LedgerRefused, match="API-key agent reads by pull"):
+        wk.rig.call("OUTSIDE_AGENTS", "register", {"client": _client(key), "family": _family(key)},
+                    session_proof=PROOF, command_center_id="alpha", source="api_key",
+                    source_ref=key, display_name="Key", delivery_method="mcp_event",
+                    recipe_id=None)
+
+
+@pytest.mark.verifies("trusted-message-ledger:AGENT_WAKE sends once, through the op journal")
+@pytest.mark.parametrize("refusal", ["ssrf", "dns"])
+def test_a_callback_refused_before_any_connection_fails_not_unknown(wk, monkeypatch, refusal):
+    import socket
+
+    from tinyassets.mcp_event_webhooks import post
+    from tinyassets.storage import outbound_connections as outbound
+
+    def resolve(host, port):
+        if refusal == "ssrf":
+            raise outbound.SsrfValidationError("nonpublic address")
+        raise socket.gaierror("no such host")
+
+    monkeypatch.setattr(outbound, "_PinnedHTTPSConnection",
+                        lambda *a, **k: pytest.fail("a refused callback reached the network"))
+    muse = wk.register(MUSE)
+    wk.subscribe(muse)
+    wk.store.sender = lambda owner, url, body, headers, **options: post(
+        url, body, headers, resolve=resolve, **options)
+    wk.rig.post(None, f"dm:{muse}", cmid="c1")
+    assert wk.tick() == 0
+    [wake] = wk.table("ledger_wakes")
+    assert (wake["state"], json.loads(wake["receipt_json"])["reason"]) == ("failed", "not_sent")
+    assert wk.receipts() == ["failed"]

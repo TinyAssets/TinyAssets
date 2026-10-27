@@ -659,8 +659,13 @@ class _Connection:
                     elif "agent_id" in result and (result["disabled_reason"] or result[
                             "delivery_method"] not in message_ledger.WAKING):
                         # Disabled or no longer rung: its doorbell ends, its callback is erased.
-                        await asyncio.to_thread(deliveries.store.revoke_agent,
-                                                doc["principal"], result["agent_id"])
+                        # The change is committed. No wake rings the agent now (a claim
+                        # suppresses and revokes again), and the callback expires in a day.
+                        try:
+                            await asyncio.to_thread(deliveries.store.revoke_agent,
+                                                    doc["principal"], result["agent_id"])
+                        except Exception:  # noqa: BLE001 - loud, never a false refusal
+                            _LOG.exception("ALARM: outside agent callbacks not revoked")
                 answer = {"op": op + "_IS", "result": result}
             except (PermissionError, ValueError) as exc:
                 # A refusal's own reason; an operating-system error names no path.

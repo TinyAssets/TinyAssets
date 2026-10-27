@@ -8,23 +8,36 @@ yet is simply not claimed until a later tick.
 from __future__ import annotations
 
 import logging
+import os
 
 _LOG = logging.getLogger(__name__)
 #: Wakes per pass; the pass repeats while any were due, as event deliveries do.
 PASS_LIMIT = 4
 
 
-def run_due(base, *, now: float, send, limit: int = PASS_LIMIT) -> int:
-    """Send every due wake once; ``base`` is the broker's ledger, ``send`` is AGENT_WAKE.
+def outside_denied() -> bool:
+    """The outside kill switch as the broker sees it: its own ``TINYASSETS_OUTSIDE_DENY``.
 
-    A failed send is logged and left to its ledger state; it never stops the others,
-    and it is not counted, so a wake that keeps failing cannot spin the pass.
+    The durable switch is router state the broker cannot read; the router's subscribe
+    door enforces both, and while either is off no new doorbell is admitted.
     """
-    done = 0
+    return os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1"
+
+
+def run_due(base, *, now: float, send, limit: int = PASS_LIMIT) -> int:
+    """Send each due wake once; ``base`` is the broker's ledger, ``send`` is AGENT_WAKE.
+
+    Nothing is claimed while the outside switch is off: wakes stay pending until it
+    reopens. A failed send is logged and left to its ledger state; it never stops the
+    others. Only an accepted wake counts, so neither a failing nor a slow callback can
+    make the pass run again.
+    """
+    if outside_denied():
+        return 0
+    accepted = 0
     for wake in base.due_wakes(now, limit=limit):
         try:
-            send(wake, now=now)
-            done += 1
+            accepted += send(wake, now=now) == "sent"
         except Exception:  # noqa: BLE001 - one owner's wake never blocks another's
             _LOG.error("outside-agent wake failed")
-    return done
+    return accepted

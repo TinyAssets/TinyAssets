@@ -116,7 +116,10 @@ S3a's row above.
   agent's own client; disabling an agent suppresses its wakes and erases its callback;
   registry row S31 converged with `test_outside_wakes`. **Live acceptance still owed:** a
   ChatGPT agent wakes on a message, reads it and replies (an `mcp` agent registers only
-  once P0-3 configures the outside-client claim).
+  once P0-3 configures the outside-client claim). **Owed:** M3, a revoked outside-client
+  grant ends the agent's wakes and erases its callbacks (waits on #5343; blocks S31 reading
+  converged once #5343 lands); L5, bounding `ledger_wakes` growth and the per-pass scan of
+  every owner's ledger (S4 caps).
 
 ## ADR-030 tool by tool
 

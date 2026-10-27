@@ -188,10 +188,12 @@ class EventStore:
         signing_key(secret)
         if params.get("cursor") is not None:
             raise EventError(-32602, "This event does not support replay")
-        if params["name"] == MAILBOX:
+        mailbox = params["name"] == MAILBOX
+        if mailbox:
             if authority is None or agents is None:
                 raise PermissionError("an agent subscribes from its verified outside identity")
-            agents(owner, origin={k: authority[k] for k in ("client", "family")}, **args)
+            origin = {k: authority[k] for k in ("client", "family")}
+            agents(owner, origin=origin, **args)
         ttl = params.get("ttlMs", MAX_TTL * 1000)
         if ttl is not None and (type(ttl) is not int or ttl <= 0):
             raise EventError(-32602, "ttlMs must be a positive integer or null")
@@ -250,6 +252,13 @@ class EventStore:
                     "AND id!=?", (owner, scope, ident)
                 ).fetchall():
                     self._revoke(conn, other[0], owner)
+        if mailbox:  # A disable that raced this subscribe must not leave a live secret.
+            try:
+                agents(owner, origin=origin, **args)
+            except Exception:
+                with self.db() as conn:
+                    self._revoke(conn, ident, owner)
+                raise
         return {
             "id": ident,
             "refreshBefore": _iso(now + lifetime),
@@ -257,10 +266,18 @@ class EventStore:
             "truncated": False,
         }
 
-    def unsubscribe(self, owner, params):
+    def unsubscribe(self, owner, params, *, authority=None):
+        """A ``mailbox.message`` subscription is ended only by the client that holds it."""
         ident, _, _ = self._identity(owner, params)
         if self.path.exists():
             with self.db() as conn:
+                row = conn.execute("SELECT * FROM subscriptions WHERE id=? AND owner=? AND "
+                                   "active=1", (ident, owner)).fetchone()
+                if row is not None and params["name"] == MAILBOX:
+                    held = json.loads(row["config"] or "{}").get("authority") or {}
+                    if authority is None or any(
+                            held.get(k) != authority.get(k) for k in ("client", "family")):
+                        raise PermissionError("not this subscription's client")
                 self._revoke(conn, ident, owner)
         return {}
 
@@ -339,10 +356,10 @@ class EventStore:
         try:
             status, _, retry = self.sender(owner, config["url"], body, headers,
                                            retry_after=True)
-        except PermissionError:  # the owner's egress refused the host: nothing left
-            return "failed", {"reason": "egress_refused"}
-        except Exception:  # a byte may have left; never replayed (no URL, key or body here)
-            return "unknown", {}
+        except Exception as exc:  # no URL, key or body in the detail
+            if getattr(exc, "before_connect", False):  # refused before any connection
+                return "failed", {"reason": "not_sent"}
+            return "unknown", {}  # a byte may have left; never replayed
         if 200 <= status < 300:
             return "sent", {"status": status}
         if status == 429:
@@ -591,7 +608,7 @@ def router_operation(store, identities, doc, *, agents=None):
     if doc["action"] == "subscribe":
         return store.subscribe(owner, doc["params"], authority=authority, agents=agents)
     if doc["action"] == "unsubscribe":
-        return store.unsubscribe(owner, doc["params"])
+        return store.unsubscribe(owner, doc["params"], authority=authority)
     raise ValueError("invalid MCP events request")
 
 

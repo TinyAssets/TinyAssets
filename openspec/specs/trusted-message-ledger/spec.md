@@ -56,7 +56,8 @@ agent SHALL take its client and family from the caller's verified `outside_origi
 SHALL be refused while that is absent. One outside identity SHALL be at most one enabled
 agent. Only `pull` and `mcp_event` delivery SHALL be admitted; `routine_fire` and `webhook`
 SHALL be refused until S9 (they wait for the credential-vault reshape, decided 2026-10-25) and
-`a2a` until its own slice.
+`a2a` until its own slice. An `api_key` agent SHALL NOT take `mcp_event`: it cannot
+subscribe to MCP events, so it reads by `pull`.
 
 #### Scenario: Another owner's key
 - **WHEN** an owner registers an `api_key` agent naming a key minted by another owner
@@ -89,14 +90,24 @@ open wake.
 
 ### Requirement: AGENT_WAKE sends once, through the op journal
 S3b, W3. `control_plane/outside_wakes.run_due` SHALL claim due wakes on the broker's shared
-tick (the MCP event delivery pass), never in a box and with no timer of its own, and hand each
-to `AGENT_WAKE`, which SHALL write may-have-sent to the broker's op journal (`broker/ops.py`)
+tick (the MCP event delivery pass), never in a box and with no timer of its own, taking at
+most one due wake per owner per pass and starting each pass after the last owner the previous
+one looked at, so no owner's agents crowd out another's; only an accepted wake SHALL make the
+pass run again. Nothing SHALL be claimed while the broker's `TINYASSETS_OUTSIDE_DENY` is set;
+wakes stay pending until it clears. Each due wake goes to `AGENT_WAKE`, which SHALL write may-have-sent to the broker's op journal (`broker/ops.py`)
 before the first byte leaves through the owner's egress. A 2xx SHALL settle `sent` with a
 `wake_accepted` receipt; a 429 SHALL settle `rate_limited` with `due` pushed by its
 Retry-After and a `rate_limited` receipt, the messages staying queued; another answer or a
-refused egress SHALL settle `failed`. A send with no answer, or one abandoned past its lease
+callback refused before any connection (owner egress, the public-address check, or
+resolution) SHALL settle `failed`. A claim that finds the agent disabled or off `mcp_event`
+SHALL suppress the wake and revoke the agent's callbacks. A send with no answer, or one abandoned past its lease
 whose journal shows a byte may have left, SHALL settle `unknown` with a `wake_sent` receipt
 and SHALL never be replayed; one the journal proves unsent SHALL be due again.
+
+Owed, not built here: revoking an outside client's grant SHALL end its wakes and erase its
+callbacks as disabling the agent does (M3, waits on #5343's broker-held grants, and blocks S31
+reading converged once that lands); bounding `ledger_wakes` growth and the per-pass scan of
+every owner's ledger belong to S4's caps (L5).
 
 #### Scenario: The callback answers 429
 - **WHEN** a wake is answered 429 with Retry-After 120 and another message arrives

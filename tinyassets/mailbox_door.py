@@ -320,8 +320,7 @@ async def _owner(request):
 
 
 async def outside_agents(request):
-    """GET lists; POST registers an owned API key as an agent (``pull`` unless
-    ``delivery_method`` names another; the ledger refuses the unbuilt ones), or disables one."""
+    """GET lists; POST registers an owned API key as a pull agent, or disables an agent."""
     from tinyassets.onboarding import _read_small_json
 
     identity, session, refused = await _owner(request)
@@ -331,15 +330,13 @@ async def outside_agents(request):
         return await _answer(_ledger, identity, "OUTSIDE_AGENTS", "list")
     data = await _read_small_json(request) or {}
     proof = {"session_hash": session["session_hash"]}
-    if set(data) - {"delivery_method"} == {"action", "key_id", "display_name",
-                                           "command_center_id"} and data[
+    if set(data) == {"action", "key_id", "display_name", "command_center_id"} and data[
             "action"] == "register" and all(isinstance(data[key], str) for key in (
                 "key_id", "display_name", "command_center_id")):
         return await _answer(_ledger, identity, "OUTSIDE_AGENTS", "register",
                              session_proof=proof, command_center_id=data["command_center_id"],
                              source="api_key", source_ref=data["key_id"],
-                             display_name=data["display_name"],
-                             delivery_method=data.get("delivery_method", "pull"),
+                             display_name=data["display_name"], delivery_method="pull",
                              recipe_id=None)
     if set(data) == {"action", "agent_id", "reason"} and data["action"] == "disable" and all(
             isinstance(data[key], str) for key in ("agent_id", "reason")):
