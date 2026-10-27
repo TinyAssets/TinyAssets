@@ -191,7 +191,7 @@ def _log_token_rejection(category: str) -> None:
 _CLAIM_SHAPE_LOG_WINDOW_SECONDS = 1800.0
 _CLAIM_SHAPE_CAP = 64
 _claim_shape_log_lock = threading.Lock()
-_claim_shape_log_state: dict[tuple, tuple[float, int]] = {}
+_claim_shape_log_state: dict[tuple, float] = {}
 # Only names on this list are logged; any other name could itself carry data.
 _KNOWN_CLAIMS = frozenset({
     "act", "amr", "appid", "aud", "auth_time", "azp", "cid", "client_id", "email",
@@ -211,13 +211,15 @@ def _log_claim_shape(token: str, claims: dict[str, Any]) -> None:
 
 
 def _emit_claim_shape(token: str, claims: dict[str, Any]) -> None:
-    from tinyassets.observability import emit
+    from tinyassets.observability import current_client_kind, emit
 
     client, issuer = claims.get("client_id"), claims.get("iss")
     has_client = isinstance(client, str) and bool(client)
     app_client = os.environ.get("TINYASSETS_ONBOARDING_APP_CLIENT_ID", "").strip()
     typ = jwt.get_unverified_header(token).get("typ")
     shape = {
+        # Which product is calling (claude, chatgpt, ...), a fixed set: labels the tags.
+        "client_kind": current_client_kind(),
         "claim_keys": sorted(k for k in claims if k in _KNOWN_CLAIMS),
         "unknown_claims": sum(1 for k in claims if k not in _KNOWN_CLAIMS),
         "client_id_present": has_client,
@@ -233,16 +235,12 @@ def _emit_claim_shape(token: str, claims: dict[str, Any]) -> None:
     key = tuple(tuple(v) if isinstance(v, list) else v for v in shape.values())
     now = _rejection_log_now()
     with _claim_shape_log_lock:
-        for stale in [k for k, (t, _) in _claim_shape_log_state.items()
+        for stale in [k for k, t in _claim_shape_log_state.items()
                       if now - t >= _CLAIM_SHAPE_LOG_WINDOW_SECONDS]:
             del _claim_shape_log_state[stale]
-        if key in _claim_shape_log_state:
-            last_logged, suppressed = _claim_shape_log_state[key]
-            _claim_shape_log_state[key] = (last_logged, suppressed + 1)
+        if key in _claim_shape_log_state or len(_claim_shape_log_state) >= _CLAIM_SHAPE_CAP:
             return
-        if len(_claim_shape_log_state) >= _CLAIM_SHAPE_CAP:
-            return
-        _claim_shape_log_state[key] = (now, 0)
+        _claim_shape_log_state[key] = now
     # No request context: it would carry the account id (the token subject).
     emit("token_claim_shape", session_id=None, trace_id=None, context=None, **shape)
 
