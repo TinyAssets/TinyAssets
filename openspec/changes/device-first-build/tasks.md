@@ -1,4 +1,4 @@
-Build order is the founder's 2026-10-26 re-sequence: "Trusted front → S3a ledger → S5a collections → P0-3 code → S3b events → ADR-030 tool-by-tool → S2a loop worker → S4/S5b", then the plan's later slices.
+Build order is the founder's 2026-10-26 re-sequence: "Trusted front → S3a ledger → S5a collections → P0-3 code → S3b events → ADR-030 tool-by-tool → S2a loop worker → S4/S5b", then the plan's later slices. "ADR-030 tool-by-tool" is the "Owner-bound serving" slice below, since the founder's isolation decision of 2026-10-27.
 
 Each slice below carries its row of the plan's Build slices table ("TinyAssets — Agents
 Everywhere, Device-First: Architecture Plan", Code spec tab): Requirement IDs, Ships, Deletes,
@@ -121,19 +121,21 @@ S3a's row above.
   converged once #5343 lands); L5, bounding `ledger_wakes` growth and the per-pass scan of
   every owner's ledger (S4 caps).
 
-## ADR-030 tool by tool
+## Owner-bound serving
 
-ADR-030 (accepted): owner MCP, app and `/api` requests are served on the trusted side through `BoxProvider` calls.
+- **Requirement IDs:** A9 (ADR-030), Direction 5; registry row S36
+- **Ships:** owner-bound broker channels and one-owner workers; a remote `BoxProvider` driver; owner tools and platform stores moved to the trusted side, one by one
+- **Deletes:** the owner-channel `principal` field below the binders; `owner_daemon`'s app-server path, `OwnerIngress`'s HTTP surface and `TRUSTED.box_routes`
+- **Live acceptance:** a forged principal from a worker is refused; a worker cannot open a broker connection by itself; box memory falls to the harness's size in the metering receipts
+- **Depends on:** S1. Built before S2a, whose loop worker uses the same channels.
 
-- [ ] Move each owner tool and app route to the trusted side as a trusted-front registration, one by one; the box keeps tools, user code and owner files.
+ADR-030 (accepted; isolation decided by the founder 2026-10-27): a binder opens a broker connection bound to one owner and one verified caller, and passes it by file descriptor to a worker that serves that owner only, under a uid with no broker role. In this order, so nothing moves twice:
 
-ADR-030's isolation decision (founder, 2026-10-27): a shared router authenticates and routes; each request is served by a shared worker holding only a broker connection bound to that owner by file descriptor, as the box channel is. Built before the loop worker, which uses the same channels.
-
-- [ ] Owner-bound broker channels: the router opens a connection bound to one owner and hands it to a worker under a uid with no broker role; the owner-channel `principal` parameter is deleted below the router. The trusted-front doors (`mailbox_door`, `room_door`, the board) move onto it.
-- [ ] Platform stores on the owner volume move to the owner's broker store, one per PR, with the matching ADR-030 tool move.
+- [ ] Owner-bound channels: a broker binding role for the router (it switches once to a bound connection before the descriptor is handed over, since peer credentials on a passed socket still name the router); the worker deploy unit with its own uid and no access to the data volume, router secrets or `owner-sessions.db`; a pre-imported parent that forks one worker per owner, sized and admitted against the droplet's memory; metering of worker time and memory (N12); guard S36. The trusted-front doors (`mailbox_door`, `room_door`, the board) move onto it.
 - [ ] A remote `BoxProvider` driver for owner files, so trusted code reads and writes them without the app server in the box.
+- [ ] Each owner tool and app route moves to the trusted side as a trusted-front registration served by a one-owner worker, with any platform store it uses moved to the owner's broker store, backup-first, its migration in the same PR; the box keeps tools, user code and owner files.
 - [ ] `owner_daemon`'s app-server path, `OwnerIngress`'s HTTP surface and `TRUSTED.box_routes` deleted once nothing is forwarded.
-- [ ] Later: the broker verifies owner sessions and API keys itself, so the bound owner comes from the credential (ADR-022 residual).
+- [ ] Later: the broker verifies owner sessions and API keys itself, so the router's binding comes from the credential (ADR-022 residual).
 
 ## S2a Loop worker
 

@@ -4,11 +4,13 @@
 
 Accepted (founder, 2026-10-26). The deferral in #5324 is withdrawn: on
 2026-10-27T01:23Z the founder said to "review the doc and build only the
-correct architecture", and the plan records this decision as A9. Amends ADR-019
-and ADR-022 on what a box runs.
+correct architecture", and the plan records this decision as A9.
 
-How owner serving is isolated: decided by the founder on 2026-10-27 (the
-hybrid below), after the research recorded under Evidence.
+How owner serving is isolated was decided by the founder on 2026-10-27 (the
+owner-bound channels below), after the research recorded under Evidence.
+
+Amends ADR-019 and ADR-022 on what a box runs, ADR-023 on how the loop worker
+reaches the broker, and ADR-025 on who records messages.
 
 ## Date
 
@@ -25,66 +27,92 @@ that is reading and writing owner files.
 
 Once serving leaves the box, something on the trusted side must keep owners
 apart. Today the router runs as one uid for every owner and names the owner
-as a `principal` parameter on the broker's owner channel
-(`broker/client.py`, `broker/process.py` roles), so any handler bug can read
-another owner's stores. The box channel already binds one owner to a
-connection: boxhostd's per-uid relay opens `BOX_CHANNEL` and the broker fixes
-the connection to that owner.
+as a `principal` field on the broker's owner channel (`broker/client.py`),
+and the broker accepts any principal from that uid (`broker/process.py`
+roles, `broker/server.py`). So any handler bug can reach another owner's
+stores. The box channel is already bound to one owner: boxhostd's per-uid
+relay opens `BOX_CHANNEL` (`boxes/relay.py`) and the broker fixes the
+connection to that owner, which it can't rebind.
 
 ## Decision
 
 - **The box runs a slim harness:** the four tools, user customizations at
   their extension points, vendor CLIs (paid tier) and owner files. It never
   builds the app server.
-- **Owner requests are served on the trusted side.** The router and loop
-  worker answer owner MCP, app and `/api` requests, and touch owner files
-  only through `BoxProvider` calls.
+- **Owner requests are served on the trusted side.** The router
+  authenticates and routes. Owner workers and the loop worker do the
+  serving, and touch owner files only through `BoxProvider` calls.
 - **The split rule:** code that must run as the owner (user code, shells,
   CLIs) stays in the box. Trusted code that only reads or writes owner data
   runs outside and calls in.
-- **Owners are kept apart by owner-bound broker channels.**
-  - The shared router authenticates the caller and routes. It holds no
-    handler code.
-  - For each request it opens a broker connection bound to that one owner,
-    as the box channel already is, and passes it to a shared worker by file
-    descriptor.
-  - The worker that serves the request runs under a uid with no broker role
-    of its own, so it can reach only the owner whose connection it holds.
-    The owner is never a request field below the router.
-  - The router's choice of owner is the one application-level trust root. It
-    is kept small (authentication, identity, routing).
-  - Later step: the broker verifies the end-user credential itself (owner
-    sessions and API keys move into broker custody), so the owner a
-    connection is bound to comes from the credential. ADR-022's residual
-    (the daemon-writable owner-session table) already owes this move.
-- **Per-owner trusted state stays one store per owner** in the broker
+- **Owners are kept apart by owner-bound broker channels and one-owner
+  workers.**
+  - A *binder* opens a broker connection bound to one owner and one verified
+    caller. The broker fixes both and never lets the connection rebind, as
+    it does for the box channel. The binder passes the connection by file
+    descriptor to a worker.
+  - **A worker serves one owner for its whole life.** It is forked from a
+    pre-imported parent, runs under a uid with no broker role (so it can't
+    open a broker connection of its own), and exits rather than serve a
+    second owner. Separation between owners in workers is therefore
+    enforced by the OS (the process boundary and the broker's peer
+    credentials), not by application checks.
+  - Below the binder, no op names the owner or the caller as a field.
+- **Who binds:**
+  - The router binds for owner MCP, app and `/api` requests.
+  - boxhostd binds box channels, as today.
+  - The broker binds for loop-worker turns it dispatches (wakes, scheduled
+    turns, resumed held turns), from its own ledger.
+  - Ops that stay on the router's all-owner channel, because they precede or
+    span owners: `INBOUND_VERIFY`, `ADMIT_OWNER`, `OWNER_IDENTITY`,
+    `DELETION_JOB`, `BILLING_PLAN` and `OWNER_BOX_WAKE`. Each owner-scoped op
+    (`OWNER_POLICY`, `MCP_EVENTS`, `OUTSIDE_AGENTS`, `ROOM_POST`,
+    `MAILBOX_RECEIPT`, `COLLECTION`) moves to the bound channel.
+- **Cross-user requests.** A bound channel carries both the store owner and
+  the verified caller: a visitor in a published app's room is bound to the
+  publisher's store with the visitor as caller, and an outside agent is
+  bound to its owner's store with its `outside_origin` as caller. Delivery
+  between two owners is a broker op whose two owners come from the bound
+  channel and the published directory, never from a request field; its
+  slice specifies it.
+- **The trust root.** Binders choose owners in application code. Keep them
+  small: authentication, identity, routing and dispatch. Later, the broker
+  verifies the end-user credential itself (owner sessions and API keys move
+  into broker custody), so the router's binding comes from the credential.
+  ADR-022's residual (the daemon-writable owner-session table) already owes
+  this move.
+- **Per-owner trusted state is one store per owner** in the broker
   (ADR-025's `.broker/accounts/<sha256(owner)>/`). Platform stores on the
-  owner volume move there; owner files are reached only through
-  `BoxProvider`.
+  owner volume move there, each backup-first with its migration in the same
+  PR. Owner files are reached only through `BoxProvider`.
 - **Not chosen:**
-  - A trusted server process per owner. No market leader runs one. On the
-    one droplet only about 20 to 30 could be awake at once, and the router's
-    choice of owner would still be an application check.
-  - One shared server that names the owner as a parameter. That is today's
-    shape, and the bug class behind the cross-tenant leaks listed under
-    Evidence.
+  - A long-lived trusted server process per owner, run like a box. No
+    surveyed agent platform runs a trusted control-plane process per user,
+    and on one `s-4vcpu-8gb` droplet (ADR-022 G3 and the memory limits in
+    `deploy/compose.yml`) it would cap how many owners can be served at
+    once. The binder still chooses the owner either way.
+  - One shared server that names the owner as a field. That is today's
+    shape, and it is the bug class behind the cross-tenant leaks listed
+    under Evidence.
 
 ## Consequences
 
 - Cold start and awake memory drop to the harness's size. ADR-026's class
-  reservations are measured again (registry row N12, metering).
+  reservations are measured again (registry row N12, metering), and
+  metering adds per-owner worker time and memory.
 - `owner_daemon`'s app-server path is deleted, and with it the box-ingress
   websocket pass-through.
 - Requests that don't touch owner files (status, messaging, rooms) never
   wake a box.
-- A handler bug or a compromised worker reaches only the owners whose
-  requests it holds, never every owner's stores.
+- A handler bug or a compromised worker reaches only the one owner that
+  worker was bound to.
 - The trusted-front doors (`mailbox_door`, `room_door`, the board) move from
-  a `principal` parameter to the owner-bound channel. Their logic is
-  unchanged.
-- The loop worker (ADR-023, S2a) uses the same owner-bound channels.
-- Build order: `openspec/changes/device-first-build/` (slice "Owner-bound
-  serving").
+  a `principal` field to the bound channel. Their logic is unchanged.
+- Registry rows S30 and S34 ("reached only by the router's owner-channel
+  ops") read "reached only through a bound channel" once that lands.
+- New registry row S36 holds the shape and its guard.
+- Build order: `openspec/changes/device-first-build/` (the "Owner-bound
+  serving" slice, before S2a).
 
 ## Evidence
 
@@ -99,27 +127,34 @@ that day.
   - Devin: https://docs.devin.ai/enterprise/vpc/overview
   - Codex cloud: https://developers.openai.com/codex/cloud/environments
   - Manus: https://manus.im/blog/manus-sandbox
-- **One isolated store per tenant:**
-  - Cloudflare Durable Objects:
+- **Per-tenant compute holding its own state:**
+  - Cloudflare Durable Objects (an actor and private SQLite per object):
     https://developers.cloudflare.com/durable-objects/platform/limits and
     https://blog.cloudflare.com/sqlite-in-durable-objects (2024-09-26)
-  - Fly.io: https://fly.io/docs/machines/guides-examples/one-app-per-user-why/
-  - Turso: https://turso.tech/blog/multi-tenancy-at-scale
+  - Fly.io, one app per customer:
+    https://fly.io/docs/machines/guides-examples/one-app-per-user-why/
+  - Turso, one database per tenant: https://turso.tech/blog/multi-tenancy-at-scale
 - **Credentials scoped at a gateway or proxy:**
   - Anthropic, as above.
   - AWS token vending:
     https://aws.amazon.com/blogs/security/how-to-implement-saas-tenant-isolation-with-abac-and-aws-iam
-- **No surveyed leader documents a trusted server process per user.**
+- **NVIDIA OpenShell** (https://github.com/NVIDIA/OpenShell, Apache-2.0,
+  v0.1.6 on 2026-10-27):
+  - It runs a trusted supervisor per sandbox and keeps tenants apart by role
+    checks in a shared gateway, control plane only (its RFC 0011).
+  - Its runtime does not support gVisor, and its agent loop runs inside the
+    sandbox.
+  - Its placeholder credentials swapped at the egress proxy, and its
+    revisioned network policy, are recorded in `ideas/PIPELINE.md`.
 - **Cross-tenant leaks from a missing owner check in a shared service:**
-  - Asana MCP server:
+  - Asana MCP server (2025):
     https://www.bleepingcomputer.com/news/security/asana-warns-mcp-ai-feature-exposed-customer-data-to-other-orgs/
-  - Langflow CVE-2026-55255: https://blog.securelayer7.net/cve-2026-55255-langflow-idor/
-  - Twenty CVE-2026-55583: https://www.rapid7.com/db/vulnerabilities/cve-2026-55583/
-  - OpenAI, 2023-03-20: https://openai.com/index/march-20-chatgpt-outage/
+  - OpenAI, 2023-03-20 (a shared connection served to the wrong user):
+    https://openai.com/index/march-20-chatgpt-outage/
+  - Langflow and Twenty IDOR advisories (2026), from secondary sources.
 - **The TinyAssets side**, read on main 8b415f569:
-  - the owner channel names the owner as a parameter: `broker/client.py`
+  - the owner channel names the owner as a field: `broker/client.py`
     (the request's `principal`), `broker/process.py` (roles by uid);
   - the box channel binds the owner: `boxes/relay.py`, `broker/server.py`
     `BOX_CHANNEL`;
-  - capacity: one `s-4vcpu-8gb` droplet, about 3 GiB for awake per-owner
-    memory.
+  - capacity: one `s-4vcpu-8gb` droplet (ADR-022).

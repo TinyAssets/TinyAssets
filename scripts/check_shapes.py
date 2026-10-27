@@ -296,6 +296,7 @@ SHAPES: dict[str, Shape] = {
     "S32": Shape(("tinyassets/broker/server.py",)),  # ROOM_POST
     "S33": Shape(("tinyassets/live_view.py",)),
     "S35": Shape(("tinyassets/agent_loop/**",)),
+    "S36": Shape(("tinyassets/broker/client.py", "tinyassets/broker/server.py")),  # owner-bound
     "N12": Shape(("tinyassets/metering/**",)),
 }
 
