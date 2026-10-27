@@ -307,7 +307,46 @@ def test_a_box_route_keeps_only_its_forwarded_methods():
 
 
 @pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
-def test_app_trace_is_answered_by_the_router_while_the_box_sleeps(
+def test_a_route_that_cannot_narrow_faithfully_refuses_the_build():
+    from starlette.middleware import Middleware
+    from starlette.routing import Mount, Route
+
+    async def endpoint(request):
+        pass
+
+    class App:  # an ASGI class: its route takes any method
+        async def __call__(self, scope, receive, send):
+            pass
+
+    asgi = App()
+
+    class Special(Route):
+        pass
+
+    class Wrap:
+        def __init__(self, app):
+            self.app = app
+
+    front = owner_router.TrustedFront()
+    front.app("/app/x", "POST")
+    front.app("/app/any")
+    for route in (Special("/app/x", endpoint, methods=["GET", "POST"]),
+                  Route("/app/x", endpoint, methods=["GET", "POST"],
+                        middleware=[Middleware(Wrap)])):
+        with pytest.raises(ValueError, match="cannot be narrowed"):
+            front.box_routes([route])
+    # A method-less route or mount goes whole or not at all, never on one method.
+    with pytest.raises(ValueError, match="any method"):
+        front.box_routes([Route("/app/x", asgi)])
+    with pytest.raises(ValueError, match="any method"):
+        front.box_routes([Mount("/app/x", app=asgi)])
+    kept = front.box_routes([Route("/app/any", asgi), Route("/app/free", asgi),
+                             Special("/app/any", endpoint, methods=["GET"])])
+    assert [route.path for route in kept] == ["/app/free"]
+
+
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
+def test_the_router_answers_app_trace_and_slashes_while_the_box_sleeps(
         tmp_path, monkeypatch, caplog, cloud_runtime):  # noqa: F811
     import logging
 
@@ -353,3 +392,16 @@ def test_app_trace_is_answered_by_the_router_while_the_box_sleeps(
         anonymous = client.post("/app/trace", json=step)
         assert anonymous.status_code == 401 and "www-authenticate" in anonymous.headers
         assert anonymous.json()["error"] == "authentication_required"
+        # The box redirected an exact app path spelled with a trailing slash
+        # (Starlette's redirect_slashes); the router's own table does the same.
+        for method, path, exact in (("GET", "/app/?x=1", "/app?x=1"),
+                                    ("POST", "/app/owner/restore/?a=b", "/app/owner/restore?a=b"),
+                                    ("GET", "/app/api/policy/", "/app/api/policy")):
+            moved = client.request(method, path, headers=bearer, follow_redirects=False)
+            assert moved.status_code == 307, path
+            assert moved.headers["location"] == "http://testserver" + exact
+    # Only an exact /app registration: a subtree already covers its slash, and
+    # the /api registrations never had a box route to redirect.
+    assert not owner_router.TRUSTED._slashed("/api/mailbox/", "GET")
+    assert not owner_router.TRUSTED._slashed("/app/trace/", "GET")
+    assert owner_router.TRUSTED._slashed("/app/trace/", "POST")

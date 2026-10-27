@@ -106,7 +106,8 @@ class TrustedFront:
         """What a box mounts of ``routes``: each loses the methods registered here (ADR-030).
 
         The router never forwards a registered request, so the box never builds
-        its route. A route left with no method is dropped whole.
+        its route. A route left with no method is dropped whole. A route this
+        cannot narrow faithfully refuses the build instead of changing shape.
         """
         from starlette.routing import Route
 
@@ -116,14 +117,31 @@ class TrustedFront:
             if methods is None:  # Any method, or a mount: all or nothing.
                 if self._app(route.path, None) is None:
                     kept.append(route)
+                elif self._app(route.path, ANY) is None:
+                    raise ValueError(f"{route.path} takes any method; register all or none")
                 continue
             left = sorted(verb for verb in methods if self._app(route.path, verb) is None)
             if len(left) == len(methods):
                 kept.append(route)
             elif left:
-                kept.append(Route(route.path, route.endpoint, methods=left, name=route.name,
-                                  include_in_schema=route.include_in_schema))
+                narrowed = Route(route.path, route.endpoint, methods=left, name=route.name,
+                                 include_in_schema=route.include_in_schema)
+                # Rebuilt from its endpoint, a subclass or route middleware would be lost.
+                if type(route) is not Route or _shape(route.app) != _shape(narrowed.app):
+                    raise ValueError(f"{route.path} cannot be narrowed to {left}")
+                kept.append(narrowed)
         return kept
+
+    def _slashed(self, path, method):
+        """An exact ``/app`` registration spelled with a trailing ``/``.
+
+        The box redirected it to the exact path (Starlette ``redirect_slashes``);
+        the router's own table, which holds that path, redirects it the same way.
+        ``/api`` registrations never had a box route, so their spelling stays a 404.
+        """
+        exact = path.rstrip("/")
+        return path != exact and exact.startswith("/app") and any(
+            key == exact and verb in {method, ANY} for key, verb in self.app_routes)
 
     def _app(self, path, method):
         """The registration answering ``method`` on ``path``; ``method=None`` asks for any."""
@@ -145,6 +163,8 @@ class TrustedFront:
         """
         path, method = scope["path"], scope["method"]
         trusted = self._app(path, method)
+        if trusted is None and self._slashed(path, method):
+            trusted = Trusted(_shared_default, owner=False)
         if trusted is not None or not _door(path):
             return trusted or Trusted(_shared_default, owner=False), receive
         if path not in _MCP or method != "POST":
@@ -174,6 +194,11 @@ def _covers(key, path):
     keys, parts = key.split("/"), path.split("/")
     return len(keys) == len(parts) and all(
         k == p or k == "*" and p for k, p in zip(keys, parts))
+
+
+def _shape(app):
+    """What a route runs, by kind: a plain endpoint wrapper or what wraps it."""
+    return type(app), getattr(app, "__qualname__", None)
 
 
 def mcp_key(document):
