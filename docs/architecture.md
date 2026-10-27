@@ -47,7 +47,7 @@ beside `cloudflared` and a log shipper.
 |---|---|
 | `tinyassets/serve.py` | Container entry point. Keeps spawn children light, then starts the server. |
 | `tinyassets/universe_server.py` | The remote MCP server: canonical handles, prompts, `/app` mounting. |
-| `tinyassets/mcp_events_http.py`, `tinyassets/mcp_events.py`, `tinyassets/broker/mcp_events.py` | MCP 2.0 adapter; the router's `events/subscribe` door; subscriptions, deliveries and callbacks in the broker; the box's terminal-run report. |
+| `tinyassets/mcp_events_http.py`, `tinyassets/mcp_events.py`, `tinyassets/broker/mcp_events.py` | MCP 2.0 adapter; the `events/subscribe` door the router's registry answers; subscriptions, deliveries and callbacks in the broker; the box's terminal-run report. |
 | `tinyassets/engine_mcp_server.py` | The same handles, served locally to the command-center agent's own turn. |
 | `tinyassets/__main__.py` | The domain CLI (`tinyassets-cli`). |
 | `tinyassets/desktop/` | The mark geometry, plus dashboard and tray helpers still imported by the shipped domain CLI. |
@@ -103,6 +103,7 @@ beside `cloudflared` and a log shipper.
 | Path | Owns |
 |---|---|
 | `tinyassets/boxes/` | `BoxProvider`, the only way to touch a command center's files or run its code. |
+| `tinyassets/owner_router.py` | The shared door: from the verified identity, its `TRUSTED` registry (MCP method, tool and target; app path and method) answers on the trusted side; every other request reaches the owner's box unchanged. |
 | `tinyassets/control_plane/` | Lease, triggers, scheduler tick, wake path. |
 | `tinyassets/owner_lease.py`, `tinyassets/storage/owner_fence.py` | The execution owner's lease and fence. |
 
@@ -158,7 +159,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | S5 | One agent definition (Dir 2, ADR-014) | `agents/<name>/` files, read by `agent_definition.py` (instructions, settings, identity) | none: the SQL agent store, interchange, templates, platform review, `harness_settings.py` and the `agent_runtime_manifest` kind were deleted by C8; `commons_catalog.py` keeps the published-system catalogue and the binding rows (serving provider, conversation design), neither an agent | converged | `check_shapes.py` S5, `test_one_agent_definition`, `test_agent_files` | C8 (done) |
 | S6 | One extension unit (Dir 2) | v2 activated revisions (`extension_manifest.py`) | none; standalone node registration and v1 discovery deleted | converged | `test_one_extension_unit`, `check_shapes.py` S6 | C10 |
 | S7 | Four tools + `ta` (Dir 2) | `universe_tools.py`, `ta_cli.py`; one registration in `control_plane/registration.py` | none; tool implementations share request-local binding, no cloned server modules | converged | `check_shapes.py` S7, `test_served_tool_guidance`, `test_converse_turn_cost` | C10 |
-| S8 | One box per owner (ADR-019, Dir 5) | `BoxProvider` (`boxes/`), attached once at admission; today the box also serves the owner's MCP, app and `/api` requests (`owner_daemon`); ADR-030 serves them on the trusted side, leaving tools, user code and owner files in the box, and ADR-025 moves messaging state out. The cross-user floor is still owed here: the box's shell can write its own action rules until N10 converges | none: the `role_*` cells were removed with the C6 cutover | converged | `test_universe_path_io_guard`; `check_shapes.py` S8 | C6 |
+| S8 | One box per owner (ADR-019, Dir 5) | `BoxProvider` (`boxes/`), attached once at admission; today the box also serves the owner's MCP, app and `/api` requests (`owner_daemon`); ADR-030 serves them on the trusted side, leaving tools, user code and owner files in the box, and ADR-025 moves messaging state out. The cross-user floor is still owed here: the box's shell can write its own action rules until N10 converges | none: the `role_*` cells were removed with the C6 cutover | converged | `test_universe_path_io_guard`; `check_shapes.py` S8; `test_trusted_front` (the router answers only through its registry) | C6 |
 | S9 | Control plane is the only always-on layer (ADR-012) | `control_plane/` | One leased owner tick handles schedules, source events, automations, activities and protected wakes; the v1 scheduler, dispatcher, producers and continuation loops are removed | converged | `test_control_plane_inventory` | C7 |
 | S10 | Platform state outside boxes (ADR-012) | `storage/` stores | 27 declarations (26 still initialized together; shared homes unresolved) | drifted | `test_storage_schema`, `test_storage_registry(_complete)`, `test_owner_stores` | C6 |
 | S11 | Owner door complete, model door bounded (ADR-011) | `owner_door/`, `/app/api/*` | none | converged | `test_owner_door_import_boundary`, `test_app_reads_use_owner_door` | — |
