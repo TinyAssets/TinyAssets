@@ -42,14 +42,9 @@ def origin(claims):
     authenticated_at = claims.get("auth_time")
     if type(authenticated_at) is not int or authenticated_at <= 0:
         raise OutsideRefused("verified interactive authentication time missing")
-    return {"client": evidence_digest(issuer, client),
-            "family": evidence_digest(issuer, family),
+    return {"client": hashlib.sha256((issuer + "\0" + client).encode()).hexdigest(),
+            "family": hashlib.sha256((issuer + "\0" + family).encode()).hexdigest(),
             "authenticated_at": authenticated_at}
-
-
-def evidence_digest(issuer, value):
-    """The stored, value-free form of one verified claim under its issuer."""
-    return hashlib.sha256((issuer + "\0" + value).encode()).hexdigest()
 
 
 class OutsideClientAuthority:

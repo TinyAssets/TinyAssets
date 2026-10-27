@@ -14,12 +14,12 @@ Design + live staging values: ``docs/reference/workos-authkit-integration.md``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import threading
 import time
-from collections import OrderedDict
 from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -186,48 +186,65 @@ def _log_token_rejection(category: str) -> None:
 
 # One trail event per verified claim shape, so the outside-client claim is read
 # from live traffic. 30 minutes puts each live shape inside any one-hour
-# unfiltered fetch-prod-logs window. Bounded: the oldest shape is forgotten.
+# unfiltered fetch-prod-logs window. At most _CLAIM_SHAPE_CAP lines per window:
+# a full table drops new shapes rather than evicting (and re-logging) old ones.
 _CLAIM_SHAPE_LOG_WINDOW_SECONDS = 1800.0
 _CLAIM_SHAPE_CAP = 64
 _claim_shape_log_lock = threading.Lock()
-_claim_shape_log_state: OrderedDict[tuple, tuple[float, int]] = OrderedDict()
-_CLAIM_KEY = re.compile(r"[A-Za-z0-9_:./-]{1,64}")
+_claim_shape_log_state: dict[tuple, tuple[float, int]] = {}
+# Only names on this list are logged; any other name could itself carry data.
+_KNOWN_CLAIMS = frozenset({
+    "act", "amr", "appid", "aud", "auth_time", "azp", "cid", "client_id", "email",
+    "email_verified", "entitlements", "exp", "feature_flags", "iat", "iss", "jti",
+    "name", "nbf", "nonce", "org_id", "permissions", "role", "roles", "scope", "scp",
+    "sid", "sub", "typ",
+})
 _TOKEN_TYPE = re.compile(r"[A-Za-z0-9+._-]{1,32}")
 
 
 def _log_claim_shape(token: str, claims: dict[str, Any]) -> None:
-    """Emit claim key names and the outside-client hash; never a claim value."""
+    """Emit claim key names and a log-only client digest; never a claim value."""
+    try:
+        _emit_claim_shape(token, claims)
+    except Exception as exc:  # A receipt never changes whether a token verifies.
+        logger.warning("token claim shape receipt failed: %s", type(exc).__name__)
+
+
+def _emit_claim_shape(token: str, claims: dict[str, Any]) -> None:
     from tinyassets.observability import emit
-    from tinyassets.outside_authority import evidence_digest
 
     client, issuer = claims.get("client_id"), claims.get("iss")
     has_client = isinstance(client, str) and bool(client)
     app_client = os.environ.get("TINYASSETS_ONBOARDING_APP_CLIENT_ID", "").strip()
     typ = jwt.get_unverified_header(token).get("typ")
     shape = {
-        "claim_keys": sorted(
-            {k if isinstance(k, str) and _CLAIM_KEY.fullmatch(k) else "?" for k in claims}
-        ),
+        "claim_keys": sorted(k for k in claims if k in _KNOWN_CLAIMS),
+        "unknown_claims": sum(1 for k in claims if k not in _KNOWN_CLAIMS),
         "client_id_present": has_client,
         "first_party": has_client and client == app_client,
-        "client_hash": (evidence_digest(issuer, client)
-                        if has_client and isinstance(issuer, str) else None),
+        # Own salt and truncated: tells clients apart without matching any
+        # stored outside_origin digest.
+        "client_tag": (hashlib.sha256(
+            ("token_claim_shape\0" + str(issuer) + "\0" + client).encode(
+                "utf-8", "surrogatepass")).hexdigest()[:12] if has_client else None),
         "token_type": (typ if isinstance(typ, str) and _TOKEN_TYPE.fullmatch(typ)
                        else "other" if typ else "none"),
     }
     key = tuple(tuple(v) if isinstance(v, list) else v for v in shape.values())
     now = _rejection_log_now()
     with _claim_shape_log_lock:
-        last_logged, suppressed = _claim_shape_log_state.pop(key, (float("-inf"), 0))
-        if now - last_logged < _CLAIM_SHAPE_LOG_WINDOW_SECONDS:
+        for stale in [k for k, (t, _) in _claim_shape_log_state.items()
+                      if now - t >= _CLAIM_SHAPE_LOG_WINDOW_SECONDS]:
+            del _claim_shape_log_state[stale]
+        if key in _claim_shape_log_state:
+            last_logged, suppressed = _claim_shape_log_state[key]
             _claim_shape_log_state[key] = (last_logged, suppressed + 1)
             return
+        if len(_claim_shape_log_state) >= _CLAIM_SHAPE_CAP:
+            return
         _claim_shape_log_state[key] = (now, 0)
-        while len(_claim_shape_log_state) > _CLAIM_SHAPE_CAP:
-            _claim_shape_log_state.popitem(last=False)
     # No request context: it would carry the account id (the token subject).
-    emit("token_claim_shape", session_id=None, trace_id=None, context=None,
-         suppressed=suppressed, **shape)
+    emit("token_claim_shape", session_id=None, trace_id=None, context=None, **shape)
 
 
 def derive_endpoints(authkit_domain: str) -> tuple[str, str]:
