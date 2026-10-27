@@ -245,23 +245,23 @@ class VolumeLifecycle:
         return await self._finish_restore(owner)
 
     async def prune(self, owner):
-        record = self.volume(owner)
-        retained = {record["snapshot_id"]}
-        for snapshot in self.volume(owner, "snapshots"):
-            if len(retained) < 7:
-                retained.add(snapshot["snapshot_id"])
-        # The selected source is an operation reference, not an eighth permanent slot.
-        work = record["work"] or {}
-        for key in ("restore_snapshot_id", "pre_snapshot_id"):
-            if work.get(key):
-                retained.add(work[key])
-        for snapshot in self.volume(owner, "snapshots"):
-            if snapshot["snapshot_id"] in retained:
-                continue
-            result = await self.host(owner, "delete_snapshots",
-                               snapshot_ids=[snapshot["snapshot_id"]], released=[])
-            if result["deleted"]:
-                self.volume(owner, "forget", snapshot_id=snapshot["snapshot_id"])
+        """Delete excess rows in one host call, and store which ones a backup pins.
+
+        A pinned row is asked again only with a row prune can delete. That
+        call reads the pin catalog anyway, so a pin the backup released since
+        is seen there and the row goes. A pinned row alone asks nothing.
+        """
+        excess = owner_volumes.excess(self.identities, owner)
+        if all(pinned for _, pinned in excess):
+            return
+        snapshot_ids = [snapshot_id for snapshot_id, _ in excess]
+        result = await self.host(owner, "delete_snapshots",
+                                 snapshot_ids=snapshot_ids, released=[])
+        refused = [] if result == {"deleted": True} else result["pinned"]
+        for snapshot_id in snapshot_ids:
+            if snapshot_id not in refused:
+                self.volume(owner, "forget", snapshot_id=snapshot_id)
+        self.volume(owner, "pinned", snapshot_ids=refused)
 
     async def evict(self, owner):
         if self.volume(owner, "evict") is None:

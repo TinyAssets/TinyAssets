@@ -25,6 +25,8 @@ class Images:
         self.locks = defaultdict(threading.RLock)
         self.events = []
         self.fail_upload = False
+        # (uid, snapshot_id) a platform backup manifest pins; None is unreadable.
+        self.pins = set()
 
     @contextmanager
     def operation(self, uid, *, blocking=True, shared=False):
@@ -83,10 +85,15 @@ class Images:
         self.events.append(("delete", uid))
 
     def delete_snapshots(self, uid, snapshot_ids, released):
+        if self.pins is None:
+            raise ValueError("unreadable retained platform backup")
+        refused = [snapshot_id for snapshot_id in snapshot_ids or []
+                   if (uid, snapshot_id) in self.pins and snapshot_id not in released]
         for key in list(self.remote):
-            if key[0] == uid and (snapshot_ids is None or key[1] in snapshot_ids):
+            if (key[0] == uid and key[1] not in refused
+                    and (snapshot_ids is None or key[1] in snapshot_ids)):
                 self.remote.pop(key)
-        return True
+        return refused
 
 
 class Admission:
@@ -246,46 +253,95 @@ def test_platform_pins_are_not_unfinished_snapshot_work(storage):
     bob_ids = [f"{i:032x}" for i in range(100, 109)]
     _seed_snapshots(storage, "alice", alice_ids, current=alice_ids[-1])
     _seed_snapshots(storage, "bob", bob_ids, current=bob_ids[-1])
-    pins = [[alice, alice_ids[0]], [alice, alice_ids[1]],
-            [bob, bob_ids[0]], [bob, bob_ids[1]]]
-    assert owner_volumes.pending_counts(storage.identities)["excess_snapshots"] == 2
-    assert "alice" in owner_volumes.pending(storage.identities, include_running=False)
-    assert owner_volumes.actionable_excess(storage.identities, pins) == 0
-    assert owner_volumes.actionable_excess(
-        storage.identities, [[alice, alice_ids[0]], [bob, bob_ids[0]], [bob, bob_ids[1]]]) == 1
-    _seed_snapshots(storage, "alice", [], current=alice_ids[-1], work={
-        "restore_snapshot_id": alice_ids[0], "pre_snapshot_id": alice_ids[1]})
-    assert owner_volumes.actionable_excess(storage.identities, [
-        [bob, bob_ids[0]], [bob, bob_ids[1]]]) == 0
-    with sqlite3.connect(storage.identities.path) as db:
-        db.execute("UPDATE owner_volumes SET work=NULL WHERE principal='alice'")
-    with pytest.raises(ValueError):
-        owner_volumes.actionable_excess(storage.identities, [[str(alice), alice_ids[0]]])
-
+    storage.volumes.pins = {(alice, alice_ids[0]), (alice, alice_ids[1]), (bob, bob_ids[0])}
     seen = []
     original = storage.lifecycle.execute
 
     def execute(operation, **fields):
         seen.append(operation)
-        if operation == "pins":
-            return {"pinned": pins}
         return original(operation, **fields)
 
     storage.lifecycle.execute = execute
-    assert drive(storage.lifecycle.lifecycle.readiness()) == {"ready": True}
-    assert seen == ["pins"]
-
-    storage.lifecycle.execute = lambda operation, **fields: {
-        "pinned": [[bob, bob_ids[0]], [bob, bob_ids[1]]]}
+    # Unpinned excess is owed until a prune is refused. Readiness asks no host.
+    assert owner_volumes.pending_counts(storage.identities)["excess_snapshots"] == 2
+    assert "alice" in owner_volumes.pending(storage.identities, include_running=False)
     blocked = drive(storage.lifecycle.lifecycle.readiness())
-    assert blocked == {"ready": False, "tasks": 0, "pending": {"excess_snapshots": 1}}
+    assert blocked == {"ready": False, "tasks": 0, "pending": {"excess_snapshots": 2}}
+    assert seen == []
 
-    def broken(operation, **fields):
-        raise RuntimeError("catalog unreadable")
+    drive(storage.lifecycle.prune("alice"))
+    drive(storage.lifecycle.prune("bob"))
+    assert seen == ["delete_snapshots", "delete_snapshots"]
+    assert owner_volumes.excess(storage.identities, "alice") == [
+        (alice_ids[1], True), (alice_ids[0], True)]
+    assert owner_volumes.excess(storage.identities, "bob") == [(bob_ids[0], True)]
+    assert owner_volumes.pending(storage.identities, include_running=False) == []
+    assert drive(storage.lifecycle.lifecycle.readiness()) == {"ready": True}
 
-    storage.lifecycle.execute = broken
-    held = drive(storage.lifecycle.lifecycle.readiness())
-    assert held["ready"] is False and held["pending"]["excess_snapshots"] == 2
+    # A restore source or pre-restore copy is retained, never excess.
+    _seed_snapshots(storage, "alice", [], current=alice_ids[-1], work={
+        "restore_snapshot_id": alice_ids[0], "pre_snapshot_id": alice_ids[1]})
+    assert owner_volumes.excess(storage.identities, "alice") == []
+    with sqlite3.connect(storage.identities.path) as db:
+        db.execute("UPDATE owner_volumes SET work=NULL WHERE principal='alice'")
+
+    # A pinned row alone asks nothing; an unreadable catalog keeps every row.
+    seen.clear()
+    drive(storage.lifecycle.prune("alice"))
+    assert seen == []
+    _seed_snapshots(storage, "alice", ["f" * 32], current=alice_ids[-1])
+    storage.volumes.pins = None
+    with pytest.raises(RuntimeError, match="unreadable"):
+        drive(storage.lifecycle.prune("alice"))
+    assert len(storage.lifecycle.volume("alice", "snapshots")) == 10
+    assert owner_volumes.pending(storage.identities, include_running=False) == ["alice"]
+
+
+def _pin_first_copy_then_publish_past_the_cap(storage):
+    """The 03:00 backup pins the current copy; later publishes overrun it."""
+    start(storage)
+    first = sleep(storage)
+    storage.volumes.pins.add((first["uid"], first["snapshot_id"]))
+    for _ in range(7):
+        start(storage)
+        sleep(storage)
+    return first
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_pinned_row_past_the_cap_never_holds_readiness_or_the_tick(storage, monkeypatch):
+    routing = storage.lifecycle.lifecycle
+    first = _pin_first_copy_then_publish_past_the_cap(storage)
+    assert len(storage.lifecycle.volume("alice", "snapshots")) == 8
+    assert (first["uid"], first["snapshot_id"]) in storage.volumes.remote
+    assert owner_volumes.pending(storage.identities) == []
+    assert drive(routing.readiness()) == {"ready": True}
+
+    started = []
+    routing.server.deletion_jobs = SimpleNamespace(tick=lambda: None)
+    monkeypatch.setattr(routing, "publish", lambda **_: None)
+    monkeypatch.setattr(routing, "start",
+                        lambda owner, operation, **_: started.append(owner))
+    drive(routing.tick())
+    assert started == []
+    assert owner_volumes.excess(storage.identities, "alice") == [(first["snapshot_id"], True)]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_released_pin_is_deleted_by_the_next_prune(storage):
+    first = _pin_first_copy_then_publish_past_the_cap(storage)
+    # Backup retention dropped the manifest. The stored flag still holds.
+    storage.volumes.pins.clear()
+    assert owner_volumes.pending(storage.identities) == []
+    start(storage)
+    sleep(storage)
+    held = storage.lifecycle.volume("alice", "snapshots")
+    assert len(held) == 7
+    assert first["snapshot_id"] not in {row["snapshot_id"] for row in held}
+    assert (first["uid"], first["snapshot_id"]) not in storage.volumes.remote
+    with sqlite3.connect(storage.identities.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM owner_snapshots WHERE pinned=1").fetchone() == (0,)
+    assert owner_volumes.excess(storage.identities, "alice") == []
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C1')

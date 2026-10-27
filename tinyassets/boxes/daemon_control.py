@@ -19,11 +19,8 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     volume_ops = {"create", "snapshot", "restore", "evict", "destroy",
                   "delete_snapshots"}
     # A requested wake may queue for 45 seconds before its 60 second startup.
-    # The broker's own readiness socket allows 5 seconds, and that call is
-    # what asks for pins. Keep the catalog read inside that budget.
     timeout = 5 if operation == "readiness" else (
-        3 if operation == "pins" else (
-            4 * 3600 if operation in volume_ops else 120))
+        4 * 3600 if operation in volume_ops else 120)
     sock, identity = connect(root / "daemon.sock",
                              timeout=timeout)
     with sock:

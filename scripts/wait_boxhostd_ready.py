@@ -7,8 +7,8 @@ no background copy is running or queued. A request wake is not that copy.
 The broker returns it only when admission is open, every lifecycle task has
 finished, and pending() is empty. pending() ignores kind=create and
 kind=running. It still counts snapshot, restore, evict, and erase, plus
-excess snapshots and a cold local volume. Rows a platform backup pins
-are not excess the gate can drain; prune is forbidden to delete them.
+excess snapshots and a cold local volume. A row a platform backup pins
+is stored as pinned when prune is refused, and is not counted.
 
 volumes.snapshot gives rclone --timeout 900s twice: the upload and the
 readback. The cap outlasts that publish. A shorter wait declared the deploy

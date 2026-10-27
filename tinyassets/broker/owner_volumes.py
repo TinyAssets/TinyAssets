@@ -41,9 +41,14 @@ def schema(db):
     db.execute("CREATE TABLE IF NOT EXISTS owner_snapshots ("
                "sequence INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL, "
                "snapshot_id TEXT NOT NULL UNIQUE, snapshot_sha256 TEXT NOT NULL, "
-               "volume_generation INTEGER NOT NULL, published_at REAL)")
+               "volume_generation INTEGER NOT NULL, published_at REAL, "
+               "pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)))")
     _add_column(db, "owner_volumes", "rewind_generation", "INTEGER")
     _add_column(db, "owner_snapshots", "published_at", "REAL")
+    # The last prune that asked to delete this row was refused: a platform
+    # backup pins it. Prune clears it when the pin is gone.
+    _add_column(db, "owner_snapshots", "pinned",
+                "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))")
 
 
 def provision(db, owner, uid):
@@ -102,13 +107,43 @@ def deferred(work, last_published, now):
             and last_published is not None and now - last_published < SNAPSHOT_DEADLINE)
 
 
+def _excess(db, owner, current, work):
+    """(snapshot_id, pinned) for each row past the cap that nothing retains.
+
+    Retained: the current snapshot, then the newest rows until seven, plus an
+    in-flight restore source or pre-restore copy. ``pinned`` is the stored
+    refusal from the last prune that asked to delete the row.
+    """
+    rows = db.execute("SELECT snapshot_id, pinned FROM owner_snapshots WHERE principal=? "
+                      "ORDER BY sequence DESC", (owner,)).fetchall()
+    retained = {current}
+    for snapshot_id, _ in rows:
+        if len(retained) < 7:
+            retained.add(snapshot_id)
+    work = work or {}
+    retained.update(work[key] for key in ("restore_snapshot_id", "pre_snapshot_id")
+                    if work.get(key))
+    return [(snapshot_id, bool(pinned)) for snapshot_id, pinned in rows
+            if snapshot_id not in retained]
+
+
+def excess(identities, owner):
+    """What prune may ask to delete, in the order prune asks."""
+    with closing(identities._connect(write=False)) as db:
+        current, work = db.execute("SELECT snapshot_id, work FROM owner_volumes "
+                                   "WHERE principal=?", (owner,)).fetchone()
+        return _excess(db, owner, current, json.loads(work) if work else None)
+
+
 def _owed(db, *, include_running, now):
     """(principal, reasons): recoverable work, excess snapshots, or a cold image.
 
     ``{"kind": "create"}`` is not recoverable. VolumeLifecycle.recover leaves
     it alone and the volume is formatted on first wake, so counting it made
     deploy readiness wait for a wake that the readiness window never issues.
-    A deferred stop is not owed until its quiet period ends.
+    A deferred stop is not owed until its quiet period ends. An excess row a
+    platform backup pinned is not owed: prune is forbidden to delete it, so
+    counting it held deploy readiness and re-sent tick_owner every tick.
     """
     from tinyassets.broker.admission import admission
 
@@ -125,7 +160,8 @@ def _owed(db, *, include_running, now):
         if (work and kind != "create" and (include_running or kind != "running")
                 and not deferred(work, published, now)):
             reasons.append(kind if isinstance(kind, str) else "work")
-        if snapshots > 7:
+        if snapshots and any(not pinned for _, pinned in _excess(
+                db, principal, snapshot_id, work)):
             reasons.append("excess_snapshots")
         if local and asleep_at is not None and asleep_at < now - COLD_AFTER and snapshot_id:
             reasons.append("cold")
@@ -158,69 +194,6 @@ def snapshot_deferred(identities, owner):
     return deferred(json.loads(work) if work else None, published, time.time())
 
 
-def _pin_set(pinned):
-    if not isinstance(pinned, list):
-        raise ValueError("pinned snapshot report is not a list")
-    pins = set()
-    for item in pinned:
-        if (not isinstance(item, (list, tuple)) or len(item) != 2
-                or type(item[0]) is not int
-                or not isinstance(item[1], str)
-                or not re.fullmatch(r"[a-f0-9]{32}", item[1])):
-            raise ValueError("pinned snapshot report is malformed")
-        pins.add((item[0], item[1]))
-    return pins
-
-
-def actionable_excess(identities, pinned):
-    """Owners whose prune can still delete a snapshot.
-
-    The retained set matches VolumeLifecycle.prune: the current snapshot,
-    then the newest rows until seven, plus an in-flight restore or
-    pre-snapshot. A row outside that set that a platform backup pins cannot
-    be deleted, so it is not unfinished deploy work. pending() still returns
-    the owner, and the tick still prunes.
-    """
-    pins = _pin_set(pinned)
-    count = 0
-    with closing(identities._connect(write=False)) as db:
-        rows = db.execute(
-            "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
-            "ON i.principal=v.principal AND i.machine_id=v.uid "
-            "WHERE (SELECT COUNT(*) FROM owner_snapshots s "
-            "WHERE s.principal=v.principal)>7").fetchall()
-        from tinyassets.broker.admission import admission
-
-        for (owner,) in rows:
-            if admission(db, owner).state not in {"admitted", "suspended"}:
-                continue
-            if _has_deletable_excess(db, owner, pins):
-                count += 1
-    return count
-
-
-def _has_deletable_excess(db, owner, pins):
-    row = db.execute(
-        "SELECT v.uid,v.snapshot_id,v.work FROM owner_volumes v "
-        "JOIN owner_identities i ON i.principal=v.principal AND i.machine_id=v.uid "
-        "WHERE v.principal=?", (owner,)).fetchone()
-    if row is None:
-        return False
-    uid, snapshot_id, work_json = row
-    work = json.loads(work_json) if work_json else {}
-    retained = {snapshot_id}
-    snapshots = [item[0] for item in db.execute(
-        "SELECT snapshot_id FROM owner_snapshots WHERE principal=? "
-        "ORDER BY sequence DESC", (owner,))]
-    for snap in snapshots:
-        if len(retained) < 7:
-            retained.add(snap)
-    for key in ("restore_snapshot_id", "pre_snapshot_id"):
-        if work.get(key):
-            retained.add(work[key])
-    return any(snap not in retained and (uid, snap) not in pins for snap in snapshots)
-
-
 def awake_owners(identities, *, stopping=False):
     """Explicit running owners, not the pending-work queue (C15).
 
@@ -251,7 +224,7 @@ def dispatch(identities, document):
               "publish": {"snapshot_id", "sha256"},
               "restore": {"snapshot_id"}, "continue_restore": set(),
               "restored": {"snapshot_id"}, "pending": set(),
-              "snapshots": set(), "forget": {"snapshot_id"},
+              "snapshots": set(), "forget": {"snapshot_id"}, "pinned": {"snapshot_ids"},
               "wake": set(), "evict": set(), "evicted": set(), "erase": set(),
               "sleep_refused": set(),
               "image_absent": set()}
@@ -452,6 +425,16 @@ def dispatch(identities, document):
                 raise PermissionError("map references this snapshot")
             db.execute("DELETE FROM owner_snapshots WHERE principal=? AND snapshot_id=?",
                        (owner, arguments["snapshot_id"]))
+        elif action == "pinned":
+            # The host refused these deletes because a platform backup pins
+            # them. The flag keeps them out of owed work; prune clears it.
+            refused = arguments["snapshot_ids"]
+            if not isinstance(refused, list) or any(not isinstance(item, str)
+                                                    for item in refused):
+                raise ValueError("invalid volume lifecycle arguments")
+            db.execute("UPDATE owner_snapshots SET pinned=0 WHERE principal=?", (owner,))
+            db.executemany("UPDATE owner_snapshots SET pinned=1 WHERE principal=? "
+                           "AND snapshot_id=?", [(owner, item) for item in refused])
         db.execute("UPDATE owner_volumes SET work=? WHERE principal=?",
                    (json.dumps(work) if work else None, owner))
         record["work"] = work
