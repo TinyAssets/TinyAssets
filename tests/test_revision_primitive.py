@@ -32,15 +32,22 @@ ROOT = Path(__file__).resolve().parents[1]
 #: Falls to one with app_room's own compare-and-swap deleted (S5a); it never rises.
 CEILING = 1
 PRIMITIVES = {"tinyassets/broker/conversations.py"}
-#: Etag compare-and-swap stores that are not shared rows. A ceiling that only falls.
+#: Compare-and-swap stores that are not shared rows. A ceiling that only falls.
 ALLOWED = {
     # The owner's own UI library in the owner's database: an edit may pin the UI's
     # etag (expected_etag). One writer, never a room or the board.
     "tinyassets/app_ui_store.py",
+    # The owner's once-only request approvals: a decision pins the request's
+    # revision; its seq numbers the owner's own activity events, not shared rows.
+    "tinyassets/bound_requests.py",
 }
-ALLOWED_CEILING = 1
+ALLOWED_CEILING = 2
 _CAS = re.compile(r"(?m)^(?=[^\n]*etag)(?=[^\n]*expected)(?=[^\n]*[!=]=)[^\n]*$"
                   r"|\betag\s*=\s*\?")
+#: A revision compare-and-swap counts beside a seq column: rows a reader pulls after.
+_REVISION_CAS = re.compile(r"(?m)^(?=[^\n]*revision)(?=[^\n]*expected)(?=[^\n]*[!=]=)[^\n]*$"
+                           r"|\brevision\s*=\s*\?")
+_SEQ = re.compile(r"\bseq\b")
 _PERSISTS = re.compile(r"\.execute\(|\bos\.(?:replace|write)\(|\.write_(?:text|bytes)\(")
 #: Every way the router reaches a box.
 BOX_PATHS = {"forward", "ask_box", "box_result", "route", "resolve_box", "wake_owner",
@@ -50,11 +57,12 @@ pytestmark = pytest.mark.verifies("trusted-message-ledger:One revision primitive
 
 
 def primitives(root: Path = ROOT) -> set[str]:
-    """Persisting modules that compare a stored etag with an expected one."""
+    """Persisting modules that compare a stored etag, or a revision beside a seq."""
     found = set()
     for path in (root / "tinyassets").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        if _CAS.search(source) and _PERSISTS.search(source):
+        swaps = _CAS.search(source) or (_REVISION_CAS.search(source) and _SEQ.search(source))
+        if swaps and _PERSISTS.search(source):
             found.add(path.relative_to(root).as_posix())
     return found
 
@@ -63,6 +71,9 @@ def test_one_revision_primitive():
     found = primitives()
     assert len(found - ALLOWED) <= CEILING and found - ALLOWED == PRIMITIVES, found
     assert len(ALLOWED) <= ALLOWED_CEILING and ALLOWED <= found, "remove a stale allowance"
+    # Single-owner revision compare-and-swaps with no seq column are not shared rows.
+    assert not found & {"tinyassets/automations.py", "tinyassets/commons_catalog.py",
+                        "tinyassets/control_plane/triggers.py"}
 
 
 @pytest.mark.parametrize("source", [
@@ -70,6 +81,8 @@ def test_one_revision_primitive():
     "        raise Conflict\n    path.write_text(body)\n",
     "def cas(db, body, etag):\n    db.execute('UPDATE rows SET body=? WHERE id=? AND "
     "etag = ?', (body, 1, etag))\n",
+    "def move(db, body, expected_revision, seq):\n    db.execute('UPDATE board SET body=?, "
+    "seq=? WHERE id=? AND revision = ?', (body, seq, 1, expected_revision))\n",
 ])
 def test_the_guard_sees_a_second_room_store(tmp_path, source):
     probe = tmp_path / "tinyassets" / "rooms.py"
@@ -151,10 +164,12 @@ def router(broker, monkeypatch):  # noqa: F811
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: broker.root)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(broker.root))
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     from tinyassets.mailbox_door import rest_routes
 
     own = Starlette(routes=[route for route in onboarding.onboarding_routes()
-                            if route.path == "/app/{slug}/state"] + rest_routes())
+                            if route.path in {"/app/{slug}/state", "/app/sw.js"}]
+                    + rest_routes())
     door = owner_router.OwnerRouter(own, resolver=refuse, admitter=refuse)
     bind(broker.root, "alice", "chess", "Chess")
 
@@ -222,6 +237,8 @@ def test_an_outside_client_is_refused_on_app_paths_before_any_handler(router, br
         assert (refused.status_code, refused.json()) == (403, {
             "error": "forbidden", "detail": owner_router.OUTSIDE_SURFACE})
     assert len(_rows(broker.root, "alice")) == 1
+    # A public asset needs no identity, so an outside bearer still gets it.
+    assert router("GET", "/app/sw.js", "bob", outside=OUTSIDE).status_code == 200
 
 
 def test_the_outside_refusal_leaves_api_mailbox_alone(router):

@@ -185,6 +185,51 @@ def test_the_owner_channel_carries_the_router_caller_and_a_conflict(broker):
                            after=0, limit=1)
 
 
+def test_a_player_at_its_row_share_still_takes_a_turn_on_a_shared_row(broker, monkeypatch):
+    """Only a creation counts against the share; a takeover charges the row's bytes."""
+    from tinyassets.broker import conversations
+
+    store, room = broker.store, "room:go:main"
+    monkeypatch.setattr(conversations, "MAX_WRITER_ROWS", 2)
+
+    def put(caller, row_id, expected_etag=""):
+        return store.write("alice", caller=caller, collection=room, row_id=row_id,
+                           body="stone", expected_etag=expected_etag, private=False)
+
+    cell0 = put("bob", "cell0")
+    put("cara", "cell1")
+    put("cara", "cell2")
+    with pytest.raises(PermissionError, match="this writer's share"):
+        put("cara", "cell3")
+    assert put("cara", "cell0", cell0["etag"])["writer"] == "cara"
+    monkeypatch.setattr(conversations, "MAX_WRITER_BYTES", 4)
+    with pytest.raises(PermissionError, match="this writer's share"):
+        put("bob", "cell1", _rows_by_id(broker.root)["cell1"])  # takes over all 5 bytes
+
+
+def _rows_by_id(root):
+    with sqlite3.connect(account_path(root, "alice", "conversations.db")) as db:
+        return dict(db.execute("SELECT row_id, etag FROM collection_rows"))
+
+
+def test_a_seq_collision_fails_loudly_and_deletes_nothing(broker, monkeypatch):
+    """A missing high-water mark still numbers past the rows; a clash never replaces one."""
+    store = broker.store
+
+    def put(row_id):
+        return store.write("alice", caller="alice", collection="board", row_id=row_id,
+                           body=row_id, expected_etag="", private=False)
+
+    assert put("a")["seq"] == 1
+    with sqlite3.connect(account_path(broker.root, "alice", "conversations.db")) as db:
+        db.execute("DELETE FROM collection_seqs")  # as a store written before the table
+    assert put("b")["seq"] == 2
+    monkeypatch.setattr(Conversations, "_top", staticmethod(lambda db, collection: 0))
+    with pytest.raises(sqlite3.IntegrityError):  # seq 1 is row a's
+        put("c")
+    assert sorted(_rows_by_id(broker.root)) == ["a", "b"]
+
+
 def test_one_visitor_fills_only_its_own_share_and_the_owner_clears(broker, monkeypatch):
     """A visitor stops at its share; another still writes; one room cannot starve another."""
     from tinyassets.auth.provider import Identity

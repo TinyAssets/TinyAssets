@@ -103,10 +103,12 @@ class Conversations:
                   ("the collection is full", " WHERE collection=?", (collection,), MAX_ROWS,
                    MAX_COLLECTION_BYTES, add, size - old)]
         if caller != owner:
+            # Only a creation counts against a writer's rows, so taking a turn on a
+            # shared row is never refused; taking it over charges its whole size.
             mine = row is not None and row["writer"] == caller
             checks.insert(0, ("this writer's share of the collection is full",
                               " WHERE collection=? AND writer=?", (collection, caller),
-                              MAX_WRITER_ROWS, MAX_WRITER_BYTES, 0 if mine else 1,
+                              MAX_WRITER_ROWS, MAX_WRITER_BYTES, add,
                               size - (old if mine else 0)))
         for reason, where, params, max_rows, max_bytes, more_rows, more_bytes in checks:
             rows, used = db.execute(_SIZE + where, params).fetchone()
@@ -170,7 +172,13 @@ class Conversations:
                 seq = self._top(db, collection) + 1
                 db.execute("INSERT INTO collection_seqs VALUES (?,?) ON CONFLICT(collection) "
                            "DO UPDATE SET seq=excluded.seq", (collection, seq))
-                db.execute("INSERT OR REPLACE INTO collection_rows VALUES (?,?,?,?,?,?,?,?,?)",
+                # An upsert on the row's key alone: a seq collision fails loudly on
+                # UNIQUE(collection, seq) instead of replacing another row.
+                db.execute("INSERT INTO collection_rows VALUES (?,?,?,?,?,?,?,?,?) "
+                           "ON CONFLICT(collection, row_id) DO UPDATE SET "
+                           "revision=excluded.revision, seq=excluded.seq, etag=excluded.etag, "
+                           "writer=excluded.writer, private=excluded.private, "
+                           "body=excluded.body, updated_at=excluded.updated_at",
                            (collection, row_id, 1 if row is None else row["revision"] + 1, seq,
                             digest(f"{seq}:{body}"), caller, int(private), body, time.time()))
                 saved = db.execute("SELECT * FROM collection_rows WHERE collection=? AND "
@@ -214,10 +222,10 @@ class Conversations:
 
     @staticmethod
     def _top(db, collection: str) -> int:
-        """The collection's high-water seq; a clear never lowers it."""
-        found = db.execute("SELECT seq FROM collection_seqs WHERE collection=?",
-                           (collection,)).fetchone()
-        return 0 if found is None else found[0]
+        """The collection's high-water seq: never below a stored row's, never lowered by a clear."""
+        return db.execute("SELECT MAX(COALESCE((SELECT seq FROM collection_seqs WHERE "
+                          "collection=?),0), COALESCE((SELECT MAX(seq) FROM collection_rows "
+                          "WHERE collection=?),0))", (collection, collection)).fetchone()[0]
 
 
 def router_operation(conversations: Conversations, doc: dict) -> dict:

@@ -28,7 +28,11 @@ verbatim, and a private row SHALL be visible to and writable by its writer alone
 payload bytes SHALL be bounded per writer other than the owner in one collection, per
 collection and per owner, and a write past a bound SHALL be refused. Only the store's owner
 SHALL clear a collection or one writer's rows in it; a clear SHALL never lower the
-collection's `seq`. The board
+collection's `seq`. A clear leaves no tombstone: a reader pulling after its cursor does not
+see cleared rows disappear, and a compare-and-swap on a cleared row gets a conflict with an
+empty etag, from which the client recovers by creating the row again. Only a creation SHALL
+count against a writer's row share; taking over another writer's shared row charges its
+whole size to the new writer. The board
 SHALL be `collection='board'`; a published app's room SHALL be `room:<app>:main`. Only the
 router's owner channel SHALL reach `COLLECTION`, with the store owner and the caller chosen
 by the router (a published slug's publisher from the published directory, the caller from
