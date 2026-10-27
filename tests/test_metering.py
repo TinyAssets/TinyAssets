@@ -5,6 +5,7 @@ import asyncio
 import datetime as dt
 import json
 import sqlite3
+import threading
 import time
 from types import SimpleNamespace
 
@@ -14,8 +15,10 @@ from scripts import check_shapes, metering_receipts
 from tests.support.admission import drive
 from tests.test_box_public_egress import exchange, proxy  # noqa: F401
 from tests.test_owner_box_lifecycle import fleet  # noqa: F401
+from tinyassets import metering
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.host_service import recover_daemons
+from tinyassets.boxes.provider import BoxError
 from tinyassets.metering import Meter, day_of
 
 DAY = dt.datetime(2026, 10, 20, tzinfo=dt.UTC).timestamp()
@@ -45,6 +48,21 @@ def test_interval_opens_at_box_start_and_closes_at_stop_with_cgroup_facts(metere
     assert metered.runtime.stops == [uid]
     assert _intervals(metered.meter) == [
         ("a", uid, "thin", 0, "stopped", USAGE["peak_memory_bytes"], USAGE["cpu_usec"])]
+
+
+@pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
+def test_a_start_that_fails_before_its_sandbox_reads_no_cgroup(metered):
+    read = []
+    metered.runtime.usage = lambda uid: read.append(uid) or USAGE
+
+    def refuse(owner, uid):
+        raise BoxError("relay unavailable")
+
+    metered.manager.relays.bind = refuse
+    with pytest.raises(Exception):  # noqa: B017 - the broker reports the start's failure
+        metered.wake("a")
+    assert metered.runtime.starts == []
+    assert (read, metered.meter.failures, metered.meter.path.exists()) == ([], 0, False)
 
 
 @pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
@@ -80,7 +98,8 @@ def test_host_restart_closes_open_intervals_at_best_known_end(tmp_path):
 
 
 @pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
-def test_metering_write_failure_never_blocks_a_box_and_is_counted(fleet, tmp_path, caplog):  # noqa: F811
+def test_metering_write_failure_never_blocks_a_box_and_is_counted(
+        fleet, tmp_path, caplog, monkeypatch):  # noqa: F811
     fleet.manager.meter = meter = Meter(tmp_path / "absent" / "metering.db", source="boxhostd")
     fleet.runtime.usage = lambda uid: USAGE
     uid = fleet.wake("a")
@@ -90,52 +109,83 @@ def test_metering_write_failure_never_blocks_a_box_and_is_counted(fleet, tmp_pat
     assert "receipts are incomplete" in caplog.text
     counted = Meter(tmp_path / "metering.db", source="broker")
     counted.add("a", "storage", 1, time.time())  # a derived driver is not a counter
-    today = day_of(time.time())
+    today, tomorrow = day_of(time.time()), time.time() + 86400
+    monkeypatch.setattr(metering, "time", SimpleNamespace(time=lambda: tomorrow))
     assert counted.receipts(today, today)["write_failures"] == {today: 1}
 
 
-@pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
-@pytest.mark.asyncio
-async def test_relay_bytes_are_counted_per_owner(proxy, monkeypatch):  # noqa: F811
+async def _relay(proxy, monkeypatch, payload):  # noqa: F811
+    """One CONNECT through the broker; returns the reply and the thread each meter write ran on."""
+    loop, written, threads, add = asyncio.get_running_loop(), asyncio.Event(), [], Meter.add
+
+    def spy(self, *args):
+        add(self, *args)
+        threads.append(threading.current_thread())
+        loop.call_soon_threadsafe(written.set)
+
     async def echo(reader, writer):
         writer.write(await reader.read())
         await writer.drain()
         writer.close()
 
+    monkeypatch.setattr(Meter, "add", spy)
     upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
     monkeypatch.setattr("tinyassets.broker.public_egress.destination", lambda *a: ["127.0.0.1"])
     port = upstream.sockets[0].getsockname()[1]
-    payload = b"x" * 5000
     try:
         reply = await exchange(proxy, f"CONNECT example.test:{port} HTTP/1.1\r\n\r\n".encode()
                                + payload)
     finally:
         upstream.close()
+    await asyncio.wait_for(written.wait(), 2)
+    return reply, threads
+
+
+@pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
+@pytest.mark.asyncio
+async def test_relay_bytes_are_counted_per_owner_off_the_event_loop(proxy, monkeypatch):  # noqa: F811
+    payload = b"x" * 5000
+    reply, threads = await _relay(proxy, monkeypatch, payload)
     assert reply.endswith(payload)
-    meter = Meter(proxy._owner_identities.path.parent / "metering.db", source="broker")
-    today = day_of(time.time())
-    async with asyncio.timeout(2):
-        while not meter.path.is_file() or not meter.receipts(today, today)["events"]:
-            await asyncio.sleep(.01)
-    [event] = meter.receipts(today, today)["events"]
-    assert (event["subject"], event["type"], event["data"]["unit"]) == (
-        "alice", "io.tinyassets.meter.relay", "GB")
-    assert event["data"]["quantity"] == pytest.approx(2 * len(payload) / 1e9)
+    assert len(threads) == 1 and threads[0] is not threading.current_thread()
+    with sqlite3.connect(proxy._public_egress.meter.path) as db:
+        assert db.execute("SELECT owner, driver, quantity FROM meter_daily").fetchall() == [
+            ("alice", "relay", 2 * len(payload))]
+
+
+@pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
+@pytest.mark.asyncio
+async def test_relay_metering_failure_is_counted_and_never_reaches_the_proxy(
+        proxy, monkeypatch):  # noqa: F811
+    absent = proxy._owner_identities.path.parent / "absent" / "metering.db"
+    meter = proxy._public_egress.meter = Meter(absent, source="broker")
+    payload = b"y" * 100
+    reply, _ = await _relay(proxy, monkeypatch, payload)
+    assert reply.endswith(payload)
+    assert meter.failures == 1
+    assert proxy._public_egress.active == {}
 
 
 @pytest.mark.verifies("cost-driver-receipts:One receipt per owner per day")
-def test_daily_rollup_is_cloudevents_clipped_to_each_day(tmp_path):
+def test_daily_rollup_splits_an_interval_across_every_day_it_spans(tmp_path):
     meter = Meter(tmp_path / "metering.db", source="boxhostd")
     meter.open_interval("a", 300001, DAY + 86400 - 600)
-    meter.close_interval(300001, "stopped", DAY + 86400 + 300,
-                         {"peak_memory_bytes": 512 * 2**20, "cpu_usec": 9_000_000})
-    meter.daily(DAY + 86400 + 400, lambda: {300001: (None, 2 * 10**9, 20 * 10**9)})
-    meter.daily(DAY + 2 * 86400 + 1, lambda: {})
-    events = meter.receipts("2026-10-20", "2026-10-21")["events"]
+    meter.daily(DAY + 86400 + 60, lambda: {300001: (None, 2 * 10**9, 20 * 10**9)})
+    [open_day] = meter.receipts("2026-10-20", "2026-10-20")["events"]
+    assert (open_day["data"]["quantity"], open_day["data"]["peak_memory_bytes"]) == (600, None)
+    meter.daily(DAY + 2 * 86400 + 60, lambda: {})
+    # Awake 600 s on the 20th, all of the 21st and 300 s on the 22nd: CPU splits pro rata.
+    meter.close_interval(300001, "stopped", DAY + 2 * 86400 + 300,
+                         {"peak_memory_bytes": 512 * 2**20, "cpu_usec": 87_300_000})
+    meter.daily(DAY + 3 * 86400 + 1, lambda: {})
+    events = meter.receipts("2026-10-20", "2026-10-22")["events"]
     assert [(e["time"], e["type"], e["subject"], e["data"]["quantity"]) for e in events] == [
         ("2026-10-20T00:00:00Z", "io.tinyassets.meter.box_seconds", "a", 600),
-        ("2026-10-21T00:00:00Z", "io.tinyassets.meter.box_seconds", "a", 300),
-        ("2026-10-21T00:00:00Z", "io.tinyassets.meter.storage", "a", 2)]
+        ("2026-10-21T00:00:00Z", "io.tinyassets.meter.box_seconds", "a", 86400),
+        ("2026-10-21T00:00:00Z", "io.tinyassets.meter.storage", "a", 2),
+        ("2026-10-22T00:00:00Z", "io.tinyassets.meter.box_seconds", "a", 300)]
+    assert [e["data"].get("cpu_seconds") for e in events] == [
+        pytest.approx(0.6), pytest.approx(86.4), None, pytest.approx(0.3)]
     first = events[0]
     assert {key: first[key] for key in ("specversion", "source", "datacontenttype")} == {
         "specversion": "1.0", "source": "tinyassets/boxhostd",
@@ -143,11 +193,20 @@ def test_daily_rollup_is_cloudevents_clipped_to_each_day(tmp_path):
     assert first["data"] == {"day": "2026-10-20", "owner": "a", "center": None,
                              "driver": "box_seconds", "unit": "box-seconds", "quantity": 600,
                              "size_class": "thin", "intervals": 1,
-                             "peak_memory_bytes": 512 * 2**20, "cpu_seconds": 6.0}
+                             "peak_memory_bytes": 512 * 2**20, "cpu_seconds": pytest.approx(0.6)}
+    assert first["id"] == open_day["id"]
     assert events[2]["data"]["provisioned_bytes"] == 20 * 10**9
-    assert len({e["id"] for e in events}) == 3
-    assert [e["id"] for e in meter.receipts("2026-10-20", "2026-10-21")["events"]] == [
-        e["id"] for e in events]
+    assert len({e["id"] for e in events}) == 4
+
+
+@pytest.mark.verifies("cost-driver-receipts:One receipt per owner per day")
+def test_an_unfinished_day_is_refused(tmp_path):
+    meter = Meter(tmp_path / "metering.db", source="broker")
+    meter.add("a", "relay", 10, time.time())
+    today, yesterday = day_of(time.time()), day_of(time.time() - 86400)
+    assert meter.receipts(yesterday, yesterday)["events"] == []
+    with pytest.raises(ValueError, match="not a finished UTC day"):
+        meter.receipts(yesterday, today)
 
 
 @pytest.mark.verifies("cost-driver-receipts:One receipt per owner per day")
@@ -178,16 +237,25 @@ def test_founder_read_prices_drivers_and_refuses_everyone_else(tmp_path, monkeyp
 
 
 @pytest.mark.verifies("cost-driver-receipts:Receipts measure and never limit")
-def test_admission_module_importing_metering_fails_the_n12_guard(tmp_path):
-    shape = check_shapes.SHAPES["N12"]
-    assert all((check_shapes.ROOT / path).is_file() for path in shape.paths)
-    assert check_shapes.forbidden("N12", shape) == []
-    routing = tmp_path / "tinyassets/broker/routing.py"
-    routing.parent.mkdir(parents=True)
-    routing.write_text("# never reads tinyassets.metering\nimport asyncio\n")
-    assert check_shapes.forbidden("N12", shape, tmp_path) == []
-    for planted in ("import tinyassets.metering", "from tinyassets.metering import Meter",
-                    "def wake():\n    from tinyassets import metering",
-                    "from tinyassets import usage_policy, metering"):
+def test_only_the_allowlist_imports_metering_in_any_form(tmp_path):
+    assert check_shapes.metering_import_problems() == []
+    assert all(any(check_shapes.ROOT.glob(path)) for path in check_shapes.METERING_IMPORTERS)
+    broker = tmp_path / "tinyassets/broker"
+    broker.mkdir(parents=True)
+    (broker / "public_egress.py").write_text("from tinyassets.metering import Meter\n")
+    routing = broker / "routing.py"
+    routing.write_text("# never reads tinyassets.metering\nNAME = 'tinyassets.metering'\n")
+    assert check_shapes.metering_import_problems(tmp_path) == []
+    refused = ["N12 metering-not-admission: tinyassets/broker/routing.py imports "
+               "tinyassets.metering"]
+    for planted in ("import tinyassets.metering", "import tinyassets.metering as receipts",
+                    "from tinyassets.metering import Meter", "from tinyassets import metering",
+                    "from .. import metering", "from ..metering import Meter",
+                    "from tinyassets import (\n    usage_policy,\n    metering,\n)",
+                    "def wake():\n    from tinyassets import metering"):
         routing.write_text(planted + "\n")
-        assert check_shapes.forbidden("N12", shape, tmp_path), planted
+        assert check_shapes.metering_import_problems(tmp_path) == refused, planted
+    routing.unlink()
+    (tmp_path / "tinyassets/usage_policy.py").write_text("from . import metering\n")
+    assert check_shapes.metering_import_problems(tmp_path) == [
+        "N12 metering-not-admission: tinyassets/usage_policy.py imports tinyassets.metering"]

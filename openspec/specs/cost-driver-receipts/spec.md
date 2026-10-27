@@ -29,7 +29,7 @@ admission module SHALL import `tinyassets.metering`, so the account limits stay 
 - **THEN** the box still starts or stops, the failure is logged and that day's receipts report it
 
 #### Scenario: Admission reads a receipt
-- **WHEN** an admission module imports `tinyassets.metering`
+- **WHEN** any module outside the `check_shapes.py` N12 allowlist imports `tinyassets.metering`
 - **THEN** `check_shapes.py` N12 fails
 
 ### Requirement: One receipt per owner per day

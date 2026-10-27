@@ -175,11 +175,15 @@ class OwnerDaemons:
 
     @contextlib.contextmanager
     def _stopping(self, box, reason):
-        """Every awake box's stop: cgroup facts first, then the stop, then its receipt."""
-        usage = self.meter and self.meter.measure(self.runtime.usage, box.uid)
+        """Every awake box's stop: cgroup facts first, then the stop, then its receipt.
+
+        A start that failed before its sandbox was started has no cgroup and no interval.
+        """
+        metered = self.meter is not None and box.awake
+        usage = self.meter.measure(self.runtime.usage, box.uid) if metered else None
         yield
         box.awake = False
-        if self.meter is not None:
+        if metered:
             self.meter.close_interval(box.uid, reason, time.time(), usage)
 
     def _storage(self):

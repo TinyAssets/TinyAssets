@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.network import EgressRefused, _destination
-from tinyassets.broker.admission import owner_lock
+from tinyassets.broker.admission import owner_lock, thread_work
 from tinyassets.broker.box_admission import resolve_owner
 from tinyassets.broker.egress import EgressPolicyRefused, destination
 from tinyassets.storage.outbound_connections import SsrfValidationError
@@ -107,8 +107,8 @@ class PublicEgress:
                     del self.active[owner]
             writer.close()
             await asyncio.gather(*pumps, return_exceptions=True)
-            if moved[0]:
-                self.meter.add(owner, "relay", moved[0], time.time())
+            if moved[0]:  # off the loop that routes every owner; a failure is counted
+                await thread_work(self.meter.add, owner, "relay", moved[0], time.time())
 
     def close_owner(self, owner):
         for task, (principal, writer) in tuple(self.channels.items()):

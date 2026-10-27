@@ -44,7 +44,6 @@ DRIVERS = {
 RESERVED_CLASS = "thin"
 _DERIVED = ("box_seconds", "storage")  # rebuilt from intervals and samples by rollup
 _SEEN_EVERY = 60
-_MAX_DAYS = 92
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meter_intervals (
@@ -140,15 +139,20 @@ class Meter:
     def close_interval(self, uid: int, reason: str, at: float, usage=None):
         usage = usage or {}
         with closing(self._connect()) as db, db:
+            began = db.execute("SELECT MIN(started_at) FROM meter_intervals "
+                               "WHERE uid=? AND ended_at IS NULL", (uid,)).fetchone()[0]
             db.execute("UPDATE meter_intervals SET ended_at=MAX(?, started_at), end_reason=?, "
                        "peak_memory_bytes=?, cpu_usec=? WHERE uid=? AND ended_at IS NULL",
                        (at, reason, usage.get("peak_memory_bytes"), usage.get("cpu_usec"), uid))
         self._seen.pop(uid, None)
+        self._reroll(began, at)
 
     @_recorded
     def recover(self, at: float, running: dict[int, dict]):
         """After a host restart: a box still running ends now, any other at its last sighting."""
         with closing(self._connect()) as db, db:
+            began = db.execute("SELECT MIN(started_at) FROM meter_intervals "
+                               "WHERE ended_at IS NULL").fetchone()[0]
             for uid, usage in running.items():
                 db.execute("UPDATE meter_intervals SET ended_at=MAX(?, started_at), "
                            "end_reason='recovered', peak_memory_bytes=?, cpu_usec=? "
@@ -156,6 +160,14 @@ class Meter:
                            (at, usage.get("peak_memory_bytes"), usage.get("cpu_usec"), uid))
             db.execute("UPDATE meter_intervals SET ended_at=seen_at, end_reason='lost' "
                        "WHERE ended_at IS NULL")
+        self._reroll(began, at)
+
+    def _reroll(self, began, at: float):
+        """CPU is known only at close: each earlier day of the interval takes its share again."""
+        day = dt.date.fromisoformat(day_of(at if began is None else began))
+        while day.isoformat() < day_of(at):
+            self._rollup(day.isoformat(), at)
+            day += dt.timedelta(days=1)
 
     @_recorded
     def add(self, owner: str, driver: str, quantity: float, at: float, center: str = ""):
@@ -173,7 +185,7 @@ class Meter:
         today = day_of(at)
         if self._daily == today:
             return
-        self._daily = today  # a failure retries tomorrow; a receipt read rolls up again
+        self._daily = today  # a failed pass is retried by tomorrow's, from rolled_through
         with closing(self._connect()) as db, db:
             for uid, (owner, allocated, provisioned) in storage().items():
                 db.execute("INSERT OR REPLACE INTO meter_storage VALUES (?,?,?,?,?)",
@@ -195,6 +207,7 @@ class Meter:
         start, end = _bounds(day)
         boxes: dict[tuple[str, str], dict] = {}
         with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")  # a close commits before or after, never in between
             for owner, size_class, began, ended, peak, cpu in db.execute(
                     "SELECT owner, size_class, started_at, COALESCE(ended_at, ?), "
                     "peak_memory_bytes, cpu_usec FROM meter_intervals "
@@ -226,10 +239,13 @@ class Meter:
                            allocated, json.dumps({"provisioned_bytes": provisioned})))
 
     def receipts(self, since: str, until: str) -> dict:
-        """Rolled-up days in [since, until] as CloudEvents. Opens the store read-only."""
-        first, last = dt.date.fromisoformat(since), dt.date.fromisoformat(until)
-        if not 0 <= (last - first).days < _MAX_DAYS:
-            raise ValueError(f"a receipt read covers 1 to {_MAX_DAYS} days")
+        """Finished UTC days in [since, until] as CloudEvents. Opens the store read-only.
+
+        Today is refused: its rows still move, under the final rows' ``id``.
+        """
+        dt.date.fromisoformat(since)
+        if dt.date.fromisoformat(until).isoformat() >= day_of(time.time()):
+            raise ValueError(f"{until} is not a finished UTC day")
         if not self.path.is_file():
             raise FileNotFoundError(f"no {self.source} receipt store at {self.path}")
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:

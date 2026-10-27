@@ -291,15 +291,7 @@ SHAPES: dict[str, Shape] = {
     "S33": Shape(("tinyassets/live_view.py",)),
     "S34": Shape(("tinyassets/conversation_store.py",)),
     "S35": Shape(("tinyassets/agent_loop/**",)),
-    "N12": Shape(  # metering-not-admission: the receipts live in tinyassets/metering/
-        # and no admission module reads them, so S26 stays two limits.
-        ("tinyassets/usage_policy.py", "tinyassets/engine_admissions.py",
-         "tinyassets/boxes/admission.py", "tinyassets/broker/admission.py",
-         "tinyassets/broker/box_admission.py", "tinyassets/broker/lifecycle_config.py",
-         "tinyassets/broker/routing.py"),
-        forbid=(r"(?m)^\s*(?:import\s+tinyassets\.metering\b|from\s+tinyassets\.metering\b"
-                r"|from\s+tinyassets\s+import\s[^\n]*\bmetering\b)",),
-    ),
+    "N12": Shape(("tinyassets/metering/**",)),
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {
@@ -344,6 +336,10 @@ RETIRED_ACCOUNT_LIMITS = re.compile(
     r"BYTES_PER_HOUR|BUDGET_WINDOW_S|usage_notice|charge_dispatch|"
     r"dispatch_window_usage)\b"
 )
+#: N12 metering-not-admission: the only importers of tinyassets.metering, so no
+#: admission module reads a receipt and S26 stays two limits.
+METERING_IMPORTERS = ("tinyassets/metering/**", "tinyassets/boxes/host_service.py",
+                      "tinyassets/broker/public_egress.py", "scripts/metering_receipts.py")
 PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
     r"\s*\(\s*['\"](/[^'\"]*)"
@@ -846,19 +842,37 @@ def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
     return problems
 
 
-def forbidden(shape_id: str, shape: Shape, root: Path = ROOT) -> list[str]:
-    return [
-        f"{shape_id} forbid: {path.relative_to(root)} matches {pattern}"
-        for pattern in shape.forbid
-        for glob in shape.paths
-        for path in files(glob, root)
-        if re.search(pattern, path.read_text(encoding="utf-8", errors="replace"))
-    ]
+def imported_modules(rel: str, source: str) -> set[str]:
+    """Every module an import anywhere in ``source`` can bind, relative ones resolved."""
+    package = PurePosixPath(rel).with_suffix("").parts[:-1]
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: max(0, len(package) - node.level + 1)] if node.level else ()
+            module = ".".join((*base, *([node.module] if node.module else [])))
+            names.update({module} | {f"{module}.{alias.name}" for alias in node.names})
+    return names
+
+
+def metering_import_problems(root: Path = ROOT) -> list[str]:
+    problems = []
+    for path in files("tinyassets/**/*.py", root) + files("scripts/**/*.py", root):
+        rel = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8", errors="replace")
+        if "metering" not in source or any(registered_path(rel, g) for g in METERING_IMPORTERS):
+            continue
+        if any(name == "tinyassets.metering" or name.startswith("tinyassets.metering.")
+               for name in imported_modules(rel, source)):
+            problems.append(f"N12 metering-not-admission: {rel} imports tinyassets.metering")
+    return problems
 
 
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
     problems.extend(control_plane_policy_problems(root))
+    problems.extend(metering_import_problems(root))
     problems.extend(dead_entry_problems(root))
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())
@@ -884,7 +898,13 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             problems.append(f"{shape_id} converged: {count} old-path occurrences remain")
         if status == "drifted" and shape.old and not count:
             problems.append(f"{shape_id} registry-parity: zero old paths; mark converged")
-        problems.extend(forbidden(shape_id, shape, root))
+        for pattern in shape.forbid:
+            for glob in shape.paths:
+                for path in files(glob, root):
+                    if re.search(pattern, path.read_text(encoding="utf-8", errors="replace")):
+                        problems.append(
+                            f"{shape_id} forbid: {path.relative_to(root)} matches {pattern}"
+                        )
     if added is None:
         added = git_added(root)
     for rel in sorted(added):
