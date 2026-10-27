@@ -165,10 +165,19 @@ that day.
     https://aws.amazon.com/blogs/security/how-to-implement-saas-tenant-isolation-with-abac-and-aws-iam
 - **NVIDIA OpenShell** (https://github.com/NVIDIA/OpenShell, Apache-2.0,
   v0.1.6 on 2026-10-27):
-  - It runs a trusted supervisor per sandbox and keeps tenants apart by role
-    checks in a shared gateway, control plane only (its RFC 0011).
-  - Its runtime does not support gVisor, and its agent loop runs inside the
-    sandbox.
+  - Not adopted, for these reasons:
+    - it runs the agent loop inside the sandbox (against ADR-023);
+    - it runs a trusted supervisor per sandbox;
+    - it keeps tenants apart by role checks in a shared gateway, control
+      plane only (its RFC 0011);
+    - its shared-kernel Docker path is weaker than gVisor and needs Linux
+      6.2's Landlock, where production runs 6.1;
+    - on a KVM host its libkrun microVM driver has no snapshot and starts
+      5 to 30 times slower than Firecracker (ADR-022's allowed second
+      driver);
+    - its interfaces still move weekly after a breaking 0.1 rewrite.
+  - It is not declined for lacking gVisor: its Kubernetes path can use a
+    gVisor runtime class. Its Landlock baseline is unavailable under runsc.
   - Its placeholder credentials swapped at the egress proxy, and its
     revisioned network policy, are recorded in `ideas/PIPELINE.md`.
   - Read from a clone of the repo; the version and RFC references are the
