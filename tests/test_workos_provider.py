@@ -292,6 +292,10 @@ def test_claim_shape_logged_once_per_shape_without_values(
         assert secret not in caplog.text
 
 
+@pytest.mark.verifies(
+    'identity-auth-and-access-control:'
+    'Bearer JWT validation is fail-closed, RS256-pinned, and audience-bound',
+)
 def test_a_claim_shape_receipt_failure_never_fails_verification(keypair, monkeypatch):
     def broken(*args, **kwargs):
         raise UnicodeEncodeError("utf-8", "x", 0, 1, "lone surrogate")
