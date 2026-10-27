@@ -24,8 +24,12 @@ def owner_channel(root, identities):
         def admits(self, generation, token):
             return (generation, token) == (7, "fence")
 
-    server = SimpleNamespace(_owner_identities=identities, _fence=Fence(), _policy_store=None,
-                             ledger=(None, Conversations(root, identities)))
+    from tinyassets.broker.message_ledger import MessageLedger
+
+    server = SimpleNamespace(_owner_identities=identities, _fence=Fence(),
+                             _policy_store=PolicyStore(root, identities),
+                             ledger=(MessageLedger(root, identities),
+                                     Conversations(root, identities)))
 
     def request(data_root, doc):
         async def call():

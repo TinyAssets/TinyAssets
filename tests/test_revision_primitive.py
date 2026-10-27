@@ -151,13 +151,17 @@ def router(broker, monkeypatch):  # noqa: F811
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: broker.root)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(broker.root))
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    from tinyassets.mailbox_door import rest_routes
+
     own = Starlette(routes=[route for route in onboarding.onboarding_routes()
-                            if route.path in {"/app/{slug}/state", "/api/mailbox"}])
+                            if route.path == "/app/{slug}/state"] + rest_routes())
     door = owner_router.OwnerRouter(own, resolver=refuse, admitter=refuse)
     bind(broker.root, "alice", "chess", "Chess")
 
-    def call(method, path, caller, body=None, *, outside=None, cookie=None):
+    def call(method, path, caller, body=None, *, outside=None, cookie=None, provider=None):
         metadata = {} if outside is None else {"outside_origin": outside}
+        if provider is not None:
+            metadata["auth_provider"] = provider
 
         async def app(scope, receive, send):
             token = middleware._current_identity.set(Identity(caller, caller,
@@ -218,6 +222,19 @@ def test_an_outside_client_is_refused_on_app_paths_before_any_handler(router, br
         assert (refused.status_code, refused.json()) == (403, {
             "error": "forbidden", "detail": owner_router.OUTSIDE_SURFACE})
     assert len(_rows(broker.root, "alice")) == 1
+
+
+def test_the_outside_refusal_leaves_api_mailbox_alone(router):
+    """An API-key agent's outside_origin still reaches the mailbox doors (/api, not /app)."""
+    for method, path, body in (("GET", "/api/mailbox", None),
+                               ("POST", "/api/mailbox/ack", {"through": 0}),
+                               ("POST", "/api/mailbox/replies", {"client_message_id": "c",
+                                                                 "body": "hi"})):
+        answer = router(method, path, "alice", body, outside=OUTSIDE, provider="api_key")
+        # The mailbox door itself answered (outside access is off for this unregistered
+        # key), never the router's /app outside-surface refusal.
+        assert answer.json()["error"] in {"refused", "outside_access_off"}, answer.text
+        assert answer.json() != {"error": "forbidden", "detail": owner_router.OUTSIDE_SURFACE}
 
 
 def test_only_the_publisher_clears_from_a_protected_session(router, broker):  # noqa: F811
