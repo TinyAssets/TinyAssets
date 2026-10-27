@@ -203,7 +203,14 @@ class OwnerDaemons:
                         pass  # A dead/unreachable ingress is still followed by a proven stop.
                     self.runtime.stop(box.uid)
                 else:
-                    self.runtime.shutdown(box.uid)
+                    try:
+                        self.runtime.shutdown(box.uid)
+                    except Exception as exc:
+                        # A drained box that outlives SIGTERM (lifespan shutdown waits
+                        # on an uncancelled tool thread) is ended, as SIGKILL bounded
+                        # the shared daemon. Left alive it refused every later wake.
+                        log.error("owner daemon uid=%s forced stop: %s", box.uid, exc)
+                        self.runtime.stop(box.uid)
                     self.volumes.detach(box.uid)
         box.secret = ""
         box.error, box.failures = "", 0

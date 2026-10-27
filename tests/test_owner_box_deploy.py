@@ -539,9 +539,10 @@ def test_app_me_timeout_and_http_errors_are_distinct_tokens(monkeypatch):
 
     class Denied(BaseHTTPRequestHandler):
         status = 503
+        body = secret.encode()
 
         def do_GET(self):
-            body = secret.encode()
+            body = type(self).body
             self.send_response(type(self).status)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -554,7 +555,13 @@ def test_app_me_timeout_and_http_errors_are_distinct_tokens(monkeypatch):
     try:
         with pytest.raises(RuntimeError) as down:
             owner_canary_sign_in(origin, 2)
-        Denied.status = 404
+        Denied.body = b'{"error": "owner_box_unavailable"}'
+        with pytest.raises(RuntimeError) as named:
+            owner_canary_sign_in(origin, 2)
+        Denied.body = b'{"error": "' + secret.encode() + b'"}'
+        with pytest.raises(RuntimeError) as unknown:
+            owner_canary_sign_in(origin, 2)
+        Denied.status, Denied.body = 404, b'{"error": "maintenance"}'
         with pytest.raises(RuntimeError) as missing:
             owner_canary_sign_in(origin, 2)
     finally:
@@ -562,8 +569,13 @@ def test_app_me_timeout_and_http_errors_are_distinct_tokens(monkeypatch):
         server.server_close()
         thread.join(5)
     assert str(down.value) == "canary_sign_in_http_5xx"
+    assert str(named.value) == "canary_sign_in_owner_box_unavailable"
+    assert str(unknown.value) == "canary_sign_in_http_5xx"  # Only fixed codes are named.
     assert str(missing.value) == "canary_sign_in_http_4xx"
     assert secret not in str(down.value) and secret not in str(missing.value)
+    from scripts.roll_owner_boxes import _public_code
+
+    assert _public_code(named.value) == "canary_sign_in_owner_box_unavailable"
 
     held = socket.socket()
     held.bind(("127.0.0.1", 0))
