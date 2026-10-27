@@ -1,8 +1,10 @@
 """S34 revision-primitive: one compare-and-swap primitive, and no collection door reaches a box.
 
-A revision primitive persists rows carrying both an ``etag`` (the compare-and-swap
-token) and a ``seq`` (the pull cursor). The generic collection in the broker's
-per-owner conversation store is the one; app rooms and the board are row sets in it.
+An etag compare-and-swap store is a persisting module that compares a stored etag
+with an expected one: a line comparing ``etag`` with ``expected``, or SQL
+``etag = ?``. The generic collection in the broker's per-owner conversation store
+is the one revision primitive for shared rows; app rooms and the board are row sets
+in it. Every other such store is named below, and that list only shrinks.
 ``COLLECTION`` reaches the broker from the router's owner channel only, and the room
 door answers ``/app/<slug>/state`` without forwarding to, asking or waking a box.
 """
@@ -30,8 +32,16 @@ ROOT = Path(__file__).resolve().parents[1]
 #: Falls to one with app_room's own compare-and-swap deleted (S5a); it never rises.
 CEILING = 1
 PRIMITIVES = {"tinyassets/broker/conversations.py"}
-_TOKENS = (re.compile(r"\betag\b"), re.compile(r"\bseq\b"))
-_PERSISTS = re.compile(r"\.execute\(|\bos\.(?:replace|write)\(|\.write_text\(")
+#: Etag compare-and-swap stores that are not shared rows. A ceiling that only falls.
+ALLOWED = {
+    # The owner's own UI library in the owner's database: an edit may pin the UI's
+    # etag (expected_etag). One writer, never a room or the board.
+    "tinyassets/app_ui_store.py",
+}
+ALLOWED_CEILING = 1
+_CAS = re.compile(r"(?m)^(?=[^\n]*etag)(?=[^\n]*expected)(?=[^\n]*[!=]=)[^\n]*$"
+                  r"|\betag\s*=\s*\?")
+_PERSISTS = re.compile(r"\.execute\(|\bos\.(?:replace|write)\(|\.write_(?:text|bytes)\(")
 #: Every way the router reaches a box.
 BOX_PATHS = {"forward", "ask_box", "box_result", "route", "resolve_box", "wake_owner",
              "admit_box"}
@@ -40,26 +50,31 @@ pytestmark = pytest.mark.verifies("trusted-message-ledger:One revision primitive
 
 
 def primitives(root: Path = ROOT) -> set[str]:
-    """Modules that persist rows carrying an etag and a seq."""
+    """Persisting modules that compare a stored etag with an expected one."""
     found = set()
     for path in (root / "tinyassets").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        if all(token.search(source) for token in _TOKENS) and _PERSISTS.search(source):
+        if _CAS.search(source) and _PERSISTS.search(source):
             found.add(path.relative_to(root).as_posix())
     return found
 
 
 def test_one_revision_primitive():
     found = primitives()
-    assert len(found) <= CEILING and found == PRIMITIVES, found
+    assert len(found - ALLOWED) <= CEILING and found - ALLOWED == PRIMITIVES, found
+    assert len(ALLOWED) <= ALLOWED_CEILING and ALLOWED <= found, "remove a stale allowance"
 
 
-def test_the_guard_sees_a_second_room_store(tmp_path):
+@pytest.mark.parametrize("source", [
+    "def cas(path, body, expected_etag):\n    if current != expected_etag:\n"
+    "        raise Conflict\n    path.write_text(body)\n",
+    "def cas(db, body, etag):\n    db.execute('UPDATE rows SET body=? WHERE id=? AND "
+    "etag = ?', (body, 1, etag))\n",
+])
+def test_the_guard_sees_a_second_room_store(tmp_path, source):
     probe = tmp_path / "tinyassets" / "rooms.py"
     probe.parent.mkdir()
-    probe.write_text("def cas(path, body, expected_etag):\n"
-                     "    row = {'etag': expected_etag, 'seq': 1}\n"
-                     "    path.write_text(json.dumps(row))\n")
+    probe.write_text(source)
     assert primitives(tmp_path) == {"tinyassets/rooms.py"}
 
 
@@ -121,6 +136,7 @@ def router(broker, monkeypatch):  # noqa: F811
     from tinyassets import onboarding, router_traffic, routing_snapshot
     from tinyassets.auth import middleware
     from tinyassets.broker import owner_identities
+    from tinyassets.onboarding import owner_sessions
 
     def refuse(*args, **kwargs):
         raise AssertionError("a room door reached a box")
@@ -133,23 +149,32 @@ def router(broker, monkeypatch):  # noqa: F811
         require_current=lambda: None))
     monkeypatch.setattr(router_traffic, "admits", lambda *args: True)
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: broker.root)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(broker.root))
+    monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
     own = Starlette(routes=[route for route in onboarding.onboarding_routes()
-                            if route.path == "/app/{slug}/state"])
+                            if route.path in {"/app/{slug}/state", "/api/mailbox"}])
     door = owner_router.OwnerRouter(own, resolver=refuse, admitter=refuse)
     bind(broker.root, "alice", "chess", "Chess")
 
-    def call(method, path, caller, body=None):
+    def call(method, path, caller, body=None, *, outside=None, cookie=None):
+        metadata = {} if outside is None else {"outside_origin": outside}
+
         async def app(scope, receive, send):
-            token = middleware._current_identity.set(Identity(caller, caller))
+            token = middleware._current_identity.set(Identity(caller, caller,
+                                                              metadata=metadata))
             try:
                 await door(scope, receive, send)
             finally:
                 middleware._current_identity.reset(token)
 
+        headers = {"origin": "https://tinyassets.io"}
+        if cookie is not None:
+            headers["cookie"] = f"{owner_sessions.COOKIE}={cookie}"
+
         async def exercise():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url="https://tinyassets.io") as client:
-                return await client.request(method, path, json=body)
+                return await client.request(method, path, json=body, headers=headers)
         return asyncio.run(exercise())
     return call
 
@@ -179,3 +204,42 @@ def test_the_router_answers_a_room_from_the_publishers_store(router, broker):  #
     assert router("POST", "/app/draft/state", "bob", turn).status_code == 200
     assert [row[:2] for row in _rows(broker.root, "bob")] == [("room:draft:main", "room:turn")]
     assert json.loads(_rows(broker.root, "alice")[0][-1]) == {"user_id": "alice"}
+
+
+OUTSIDE = {"client": "a" * 64, "family": "b" * 64}
+
+
+def test_an_outside_client_is_refused_on_app_paths_before_any_handler(router, broker):  # noqa: F811
+    """As at the box: an outside client has the MCP surface only, revoked or not."""
+    turn = {"scope": "player", "key": "seat", "value": {}, "expected_etag": ""}
+    assert router("POST", "/app/chess/state", "bob", turn).status_code == 200
+    for method, body in (("GET", None), ("POST", turn)):
+        refused = router(method, "/app/chess/state?since=0", "bob", body, outside=OUTSIDE)
+        assert (refused.status_code, refused.json()) == (403, {
+            "error": "forbidden", "detail": owner_router.OUTSIDE_SURFACE})
+    assert len(_rows(broker.root, "alice")) == 1
+
+
+def test_only_the_publisher_clears_from_a_protected_session(router, broker):  # noqa: F811
+    import time
+
+    from tinyassets.onboarding import owner_sessions
+
+    with owner_sessions.store() as sessions:
+        for user in ("alice", "bob"):
+            sessions.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
+                owner_sessions.hashed(f"{user}-cookie"), json.dumps({"user_id": user}),
+                time.time() + 3600))
+    seat = {"scope": "player", "key": "seat", "value": {}, "expected_etag": ""}
+    for player in ("bob", "cara"):
+        assert router("POST", "/app/chess/state", player, seat).status_code == 200
+    assert router("DELETE", "/app/chess/state", "bob", {}, cookie="bob-cookie").json() == {
+        "error": "private_surface"}
+    assert router("DELETE", "/app/chess/state", "alice", {}).json() == {
+        "error": "interactive_owner_session_required"}
+    assert router("DELETE", "/app/chess/state", "alice", {"writer": "bob"},
+                  cookie="alice-cookie").json() == {"deleted": 1}
+    assert [row[4] for row in _rows(broker.root, "alice")] == ["cara"]
+    # A bearer beside another account's session cookie is refused, as at the box door.
+    assert router("GET", "/app/chess/state", "alice", cookie="bob-cookie").json() == {
+        "error": "identity_conflict"}

@@ -11,10 +11,10 @@ as clean text.
 commit stamped with the collection's next ``seq`` so a reader pulls after a
 cursor. The board is ``collection='board'``; a Tier A app room is
 ``collection='room:<app>:<room>'``. Payloads are stored and returned verbatim.
-A private row is visible to, and writable by, its writer alone. One collection
-holds at most ``MAX_ROWS`` rows, and one owner's collections in all at most
-``MAX_OWNER_ROWS`` rows and ``MAX_OWNER_BYTES`` of payload; past either a write
-is refused.
+A private row is visible to, and writable by, its writer alone. Rows and payload
+bytes are bounded per writer (other than the owner) in a collection, per
+collection and per owner; past a bound a write is refused. Only the owner
+clears a collection, or one writer's rows in it.
 """
 from __future__ import annotations
 
@@ -28,9 +28,14 @@ from tinyassets.broker.policy import account_path, erase_account_db, open_accoun
 FILENAME = "conversations.db"
 MAX_BODY = 16384
 MAX_ROW = 65536
+#: Bounds on payload bytes and rows, each refused loudly. The broker holds collections
+#: outside any volume quota, so these, not the owner's storage pool, keep it finite.
+#: A writer other than the store's owner gets a small share of one collection; one
+#: collection gets a slice of the owner's total, so one room cannot starve another.
+MAX_WRITER_ROWS = 64
+MAX_WRITER_BYTES = 512 * 1024
 MAX_ROWS = 1000
-#: One owner's collections in all: the broker holds them outside any volume quota,
-#: so this bound, not the owner's storage pool, keeps the trusted zone finite.
+MAX_COLLECTION_BYTES = 8 * 1024 * 1024
 MAX_OWNER_ROWS = 10_000
 MAX_OWNER_BYTES = 64 * 1024 * 1024
 MAX_PULL = 100
@@ -39,7 +44,12 @@ _ROWS = ("CREATE TABLE IF NOT EXISTS collection_rows ("
          "seq INTEGER NOT NULL, etag TEXT NOT NULL, writer TEXT NOT NULL, "
          "private INTEGER NOT NULL CHECK(private IN (0,1)), "
          "body TEXT NOT NULL CHECK(length(body) <= 65536), updated_at REAL NOT NULL, "
-         "PRIMARY KEY(collection, row_id), UNIQUE(collection, seq))")
+         "PRIMARY KEY(collection, row_id), UNIQUE(collection, seq));"
+         "CREATE INDEX IF NOT EXISTS collection_writers ON collection_rows(collection, writer);"
+         # The high-water seq survives a clear, so a reader's cursor never goes back.
+         "CREATE TABLE IF NOT EXISTS collection_seqs ("
+         "collection TEXT PRIMARY KEY, seq INTEGER NOT NULL);")
+_SIZE = "SELECT COUNT(*), COALESCE(SUM(length(CAST(body AS BLOB))),0) FROM collection_rows"
 
 
 class Conflict(Exception):
@@ -80,8 +90,29 @@ class Conversations:
         db.execute("CREATE TABLE IF NOT EXISTS message_bodies ("
                    "message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, "
                    "body TEXT NOT NULL CHECK(length(body) <= 16384), created_at REAL NOT NULL)")
-        db.execute(_ROWS)
+        db.executescript(_ROWS)
         return closing(db)
+
+    @staticmethod
+    def _bound(db, owner: str, caller: str, collection: str, row, body: str) -> None:
+        """Refuse a write that would take its writer, collection or owner past a bound."""
+        size, old = len(body.encode()), 0 if row is None else len(row["body"].encode())
+        add = 1 if row is None else 0
+        checks = [("the owner's collections are full", "", (), MAX_OWNER_ROWS,
+                   MAX_OWNER_BYTES, add, size - old),
+                  ("the collection is full", " WHERE collection=?", (collection,), MAX_ROWS,
+                   MAX_COLLECTION_BYTES, add, size - old)]
+        if caller != owner:
+            mine = row is not None and row["writer"] == caller
+            checks.insert(0, ("this writer's share of the collection is full",
+                              " WHERE collection=? AND writer=?", (collection, caller),
+                              MAX_WRITER_ROWS, MAX_WRITER_BYTES, 0 if mine else 1,
+                              size - (old if mine else 0)))
+        for reason, where, params, max_rows, max_bytes, more_rows, more_bytes in checks:
+            rows, used = db.execute(_SIZE + where, params).fetchone()
+            if rows + more_rows > max_rows and more_rows or (
+                    used + more_bytes > max_bytes and more_bytes > 0):
+                raise PermissionError(reason)
 
     def put(self, owner: str, message_id: str, room_id: str, body: str) -> None:
         """Before the ledger commit. Replaces only an orphan: the ledger has no row yet."""
@@ -113,8 +144,8 @@ class Conversations:
     # -- collections: the one revision primitive (S34) -----------------------
 
     def write(self, owner: str, *, caller: str, collection: str, row_id: str, body: str,
-              expected: str, private: bool) -> dict:
-        """Commit ``body`` only while ``expected`` is the row's etag; ``""`` creates the row.
+              expected_etag: str, private: bool) -> dict:
+        """Commit ``body`` only while ``expected_etag`` is the row's; ``""`` creates the row.
 
         A mismatch raises :class:`Conflict` with the row as stored and changes nothing.
         """
@@ -122,7 +153,7 @@ class Conversations:
         _name(row_id, "row_id")
         if not isinstance(body, str) or len(body) > MAX_ROW:
             raise ValueError(f"a row body is text of at most {MAX_ROW} characters")
-        if not isinstance(expected, str) or type(private) is not bool:
+        if not isinstance(expected_etag, str) or type(private) is not bool:
             raise ValueError("invalid collection write")
         with self._connect(owner) as db:
             db.execute("BEGIN IMMEDIATE")  # one writer at a time across connections
@@ -133,19 +164,12 @@ class Conversations:
                     raise PermissionError("a private row is its writer's own")
                 if row is not None and bool(row["private"]) != private:
                     raise ValueError("a row keeps the privacy it was created with")
-                if (row["etag"] if row is not None else "") != expected:
+                if (row["etag"] if row is not None else "") != expected_etag:
                     raise Conflict(None if row is None else _row(row))
-                count, top = db.execute("SELECT COUNT(*), COALESCE(MAX(seq),0) FROM "
-                                        "collection_rows WHERE collection=?",
-                                        (collection,)).fetchone()
-                if row is None and count >= MAX_ROWS:
-                    raise PermissionError("the collection is full")
-                rows, size = db.execute("SELECT COUNT(*), COALESCE(SUM(length(CAST(body AS "
-                                        "BLOB))),0) FROM collection_rows").fetchone()
-                size += len(body.encode()) - (0 if row is None else len(row["body"].encode()))
-                if (row is None and rows >= MAX_OWNER_ROWS) or size > MAX_OWNER_BYTES:
-                    raise PermissionError("the owner's collections are full")
-                seq = top + 1
+                self._bound(db, owner, caller, collection, row, body)
+                seq = self._top(db, collection) + 1
+                db.execute("INSERT INTO collection_seqs VALUES (?,?) ON CONFLICT(collection) "
+                           "DO UPDATE SET seq=excluded.seq", (collection, seq))
                 db.execute("INSERT OR REPLACE INTO collection_rows VALUES (?,?,?,?,?,?,?,?,?)",
                            (collection, row_id, 1 if row is None else row["revision"] + 1, seq,
                             digest(f"{seq}:{body}"), caller, int(private), body, time.time()))
@@ -169,13 +193,31 @@ class Conversations:
         if type(limit) is not int or not 0 < limit <= MAX_PULL:
             raise ValueError(f"limit is 1 to {MAX_PULL}")
         with self._connect(owner) as db:
-            top = db.execute("SELECT COALESCE(MAX(seq),0) FROM collection_rows WHERE "
-                             "collection=?", (collection,)).fetchone()[0]
+            top = self._top(db, collection)
             rows = db.execute("SELECT * FROM collection_rows WHERE collection=? AND seq>? AND "
                               "seq<=? AND (private=0 OR writer=?) ORDER BY seq LIMIT ?",
                               (collection, after, top, caller, limit)).fetchall()
         return {"cursor": rows[-1]["seq"] if len(rows) == limit else top,
                 "rows": [_row(row) for row in rows]}
+
+    def clear(self, owner: str, *, collection: str, writer: str | None) -> dict:
+        """Delete a collection's rows, or one writer's; the owner's act alone (the router's)."""
+        _name(collection, "collection")
+        if writer is not None:
+            _name(writer, "writer")
+        with self._connect(owner) as db:
+            deleted = db.execute(
+                "DELETE FROM collection_rows WHERE collection=?" + (
+                    "" if writer is None else " AND writer=?"),
+                (collection,) if writer is None else (collection, writer)).rowcount
+        return {"deleted": deleted}
+
+    @staticmethod
+    def _top(db, collection: str) -> int:
+        """The collection's high-water seq; a clear never lowers it."""
+        found = db.execute("SELECT seq FROM collection_seqs WHERE collection=?",
+                           (collection,)).fetchone()
+        return 0 if found is None else found[0]
 
 
 def router_operation(conversations: Conversations, doc: dict) -> dict:
@@ -194,7 +236,7 @@ def router_operation(conversations: Conversations, doc: dict) -> dict:
     validate_principal(caller)
     require_admitted(conversations._admissions, owner)
     fields = {k: v for k, v in doc.items() if k not in {"op", "action", "principal", "caller"}}
-    if action == "write" and set(fields) == {"collection", "row_id", "body", "expected",
+    if action == "write" and set(fields) == {"collection", "row_id", "body", "expected_etag",
                                              "private"}:
         try:
             return {"row": conversations.write(owner, caller=caller, **fields)}
@@ -202,4 +244,8 @@ def router_operation(conversations: Conversations, doc: dict) -> dict:
             return {"conflict": exc.current}
     if action == "pull" and set(fields) == {"collection", "after", "limit"}:
         return conversations.pull(owner, caller=caller, **fields)
+    if action == "clear" and set(fields) == {"collection", "writer"}:
+        if caller != owner:
+            raise PermissionError("only the owner clears a collection")
+        return conversations.clear(owner, **fields)
     raise ValueError("invalid collection request")

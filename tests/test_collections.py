@@ -58,14 +58,14 @@ def test_board_race_has_one_winner_and_one_conflict_carrying_the_current_row(bro
     """Two writers present the same etag at once: one commits, the other gets the row."""
     store, start, outcomes = broker.store, threading.Barrier(2), {}
     first = store.write("alice", caller="alice", collection="board", row_id="task-1",
-                        body='{"lane":"todo"}', expected="", private=False)
+                        body='{"lane":"todo"}', expected_etag="", private=False)
 
     def move(name, lane):
         start.wait()
         try:
             outcomes[name] = store.write("alice", caller=name, collection="board",
                                          row_id="task-1", body=f'{{"lane":"{lane}"}}',
-                                         expected=first["etag"], private=False)
+                                         expected_etag=first["etag"], private=False)
         except Conflict as exc:
             outcomes[name] = exc
 
@@ -87,11 +87,11 @@ def test_payloads_are_verbatim_and_pull_follows_the_sequence(broker):
     store = broker.store
     body = '{ "b": 1,  "a": "café" }'
     one = store.write("alice", caller="alice", collection="board", row_id="t1", body=body,
-                      expected="", private=False)
+                      expected_etag="", private=False)
     store.write("alice", caller="alice", collection="room:chess:main", row_id="x", body="{}",
-                expected="", private=False)
+                expected_etag="", private=False)
     two = store.write("alice", caller="alice", collection="board", row_id="t2", body="[]",
-                      expected="", private=False)
+                      expected_etag="", private=False)
     page = store.pull("alice", caller="bob", collection="board", after=0, limit=1)
     assert page == {"cursor": 1, "rows": [one]} and one["body"] == body
     assert store.pull("alice", caller="bob", collection="board", after=1, limit=10) == {
@@ -100,24 +100,24 @@ def test_payloads_are_verbatim_and_pull_follows_the_sequence(broker):
         "cursor": 2, "rows": []}
     with pytest.raises(Conflict) as stale:
         store.write("alice", caller="bob", collection="board", row_id="t1", body="{}",
-                    expected="", private=False)
+                    expected_etag="", private=False)
     assert stale.value.current == one
 
 
 def test_a_private_row_is_its_writers_own(broker):
     store = broker.store
     mine = store.write("alice", caller="bob", collection="room:chess:main", row_id="p",
-                       body="secret", expected="", private=True)
+                       body="secret", expected_etag="", private=True)
     assert store.pull("alice", caller="cara", collection="room:chess:main", after=0,
                       limit=10) == {"cursor": 1, "rows": []}
     assert store.pull("alice", caller="bob", collection="room:chess:main", after=0,
                       limit=10)["rows"] == [mine]
     with pytest.raises(PermissionError):
         store.write("alice", caller="cara", collection="room:chess:main", row_id="p",
-                    body="x", expected=mine["etag"], private=True)
+                    body="x", expected_etag=mine["etag"], private=True)
     with pytest.raises(ValueError):
         store.write("alice", caller="bob", collection="room:chess:main", row_id="p",
-                    body="x", expected=mine["etag"], private=False)
+                    body="x", expected_etag=mine["etag"], private=False)
     assert _rows(broker.root)[0][-1] == "secret"
 
 
@@ -127,12 +127,12 @@ def test_a_full_collection_refuses_a_new_row(broker, monkeypatch):
     monkeypatch.setattr(conversations, "MAX_ROWS", 1)
     store = broker.store
     row = store.write("alice", caller="alice", collection="board", row_id="a", body="1",
-                      expected="", private=False)
+                      expected_etag="", private=False)
     with pytest.raises(PermissionError, match="full"):
         store.write("alice", caller="alice", collection="board", row_id="b", body="1",
-                    expected="", private=False)
+                    expected_etag="", private=False)
     assert store.write("alice", caller="alice", collection="board", row_id="a", body="2",
-                       expected=row["etag"], private=False)["revision"] == 2
+                       expected_etag=row["etag"], private=False)["revision"] == 2
     assert MAX_ROWS == 1000
 
 
@@ -144,20 +144,20 @@ def test_an_owners_collections_are_bounded_in_rows_and_bytes(broker, monkeypatch
     monkeypatch.setattr(conversations, "MAX_OWNER_ROWS", 2)
     monkeypatch.setattr(conversations, "MAX_OWNER_BYTES", 10)
     a = store.write("alice", caller="alice", collection="room:a:main", row_id="x", body="1234",
-                    expected="", private=False)
+                    expected_etag="", private=False)
     store.write("alice", caller="alice", collection="room:b:main", row_id="x", body="1234",
-                expected="", private=False)
+                expected_etag="", private=False)
     with pytest.raises(PermissionError, match="owner's collections are full"):
         store.write("alice", caller="alice", collection="room:c:main", row_id="x", body="",
-                    expected="", private=False)
+                    expected_etag="", private=False)
     with pytest.raises(PermissionError, match="owner's collections are full"):
         store.write("alice", caller="alice", collection="room:a:main", row_id="x",
-                    body="caféé", expected=a["etag"], private=False)  # 7 bytes
+                    body="caféé", expected_etag=a["etag"], private=False)  # 7 bytes
     assert store.write("alice", caller="alice", collection="room:a:main", row_id="x",
-                       body="123456", expected=a["etag"], private=False)["revision"] == 2
+                       body="123456", expected_etag=a["etag"], private=False)["revision"] == 2
     assert len(_rows(broker.root)) == 2
     assert store.write("bob", caller="bob", collection="room:c:main", row_id="x", body="1",
-                       expected="", private=False)["revision"] == 1
+                       expected_etag="", private=False)["revision"] == 1
 
 
 def test_the_owner_channel_carries_the_router_caller_and_a_conflict(broker):
@@ -167,15 +167,52 @@ def test_the_owner_channel_carries_the_router_caller_and_a_conflict(broker):
 
     bob = Identity(user_id="bob", username="bob")
     row = collection_request(broker.root, bob, "write", owner="alice", collection="board",
-                             row_id="t", body="1", expected="", private=False)["row"]
+                             row_id="t", body="1", expected_etag="", private=False)["row"]
     assert row["writer"] == "bob" and _rows(broker.root)[0][4] == "bob"
     with pytest.raises(CollectionConflict) as lost:
         collection_request(broker.root, bob, "write", owner="alice", collection="board",
-                           row_id="t", body="2", expected="", private=False)
+                           row_id="t", body="2", expected_etag="", private=False)
     assert lost.value.current == row and lost.value.etag == row["etag"]
     with pytest.raises(BrokerRefused, match="invalid collection request"):
         collection_request(broker.root, bob, "write", owner="alice", collection="board",
-                           row_id="t", body="2", expected="", private=False, writer="alice")
+                           row_id="t", body="2", expected_etag="", private=False, writer="alice")
     with pytest.raises(BrokerRefused, match="no admission"):
         collection_request(broker.root, bob, "pull", owner="cara", collection="board",
                            after=0, limit=1)
+
+
+def test_one_visitor_fills_only_its_own_share_and_the_owner_clears(broker, monkeypatch):
+    """A visitor stops at its share; another still writes; one room cannot starve another."""
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker import conversations
+    from tinyassets.broker.client import BrokerRefused, collection_request
+
+    store, room = broker.store, "room:chess:main"
+    monkeypatch.setattr(conversations, "MAX_WRITER_ROWS", 2)
+    monkeypatch.setattr(conversations, "MAX_COLLECTION_BYTES", 6)
+
+    def put(caller, row_id, body="1", collection=room):
+        return store.write("alice", caller=caller, collection=collection, row_id=row_id,
+                           body=body, expected_etag="", private=True)
+
+    put("mallory", "a")
+    put("mallory", "b")
+    with pytest.raises(PermissionError, match="this writer's share"):
+        put("mallory", "c")
+    put("cara", "c1")
+    with pytest.raises(PermissionError, match="the collection is full"):
+        put("alice", "big", body="1234")  # 3 used + 4 > 6
+    put("alice", "big", body="1234", collection="room:go:main")
+    alice = Identity(user_id="alice", username="alice")
+    with pytest.raises(BrokerRefused, match="only the owner"):
+        collection_request(broker.root, Identity("mallory", "mallory"), "clear",
+                           owner="alice", collection=room, writer=None)
+    assert collection_request(broker.root, alice, "clear", owner="alice", collection=room,
+                              writer="mallory") == {"deleted": 2}
+    put("mallory", "c")
+    assert collection_request(broker.root, alice, "clear", owner="alice", collection=room,
+                              writer=None) == {"deleted": 2}
+    # A clear never moves a reader's cursor back: the next row is past every old seq.
+    assert put("cara", "z")["seq"] == 5
+    assert store.pull("alice", caller="cara", collection=room, after=4, limit=10)[
+        "cursor"] == 5

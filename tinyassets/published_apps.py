@@ -79,9 +79,10 @@ def unbind(root, owner: str, slug: str) -> dict:
     with _LOCK:
         document = _read(root)
         current = document.get(slug)
-        if current is None:
+        if current is None or isinstance(current, dict) and current.get("owner") != owner:
+            # Idempotent: nothing of this owner's is bound; another owner's stays.
             return {"slug": slug, "owner": owner, "published": False}
-        if not isinstance(current, dict) or current.get("owner") != owner:
+        if not isinstance(current, dict):
             raise PermissionError("app slug is not this owner's")
         del document[slug]
         _write(root, document)

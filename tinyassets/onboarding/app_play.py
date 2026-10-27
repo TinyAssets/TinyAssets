@@ -86,10 +86,9 @@ async def handle_app_publish(request: Request) -> JSONResponse:
             })
             saved = mark_published(runtime.root, slug, published=True)
         elif body["published"] is False:
-            if document.get("published") is True:
-                request_publication({
-                    "kind": "published_app_withdrawal", "slug": slug,
-                })
+            # Always withdraw: the binding opens the room, and a half-failed
+            # publish may have left it while the document reads unpublished.
+            request_publication({"kind": "published_app_withdrawal", "slug": slug})
             saved = mark_published(runtime.root, slug, published=False)
         else:
             raise ValueError("invalid app publication")

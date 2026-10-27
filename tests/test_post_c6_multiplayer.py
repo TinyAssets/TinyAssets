@@ -315,3 +315,31 @@ def test_state_route_attributes_the_verified_caller(
         _current_identity.reset(token)
     assert response.status_code == 200
     assert json.loads(response.body)["writer"] == "bob"
+
+
+def test_unpublishing_always_withdraws_the_binding(tmp_path: Path, monkeypatch):
+    """A binding a half-failed publish left is withdrawn; another owner's slug stays."""
+    from starlette.requests import Request
+
+    from tinyassets.onboarding import app_play
+    from tinyassets.published_apps import apply
+
+    root = tmp_path / "alice"
+    _runtime(monkeypatch, root)
+    for slug in ("chess", "go"):
+        write_app(root, slug, name="Game")  # each document reads unpublished
+    bind(tmp_path, "alice", "chess", "Chess")
+    bind(tmp_path, "bob", "go", "Go")
+    monkeypatch.setattr(app_play, "request_publication",
+                        lambda payload: apply(tmp_path, "alice", payload))
+
+    async def receive():
+        return {"type": "http.request", "body": b'{"published": false}', "more_body": False}
+
+    for slug in ("chess", "go"):
+        response = asyncio.run(app_play.handle_app_publish(Request({
+            "type": "http", "method": "POST", "path": f"/app/{slug}/publish",
+            "path_params": {"slug": slug}, "query_string": b"",
+            "headers": [(b"content-type", b"application/json")]}, receive)))
+        assert response.status_code == 200
+    assert (owner_for(tmp_path, "chess"), owner_for(tmp_path, "go")) == (None, "bob")

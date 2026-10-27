@@ -30,6 +30,8 @@ _INBOUND_PROOF = {b"x-slack-signature", b"x-hub-signature-256",
                   b"x-slack-request-timestamp", b"proxy-authorization"}
 _MCP = frozenset({"/mcp", "/mcp/"})
 ANY = "*"
+#: The box middleware's refusal of an outside client off the MCP surface.
+OUTSIDE_SURFACE = "outside clients use the MCP capability surface"
 
 
 @dataclass(frozen=True)
@@ -186,6 +188,12 @@ async def _serve_shared(front, public):
     from tinyassets.storage import data_dir
 
     scope = front.scope
+    if (scope["path"].startswith("/app/") and front.identity is not None
+            and (front.identity.metadata or {}).get("outside_origin") is not None):
+        # The box's own rule, before any handler: an outside client has the MCP
+        # surface only. Keyed /api routes (API-key agents) are not /app.
+        return await JSONResponse({"error": "forbidden", "detail": OUTSIDE_SURFACE},
+                                  status_code=403)(scope, front.receive, front.send)
     if not (public and scope["method"] in {"GET", "HEAD"}) and not await run_in_threadpool(
             admits, data_dir(), front.identity.user_id if front.identity else None):
         return await JSONResponse({"error": "maintenance"}, status_code=503)(

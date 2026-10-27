@@ -2082,7 +2082,7 @@ def onboarding_routes() -> list[Any]:
         # A published app lives in its owner's box. Specific product routes
         # above keep their paths; a slug cannot use a reserved first segment.
         # S34: answered by the router from the publisher's broker store (room_door).
-        Route("/app/{slug}/state", room_door.handle, methods=["GET", "POST"]),
+        Route("/app/{slug}/state", room_door.handle, methods=["GET", "POST", "DELETE"]),
         Route("/app/{slug}/publish", handle_app_publish, methods=["POST"]),
         Route("/app/{slug}", handle_app_document, methods=["GET", "HEAD", "POST"]),
     ]

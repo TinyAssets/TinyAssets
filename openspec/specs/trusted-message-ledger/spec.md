@@ -24,14 +24,18 @@ S34, W8, W9 Tier A. `conversations.db` SHALL hold `collection_rows`, the repo's 
 compare-and-swap primitive: rows keyed by collection and row id, each with a revision, an
 etag and the collection's next `seq`, written only while the presented etag is the row's
 (empty creates it) and pulled after a `seq` cursor; payloads SHALL be stored and returned
-verbatim, and a private row SHALL be visible to and writable by its writer alone. One
-owner's collections SHALL be bounded in rows and payload bytes, and a write past the bound
-SHALL be refused. The board
+verbatim, and a private row SHALL be visible to and writable by its writer alone. Rows and
+payload bytes SHALL be bounded per writer other than the owner in one collection, per
+collection and per owner, and a write past a bound SHALL be refused. Only the store's owner
+SHALL clear a collection or one writer's rows in it; a clear SHALL never lower the
+collection's `seq`. The board
 SHALL be `collection='board'`; a published app's room SHALL be `room:<app>:main`. Only the
 router's owner channel SHALL reach `COLLECTION`, with the store owner and the caller chosen
 by the router (a published slug's publisher from the published directory, the caller from
 its verified identity), never by a request field. The router SHALL answer
-`/app/<slug>/state` itself, and SHALL never forward, ask or wake a box for it.
+`/app/<slug>/state` itself, and SHALL never forward, ask or wake a box for it; the
+publisher SHALL clear it with `DELETE` from their protected owner session. Every
+router-answered `/app/` path SHALL refuse a caller with an `outside_origin`, as the box does.
 
 #### Scenario: Two writers move one board task at once
 - **WHEN** two writers present the same etag for one `board` row

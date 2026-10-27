@@ -41,9 +41,16 @@ def write(request, slug: str, *, scope, key, value, expected_etag, caller: str) 
     if len(body.encode()) > MAX_VALUE:
         raise ValueError("state value is too large")
     row = request("write", collection=f"room:{slug}:{ROOM}", row_id=_row_id(scope, key, caller),
-                  body=body, expected=expected_etag, private=scope == "player")["row"]
+                  body=body, expected_etag=expected_etag, private=scope == "player")["row"]
     return {"scope": scope, "key": key, "etag": row["etag"], "seq": row["seq"],
             "writer": row["writer"]}
+
+
+def clear(request, slug: str, *, writer=None) -> dict:
+    """The publisher clears the room, or one player's rows in it."""
+    if writer is not None and (not isinstance(writer, str) or not writer):
+        raise ValueError("invalid writer")
+    return request("clear", collection=f"room:{slug}:{ROOM}", writer=writer)
 
 
 def pull(request, slug: str, *, since: int) -> dict:
@@ -66,19 +73,28 @@ def _answer(body: dict, status: int = 200) -> JSONResponse:
 
 
 async def handle(request) -> JSONResponse:
-    """``GET /app/<slug>/state?since=`` pulls; ``POST`` compare-and-swaps one record."""
+    """``GET /app/<slug>/state?since=`` pulls; ``POST`` compare-and-swaps one record.
+
+    ``DELETE`` (``{}`` or ``{"writer": ...}``) is the publisher's own, from their
+    protected owner session: it clears the room or one player's rows.
+    """
     from functools import partial
 
     from tinyassets.app_access import validate_slug
     from tinyassets.auth.middleware import current_identity_or_none, published_box_owner
     from tinyassets.broker.client import BrokerRefused, CollectionConflict, collection_request
-    from tinyassets.onboarding import _read_small_json
+    from tinyassets.onboarding import _read_small_json, owner_sessions
     from tinyassets.storage import data_dir
 
     identity = current_identity_or_none()
     if identity is None:  # as the router answers an unsigned owner door
         return _answer({"error": "not_found"}, 404)
     caller = identity.user_id
+    # A bearer beside another account's session cookie is refused, as at the box door.
+    session = await run_in_threadpool(owner_sessions.lookup,
+                                      request.cookies.get(owner_sessions.COOKIE, ""))
+    if session is not None and json.loads(session["identity_json"])["user_id"] != caller:
+        return _answer({"error": "identity_conflict"}, 401)
     try:
         slug = validate_slug(request.path_params["slug"])
     except ValueError:
@@ -88,7 +104,18 @@ async def handle(request) -> JSONResponse:
         # A published slug is its publisher's room; any other is the caller's own.
         owner = await run_in_threadpool(published_box_owner, root, request.scope["path"], caller)
         call = partial(collection_request, root, identity, owner=owner)
-        if request.method == "GET":
+        if request.method == "DELETE":
+            if owner != caller:
+                return _answer({"error": "private_surface"}, 403)
+            try:
+                await run_in_threadpool(owner_sessions.require, request, owner=caller)
+            except PermissionError:
+                return _answer({"error": "interactive_owner_session_required"}, 403)
+            body = await _read_small_json(request)
+            if body is None or set(body) - {"writer"}:
+                raise ValueError("invalid room clear")
+            result = await run_in_threadpool(clear, call, slug, **body)
+        elif request.method == "GET":
             raw = request.query_params.get("since", "0")
             if not raw.isdecimal():
                 raise ValueError("invalid sync cursor")

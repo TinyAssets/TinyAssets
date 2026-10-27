@@ -89,7 +89,9 @@ The founder's words: "Insert a 'trusted front' slice (router answers registered 
   (`/app/<slug>/state`) answered on the trusted side by `room_door.py` from the publisher's store
   as `room:<app>:main`; `app_room`'s own compare-and-swap and the box-side `state.json` deleted;
   registry row S34 converged with `test_revision_primitive`. Live acceptance owed: the board
-  race and the post-c6 multiplayer flow against staging.
+  race and the post-c6 multiplayer flow against staging. Gaps: an erased player's rows stay in
+  other publishers' stores until that publisher clears them; the box-side
+  `apps/<slug>/state.json` files are left on volumes, unmigrated (founder decision).
 
 ## P0-3 code
 
