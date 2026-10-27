@@ -2,11 +2,10 @@
 
 ## Status
 
-Proposed. Would amend ADR-019 (where the loop runs) and ADR-022 (its P3 row:
-"loop in the box"). Deferred (founder, 2026-10-26): moving serving out means
-relocating about 113 owner stores and about 66,000 lines of serving, and
-one shared trusted server would make owner isolation an app check again
-(Direction 5). Revisit with metering receipts (N12) at real user counts.
+Accepted (founder, 2026-10-26). The deferral in #5324 is withdrawn: on
+2026-10-27T01:23Z the founder said to "review the doc and build only the
+correct architecture", and the plan records this decision as A8. Amends ADR-019
+(where the loop runs) and ADR-022 (its P3 row: "loop in the box").
 
 ## Date
 
@@ -42,7 +41,7 @@ one shared trusted server would make owner isolation an app check again
   through the broker.
 - **How it reaches the box:** a tool door served by the box for the four
   tools and declared extension points, with an operation id and handle
-  generation on each call. This would reverse C6's "no execution
+  generation on each call. This reverses C6's "no execution
   forwarding" stance.
 - **Where it runs:** its own deploy unit (`loop-worker`) under its own OS
   user, unprivileged. The turn journal, leases and fences move from the
@@ -62,22 +61,25 @@ one shared trusted server would make owner isolation an app check again
 
 ## Consequences
 
-- If accepted, ADR-022's P3 loop move, which C6 carried out, is reversed:
-  the loop leaves the box for the loop-worker pool, never for the shared
-  daemon. The loop worker would be built after owner serving leaves the box
-  (ADR-030), since while the converse handler runs in the box the box stays
-  awake through every model call wherever the loop runs. P3's other duties
-  land elsewhere:
+- ADR-022's P3 loop move, which C6 carried out, is reversed: the loop
+  leaves the box for the loop-worker pool, never for the shared daemon.
+  P3's other duties land elsewhere:
   - **Owner-session minting in broker custody** (ADR-019's P1 residual, the
     daemon-writable owner-session table) stays owed as its own step, unchanged
     in scope, under S8.
   - **The broker in-box endpoint for CLI packages** is not built: ADR-031 has
     hosted CLIs sign in through the vendor's own flow, so no token is leased.
-  - **The cross-user floor completes, and S8 reads converged,** when the
-    owner-session move lands and the loop runs in the loop-worker pool.
+  - **The cross-user floor completes** when the owner-session move lands,
+    N10 takes action rules out of the box, and the loop runs in the
+    loop-worker pool. Registry row S8 already reads converged and records
+    that floor as still owed.
+- The loop worker records its native agents' messages in the ledger
+  (ADR-025); user code in the box posts only as native, flagged.
 - A box wakes only for tool and customization calls.
 - The box harness shrinks to tools, user code and owner files (ADR-030).
-- A new registry row (proposed S35), added with its guard in the loop-worker
-  slice, will hold the placement: no loop code imported by the box harness
-  or the shared daemon.
+- Registry row S35 holds the placement. Its guard, turned on in the
+  loop-worker slice (S2a): no module imported by the box harness imports
+  `agent_loop`; `ExecutionOwner` is constructed only in the loop-worker
+  entry point; user code reaches the loop only through declared extension
+  points.
 - Build order: `openspec/changes/device-first-build/`.
