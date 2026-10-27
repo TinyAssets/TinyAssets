@@ -292,11 +292,13 @@ class EventStore:
                 for row, config in self._candidates(conn, owner, event)
             ]
 
-    def capture(self, owner, event, *, allow, revoke):
+    def capture(self, owner, event, *, allow, revoke, admits=None):
         """Enqueue for re-authorized subscriptions; revoke the ones the box refused.
 
         Both lists name only this owner's subscriptions; an ID outside this
         run's scope is ignored, so a box cannot aim a delivery anywhere else.
+        ``admits`` is the broker's own read of an outside subscriber's grant (P0-3):
+        one it no longer admits is revoked whatever the box allowed.
         """
         event = _event(event)
         if (not isinstance(allow, list) or not isinstance(revoke, list)
@@ -324,8 +326,9 @@ class EventStore:
             ).fetchone()[0] + len(allow) > MAX_PENDING:
                 # The source stays owed in the box, inside its one-day horizon.
                 raise EventError(-32025, "Delivery backlog limit reached", limit="deliveries")
-            for row, _ in self._candidates(conn, owner, event):
-                if row["id"] in revoke:
+            for row, config in self._candidates(conn, owner, event):
+                if row["id"] in revoke or row["id"] in allow and config["authority"] and (
+                        admits is not None and not admits(config["authority"])):
                     self._revoke(conn, row["id"], owner)
                 elif row["id"] in allow:
                     queued += conn.execute(
@@ -497,13 +500,14 @@ def router_operation(store, identities, doc):
     raise ValueError("invalid MCP events request")
 
 
-def box_operation(store, owner, doc):
+def box_operation(store, owner, doc, admits=None):
     """A box reports runs for its bound owner only; the owner is the relay's."""
     if doc.get("action") == "match" and set(doc) == {"op", "action", "event"}:
         return store.match(owner, doc["event"])
     if doc.get("action") == "capture" and set(doc) == {"op", "action", "event", "allow",
                                                        "revoke"}:
-        return store.capture(owner, doc["event"], allow=doc["allow"], revoke=doc["revoke"])
+        return store.capture(owner, doc["event"], allow=doc["allow"], revoke=doc["revoke"],
+                             admits=admits)
     raise ValueError("invalid MCP events report")
 
 

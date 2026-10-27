@@ -102,6 +102,14 @@ S0's row above.
 
 - [ ] N10 owner authority in the broker (P0-3's prerequisite): action rules, once-approvals, effector consents and outside-client grant modes in `broker/policy.py`'s per-owner store (plan module map: "Room caps and per-agent grant modes as owner policy (N10)"; founder 2026-10-26: trusted per-owner stores are broker-held SQLite), written only from a protected owner session and enforced at OPEN; the box channel cannot widen authority. Connect-flow consent is built with W7/W11, not here. Stage a1 (action rules and once-approvals) is PR #5333.
 - [ ] P0-3 Outside agents distinguishable from the owner: grant modes (full by default, scoped per agent), `check_identity` consults grants, then the claim probe and setting.
+  - [x] Grant modes in the broker (branch `p0-3-outside-grants`): `outside_clients` in each
+    owner's `policy.db` (`full` by default for a newly verified MCP client, `scoped`,
+    `revoked`); changed only by `outside_set` on the router's owner channel from the
+    protected session (`/app/outside-clients`, `/app/api-keys/mint`); the router admits
+    every outside call and stamps its grant, the box refuses an unstamped one, and OPEN
+    binds the stamped label. The box-held `.outside-client-authority.sqlite3`, its
+    durable switch and its effect leases are deleted. Still owed: effector consents (N10
+    above), and the claim probe and setting.
 
 ## S3b Events
 

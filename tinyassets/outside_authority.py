@@ -1,18 +1,23 @@
-"""Durable per-client authority, independent of extension authorship.
+"""Outside clients: who each one is, and the grant each call is admitted under (P0-3).
 
-Only verified resource-token claims identify a client and credential family.
-Cutover is configured after the founder's AuthKit evidence check. A missing or
-invalid durable switch denies all classified outside work across workers.
+Only verified resource-token claims identify a client and credential family
+(``origin``). The grant is owner policy in the broker (``broker/policy.py``
+``outside_clients``): ``full`` by default (decision A1), ``scoped`` to exact
+``{universe, agent, capability}`` triples, or ``revoked``, changed only from the
+owner's protected session. The router admits every outside call (``admit``) and
+stamps the grant on the identity it forwards; the box checks that stamp
+(``check_identity``) and re-reads the broker (``refresh``) for work that outlives its
+request. ``TINYASSETS_OUTSIDE_DENY=1`` refuses every outside client.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import sqlite3
-import time
 from contextlib import contextmanager
-from pathlib import Path
+
+#: What the router's admission adds to a verified ``outside_origin``.
+STAMP = ("mode", "scopes", "generation")
 
 
 class OutsideRefused(PermissionError):
@@ -47,173 +52,72 @@ def origin(claims):
             "authenticated_at": authenticated_at}
 
 
-def _switched_off(conn) -> bool:
-    """The platform-wide kill switches: the deny environment and the durable router switch."""
-    switch = conn.execute("SELECT enabled FROM outside_switch WHERE id=1").fetchone()
-    return os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1" or switch is None or switch[0] != 1
+def admit(data_root, identity) -> None:
+    """Router: stamp the verified outside client's grant on ``identity``, or refuse.
+
+    The one admission of every outside call, before the router answers it or
+    forwards it to the box. A broker that cannot answer raises ``RuntimeError``.
+    """
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.broker.policy_submit import submit
+
+    bound = identity.metadata["outside_origin"]
+    if os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1":
+        raise OutsideRefused("outside clients are switched off")
+    source = "api_key" if identity.metadata.get("auth_provider") == "api_key" else "mcp"
+    try:
+        grant = submit(data_root, identity.user_id, "outside_admit", client=bound["client"],
+                       source=source, authenticated_at=bound.get("authenticated_at"))
+    except PolicyRefused as exc:
+        raise OutsideRefused(str(exc)) from None
+    identity.metadata["outside_origin"] = {**bound, **{k: grant[k] for k in STAMP}}
 
 
-class OutsideClientAuthority:
-    def __init__(self, base):
-        self.path = Path(base) / ".outside-client-authority.sqlite3"
+def refresh(owner, bound) -> dict:
+    """Box: the grant as it stands now, for work that outlives the call that stamped it.
 
-    @contextmanager
-    def db(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path, timeout=10) as conn:
-            conn.row_factory = sqlite3.Row
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS outside_switch (id INTEGER PRIMARY KEY, enabled INTEGER);
-                CREATE TABLE IF NOT EXISTS outside_families (
-                  owner TEXT, client TEXT, family TEXT, retired INTEGER NOT NULL DEFAULT 0,
-                  authenticated_at INTEGER NOT NULL,
-                  PRIMARY KEY(owner,client,family));
-                CREATE TABLE IF NOT EXISTS outside_revocations (
-                  owner TEXT, client TEXT, revoked_at REAL NOT NULL, PRIMARY KEY(owner,client));
-                CREATE TABLE IF NOT EXISTS outside_grants (
-                  owner TEXT, client TEXT, generation INTEGER NOT NULL, family TEXT NOT NULL,
-                  scopes TEXT NOT NULL, revoked INTEGER NOT NULL,
-                  PRIMARY KEY(owner,client));
-                CREATE TABLE IF NOT EXISTS outside_effects (
-                  lease TEXT PRIMARY KEY, owner TEXT, client TEXT, generation INTEGER,
-                  state TEXT NOT NULL, admitted_at REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS outside_audit (
-                  owner TEXT, client TEXT, generation INTEGER, action TEXT,
-                  at TEXT DEFAULT CURRENT_TIMESTAMP);
-            """)
-            yield conn
+    Any change to the grant since then (a new mode, new scopes, a revoke) refuses.
+    """
+    from tinyassets.broker.client import BrokerRefused, owner_policy_operation
+    from tinyassets.storage import data_dir
 
-    def observe(self, owner, bound):
-        with self.db() as conn:
-            conn.execute("INSERT OR IGNORE INTO outside_families VALUES (?,?,?,0,?)",
-                         (owner, bound["client"], bound["family"], bound["authenticated_at"]))
-
-    def set_enabled(self, enabled):
-        if type(enabled) is not bool:
-            raise ValueError("outside switch requires boolean")
-        with self.db() as conn:
-            conn.execute("INSERT OR REPLACE INTO outside_switch VALUES (1,?)", (int(enabled),))
-
-    def change(self, owner, client, *, expected_generation, family, scopes, revoke=False):
-        if type(expected_generation) is not int or expected_generation < 0:
-            raise ValueError("expected outside grant generation required")
-        if (not isinstance(scopes, list) or any(not isinstance(s, dict) or set(s) != {
-                "universe", "agent", "capability"} or any(
-                    not isinstance(v, str) or not v or v == "*" for v in s.values())
-                for s in scopes)):
-            raise ValueError("outside scopes require exact universe, agent and capability")
-        with self.db() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            old = conn.execute("SELECT * FROM outside_grants WHERE owner=? AND client=?",
-                               (owner, client)).fetchone()
-            if (old["generation"] if old else 0) != expected_generation:
-                raise OutsideRefused("outside grant changed")
-            observed = conn.execute("SELECT retired,authenticated_at FROM outside_families "
-                                    "WHERE owner=? "
-                                    "AND client=? AND family=?", (owner, client, family)).fetchone()
-            fence = conn.execute("SELECT revoked_at FROM outside_revocations WHERE owner=? "
-                                 "AND client=?", (owner, client)).fetchone()
-            if not revoke and (observed is None or observed[0]
-                               or fence is not None and observed[1] <= fence[0]):
-                raise OutsideRefused("fresh verified credential family required")
-            if revoke:
-                if old is None:
-                    raise OutsideRefused("outside grant absent")
-                conn.execute("UPDATE outside_families SET retired=1 WHERE owner=? AND client=?",
-                             (owner, client))
-                conn.execute("INSERT OR REPLACE INTO outside_revocations VALUES (?,?,?)",
-                             (owner, client, time.time()))
-                family = old["family"]
-            generation = expected_generation + 1
-            conn.execute("INSERT OR REPLACE INTO outside_grants VALUES (?,?,?,?,?,?)",
-                         (owner, client, generation, family,
-                          json.dumps([] if revoke else scopes), int(revoke)))
-            conn.execute("INSERT INTO outside_audit(owner,client,generation,action) "
-                         "VALUES (?,?,?,?)",
-                         (owner, client, generation, "revoke" if revoke else "grant"))
-        return {"client": client, "generation": generation, "revoked": revoke}
-
-    def inspect(self, owner):
-        with self.db() as conn:
-            return {"clients": [dict(row) for row in conn.execute(
-                "SELECT client,generation,family,scopes,revoked FROM outside_grants WHERE owner=?",
-                (owner,))], "families": [dict(row) for row in conn.execute(
-                    "SELECT client,family,retired FROM outside_families WHERE owner=?", (owner,))]}
-
-    def require_switched_on(self):
-        """The kill switches alone, for a door that holds no owner grants (the router's)."""
-        try:
-            with self.db() as conn:
-                if _switched_off(conn):
-                    raise OutsideRefused("outside client authority unavailable")
-        except (sqlite3.Error, OSError):
-            raise OutsideRefused("outside authority store unavailable") from None
-
-    def admit(self, owner, bound, *, universe=None, agent=None, capability=None):
-        try:
-            with self.db() as conn:
-                row = conn.execute("SELECT * FROM outside_grants WHERE owner=? AND client=?",
-                                   (owner, bound["client"])).fetchone()
-                if (_switched_off(conn) or row is None or row["revoked"]
-                        or row["family"] != bound["family"]
-                        or bound.get("generation", row["generation"]) != row["generation"]):
-                    raise OutsideRefused("outside client authority unavailable")
-                scopes = json.loads(row["scopes"])
-                if capability is not None and {"universe": universe, "agent": agent,
-                                               "capability": capability} not in scopes:
-                    raise OutsideRefused("outside client capability not granted")
-                return {**bound, "generation": row["generation"]}
-        except (sqlite3.Error, ValueError, KeyError, OSError):
-            raise OutsideRefused("outside authority store unavailable") from None
-
-
-def current_store():
-    from tinyassets.api.helpers import _base_path
-
-    return OutsideClientAuthority(_base_path())
+    try:
+        grant = owner_policy_operation(data_dir(), owner, "outside_check",
+                                       client=bound["client"],
+                                       authenticated_at=bound.get("authenticated_at"))
+    except BrokerRefused as exc:
+        raise OutsideRefused(str(exc)) from None
+    except Exception:  # noqa: BLE001 - an unreadable grant never admits outside work
+        raise OutsideRefused("outside authority unavailable") from None
+    if grant["generation"] != bound.get("generation"):
+        raise OutsideRefused("outside client authority changed")
+    return {**bound, **{k: grant[k] for k in STAMP}}
 
 
 def check_identity(identity, *, universe=None, agent=None, capability=None):
+    """An outside identity's stamped grant admits this capability, or it refuses."""
     bound = identity.metadata.get("outside_origin")
-    if bound is not None:
-        current_store().admit(identity.user_id, bound, universe=universe,
-                              agent=agent, capability=capability)
+    if bound is None:
+        return
+    if bound.get("mode") not in ("full", "scoped") or type(bound.get("generation")) is not int:
+        raise OutsideRefused("outside client authority unavailable")
+    if (bound["mode"] == "scoped" and capability is not None
+            and {"universe": universe, "agent": agent, "capability": capability}
+            not in bound["scopes"]):
+        raise OutsideRefused("outside client capability not granted")
 
 
-@contextmanager
-def effect_admission():
-    """Admit once under a short transaction; in-flight outcomes are never replayed."""
+def recheck() -> str | None:
+    """Before an outside client's external effect: its grant as it stands, so a revoke
+    since its call stops it; the label the broker's OPEN gate binds (P0-3)."""
     from tinyassets.auth.middleware import current_identity_or_none
 
     identity = current_identity_or_none()
     bound = identity.metadata.get("outside_origin") if identity is not None else None
     if bound is None:
-        yield
-        return
-    import uuid
-
-    store = current_store()
-    check_identity(identity)
-    lease = uuid.uuid4().hex
-    with store.db() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM outside_grants WHERE owner=? AND client=?",
-                           (identity.user_id, bound["client"])).fetchone()
-        if (row is None or row["revoked"] or row["generation"] != bound["generation"]
-                or row["family"] != bound["family"] or _switched_off(conn)):
-            raise OutsideRefused("outside effect authority changed")
-        conn.execute("INSERT INTO outside_effects VALUES (?,?,?,?,?,?)",
-                     (lease, identity.user_id, bound["client"], bound["generation"],
-                      "in_flight", time.time()))
-    try:
-        yield
-    except BaseException:
-        with store.db() as conn:
-            conn.execute("UPDATE outside_effects SET state='unknown' WHERE lease=?", (lease,))
-        raise
-    else:
-        with store.db() as conn:
-            conn.execute("UPDATE outside_effects SET state='finished' WHERE lease=?", (lease,))
+        return None
+    grant = refresh(identity.user_id, bound)
+    return f"{grant['client']}:{grant['generation']}:{grant.get('authenticated_at') or ''}"
 
 
 def check_mcp_request(identity, document):
@@ -241,12 +145,14 @@ def check_mcp_request(identity, document):
               if arguments.get(k)}
     agents = {arguments[k] for k in ("agent_id", "agent_binding_id", "conversation_agent")
               if arguments.get(k)}
+    if arguments.get("webhook_op") == "mint" or arguments.get("source_op") == "create":
+        raise OutsideRefused("channel credentials require the protected owner surface")
+    if identity.metadata["outside_origin"]["mode"] == "full":
+        return  # the owner's normal authority (A1): no scope to resolve
     indirect = {"run_id", "branch_def_id", "branch_id", "branch_version_id", "automation_id",
                 "agent_definition_id", "source_id", "goal_id"}
     if any(arguments.get(k) for k in indirect) and not scopes:
         raise OutsideRefused("outside resource calls require an explicit universe")
-    if arguments.get("webhook_op") == "mint" or arguments.get("source_op") == "create":
-        raise OutsideRefused("channel credentials require the protected owner surface")
     if len(scopes) > 1 or len(agents) > 1:
         raise OutsideRefused("ambiguous outside resource scope")
     universe = next(iter(scopes), None) or get_founder_home(_base_path(), identity.user_id)
@@ -288,8 +194,8 @@ def run_identity(base, run_id):
         raise OutsideRefused("outside run owner changed")
     identity = Identity(document["owner"], document["owner"],
                         capabilities=document["capabilities"],
-                        metadata={"outside_origin": document["bound"]})
-    check_identity(identity)
+                        metadata={"outside_origin": refresh(document["owner"],
+                                                            document["bound"])})
     with identity_context(identity):
         yield
 
@@ -306,8 +212,7 @@ def stored_identity(raw, owner):
     if document["owner"] != owner:
         raise OutsideRefused("outside saved work owner changed")
     identity = Identity(owner, owner, capabilities=document["capabilities"],
-                        metadata={"outside_origin": document["bound"]})
-    check_identity(identity)
+                        metadata={"outside_origin": refresh(owner, document["bound"])})
     with identity_context(identity):
         yield
 

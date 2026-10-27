@@ -543,7 +543,7 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(platform, monkeypat
 
     for relative in (".api-keys.sqlite3", ".hook-owners.sqlite3", ".runtime/owner-sessions.db"):
         (staged / relative).unlink()
-    key = ApiKeyStore(staged).mint("alice", name="fixture", scopes=[], authority=None)["key"]
+    key = ApiKeyStore(staged).mint("alice", name="fixture")["key"]
     HookOwners(staged).publish(hashlib.sha256(b"hook").hexdigest(), "alice")
     with owner_sessions.store() as db:
         db.execute(

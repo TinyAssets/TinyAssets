@@ -837,7 +837,7 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
     published = sleep(storage)
 
     keys = ApiKeyStore(tmp_path)
-    key = keys.mint("alice", name="snapshot key", scopes=[], authority=None)
+    key = keys.mint("alice", name="snapshot key")
     assert keys.resolve(key["key"]) is not None
     owner = tmp_path / "owner-mount"
     owner.mkdir()
@@ -851,7 +851,7 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
     core.write(old, write_id, "/cc/note", b"after snapshot", max_bytes=100)
     core.consume_operation(old, bash_id, "bash", {"command": "echo once"})
     core.close()
-    keys.revoke("alice", key["key_id"], authority=None)
+    keys.revoke("alice", key["key_id"])
     assert keys.resolve(key["key"]) is None
     other = storage.lifecycle.volume("bob")
     restored = drive(storage.lifecycle.restore("alice", published["snapshot_id"]))

@@ -49,18 +49,11 @@ def main():
     (folder / "hello.txt").write_text(owner + " private data")
     grant_universe_ownership(root, universe_id=center, owner_id=owner)
     set_founder_home(root, founder_sub=owner, universe_id=center, platform_generated=True)
-    from tinyassets.api_keys import current_store
-    from tinyassets.outside_authority import OutsideClientAuthority
-
-    authority = OutsideClientAuthority(root)
-    with authority.db() as db:
-        db.execute("INSERT OR REPLACE INTO outside_switch VALUES (1, 1)")
-    key = current_store().mint(owner, name="router acceptance", authority=authority,
-                                scopes=[{"universe": center, "agent": "main",
-                                         "capability": "read_graph"}])
-    (root / "key.json").write_text(json.dumps(key))
+    # P0-3: a box never mints a key; the suite's key is the router's (test_owner_router).
     from starlette.responses import JSONResponse, StreamingResponse
     from starlette.routing import Route
+
+    from tinyassets.api_keys import current_store
 
     async def stream(request):
         async def chunks():
@@ -114,9 +107,9 @@ def main():
         data = await request.json()
         operation = data["operation"]
         if operation == "key_list":
-            result = current_store().list(owner, authority=authority)
+            result = current_store().list(owner)
         elif operation == "key_revoke":
-            result = current_store().revoke(owner, data["key_id"], authority=authority)
+            result = current_store().revoke(owner, data["key_id"])
         elif operation == "hook_mint":
             token = webhook_hooks.mint(root, universe_id=center, branch_def_id="main",
                                        owner_principal_id="request-field-is-ignored",

@@ -15,6 +15,12 @@ rules join ``main``'s (strictest wins), and a standing grant naming that agent
 covers whatever the box labels as that agent. The broker cannot tell which
 process inside the box made the call, so a per-agent grant is a grant to the
 box under that name.
+
+An OPEN made for an outside client (P0-3) carries its grant as stamped:
+``client:generation:authenticated_at``. The broker refuses it once that grant has
+changed or been revoked, and a scoped client's own rules join the decision. Like the
+agent label, it is the box's word: an omitted label decides as the owner, and the
+binding control on an outside client is the router's admission.
 """
 from __future__ import annotations
 
@@ -26,7 +32,7 @@ import rfc8785
 #: Never trust the box's agent label for these: the strictest rule of any agent.
 STRICTEST_AGENT = frozenset({"security.change", "access.grant", "money.move"})
 REFUSALS = frozenset({"policy_ask", "policy_hand_off"})
-AUTHORITY_FIELDS = frozenset({"agent", "approval"})
+AUTHORITY_FIELDS = frozenset({"agent", "approval", "outside"})
 MAIN_AGENT = "main"
 _READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD_OVERRIDES = frozenset({"x-http-method-override", "x-method-override", "x-http-method"})
@@ -117,6 +123,16 @@ def _agents(store, owner: str, asserted: str, action_class: str) -> tuple[list[s
     return sorted({MAIN_AGENT, label}), label
 
 
+def _outside(store, owner: str, label: str) -> tuple[str, str]:
+    """(client, mode) of the outside grant an OPEN is labelled with, unchanged since."""
+    client, _, rest = label.partition(":")
+    generation, _, authenticated = rest.partition(":")
+    grant = store.outside_check(owner, client, int(authenticated) if authenticated else None)
+    if str(grant["generation"]) != generation:
+        raise PermissionError("outside client authority changed")
+    return client, grant["mode"]
+
+
 def _meaning(store, owner: str, connection_id: str, verb: str,
              request: dict) -> tuple[str, str, str]:
     """(action class, operation, origin) by the broker's own reading of the call."""
@@ -152,10 +168,14 @@ def check(store, ledger, *, owner: str, grant_id: str, connection_id: str, verb:
     agent = authority.get("agent") or MAIN_AGENT
     try:
         action_class, operation, origin = _meaning(store, owner, connection_id, verb, request)
+        client, mode = (_outside(store, owner, authority["outside"])
+                        if authority.get("outside") else ("", "full"))
     except (PermissionError, ValueError):
         store.receipt_gate(owner, request_digest, f"unreadable agent={agent}"[:512], "deny")
         return "refused"
     agents, label = _agents(store, owner, agent, action_class)
+    if mode == "scoped":  # the owner's rules for this outside agent join, strictest wins
+        agents = sorted({*agents, "outside:" + client})
     decision = max((store.decide(owner, center=owner, action_class=action_class,
                                  connection=connection_id, operation=operation,
                                  destination=origin, agent=candidate)

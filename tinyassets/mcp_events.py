@@ -96,7 +96,6 @@ def authorize(base, owner, args, authority=None):
         universe_access_permission,
         universe_is_private,
     )
-    from tinyassets.outside_authority import OutsideClientAuthority
     from tinyassets.principals import named_principal
     from tinyassets.universe_owner import owner_of
 
@@ -114,10 +113,11 @@ def authorize(base, owner, args, authority=None):
     ):
         raise PermissionError("Workflow unavailable")
     if authority:
-        identity = Identity(owner, owner, metadata={"outside_origin": authority})
-        OutsideClientAuthority(base).admit(
-            identity.user_id, authority, universe=uid, agent="main", capability="read_graph"
-        )
+        from tinyassets.outside_authority import check_identity, refresh
+
+        # The grant as it stands now, unchanged since the subscribe (P0-3).
+        identity = Identity(owner, owner, metadata={"outside_origin": refresh(owner, authority)})
+        check_identity(identity, universe=uid, agent="main", capability="read_graph")
 
 
 

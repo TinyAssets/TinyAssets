@@ -6,9 +6,11 @@ answered by the router from its verified identity through ``broker.client
 .ledger_request``. None reaches, wakes or asks a box. The reader and the sender are the
 identity's ``outside_origin`` (none means the owner); no request field names either.
 
-Until P0-3 an MCP connector carries no ``outside_origin`` and cannot be told apart from
-the owner, so an MCP caller without one is refused, never read as the owner. A body
-handed to an outside agent is wrapped in the untrusted envelope.
+Until the outside-client claim is configured an MCP connector carries no
+``outside_origin`` and cannot be told apart from the owner, so an MCP caller without one
+is refused, never read as the owner. The router admitted every outside caller against
+its grant before any of these doors runs (P0-3): a revoked client never reaches the
+ledger. A body handed to an outside agent is wrapped in the untrusted envelope.
 
 ``cursor`` on a mailbox read acknowledges everything through it before reading, so a
 pull client pages with the ``next_cursor`` each read returns; ``mailbox_ack`` acks
@@ -173,36 +175,16 @@ async def mcp(front) -> None:
             "code": -32024, "message": OUTSIDE_UNCONFIGURED,
             "data": {"reason": "outside_identity_unconfigured"}})
     try:
-        await run_in_threadpool(switched_on)
         result = await run_in_threadpool(
             _tool, front.identity, target, document["params"]["arguments"])
     except Refused as exc:
         if exc.status == 503:
             return await mcp_answer(front, ident, error={"code": -32603,
                                                          "message": "ledger unavailable"})
-        if exc.error == "outside_access_off":
-            return await mcp_answer(front, ident, error={
-                "code": -32024, "message": "outside client capability not granted",
-                "data": exc.body()})
         # An invalid argument or a ledger refusal is a tool result, as the box returns
         # its own: ``{"error": ...}`` through _structured_return, so the model can correct.
         result = exc.body()
     await mcp_answer(front, ident, result=tool_result(result))
-
-
-def switched_on() -> None:
-    """The platform's outside kill switches, the one definition the box's admission reads.
-
-    The switch is router state; an outside client's own grants stay the box's, and an
-    agent the owner disabled in the ledger is refused there.
-    """
-    from tinyassets.outside_authority import OutsideClientAuthority, OutsideRefused
-    from tinyassets.storage import data_dir
-
-    try:
-        OutsideClientAuthority(data_dir()).require_switched_on()
-    except OutsideRefused:
-        raise Refused(403, "outside_access_off") from None
 
 
 # -- /api: API-key agents --------------------------------------------------------
@@ -224,21 +206,13 @@ def _query_int(request, name: str, default: int):
 
 
 async def _agent(request):
-    """The caller's API-key identity, admitted past the outside kill switches.
-
-    The auth middleware refused every other bearer; on the router it does not run
-    the box's admission, so the switches are checked here before any ledger call.
-    """
+    """The caller's API-key identity; the router admitted its grant before this door."""
     from tinyassets.rest_api import _api_key_identity
 
     identity = _api_key_identity()
     if identity is None or identity.metadata.get("outside_origin") is None:
         return None, JSONResponse({"error": "api_key_required"}, status_code=401,
                                   headers=_HEADERS)
-    try:
-        await run_in_threadpool(switched_on)
-    except Refused as exc:
-        return None, JSONResponse(exc.body(), status_code=exc.status, headers=_HEADERS)
     return identity, None
 
 

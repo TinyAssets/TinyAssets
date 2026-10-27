@@ -75,7 +75,6 @@ _REJECTION_DESCRIPTIONS = {
     "issuer": "The access token was not issued by this connector's sign-in provider.",
     "malformed": "The access token is not a valid sign-in token.",
     "outside_authority": "This sign-in is not allowed to use the connector.",
-    "outside_store": "The connector's client-access store is unavailable.",
     "required_claim": "The access token is missing a required claim.",
     "signature": "The access token signature could not be verified.",
     "signing_key": "This connector could not verify the sign-in provider's signing key.",
@@ -426,24 +425,14 @@ class WorkOSAuthProvider(AuthProvider):
             dict.fromkeys([*_AUTHENTICATED_BASE_CAPABILITIES, *granted])
         )
 
-        from tinyassets.outside_authority import OutsideRefused, current_store, origin
+        from tinyassets.outside_authority import OutsideRefused, origin
 
         try:
+            # The router stamps this client's grant before any answer (P0-3).
             outside = origin(claims)
-            from tinyassets.auth.middleware import router_authentication
-
-            if outside is not None and not router_authentication.get():
-                authority = current_store()
-                authority.observe(sub, outside)
-                outside = authority.admit(sub, outside)
         except OutsideRefused:
             _log_token_rejection("outside_authority")
             return None
-        except (OSError, sqlite3.Error):
-            _log_token_rejection("outside_store")
-            return None
-
-        from tinyassets.connected_agents import workos_connection
 
         return Identity(
             user_id=sub,
@@ -457,9 +446,6 @@ class WorkOSAuthProvider(AuthProvider):
                 "role": claims.get("role"),
                 "permissions": granted,
                 "iss": claims.get("iss"),
-                "oauth_connection": workos_connection(claims, token, outside),
-                "first_party_client": bool(os.environ.get("TINYASSETS_OUTSIDE_CLIENT_CLAIM"))
-                and outside is None,
                 **({"outside_origin": outside} if outside is not None else {}),
             },
         )

@@ -1,4 +1,5 @@
-"""Broker-owned owner policy: action rules, once-approvals, egress and spending (N10).
+"""Broker-owned owner policy: action rules, once-approvals, egress, spending and
+outside-client grants (N10, P0-3).
 
 The policy database is never opened by the daemon or by a box. Every widening
 (a policy write, a one-use approval) is called only by the broker's policy RPC
@@ -45,6 +46,12 @@ PROPOSAL_TTL_S = 30 * 86400
 PENDING_PROPOSALS = 200
 #: Receipt kinds a box can mint at will; listed apart so they never push others out.
 BOX_RECEIPT_KINDS = ("proposal", "decision")
+#: P0-3 grant modes (decision A1): ``full`` is the owner's normal authority and the
+#: default; ``scoped`` holds exact ``{universe, agent, capability}`` triples.
+OUTSIDE_MODES = ("full", "scoped", "revoked")
+OUTSIDE_SOURCES = ("mcp", "api_key")
+#: An outside client's ``last_seen`` is coarse, so admission is a read most calls.
+SEEN_INTERVAL_S = 60
 
 def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -118,6 +125,25 @@ def open_account_db(path: Path, admissions, owner: str,
     return db
 
 
+def outside_scopes(value: object) -> list:
+    """Exact ``{universe, agent, capability}`` triples; a wildcard is never a scope."""
+    if (not isinstance(value, list) or len(value) > 64 or any(
+            not isinstance(scope, dict) or set(scope) != {"universe", "agent", "capability"}
+            or any(not isinstance(v, str) or not v or v == "*" or len(v) > 512
+                   for v in scope.values())
+            for scope in value)):
+        raise PolicyRefused("outside scopes require exact universe, agent and capability")
+    return value
+
+
+def _outside_client(client: object, source: object = "mcp") -> None:
+    if (not isinstance(client, str) or len(client) != 64
+            or any(c not in "0123456789abcdef" for c in client)):
+        raise PolicyRefused("invalid outside client")
+    if source not in OUTSIDE_SOURCES:
+        raise PolicyRefused("invalid outside client source")
+
+
 def erase_account_db(path: Path) -> int:
     existed = path.exists()
     for suffix in ("", "-wal", "-shm", "-journal"):
@@ -170,6 +196,12 @@ class PolicyStore:
             CREATE TABLE IF NOT EXISTS proposals (
                 request_id TEXT PRIMARY KEY, digest TEXT NOT NULL, document TEXT NOT NULL,
                 at REAL NOT NULL, applied_at REAL);
+            CREATE TABLE IF NOT EXISTS outside_clients (
+                client TEXT PRIMARY KEY,
+                source TEXT NOT NULL CHECK(source IN ('mcp','api_key')),
+                mode TEXT NOT NULL CHECK(mode IN ('full','scoped','revoked')),
+                scopes TEXT NOT NULL, generation INTEGER NOT NULL, revoked_at REAL,
+                name TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL);
         """)
         document = {"entries": [], "egress": {"mode": "open", "destinations": []},
                     "spend": {"daily": None, "monthly": None, "transaction": None,
@@ -427,6 +459,127 @@ class PolicyStore:
                              "AND applied_at IS NULL AND at>?",
                              (request_id, time.time() - PROPOSAL_TTL_S)).fetchone()
         return json.loads(row["document"]) if row is not None else None
+
+    # -- P0-3: outside-client grants (decision A1) ------------------------------
+
+    @staticmethod
+    def _grant(row, authenticated_at) -> dict:
+        """The grant a call is admitted under, or a refusal naming why."""
+        if row is None:
+            raise PolicyRefused("outside client has no grant")
+        if row["mode"] == "revoked":
+            raise PolicyRefused("outside client revoked")
+        if row["revoked_at"] is not None and (type(authenticated_at) is not int
+                                              or authenticated_at <= row["revoked_at"]):
+            # A credential signed in before a revoke never comes back with a re-grant.
+            raise PolicyRefused("a fresh sign-in is required after a revoke")
+        return {"mode": row["mode"], "scopes": json.loads(row["scopes"]),
+                "generation": row["generation"]}
+
+    def outside_admit(self, owner: str, client: str, source: str,
+                      authenticated_at: int | None) -> dict:
+        """Router only: the grant of the verified outside client making this call.
+
+        An MCP client's first verified call records it ``full`` (A1). An API key's
+        row is written with the key, so a key without one is refused, never widened.
+        """
+        _outside_client(client, source)
+        now = time.time()
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM outside_clients WHERE client=?", (client,)).fetchone()
+            if row is None and source == "mcp":
+                db.execute("INSERT INTO outside_clients VALUES (?,?,'full','[]',1,NULL,'',?,?)",
+                           (client, source, now, now))
+                row = db.execute("SELECT * FROM outside_clients WHERE client=?",
+                                 (client,)).fetchone()
+            elif row is not None and row["source"] != source:
+                raise PolicyRefused("outside client source changed")
+            elif row is not None and now - row["last_seen"] >= SEEN_INTERVAL_S:
+                db.execute("UPDATE outside_clients SET last_seen=? WHERE client=?",
+                           (now, client))
+            grant = self._grant(row, authenticated_at)
+            db.commit()
+        return grant
+
+    def outside_check(self, owner: str, client: str, authenticated_at: int | None) -> dict:
+        """The grant as it stands now; a read that never records a client."""
+        _outside_client(client)
+        with closing(self._connect(owner)) as db:
+            row = db.execute("SELECT * FROM outside_clients WHERE client=?", (client,)).fetchone()
+        return self._grant(row, authenticated_at)
+
+    def outside_list(self, owner: str) -> list[dict]:
+        with closing(self._connect(owner)) as db:
+            rows = db.execute("SELECT * FROM outside_clients ORDER BY first_seen, client")
+            return [{**dict(row), "scopes": json.loads(row["scopes"])} for row in rows]
+
+    def outside_set(self, owner: str, proof: str | dict, *, client: str, source: str,
+                    mode: str, scopes: list, expected_generation: int, name: str = "",
+                    proposal: dict | None = None) -> dict:
+        """Owner widening (router only): one client's mode, from a protected session.
+
+        ``expected_generation`` 0 creates the row, as a key's mint does. With
+        ``proposal``, only as the one apply of an agent's held key request.
+        """
+        session_id = self._session(owner, proof)
+        _outside_client(client, source)
+        if mode not in OUTSIDE_MODES:
+            raise PolicyRefused("invalid outside grant mode")
+        outside_scopes(scopes)
+        if (mode == "scoped") != bool(scopes):
+            raise PolicyRefused("a scoped grant, and only a scoped one, names scopes")
+        if type(expected_generation) is not int or expected_generation < 0:
+            raise PolicyRefused("expected outside grant generation required")
+        if not isinstance(name, str) or len(name) > 80:
+            raise PolicyRefused("invalid outside client name")
+        now = time.time()
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM outside_clients WHERE client=?", (client,)).fetchone()
+            if (row["generation"] if row else 0) != expected_generation:
+                raise PolicyRefused("outside grant changed")
+            if row is not None and row["source"] != source:
+                raise PolicyRefused("outside client source changed")
+            if proposal is not None:
+                self._apply_key_request(db, owner, proposal, client, mode, scopes, now)
+            generation = expected_generation + 1
+            revoked_at = now if mode == "revoked" else row["revoked_at"] if row else None
+            db.execute("INSERT INTO outside_clients VALUES (?,?,?,?,?,?,?,?,?) "
+                       "ON CONFLICT(client) DO UPDATE SET mode=excluded.mode, "
+                       "scopes=excluded.scopes, generation=excluded.generation, "
+                       "revoked_at=excluded.revoked_at, name=CASE WHEN excluded.name='' "
+                       "THEN name ELSE excluded.name END",
+                       (client, source, mode, _canonical(scopes), generation, revoked_at,
+                        name, now, now))
+            db.execute("INSERT INTO receipts(at,kind,owner,session_id,request_digest,"
+                       "generation,rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?)",
+                       (now, "outside_grant", owner, session_id,
+                        _digest({"client": client, "mode": mode, "scopes": scopes}),
+                        generation, client, mode, "committed"))
+            db.commit()
+        return {"client": client, "mode": mode, "scopes": scopes, "generation": generation}
+
+    @staticmethod
+    def _apply_key_request(db, owner, proposal, client, mode, scopes, now) -> None:
+        """The held key request the owner was shown, applied once with its grant."""
+        from tinyassets.api_keys import ApiKeyStore, _client
+
+        if (not isinstance(proposal, dict) or set(proposal) != {"request_id", "digest"}
+                or not all(isinstance(v, str) and 0 < len(v) <= 128
+                           for v in proposal.values())):
+            raise PolicyRefused("invalid proposal apply")
+        held = db.execute("SELECT digest,document FROM proposals WHERE request_id=? "
+                          "AND applied_at IS NULL AND at>?",
+                          (proposal["request_id"], now - PROPOSAL_TTL_S)).fetchone()
+        change = json.loads(held["document"]).get("api_key") if held is not None else None
+        if (held is None or held["digest"] != proposal["digest"] or not isinstance(change, dict)
+                or mode != "scoped" or change.get("scopes") != scopes
+                or not isinstance(change.get("request_ref"), str)
+                or client != _client(ApiKeyStore.request_key_id(owner, change["request_ref"]))):
+            raise PolicyRefused("proposal is not the pending card shown")
+        db.execute("UPDATE proposals SET applied_at=? WHERE request_id=?",
+                   (now, proposal["request_id"]))
 
     def receipt_egress(self, owner, generation, destination, decision):
         with closing(self._connect(owner)) as db, db:

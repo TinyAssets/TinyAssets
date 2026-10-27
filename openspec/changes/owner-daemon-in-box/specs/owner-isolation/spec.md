@@ -283,6 +283,28 @@ rules at the broker whatever the box asserts; the box's own checks are advisory.
 - **WHEN** a box OPEN is classified under an ask-first rule
 - **THEN** the broker sends nothing unless the OPEN carries an unspent one-use approval of exactly that request at the current generation, or a live standing grant matches
 
+### Requirement: Outside-client grants are owner policy in the broker
+P0-3, decision A1. The broker SHALL hold each owner's outside-client grants in its
+per-owner policy store: `full`, the owner's normal authority still under the action
+rules, egress and spending, by default for a newly verified MCP client; `scoped` to
+exact `{universe, agent, capability}` triples; or `revoked`. Only the router's owner
+channel, with a live protected owner session, SHALL change a grant. A key's grant
+SHALL be written with the key, and a key without one SHALL be refused, never widened.
+The router SHALL admit every outside call against its grant before it answers or
+forwards it, and a box SHALL refuse an outside identity the router did not stamp.
+
+#### Scenario: A revoked client is refused before any door
+- **WHEN** the owner revokes an outside client's grant
+- **THEN** the client's next call is refused at the router, before any forward or ledger call
+
+#### Scenario: A scoped client keeps only its scopes
+- **WHEN** a scoped client calls a capability outside its triples
+- **THEN** it is refused, and a call inside them is admitted
+
+#### Scenario: The box cannot write a grant
+- **WHEN** a box sends a grant change or an admission on its channel
+- **THEN** the broker refuses it and no grant changes
+
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before
 admission reopens, services SHALL start with admission closed for every owner.

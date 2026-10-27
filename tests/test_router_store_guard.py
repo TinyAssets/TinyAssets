@@ -95,6 +95,8 @@ _ROUTER_IMPORTS = {
     # S30's doors: ledger requests on the broker's owner channel; no owner store.
     # Scanned in its own right below, against _MAILBOX_DOOR_IMPORTS.
     "tinyassets.mailbox_door",
+    # P0-3: the one outside admission asks the broker's owner channel; no owner store.
+    "tinyassets.outside_authority",
     "tinyassets.engine_result_bounds",  # The tool result's text block; pure string work.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
@@ -113,7 +115,6 @@ _MAILBOX_DOOR_IMPORTS = {
     "tinyassets.engine_result_bounds",  # the read_graph ceiling
     "tinyassets.mcp_events_http",  # the box's own modern-envelope checks
     "tinyassets.onboarding",  # the app's identity, same-origin and body helpers
-    "tinyassets.outside_authority",  # the kill switches, router state
     "tinyassets.owner_router",
     "tinyassets.owner_runtime",
     "tinyassets.rest_api",  # the API-key identity and body helpers
@@ -271,6 +272,12 @@ _ROLE_DISPATCH = {
     ),
     ('onboarding/__init__.py', '_handle_policy'): (
         'Router submits owner policy writes and once-approvals (N10); a box cannot widen them.'
+    ),
+    ('onboarding/outside_clients.py', 'handle'): (
+        'Router writes outside-client grants (P0-3) from the owner session; a box cannot.'
+    ),
+    ('onboarding/api_keys.py', 'mint'): (
+        'Router mints a key and writes its grant (P0-3) together; a box cannot.'
     ),
     ('mailbox_door.py', '_owner'): (
         'Router serves the owner\'s outside agents and dm rooms (S30); a box holds no mail.'

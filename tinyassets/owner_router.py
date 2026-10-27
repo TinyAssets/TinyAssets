@@ -34,6 +34,8 @@ _MCP = frozenset({"/mcp", "/mcp/"})
 ANY = "*"
 #: The box middleware's refusal of an outside client off the MCP surface.
 OUTSIDE_SURFACE = "outside clients use the MCP capability surface"
+#: The router's refusal of an outside client whose grant does not admit this call.
+OUTSIDE_REFUSED = "outside client capability not granted"
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,8 @@ for _path in ("/app/account/delete", "/app/client-error", "/app/token",
               "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
               # N10: owner policy widens only here, with the proof, on the owner channel.
               "/app/api/policy",
+              # P0-3: outside-client grants and key mints, written in the broker.
+              "/app/outside-clients", "/app/api-keys/mint",
               # S30: the owner's outside agents and their dm rooms (mailbox_door).
               "/app/api/outside-agents", "/app/api/agent-messages",
               "/api/mailbox", "/api/mailbox/ack", "/api/mailbox/replies",
@@ -350,6 +354,27 @@ def _headers(headers, *, private=False, proof_headers=()):
     return [(name, value) for name, value in headers if name.lower() not in blocked]
 
 
+async def _admit_outside(identity, scope, receive, send) -> bool:
+    """P0-3: an outside caller's one admission, before any answer, forward or ledger call.
+
+    Stamps the client's current grant on ``identity`` (the box and every trusted
+    handler read that stamp), or sends the refusal and returns False.
+    """
+    from tinyassets.outside_authority import OutsideRefused, admit
+    from tinyassets.storage import data_dir
+
+    try:
+        await run_in_threadpool(admit, data_dir(), identity)
+        return True
+    except OutsideRefused as exc:
+        refusal = JSONResponse({"error": "forbidden", "detail": OUTSIDE_REFUSED,
+                                "reason": str(exc)}, status_code=403)
+    except (RuntimeError, OSError):
+        refusal = JSONResponse({"error": "outside_authority_unavailable"}, status_code=503)
+    await refusal(scope, receive, send)
+    return False
+
+
 class OwnerRouter:
     def __init__(self, app, *, resolver=resolve_box, admitter=admit_box):
         self.app, self.resolver, self.admitter = app, resolver, admitter
@@ -372,6 +397,9 @@ class OwnerRouter:
             return await JSONResponse({"error": "routing_unavailable"}, status_code=503)(
                 scope, receive, send)
         identity = current_identity_or_none()
+        if (identity is not None and identity.metadata.get("outside_origin") is not None
+                and not await _admit_outside(identity, scope, receive, send)):
+            return
         trusted, receive = await TRUSTED.match(scope, receive)
         route = None
         if trusted is None or trusted.owner:

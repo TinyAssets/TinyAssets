@@ -92,8 +92,9 @@ target=room_message` and `target=mailbox_ack` from `owner_router.TRUSTED`, `GET 
 `/app/api/outside-agents` and `/app/api/agent-messages` behind the protected owner session,
 all through `ledger_request`, and SHALL never forward, ask or wake a box for them. The
 reader and sender SHALL be the verified `outside_origin`; until P0-3 an MCP caller without
-one SHALL be refused, never read as the owner. The outside kill switches SHALL close the
-agent doors before any ledger call. Every body an outside agent reads, and every outside
+one SHALL be refused, never read as the owner. The router's outside admission (P0-3: the
+client's broker grant, and `TINYASSETS_OUTSIDE_DENY`) SHALL close the agent doors before any
+ledger call. Every body an outside agent reads, and every outside
 agent's body the owner reads, SHALL be in the untrusted envelope; a read's `cursor` SHALL
 acknowledge through it first; a read SHALL return whole messages under the `read_graph`
 ceiling, at least one, with `next_cursor` at the cut; a reply SHALL show its recorded

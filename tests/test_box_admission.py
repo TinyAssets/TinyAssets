@@ -369,7 +369,7 @@ def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_
     from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
 
     keys = ApiKeyStore(tmp_path)
-    key = keys.mint("alice", name="fixture", scopes=[], authority=None)["key"]
+    key = keys.mint("alice", name="fixture")["key"]
     assert keys.resolve(key) is not None  # Start the fixture broker before authority loss.
     if damage == "missing":
         authority.path.unlink()
@@ -429,7 +429,7 @@ def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
     from tinyassets.router_credentials import revoke_account
 
     keys = ApiKeyStore(tmp_path)
-    key = keys.mint("alice", name="fixture", scopes=[], authority=None)["key"]
+    key = keys.mint("alice", name="fixture")["key"]
     suspend(authority.plans, "alice", reason="abuse", suspended=True)
     assert keys.resolve(key) is not None
     assert not allowed(lambda: authority.box_route("alice"))

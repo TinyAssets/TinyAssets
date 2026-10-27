@@ -23,6 +23,8 @@ pytestmark = pytest.mark.verifies(
     "trusted-message-ledger:The doors answer on the trusted side")
 DOOR = Path(mailbox_door.__file__)
 MUSE = {"client": "a" * 64, "family": "b" * 64, "authenticated_at": 1.0}
+#: A new MCP client as the router's admission stamps it: full by default (P0-3, A1).
+STAMPED = {**MUSE, "mode": "full", "scopes": [], "generation": 1}
 SID = "box-held-session"
 
 
@@ -75,11 +77,11 @@ def test_the_box_answers_served_on_trusted_side_and_lists_the_targets():
 
 @pytest.fixture
 def door(monkeypatch, tmp_path):
+    from tests.support.outside_grants import LocalBroker
     from tinyassets import router_traffic, routing_snapshot
     from tinyassets.auth import middleware
     from tinyassets.broker import client
     from tinyassets.engine_result_bounds import CEILING_ENV, CONTEXT_TOKENS_ENV
-    from tinyassets.outside_authority import OutsideClientAuthority
 
     class Snapshot:
         def require_current(self):
@@ -89,8 +91,7 @@ def door(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY", raising=False)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    authority = OutsideClientAuthority(tmp_path)  # the router's kill switch, on
-    authority.set_enabled(True)
+    grants = LocalBroker(tmp_path, monkeypatch)  # the router's admission, in the broker
     monkeypatch.setattr(routing_snapshot, "snapshot", lambda root: Snapshot())
     monkeypatch.setattr(router_traffic, "admits", lambda *args: True)
     monkeypatch.setattr(middleware, "published_box_owner", lambda root, path, caller: caller)
@@ -146,7 +147,7 @@ def door(monkeypatch, tmp_path):
                     "mcp-protocol-version": "2025-11-25"})
         return asyncio.run(exercise())
 
-    post.authority = authority
+    post.grants = grants
     return post, boxed, calls
 
 
@@ -177,7 +178,7 @@ def test_an_outside_agent_reads_acks_and_replies_without_a_box(door):
     # The ledger pages under the ceiling, padded for the envelope this reader gets.
     pad = len(json.dumps(envelope("mailbox:" + "x" * 64, ""), separators=(",", ":"))) - 2
     assert calls[1][4] == {"limit": 5, "max_bytes": 24576 - 1024, "pad_bytes": pad}
-    assert all(c[:2] == ("alice", MUSE) for c in calls)
+    assert all(c[:2] == ("alice", STAMPED) for c in calls)  # the router stamped its grant
     calls.clear()
     acked = sse(post(call("write_graph", "mailbox_ack", payload_json='{"through": 3}')))
     assert acked["result"]["structuredContent"] == {"reader": "agent_1", "through": 3}
@@ -223,20 +224,22 @@ def test_a_text_only_client_sees_where_to_page_and_bad_arguments_are_tool_result
     assert calls == []
 
 
-@pytest.mark.parametrize("switch", ["deny_env", "durable_off"])
+@pytest.mark.parametrize("switch", ["deny_env", "revoked_grant"])
 def test_the_outside_kill_switches_close_the_mcp_doors(door, monkeypatch, switch):
     post, boxed, calls = door
     if switch == "deny_env":
         monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")
     else:
-        post.authority.set_enabled(False)
+        assert sse(post(call("read_graph", "mailbox")))["result"]  # full by default (A1)
+        calls.clear()
+        post.grants.grant("alice", MUSE["client"], source="mcp", mode="revoked")
     for body in (call("read_graph", "mailbox"),
                  call("write_graph", "mailbox_ack", payload_json='{"through": 1}'),
                  call("write_graph", "room_message", payload_json=json.dumps(
                      {"client_message_id": "r1", "body": "hi"}))):
-        refused = sse(post(body))
-        assert refused["error"]["code"] == -32024
-        assert refused["error"]["data"] == {"error": "outside_access_off"}
+        refused = post(body)
+        assert refused.status_code == 403  # the router's admission, before any door
+        assert refused.json()["detail"] == owner_router.OUTSIDE_REFUSED
     assert calls == [] and boxed == []
 
 
@@ -365,9 +368,6 @@ def served(broker, cloud_runtime, tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
     monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY", raising=False)
-    from tinyassets.outside_authority import OutsideClientAuthority
-
-    OutsideClientAuthority(tmp_path).set_enabled(True)  # the router's kill switch, on
 
     class Snapshot:
         def require_current(self):
@@ -402,8 +402,15 @@ def served(broker, cloud_runtime, tmp_path, monkeypatch):
         db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
             owner_sessions.hashed(cookie), json.dumps({"user_id": "alice"}), 2e9))
     keys = ApiKeyStore(tmp_path)
-    minted = [keys.mint("alice", name=name, scopes=[], authority=None)
+    minted = [keys.mint("alice", name=name)
               for name in ("agent key", "unregistered key")]
+    from tinyassets.api_keys import _client
+    from tinyassets.broker.policy_submit import submit
+
+    for key in minted:  # each key's grant, as the router's mint writes it (P0-3)
+        submit(tmp_path, "alice", "outside_set", session_proof={
+            "session_hash": owner_sessions.hashed(cookie)}, client=_client(key["key_id"]),
+            source="api_key", mode="full", scopes=[], expected_generation=0, name="")
     app = universe_server.create_streamable_http_app()
 
     def request(method, path, *, bearer, session=False, **kwargs):
@@ -418,6 +425,7 @@ def served(broker, cloud_runtime, tmp_path, monkeypatch):
                 return await http.request(method, path, headers=headers, **kwargs)
         return asyncio.run(exercise())
 
+    request.root, request.proof = tmp_path, {"session_hash": owner_sessions.hashed(cookie)}
     return request, minted
 
 
@@ -468,22 +476,16 @@ def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(serv
     acked = request("POST", "/api/mailbox/ack", bearer=key, json={"through": mail["next_cursor"]})
     assert acked.json()["through"] == mail["next_cursor"]
     assert request("GET", "/api/mailbox", bearer=key).json()["messages"] == []
-    # Either outside kill switch closes the key's doors before any ledger call.
-    from tinyassets.outside_authority import OutsideClientAuthority
-    from tinyassets.storage import data_dir
-
-    for close, reopen in ((lambda: monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1"),
-                           lambda: monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY")),
-                          (lambda: OutsideClientAuthority(data_dir()).set_enabled(False),
-                           lambda: OutsideClientAuthority(data_dir()).set_enabled(True))):
-        close()
-        for method, path, body in (("GET", "/api/mailbox", None),
-                                   ("POST", "/api/mailbox/replies", {
-                                       "client_message_id": "a2", "body": "x"}),
-                                   ("POST", "/api/mailbox/ack", {"through": 0})):
-            shut = request(method, path, bearer=key, json=body)
-            assert (shut.status_code, shut.json()) == (403, {"error": "outside_access_off"})
-        reopen()
+    # The kill switch closes the key's doors at the router's admission (P0-3),
+    # before any ledger call.
+    monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")
+    for method, path, body in (("GET", "/api/mailbox", None),
+                               ("POST", "/api/mailbox/replies", {
+                                   "client_message_id": "a2", "body": "x"}),
+                               ("POST", "/api/mailbox/ack", {"through": 0})):
+        shut = request(method, path, bearer=key, json=body)
+        assert (shut.status_code, shut.json()["detail"]) == (403, owner_router.OUTSIDE_REFUSED)
+    monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY")
     assert request("GET", "/api/mailbox", bearer=key).status_code == 200
 
     [back] = request("GET", "/app/api/agent-messages", bearer="alice-app",
@@ -500,3 +502,12 @@ def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(serv
         "action": "disable", "agent_id": agent["agent_id"], "reason": "done"})
     assert disabled.json()["disabled_reason"] == "done"
     assert request("GET", "/api/mailbox", bearer=key).status_code == 403
+    # The owner's revoke of the key's grant closes its doors at the router (P0-3).
+    from tinyassets.api_keys import _client
+    from tinyassets.broker.policy_submit import submit
+
+    submit(request.root, "alice", "outside_set", session_proof=request.proof,
+           client=_client(agent_key["key_id"]), source="api_key", mode="revoked", scopes=[],
+           expected_generation=1, name="")
+    revoked = request("GET", "/api/mailbox", bearer=key)
+    assert (revoked.status_code, revoked.json()["detail"]) == (403, owner_router.OUTSIDE_REFUSED)

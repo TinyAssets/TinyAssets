@@ -840,11 +840,13 @@ class OutsideClientScope(Middleware):
     async def on_call_tool(self, context, call_next):
         from tinyassets.auth.provider import Identity
         from tinyassets.engine_steering import outside_origin
-        from tinyassets.outside_authority import check_identity
+        from tinyassets.outside_authority import check_identity, refresh
 
         origin = outside_origin()
         if origin is not None:
-            identity = Identity(_actor_id(), _actor_id(), metadata={"outside_origin": origin})
+            # Each tool call reads the grant as it stands: a revoke stops the turn.
+            identity = Identity(_actor_id(), _actor_id(), metadata={
+                "outside_origin": refresh(_actor_id(), origin)})
             check_identity(identity, universe=_graph_id(), agent=_acting_agent(),
                            capability=context.message.name)
         return await call_next(context)

@@ -70,6 +70,19 @@ def box_channel(home, tmp_path, monkeypatch):
     return SimpleNamespace(store=store, sent=sent, reports=reports, document=document)
 
 
+def _outside_grant(home, monkeypatch):
+    """A scoped outside client's broker grant, and its identity as the router stamps it."""
+    from tests.support.outside_grants import LocalBroker
+
+    grants = LocalBroker(home, monkeypatch, owners=(OWNER,))
+    client = "c" * 64
+    grants.grant(OWNER, client, source="mcp", mode="scoped", scopes=[
+        {"universe": UNIVERSE, "agent": "main", "capability": "read_graph"}])
+    bound = {"client": client, "family": "f" * 64, "authenticated_at": int(time.time()),
+             **grants.store.outside_check(OWNER, client, None)}
+    return grants, bound
+
+
 def run(home, *, inputs, status="completed", output=None):
     with identity_context(Identity(OWNER, OWNER)):
         run_id = create_run(home, branch_def_id=FOLLOWED, thread_id="t", actor=OWNER,
@@ -186,31 +199,38 @@ def test_broker_unavailable_keeps_the_source_owed(home, channel, monkeypatch):
 
 
 @pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
-def test_saved_outside_authority_is_rechecked_at_capture(home, channel):
-    from tinyassets.outside_authority import OutsideClientAuthority
-
-    outside = OutsideClientAuthority(home)
-    bound = {"client": "test-client", "family": "family", "authenticated_at": time.time()}
-    outside.observe(OWNER, bound)
-    outside.set_enabled(True)
-    outside.change(
-        OWNER,
-        "test-client",
-        expected_generation=0,
-        family="family",
-        scopes=[{"universe": UNIVERSE, "agent": "main", "capability": "read_graph"}],
-    )
-    bound = outside.admit(OWNER, bound)
+def test_saved_outside_authority_is_rechecked_at_capture(home, channel, monkeypatch):
+    grants, bound = _outside_grant(home, monkeypatch)
     channel.store.subscribe(OWNER, channel.document, authority=bound)
     run(home, inputs={"operation": "save"})
     assert len(rows(channel.store, "deliveries")) == 1
-    outside.change(
-        OWNER, "test-client", expected_generation=1, family="family", scopes=[], revoke=True
-    )
+    grants.grant(OWNER, bound["client"], source="mcp", mode="revoked")
     run(home, inputs={"operation": "save"})
     record = rows(channel.store, "subscriptions")[0]
     assert record["active"] == 0 and record["config"] == ""
     assert rows(channel.store, "deliveries")[0]["state"] == "stopped"
+
+
+@pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
+def test_the_broker_revokes_a_subscription_its_grant_no_longer_admits(home, channel,
+                                                                     monkeypatch):
+    from functools import partial
+
+    from tinyassets.broker.server import _outside_admits
+
+    grants, bound = _outside_grant(home, monkeypatch)
+    channel.store.subscribe(OWNER, channel.document, authority=bound)
+    admits = partial(_outside_admits, grants.store, OWNER)
+    assert admits(bound)
+    grants.grant(OWNER, bound["client"], source="mcp", mode="scoped", scopes=bound["scopes"])
+    assert not admits(bound) and not partial(_outside_admits, None, OWNER)(bound)
+    # A box that still allows it (a stale box) cannot keep it: the broker revokes it.
+    [subscription] = rows(channel.store, "subscriptions")
+    event = {"command_center_id": UNIVERSE, "branch_def_id": FOLLOWED, "run_id": "r1",
+             "event_id": "r1#1", "occurred": time.time()}
+    assert channel.store.capture(OWNER, event, allow=[subscription["id"]], revoke=[],
+                                 admits=admits) == {"queued": 0}
+    assert rows(channel.store, "subscriptions")[0]["active"] == 0
 
 
 @pytest.mark.verifies("native-mcp-events:Subscriptions live in the broker and expire")
@@ -253,8 +273,10 @@ def router_root(broker, tmp_path, monkeypatch):  # noqa: F811
 
 
 @pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
-def test_router_subscribes_and_box_reports_through_the_broker(broker, router_root):  # noqa: F811
+def test_router_subscribes_and_box_reports_through_the_broker(broker, router_root,  # noqa: F811
+                                                              tmp_path):
     from tinyassets.broker.mcp_events import request
+    from tinyassets.broker.policy import PolicyStore
 
     sent = []
 
@@ -263,7 +285,12 @@ def test_router_subscribes_and_box_reports_through_the_broker(broker, router_roo
         return answering(owner, url, body, headers)
 
     broker.server.mcp_events.store.sender = sender
-    authority = {"client": "c", "family": "f", "authenticated_at": 1}
+    # The outside subscriber's grant, which the broker rechecks at capture (P0-3).
+    broker.server._policy_store = PolicyStore(tmp_path, broker.server._owner_identities)
+    broker.server._policy_store.bootstrap_owner("alice")
+    grant = broker.server._policy_store.outside_admit("alice", "c" * 64, "mcp", 1)
+    authority = {"client": "c" * 64, "family": "f", "authenticated_at": 1,
+                 "generation": grant["generation"]}
     sub = request(router_root, {"action": "subscribe", "principal": "alice",
                                 "authority": authority, "params": params()})
     assert sub["id"].startswith("sub_") and sent[0][0] == "alice"
@@ -328,20 +355,13 @@ def test_a_run_without_a_workflow_is_acknowledged_without_a_report(home, channel
 
 
 @pytest.mark.verifies("native-mcp-events:A box reports runs as IDs and rechecks authority")
-def test_a_changed_grant_generation_ends_the_subscription(home, channel):
-    from tinyassets.outside_authority import OutsideClientAuthority
-
-    outside = OutsideClientAuthority(home)
-    bound = {"client": "test-client", "family": "family", "authenticated_at": time.time()}
-    outside.observe(OWNER, bound)
-    outside.set_enabled(True)
-    scope = [{"universe": UNIVERSE, "agent": "main", "capability": "read_graph"}]
-    outside.change(OWNER, "test-client", expected_generation=0, family="family", scopes=scope)
-    admitted = outside.admit(OWNER, bound)
+def test_a_changed_grant_generation_ends_the_subscription(home, channel, monkeypatch):
+    grants, admitted = _outside_grant(home, monkeypatch)
     assert admitted["generation"] == 1
     channel.store.subscribe(OWNER, channel.document, authority=admitted)
     # Narrowed and widened again: same scopes, a new generation.
-    outside.change(OWNER, "test-client", expected_generation=1, family="family", scopes=scope)
+    grants.grant(OWNER, admitted["client"], source="mcp", mode="scoped",
+                 scopes=admitted["scopes"])
     run(home, inputs={"operation": "save"})
     assert rows(channel.store, "subscriptions")[0]["active"] == 0
     assert rows(channel.store, "deliveries") == []

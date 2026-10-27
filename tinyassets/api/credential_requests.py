@@ -48,8 +48,12 @@ def tab_text(action):
             "your agent receives a completion receipt without the secret.")
 
 
-def owner_operation(owner, data, keys, authority):
-    """Called only by the protected owner HTTP route. Never decorate/log results."""
+def owner_operation(owner, data, keys):
+    """Called only by the protected owner HTTP route. Never decorate/log results.
+
+    ``request_create`` holds the reviewed request in the broker; the router mints
+    the key and writes its grant from the owner's session (``api_keys.mint``).
+    """
     from tinyassets.api.helpers import _base_path, _universe_dir
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.owner_control import control
@@ -84,14 +88,14 @@ def owner_operation(owner, data, keys, authority):
             raise PermissionError("Request changed")
         ref = json.dumps([uid, request_id])
         key_id = keys.request_key_id(owner, ref)
-        existing = next((k for k in keys.list(owner, authority=authority)["keys"]
+        existing = next((k for k in keys.list(owner)["keys"]
                          if k["key_id"] == key_id), None)
         operation = data["operation"]
         if operation == "request_preview":
             return {"action": action, "digest": digest, "status": row["status"],
                     "existing": existing}
         if operation == "request_revoke" and existing:
-            return keys.revoke(owner, key_id, authority=authority)
+            return keys.revoke(owner, key_id)
         if row["status"] != "pending":
             raise PermissionError("Request already closed")
         if operation == "request_decline" and not existing:
@@ -101,8 +105,13 @@ def owner_operation(owner, data, keys, authority):
         if operation == "request_create":
             if data["expected_digest"] != digest:
                 raise PermissionError("Review the current request before creating")
-            return keys.mint(owner, name=action["name"], scopes=action["scopes"],
-                             authority=authority, request_ref=ref)
+            from tinyassets.broker.client import owner_policy_operation
+
+            held = owner_policy_operation(base, owner, "proposal", request_id="api_key:" + key_id,
+                                          change={"api_key": {"name": action["name"],
+                                                              "scopes": action["scopes"],
+                                                              "request_ref": ref}})
+            return {"request_id": "api_key:" + key_id, "digest": held["request_digest"]}
         if operation == "request_finish" and existing:
             # Only this receipt reaches storage, events and the asking agent.
             receipt = {"key_id": key_id, "provider": "tinyassets",
