@@ -180,13 +180,12 @@ async def mcp(front) -> None:
         if exc.status == 503:
             return await mcp_answer(front, ident, error={"code": -32603,
                                                          "message": "ledger unavailable"})
-        if exc.status == 400:
-            return await mcp_answer(front, ident, error={
-                "code": -32602, "message": "Invalid params", "data": exc.body()})
         if exc.error == "outside_access_off":
             return await mcp_answer(front, ident, error={
                 "code": -32024, "message": "outside client capability not granted",
                 "data": exc.body()})
+        # An invalid argument or a ledger refusal is a tool result, as the box returns
+        # its own: ``{"error": ...}`` through _structured_return, so the model can correct.
         result = exc.body()
     await mcp_answer(front, ident, result=tool_result(result))
 
@@ -339,7 +338,8 @@ async def outside_agents(request):
                              source="api_key", source_ref=data["key_id"],
                              display_name=data["display_name"], delivery_method="pull",
                              recipe_id=None)
-    if set(data) == {"action", "agent_id", "reason"} and data["action"] == "disable":
+    if set(data) == {"action", "agent_id", "reason"} and data["action"] == "disable" and all(
+            isinstance(data[key], str) for key in ("agent_id", "reason")):
         return await _answer(_ledger, identity, "OUTSIDE_AGENTS", "disable",
                              session_proof=proof, agent_id=data["agent_id"],
                              reason=data["reason"])

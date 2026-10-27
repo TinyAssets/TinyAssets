@@ -191,12 +191,13 @@ def test_an_outside_agent_reads_acks_and_replies_without_a_box(door):
                                                   "parent_id": "msg_1"})
     wrong = sse(post(call("write_graph", "room_message", payload_json=json.dumps(
         {"room_id": "dm:agent_1", "client_message_id": "r2", "body": "x", "to": "bob"}))))
-    assert wrong["error"] == {"code": -32602, "message": "Invalid params", "data": {
-        "error": "invalid_request", "reason": "an outside agent's dm message goes to the owner"}}
+    # An invalid argument is a tool result, the shape the box gives its own (isError false).
+    assert wrong["result"] == owner_router.tool_result({
+        "error": "invalid_request", "reason": "an outside agent's dm message goes to the owner"})
     assert boxed == []
 
 
-def test_a_text_only_client_sees_where_to_page_and_bad_payloads_are_invalid_params(door):
+def test_a_text_only_client_sees_where_to_page_and_bad_arguments_are_tool_results(door):
     post, _, calls = door
     reply = sse(post(call("read_graph", "mailbox")))["result"]
     text = reply["content"][0]["text"]
@@ -206,8 +207,19 @@ def test_a_text_only_client_sees_where_to_page_and_bad_payloads_are_invalid_para
     nested = "[" * 100_000 + "]" * 100_000  # deeper than the parser's recursion limit
     for payload in (nested, "[]", "not json"):
         refused = sse(post(call("write_graph", "mailbox_ack", payload_json=payload)))
-        assert refused["error"]["code"] == -32602
-        assert refused["error"]["data"]["reason"] == "payload_json is a JSON object"
+        assert refused["result"] == owner_router.tool_result({
+            "error": "invalid_request", "reason": "payload_json is a JSON object"})
+    for name, target, arguments, reason in (
+            ("read_graph", "mailbox", {"cursor": -1}, "cursor is an integer, at least 0"),
+            ("read_graph", "mailbox", {"limit": 101}, "limit is an integer, 1 to 100"),
+            ("write_graph", "room_message", {"payload_json": '{"body": "x"}'},
+             "client_message_id is required text"),
+            ("write_graph", "room_message", {"payload_json": json.dumps(
+                {"client_message_id": "r", "body": "x", "parent_id": 7})},
+             "parent_id is a message id")):
+        refused = sse(post(call(name, target, **arguments)))["result"]
+        assert refused["isError"] is False  # as the box returns its own argument errors
+        assert refused["structuredContent"] == {"error": "invalid_request", "reason": reason}
     assert calls == []
 
 
@@ -425,10 +437,11 @@ def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(serv
         bare = request(method, path, bearer="alice-app", json=body)
         assert (bare.status_code, bare.json()) == (
             403, {"error": "interactive_owner_session_required"})
-    for bad in ({}, [], 7):  # a key_id that is not text is the caller's error, never a 500
-        refused = request("POST", agents, bearer="alice-app", session=True,
-                          json={**register, "key_id": bad})
-        assert (refused.status_code, refused.json()) == (400, {"error": "invalid_request"})
+    for bad in ({}, [], [1], 7):  # an id that is not text is the caller's error, never a 5xx
+        for body in ({**register, "key_id": bad},
+                     {"action": "disable", "agent_id": bad, "reason": "done"}):
+            refused = request("POST", agents, bearer="alice-app", session=True, json=body)
+            assert (refused.status_code, refused.json()) == (400, {"error": "invalid_request"})
     agent = request("POST", agents, bearer="alice-app", session=True, json=register).json()
     assert (agent["source"], agent["delivery_method"]) == ("api_key", "pull")
     [listed] = request("GET", agents, bearer="alice-app", session=True).json()["agents"]
