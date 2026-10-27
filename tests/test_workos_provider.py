@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 
 import jwt
 import pytest
@@ -236,6 +237,53 @@ def test_only_verified_tokens_supply_opaque_connection_metadata(keypair):
     assert len(connection["id"]) == 64
     assert "session_fixture" not in str(connection) and token not in str(ident.metadata)
     assert _provider(keypair).resolve_token(token + "invalid") is None
+
+
+@pytest.fixture
+def claim_shapes(monkeypatch, caplog):
+    """The token_claim_shape events emitted, parsed, from fresh rate-limit state."""
+    import json
+
+    monkeypatch.setattr(workos_provider_module, "_claim_shape_log_state", OrderedDict())
+    monkeypatch.setattr(workos_provider_module, "_rejection_log_now", lambda: 100.0)
+    events = logging.getLogger("tinyassets.events")
+    events.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="tinyassets.events")
+    yield lambda: [
+        json.loads(r.getMessage()) for r in caplog.records
+        if '"event":"token_claim_shape"' in r.getMessage()
+    ]
+    events.removeHandler(caplog.handler)
+
+
+@pytest.mark.verifies(
+    'identity-auth-and-access-control:'
+    'Bearer JWT validation is fail-closed, RS256-pinned, and audience-bound',
+)
+def test_claim_shape_logged_once_per_shape_without_values(
+        keypair, claim_shapes, monkeypatch, caplog):
+    from tinyassets.outside_authority import evidence_digest
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP_CLIENT_ID", "client_first_party")
+    monkeypatch.setattr(workos_provider_module, "_CLAIM_SHAPE_CAP", 2)
+    provider = _provider(keypair)
+    outside = _sign(keypair, client_id="client_outside_x", sid="sid_secret_v")
+    for token in (outside, outside, _sign(keypair, client_id="client_first_party")):
+        assert provider.verified_claims(token) is not None
+    first, second = claim_shapes()  # same shape twice -> one line
+    assert first["claim_keys"] == sorted(
+        ["sub", "sid", "iss", "iat", "exp", "email", "client_id"])
+    assert first["client_id_present"] and not first["first_party"]
+    assert first["client_hash"] == evidence_digest(ISSUER, "client_outside_x")
+    assert first["token_type"] == "JWT" and "context" not in first
+    assert second["first_party"] and second["client_hash"] != first["client_hash"]
+    assert provider.verified_claims(_sign(keypair, extra_claim="v")) is not None
+    third = claim_shapes()[2]  # a different claim set -> its own line
+    assert not third["client_id_present"] and "client_hash" not in third
+    assert len(workos_provider_module._claim_shape_log_state) == 2  # bounded
+    for secret in ("user_workos_123", "founder@example.com", "sid_secret_v",
+                   "client_outside_x", "client_first_party", outside):
+        assert secret not in caplog.text
 
 
 

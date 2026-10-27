@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
+from collections import OrderedDict
 from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -182,6 +184,52 @@ def _log_token_rejection(category: str) -> None:
     )
 
 
+# One trail event per verified claim shape, so the outside-client claim is read
+# from live traffic. 30 minutes puts each live shape inside any one-hour
+# unfiltered fetch-prod-logs window. Bounded: the oldest shape is forgotten.
+_CLAIM_SHAPE_LOG_WINDOW_SECONDS = 1800.0
+_CLAIM_SHAPE_CAP = 64
+_claim_shape_log_lock = threading.Lock()
+_claim_shape_log_state: OrderedDict[tuple, tuple[float, int]] = OrderedDict()
+_CLAIM_KEY = re.compile(r"[A-Za-z0-9_:./-]{1,64}")
+_TOKEN_TYPE = re.compile(r"[A-Za-z0-9+._-]{1,32}")
+
+
+def _log_claim_shape(token: str, claims: dict[str, Any]) -> None:
+    """Emit claim key names and the outside-client hash; never a claim value."""
+    from tinyassets.observability import emit
+    from tinyassets.outside_authority import evidence_digest
+
+    client, issuer = claims.get("client_id"), claims.get("iss")
+    has_client = isinstance(client, str) and bool(client)
+    app_client = os.environ.get("TINYASSETS_ONBOARDING_APP_CLIENT_ID", "").strip()
+    typ = jwt.get_unverified_header(token).get("typ")
+    shape = {
+        "claim_keys": sorted(
+            {k if isinstance(k, str) and _CLAIM_KEY.fullmatch(k) else "?" for k in claims}
+        ),
+        "client_id_present": has_client,
+        "first_party": has_client and client == app_client,
+        "client_hash": (evidence_digest(issuer, client)
+                        if has_client and isinstance(issuer, str) else None),
+        "token_type": (typ if isinstance(typ, str) and _TOKEN_TYPE.fullmatch(typ)
+                       else "other" if typ else "none"),
+    }
+    key = tuple(tuple(v) if isinstance(v, list) else v for v in shape.values())
+    now = _rejection_log_now()
+    with _claim_shape_log_lock:
+        last_logged, suppressed = _claim_shape_log_state.pop(key, (float("-inf"), 0))
+        if now - last_logged < _CLAIM_SHAPE_LOG_WINDOW_SECONDS:
+            _claim_shape_log_state[key] = (last_logged, suppressed + 1)
+            return
+        _claim_shape_log_state[key] = (now, 0)
+        while len(_claim_shape_log_state) > _CLAIM_SHAPE_CAP:
+            _claim_shape_log_state.popitem(last=False)
+    # No request context: it would carry the account id (the token subject).
+    emit("token_claim_shape", session_id=None, trace_id=None, context=None,
+         suppressed=suppressed, **shape)
+
+
 def derive_endpoints(authkit_domain: str) -> tuple[str, str]:
     """Return ``(issuer, jwks_uri)`` for an AuthKit domain.
 
@@ -318,6 +366,7 @@ class WorkOSAuthProvider(AuthProvider):
         if not active_owner(sub):
             return None
 
+        _log_claim_shape(token, claims)
         return claims
 
     def resolve_token(self, token: str) -> Identity | None:
