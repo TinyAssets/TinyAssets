@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted (founder, 2026-10-26). Amends ADR-019 and ADR-022 on what a box
-runs.
+Accepted (founder, 2026-10-26). The deferral in #5324 is withdrawn: on
+2026-10-27T01:23Z the founder said to "review the doc and build only the
+correct architecture", and the plan records this decision as A9. Amends ADR-019
+and ADR-022 on what a box runs.
 
 ## Date
 
@@ -33,11 +35,12 @@ that is reading and writing owner files.
 ## Consequences
 
 - Cold start and awake memory drop to the harness's size. ADR-026's class
-  reservations are measured again (proposed row N12, metering).
+  reservations are measured again (registry row N12, metering).
 - `owner_daemon`'s app-server path is deleted, and with it the box-ingress
   websocket pass-through.
 - Requests that don't touch owner files (status, messaging, rooms) never
   wake a box.
-- The proposed S35 row's guard also checks that the box imports no server
-  modules.
+- How owner isolation holds once serving is on the trusted side is
+  unresolved; `docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md`
+  tracks it.
 - Build order: `openspec/changes/device-first-build/`.
