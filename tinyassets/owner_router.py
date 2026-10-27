@@ -18,7 +18,7 @@ import httpx
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect, Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from tinyassets.asgi_scope import refuse_non_http
 from tinyassets.mailbox_door import mcp as mailbox_mcp
@@ -136,8 +136,8 @@ class TrustedFront:
         """An exact ``/app`` registration spelled with a trailing ``/``.
 
         The box redirected it to the exact path (Starlette ``redirect_slashes``);
-        the router's own table, which holds that path, redirects it the same way.
-        ``/api`` registrations never had a box route, so their spelling stays a 404.
+        the router answers the same 307 itself (``_slash_redirect``). ``/api``
+        registrations never had a box route, so their spelling stays a 404.
         """
         exact = path.rstrip("/")
         return path != exact and exact.startswith("/app") and any(
@@ -164,7 +164,7 @@ class TrustedFront:
         path, method = scope["path"], scope["method"]
         trusted = self._app(path, method)
         if trusted is None and self._slashed(path, method):
-            trusted = Trusted(_shared_default, owner=False)
+            trusted = Trusted(_slash_redirect, owner=False)
         if trusted is not None or not _door(path):
             return trusted or Trusted(_shared_default, owner=False), receive
         if path not in _MCP or method != "POST":
@@ -232,8 +232,8 @@ async def _ignore(front):
     """The client left before its request body arrived; nothing is answered."""
 
 
-async def _serve_shared(front, public):
-    """The router's own route table; only immutable public assets skip closed admission."""
+async def _serve_shared(front, public, answer=None):
+    """The router's own route table, or ``answer``; only public assets skip closed admission."""
     from tinyassets.router_traffic import admits
     from tinyassets.storage import data_dir
 
@@ -248,11 +248,25 @@ async def _serve_shared(front, public):
             admits, data_dir(), front.identity.user_id if front.identity else None):
         return await JSONResponse({"error": "maintenance"}, status_code=503)(
             scope, front.receive, front.send)
+    if answer is not None:
+        return await answer(scope, front.receive, front.send)
     await front.router.app(scope, front.receive, front.send)
 
 
 async def _shared_default(front):
     await _serve_shared(front, False)
+
+
+async def _slash_redirect(front):
+    """The box's 307 to the exact path, query kept. Relative: the Host the router
+    sees is the internal tunnel host, which a browser must never be sent to."""
+    scope = front.scope
+    if front.identity is None:  # As a forwarded door refuses an anonymous caller.
+        return await JSONResponse({"error": "not_found"}, status_code=404)(
+            scope, front.receive, front.send)
+    query = scope.get("query_string", b"").decode("latin-1")
+    location = scope["path"].rstrip("/") + ("?" + query if query else "")
+    await _serve_shared(front, False, RedirectResponse(location, status_code=307))
 
 
 TRUSTED = TrustedFront()

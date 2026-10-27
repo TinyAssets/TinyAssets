@@ -393,13 +393,16 @@ def test_the_router_answers_app_trace_and_slashes_while_the_box_sleeps(
         assert anonymous.status_code == 401 and "www-authenticate" in anonymous.headers
         assert anonymous.json()["error"] == "authentication_required"
         # The box redirected an exact app path spelled with a trailing slash
-        # (Starlette's redirect_slashes); the router's own table does the same.
+        # (Starlette's redirect_slashes). The router answers the same 307, but
+        # relative: the Host it sees is the internal tunnel host (fact 11).
+        tunnel = bearer | {"host": "mcp.tinyassets.io"}
         for method, path, exact in (("GET", "/app/?x=1", "/app?x=1"),
                                     ("POST", "/app/owner/restore/?a=b", "/app/owner/restore?a=b"),
-                                    ("GET", "/app/api/policy/", "/app/api/policy")):
-            moved = client.request(method, path, headers=bearer, follow_redirects=False)
-            assert moved.status_code == 307, path
-            assert moved.headers["location"] == "http://testserver" + exact
+                                    ("POST", "/app/token//", "/app/token")):
+            moved = client.request(method, path, headers=tunnel, follow_redirects=False)
+            assert (moved.status_code, moved.headers["location"]) == (307, exact), path
+        anonymous = client.get("/app/api/policy/", follow_redirects=False)
+        assert anonymous.status_code == 401 and "location" not in anonymous.headers
     # Only an exact /app registration: a subtree already covers its slash, and
     # the /api registrations never had a box route to redirect.
     assert not owner_router.TRUSTED._slashed("/api/mailbox/", "GET")
