@@ -54,7 +54,10 @@ name the owner's own live key, checked by the router, which alone holds the key 
 broker SHALL take that key's origin from the router and never read the store. An `mcp`
 agent SHALL take its client and family from the caller's verified `outside_origin` and
 SHALL be refused while that is absent. One outside identity SHALL be at most one enabled
-agent. Only `pull` delivery SHALL be admitted until S3b.
+agent. Only `pull` and `mcp_event` delivery SHALL be admitted; `routine_fire` and `webhook`
+SHALL be refused until S9 (they wait for the credential-vault reshape, decided 2026-10-25) and
+`a2a` until its own slice. An `api_key` agent SHALL NOT take `mcp_event`: it cannot
+subscribe to MCP events, so it reads by `pull`.
 
 #### Scenario: Another owner's key
 - **WHEN** an owner registers an `api_key` agent naming a key minted by another owner
@@ -72,6 +75,51 @@ The owner's chain depth SHALL be 0; an agent's SHALL be its parent's plus 1.
 #### Scenario: A client message id is reused with another body
 - **WHEN** a sender posts a second body under a client message id it already used
 - **THEN** the post is refused as `conflict` and the first message is unchanged
+
+### Requirement: One open wake per ringing recipient
+S3b, W3. In the same transaction as the message, `ROOM_POST` SHALL open one `ledger_wakes`
+row per recipient whose delivery method rings (`mcp_event`), or leave that recipient's open
+(`pending` or `rate_limited`) wake to cover it; the unique index `one_open_wake` holds at
+most one per agent. A `pull` agent SHALL never be woken, and no wake SHALL open for the
+message's own sender. Disabling an agent, or moving it off `mcp_event`, SHALL suppress its
+open wake.
+
+#### Scenario: The owner sends two messages before the wake goes out
+- **WHEN** the owner posts twice to an `mcp_event` agent's dm room
+- **THEN** one wake is pending and, once accepted, both messages read `woken`
+
+### Requirement: AGENT_WAKE sends once, through the op journal
+S3b, W3. `control_plane/outside_wakes.run_due` SHALL claim due wakes on the broker's shared
+tick (the MCP event delivery pass), never in a box and with no timer of its own, taking at
+most one due wake per owner per pass and starting each pass after the last owner the previous
+one looked at, so no owner's agents crowd out another's; only an accepted wake SHALL make the
+pass run again. Nothing SHALL be claimed while the broker's `TINYASSETS_OUTSIDE_DENY` is set;
+wakes stay pending until it clears. Each due wake goes to `AGENT_WAKE`, which SHALL write may-have-sent to the broker's op journal (`broker/ops.py`)
+before the first byte leaves through the owner's egress. A 2xx SHALL settle `sent` with a
+`wake_accepted` receipt; a 429 SHALL settle `rate_limited` with `due` pushed by its
+Retry-After and a `rate_limited` receipt, the messages staying queued; another answer or a
+callback refused before any connection (owner egress, the public-address check, or
+resolution) SHALL settle `failed`. A claim that finds the agent disabled or off `mcp_event`
+SHALL suppress the wake and revoke the agent's callbacks. A send with no answer, or one abandoned past its lease
+whose journal shows a byte may have left, SHALL settle `unknown` with a `wake_sent` receipt
+and SHALL never be replayed; one the journal proves unsent SHALL be due again.
+
+Owed, not built here: revoking an outside client's grant SHALL end its wakes and erase its
+callbacks as disabling the agent does (M3, waits on #5343's broker-held grants, and blocks S31
+reading converged once that lands); bounding `ledger_wakes` growth and the per-pass scan of
+every owner's ledger belong to S4's caps (L5).
+
+#### Scenario: The callback answers 429
+- **WHEN** a wake is answered 429 with Retry-After 120 and another message arrives
+- **THEN** no wake is sent for 120 seconds, and then one wake covers both messages
+
+### Requirement: Wakes are doorbells
+S31. A wake and its event SHALL carry identifiers only: the command center, the agent and the
+mailbox cursor, never a message body, in the payload, the receipts or the wake row.
+
+#### Scenario: A wake goes out for a message
+- **WHEN** any wake for a message is sent, rate limited, failed or unknown
+- **THEN** that message's body appears in no sent payload and no ledger or event store
 
 ### Requirement: A reader sees only its own mail
 W3-R3, W3-R5. `MAILBOX_RECEIPT read` SHALL return only the reader's messages past its

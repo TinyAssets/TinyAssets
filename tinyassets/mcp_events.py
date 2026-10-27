@@ -44,6 +44,24 @@ DEFINITION = {
         "additionalProperties": False,
     },
 }
+MAILBOX = "mailbox.message"
+_MAILBOX_IDS = {k: _IDENTIFIER for k in ("command_center_id", "agent_id")}
+#: S3b, W4: a doorbell for a registered ``mcp_event`` agent. IDs only, never a body.
+MAILBOX_DEFINITION = {
+    "name": MAILBOX,
+    "delivery": ["webhook"],
+    "description": "New mail is waiting for your registered agent. Contains IDs and the "
+    "mailbox cursor only, never a message; read it with read_graph target=mailbox. Only "
+    "the agent's own verified client may subscribe.",
+    "inputSchema": {"type": "object", "properties": _MAILBOX_IDS,
+                    "required": list(_MAILBOX_IDS), "additionalProperties": False},
+    "payloadSchema": {
+        "type": "object",
+        "properties": {**_MAILBOX_IDS, "cursor": {"type": "integer", "minimum": 0}},
+        "required": [*_MAILBOX_IDS, "cursor"],
+        "additionalProperties": False,
+    },
+}
 
 
 def _scalar_matches(actual, expected):
@@ -85,6 +103,17 @@ def arguments(value):
     except ValueError:
         raise EventError(-32602, "Event arguments exceed bounds") from None
     return value
+
+
+def mailbox_arguments(value):
+    if not isinstance(value, dict) or set(value) != set(_MAILBOX_IDS) or not all(
+            isinstance(v, str) and 1 <= len(v) <= 256 for v in value.values()):
+        raise EventError(-32602, "Exact command center and agent IDs are required")
+    return value
+
+
+#: The events registry: each event's definition and its argument check.
+EVENTS = {NAME: (DEFINITION, arguments), MAILBOX: (MAILBOX_DEFINITION, mailbox_arguments)}
 
 
 def authorize(base, owner, args, authority=None):

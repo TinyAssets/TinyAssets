@@ -9,6 +9,7 @@ plane is the only always-on layer, and boxes and jails keep no timers.
 * ``triggers`` -- the trigger table and fire ledger (platform state).
 * ``scheduler`` -- the owner tick that fires owed triggers, and its metrics.
 * ``wake`` -- what a fire calls: the run path, later ``BoxProvider.ensure_awake``.
+* ``outside_wakes`` -- outside-agent wakes, run in the broker on its delivery pass.
 
 Every periodic loop in the platform is classified in
 ``tests/control_plane_timer_inventory.py``.

@@ -72,7 +72,8 @@ def test_the_broker_takes_a_keys_origin_from_the_router_and_never_reads_the_stor
 
 
 def test_only_pull_delivery_is_admitted(rig):
-    for method, error in (("webhook", LedgerRefused), ("mcp_event", LedgerRefused),
+    """Since S3b, pull and mcp_event; the routine and webhook wakes wait for S9."""
+    for method, error in (("webhook", LedgerRefused), ("routine_fire", LedgerRefused),
                           ("carrier", ValueError)):
         with pytest.raises(error):
             rig.call("OUTSIDE_AGENTS", "register", MUSE, session_proof=PROOF,

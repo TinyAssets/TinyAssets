@@ -6,6 +6,10 @@ it, and only the router's owner channel reaches it (``OUTSIDE_AGENTS``,
 is the router-verified identity's ``outside_origin`` (none means the owner),
 never a field of the request. Bodies live in ``conversations.py``; this ledger
 keeps each body's hash, so a tampered body is detected on read.
+
+Wakes (S3b, W3) are data: ``ROOM_POST`` opens or extends one ``ledger_wakes`` row per
+recipient whose delivery method rings (``mcp_event``); ``agent_wake`` (AGENT_WAKE) sends
+it on the broker's tick through the op journal, so an ambiguous send is never replayed.
 """
 from __future__ import annotations
 
@@ -14,9 +18,11 @@ import json
 import logging
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -25,8 +31,18 @@ from tinyassets.broker.policy import account_path, erase_account_db, open_accoun
 _LOG = logging.getLogger(__name__)
 FILENAME = "message_ledger.db"
 DELIVERY_METHODS = ("mcp_event", "routine_fire", "webhook", "a2a", "pull")
-#: S3a.1 admits pull only: the wake methods arrive with ``ledger_wakes`` (S3b).
-ADMITTED_DELIVERY = frozenset({"pull"})
+#: S3b admits the ``mailbox.message`` doorbell beside pull. Routine and webhook wakes wait
+#: for the credential-vault reshape (S9, decided 2026-10-25); a2a for its own slice.
+ADMITTED_DELIVERY = frozenset({"pull", "mcp_event"})
+#: The admitted methods that ring; a pull agent is never woken (W3).
+WAKING = frozenset({"mcp_event"})
+#: A claimed send's lease: past it, the op journal decides whether a byte left.
+WAKE_LEASE_S = 60
+_OPEN = "state IN ('pending','rate_limited')"
+SUPPRESSED = "suppressed"
+#: The receipt each settled wake leaves; ``wake_sent`` alone means the outcome is unknown.
+_WAKE_RECEIPTS = {"sent": "wake_accepted", "rate_limited": "rate_limited",
+                  "failed": "failed", "unknown": "wake_sent"}
 OPS = {"OUTSIDE_AGENTS": ("list", "register", "disable"), "ROOM_POST": ("post",),
        "MAILBOX_RECEIPT": ("read", "ack")}
 OWNER = "owner"
@@ -62,11 +78,30 @@ CREATE TABLE IF NOT EXISTS ledger_receipts(
   ref TEXT NOT NULL, at REAL NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS ledger_cursors(
   reader TEXT PRIMARY KEY, through_seq INTEGER NOT NULL, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS ledger_wakes(
+  wake_id TEXT PRIMARY KEY, owner TEXT NOT NULL, agent_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN('pending','sending','sent','unknown','rate_limited',
+                                     'failed','suppressed')),
+  due REAL NOT NULL, op_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, receipt_json TEXT,
+  created_at REAL NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_wake ON ledger_wakes(owner, agent_id)
+  WHERE state IN('pending','rate_limited');
+CREATE INDEX IF NOT EXISTS wakes_due ON ledger_wakes(state, due);
 """
 
 
 class LedgerRefused(PermissionError):
     """A refusal whose reason the router may show the caller."""
+
+
+@dataclass(frozen=True, slots=True)
+class Wake:
+    owner: str
+    wake_id: str
+    agent_id: str
+    state: str
+    due: float
+    op_id: str | None
 
 
 def erase(data_root: Path, owner: str) -> int:
@@ -84,6 +119,7 @@ class MessageLedger:
         self._root = Path(data_root)
         self._admissions = admissions
         self._locks: dict[str, threading.Lock] = {}
+        self._wake_turn = 0  # where the next wake pass starts among owners (due_wakes)
 
     def _open(self, owner: str):
         db = open_account_db(account_path(self._root, owner, FILENAME), self._admissions, owner)
@@ -120,7 +156,9 @@ class MessageLedger:
         if delivery_method not in DELIVERY_METHODS:
             raise ValueError("unknown delivery method")
         if delivery_method not in ADMITTED_DELIVERY:
-            raise LedgerRefused("only pull delivery is available yet")
+            raise LedgerRefused("only pull and mcp_event delivery are available yet")
+        if source == "api_key" and delivery_method in WAKING:
+            raise LedgerRefused("an API-key agent reads by pull; mcp_event is for MCP clients")
         with self._write(owner) as db:
             row = db.execute("SELECT agent_id FROM outside_agents WHERE command_center_id=? "
                              "AND outside_client=? AND outside_family=?",
@@ -142,6 +180,8 @@ class MessageLedger:
                 db.execute("UPDATE outside_agents SET source=?,source_ref=?,display_name=?,"
                            "delivery_method=?,recipe_id=?,disabled_reason=NULL,"
                            "revision=revision+1 WHERE agent_id=?", (*fields, agent_id))
+            if delivery_method not in WAKING:
+                self._suppress(db, owner, agent_id, "delivery_method")
             return dict(db.execute("SELECT * FROM outside_agents WHERE agent_id=?",
                                    (agent_id,)).fetchone())
 
@@ -151,6 +191,7 @@ class MessageLedger:
             if not db.execute("UPDATE outside_agents SET disabled_reason=?,revision=revision+1 "
                               "WHERE agent_id=?", (reason, agent_id)).rowcount:
                 raise LedgerRefused("agent not found")
+            self._suppress(db, owner, agent_id, "disabled")
             return dict(db.execute("SELECT * FROM outside_agents WHERE agent_id=?",
                                    (agent_id,)).fetchone())
 
@@ -226,6 +267,13 @@ class MessageLedger:
                         parent["chain_root"] if parent else message_id, depth, now))
             db.execute("INSERT INTO ledger_recipients VALUES (?,?,'queued',?)",
                        (message_id, recipient, now))
+            # One open wake per ringing recipient; never one for the message's own sender.
+            if agent["delivery_method"] in WAKING and recipient == agent["agent_id"] != sender:
+                db.execute("INSERT INTO ledger_wakes(wake_id,owner,agent_id,state,due,created_at)"
+                           " SELECT ?,?,?,'pending',?,? WHERE NOT EXISTS (SELECT 1 FROM "
+                           f"ledger_wakes WHERE owner=? AND agent_id=? AND {_OPEN})",
+                           ("wake_" + secrets.token_hex(16), owner, recipient, now, now, owner,
+                            recipient))
             if parent is not None:
                 db.execute("UPDATE ledger_recipients SET state='replied',changed_at=? "
                            "WHERE message_id=? AND agent_id=?", (now, parent_id, sender))
@@ -236,6 +284,110 @@ class MessageLedger:
                     "read_s": None if read is None else round(read - parent["created_at"], 3)})
             return {"message_id": message_id, "recipients": [recipient], "held": False,
                     "paused_reason": ""}
+
+    # -- wakes (S3b) ----------------------------------------------------------
+
+    @staticmethod
+    def _suppress(db, owner, agent_id, reason) -> None:
+        db.execute(f"UPDATE ledger_wakes SET state='suppressed',receipt_json=? WHERE owner=? "
+                   f"AND agent_id=? AND {_OPEN}", (json.dumps({"reason": reason}), owner,
+                                                   agent_id))
+
+    def mailbox_subscriber(self, owner: str, *, origin: dict, command_center_id: str,
+                           agent_id: str) -> None:
+        """W4: a ``mailbox.message`` subscribe names the caller's own ringing agent."""
+        with self._open(owner) as db:
+            if db.execute(
+                    "SELECT 1 FROM outside_agents WHERE agent_id=? AND command_center_id=? AND "
+                    "outside_client=? AND outside_family=? AND disabled_reason IS NULL AND "
+                    "delivery_method='mcp_event'", (agent_id, command_center_id,
+                                                    origin["client"], origin["family"])
+            ).fetchone() is None:
+                raise LedgerRefused("not this caller's mcp_event agent")
+
+    def due_wakes(self, now: float, *, limit: int) -> list[Wake]:
+        """At most one due wake per owner, its oldest, from up to ``limit`` owners.
+
+        Each pass starts after the last owner the previous pass looked at, so an owner
+        with many agents can never crowd another out. A send past its lease is due
+        again for recovery.
+        """
+        from tinyassets.broker.admission import read
+
+        paths = sorted((self._root / ".broker" / "accounts").glob("*/" + FILENAME))
+        start = self._wake_turn % len(paths) if paths else 0
+        found: list[Wake] = []
+        for looked, path in enumerate(paths[start:] + paths[:start], 1):
+            self._wake_turn = start + looked
+            try:
+                with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as probe:
+                    row = probe.execute(
+                        "SELECT owner,wake_id,agent_id,state,due,op_id FROM ledger_wakes WHERE "
+                        f"({_OPEN} OR state='sending') AND due<=? ORDER BY due LIMIT 1",
+                        (now,)).fetchone()
+                if row is None or account_path(self._root, row[0], FILENAME) != path:
+                    continue
+                read(self._admissions, row[0]).require_work()
+            except (sqlite3.Error, PermissionError, LookupError, ValueError):
+                continue  # a ledger from before wakes, or an owner not admitted now
+            found.append(Wake(*row))
+            if len(found) >= limit:
+                break
+        return found
+
+    def claim_wake(self, owner: str, wake_id: str, *, op_id: str,
+                   now: float) -> dict | str | None:
+        """Before any byte: the claimed agent's IDs and mailbox cursor, or None.
+
+        A wake whose agent is disabled or no longer rings is suppressed here instead,
+        and ``SUPPRESSED`` tells AGENT_WAKE to revoke that agent's callbacks.
+        """
+        with self._write(owner) as db:
+            wake = db.execute(f"SELECT * FROM ledger_wakes WHERE wake_id=? AND {_OPEN} AND "
+                              "due<=?", (wake_id, now)).fetchone()
+            if wake is None:
+                return None
+            agent = db.execute("SELECT * FROM outside_agents WHERE agent_id=?",
+                               (wake["agent_id"],)).fetchone()
+            if agent is None or agent["disabled_reason"] or agent["delivery_method"] not in WAKING:
+                self._suppress(db, owner, wake["agent_id"], "agent")
+                return SUPPRESSED
+            cursor = db.execute("SELECT through_seq FROM ledger_cursors WHERE reader=?",
+                                (agent["agent_id"],)).fetchone()
+            through = db.execute(
+                "SELECT COALESCE(MAX(m.seq),0) FROM ledger_messages m JOIN ledger_recipients r "
+                "ON r.message_id=m.message_id AND r.agent_id=?", (agent["agent_id"],)).fetchone()
+            db.execute("UPDATE ledger_wakes SET state='sending',op_id=?,attempts=attempts+1,"
+                       "due=? WHERE wake_id=?", (op_id, now + WAKE_LEASE_S, wake_id))
+            return {"agent_id": agent["agent_id"], "command_center_id": agent[
+                "command_center_id"], "client": agent["outside_client"], "family": agent[
+                "outside_family"], "cursor": cursor[0] if cursor else 0, "through": through[0]}
+
+    def settle_wake(self, owner: str, wake_id: str, state: str, *, now: float,
+                    detail: dict) -> None:
+        """A claimed wake's outcome, its receipt, and its messages ``woken`` once accepted."""
+        with self._write(owner) as db:
+            wake = db.execute("SELECT * FROM ledger_wakes WHERE wake_id=? AND state='sending'",
+                              (wake_id,)).fetchone()
+            if wake is None:
+                return
+            kind, due = _WAKE_RECEIPTS.get(state), now + detail.get("retry_after", 0)
+            # A message posted meanwhile opened the agent's next wake: fold into that one,
+            # which then waits out any Retry-After.
+            if state in ("pending", "rate_limited") and db.execute(
+                    "UPDATE ledger_wakes SET due=MAX(due,?),state=CASE WHEN ?='rate_limited' "
+                    f"THEN 'rate_limited' ELSE state END WHERE owner=? AND agent_id=? AND {_OPEN}",
+                    (due, state, owner, wake["agent_id"])).rowcount:
+                state, detail = "suppressed", {**detail, "folded": True}
+            db.execute("UPDATE ledger_wakes SET state=?,due=?,receipt_json=? WHERE wake_id=?",
+                       (state, due, json.dumps(detail, sort_keys=True), wake_id))
+            if state == "sent":
+                db.execute("UPDATE ledger_recipients SET state='woken',changed_at=? WHERE "
+                           "agent_id=? AND state='queued' AND message_id IN (SELECT message_id "
+                           "FROM ledger_messages WHERE seq<=?)",
+                           (now, wake["agent_id"], detail["through"]))
+            if kind:
+                self._receipt(db, owner, wake["agent_id"], kind, wake_id, now, detail)
 
     # -- MAILBOX_RECEIPT ----------------------------------------------------
 
@@ -305,6 +457,41 @@ class MessageLedger:
                                  (reader,)).fetchone()[0]
             self._receipt(db, owner, reader, "ack", str(through), now)
             return {"reader": reader, "through": through}
+
+
+def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float) -> str:
+    """AGENT_WAKE (W3): one wake through broker egress, under the op journal (``ops.py``).
+
+    may-have-sent is durable before the first byte, so a send abandoned past its lease
+    is ``unknown`` unless the journal proves no byte left, and an unknown wake is never
+    replayed: the agent's next message opens its next wake. A 429 waits out Retry-After.
+    """
+    from tinyassets.broker.ops import OpRecord, new_op_id
+
+    namespace = "agent_wake:" + wake.owner
+    if wake.state == "sending":
+        record = ops.status(namespace, wake.op_id) if wake.op_id else "not_found"
+        unsent = record == "not_found" or isinstance(record, OpRecord) and not record.sent
+        state = "pending" if unsent else "unknown"
+        ledger.settle_wake(wake.owner, wake.wake_id, state, now=now, detail={"recovered": True})
+        return state
+    op_id = new_op_id()
+    if ops.admit(namespace, op_id, hashlib.sha256(wake.wake_id.encode()).hexdigest()
+                 ).kind != "new":
+        raise RuntimeError("the op journal refused the wake")
+    target = ledger.claim_wake(wake.owner, wake.wake_id, op_id=op_id, now=now)
+    if not isinstance(target, dict):
+        ops.finish(namespace, op_id, "refused")
+        if target == SUPPRESSED:  # disabled or off mcp_event: no callback may outlive it
+            events.revoke_agent(wake.owner, wake.agent_id)
+        return SUPPRESSED
+    state, detail = events.send_wake(wake.owner, target, wake.wake_id,
+                                     mark=partial(ops.mark_may_have_sent, namespace, op_id))
+    ledger.settle_wake(wake.owner, wake.wake_id, state, now=now,
+                       detail={**detail, "through": target["through"]})
+    ops.finish(namespace, op_id, {"sent": "completed", "suppressed": "refused"}.get(
+        state, "failed"))
+    return state
 
 
 def _origin(value) -> dict | None:

@@ -309,6 +309,33 @@ async def test_router_unsubscribe_never_wakes_the_box(router_door):
     assert asked == [] and brokered[0]["action"] == "unsubscribe"
 
 
+@pytest.mark.verifies("native-mcp-events:mailbox.message rings only the agent's own client")
+@pytest.mark.asyncio
+async def test_a_mailbox_subscribe_goes_to_the_broker_without_the_box(router_door, monkeypatch):
+    from tinyassets.outside_authority import OutsideClientAuthority, OutsideRefused
+
+    post, asked, brokered, _ = router_door
+    switch = {"on": False}
+
+    def require_switched_on(self):
+        if not switch["on"]:
+            raise OutsideRefused("outside client authority unavailable")
+
+    monkeypatch.setattr(OutsideClientAuthority, "require_switched_on", require_switched_on)
+    verified = {"client": "c", "family": "f", "authenticated_at": 1}
+    document = params() | {"name": "mailbox.message",
+                           "arguments": {"command_center_id": "alpha", "agent_id": "agent_1"}}
+    identity = Identity("alice", "alice", metadata={"outside_origin": verified})
+    refused = await post("events/subscribe", identity, **document)  # the kill switch is off
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, -32024)
+    assert asked == [] and brokered == []
+    switch["on"] = True
+    response = await post("events/subscribe", identity, **document)
+    assert response.status_code == 200, response.text
+    assert asked == [] and brokered[0]["authority"] == verified
+    assert brokered[0]["params"]["name"] == "mailbox.message"
+
+
 @pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal,code,status", [

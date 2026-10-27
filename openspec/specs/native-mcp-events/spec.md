@@ -2,8 +2,8 @@
 
 ## Intent and compatibility
 
-Expose owner-scoped `workflow.succeeded` webhook subscriptions on the authenticated
-public MCP endpoint. This is notification plumbing, not a shared conversation or
+Expose owner-scoped `workflow.succeeded` and, for registered outside agents,
+`mailbox.message` webhook subscriptions on the authenticated public MCP endpoint. This is notification plumbing, not a shared conversation or
 an agent impersonation layer. No UI, live grant, subscription or deployment changes.
 
 Protocol references (verified 2026-10-14):
@@ -54,6 +54,24 @@ that caller may follow the workflow, then subscribes in the broker. Unsubscribe
 never wakes a box. The box answers `events/list`, `server/discover` and that
 authorization question; an `events/unsubscribe` that reaches a box is a routing
 fault and is refused. Envelope checks run before the box or the broker is asked.
+A `mailbox.message` subscribe never asks a box: the broker checks it against the
+agent registry.
+
+### Requirement: mailbox.message rings only the agent's own client
+
+S3b, W4. Subscribe input is `{command_center_id, agent_id}`. It is accepted only
+when the caller's verified outside client is that enabled agent's registry row and
+its delivery method is `mcp_event`, and while the outside kill switches are on
+(the router checks them, as a box's admission would); otherwise it is refused
+(-32024). The registry check runs again after the subscription is stored, and a
+failure then revokes it. Only the client that holds a mailbox subscription may
+unsubscribe it. One callback
+per agent: a new subscription revokes the agent's earlier one. The payload is
+`{command_center_id, agent_id, cursor}`, IDs and the mailbox cursor only; the event
+ID is `evt_` plus a SHA-256 of owner, agent and wake. `AGENT_WAKE` sends it once
+(trusted-message-ledger); it does not use the delivery outbox's retries. Disabling
+the agent, or moving it off `mcp_event`, revokes its subscriptions and erases their
+callback credentials.
 
 ### Requirement: Subscriptions live in the broker and expire
 
