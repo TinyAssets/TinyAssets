@@ -772,15 +772,54 @@ def test_a_restarted_broker_counts_no_deferred_stop_as_awake(fleet, monkeypatch)
 
 
 @pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
+def test_an_idle_stop_past_its_shutdown_deadline_ends_the_box_and_the_next_wake_serves(
+        fleet, monkeypatch):
+    # SIGTERM closed the drained box's listener, but its process never exits
+    # (lifespan shutdown waits on an uncancelled tool thread). Left alive, every
+    # later wake was refused and the router answered 503 until boxhostd restarted.
+    uid = fleet.wake("a")
+    fleet.states[uid].last -= 10
+    fleet.manager.boxes[uid].last -= 10
+    rpc, start, closed = fleet.manager._rpc, fleet.runtime.start, set()
+
+    def hung(uid):
+        closed.add(uid)
+        raise BoxError("owner daemon did not flush before shutdown deadline")
+
+    def answer(box, operation="status", **body):
+        if box.uid in closed:
+            raise OSError("connection refused")
+        return rpc(box, operation, **body)
+
+    def started(uid, gid, **kwargs):
+        closed.discard(uid)
+        start(uid, gid, **kwargs)
+
+    monkeypatch.setattr(fleet.runtime, "shutdown", hung)
+    monkeypatch.setattr(fleet.runtime, "start", started)
+    monkeypatch.setattr(fleet.manager, "_rpc", answer)
+    fleet.tick()
+    assert fleet.runtime.stops == [uid] and uid not in fleet.runtime.live
+    box = fleet.manager.boxes[uid]
+    assert not box.awake and box.failures == 0 and not box.error
+    assert fleet.states[uid].snapshot_stop  # Parked calls settled, as an explicit stop.
+    assert "a" not in fleet.routing.awake
+    assert fleet.wake("a") == uid
+    assert len(fleet.runtime.starts) == 2 and not fleet.states[uid].draining
+    assert fleet.admission.volume("a")["work"] == {"kind": "running"}
+
+
+@pytest.mark.verifies("owner-daemon-in-box:Boxes sleep and wake without a person")
 def test_an_idle_box_that_drains_but_does_not_stop_is_not_read_as_busy(fleet, monkeypatch):
     uid = fleet.wake("a")
     fleet.states[uid].last -= 10
     fleet.manager.boxes[uid].last -= 10
 
     def stuck(uid):
-        raise OSError("shutdown deadline")
+        raise OSError("cannot prove the owner sandbox stopped")
 
     monkeypatch.setattr(fleet.runtime, "shutdown", stuck)
+    monkeypatch.setattr(fleet.runtime, "stop", stuck)
     fleet.tick()
     assert fleet.manager.boxes[uid].failures == 1
     work = fleet.admission.volume("a")["work"]

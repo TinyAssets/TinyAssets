@@ -178,7 +178,14 @@ class OwnerDaemons:
                     pass  # A dead/unreachable ingress is still followed by a proven stop.
                 self.runtime.stop(box.uid)
             else:
-                self.runtime.shutdown(box.uid)
+                try:
+                    self.runtime.shutdown(box.uid)
+                except Exception as exc:
+                    # A drained box that outlives SIGTERM (lifespan shutdown waits
+                    # on an uncancelled tool thread) is ended, as SIGKILL bounded
+                    # the shared daemon. Left alive it refused every later wake.
+                    log.error("owner daemon uid=%s forced stop: %s", box.uid, exc)
+                    self.runtime.stop(box.uid)
                 self.volumes.detach(box.uid)
             box.awake = False
         box.secret = ""
@@ -216,6 +223,10 @@ class OwnerDaemons:
             return False  # Unknown status never authorizes idle eviction.
         if not status["draining"] or status["active"] or status["deleting"]:
             return False
+        # Drained: settle parked calls and mark refusals retryable, as the
+        # explicit stop's snapshot-stop does. The stop goes ahead regardless.
+        with contextlib.suppress(OSError, http.client.HTTPException):
+            self._rpc(box, "snapshot-stop")
         try:
             self._stop(box)
         except Exception as exc:

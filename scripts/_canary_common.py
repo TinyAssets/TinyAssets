@@ -161,9 +161,21 @@ def _post(
     return parsed, new_sid
 
 
-def _sign_in_http_token(status: int) -> str:
-    """A fixed status class. The code and the body stay off the failure."""
+#: Fixed 5xx codes of the router and the box ingress, named in the failure.
+_SIGN_IN_5XX_CODES = frozenset({
+    "owner_box_unavailable", "maintenance", "routing_unavailable", "box_draining"})
+
+
+def _sign_in_http_token(status: int, body: bytes = b"") -> str:
+    """A fixed status class, or a known fixed 5xx code. No other body text."""
     klass = status // 100
+    if klass == 5:
+        try:
+            code = json.loads(body).get("error")
+        except (ValueError, AttributeError):
+            code = None
+        if isinstance(code, str) and code in _SIGN_IN_5XX_CODES:
+            return "canary_sign_in_" + code
     if klass in (4, 5):
         return f"canary_sign_in_http_{klass}xx"
     return "canary_sign_in_failed"
@@ -180,7 +192,8 @@ def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
     ``scripts/canary_session.py`` holds the session like a signed-in phone app.
     No credentials, upstream text or owner rows are included in errors.
     A read that hits ``timeout`` is ``canary_sign_in_timeout``. An HTTP error
-    is ``canary_sign_in_http_4xx`` or ``canary_sign_in_http_5xx``.
+    is ``canary_sign_in_http_4xx`` or ``canary_sign_in_http_5xx``, or for a
+    5xx carrying a fixed router code, ``canary_sign_in_<code>``.
     """
     from scripts.canary_session import USER_AGENT, CanarySessionError, access_token
 
@@ -193,7 +206,11 @@ def owner_canary_sign_in(origin: str, timeout: float) -> tuple[str, dict, Any]:
     except CanarySessionError as exc:
         raise RuntimeError(str(exc)) from None
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(_sign_in_http_token(exc.code)) from None
+        try:
+            body = exc.read(4096)
+        except Exception:  # noqa: BLE001 - an unreadable body is only the class
+            body = b""
+        raise RuntimeError(_sign_in_http_token(exc.code, body)) from None
     except (TimeoutError, urllib.error.URLError) as exc:
         if _sign_in_timed_out(exc):
             raise RuntimeError("canary_sign_in_timeout") from None
