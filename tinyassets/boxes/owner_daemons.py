@@ -223,10 +223,6 @@ class OwnerDaemons:
             return False  # Unknown status never authorizes idle eviction.
         if not status["draining"] or status["active"] or status["deleting"]:
             return False
-        # Drained: settle parked calls and mark refusals retryable, as the
-        # explicit stop's snapshot-stop does. The stop goes ahead regardless.
-        with contextlib.suppress(OSError, http.client.HTTPException):
-            self._rpc(box, "snapshot-stop")
         try:
             self._stop(box)
         except Exception as exc:

@@ -802,7 +802,6 @@ def test_an_idle_stop_past_its_shutdown_deadline_ends_the_box_and_the_next_wake_
     assert fleet.runtime.stops == [uid] and uid not in fleet.runtime.live
     box = fleet.manager.boxes[uid]
     assert not box.awake and box.failures == 0 and not box.error
-    assert fleet.states[uid].snapshot_stop  # Parked calls settled, as an explicit stop.
     assert "a" not in fleet.routing.awake
     assert fleet.wake("a") == uid
     assert len(fleet.runtime.starts) == 2 and not fleet.states[uid].draining
