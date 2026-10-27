@@ -207,6 +207,50 @@ def test_a_player_at_its_row_share_still_takes_a_turn_on_a_shared_row(broker, mo
         put("bob", "cell1", _rows_by_id(broker.root)["cell1"])  # takes over all 5 bytes
 
 
+def test_two_accounts_cannot_launder_a_row_share(broker, monkeypatch):
+    """Rows count against their creator: a takeover by a second account frees nothing."""
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker import conversations
+    from tinyassets.broker.client import collection_request
+
+    store, room = broker.store, "room:go:main"
+    monkeypatch.setattr(conversations, "MAX_WRITER_ROWS", 2)
+
+    def put(caller, row_id, expected_etag="", body="xx"):
+        return store.write("alice", caller=caller, collection=room, row_id=row_id,
+                           body=body, expected_etag=expected_etag, private=False)
+
+    made = [put("m1", f"r{n}") for n in range(2)]
+    for row in made:
+        put("m2", row["row_id"], row["etag"], body="")  # m2 takes both over
+    with pytest.raises(PermissionError, match="this writer's share"):
+        put("m1", "r2")  # m1's rows still exist, under m2's name
+    put("honest", "h0")
+    put("honest", "h1")
+    # The owner's clear-by-writer matches creator or writer: m1's rows go, though m2
+    # last wrote them, and m1 may create again.
+    alice = Identity(user_id="alice", username="alice")
+    assert collection_request(broker.root, alice, "clear", owner="alice", collection=room,
+                              writer="m1") == {"deleted": 2}
+    put("m1", "r2")
+    assert sorted(_rows_by_id(broker.root)) == ["h0", "h1", "r2"]
+
+
+def test_a_row_from_before_creators_is_its_writers(broker):
+    path = account_path(broker.root, "alice", "conversations.db")
+    path.touch(mode=0o600)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE collection_rows (collection TEXT NOT NULL, row_id TEXT NOT "
+                   "NULL, revision INTEGER NOT NULL, seq INTEGER NOT NULL, etag TEXT NOT NULL, "
+                   "writer TEXT NOT NULL, private INTEGER NOT NULL, body TEXT NOT NULL, "
+                   "updated_at REAL NOT NULL, PRIMARY KEY(collection, row_id), "
+                   "UNIQUE(collection, seq))")
+        db.execute("INSERT INTO collection_rows VALUES ('board','a',1,1,'e','bob',0,'x',0)")
+    broker.store.pull("alice", caller="bob", collection="board", after=0, limit=1)
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT creator FROM collection_rows").fetchall() == [("bob",)]
+
+
 def _rows_by_id(root):
     with sqlite3.connect(account_path(root, "alice", "conversations.db")) as db:
         return dict(db.execute("SELECT row_id, etag FROM collection_rows"))

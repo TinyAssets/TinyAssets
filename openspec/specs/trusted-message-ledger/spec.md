@@ -30,9 +30,11 @@ collection and per owner, and a write past a bound SHALL be refused. Only the st
 SHALL clear a collection or one writer's rows in it; a clear SHALL never lower the
 collection's `seq`. A clear leaves no tombstone: a reader pulling after its cursor does not
 see cleared rows disappear, and a compare-and-swap on a cleared row gets a conflict with an
-empty etag, from which the client recovers by creating the row again. Only a creation SHALL
-count against a writer's row share; taking over another writer's shared row charges its
-whole size to the new writer. The board
+empty etag, from which the client recovers by creating the row again. A row SHALL count
+against its creator's row share for as long as it exists, whoever takes it over; payload
+bytes SHALL count against the current writer, so taking over a shared row charges its whole
+size to the new writer. Clearing by writer SHALL remove every row that account created or
+last wrote. The board
 SHALL be `collection='board'`; a published app's room SHALL be `room:<app>:main`. Only the
 router's owner channel SHALL reach `COLLECTION`, with the store owner and the caller chosen
 by the router (a published slug's publisher from the published directory, the caller from

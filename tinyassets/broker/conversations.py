@@ -44,6 +44,8 @@ _ROWS = ("CREATE TABLE IF NOT EXISTS collection_rows ("
          "seq INTEGER NOT NULL, etag TEXT NOT NULL, writer TEXT NOT NULL, "
          "private INTEGER NOT NULL CHECK(private IN (0,1)), "
          "body TEXT NOT NULL CHECK(length(body) <= 65536), updated_at REAL NOT NULL, "
+         # Who created the row; a takeover never changes it (the row share counts it).
+         "creator TEXT, "
          "PRIMARY KEY(collection, row_id), UNIQUE(collection, seq));"
          "CREATE INDEX IF NOT EXISTS collection_writers ON collection_rows(collection, writer);"
          # The high-water seq survives a clear, so a reader's cursor never goes back.
@@ -91,6 +93,13 @@ class Conversations:
                    "message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, "
                    "body TEXT NOT NULL CHECK(length(body) <= 16384), created_at REAL NOT NULL)")
         db.executescript(_ROWS)
+        if "creator" not in {column[1] for column in db.execute(
+                "PRAGMA table_info(collection_rows)")}:
+            # A store from before creators were kept: each row's writer created it.
+            db.execute("ALTER TABLE collection_rows ADD COLUMN creator TEXT")
+            db.execute("UPDATE collection_rows SET creator=writer WHERE creator IS NULL")
+        db.execute("CREATE INDEX IF NOT EXISTS collection_creators ON "
+                   "collection_rows(collection, creator)")
         return closing(db)
 
     @staticmethod
@@ -103,13 +112,15 @@ class Conversations:
                   ("the collection is full", " WHERE collection=?", (collection,), MAX_ROWS,
                    MAX_COLLECTION_BYTES, add, size - old)]
         if caller != owner:
-            # Only a creation counts against a writer's rows, so taking a turn on a
-            # shared row is never refused; taking it over charges its whole size.
+            # Rows count against their creator, whoever takes them over later, so
+            # neither a turn on a shared row nor a second account frees a share.
+            # Bytes count against the current writer: a takeover charges the row's size.
             mine = row is not None and row["writer"] == caller
-            checks.insert(0, ("this writer's share of the collection is full",
-                              " WHERE collection=? AND writer=?", (collection, caller),
-                              MAX_WRITER_ROWS, MAX_WRITER_BYTES, add,
-                              size - (old if mine else 0)))
+            share = "this writer's share of the collection is full"
+            checks[:0] = [(share, " WHERE collection=? AND creator=?", (collection, caller),
+                           MAX_WRITER_ROWS, MAX_WRITER_BYTES, add, 0),
+                          (share, " WHERE collection=? AND writer=?", (collection, caller),
+                           MAX_WRITER_ROWS, MAX_WRITER_BYTES, 0, size - (old if mine else 0))]
         for reason, where, params, max_rows, max_bytes, more_rows, more_bytes in checks:
             rows, used = db.execute(_SIZE + where, params).fetchone()
             if rows + more_rows > max_rows and more_rows or (
@@ -174,13 +185,15 @@ class Conversations:
                            "DO UPDATE SET seq=excluded.seq", (collection, seq))
                 # An upsert on the row's key alone: a seq collision fails loudly on
                 # UNIQUE(collection, seq) instead of replacing another row.
-                db.execute("INSERT INTO collection_rows VALUES (?,?,?,?,?,?,?,?,?) "
+                db.execute("INSERT INTO collection_rows (collection,row_id,revision,seq,etag,"
+                           "writer,private,body,updated_at,creator) VALUES (?,?,?,?,?,?,?,?,?,?) "
                            "ON CONFLICT(collection, row_id) DO UPDATE SET "
                            "revision=excluded.revision, seq=excluded.seq, etag=excluded.etag, "
                            "writer=excluded.writer, private=excluded.private, "
                            "body=excluded.body, updated_at=excluded.updated_at",
                            (collection, row_id, 1 if row is None else row["revision"] + 1, seq,
-                            digest(f"{seq}:{body}"), caller, int(private), body, time.time()))
+                            digest(f"{seq}:{body}"), caller, int(private), body, time.time(),
+                            caller))
                 saved = db.execute("SELECT * FROM collection_rows WHERE collection=? AND "
                                    "row_id=?", (collection, row_id)).fetchone()
                 db.execute("COMMIT")
@@ -209,15 +222,19 @@ class Conversations:
                 "rows": [_row(row) for row in rows]}
 
     def clear(self, owner: str, *, collection: str, writer: str | None) -> dict:
-        """Delete a collection's rows, or one writer's; the owner's act alone (the router's)."""
+        """Delete a collection's rows, or every row ``writer`` created or last wrote.
+
+        The owner's act alone (the router's). Matching creator or writer removes an
+        abuser's rows even after another account took them over.
+        """
         _name(collection, "collection")
         if writer is not None:
             _name(writer, "writer")
         with self._connect(owner) as db:
             deleted = db.execute(
                 "DELETE FROM collection_rows WHERE collection=?" + (
-                    "" if writer is None else " AND writer=?"),
-                (collection,) if writer is None else (collection, writer)).rowcount
+                    "" if writer is None else " AND (writer=? OR creator=?)"),
+                (collection,) if writer is None else (collection, writer, writer)).rowcount
         return {"deleted": deleted}
 
     @staticmethod
