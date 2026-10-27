@@ -139,11 +139,15 @@ def door(monkeypatch):
         finally:
             middleware._current_identity.reset(token)
 
-    def post(content):
+    def post(body, chunk=None):
+        async def chunks():
+            for start in range(0, len(body), chunk):
+                yield body[start:start + chunk]
+
         async def exercise():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url="https://tinyassets.io") as client:
-                return await client.post("/mcp", content=content)
+                return await client.post("/mcp", content=chunks() if chunk else body)
         return asyncio.run(exercise())
 
     return post, boxed, answered, route
@@ -183,14 +187,37 @@ def test_everything_unregistered_reaches_the_box_byte_for_byte(door):
 
 
 @pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
-@pytest.mark.parametrize("body,status", [
-    (b'{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"events/subscribe"}', 400),
-    (b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":NaN}}', 400),
-    (b"not json", 400),
-    (b"[" + call("board") + b"]", 400),
-    (b" " * (1_048_576 + 1), 413),
-])
-def test_an_unreadable_body_is_refused_never_forwarded(door, body, status):
+def test_an_oversized_or_unreadable_body_reaches_the_box_byte_for_byte(door):
     post, boxed, answered, _ = door
-    assert post(body).status_code == status
-    assert boxed == [] and answered == []
+    # Over the bound, even a registered call is no registered request: no client
+    # sends one that large. The box gets the bytes read so far, then the rest.
+    oversized = call("board")[:-1] + b" " * (1_048_576 + 1) + b"}"
+    bodies = [oversized, b"not json",
+              b'{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}',
+              b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":NaN}}']
+    for body in bodies:
+        assert post(body, chunk=65536).text == "box"
+    assert boxed == bodies and answered == []
+
+
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
+def test_duplicate_keys_resolve_last_wins_as_the_box_reads_them(door):
+    post, boxed, answered, _ = door
+    body = call("board").replace(b'"target": "board"', b'"target": "status", "target": "board"')
+    assert post(body).json()["result"] == {"board": []}
+    assert boxed == [] and len(answered) == 1
+
+
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
+def test_only_a_batch_holding_a_registered_request_is_refused(door, monkeypatch):
+    from tinyassets import router_traffic
+
+    post, boxed, answered, _ = door
+    response = post(b"[" + call("board") + b"]")
+    assert (response.status_code, response.json()["error"]["code"]) == (400, -32600)
+    unregistered = b"[" + call("status") + b"]"
+    assert post(unregistered).text == "box"
+    assert boxed == [unregistered] and answered == []
+    # The refusal is an owner answer: maintenance still comes first, as for a forward.
+    monkeypatch.setattr(router_traffic, "admits", lambda *args: False)
+    assert post(b"[" + call("board") + b"]").json() == {"error": "maintenance"}

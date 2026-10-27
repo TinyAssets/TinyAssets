@@ -164,7 +164,7 @@ original bytes, and `tools/list` SHALL stay the box's.
 
 #### Scenario: Only registered requests are answered on the trusted side
 - **WHEN** a POST to `/mcp` names no registered method, tool and target
-- **THEN** the owner's box receives the original bytes; a body the router cannot parse strictly, or a batch holding a registered request, is refused and never forwarded
+- **THEN** the owner's box receives the original bytes, including a body over the router's read bound or one that is not JSON; only a batch holding a registered request is refused
 
 #### Scenario: Routing survives a control-plane outage
 - **WHEN** the routing snapshot is installed, the owner's box is awake, and control-plane lookups and lifecycle calls are unavailable

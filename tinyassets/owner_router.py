@@ -17,7 +17,7 @@ import anyio
 import httpx
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 
 from tinyassets.asgi_scope import refuse_non_http
 from tinyassets.mcp_events_http import door as events_door
@@ -102,9 +102,13 @@ class TrustedFront:
     async def match(self, scope, receive):
         """``(Trusted | None, receive)``: the one lookup for every request.
 
-        A POST to ``/mcp`` is read once, bounded, and parsed strictly; an
-        unregistered one is replayed to the box exactly as it arrived. A body
-        the router cannot read unambiguously is refused, never forwarded.
+        A POST to ``/mcp`` is read up to the request bound. Anything that is
+        not a registered request -- over the bound (no registered request is
+        that large), not JSON, or unregistered -- is replayed to the box with
+        the bytes already read, then the rest of the stream, so the box applies
+        its own limits and errors as before. Duplicate keys resolve last-wins,
+        as the box's parsers do. Only a batch holding a registered request is
+        refused: forwarding it would let that request bypass the router.
         """
         path, method = scope["path"], scope["method"]
         trusted = self._app(path, method)
@@ -113,25 +117,21 @@ class TrustedFront:
         if path not in _MCP or method != "POST":
             return None, receive
         from tinyassets.auth.middleware import _buffer_request_body, _replay_receive
-        from tinyassets.mcp_events_http import _invalid_constant, _object
 
         body, messages, disconnected, oversized = await _buffer_request_body(receive)
         if disconnected:
             return Trusted(_ignore, owner=False), receive
-        if oversized:
-            return Trusted(_refuse(413), owner=False), receive
+        replay = _replay_receive(messages, receive)
         try:
-            document = json.loads(body, object_pairs_hook=_object,
-                                  parse_constant=_invalid_constant)
+            document = None if oversized else json.loads(body)
         except (ValueError, TypeError):
-            return Trusted(_refuse(400, -32700, "Parse error"), owner=False), receive
-        keys = [mcp_key(item) for item in (document if isinstance(document, list)
-                                           else [document])]
-        found = [self.mcp_routes[key] for key in keys if key in self.mcp_routes]
+            document = None
+        batch = document if isinstance(document, list) else [document]
+        found = [self.mcp_routes[key] for key in map(mcp_key, batch) if key in self.mcp_routes]
         if found and isinstance(document, list):
-            return Trusted(_refuse(400, -32600, "Invalid JSON-RPC request"),
-                           owner=False), receive
-        return (found[0] if found else None), _replay_receive(messages, receive)
+            # An owner answer: the same 404 and maintenance checks as forwarding come first.
+            return Trusted(_batch_refused), replay
+        return (found[0] if found else None), replay
 
 
 def mcp_key(document):
@@ -155,14 +155,10 @@ def _door(path: str) -> bool:
             or path.startswith(("/api/", "/hooks/inbound/")))
 
 
-def _refuse(status, code=None, message=""):
-    async def refuse(front):
-        if code is None:
-            return await Response(status_code=status)(front.scope, front.receive, front.send)
-        await JSONResponse({"jsonrpc": "2.0", "id": None, "error": {
-            "code": code, "message": message}}, status_code=status)(
-                front.scope, front.receive, front.send)
-    return refuse
+async def _batch_refused(front):
+    await JSONResponse({"jsonrpc": "2.0", "id": None, "error": {
+        "code": -32600, "message": "Invalid JSON-RPC request"}}, status_code=400)(
+            front.scope, front.receive, front.send)
 
 
 async def _ignore(front):
