@@ -287,8 +287,9 @@ SHAPES: dict[str, Shape] = {
     "N9": Shape(("tinyassets/model_call.py",)),  # call-sites, media-receipt
     "N10": Shape(("tinyassets/boxes/**", "tinyassets/broker/**")),  # owner-policy-write
     "N11": Shape(("tinyassets/app_object.py",)),  # one user-built app; the command center
+    # ledger-boundary: test_ledger_boundary (S3a.1).
+    "S30": Shape(("tinyassets/broker/message_ledger.py", "tinyassets/broker/conversations.py")),
     # Rows from the device-first plan; each slice adds its guard.
-    "S30": Shape(("tinyassets/broker/message_ledger.py",)),
     "S31": Shape(("tinyassets/agent_recipes/**",)),
     "S32": Shape(("tinyassets/broker/server.py",)),  # ROOM_POST
     "S33": Shape(("tinyassets/live_view.py",)),

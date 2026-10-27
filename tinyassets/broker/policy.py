@@ -70,6 +70,53 @@ class PolicyRefused(PermissionError):
     """No valid interactive owner authority or the requested policy is invalid."""
 
 
+def account_path(root: Path, owner: str, name: str) -> Path:
+    """An owner's broker-private store: ``.broker/accounts/<sha256(owner)>/<name>``."""
+    validate_principal(owner)
+    account = hashlib.sha256(owner.encode()).hexdigest()
+    return Path(root) / ".broker" / "accounts" / account / name
+
+
+def open_account_db(path: Path, admissions, owner: str,
+                    refused: type[Exception] = PermissionError) -> sqlite3.Connection:
+    """Open one per-owner broker store: 0700 parents, an admitted owner, a 0600 single link."""
+    broker = path.parent.parent.parent
+    broker.mkdir(mode=0o700, exist_ok=True)
+    path.parent.parent.mkdir(mode=0o700, exist_ok=True)
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    from tinyassets.broker.admission import read
+
+    try:
+        read(admissions, owner).require_work()
+    except (PermissionError, LookupError) as exc:
+        raise refused("account store is not admitted") from exc
+    if os.name == "posix":
+        for directory in (broker, path.parent.parent, path.parent):
+            info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077):
+                raise PermissionError("account store parent is not broker-private")
+        if path.exists():
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                raise PermissionError("account store is not broker-private")
+        else:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(descriptor)
+    db = sqlite3.connect(path, timeout=30, isolation_level=None)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA synchronous=FULL")
+    return db
+
+
+def erase_account_db(path: Path) -> int:
+    existed = path.exists()
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
+    return int(existed)
+
+
 class PolicyStore:
     """The broker's sole policy writer, with a receipt in the same transaction."""
 
@@ -83,9 +130,7 @@ class PolicyStore:
         return self._locks.setdefault(owner, threading.RLock())
 
     def _path(self, owner: str) -> Path:
-        validate_principal(owner)
-        account = hashlib.sha256(owner.encode()).hexdigest()
-        return self._root / ".broker" / "accounts" / account / "policy.db"
+        return account_path(self._root, owner, "policy.db")
 
     def _connect(self, owner: str, *, provision=False) -> sqlite3.Connection:
         if owner in self._unavailable:
@@ -96,33 +141,7 @@ class PolicyStore:
             raise PolicyRefused("owner policy is missing")
         if not provision and not path.is_file():
             raise PolicyRefused("owner policy has not been bootstrapped")
-        broker = path.parent.parent.parent
-        broker.mkdir(mode=0o700, exist_ok=True)
-        path.parent.parent.mkdir(mode=0o700, exist_ok=True)
-        path.parent.mkdir(mode=0o700, exist_ok=True)
-        from tinyassets.broker.admission import read
-
-        try:
-            read(self._admissions, owner).require_work()
-        except (PermissionError, LookupError) as exc:
-            raise PolicyRefused("account policy is not admitted") from exc
-        if os.name == "posix":
-            for directory in (broker, path.parent.parent, path.parent):
-                info = directory.lstat()
-                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
-                        or stat.S_IMODE(info.st_mode) & 0o077):
-                    raise PermissionError("policy parent is not broker-private")
-            if path.exists():
-                info = path.lstat()
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-                    raise PermissionError("policy database is not broker-private")
-            else:
-                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                os.close(descriptor)
-        db = sqlite3.connect(path, timeout=30, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA synchronous=FULL")
+        db = open_account_db(path, self._admissions, owner, PolicyRefused)
         db.executescript("""
             CREATE TABLE IF NOT EXISTS policy (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -180,11 +199,7 @@ class PolicyStore:
 
     def erase(self, owner: str) -> int:
         """Erase policy custody under terminal admission."""
-        path = self._path(owner)
-        existed = path.exists()
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            path.with_name(path.name + suffix).unlink(missing_ok=True)
-        return int(existed)
+        return erase_account_db(self._path(owner))
 
     def _session(self, owner: str, cookie: str | dict) -> str:
         from tinyassets.owner_runtime import refuse_router_store

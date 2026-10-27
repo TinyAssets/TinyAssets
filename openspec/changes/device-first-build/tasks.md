@@ -65,7 +65,16 @@ item whose live acceptance is still owed says so.
 - **Live acceptance:** The first users' agent wakes on a message, reads it and replies; time to reply recorded
 - **Depends on:** S0, S1
 
-- [ ] Ledger and first outside agent.
+- S3a Ledger and doors:
+  - [x] S3a.1 Message ledger core: `broker/message_ledger.py` (`outside_agents`,
+    `ledger_messages`, `ledger_recipients`, `ledger_receipts`, `ledger_cursors`) and
+    `broker/conversations.py` (`message_bodies`), broker-held per owner; owner-channel ops
+    `OUTSIDE_AGENTS`, `ROOM_POST` (1:1) and `MAILBOX_RECEIPT`; `pull` delivery only; registry
+    row S30 converged with `test_ledger_boundary`. No public surface yet.
+  - [ ] S3a.2 Doors: router and trusted-front registrations, `read_graph target=mailbox`,
+    `write_graph room_message` and `mailbox_ack`, the REST routes; live acceptance owed here.
+- [ ] S3b Wakes: `ledger_wakes`, the `AGENT_WAKE` broker op, `control_plane/outside_wakes.py`
+  and `mailbox.message`; the wake delivery methods are admitted with them.
 
 ## S4 Rooms, status and onboarding
 

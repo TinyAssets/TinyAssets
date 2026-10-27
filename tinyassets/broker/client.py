@@ -480,3 +480,30 @@ def owner_policy_operation(data_root: Path, owner: str, action: str,
                           fence=supervisor.fence, verify_peer=supervisor.verify_broker,
                           timeout=30)
     return client.owner_policy(action, **fields)
+
+
+#: S30 ledger ops, owner channel only; the box channel refuses each of them.
+LEDGER_OPS = {"OUTSIDE_AGENTS": frozenset({"list", "register", "disable"}),
+              "ROOM_POST": frozenset({"post"}), "MAILBOX_RECEIPT": frozenset({"read", "ack"})}
+
+
+def ledger_request(data_root: Path, identity: Any, op: str, action: str,
+                   **fields: Any) -> dict[str, Any]:
+    """The router's owner-role ledger call for the router-verified ``identity``.
+
+    The owner is the identity's user and the sender its ``outside_origin`` (none
+    means the owner); neither can be a request field.
+    """
+    from tinyassets.broker.owner_identities import _owner_request
+
+    if action not in LEDGER_OPS.get(op, ()):
+        raise ValueError("unsupported ledger operation")
+    bound = identity.metadata.get("outside_origin")
+    origin = None if bound is None else {"client": bound["client"], "family": bound["family"]}
+    answer = _owner_request(data_root, {**fields, "op": op, "action": action,
+                                        "principal": identity.user_id, "origin": origin})
+    if answer.get("op") == op + "_REFUSED":
+        raise BrokerRefused(answer.get("reason") or "ledger request refused")
+    if answer.get("op") != op + "_IS" or not isinstance(answer.get("result"), dict):
+        raise RuntimeError("ledger unavailable")
+    return answer["result"]
