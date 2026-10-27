@@ -529,6 +529,10 @@ def main(argv):
             delay = state.pop("stop_delay_s")
             save_state(state)
             time.sleep(delay)
+        # Per image: only the daemon running that image is slow to stop.
+        slow = (state.get("stop_delay_images") or {}).get((container or {}).get("image_ref"))
+        if argv[0] == "stop" and slow:
+            time.sleep(slow)
         if container is not None:
             container["status"] = "running" if argv[0] == "start" else "exited"
             save_state(state)
@@ -583,6 +587,8 @@ def main(argv):
             print(container.get("image_ref", ""))
         elif ".Config.Env" in fmt:
             print(json.dumps(container.get("config_env") or []))
+        elif "{{.Id}}" in fmt:
+            print(container.get("id", ""))
         else:
             print("")
         return 0
@@ -685,7 +691,10 @@ def main(argv):
                 if kind == "unreadable":
                     os.makedirs(os.path.join(extra_dir, "environ"), exist_ok=True)
             containers = state.setdefault("containers", {})
+            # Each converge creates a new container, so a new id.
+            state["container_seq"] = state.get("container_seq", 0) + 1
             containers["tinyassets-daemon"] = {
+                "id": "%064x" % state["container_seq"],
                 "status": "running",
                 "health": health,
                 "image_id": image_id(ref),
@@ -1789,14 +1798,19 @@ def test_idle_or_unhealthy_daemon_at_the_drain_bound_still_swaps(box: Box):
     assert box.env_image() == OLD_IMAGE
 
 
-def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box: Box):
-    """A healthy daemon that was not proved idle is still a cut turn."""
+@pytest.mark.parametrize("health", ["healthy", "starting"])
+def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box: Box, health):
+    """A healthy daemon that was not proved idle is still a cut turn.
+
+    So is a `starting` one this run did not create: Docker resets health to
+    `starting` on every restart, so that state alone proves nothing.
+    """
     box.stage_bundle()
     deployed = box.run(NEW_IMAGE)
     assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
     state = box.docker_state_json()
     state["stop_delay_s"] = _drain_bound_s() + 1
-    state["containers"]["tinyassets-daemon"]["health"] = "healthy"
+    state["containers"]["tinyassets-daemon"]["health"] = health
     state["containers"]["tinyassets-daemon"]["status"] = "running"
     box.docker_state.write_text(json.dumps(state), encoding="utf-8")
     marked = len(box.docker_calls_text().splitlines())
@@ -1809,6 +1823,58 @@ def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box:
     assert "no in-flight turn, continuing the swap" not in refused.stdout
     calls = box.docker_calls_text().splitlines()[marked:]
     assert not any(" up " in line and "compose" in line for line in calls)
+
+
+def _post_deploy_rollback(box: Box, **rollback_state):
+    host_env = _stage_required_host_bundle(box)
+    deployed = box.run(NEW_IMAGE, **host_env)
+    assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
+    # The rollback image's daemon is slow to stop when the return to the
+    # candidate replaces it.
+    box.set_docker_state(stop_delay_images={OLD_IMAGE: _drain_bound_s() + 1}, **rollback_state)
+    return box.run(
+        "--post-deploy-failure", NEW_IMAGE,
+        IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE, **host_env,
+    )
+
+
+def test_return_to_candidate_stops_a_never_healthy_rollback_daemon(box: Box):
+    """2026-10-27: compose created the rollback daemon, then failed because it
+    never went healthy. When the return to the candidate stopped it, it was
+    `starting` (Docker resets health on a restart-policy restart) and ignored
+    SIGTERM to the drain bound. The cut-turn refusal fired and production was
+    left with no daemon. This run created that daemon and never saw it pass
+    health, and cloudflared waits on its health, so no turn could reach it."""
+    failed = _post_deploy_rollback(
+        box, up_partial_images=[OLD_IMAGE],
+        unhealthy_images=[OLD_IMAGE], unhealthy_health="starting",
+    )
+
+    out = failed.stdout + failed.stderr
+    assert failed.returncode == 2, out
+    assert _result(failed) == "candidate_held"
+    assert "returning to" in failed.stderr
+    assert "prior starting" in failed.stdout
+    assert "never healthy in this run 1" in failed.stdout
+    assert "refusing this deploy rather than accepting a cut turn" not in out
+    assert box.env_image() == NEW_IMAGE
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == NEW_IMAGE
+    assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "new\n"
+
+
+def test_return_to_candidate_still_refuses_a_rollback_daemon_seen_healthy(box: Box):
+    """The waiver is only for a daemon this run never saw pass health. A
+    rollback daemon that went healthy (accept failed later, on log forwarding)
+    may be serving a turn, so the drain bound still refuses."""
+    failed = _post_deploy_rollback(box, logs_status="exited")
+
+    out = failed.stdout + failed.stderr
+    assert failed.returncode == 3, out
+    assert _result(failed) == "rollback_failed"
+    assert "returning to" in failed.stderr
+    assert "prior healthy" in failed.stdout
+    assert "refusing this deploy rather than accepting a cut turn" in failed.stderr
+    assert "never healthy in this run" not in failed.stdout
 
 
 def test_a_failed_docker_stop_still_refuses_an_unhealthy_daemon(box: Box):
