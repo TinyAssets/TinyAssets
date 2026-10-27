@@ -136,6 +136,30 @@ def test_a_full_collection_refuses_a_new_row(broker, monkeypatch):
     assert MAX_ROWS == 1000
 
 
+def test_an_owners_collections_are_bounded_in_rows_and_bytes(broker, monkeypatch):
+    """Across every collection of one owner; another owner's store is untouched."""
+    from tinyassets.broker import conversations
+
+    store = broker.store
+    monkeypatch.setattr(conversations, "MAX_OWNER_ROWS", 2)
+    monkeypatch.setattr(conversations, "MAX_OWNER_BYTES", 10)
+    a = store.write("alice", caller="alice", collection="room:a:main", row_id="x", body="1234",
+                    expected="", private=False)
+    store.write("alice", caller="alice", collection="room:b:main", row_id="x", body="1234",
+                expected="", private=False)
+    with pytest.raises(PermissionError, match="owner's collections are full"):
+        store.write("alice", caller="alice", collection="room:c:main", row_id="x", body="",
+                    expected="", private=False)
+    with pytest.raises(PermissionError, match="owner's collections are full"):
+        store.write("alice", caller="alice", collection="room:a:main", row_id="x",
+                    body="caféé", expected=a["etag"], private=False)  # 7 bytes
+    assert store.write("alice", caller="alice", collection="room:a:main", row_id="x",
+                       body="123456", expected=a["etag"], private=False)["revision"] == 2
+    assert len(_rows(broker.root)) == 2
+    assert store.write("bob", caller="bob", collection="room:c:main", row_id="x", body="1",
+                       expected="", private=False)["revision"] == 1
+
+
 def test_the_owner_channel_carries_the_router_caller_and_a_conflict(broker):
     """The router's verified caller is the writer; a lost swap is an answer, not a refusal."""
     from tinyassets.auth.provider import Identity

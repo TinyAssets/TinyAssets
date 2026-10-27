@@ -11,7 +11,10 @@ as clean text.
 commit stamped with the collection's next ``seq`` so a reader pulls after a
 cursor. The board is ``collection='board'``; a Tier A app room is
 ``collection='room:<app>:<room>'``. Payloads are stored and returned verbatim.
-A private row is visible to, and writable by, its writer alone.
+A private row is visible to, and writable by, its writer alone. One collection
+holds at most ``MAX_ROWS`` rows, and one owner's collections in all at most
+``MAX_OWNER_ROWS`` rows and ``MAX_OWNER_BYTES`` of payload; past either a write
+is refused.
 """
 from __future__ import annotations
 
@@ -26,6 +29,10 @@ FILENAME = "conversations.db"
 MAX_BODY = 16384
 MAX_ROW = 65536
 MAX_ROWS = 1000
+#: One owner's collections in all: the broker holds them outside any volume quota,
+#: so this bound, not the owner's storage pool, keeps the trusted zone finite.
+MAX_OWNER_ROWS = 10_000
+MAX_OWNER_BYTES = 64 * 1024 * 1024
 MAX_PULL = 100
 _ROWS = ("CREATE TABLE IF NOT EXISTS collection_rows ("
          "collection TEXT NOT NULL, row_id TEXT NOT NULL, revision INTEGER NOT NULL, "
@@ -133,6 +140,11 @@ class Conversations:
                                         (collection,)).fetchone()
                 if row is None and count >= MAX_ROWS:
                     raise PermissionError("the collection is full")
+                rows, size = db.execute("SELECT COUNT(*), COALESCE(SUM(length(CAST(body AS "
+                                        "BLOB))),0) FROM collection_rows").fetchone()
+                size += len(body.encode()) - (0 if row is None else len(row["body"].encode()))
+                if (row is None and rows >= MAX_OWNER_ROWS) or size > MAX_OWNER_BYTES:
+                    raise PermissionError("the owner's collections are full")
                 seq = top + 1
                 db.execute("INSERT OR REPLACE INTO collection_rows VALUES (?,?,?,?,?,?,?,?,?)",
                            (collection, row_id, 1 if row is None else row["revision"] + 1, seq,

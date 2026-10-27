@@ -79,6 +79,24 @@ def test_no_collection_door_names_a_way_into_a_box():
         "/app/chess/state/x")
 
 
+def test_the_box_serves_no_room(tmp_path, monkeypatch):
+    """The router serves the room route; a box's route table and ingress have none."""
+    import os
+
+    from tinyassets import owner_runtime, universe_server
+    from tinyassets.app_access import visitor_surface
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    router_paths = {route.path for route in universe_server.create_streamable_http_app().routes}
+    monkeypatch.setattr(owner_runtime, "_runtime", owner_runtime.OwnerRuntime(
+        "alice", os.getuid(), tmp_path / "alice", os.getpid(), None))
+    box_paths = {route.path for route in universe_server.create_streamable_http_app().routes}
+    assert "/app/{slug}/state" in router_paths - box_paths and "/app/{slug}" in box_paths
+    assert not any(visitor_surface("/app/chess/state", method) for method in ("GET", "POST"))
+    assert visitor_surface("/app/chess", "GET") and not visitor_surface("/app/chess", "POST")
+
+
 def test_the_box_channel_refuses_collection(tmp_path):
     from tinyassets.broker.server import BOX, _Connection
 

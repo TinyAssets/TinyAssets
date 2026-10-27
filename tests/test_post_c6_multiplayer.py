@@ -214,7 +214,7 @@ def test_forged_caller_does_not_select_the_box(tmp_path: Path, monkeypatch):
 
 
 def test_visitor_private_tools_and_room_door(tmp_path: Path, monkeypatch):
-    """write_page and read_page refuse a visitor. The room door still opens."""
+    """write_page and read_page refuse a visitor. The app door opens; the room is not here."""
     from tinyassets.owner_activity import activity
     from tinyassets.owner_ingress import OwnerIngress
     from tinyassets.universe_server import read_page, write_page
@@ -278,8 +278,11 @@ def test_visitor_private_tools_and_room_door(tmp_path: Path, monkeypatch):
 
     assert asyncio.run(once("/mcp", "POST", b"bob")) == 403
     assert opened == []
-    assert asyncio.run(once("/app/chess/state", "POST", b"bob")) == 200
-    assert opened == [("/app/chess/state", "bob")]
+    # The room is the router's (S34): a visitor reaching the box there is refused.
+    assert asyncio.run(once("/app/chess/state", "POST", b"bob")) == 403
+    assert opened == []
+    assert asyncio.run(once("/app/chess", "GET", b"bob")) == 200
+    assert opened == [("/app/chess", "bob")]
     assert asyncio.run(once("/mcp", "POST", None)) == 401
     assert asyncio.run(once("/mcp", "POST", None, account="alice")) == 200
 

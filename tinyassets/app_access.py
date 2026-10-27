@@ -2,8 +2,8 @@
 
 The router authenticates the signed-in account and, for a published slug,
 forwards that account into the app owner's box. Private pages, graphs and
-settings stay on the caller's own box. A visitor who does arrive may touch
-only the published app document and its room.
+settings stay on the caller's own box. A visitor who does arrive may read
+only the published app document; its room never reaches a box.
 """
 
 from __future__ import annotations
@@ -53,14 +53,12 @@ def app_slug(path: str) -> str | None:
 
 
 def visitor_surface(path: str, method: str) -> bool:
-    """Paths a visiting player may use on the app owner's box."""
+    """Paths a visiting player may use on the app owner's box: the app document only.
+
+    The room is answered by the router from the publisher's broker store (S34).
+    """
     slug = app_slug(path)
-    if slug is None:
-        return False
-    parts = path[len("/app/"):].split("/")
-    if len(parts) == 1:
-        return method in {"GET", "HEAD"}
-    return len(parts) == 2 and parts[1] == "state" and method in {"GET", "POST"}
+    return slug is not None and path == f"/app/{slug}" and method in {"GET", "HEAD"}
 
 
 def private_tool_refusal() -> str | None:
