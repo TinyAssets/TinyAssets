@@ -103,8 +103,11 @@ class OwnerVolumes:
         with self._lock(uid):
             return self._image(uid).stat().st_size
 
-    def delete_snapshots(self, uid: int, snapshot_ids, released) -> bool:
-        """One deletion path; only map-released references may retire a pin."""
+    def delete_snapshots(self, uid: int, snapshot_ids, released) -> list[str]:
+        """One deletion path; only map-released references may retire a pin.
+
+        Returns the ids a platform backup still pins, which were not deleted.
+        """
         from tinyassets.platform_backup import pinned_snapshots, retention_lock
 
         with self._lock(uid), retention_lock():
@@ -118,10 +121,10 @@ class OwnerVolumes:
                            for item in [*snapshot_ids, *released])):
                 raise VolumeError("snapshot references are required")
             pins = pinned_snapshots(self.remote)
-            deleted = True
+            refused = []
             for snapshot_id in snapshot_ids:
                 if (uid, snapshot_id) in pins and snapshot_id not in released:
-                    deleted = False
+                    refused.append(snapshot_id)
                     continue
                 try:
                     self._run("rclone", "deletefile",
@@ -132,7 +135,7 @@ class OwnerVolumes:
                     # row. Any other failure stays raised and the row remains.
                     if exc.returncode not in {3, 4}:
                         raise
-            return deleted
+            return refused
 
     @staticmethod
     def _sync(path: Path) -> None:

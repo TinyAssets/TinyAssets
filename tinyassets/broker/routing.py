@@ -221,13 +221,10 @@ class BrokerLifecycle:
     async def readiness(self):
         """Include durable work that the next waker tick has not dispatched.
 
-        A platform backup pins snapshot rows that prune is not allowed to
-        delete. Those rows stay above the seven-copy cap until backup
-        retention drops the manifest, which this gate cannot age out. They
-        are not unfinished deploy work. An unreadable pin catalog still
-        counts, so a missing report cannot hide a snapshot prune can delete.
+        The same owed work as the tick: a row a platform backup pins is a
+        stored fact, so it is not counted and no host call is made here.
         """
-        from tinyassets.broker.owner_volumes import actionable_excess, pending, pending_counts
+        from tinyassets.broker.owner_volumes import pending, pending_counts
 
         if not self.identities.work_ready:
             return {"ready": False, "blocked": "admission"}
@@ -238,21 +235,6 @@ class BrokerLifecycle:
             return {"ready": True}
         counts = (await asyncio.to_thread(
             pending_counts, self.identities, include_running=False) if owners else {})
-        if counts.get("excess_snapshots"):
-            try:
-                # lifecycle_control gives this readiness call 5 seconds total.
-                report = await asyncio.wait_for(
-                    self.host_call(self.volumes.execute, "pins"), timeout=3)
-                actionable = await asyncio.to_thread(
-                    actionable_excess, self.identities, report["pinned"])
-            except Exception:
-                log.exception(
-                    "pinned snapshot report unavailable; excess rows still block readiness")
-            else:
-                if actionable:
-                    counts["excess_snapshots"] = actionable
-                else:
-                    del counts["excess_snapshots"]
         if not tasks and not counts:
             return {"ready": True}
         return {"ready": False, "tasks": tasks, "pending": counts}

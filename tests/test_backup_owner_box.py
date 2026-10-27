@@ -137,9 +137,9 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    assert volumes.delete_snapshots(300001, ["a" * 32], []) is False
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) == ["a" * 32]
     assert snapshot.read_bytes() == b"retained snapshot"
-    assert volumes.delete_snapshots(300001, ["c" * 32], []) is True
+    assert volumes.delete_snapshots(300001, ["c" * 32], []) == []
     assert not stale.exists()
     next((remote / "platform").glob("*.json")).write_text("corrupt catalog")
     with pytest.raises(ValueError):
@@ -163,14 +163,14 @@ def test_absent_snapshot_object_is_deleted_and_a_pin_is_not(shared_backup, monke
 
     monkeypatch.setattr(volumes, "_run", run)
     codes.append(3)
-    assert volumes.delete_snapshots(300001, ["c" * 32], []) is True
+    assert volumes.delete_snapshots(300001, ["c" * 32], []) == []
     codes.append(4)
-    assert volumes.delete_snapshots(300001, ["d" * 32], []) is True
+    assert volumes.delete_snapshots(300001, ["d" * 32], []) == []
     codes.append(1)
     with pytest.raises(subprocess.CalledProcessError) as raised:
         volumes.delete_snapshots(300001, ["e" * 32], [])
     assert raised.value.returncode == 1
-    assert volumes.delete_snapshots(300001, ["a" * 32], []) is False
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) == ["a" * 32]
     assert codes == []
 
 
@@ -206,7 +206,7 @@ def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
         assert not pruning.done()
         release.set()
         assert publication.result(timeout=15)["snapshots"]
-        assert pruning.result(timeout=15) is False
+        assert pruning.result(timeout=15) == ["a" * 32]
     assert snapshot.read_bytes() == b"snapshot being captured"
 
 
@@ -275,6 +275,7 @@ def test_erasure_preserves_a_pin_not_explicitly_released(shared_backup, monkeypa
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    assert not volumes.delete_snapshots(300001, ["a" * 32, "c" * 32], ["a" * 32])
+    assert volumes.delete_snapshots(300001, ["a" * 32, "c" * 32], ["a" * 32]) == [
+        "c" * 32]
     assert not released.exists()
     assert retained.read_bytes() == b"unreleased pin"
