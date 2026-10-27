@@ -52,22 +52,44 @@ connection to that owner, which it can't rebind.
     it does for the box channel. The binder passes the connection by file
     descriptor to a worker.
   - **A worker serves one owner for its whole life.** It is forked from a
-    pre-imported parent, runs under a uid with no broker role (so it can't
-    open a broker connection of its own), and exits rather than serve a
-    second owner. Separation between owners in workers is therefore
-    enforced by the OS (the process boundary and the broker's peer
-    credentials), not by application checks.
+    warm, pre-imported parent and exits on idle rather than serve a second
+    owner. Each worker slot runs under its own uid, from a range that is
+    absent from the broker's role map, as boxes have their own range. So a
+    worker can't open a broker connection of its own, and can't read a
+    sibling's memory, attach to it, signal it or copy its descriptors,
+    because those need the same uid. Workers also set no-new-privileges and
+    non-dumpable, and seccomp denies ptrace, `process_vm_readv`/`writev` and
+    `pidfd_getfd`. The parent runs no handler code and never reads a bound
+    connection; it only forks, drops to the slot's uid and hands the
+    descriptor over. Proof runs under `scripts/linux_oracle.py`.
   - Below the binder, no op names the owner or the caller as a field.
+  - Within one owner's worker, separating callers (for example two visitors
+    in a published room, each with private rows) stays an application
+    check: the broker scopes each request to the caller its bound channel
+    carries.
 - **Who binds:**
   - The router binds for owner MCP, app and `/api` requests.
   - boxhostd binds box channels, as today.
   - The broker binds for loop-worker turns it dispatches (wakes, scheduled
-    turns, resumed held turns), from its own ledger.
-  - Ops that stay on the router's all-owner channel, because they precede or
-    span owners: `INBOUND_VERIFY`, `ADMIT_OWNER`, `OWNER_IDENTITY`,
-    `DELETION_JOB`, `BILLING_PLAN` and `OWNER_BOX_WAKE`. Each owner-scoped op
-    (`OWNER_POLICY`, `MCP_EVENTS`, `OUTSIDE_AGENTS`, `ROOM_POST`,
-    `MAILBOX_RECEIPT`, `COLLECTION`) moves to the bound channel.
+    turns, resumed held turns), from its own ledger. It hands one end of a
+    bound socket pair to the loop-worker parent over a role-mapped control
+    socket. So the broker dispatches turns, which amends ADR-023's "the
+    broker verifies the worker's per-turn owner".
+  - Ops that stay on the router's all-owner channel, because they precede
+    binding or span owners: `FENCE`, `INBOUND_VERIFY`, `ADMIT_OWNER`,
+    `OWNER_ADMISSION`, `OWNER_IDENTITY`, `DELETION_JOB`, `BILLING_PLAN` and
+    `OWNER_BOX_WAKE`.
+  - Every op that names an owner moves to the bound channel: `OPEN` (model
+    and connector streams), `STATUS`, `LEDGER_QUERY`, `MODEL_SOURCE`,
+    `USAGE`, `HTTP_CONNECT`, `CAPABILITY`, `CONNECTION_CATALOG`,
+    `DISCONNECT`, `BROWSER_VAULT`, `OWNER_VOLUME`, `OWNER_POLICY`,
+    `MCP_EVENTS`, `OUTSIDE_AGENTS`, `ROOM_POST`, `MAILBOX_RECEIPT` and
+    `COLLECTION`. The three owner-channel clients today (`BrokerClient`,
+    `owner_identities._owner_request`, `mcp_events.request`) become one.
+  - Per-owner state still held in shared stores moves to the owner's broker
+    store with this slice: MCP event subscriptions (`mcp-events.db` is
+    broker-wide today). The router's own stores, owner sessions and API
+    keys, move into broker custody at the later step below.
 - **Cross-user requests.** A bound channel carries both the store owner and
   the verified caller: a visitor in a published app's room is bound to the
   publisher's store with the visitor as caller, and an outside agent is
@@ -86,11 +108,14 @@ connection to that owner, which it can't rebind.
   owner volume move there, each backup-first with its migration in the same
   PR. Owner files are reached only through `BoxProvider`.
 - **Not chosen:**
-  - A long-lived trusted server process per owner, run like a box. No
-    surveyed agent platform runs a trusted control-plane process per user,
-    and on one `s-4vcpu-8gb` droplet (ADR-022 G3 and the memory limits in
-    `deploy/compose.yml`) it would cap how many owners can be served at
-    once. The binder still chooses the owner either way.
+  - A long-lived trusted server per owner, started on its own and held
+    awake like a box. Each would import the whole server (about 100 MiB
+    measured outside gVisor). On one `s-4vcpu-8gb` droplet (ADR-022 G3 and
+    the memory limits in `deploy/compose.yml`) that caps how many owners
+    can be served at once. The chosen workers are short-lived forks from one
+    warm parent that share its pages copy-on-write (`gc.freeze()` before
+    forking keeps them shared), so each owner costs only its own writes.
+    The slice measures that per-worker figure before sizing the pool.
   - One shared server that names the owner as a field. That is today's
     shape, and it is the bug class behind the cross-tenant leaks listed
     under Evidence.
@@ -146,6 +171,8 @@ that day.
     sandbox.
   - Its placeholder credentials swapped at the egress proxy, and its
     revisioned network policy, are recorded in `ideas/PIPELINE.md`.
+  - Read from a clone of the repo; the version and RFC references are the
+    repo's own `docs/` and `rfc/0011-multi-player-design/` as of that date.
 - **Cross-tenant leaks from a missing owner check in a shared service:**
   - Asana MCP server (2025):
     https://www.bleepingcomputer.com/news/security/asana-warns-mcp-ai-feature-exposed-customer-data-to-other-orgs/

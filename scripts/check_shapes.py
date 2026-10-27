@@ -296,7 +296,12 @@ SHAPES: dict[str, Shape] = {
     "S32": Shape(("tinyassets/broker/server.py",)),  # ROOM_POST
     "S33": Shape(("tinyassets/live_view.py",)),
     "S35": Shape(("tinyassets/agent_loop/**",)),
-    "S36": Shape(("tinyassets/broker/client.py", "tinyassets/broker/server.py")),  # owner-bound
+    # owner-bound: every "principal" request field is the second path; it only falls.
+    "S36": Shape(
+        ("tinyassets/broker/client.py", "tinyassets/broker/server.py"),
+        (("tinyassets/**/*.py", r'"principal":\s*'),),
+        ceiling=39,
+    ),
     "N12": Shape(("tinyassets/metering/**",)),
 }
 
