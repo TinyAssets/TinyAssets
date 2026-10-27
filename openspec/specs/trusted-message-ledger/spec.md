@@ -24,7 +24,8 @@ against the live router row, and a refusal SHALL leave a receipt. An `api_key` a
 name the owner's own live key, checked by the router, which alone holds the key store; the
 broker SHALL take that key's origin from the router and never read the store. An `mcp`
 agent SHALL take its client and family from the caller's verified `outside_origin` and
-SHALL be refused while that is absent. Only `pull` delivery SHALL be admitted until S3b.
+SHALL be refused while that is absent. One outside identity SHALL be at most one enabled
+agent. Only `pull` delivery SHALL be admitted until S3b.
 
 #### Scenario: Another owner's key
 - **WHEN** an owner registers an `api_key` agent naming a key minted by another owner
@@ -47,7 +48,8 @@ The owner's chain depth SHALL be 0; an agent's SHALL be its parent's plus 1.
 W3-R3, W3-R5. `MAILBOX_RECEIPT read` SHALL return only the reader's messages past its
 cursor, moving them from `queued` to `read` with a `read` receipt; with `max_bytes` it SHALL
 return whole messages under that budget, at least one, and SHALL mark and receipt only the
-messages it returns. `ack` SHALL advance the cursor and never move it back. A body whose hash no longer matches the ledger SHALL be
+messages it returns. `ack` SHALL advance the cursor and never move it back, and never past
+the reader's own newest message. A body whose hash no longer matches the ledger SHALL be
 withheld and flagged `tampered`.
 
 #### Scenario: A retried wake starts a second session
@@ -61,11 +63,12 @@ target=room_message` and `target=mailbox_ack` from `owner_router.TRUSTED`, `GET 
 `/app/api/outside-agents` and `/app/api/agent-messages` behind the protected owner session,
 all through `ledger_request`, and SHALL never forward, ask or wake a box for them. The
 reader and sender SHALL be the verified `outside_origin`; until P0-3 an MCP caller without
-one SHALL be refused, never read as the owner. A body returned to an outside agent SHALL be
-in the untrusted envelope; a read's `cursor` SHALL acknowledge through it first; a read
-SHALL return whole messages under the `read_graph` ceiling, at least one, with
-`next_cursor` at the cut; a reply
-SHALL show its recorded `reply_s`. The box SHALL answer these targets `served_on_trusted_side`.
+one SHALL be refused, never read as the owner. The outside kill switches SHALL close the
+agent doors before any ledger call. Every body an outside agent reads, and every outside
+agent's body the owner reads, SHALL be in the untrusted envelope; a read's `cursor` SHALL
+acknowledge through it first; a read SHALL return whole messages under the `read_graph`
+ceiling, at least one, with `next_cursor` at the cut; a reply SHALL show its recorded
+`reply_s`. The box SHALL answer these targets `served_on_trusted_side`.
 
 #### Scenario: An API-key agent replies claiming to be the owner
 - **WHEN** an agent's key posts a reply whose body says `"sender": "owner"`

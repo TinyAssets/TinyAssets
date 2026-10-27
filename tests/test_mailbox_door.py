@@ -74,19 +74,23 @@ def test_the_box_answers_served_on_trusted_side_and_lists_the_targets():
 
 
 @pytest.fixture
-def door(monkeypatch):
+def door(monkeypatch, tmp_path):
     from tinyassets import router_traffic, routing_snapshot
     from tinyassets.auth import middleware
     from tinyassets.broker import client
+    from tinyassets.engine_result_bounds import CEILING_ENV, CONTEXT_TOKENS_ENV
+    from tinyassets.outside_authority import OutsideClientAuthority
 
     class Snapshot:
         def require_current(self):
             pass
 
-    from tinyassets.engine_result_bounds import CEILING_ENV, CONTEXT_TOKENS_ENV
-
     for name in (CEILING_ENV, CONTEXT_TOKENS_ENV):  # the default read_graph ceiling
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY", raising=False)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    authority = OutsideClientAuthority(tmp_path)  # the router's kill switch, on
+    authority.set_enabled(True)
     monkeypatch.setattr(routing_snapshot, "snapshot", lambda root: Snapshot())
     monkeypatch.setattr(router_traffic, "admits", lambda *args: True)
     monkeypatch.setattr(middleware, "published_box_owner", lambda root, path, caller: caller)
@@ -116,7 +120,7 @@ def door(monkeypatch):
                       fields))
         return {("OUTSIDE_AGENTS", "list"): {"agents": [agent]},
                 ("MAILBOX_RECEIPT", "read"): {"reader": "agent_1", "cursor": 3,
-                                              "messages": [mail]},
+                                              "more": True, "messages": [mail]},
                 ("MAILBOX_RECEIPT", "ack"): {"reader": "agent_1", "through": 3},
                 ("ROOM_POST", "post"): {"message_id": "msg_2", "recipients": ["owner"],
                                         "held": False, "paused_reason": ""}}[op, action]
@@ -142,6 +146,7 @@ def door(monkeypatch):
                     "mcp-protocol-version": "2025-11-25"})
         return asyncio.run(exercise())
 
+    post.authority = authority
     return post, boxed, calls
 
 
@@ -186,8 +191,41 @@ def test_an_outside_agent_reads_acks_and_replies_without_a_box(door):
                                                   "parent_id": "msg_1"})
     wrong = sse(post(call("write_graph", "room_message", payload_json=json.dumps(
         {"room_id": "dm:agent_1", "client_message_id": "r2", "body": "x", "to": "bob"}))))
-    assert wrong["result"]["structuredContent"]["error"] == "invalid_request"
+    assert wrong["error"] == {"code": -32602, "message": "Invalid params", "data": {
+        "error": "invalid_request", "reason": "an outside agent's dm message goes to the owner"}}
     assert boxed == []
+
+
+def test_a_text_only_client_sees_where_to_page_and_bad_payloads_are_invalid_params(door):
+    post, _, calls = door
+    reply = sse(post(call("read_graph", "mailbox")))["result"]
+    text = reply["content"][0]["text"]
+    assert list(reply["structuredContent"])[:4] == ["reader", "cursor", "next_cursor", "more"]
+    assert text.index('"next_cursor"') < text.index('"messages"')
+    calls.clear()
+    nested = "[" * 100_000 + "]" * 100_000  # deeper than the parser's recursion limit
+    for payload in (nested, "[]", "not json"):
+        refused = sse(post(call("write_graph", "mailbox_ack", payload_json=payload)))
+        assert refused["error"]["code"] == -32602
+        assert refused["error"]["data"]["reason"] == "payload_json is a JSON object"
+    assert calls == []
+
+
+@pytest.mark.parametrize("switch", ["deny_env", "durable_off"])
+def test_the_outside_kill_switches_close_the_mcp_doors(door, monkeypatch, switch):
+    post, boxed, calls = door
+    if switch == "deny_env":
+        monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")
+    else:
+        post.authority.set_enabled(False)
+    for body in (call("read_graph", "mailbox"),
+                 call("write_graph", "mailbox_ack", payload_json='{"through": 1}'),
+                 call("write_graph", "room_message", payload_json=json.dumps(
+                     {"client_message_id": "r1", "body": "hi"}))):
+        refused = sse(post(body))
+        assert refused["error"]["code"] == -32024
+        assert refused["error"]["data"] == {"error": "outside_access_off"}
+    assert calls == [] and boxed == []
 
 
 def test_a_caller_without_an_outside_origin_is_refused_never_read_as_the_owner(door):
@@ -314,6 +352,10 @@ def served(broker, cloud_runtime, tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY", raising=False)
+    from tinyassets.outside_authority import OutsideClientAuthority
+
+    OutsideClientAuthority(tmp_path).set_enabled(True)  # the router's kill switch, on
 
     class Snapshot:
         def require_current(self):
@@ -369,7 +411,10 @@ def served(broker, cloud_runtime, tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker owner channel uses Unix peer credentials")
-def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(served):
+def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(served,
+                                                                           monkeypatch):
+    from tinyassets.untrusted import envelope
+
     request, (agent_key, other_key) = served
     agents = "/app/api/outside-agents"
     register = {"action": "register", "key_id": agent_key["key_id"],
@@ -380,6 +425,10 @@ def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(serv
         bare = request(method, path, bearer="alice-app", json=body)
         assert (bare.status_code, bare.json()) == (
             403, {"error": "interactive_owner_session_required"})
+    for bad in ({}, [], 7):  # a key_id that is not text is the caller's error, never a 500
+        refused = request("POST", agents, bearer="alice-app", session=True,
+                          json={**register, "key_id": bad})
+        assert (refused.status_code, refused.json()) == (400, {"error": "invalid_request"})
     agent = request("POST", agents, bearer="alice-app", session=True, json=register).json()
     assert (agent["source"], agent["delivery_method"]) == ("api_key", "pull")
     [listed] = request("GET", agents, bearer="alice-app", session=True).json()["agents"]
@@ -406,11 +455,30 @@ def test_an_api_key_agent_reads_replies_and_acks_and_the_owner_sees_reply_s(serv
     acked = request("POST", "/api/mailbox/ack", bearer=key, json={"through": mail["next_cursor"]})
     assert acked.json()["through"] == mail["next_cursor"]
     assert request("GET", "/api/mailbox", bearer=key).json()["messages"] == []
+    # Either outside kill switch closes the key's doors before any ledger call.
+    from tinyassets.outside_authority import OutsideClientAuthority
+    from tinyassets.storage import data_dir
+
+    for close, reopen in ((lambda: monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1"),
+                           lambda: monkeypatch.delenv("TINYASSETS_OUTSIDE_DENY")),
+                          (lambda: OutsideClientAuthority(data_dir()).set_enabled(False),
+                           lambda: OutsideClientAuthority(data_dir()).set_enabled(True))):
+        close()
+        for method, path, body in (("GET", "/api/mailbox", None),
+                                   ("POST", "/api/mailbox/replies", {
+                                       "client_message_id": "a2", "body": "x"}),
+                                   ("POST", "/api/mailbox/ack", {"through": 0})):
+            shut = request(method, path, bearer=key, json=body)
+            assert (shut.status_code, shut.json()) == (403, {"error": "outside_access_off"})
+        reopen()
+    assert request("GET", "/api/mailbox", bearer=key).status_code == 200
 
     [back] = request("GET", "/app/api/agent-messages", bearer="alice-app",
                      session=True).json()["messages"]
     assert (back["sender_kind"], back["sender_id"]) == ("outside", agent["agent_id"])
-    assert back["body"] == '{"sender": "owner"}' and back["parent_id"] == sent["message_id"]
+    # The agent's words reach the owner enveloped, as any other party's do.
+    assert back["body"] == envelope("mailbox:" + agent["agent_id"], '{"sender": "owner"}')
+    assert back["parent_id"] == sent["message_id"]
     assert isinstance(back["reply_s"], float) and back["reply_s"] >= 0
     caught_up = request("GET", f"/app/api/agent-messages?cursor={back['seq']}",
                         bearer="alice-app", session=True).json()

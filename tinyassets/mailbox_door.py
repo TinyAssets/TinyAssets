@@ -80,19 +80,23 @@ def read(identity, *, cursor=0, limit=30) -> dict:
     outside = identity.metadata.get("outside_origin") is not None
     # The ledger pages whole messages under the box's read_graph ceiling (the
     # environment as the box reads it; the router has no served model context),
-    # padded per message for the envelope wrapped around an outside reader's body.
+    # padded per message for the envelope a body may be wrapped in.
     pad = len(json.dumps(envelope("mailbox:" + "x" * 64, ""), separators=(",", ":"))) - 2
     mail = _ledger(identity, "MAILBOX_RECEIPT", "read", limit=limit,
                    max_bytes=resolve_ceiling(dict(os.environ)) - CEILING_HEADROOM_BYTES,
-                   pad_bytes=pad if outside else 0)
-    messages = mail["messages"]
-    if outside:
-        messages = [{**message, "body": None if message["body"] is None else envelope(
-            "mailbox:" + message["sender_id"], message["body"])} for message in messages]
+                   pad_bytes=pad)
+    # Another party's words reach any reader enveloped: every body an outside agent
+    # reads, and every outside agent's body the owner reads.
+    messages = [{**message, "body": envelope("mailbox:" + message["sender_id"], message[
+        "body"])} if message["body"] is not None and (
+            outside or message["sender_kind"] == "outside") else message
+                for message in mail["messages"]]
     # After that ack the ledger's own cursor is at least ``cursor``; a page the
     # ledger cut ends at next_cursor, and the rest stays unread for the next read.
-    return {**mail, "messages": messages,
-            "next_cursor": messages[-1]["seq"] if messages else mail["cursor"]}
+    # Paging fields come first, so a text-only client's clipped copy still has them.
+    return {"reader": mail["reader"], "cursor": mail["cursor"],
+            "next_cursor": messages[-1]["seq"] if messages else mail["cursor"],
+            "more": mail["more"], "messages": messages}
 
 
 def ack(identity, *, through) -> dict:
@@ -129,7 +133,7 @@ def _payload(arguments: dict) -> dict:
     raw = arguments.get("payload_json") or "{}"
     try:
         payload = json.loads(raw) if isinstance(raw, str) else None
-    except ValueError:
+    except (ValueError, RecursionError):
         payload = None
     if not isinstance(payload, dict):
         raise Refused(400, "invalid_request", "payload_json is a JSON object")
@@ -169,14 +173,37 @@ async def mcp(front) -> None:
             "code": -32024, "message": OUTSIDE_UNCONFIGURED,
             "data": {"reason": "outside_identity_unconfigured"}})
     try:
+        await run_in_threadpool(switched_on)
         result = await run_in_threadpool(
             _tool, front.identity, target, document["params"]["arguments"])
     except Refused as exc:
         if exc.status == 503:
             return await mcp_answer(front, ident, error={"code": -32603,
                                                          "message": "ledger unavailable"})
+        if exc.status == 400:
+            return await mcp_answer(front, ident, error={
+                "code": -32602, "message": "Invalid params", "data": exc.body()})
+        if exc.error == "outside_access_off":
+            return await mcp_answer(front, ident, error={
+                "code": -32024, "message": "outside client capability not granted",
+                "data": exc.body()})
         result = exc.body()
     await mcp_answer(front, ident, result=tool_result(result))
+
+
+def switched_on() -> None:
+    """The platform's outside kill switches, the one definition the box's admission reads.
+
+    The switch is router state; an outside client's own grants stay the box's, and an
+    agent the owner disabled in the ledger is refused there.
+    """
+    from tinyassets.outside_authority import OutsideClientAuthority, OutsideRefused
+    from tinyassets.storage import data_dir
+
+    try:
+        OutsideClientAuthority(data_dir()).require_switched_on()
+    except OutsideRefused:
+        raise Refused(403, "outside_access_off") from None
 
 
 # -- /api: API-key agents --------------------------------------------------------
@@ -197,19 +224,27 @@ def _query_int(request, name: str, default: int):
         return None
 
 
-def _agent(request):
-    """The caller's API-key identity; the auth middleware refused every other bearer."""
+async def _agent(request):
+    """The caller's API-key identity, admitted past the outside kill switches.
+
+    The auth middleware refused every other bearer; on the router it does not run
+    the box's admission, so the switches are checked here before any ledger call.
+    """
     from tinyassets.rest_api import _api_key_identity
 
     identity = _api_key_identity()
     if identity is None or identity.metadata.get("outside_origin") is None:
         return None, JSONResponse({"error": "api_key_required"}, status_code=401,
                                   headers=_HEADERS)
+    try:
+        await run_in_threadpool(switched_on)
+    except Refused as exc:
+        return None, JSONResponse(exc.body(), status_code=exc.status, headers=_HEADERS)
     return identity, None
 
 
 async def rest_mailbox(request):
-    identity, refused = _agent(request)
+    identity, refused = await _agent(request)
     return refused or await _answer(read, identity, cursor=_query_int(request, "cursor", 0),
                                     limit=_query_int(request, "limit", 30))
 
@@ -217,7 +252,7 @@ async def rest_mailbox(request):
 async def rest_ack(request):
     from tinyassets.rest_api import _body
 
-    identity, refused = _agent(request)
+    identity, refused = await _agent(request)
     if refused:
         return refused
     data = await _body(request)
@@ -230,7 +265,7 @@ async def rest_reply(request):
     """``{client_message_id, body, parent_id}`` in the caller's own dm room."""
     from tinyassets.rest_api import _body
 
-    identity, refused = _agent(request)
+    identity, refused = await _agent(request)
     if refused:
         return refused
     data = await _body(request)
@@ -297,7 +332,8 @@ async def outside_agents(request):
     data = await _read_small_json(request) or {}
     proof = {"session_hash": session["session_hash"]}
     if set(data) == {"action", "key_id", "display_name", "command_center_id"} and data[
-            "action"] == "register":
+            "action"] == "register" and all(isinstance(data[key], str) for key in (
+                "key_id", "display_name", "command_center_id")):
         return await _answer(_ledger, identity, "OUTSIDE_AGENTS", "register",
                              session_proof=proof, command_center_id=data["command_center_id"],
                              source="api_key", source_ref=data["key_id"],

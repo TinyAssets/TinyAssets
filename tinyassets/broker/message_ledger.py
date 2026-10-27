@@ -126,6 +126,11 @@ class MessageLedger:
                              "AND outside_client=? AND outside_family=?",
                              (command_center_id, client, family)).fetchone()
             fields = (source, source_ref, name, delivery_method, recipe_id)
+            # One outside identity is one enabled agent; a second would lock both out.
+            if db.execute("SELECT 1 FROM outside_agents WHERE outside_client=? AND "
+                          "outside_family=? AND disabled_reason IS NULL AND command_center_id!=?",
+                          (client, family, command_center_id)).fetchone():
+                raise LedgerRefused("this outside identity is already an enabled agent")
             if row is None:
                 agent_id = "agent_" + secrets.token_hex(8)
                 db.execute("INSERT INTO outside_agents(agent_id,command_center_id,outside_client,"
@@ -287,9 +292,11 @@ class MessageLedger:
             raise ValueError("through is a ledger seq")
         with self._write(owner) as db:
             reader = self._reader(db, origin)
-            if through > db.execute("SELECT COALESCE(MAX(seq),0) FROM ledger_messages"
-                                    ).fetchone()[0]:
-                raise LedgerRefused("ack is past the ledger")
+            # Bounded by this reader's own newest message: never another reader's count.
+            if through > db.execute(
+                    "SELECT COALESCE(MAX(m.seq),0) FROM ledger_messages m JOIN ledger_recipients "
+                    "r ON r.message_id=m.message_id AND r.agent_id=?", (reader,)).fetchone()[0]:
+                raise LedgerRefused("ack is past this reader's mail")
             now = time.time()
             db.execute("INSERT INTO ledger_cursors VALUES (?,?,?) ON CONFLICT(reader) DO UPDATE "
                        "SET through_seq=MAX(through_seq, excluded.through_seq), at=excluded.at",

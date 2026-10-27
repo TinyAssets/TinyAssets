@@ -47,6 +47,12 @@ def origin(claims):
             "authenticated_at": authenticated_at}
 
 
+def _switched_off(conn) -> bool:
+    """The platform-wide kill switches: the deny environment and the durable router switch."""
+    switch = conn.execute("SELECT enabled FROM outside_switch WHERE id=1").fetchone()
+    return os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1" or switch is None or switch[0] != 1
+
+
 class OutsideClientAuthority:
     def __init__(self, base):
         self.path = Path(base) / ".outside-client-authority.sqlite3"
@@ -134,14 +140,21 @@ class OutsideClientAuthority:
                 (owner,))], "families": [dict(row) for row in conn.execute(
                     "SELECT client,family,retired FROM outside_families WHERE owner=?", (owner,))]}
 
+    def require_switched_on(self):
+        """The kill switches alone, for a door that holds no owner grants (the router's)."""
+        try:
+            with self.db() as conn:
+                if _switched_off(conn):
+                    raise OutsideRefused("outside client authority unavailable")
+        except (sqlite3.Error, OSError):
+            raise OutsideRefused("outside authority store unavailable") from None
+
     def admit(self, owner, bound, *, universe=None, agent=None, capability=None):
         try:
             with self.db() as conn:
-                switch = conn.execute("SELECT enabled FROM outside_switch WHERE id=1").fetchone()
                 row = conn.execute("SELECT * FROM outside_grants WHERE owner=? AND client=?",
                                    (owner, bound["client"])).fetchone()
-                if (os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1" or switch is None
-                        or switch[0] != 1 or row is None or row["revoked"]
+                if (_switched_off(conn) or row is None or row["revoked"]
                         or row["family"] != bound["family"]
                         or bound.get("generation", row["generation"]) != row["generation"]):
                     raise OutsideRefused("outside client authority unavailable")
@@ -186,10 +199,8 @@ def effect_admission():
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM outside_grants WHERE owner=? AND client=?",
                            (identity.user_id, bound["client"])).fetchone()
-        enabled = conn.execute("SELECT enabled FROM outside_switch WHERE id=1").fetchone()
         if (row is None or row["revoked"] or row["generation"] != bound["generation"]
-                or row["family"] != bound["family"] or enabled is None or enabled[0] != 1
-                or os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1"):
+                or row["family"] != bound["family"] or _switched_off(conn)):
             raise OutsideRefused("outside effect authority changed")
         conn.execute("INSERT INTO outside_effects VALUES (?,?,?,?,?,?)",
                      (lease, identity.user_id, bound["client"], bound["generation"],
