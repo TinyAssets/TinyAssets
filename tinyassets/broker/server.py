@@ -656,8 +656,10 @@ class _Connection:
                     deliveries = self._server.mcp_events
                     if op == "ROOM_POST":  # a wake it opened goes out now, not next tick
                         deliveries.kick()
-                    elif "agent_id" in result and (result["disabled_reason"] or result[
-                            "delivery_method"] not in message_ledger.WAKING):
+                    # Only a registry change (register or disable) can stop an agent ringing.
+                    elif (op, doc.get("action")) in {("OUTSIDE_AGENTS", "register"), (
+                            "OUTSIDE_AGENTS", "disable")} and (result["disabled_reason"] or result[
+                                "delivery_method"] not in message_ledger.WAKING):
                         # Disabled or no longer rung: its doorbell ends, its callback is erased.
                         # The change is committed. No wake rings the agent now (a claim
                         # suppresses and revokes again), and the callback expires in a day.

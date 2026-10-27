@@ -50,11 +50,12 @@ def rig(tmp_path, monkeypatch):
 
     identities = admissions(tmp_path)
     PolicyStore(tmp_path, identities).bootstrap()
-    ledger = MessageLedger(tmp_path, identities)
+    ledger, revoked = MessageLedger(tmp_path, identities), []
+    callbacks = SimpleNamespace(revoke_agent=lambda owner, agent: revoked.append((owner, agent)))
     server = SimpleNamespace(_owner_identities=identities, _fence=Fence(),
                              _policy_store=PolicyStore(tmp_path, identities),
                              ledger=(ledger, Conversations(tmp_path, identities)),
-                             mcp_events=SimpleNamespace(kick=lambda: None))
+                             mcp_events=SimpleNamespace(kick=lambda: None, store=callbacks))
 
     def request(data_root, doc):
         async def exchange():
@@ -86,7 +87,8 @@ def rig(tmp_path, monkeypatch):
                                            "collection='board' AND row_id=?",
                                            (task_id,)).fetchone()[0])
 
-    return SimpleNamespace(ledger=ledger, clock=clock, db=db, stored=stored,
+    return SimpleNamespace(root=tmp_path, ledger=ledger, revoked=revoked, clock=clock, db=db,
+                           stored=stored,
                            muse=register(MUSE, "Muse"), dot=register(DOT, "Dot", "mcp_event"))
 
 
@@ -205,6 +207,25 @@ def test_a_claim_with_open_dependencies_is_refused(rig):
             "SELECT agent_id, kind, ref FROM ledger_receipts WHERE kind IN "
             "('claim','complete') ORDER BY seq")] == [
             ("owner", "claim", "t1"), ("owner", "complete", "t1"), (rig.muse, "claim", "t2")]
+
+
+def test_a_receipt_naming_an_agent_revokes_nothing_only_a_registry_change_does(rig):
+    """The broker revokes callbacks on an OUTSIDE_AGENTS change, never on another result."""
+    from tests.test_message_ledger import COOKIE, PROOF
+    from tests.test_owner_policy import _session
+    from tinyassets.broker.client import ledger_request
+
+    _create()
+    claimed = board_door.write(_agent(MUSE), task_id="t1", expected_revision=1,
+                               patch={"state": "claimed"})
+    assert "receipt" not in claimed  # the receipt result carries agent_id and was recorded
+    receipt = ledger_request(rig.root, _agent(MUSE), "MAILBOX_RECEIPT", "board", kind="claim",
+                             task_id="t1", revision=2)
+    assert receipt["agent_id"] == rig.muse and rig.revoked == []
+    _session(rig.root, "alice", COOKIE)
+    ledger_request(rig.root, OWNER, "OUTSIDE_AGENTS", "disable", session_proof=PROOF,
+                   agent_id=rig.muse, reason="done")
+    assert rig.revoked == [("alice", rig.muse)]
 
 
 def test_only_the_owner_assigns_and_only_the_claimant_or_owner_moves_a_task(rig):

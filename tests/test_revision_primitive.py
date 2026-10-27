@@ -135,7 +135,7 @@ def test_the_box_channel_refuses_collection(tmp_path):
         connection._box_owner = "alice"  # admitted, so only the op itself is refused
         await connection._connection_op(doc["op"], doc)
 
-    for action in ("write", "pull"):
+    for action in ("write", "pull", "get"):
         with pytest.raises(rf.FrameError, match="not available on the box channel"):
             asyncio.run(send({"op": "COLLECTION", "action": action, "principal": "alice"}))
     assert not account_path(tmp_path, "alice", "conversations.db").exists()

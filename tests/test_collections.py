@@ -125,6 +125,36 @@ def test_a_private_row_is_its_writers_own(broker):
     assert _rows(broker.root)[0][-1] == "secret"
 
 
+def test_get_reads_one_row_by_key_as_pull_would_show_it(broker):
+    """A keyed read, not a second swap: a private row is its writer's, the caller the router's."""
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker.client import BrokerRefused, collection_request
+
+    store, room = broker.store, "room:chess:main"
+    mine = store.write("alice", caller="bob", collection=room, row_id="p", body="secret",
+                       expected_etag="", private=True)
+    shared = store.write("alice", caller="bob", collection=room, row_id="s", body="turn",
+                         expected_etag="", private=False)
+    assert store.get("alice", caller="bob", collection=room, row_id="p") == {"row": mine}
+    assert store.get("alice", caller="cara", collection=room, row_id="p") == {"row": None}
+    assert store.get("alice", caller="cara", collection=room, row_id="s") == {"row": shared}
+    assert store.get("alice", caller="bob", collection=room, row_id="none") == {"row": None}
+    assert store.get("alice", caller="bob", collection="board", row_id="s") == {"row": None}
+    cara = Identity(user_id="cara", username="cara")
+    over = collection_request(broker.root, cara, "get", owner="alice", collection=room,
+                              row_id="s")
+    assert over == {"row": shared}
+    assert collection_request(broker.root, cara, "get", owner="alice", collection=room,
+                              row_id="p") == {"row": None}
+    with pytest.raises(BrokerRefused, match="invalid collection request"):
+        collection_request(broker.root, cara, "get", owner="alice", collection=room,
+                           row_id="p", writer="bob")
+    with pytest.raises(BrokerRefused):
+        collection_request(broker.root, cara, "get", owner="alice", collection=room,
+                           row_id="")
+    assert [row[1] for row in _rows(broker.root)] == ["p", "s"]  # a get writes nothing
+
+
 def test_a_full_collection_refuses_a_new_row(broker, monkeypatch):
     from tinyassets.broker import conversations
 

@@ -541,7 +541,7 @@ def collection_request(data_root: Path, identity: Any, action: str, *, owner: st
     """
     from tinyassets.broker.owner_identities import _owner_request
 
-    if action not in {"write", "pull", "clear"}:
+    if action not in {"write", "pull", "get", "clear"}:
         raise ValueError("unsupported collection operation")
     answer = _owner_request(data_root, {**fields, "op": "COLLECTION", "action": action,
                                         "principal": owner, "caller": identity.user_id})

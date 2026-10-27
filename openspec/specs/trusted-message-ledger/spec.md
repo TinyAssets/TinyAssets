@@ -23,8 +23,8 @@ broker SHALL open them, and only the router's owner channel SHALL reach `OUTSIDE
 S34, W8, W9 Tier A. `conversations.db` SHALL hold `collection_rows`, the repo's one
 compare-and-swap primitive: rows keyed by collection and row id, each with a revision, an
 etag and the collection's next `seq`, written only while the presented etag is the row's
-(empty creates it) and pulled after a `seq` cursor; payloads SHALL be stored and returned
-verbatim, and a private row SHALL be visible to and writable by its writer alone. Rows and
+(empty creates it), pulled after a `seq` cursor and read one by key (`get`, which pull's
+visibility rules bound); payloads SHALL be stored and returned verbatim, and a private row SHALL be visible to and writable by its writer alone. Rows and
 payload bytes SHALL be bounded per writer other than the owner in one collection, per
 collection and per owner, and a write past a bound SHALL be refused. Only the store's owner
 SHALL clear a collection or one writer's rows in it; a clear SHALL never lower the

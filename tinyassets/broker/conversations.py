@@ -9,7 +9,7 @@ as clean text.
 ``collection_rows`` is the repo's one revision primitive (S34): rows keyed by
 ``(collection, row_id)``, each write a compare-and-swap on the row's etag, each
 commit stamped with the collection's next ``seq`` so a reader pulls after a
-cursor. The board is ``collection='board'``; a Tier A app room is
+cursor, or gets one row by its key. The board is ``collection='board'``; a Tier A app room is
 ``collection='room:<app>:<room>'``. Payloads are stored and returned verbatim.
 A private row is visible to, and writable by, its writer alone. Rows and payload
 bytes are bounded per writer (other than the owner) in a collection, per
@@ -221,6 +221,16 @@ class Conversations:
         return {"cursor": rows[-1]["seq"] if len(rows) == limit else top,
                 "rows": [_row(row) for row in rows]}
 
+    def get(self, owner: str, *, caller: str, collection: str, row_id: str) -> dict:
+        """One row by its key, as ``pull`` would show it to this caller, or None."""
+        _name(collection, "collection")
+        _name(row_id, "row_id")
+        with self._connect(owner) as db:
+            row = db.execute("SELECT * FROM collection_rows WHERE collection=? AND row_id=? "
+                             "AND (private=0 OR writer=?)",
+                             (collection, row_id, caller)).fetchone()
+        return {"row": None if row is None else _row(row)}
+
     def clear(self, owner: str, *, collection: str, writer: str | None) -> dict:
         """Delete a collection's rows, or every row ``writer`` created or last wrote.
 
@@ -269,6 +279,8 @@ def router_operation(conversations: Conversations, doc: dict) -> dict:
             return {"conflict": exc.current}
     if action == "pull" and set(fields) == {"collection", "after", "limit"}:
         return conversations.pull(owner, caller=caller, **fields)
+    if action == "get" and set(fields) == {"collection", "row_id"}:
+        return conversations.get(owner, caller=caller, **fields)
     if action == "clear" and set(fields) == {"collection", "writer"}:
         if caller != owner:
             raise PermissionError("only the owner clears a collection")

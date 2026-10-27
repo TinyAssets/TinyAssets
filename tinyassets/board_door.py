@@ -97,15 +97,9 @@ def _store(identity, action: str, **fields) -> dict:
         raise Refused(503, "ledger_unavailable") from None
 
 
-def _rows(identity) -> dict:
-    """Every task row by id, paged through the store's pull."""
-    rows, after = {}, 0
-    while True:
-        page = _store(identity, "pull", after=after, limit=PAGE)
-        rows.update((row["row_id"], row) for row in page["rows"])
-        if len(page["rows"]) < PAGE:
-            return rows
-        after = page["cursor"]
+def _row(identity, task_id: str) -> dict | None:
+    """One task's row by its key, or None."""
+    return _store(identity, "get", row_id=task_id)["row"]
 
 
 def _agents(identity) -> list[dict]:
@@ -203,13 +197,13 @@ def board(identity, *, since=0, limit=30) -> dict:
 def task(identity, *, task_id) -> dict:
     _task_id(task_id)
     outside = _outside_reader(identity)
-    row = _rows(identity).get(task_id)
+    row = _row(identity, task_id)
     if row is None:
         raise Refused(404, "not_found", "no board task has this task_id")
     return {"task": _view(row, time.time(), outside)}
 
 
-def _move(task: dict, state: str, *, actor: str, lease: int, now: float, rows: dict) -> str:
+def _move(task: dict, state: str, *, actor: str, lease: int, now: float, lookup) -> str:
     """One state change, its rules and its history op. ``claimed`` comes only from ``open``."""
     before = task["state"]
     if state == "claimed":
@@ -217,9 +211,9 @@ def _move(task: dict, state: str, *, actor: str, lease: int, now: float, rows: d
         # "everyone" or no assignee: any enabled agent may claim; one claimant holds it.
         if actor != OWNER and named and EVERYONE not in named and actor not in named:
             raise Refused(403, "refused", "this task is assigned to other agents")
-        if any(rows.get(dep) is None or _lapsed(json.loads(rows[dep]["body"]), now)[
-                "state"] != "done" for dep in task["depends_on"]):
-            raise Refused(409, "refused", DEPS_OPEN)
+        for dep in map(lookup, task["depends_on"]):
+            if dep is None or json.loads(dep["body"])["state"] != "done":
+                raise Refused(409, "refused", DEPS_OPEN)
         task["claim"] = {"agent_id": actor, "expires_at": now + lease}
         return "claim"
     if before == "open":
@@ -234,7 +228,7 @@ def _move(task: dict, state: str, *, actor: str, lease: int, now: float, rows: d
     return state  # in_progress or blocked
 
 
-def _change(task: dict, patch: dict, *, actor: str, lease: int, now: float, rows: dict,
+def _change(task: dict, patch: dict, *, actor: str, lease: int, now: float, lookup,
             created: bool, agents) -> tuple[str, list[str]]:
     """Apply ``patch`` for ``actor``: the history op and the agents newly assigned."""
     holder = task["claim"]["agent_id"] if task["claim"] else None
@@ -282,7 +276,7 @@ def _change(task: dict, patch: dict, *, actor: str, lease: int, now: float, rows
     op = ("create" if created else "renew" if not patch else
           "assign" if "assignees" in patch else "edit")
     if state != task["state"]:
-        op = _move(task, state, actor=actor, lease=lease, now=now, rows=rows)
+        op = _move(task, state, actor=actor, lease=lease, now=now, lookup=lookup)
         task["state"] = state
     if task["state"] in HELD and task["claim"]["agent_id"] == actor:
         task["claim"] = {"agent_id": actor, "expires_at": now + lease}  # a claimant's write renews
@@ -300,8 +294,7 @@ def write(identity, *, task_id, expected_revision, patch) -> dict:
         raise Refused(400, "invalid_request", "patch takes " + ", ".join(sorted(FIELDS)))
     actor, lease = _actor(identity)
     outside = identity.metadata.get("outside_origin") is not None
-    rows, now = _rows(identity), time.time()
-    row = rows.get(task_id)
+    row, now = _row(identity, task_id), time.time()
     if (row["revision"] if row else 0) != expected_revision:
         raise Conflict(row and _view(row, now, outside),
                        "expected_revision is not the task's revision")
@@ -311,8 +304,9 @@ def write(identity, *, task_id, expected_revision, patch) -> dict:
     if patch.get("state") == "claimed" and task["state"] != "open":
         raise Conflict(_view(row, now, outside), "the task is not open")
     before = task["state"]
-    op, newly = _change(task, patch, actor=actor, lease=lease, now=now, rows=rows,
-                        created=row is None, agents=lambda: _agents(identity))
+    op, newly = _change(task, patch, actor=actor, lease=lease, now=now,
+                        lookup=lambda dep: _row(identity, dep), created=row is None,
+                        agents=lambda: _agents(identity))
     task["history"] = [*task["history"], {"at": now, "actor": actor, "op": op,
                                           "from_state": before, "to_state": task["state"]}
                        ][-MAX_HISTORY:]

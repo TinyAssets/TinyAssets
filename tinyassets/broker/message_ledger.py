@@ -471,8 +471,7 @@ class MessageLedger:
         with self._write(owner) as db:
             actor, now = self._reader(db, origin), time.time()
             self._receipt(db, owner, actor, kind, task_id, now, {"revision": revision})
-            # "actor", never "agent_id": the server reads an agent_id result as a registry change.
-            return {"actor": actor, "kind": kind, "ref": task_id, "at": now}
+            return {"agent_id": actor, "kind": kind, "ref": task_id, "at": now}
 
 
 def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float) -> str:
