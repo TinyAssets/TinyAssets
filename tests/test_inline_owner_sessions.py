@@ -105,9 +105,8 @@ def test_bearer_fetch_cannot_start_interactive_login(setup):
 @pytest.mark.verifies('owner-daemon-in-box:T2')
 def test_policy_bearer_write_cannot_bypass_owner_session(
         setup, monkeypatch, tmp_path):
-    from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.policy import PolicyRefused, PolicyStore
+    from tinyassets.broker.policy import PolicyStore
 
     seed_owner_admission(tmp_path, principal="alice", center="alpha")
     admissions = OwnerIdentities(tmp_path / ".broker/state/owner-identities.db")
@@ -119,22 +118,19 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
         if action == "receipts":
             return {"receipts": store.receipts(owner)}
         assert action == "write"
-        try:
-            assert "cookie" not in fields
-            return store.write(owner, fields["session_proof"], fields["expected_generation"],
-                               fields["policy"]).projection()
-        except PolicyRefused as exc:
-            raise BrokerRefused("broker refused policy write") from exc
+        assert "cookie" not in fields
+        return store.write(owner, fields["session_proof"], fields["expected_generation"],
+                           fields["policy"]).projection()
 
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
     monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "alpha")
-    async def payload(_request):
+    async def payload(_request, **_limit):
         return {"expected_generation": current.generation, "policy": current.document}
     monkeypatch.setattr(onboarding, "_read_small_json", payload)
-    monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", broker)
+    # N10: the router serves this route and submits on its owner channel.
+    monkeypatch.setattr("tinyassets.broker.policy_submit.submit", broker)
     req = request(cookie="")
     req.method = "POST"
-    req.query_params = {"scope": "spend"}
     with identity_context(Identity(user_id="alice", username="alice")):
         response = asyncio.run(onboarding._handle_policy(req))
     assert response.status_code == 403
@@ -249,42 +245,34 @@ def test_box_approval_decision_uses_forwarded_session(tmp_path, monkeypatch, cho
     assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8')
-def test_box_policy_door_uses_local_policy_without_broker_or_cookie(tmp_path, monkeypatch):
+@pytest.mark.verifies('owner-daemon-in-box:C8',
+                      'owner-daemon-in-box:Owner action policy is held by the broker '
+                      'and enforced at OPEN')
+def test_box_policy_door_refuses_and_never_writes_owner_authority(tmp_path, monkeypatch):
+    """N10 reversed C8: the router serves owner authority; the box refuses."""
     from tinyassets import owner_runtime
-    from tinyassets.action_policy import ActionPolicyStore, initialize
 
-    initialize(tmp_path / ".action-policy.db")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(owner_runtime, "_runtime", owner_runtime.OwnerRuntime(
         "alice", 1001, tmp_path, os.getpid(), None))
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
-    monkeypatch.setattr(onboarding, "_read_home", lambda _: "home")
     proof = {"session_hash": "a" * 64, "identity_json": json.dumps({"user_id": "alice"}),
              "expires_at": time.time() + 300}
 
     def no_broker(*args, **kwargs):
-        pytest.fail("local action policy used a shared collaborator")
+        pytest.fail("a box presented owner authority to the broker")
 
-    async def payload(_request):
-        return {"expected_generation": 1, "policy": {"entries": [
-            {"scope": "account", "table": "rules", "values": {
-                "action_class": "workspace.shell", "behaviour": "ask_first"}}]}}
-
+    monkeypatch.setattr("tinyassets.broker.policy_submit.submit", no_broker)
     monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", no_broker)
-    monkeypatch.setattr(onboarding, "_read_small_json", payload)
-    req = request(cookie="")
-    req.cookies = {}
-    req.method = "POST"
-    with identity_context(Identity(user_id="alice", username="alice",
-                                   metadata={"router_owner_session": proof})):
-        response = asyncio.run(onboarding._handle_policy(req))
-    assert response.status_code == 200, response.body
-    store = ActionPolicyStore(tmp_path / "home")
-    assert store.read("alice").generation == 2
-    assert store.decide("alice", center="home", action_class="workspace.shell")["decision"] == "ask"
-    assert (tmp_path / ".action-policy.db").is_file()
-    assert not (tmp_path / ".broker").exists()
+    for method in ("GET", "POST"):
+        req = request(cookie="")
+        req.cookies = {}
+        req.method = method
+        with identity_context(Identity(user_id="alice", username="alice",
+                                       metadata={"router_owner_session": proof})):
+            response = asyncio.run(onboarding._handle_policy(req))
+        assert response.status_code == 403, response.body
+    assert not (tmp_path / ".action-policy.db").exists()
     assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()

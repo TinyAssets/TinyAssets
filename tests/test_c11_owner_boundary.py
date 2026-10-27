@@ -72,13 +72,13 @@ def test_cutover_drops_custody_and_retains_account_policy(cutover):  # noqa: F81
                 assert db.execute(f'SELECT count(*) FROM "{table}"').fetchone() == (0,)
     assert Centers(contents(store) / "300001").active() == ["a1", "a2"]
     assert Centers(contents(store) / "300002").active() == ["b1", "b2"]
-    with sqlite3.connect(contents(store) / "300001/.action-policy.db") as db:
-        local = json.loads(db.execute("SELECT document FROM policy").fetchone()[0])
-        assert local == {"entries": document["entries"][2:]}
+    # N10: every account-scoped rule stays in the broker; no box policy file.
+    assert not (contents(store) / "300001/.action-policy.db").exists()
     with sqlite3.connect(policy_path) as db:
         generation, digest, raw = db.execute(
             "SELECT generation,digest,document FROM policy").fetchone()
-        expected = {"entries": document["entries"][:1], "spend": document["spend"]}
+        expected = {"entries": [document["entries"][0], document["entries"][2]],
+                    "spend": document["spend"]}
         assert (generation, digest, json.loads(raw)) == (5, _digest(expected), expected)
         assert db.execute("SELECT kind,owner,old_digest,new_digest,generation,outcome "
                           "FROM receipts").fetchall() == [

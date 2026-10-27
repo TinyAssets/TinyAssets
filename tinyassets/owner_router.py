@@ -191,6 +191,8 @@ for _path in ("/app/account/delete", "/app/client-error", "/app/token",
               "/app/approval-handoff", "/app/connections",
               # Undo stays on the router: the session proof never enters the box.
               "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
+              # N10: owner policy widens only here, with the proof, on the owner channel.
+              "/app/api/policy",
               "/app/billing/", "/app/run/", "/app/model-callback/",
               "/app/approval-handoff/", "/app/model-connect/", "/app/account/deletion/"):
     TRUSTED.app(_path)

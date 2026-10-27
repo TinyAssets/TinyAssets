@@ -122,6 +122,7 @@ def door(monkeypatch):
 
     monkeypatch.setattr(owner_router, "forward", forward)
     front = owner_router.TrustedFront()
+    front.app_routes.update(owner_router.TRUSTED.app_routes)  # the real app registrations
 
     @front.mcp("tools/call", "read_graph", "board")
     async def board(request):
@@ -130,7 +131,17 @@ def door(monkeypatch):
 
     monkeypatch.setattr(owner_router, "TRUSTED", front)
     route = owner_router.BoxRoute(Path("/unused"), "s" * 43)
-    router = owner_router.OwnerRouter(lambda *a: None, resolver=lambda owner: route)
+    shared = []
+
+    async def own_app(scope, receive, send):
+        """The router's own route table: records what it was handed."""
+        from starlette.requests import Request
+
+        shared.append((scope["method"], scope["path"], await Request(scope, receive).body()))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"router"})
+
+    router = owner_router.OwnerRouter(own_app, resolver=lambda owner: route)
 
     async def app(scope, receive, send):
         token = middleware._current_identity.set(Identity("alice", "alice"))
@@ -139,7 +150,7 @@ def door(monkeypatch):
         finally:
             middleware._current_identity.reset(token)
 
-    def post(body, chunk=None):
+    def post(body, chunk=None, path="/mcp"):
         async def chunks():
             for start in range(0, len(body), chunk):
                 yield body[start:start + chunk]
@@ -147,10 +158,27 @@ def door(monkeypatch):
         async def exercise():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url="https://tinyassets.io") as client:
-                return await client.post("/mcp", content=chunks() if chunk else body)
+                return await client.post(path, content=chunks() if chunk else body)
         return asyncio.run(exercise())
 
+    post.shared = shared
     return post, boxed, answered, route
+
+
+@pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")
+def test_owner_policy_is_served_by_the_routers_own_app(door):
+    from tinyassets import onboarding
+
+    post, boxed, _, _ = door
+    # N10: the router's own app keeps /app/api/policy and reads its body (up to
+    # 32 kB) itself; the registry hands that body over untouched, never to the box.
+    proposal = json.dumps({"action": "apply_proposal", "shown": "x" * 20000}).encode()
+    assert post(proposal, chunk=4096, path="/app/api/policy").text == "router"
+    assert post.shared == [("POST", "/app/api/policy", proposal)] and boxed == []
+    assert not owner_router.forwarded_path("/app/api/policy")
+    routes = [route for route in onboarding.onboarding_routes()
+              if route.path == "/app/api/policy"]
+    assert len(routes) == 1 and {"GET", "POST"} <= routes[0].methods
 
 
 async def reply(request, result):

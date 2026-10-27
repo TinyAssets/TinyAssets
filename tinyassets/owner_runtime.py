@@ -127,10 +127,6 @@ def start(relay: Path) -> OwnerRuntime:
     from tinyassets.boxes.boxd import OwnerBoxd
     from tinyassets.owner_centers import Centers
 
-    if not (root / ".centers.db").exists():
-        from tinyassets.action_policy import initialize
-
-        initialize(root / ".action-policy.db")
     for center in Centers(root).active():
         (root / center).mkdir(mode=0o700, exist_ok=True)
     (root / ".agent-home").mkdir(mode=0o700, exist_ok=True)

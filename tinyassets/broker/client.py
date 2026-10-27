@@ -30,6 +30,15 @@ class BrokerRefused(PermissionError):
     """The broker refused the stream before anything was sent."""
 
 
+class AuthorityRefused(BrokerRefused):
+    """N10: the owner's rules refused a box OPEN; nothing was sent."""
+
+    def __init__(self, error_class: str) -> None:
+        super().__init__(f"owner rules refused the request ({error_class})")
+        self.error_class = error_class
+        self.side_effect_state = "none"
+
+
 def _raise_for(end: dict[str, Any]) -> None:
     from tinyassets.storage.outbound_connections import (
         AmbiguousProxyOutcome,
@@ -51,6 +60,10 @@ def _raise_for(end: dict[str, Any]) -> None:
         raise EgressPolicyRefused({"host": detail["host"], "port": detail["port"]},
                                   detail["generation"], detail["decision"])
     outcome = end.get("outcome")
+    from tinyassets.broker.authority_gate import REFUSALS
+
+    if outcome == "refused" and error_class in REFUSALS:
+        raise AuthorityRefused(error_class)
     if error_class == "GrantPathRefused":
         raise GrantPathRefused("requested method and path are not covered by the connection grant")
     if error_class == "InferenceUsageStopped":
@@ -210,10 +223,10 @@ class BrokerClient:
         return answer["result"]
 
     def owner_policy(self, action: str, **fields: Any) -> dict[str, Any]:
-        """Forward policy requests; the broker verifies write cookies itself."""
+        """Forward the box's policy reads, decisions and proposals (N10: never a write)."""
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        if action not in {"read", "write", "receipts", "proposal", "decide"}:
+        if action not in {"read", "receipts", "proposal", "decide", "classify"}:
             raise ValueError("unsupported owner policy operation")
         wire = {"op": "OWNER_POLICY", "action": action, "principal": self._principal,
                 **fields}
@@ -312,11 +325,6 @@ class BrokerClient:
         wire = {"op": "HTTP_CONNECT", "principal": self._principal,
                 "generation": generation,
                 "token": token, "document": document}
-        from tinyassets.onboarding.owner_sessions import router_owner_session
-
-        session = router_owner_session()
-        if session is not None:
-            wire["session_proof"] = {"session_hash": session["session_hash"]}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
@@ -384,7 +392,8 @@ class BrokerClient:
     @observed('connected_service', owner=lambda self, **kwargs: self._principal)
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
-                inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
+                inference_usage: dict[str, Any] | None = None,
+                authority: dict[str, str] | None = None) -> dict[str, Any]:
 
         generation, token = self._fence()
         open_doc = {
@@ -395,6 +404,8 @@ class BrokerClient:
         }
         if inference_usage is not None:
             open_doc["inference_usage"] = inference_usage
+        if authority:
+            open_doc["authority"] = authority
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
         from tinyassets.storage.outbound_connections import (

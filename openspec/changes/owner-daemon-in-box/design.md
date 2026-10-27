@@ -543,15 +543,14 @@ private app reads and writes. That policy moves into the box, and the broker kee
 credential, egress and spending policy. `policy_rules.py:69` stops delegating
 owner-local decisions to `broker/server.py:1020`.
 
-**As built (lane c, C8):** `action_policy.ActionPolicyStore` stores action rules,
-classifications, receipts and one-use approvals in the box's `.action-policy.db`.
-First box startup creates this store; a missing file or policy row refuses
-subsequent decisions instead of regenerating defaults.
-The protected owner route and local action callers use that store. The broker
-policy document holds monetary rules and spend limits only; stream opening no
-longer decides an owner's app action. Cutover moves retained account action rules
-into the box and drops shared one-use approvals. The owner route selects actions
-by default and spending explicitly with `scope=spend`.
+**Reversed by N10 a1 (ADR-025, Decision A1):** the box's shell runs as its app
+server's user, so a box-held store let the agent rewrite its own rules. Action
+rules, classifications, standing grants and one-use approvals now live in the
+broker's per-owner `policy.db` beside spend and egress, with one generation.
+Only the router's owner channel writes them (`broker/policy_submit.py`, behind
+the router-served `/app/api/policy`); the box channel reads, decides and
+proposes. The binding check is the broker's OPEN (`broker/authority_gate.py`);
+the box's checks are advisory. Owners start from the default rules.
 
 ### C9. Wake index is two columns (T7)
 Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, and drop the

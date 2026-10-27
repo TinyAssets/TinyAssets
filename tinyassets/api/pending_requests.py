@@ -1152,18 +1152,6 @@ def request_from_user(
         return _refused(exc)
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
-    if action.get("type") == "policy_proposal":
-        from tinyassets.action_policy import owner_policy_operation
-        from tinyassets.owner_centers import admitted_owner
-
-        owner = admitted_owner(udir.parent, center=_uid)
-        if "egress" in action["policy"]:
-            from tinyassets.broker.client import owner_policy_operation as broker_policy
-
-            broker_policy(udir.parent, owner, "proposal", change=action)
-        else:
-            owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
-                                   change=action)
     if action.get("type") == "rotate_http":
         # BEFORE the fields are validated, because the connection's stored auth
         # scheme is what decides how many boxes the card has and what they are
@@ -1342,6 +1330,20 @@ def request_from_user(
         return {"error": "request_storage_unavailable"}
     if row.get("error"):
         return row
+    if action.get("type") == "policy_proposal" and not row.get("settled"):
+        from tinyassets.broker.client import BrokerRefused, owner_policy_operation
+        from tinyassets.owner_centers import admitted_owner
+        from tinyassets.storage.pending_requests import resolve_request
+
+        # N10: the broker holds the proposal under this card's id; the router
+        # applies it only through the owner's protected session. A card the
+        # broker will not hold is closed, never left unappliable.
+        try:
+            owner_policy_operation(udir.parent, admitted_owner(udir.parent, center=_uid),
+                                   "proposal", change=action, request_id=row["request_id"])
+        except BrokerRefused as exc:
+            resolve_request(udir, row["request_id"], status="dismissed", decision="declined")
+            return {"error": "policy_proposal_refused", "detail": str(exc)}
     if row.get("settled"):
         # Already decided in a past interaction. This is the "it might know from
         # past interaction what it is allowed" case: a standing ALLOW means go
@@ -2114,6 +2116,27 @@ def _reconcile_connections(uid, udir):
     return results
 
 
+def _reconcile_proposals(udir) -> None:
+    """Close a policy proposal card once the broker holds exactly its document (N10)."""
+    from tinyassets import policy_rules
+    from tinyassets.broker.policy import _digest
+    from tinyassets.storage.pending_requests import list_pending, resolve_request
+
+    rows = [row for row in list_pending(udir)
+            if row["action"].get("type") == "policy_proposal" and displayed_row_matches(row)]
+    if not rows:
+        return
+    try:
+        current = policy_rules.projection(udir)["digest"]
+    except (PermissionError, RuntimeError, OSError):
+        logger.warning("policy proposals not reconciled: owner policy unavailable")
+        return
+    for row in rows:
+        if _digest(row["action"]["policy"]) == current:
+            resolve_request(udir, row["request_id"], status="answered",
+                            answer={"policy_digest": current}, decision="accepted")
+
+
 def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     """What the app's rail renders, and what the phone reads too: EVERY pending row.
 
@@ -2148,6 +2171,7 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     # block cannot contradict the rail it is describing. Never raises.
     intake = rail_entry(uid, udir)
     completions = reconcile_connections(uid, udir)
+    _reconcile_proposals(udir)
     rows = [_rendered_from_pin(uid, r) for r in list_pending(udir)]
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
