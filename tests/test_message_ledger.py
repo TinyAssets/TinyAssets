@@ -23,6 +23,7 @@ DOT = {"client": "c" * 64, "family": "d" * 64}
 def rig(tmp_path):
     identities = admissions(tmp_path)
     _session(tmp_path, "alice", COOKIE)
+    PolicyStore(tmp_path, identities).bootstrap()  # as admission does, before any ledger op
     ledger = MessageLedger(tmp_path, identities)
 
     def call(op, action, origin=None, **fields):
@@ -48,8 +49,8 @@ def rig(tmp_path):
         conn.row_factory = sqlite3.Row
         return conn
 
-    return SimpleNamespace(root=tmp_path, call=call, register=register, post=post, read=read,
-                           db=db)
+    return SimpleNamespace(root=tmp_path, identities=identities, call=call, register=register,
+                           post=post, read=read, db=db)
 
 
 @pytest.mark.verifies("trusted-message-ledger:The sender is the verified identity")
@@ -173,3 +174,37 @@ def test_a_disabled_agent_cannot_be_written_to_post_or_read(rig):
             attempt()
     assert rig.register(MUSE) == muse  # the same identity re-registers as the same agent
     assert len(rig.read(MUSE)["messages"]) == 1
+
+
+@pytest.mark.verifies("trusted-message-ledger:The ledger lives in the broker")
+def test_a_ledger_op_before_policy_bootstrap_leaves_bootstrap_working(tmp_path):
+    identities = admissions(tmp_path)  # admitted, as admission marks before bootstrap_owner
+    ledger, bodies = MessageLedger(tmp_path, identities), Conversations(tmp_path, identities)
+    doc = {"op": "OUTSIDE_AGENTS", "action": "list", "principal": "alice", "origin": None}
+    with pytest.raises(PermissionError, match="not bootstrapped"):
+        router_operation(ledger, bodies, None, doc)
+    assert not account_path(tmp_path, "alice", "policy.db").parent.exists()
+    policy = PolicyStore(tmp_path, identities)
+    policy.bootstrap_owner("alice")
+    assert policy.read("alice").generation == 1
+    assert router_operation(ledger, bodies, None, doc) == {"agents": []}
+
+
+@pytest.mark.verifies("trusted-message-ledger:The ledger lives in the broker")
+def test_two_racing_first_opens_both_succeed(rig, monkeypatch):
+    import os
+
+    from tinyassets.broker import policy
+
+    path = account_path(rig.root, "alice", "conversations.db")
+    real = os.open
+
+    def raced(target, flags, mode=0o777):
+        if flags & os.O_EXCL:  # the other opener created it between exists() and open
+            os.close(real(target, os.O_CREAT | os.O_WRONLY, 0o600))
+            raise FileExistsError(target)
+        return real(target, flags, mode)
+
+    monkeypatch.setattr(policy.os, "open", raced)
+    policy.open_account_db(path, rig.identities, "alice").close()
+    assert path.stat().st_mode & 0o777 == 0o600

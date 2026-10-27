@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import socket
+import sqlite3
 import sys
 
 import pytest
@@ -12,9 +13,9 @@ from tests.test_broker_server import _connect, broker  # noqa: F401
 from tests.test_message_ledger import COOKIE, MUSE, PROOF, rig  # noqa: F401
 from tests.test_owner_policy import _session
 from tinyassets import rpc_frames as rf
-from tinyassets.api_keys import ApiKeyStore, _client
+from tinyassets.api_keys import ApiKeyRefused, ApiKeyStore, _client, _family
 from tinyassets.broker.message_ledger import LedgerRefused
-from tinyassets.broker.policy import PolicyRefused, PolicyStore
+from tinyassets.broker.policy import PolicyRefused, PolicyStore, account_path
 
 pytestmark = pytest.mark.verifies(
     "trusted-message-ledger:Outside agents register from a verified identity")
@@ -38,21 +39,36 @@ def test_register_and_disable_need_the_owners_protected_session(rig):
     assert listed["disabled_reason"] is None
     assert (listed["outside_client"], listed["outside_family"]) == (MUSE["client"],
                                                                    MUSE["family"])
+    with sqlite3.connect(account_path(rig.root, "alice", "policy.db")) as db:
+        refused = db.execute("SELECT COUNT(*) FROM receipts WHERE kind='refusal'").fetchone()
+    assert refused == (5,)  # four refused registers and one refused disable
 
 
-def test_an_api_key_agent_names_the_owners_own_live_key(rig):
-    keys = ApiKeyStore(rig.root)
+def test_the_router_checks_a_key_is_the_owners_and_fails_loudly(tmp_path):
+    keys = ApiKeyStore(tmp_path)
     theirs = keys.mint("bob", name="bob key", scopes=[], authority=None)["key_id"]
     mine = keys.mint("alice", name="alice key", scopes=[], authority=None)["key_id"]
-    fields = {**AGENT, "source": "api_key", "session_proof": PROOF}
-    for ref in (theirs, "0" * 16):
-        with pytest.raises(LedgerRefused, match="not this owner's live key"):
-            rig.call("OUTSIDE_AGENTS", "register", **{**fields, "source_ref": ref})
-    with pytest.raises(LedgerRefused, match="not this API key"):
-        rig.call("OUTSIDE_AGENTS", "register", MUSE, **{**fields, "source_ref": mine})
-    agent = rig.call("OUTSIDE_AGENTS", "register", **{**fields, "source_ref": mine})
-    assert agent["outside_client"] == _client(mine)
-    assert [a["source_ref"] for a in rig.call("OUTSIDE_AGENTS", "list")["agents"]] == [mine]
+    assert keys.agent_origin("alice", mine) == {"client": _client(mine), "family": _family(mine)}
+    for ref in (theirs, "0" * 16, None):
+        with pytest.raises(ApiKeyRefused, match="not this owner's live key"):
+            keys.agent_origin("alice", ref)
+    keys.revoke("alice", mine, authority=None)
+    with pytest.raises(ApiKeyRefused):
+        keys.agent_origin("alice", mine)
+    keys.path.write_bytes(b"not a database")  # a store failure is an error, never a refusal
+    with pytest.raises(sqlite3.DatabaseError):
+        keys.agent_origin("alice", mine)
+
+
+def test_the_broker_takes_a_keys_origin_from_the_router_and_never_reads_the_store(rig):
+    key = "0123456789abcdef"
+    origin = {"client": _client(key), "family": _family(key)}
+    fields = {**AGENT, "source": "api_key", "source_ref": key, "session_proof": PROOF}
+    for wrong in (None, MUSE):
+        with pytest.raises(LedgerRefused, match="verified outside identity|this API key's"):
+            rig.call("OUTSIDE_AGENTS", "register", wrong, **fields)
+    assert rig.call("OUTSIDE_AGENTS", "register", origin, **fields)["source_ref"] == key
+    assert not (rig.root / ".api-keys.sqlite3").exists()
 
 
 def test_only_pull_delivery_is_admitted(rig):
@@ -80,8 +96,11 @@ def test_the_router_helper_crosses_the_fenced_owner_channel(broker, tmp_path, mo
 
     _session(tmp_path, "alice", COOKIE)
     broker.server._policy_store = PolicyStore(tmp_path, broker.server._owner_identities)
+    broker.server._policy_store.bootstrap_owner("alice")
+    sent = []
 
     def over_the_socket(root, request):
+        sent.append(request)
         with _connect(broker) as sock:
             sock.sendall(rf.control(rf.CONNECTION, {**request, **broker.state}))
             return rf.read_frame_blocking(sock).control()
@@ -91,9 +110,23 @@ def test_the_router_helper_crosses_the_fenced_owner_channel(broker, tmp_path, mo
     agent = ledger_request(tmp_path, outside, "OUTSIDE_AGENTS", "register",
                            session_proof=PROOF, **AGENT)
     owner = Identity("alice", "alice", metadata={})
-    sent = ledger_request(tmp_path, owner, "ROOM_POST", "post", room_id=f"dm:{agent['agent_id']}",
-                          client_message_id="c1", body="hi", parent_id=None, principal="bob")
-    assert sent["recipients"] == [agent["agent_id"]]
+    posted = ledger_request(tmp_path, owner, "ROOM_POST", "post",
+                            room_id=f"dm:{agent['agent_id']}", client_message_id="c1",
+                            body="hi", parent_id=None, principal="bob")
+    assert posted["recipients"] == [agent["agent_id"]]
+    # The owner registers its own key: the router checks it and sends the key's origin.
+    keys = ApiKeyStore(tmp_path)
+    mine = keys.mint("alice", name="alice key", scopes=[], authority=None)["key_id"]
+    theirs = keys.mint("bob", name="bob key", scopes=[], authority=None)["key_id"]
+    keyed = {**AGENT, "source": "api_key", "session_proof": PROOF}
+    assert ledger_request(tmp_path, owner, "OUTSIDE_AGENTS", "register",
+                          **{**keyed, "source_ref": mine})["outside_client"] == _client(mine)
+    calls = len(sent)
+    for caller, ref in ((owner, theirs), (outside, mine)):
+        with pytest.raises((ApiKeyRefused, BrokerRefused)):
+            ledger_request(tmp_path, caller, "OUTSIDE_AGENTS", "register",
+                           **{**keyed, "source_ref": ref})
+    assert len(sent) == calls  # refused in the router, before any broker call
     [mail] = ledger_request(tmp_path, outside, "MAILBOX_RECEIPT", "read", limit=5)["messages"]
     assert (mail["body"], mail["sender_kind"]) == ("hi", "owner")
     broker.state["token"] = "stale"

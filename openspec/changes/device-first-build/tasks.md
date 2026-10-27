@@ -73,6 +73,8 @@ item whose live acceptance is still owed says so.
     row S30 converged with `test_ledger_boundary`. No public surface yet.
   - [ ] S3a.2 Doors: router and trusted-front registrations, `read_graph target=mailbox`,
     `write_graph room_message` and `mailbox_ack`, the REST routes; live acceptance owed here.
+    Until P0-3, its MCP doors refuse an outside-looking caller with no `outside_origin`
+    rather than read it as the owner (or gate on it as P0-3 settles).
 - [ ] S3b Wakes: `ledger_wakes`, the `AGENT_WAKE` broker op, `control_plane/outside_wakes.py`
   and `mailbox.message`; the wake delivery methods are admitted with them.
 

@@ -9,7 +9,8 @@ S3a.1 builds the core for the 1:1 dm room; S3a.2 adds the doors and S3b the wake
 ### Requirement: The ledger lives in the broker
 The agent registry, message ledger, receipts and cursors (`message_ledger.db`) and the
 message bodies (`conversations.db`) SHALL be per-owner SQLite under the broker-private
-`.broker/accounts/<sha256(owner)>/`, with `policy.db`'s modes and admission gate. Only the
+`.broker/accounts/<sha256(owner)>/`, with `policy.db`'s modes and admission gate, and SHALL
+open only once that account's policy is bootstrapped. Only the
 broker SHALL open them, and only the router's owner channel SHALL reach `OUTSIDE_AGENTS`,
 `ROOM_POST` and `MAILBOX_RECEIPT`. Account erasure SHALL remove both files.
 
@@ -19,8 +20,10 @@ broker SHALL open them, and only the router's owner channel SHALL reach `OUTSIDE
 
 ### Requirement: Outside agents register from a verified identity
 Registering or disabling an agent SHALL need the owner's protected-session proof, checked
-against the live router row. An `api_key` agent SHALL name the owner's own live key; an
-`mcp` agent SHALL take its client and family from the caller's verified `outside_origin` and
+against the live router row, and a refusal SHALL leave a receipt. An `api_key` agent SHALL
+name the owner's own live key, checked by the router, which alone holds the key store; the
+broker SHALL take that key's origin from the router and never read the store. An `mcp`
+agent SHALL take its client and family from the caller's verified `outside_origin` and
 SHALL be refused while that is absent. Only `pull` delivery SHALL be admitted until S3b.
 
 #### Scenario: Another owner's key

@@ -12,7 +12,6 @@ TABLES = frozenset({
     "outbound_connector_artifacts", "outbound_connector_artifact_edges",
     "agent_request_usage", "agent_request_attempts", "agent_request_usage_links",
     "agent_request_dispatches", "browser_vault", "owner_policy",
-    "message_ledger", "conversations",
 })
 
 

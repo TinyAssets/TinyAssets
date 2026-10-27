@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
-import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
@@ -22,6 +22,7 @@ from pathlib import Path
 
 from tinyassets.broker.policy import account_path, erase_account_db, open_account_db
 
+_LOG = logging.getLogger(__name__)
 FILENAME = "message_ledger.db"
 DELIVERY_METHODS = ("mcp_event", "routine_fire", "webhook", "a2a", "pull")
 #: S3a.1 admits pull only: the wake methods arrive with ``ledger_wakes`` (S3b).
@@ -286,31 +287,25 @@ def _origin(value) -> dict | None:
     return value
 
 
-def _registrant(root: Path, owner: str, source, source_ref, origin) -> tuple[str, str]:
-    """The registered identity: the verified MCP origin, or the owner's own live key."""
-    if source == "mcp":
-        if origin is None:  # P0-3 lifts this once the outside-client claim is configured.
-            raise LedgerRefused("an MCP agent registers only from its verified outside identity")
-        return origin["client"], origin["family"]
-    if source != "api_key":
-        raise ValueError("source is api_key or mcp")
-    if not isinstance(source_ref, str) or not _KEY_ID.fullmatch(source_ref):
-        raise ValueError("an api_key source_ref is the key id")
-    from tinyassets.api_keys import _client, _family
+def _registrant(source, source_ref, origin) -> tuple[str, str]:
+    """The registered identity, as the router verified it.
 
-    try:  # The router's key map, read-only, as the session proof is checked.
-        with closing(sqlite3.connect((Path(root) / ".api-keys.sqlite3").as_uri() + "?mode=ro",
-                                     uri=True)) as db:
-            row = db.execute("SELECT owner, revoked_at FROM api_keys WHERE key_id=?",
-                             (source_ref,)).fetchone()
-    except sqlite3.Error:
-        row = None
-    if row is None or row[0] != owner or row[1] is not None:
-        raise LedgerRefused("the API key is not this owner's live key")
-    bound = _client(source_ref), _family(source_ref)
-    if origin is not None and (origin["client"], origin["family"]) != bound:
-        raise LedgerRefused("the caller is not this API key")
-    return bound
+    An MCP agent's is its verified ``outside_origin``. An API-key agent's is the key's
+    own origin: the router, which alone holds the key store, checked that the key is
+    the owner's live key (``api_keys.agent_origin``). Nothing here reads that store.
+    """
+    if source not in {"mcp", "api_key"}:
+        raise ValueError("source is api_key or mcp")
+    if origin is None:  # MCP: P0-3 lifts this once the outside-client claim is configured.
+        raise LedgerRefused("an agent registers only from its verified outside identity")
+    if source == "api_key":
+        from tinyassets.api_keys import _client, _family
+
+        if not isinstance(source_ref, str) or not _KEY_ID.fullmatch(source_ref):
+            raise ValueError("an api_key source_ref is the key id")
+        if (origin["client"], origin["family"]) != (_client(source_ref), _family(source_ref)):
+            raise LedgerRefused("the origin is not this API key's")
+    return origin["client"], origin["family"]
 
 
 def router_operation(ledger: MessageLedger, conversations, sessions, doc: dict) -> dict:
@@ -336,17 +331,25 @@ def router_operation(ledger: MessageLedger, conversations, sessions, doc: dict) 
         return {"agents": ledger.agents(owner)}
     if op == "OUTSIDE_AGENTS":
         proof = fields.pop("session_proof", None)
-        if not isinstance(proof, dict) or sessions is None:
-            raise LedgerRefused("interactive owner session required")
-        sessions._session(owner, proof)  # the live router row, as policy writes check it
-        if action == "disable":
-            exactly("agent_id", "reason")
-            return ledger.disable(owner, **fields)
-        exactly("command_center_id", "source", "source_ref", "display_name",
-                "delivery_method", "recipe_id")
-        client, family = _registrant(ledger._root, owner, fields["source"],
-                                     fields["source_ref"], origin)
-        return ledger.register(owner, client=client, family=family, **fields)
+        try:
+            if not isinstance(proof, dict) or sessions is None:
+                raise LedgerRefused("interactive owner session required")
+            sessions._session(owner, proof)  # the live router row, as policy writes check it
+            if action == "disable":
+                exactly("agent_id", "reason")
+                return ledger.disable(owner, **fields)
+            exactly("command_center_id", "source", "source_ref", "display_name",
+                    "delivery_method", "recipe_id")
+            client, family = _registrant(fields["source"], fields["source_ref"], origin)
+            return ledger.register(owner, client=client, family=family, **fields)
+        except (PermissionError, ValueError):
+            # A refused widening leaves a receipt, as a refused policy write does.
+            try:
+                sessions.receipt_refusal(owner, "outside_agents." + action,
+                                         {**fields, "origin": origin})
+            except Exception:  # noqa: BLE001 - refuse regardless of receipt failure
+                _LOG.exception("outside-agent refusal receipt unavailable")
+            raise
     if op == "ROOM_POST":
         exactly("room_id", "client_message_id", "body", "parent_id")
         return ledger.post(owner, origin=origin, put_body=partial(conversations.put, owner),

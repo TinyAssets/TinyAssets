@@ -79,7 +79,14 @@ def account_path(root: Path, owner: str, name: str) -> Path:
 
 def open_account_db(path: Path, admissions, owner: str,
                     refused: type[Exception] = PermissionError) -> sqlite3.Connection:
-    """Open one per-owner broker store: 0700 parents, an admitted owner, a 0600 single link."""
+    """Open one per-owner broker store: 0700 parents, an admitted owner, a 0600 single link.
+
+    The account directory is created only by the policy bootstrap, which reads an
+    existing directory as "not fresh". Every other store opens inside a bootstrapped
+    account, so it can never make an owner's policy look missing.
+    """
+    if path.name != "policy.db" and not path.with_name("policy.db").is_file():
+        raise refused("account store is not bootstrapped")
     broker = path.parent.parent.parent
     broker.mkdir(mode=0o700, exist_ok=True)
     path.parent.parent.mkdir(mode=0o700, exist_ok=True)
@@ -96,14 +103,15 @@ def open_account_db(path: Path, admissions, owner: str,
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
                     or stat.S_IMODE(info.st_mode) & 0o077):
                 raise PermissionError("account store parent is not broker-private")
-        if path.exists():
-            info = path.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-                raise PermissionError("account store is not broker-private")
-        else:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.close(descriptor)
+        if not path.exists():
+            try:
+                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                pass  # a racing first open made it; it is checked like any other
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise PermissionError("account store is not broker-private")
     db = sqlite3.connect(path, timeout=30, isolation_level=None)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA synchronous=FULL")

@@ -492,7 +492,9 @@ def ledger_request(data_root: Path, identity: Any, op: str, action: str,
     """The router's owner-role ledger call for the router-verified ``identity``.
 
     The owner is the identity's user and the sender its ``outside_origin`` (none
-    means the owner); neither can be a request field.
+    means the owner); neither can be a request field. Registering an ``api_key``
+    agent checks here, in the router that holds the key store, that the key is the
+    owner's live key, and sends that key's origin; the broker never reads the store.
     """
     from tinyassets.broker.owner_identities import _owner_request
 
@@ -500,6 +502,13 @@ def ledger_request(data_root: Path, identity: Any, op: str, action: str,
         raise ValueError("unsupported ledger operation")
     bound = identity.metadata.get("outside_origin")
     origin = None if bound is None else {"client": bound["client"], "family": bound["family"]}
+    if (op, action, fields.get("source")) == ("OUTSIDE_AGENTS", "register", "api_key"):
+        from tinyassets.api_keys import ApiKeyStore
+
+        key = ApiKeyStore(data_root).agent_origin(identity.user_id, fields.get("source_ref"))
+        if origin is not None and origin != key:
+            raise BrokerRefused("the caller is not this API key")
+        origin = key
     answer = _owner_request(data_root, {**fields, "op": op, "action": action,
                                         "principal": identity.user_id, "origin": origin})
     if answer.get("op") == op + "_REFUSED":

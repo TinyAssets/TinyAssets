@@ -167,6 +167,16 @@ class ApiKeyStore:
                                      family=grant["family"], scopes=[], revoke=True)
         return {"key_id": key_id, "revoked": True}
 
+    def agent_origin(self, owner: str, key_id: str) -> dict[str, str]:
+        """Router side of an S30 ``api_key`` agent registration: the verified owner's own
+        live key, as the outside identity it resolves to. A store failure raises."""
+        with self.db() as conn:
+            row = conn.execute("SELECT owner, revoked_at FROM api_keys WHERE key_id=?",
+                               (key_id,)).fetchone()
+        if row is None or row["owner"] != owner or row["revoked_at"] is not None:
+            raise ApiKeyRefused("the API key is not this owner's live key")
+        return {"client": _client(key_id), "family": _family(key_id)}
+
     def list(self, owner: str, *, authority: Any) -> dict[str, Any]:
         import json
 
