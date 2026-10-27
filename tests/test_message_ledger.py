@@ -127,9 +127,77 @@ def test_reader_isolation_cursor_ack_and_a_duplicate_session(rig):
     assert rig.call("MAILBOX_RECEIPT", "ack", MUSE, through=through)["through"] == through
     assert rig.read(MUSE)["messages"] == []  # W3-R5: the retried session finds nothing new
     assert rig.call("MAILBOX_RECEIPT", "ack", MUSE, through=0)["through"] == through
-    with pytest.raises(LedgerRefused, match="past the ledger"):
+    with pytest.raises(LedgerRefused, match="past this reader's mail"):
         rig.call("MAILBOX_RECEIPT", "ack", MUSE, through=through + 10)
     assert len(rig.read(DOT)["messages"]) == 1  # Muse's cursor is Muse's alone
+
+
+@pytest.mark.verifies("trusted-message-ledger:A reader sees only its own mail")
+def test_a_held_back_message_has_no_read_receipt_and_stays_unread(rig):
+    muse = rig.register(MUSE)
+    sent = [rig.post(None, f"dm:{muse}", body=str(n) * 16000, cmid=f"c{n}")["message_id"]
+            for n in range(3)]
+
+    def page(budget):
+        return rig.call("MAILBOX_RECEIPT", "read", MUSE, limit=10, max_bytes=budget,
+                        pad_bytes=200)
+
+    def unread():
+        with rig.db() as db:
+            read = {r[0] for r in db.execute("SELECT ref FROM ledger_receipts WHERE kind='read'")}
+            states = dict(db.execute("SELECT message_id, state FROM ledger_recipients"))
+        return read, states
+
+    first = page(20000)  # one 16 kB body fits; a second would cross the budget
+    assert [m["message_id"] for m in first["messages"]] == sent[:1] and first["more"] is True
+    assert len(first["messages"][0]["body"]) == 16000  # whole, never cut
+    read, states = unread()
+    assert read == {sent[0]} and [states[m] for m in sent] == ["read", "queued", "queued"]
+    tiny = page(1)  # over budget alone, still one whole message, and the same one again
+    assert [m["message_id"] for m in tiny["messages"]] == sent[:1]
+    rig.call("MAILBOX_RECEIPT", "ack", MUSE, through=first["messages"][0]["seq"])
+    rest = page(40000)
+    assert [m["message_id"] for m in rest["messages"]] == sent[1:] and rest["more"] is False
+    read, states = unread()
+    assert read == set(sent) and set(states.values()) == {"read"}
+    with pytest.raises(ValueError, match="max_bytes"):
+        page(0)
+    with pytest.raises(ValueError, match="invalid ledger request"):
+        rig.call("MAILBOX_RECEIPT", "read", MUSE, limit=10, sender="owner")
+
+
+@pytest.mark.verifies("trusted-message-ledger:A reader sees only its own mail")
+def test_an_ack_is_bounded_by_the_readers_own_mail_and_reveals_no_count(rig):
+    muse, dot = rig.register(MUSE), rig.register(DOT, name="Dot")
+    mine = rig.post(None, f"dm:{muse}", cmid="m1")
+    for n in range(3):  # later mail to another reader raises the ledger's newest seq
+        rig.post(None, f"dm:{dot}", cmid=f"d{n}")
+    [seq] = [m["seq"] for m in rig.read(MUSE)["messages"]]
+    assert seq == 1 and mine["message_id"]
+    for through in (seq + 1, 4, 10_000):
+        with pytest.raises(LedgerRefused, match=r"^ack is past this reader's mail$"):
+            rig.call("MAILBOX_RECEIPT", "ack", MUSE, through=through)
+    assert rig.call("MAILBOX_RECEIPT", "ack", MUSE, through=seq)["through"] == seq
+    [first] = rig.read(DOT)["messages"][:1]
+    assert first["message_id"] and rig.read(DOT)["messages"][0]["seq"] == 2  # Dot's mail intact
+
+
+@pytest.mark.verifies("trusted-message-ledger:Outside agents register from a verified identity")
+def test_one_outside_identity_is_one_enabled_agent(rig):
+    muse = rig.register(MUSE)
+    with pytest.raises(LedgerRefused, match="already an enabled agent"):
+        rig.call("OUTSIDE_AGENTS", "register", MUSE, session_proof=PROOF,
+                 command_center_id="beta", source="mcp", source_ref="conn-1",
+                 display_name="Muse", delivery_method="pull", recipe_id=None)
+    assert [a["agent_id"] for a in rig.call("OUTSIDE_AGENTS", "list")["agents"]] == [muse]
+    rig.post(None, f"dm:{muse}")
+    assert len(rig.read(MUSE)["messages"]) == 1  # the agent is not locked out
+    assert rig.register(MUSE) == muse  # its own command center again is a re-register
+    rig.call("OUTSIDE_AGENTS", "disable", session_proof=PROOF, agent_id=muse, reason="moved")
+    moved = rig.call("OUTSIDE_AGENTS", "register", MUSE, session_proof=PROOF,
+                     command_center_id="beta", source="mcp", source_ref="conn-1",
+                     display_name="Muse", delivery_method="pull", recipe_id=None)
+    assert moved["agent_id"] != muse and moved["command_center_id"] == "beta"
 
 
 @pytest.mark.verifies("trusted-message-ledger:The sender is the verified identity")

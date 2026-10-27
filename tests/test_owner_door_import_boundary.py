@@ -49,6 +49,12 @@ _MODEL_DOOR = frozenset({
     "tinyassets/universe_server.py",
     "tinyassets/universe_tools.py",
     "tinyassets/engine_read_views.py",
+    # ADR-030: the router answers registered MCP tool calls itself (the model
+    # door on the trusted side), rendering their text block as the box does.
+    "tinyassets/owner_router.py",
+    # S30: a mailbox read pages whole messages under the same ceiling and sets
+    # next_cursor at the cut, so every page is complete and nothing is lost.
+    "tinyassets/mailbox_door.py",
 })
 
 

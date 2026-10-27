@@ -70,6 +70,7 @@ from tinyassets.command_center_names import (
 )
 from tinyassets.control_plane.registration import install_profile_tool
 from tinyassets.engine_read_views import compact_model_options
+from tinyassets.engine_result_bounds import faithful_text as _faithful_text_content
 from tinyassets.mcp_schema_utils import describe_signature
 from tinyassets.mcp_tool_annotations import annotations_for
 
@@ -79,7 +80,6 @@ logger = logging.getLogger("universe_server")
 # Server
 # ---------------------------------------------------------------------------
 
-_MCP_TEXT_CONTENT_MAX_CHARS = 6000
 _CONVERSE_PROGRESS_INTERVAL_S = 20
 _CONVERSE_WORKERS = 8
 _CONVERSE_EXECUTOR = ThreadPoolExecutor(max_workers=_CONVERSE_WORKERS,
@@ -137,41 +137,6 @@ class _OAuthFunctionTool(FunctionTool):
             "securitySchemes": schemes,
             "meta": meta,
         })
-
-
-def _faithful_text_content(value: object) -> str:
-    """Build the text ``content`` block for an MCP tool result.
-
-    Text-only MCP clients read only the ``content`` text block and never parse
-    ``structuredContent`` — so the text must carry the *real* payload, never a
-    placeholder. Prior behaviour replaced oversized payloads with a lossy
-    key-count stub ("Full payload is in structuredContent."), which made reads
-    silently look empty to those clients (read_page bodies, get_status caveats,
-    goals lists, etc.).
-
-    Contract:
-    - Payload fits the text budget -> emit the full payload as JSON (pretty
-      when that also fits, else compact). Fully faithful, no data lost.
-    - Payload exceeds the budget -> render as much real, readable data as fits
-      and append an explicit truncation pointer to ``structuredContent`` for
-      the elided remainder. Still bounded (the 6000-char ceiling that already
-      governed the under-budget path), so ChatGPT's token budget is unchanged;
-      the difference is real data instead of a placeholder.
-    """
-    import json as _json
-
-    compact = _json.dumps(value, separators=(",", ":"), default=str)
-    if len(compact) <= _MCP_TEXT_CONTENT_MAX_CHARS:
-        pretty = _json.dumps(value, indent=2, default=str)
-        return pretty if len(pretty) <= _MCP_TEXT_CONTENT_MAX_CHARS else compact
-
-    marker = (
-        f"\n... [truncated: {len(compact)} chars total; "
-        "full payload in structuredContent]"
-    )
-    keep = max(0, _MCP_TEXT_CONTENT_MAX_CHARS - len(marker))
-    pretty = _json.dumps(value, indent=2, default=str)
-    return pretty[:keep] + marker
 
 
 #: The ONE tool whose replies the single-result ceiling governs on this surface.
@@ -233,7 +198,7 @@ def _connector_ceiling_exempt():
 def _bounded_structured(structured: dict, *, tool: str) -> dict | None:
     """The truncation marker for an oversized structured reply, else ``None``.
 
-    The connector already bounds its TEXT block at ``_MCP_TEXT_CONTENT_MAX_CHARS``
+    The connector already bounds its TEXT block at ``TEXT_CONTENT_MAX_CHARS``
     while handing ``structured_content`` the whole payload — and
     ``structuredContent`` is the half the Apps SDK path exists to serve and the
     half a chatbot client parses. So the text cap protected text-only clients and
@@ -748,6 +713,7 @@ def read_graph(
     file_id: str = "",
     file_offset: int = 0,
     file_max_bytes: int = 524288,
+    cursor: int = 0,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
@@ -800,7 +766,8 @@ def read_graph(
             literally, ignoring case, and must be kept when paging next_offset.
             Pass field_name=<turn id> --
             the id get_status's recent_conversation carries -- for exact chunks
-            of one message, continuing from next_offset until it is null).
+            of one message, continuing from next_offset until it is null),
+            or mailbox (see cursor).
         graph_id: Optional graph/command center identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
@@ -846,7 +813,15 @@ def read_graph(
         file_offset: Byte offset for run_file. Continue with returned next_offset.
         file_max_bytes: Byte chunk size, up to 1048576; bytes return exact base64.
             target=run_file_limits reports intake/read/retention technical limits.
+        cursor: For target=mailbox (an outside agent's own messages, with limit;
+            each body arrives in an untrusted envelope; reply with write_graph
+            target=room_message), the next_cursor the previous read returned:
+            reading with it acknowledges every message through it.
     """
+    from tinyassets import mailbox_door
+
+    if (target or "").strip().lower() in mailbox_door.READS:
+        return mailbox_door.served_on_trusted_side(target.strip().lower())
     # THE MODEL DOOR. The read itself is the shared domain dispatch
     # (``tinyassets.api.graph_reads``), which is complete; what this adds is only
     # the projection a model's context needs. The owner's app never comes
@@ -1146,6 +1121,11 @@ def write_graph(
             bindings and revokes only that file. Export via read_graph target=run_file
             first. No bind tool, public URL, path or inline whole-file JSON exists; the
             reference metadata is untrusted and grants nothing by itself.
+            An outside agent answers its mailbox (read_graph target=mailbox) with
+            target=room_message, payload_json {room_id, client_message_id, body, to,
+            parent_id}: room_id is its own dm room, to defaults to the parent's author,
+            and resending a client_message_id is idempotent. target=mailbox_ack,
+            payload_json {through: <seq>}, acknowledges its mailbox through that seq.
         operation: With target=command_center, set_visibility changes who else may see
             that command center, taking `visibility` as `private` or `public` and
             `graph_id` for the command center. Everything in a command center is private until
@@ -1325,6 +1305,10 @@ def write_graph(
             needs schema_version=1, name, description, tags, and components.
         expected_revision: Current binding revision required by update.
     """
+    from tinyassets import mailbox_door
+
+    if target.strip().lower() in mailbox_door.WRITES:
+        return mailbox_door.served_on_trusted_side(target.strip().lower())
     rejection = write_gate_rejection("write_graph")
     if rejection:
         return rejection
@@ -4064,6 +4048,7 @@ def create_streamable_http_app() -> Starlette:
     from starlette.routing import Route as _HookRoute
 
     from tinyassets.auth.wellknown import starlette_discovery_routes
+    from tinyassets.mailbox_door import rest_routes as mailbox_rest_routes
     from tinyassets.onboarding import onboarding_routes
     from tinyassets.rest_api import rest_api_routes
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
@@ -4186,8 +4171,9 @@ def create_streamable_http_app() -> Starlette:
             # before the MCP transport so the exact path resolves first.
             *app_routes,
             # REST door for programmatic clients (API keys only; see the
-            # auth middleware's `_serve_rest_api`).
-            *(rest_api_routes() if owner_mode else []),
+            # auth middleware's `_serve_rest_api`). The mailbox routes are the
+            # router's own (owner_router.TRUSTED); the rest reach the box.
+            *(rest_api_routes() if owner_mode else mailbox_rest_routes()),
             *(canonical_app.routes if owner_mode else []),
         ],
         lifespan=lifespan,

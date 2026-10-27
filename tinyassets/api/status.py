@@ -1572,7 +1572,7 @@ def get_status(
             pass
     persona = resolve_persona(read_universe_soul(udir), read_self_model(udir))
     # persona first so text-only MCP clients (whose text payload truncates at
-    # _MCP_TEXT_CONTENT_MAX_CHARS) still see it (Codex review 2026-06-25).
+    # engine_result_bounds.TEXT_CONTENT_MAX_CHARS) still see it (Codex review 2026-06-25).
     response = {"persona": persona.summary(), **response}
 
     # Founder-only conversation peek (founder 2026-08-23): the SAME server-side

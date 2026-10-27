@@ -92,6 +92,10 @@ _ROUTER_IMPORTS = {
     "tinyassets.mcp_events_http",
     "tinyassets.mcp_event_webhooks",  # EventError, the bounded refusal type; no I/O.
     "tinyassets.asgi_scope",  # The non-HTTP refusal both doors share; imports nothing.
+    # S30's doors: ledger requests on the broker's owner channel; no owner store.
+    # Scanned in its own right below, against _MAILBOX_DOOR_IMPORTS.
+    "tinyassets.mailbox_door",
+    "tinyassets.engine_result_bounds",  # The tool result's text block; pure string work.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
     "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.
@@ -100,7 +104,26 @@ _ROUTER_IMPORTS = {
 }
 
 
-def _router_owner_io(source):
+#: What the router's mailbox doors may import: each is router state, the broker's
+#: owner channel, or a pure helper. A new owner-store import fails here.
+_MAILBOX_DOOR_IMPORTS = {
+    "tinyassets.auth.middleware",
+    "tinyassets.broker.client",  # ledger_request: the broker's owner channel
+    "tinyassets.engine_read_views",  # the ceiling's headroom constant
+    "tinyassets.engine_result_bounds",  # the read_graph ceiling
+    "tinyassets.mcp_events_http",  # the box's own modern-envelope checks
+    "tinyassets.onboarding",  # the app's identity, same-origin and body helpers
+    "tinyassets.outside_authority",  # the kill switches, router state
+    "tinyassets.owner_router",
+    "tinyassets.owner_runtime",
+    "tinyassets.rest_api",  # the API-key identity and body helpers
+    "tinyassets.storage",  # data_dir only
+    "tinyassets.untrusted",
+}
+
+
+def _router_owner_io(source, allowed=None):
+    allowed = _ROUTER_IMPORTS if allowed is None else allowed
     violations = []
     tree = ast.parse(source)
     dataclass_replace = any(
@@ -112,7 +135,7 @@ def _router_owner_io(source):
         imports = ([node.module] if isinstance(node, ast.ImportFrom)
                    else [item.name for item in node.names] if isinstance(node, ast.Import) else [])
         for module in imports:
-            if module and module.startswith("tinyassets") and module not in _ROUTER_IMPORTS:
+            if module and module.startswith("tinyassets") and module not in allowed:
                 violations.append((node.lineno, "owner import", module))
         if isinstance(node, ast.Call):
             name = (node.func.attr if isinstance(node.func, ast.Attribute)
@@ -132,6 +155,13 @@ def test_router_imports_only_shared_control_plane_and_never_opens_files():
         encoding="utf-8",
     )
     assert _router_owner_io(source) == []
+
+
+def test_the_mailbox_doors_import_only_router_state_and_never_open_files():
+    door = Path(__file__).resolve().parents[1] / "tinyassets" / "mailbox_door.py"
+    assert _router_owner_io(door.read_text(encoding="utf-8"), _MAILBOX_DOOR_IMPORTS) == []
+    assert _router_owner_io("from tinyassets.daemon_server import _connect",
+                            _MAILBOX_DOOR_IMPORTS)
 
 
 @pytest.mark.parametrize("source", [
@@ -241,6 +271,9 @@ _ROLE_DISPATCH = {
     ),
     ('onboarding/__init__.py', '_handle_policy'): (
         'Router submits owner policy writes and once-approvals (N10); a box cannot widen them.'
+    ),
+    ('mailbox_door.py', '_owner'): (
+        'Router serves the owner\'s outside agents and dm rooms (S30); a box holds no mail.'
     ),
     ('onboarding/session_store.py', 'store_dir'): (
         'Router owns refresh sessions; direct box access must refuse.'
