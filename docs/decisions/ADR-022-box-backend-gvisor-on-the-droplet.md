@@ -7,7 +7,7 @@ order ("Firecracker, gVisor where KVM is unusable"). Revised after one
 cross-family round (2026-10-13): S0 is quoted for what it measured, the
 production facts are P2 gates, and P2 is the single cutover. Amended by
 ADR-023 (P3), ADR-026 (stop on idle), ADR-030 (what a box runs) and ADR-031
-(P2b CLI packages).
+(P2b CLI packages). Superseded by ADR-032 (2026-10-27).
 
 ## Date
 

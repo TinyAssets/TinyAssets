@@ -1,0 +1,15 @@
+// The per-owner Durable Object (ADR-032). Not deployed yet: no workflow deploys
+// platform/. Edge Workers bind OWNER to this class by script_name from their own
+// configs; this Worker never binds its own namespace (guards/config.test.ts).
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-owner",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["OwnerDO"] }
+  ]
+}
