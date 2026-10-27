@@ -27,6 +27,7 @@ ACTION_CLASSES = {
     "money.move": "Moving money or making a payment",
     "security.change": "Changing a password, credential or security setting",
     "access.grant": "Giving another person access to your accounts or data",
+    "model.call": "Calling a model you connected (spend caps govern it)",
 }
 
 

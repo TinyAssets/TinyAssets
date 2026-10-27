@@ -454,7 +454,7 @@
     <button id="source-consent-allow" type="button">Allow live calls for this source</button>
   </div>
   <div id="rules-import-notice" class="app-update-banner" role="alert" hidden>
-    <span>Your earlier rules could not be brought over in this update. Review your rules.</span>
+    <span id="rules-import-text"></span>
     <button id="rules-import-review" type="button">Review rules</button>
   </div>
   <div id="app-update-required" class="app-update-required" role="alert" hidden>
@@ -912,6 +912,7 @@
         <h3>Owner policy</h3>
         <p>Approval rules, egress hosts and spend caps for this account. Only your protected
         owner session can save changes. Your agent can send a proposal for you to review.</p>
+        <p>Rules for a named agent can only add caution: the rules for main always apply too.</p>
         <p>A spend cap pauses model requests whose maximum cost is unknown.</p>
         <p>Internet modes: open, allowlist, or ask. Destination rules allow future connections until removed.</p>
         <textarea id="policy-json" aria-label="Owner policy JSON" spellcheck="false"></textarea>

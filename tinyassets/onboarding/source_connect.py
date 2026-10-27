@@ -119,6 +119,15 @@ def _ask_body(preset):
 
 def model_source(endpoints, destination=""):
     """Recognize installed model data only when its full policy is granted."""
+    return model_source_match(endpoints, destination)[0]
+
+
+def model_source_match(endpoints, destination=""):
+    """``(preset, its endpoint set)`` for installed model data, or ``(None, None)``.
+
+    The endpoint set lets a caller tell an exact match (a model source and
+    nothing else) from a connection that also carries other endpoints.
+    """
     from tinyassets.api.http_connection import _canonical_endpoint_set
     from tinyassets.onboarding.connection_definition import preset_definition
     from tinyassets.onboarding.hosted_model_auth import load_preset
@@ -131,8 +140,9 @@ def model_source(endpoints, destination=""):
             preset = load_preset(ident)
         except HostedAuthError:
             continue
-        if _canonical_endpoint_set(preset_definition(ident)["policy"]["endpoints"]) <= actual:
-            return preset
+        required = preset_definition(ident)["policy"]["endpoints"]
+        if _canonical_endpoint_set(required) <= actual:
+            return preset, required
     for preset in source_cards() + [sign_in_preset(p["id"]) for p in sign_in_cards()]:
         base = urlsplit(preset["base_url"])
         paths = [("/chat/completions", "POST")]
@@ -142,10 +152,11 @@ def model_source(endpoints, destination=""):
                      "methods": [method]}
                     for path, method in paths]
         if _canonical_endpoint_set(required) <= actual:
-            return preset
+            return preset, required
     from tinyassets.connection_oauth.model_discovery import source
 
-    return source(endpoints, destination)
+    found = source(endpoints, destination)
+    return (found, endpoints) if found is not None else (None, None)
 
 
 def offer_connection_access(*, base, uid, owner, grant_id):

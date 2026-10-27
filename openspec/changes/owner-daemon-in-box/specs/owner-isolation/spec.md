@@ -274,18 +274,28 @@ protected-session proof; the box channel SHALL refuse every widening whatever
 proof it presents, and MAY read, preview, decide and narrow. The broker SHALL
 decide every box OPEN, model calls included, by the owner's rules and by
 nothing the box can write: an agent label the owner never configured decides as
-`main`, a box-supplied task or binding label is not accepted, a git call reaches
+`main`, and a configured agent's rules join `main`'s so they can only tighten
+them; a box-supplied task or binding label is not accepted, a git call reaches
 only the endpoints of its own granted verb and repository, and a GET or HEAD
 with a body or a method override is a write. It SHALL spend a matching one-use
 approval or match a site or always standing grant for an ask, and SHALL require
 the owner's consent for every non-read call before spending an approval.
-Connecting a model source through the router SHALL grant consent to call it. An
-owner admitted before this change SHALL import its box-held rules and consents
-once, lifted by boxhostd from the attached volume before the box starts and
-imported by the broker under the wake's owner lock; until then box operations
-SHALL wait (retryably). An import that cannot be trusted, or that drops
-invalid rows, SHALL end with the defaults a new owner gets, an alarm receipt,
-and a notice to the owner to review their rules until they next save them.
+A call on an endpoint the owner declared a model call is a `model.call`
+(rule default `do`, governed by spend caps), never an app write; only the
+router (with the owner's session) and the one-shot migration SHALL write that
+declaration, from the broker's own ledger row. Connecting a model source
+through the router SHALL grant consent to call it and declare its inference
+endpoints only when the connection's endpoints are exactly the matched source's;
+otherwise the owner allows live calls explicitly. An owner admitted before
+this change SHALL import its box-held rules and consents once, lifted by
+boxhostd from the attached volume before the box starts and imported by the
+broker under the wake's owner lock; the migration consents and declares each
+live model grant and lists them for the owner to review. Until the import
+settles box operations SHALL wait (retryably) and the owner sees that it is
+pending. An import that cannot be trusted, that drops invalid rows, or that the
+owner's own save replaces SHALL end with the defaults a new owner gets (or the
+owner's save), an alarm receipt, and a notice to the owner to review their
+rules until they next save them.
 
 #### Scenario: A box cannot widen its owner's authority
 - **WHEN** a box sends a policy write, a one-use approval or a consent grant, with or without a session proof
@@ -295,6 +305,10 @@ and a notice to the owner to review their rules until they next save them.
 - **WHEN** a box opens a call that the owner's rules ask first for, without an approval, whatever ledger facts or labels the box wrote
 - **THEN** the broker refuses the stream before any byte is sent and receipts the refusal
 - **AND** a one-use approval of exactly that request admits it once, and not after the policy generation changes
+
+#### Scenario: A model call is not judged as an app write
+- **WHEN** the owner asks first for app writes and the agent calls a model connected through the router
+- **THEN** the broker admits the call as a model call; the box cannot declare one itself
 
 #### Scenario: A non-read call needs the owner's consent
 - **WHEN** a box pushes to a repository through a connection with exact access and no push consent

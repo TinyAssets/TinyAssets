@@ -8,7 +8,7 @@ from __future__ import annotations
 from tinyassets.broker.policy import PolicyRefused
 
 _ACTIONS = frozenset({"read", "receipts", "write", "issue_once", "consent_grant",
-                      "consent_revoke", "consents_read"})
+                      "consent_revoke", "consents_read", "model_declare"})
 
 
 def submit(data_root, owner: str, action: str, **fields) -> dict:

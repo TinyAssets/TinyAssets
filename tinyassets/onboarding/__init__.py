@@ -1211,7 +1211,16 @@ async def _handle_policy(request: Any) -> Any:
         result, refused = await _owner_authority_submit(owner, "read")
         if refused is None:
             receipts, refused = await _owner_authority_submit(owner, "receipts")
-        return refused or JSONResponse({**result, **receipts}, headers=_NO_STORE)
+        if refused is not None:
+            return refused
+        from tinyassets.onboarding.connections import connection_label
+
+        # The sources the N10 migration consented, by the names the owner knows.
+        notice = receipts.get("import_notice") or {}
+        receipts["import_consented_labels"] = [
+            connection_label({"destination": destination})
+            for destination in notice.get("consented") or []]
+        return JSONResponse({**result, **receipts}, headers=_NO_STORE)
     proof, refused = _owner_proof(request, owner)
     if refused is not None:
         return refused
@@ -1268,24 +1277,36 @@ def consent_model_source(request, owner, result):
     """N10: connecting a model source on the router is the owner's consent to call it.
 
     No model call is exempt from the broker's gate, and only an interactive
-    owner session on this router channel can grant a consent. Without one the
-    connection stands but its calls wait for the Consents panel; the result
-    says so instead of reporting a working source.
+    owner session on this router channel can grant a consent. The consent, and
+    the declaration that the connection's inference endpoints are model calls
+    (judged by spend caps, not by the owner's app-write rule), are written only
+    when the connection's endpoints are exactly the matched source's. Otherwise,
+    or without a session, the connection stands, the result says
+    ``consent_required``, and the page offers the explicit "Allow live calls".
     """
     import logging
 
     from tinyassets.api.helpers import _base_path
+    from tinyassets.api.http_connection import _canonical_endpoint_set
     from tinyassets.broker.authority_gate import CALL_SINK
     from tinyassets.broker.policy import PolicyRefused
     from tinyassets.broker.policy_submit import submit
     from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.onboarding.source_connect import model_source_match
 
+    endpoints = result.get("allowed_endpoints", [])
+    _preset, required = model_source_match(endpoints, result.get("destination", ""))
     try:
+        if required is None or (_canonical_endpoint_set(required)
+                                != _canonical_endpoint_set(endpoints)):
+            raise PermissionError("not exactly a model source")
         session = require(request, owner=owner)
-        submit(_base_path(), owner, "consent_grant",
-               session_proof={"session_hash": session["session_hash"]},
+        proof = {"session_hash": session["session_hash"]}
+        submit(_base_path(), owner, "consent_grant", session_proof=proof,
                sink=CALL_SINK, destination=result["destination"])
-    except (PermissionError, PolicyRefused, RuntimeError) as exc:
+        submit(_base_path(), owner, "model_declare", session_proof=proof,
+               connection_id=result["connection_id"])
+    except (PermissionError, PolicyRefused, RuntimeError, KeyError, ValueError) as exc:
         # A broker refusal reason is a fixed, secret-free sentence.
         logging.getLogger(__name__).warning(
             "model source consent not granted: %s%s", type(exc).__name__,

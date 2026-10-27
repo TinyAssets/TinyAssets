@@ -120,6 +120,59 @@ def test_no_ledger_fact_the_box_can_write_exempts_a_call(rig):
     assert _check(rig) == "consent_missing"  # a model call needs consent like any other
 
 
+def _model_capability(rig):
+    from tinyassets.broker import capabilities
+
+    capabilities.local_operation(rig.ledger, principal="alice", command_center="alice",
+                                 document={
+        "action": "configure", "grant_id": "grant-a", "connection_id": "conn-a",
+        "capability_kind": "model_use", "descriptor": {
+            "wire": "openai_chat", "models": [{"id": "m", "tools": False, "context": 10}],
+            "billing": "free"}, "enabled": True, "preview": False})
+
+
+def _declare_model(rig):
+    endpoints = [{"host": "api.example.com", "path_template": "/v1/items",
+                  "methods": ["GET", "POST"]}]
+    return rig.store.declare_model("alice", COOKIE, "conn-a", endpoints)
+
+
+@pytest.mark.parametrize("behaviour", ["ask_first", "hand_off", "do_if_preapproved"])
+def test_an_owner_declared_model_call_is_not_judged_as_an_app_write(rig, behaviour):
+    """Re-review finding 1: app.write rules stopped every model call."""
+    _model_capability(rig)  # box-writable: classifies nothing on its own
+    rig.store.grant_consent("alice", COOKIE, CALL, "items-api")
+    _rule(rig, "app.write", behaviour)
+    assert _check(rig) is not None
+    assert _declare_model(rig)["declared"] == 1
+    assert _check(rig) is None
+    assert rig.store.classify("alice", "conn-a", "POST", "/v1/items")[0] == "model.call"
+    # Declaring again changes nothing; the owner's own model.call rule still decides.
+    assert _declare_model(rig)["declared"] == 0
+    _rule(rig, "model.call", "hand_off")
+    assert _check(rig) == "policy_hand_off"
+
+
+def test_an_owner_write_declaration_outranks_a_model_declaration(rig):
+    rig.store.grant_consent("alice", COOKIE, CALL, "items-api")
+    _declare_model(rig)
+    _rule(rig, "app.write", "ask_first", entries=[{"scope": "account",
+          "table": "operation_kinds", "values": {"connection": "conn-a", "method": "POST",
+                                                 "path_prefix": "/v1/items",
+                                                 "kind": "write"}}])
+    assert _check(rig) == "policy_ask"
+
+
+def test_only_an_owner_session_declares_a_model_call(rig):
+    with pytest.raises(PolicyRefused):
+        rig.store.declare_model("alice", "agent-token-" + "x" * 32, "conn-a",
+                                [{"path_template": "/v1/items", "methods": ["POST"]}])
+    with pytest.raises(PolicyRefused):
+        rig.store.declare_model("alice", COOKIE, "conn-a",
+                                [{"path_template": "/v1/items", "methods": ["GET"]}])
+    assert rig.store.classify("alice", "conn-a", "POST", "/v1/items")[0] == "app.write"
+
+
 def test_an_agent_label_the_owner_never_configured_decides_as_main(rig):
     """Review finding 2: an unknown label fell back to the laxer defaults."""
     rig.store.grant_consent("alice", COOKIE, CALL, "items-api")
@@ -398,6 +451,11 @@ def test_the_owners_first_router_write_supersedes_the_import(tmp_path):
     with pytest.raises(PolicyRefused, match="not pending"):
         store.import_authority("alice", {"source_digest": "", "entries": [], "consents": []})
     assert any(row["outcome"] == "superseded" for row in store.receipts("alice"))
+    # The old rules were replaced, not silently lost: the owner is told.
+    assert store.import_notice("alice")["reason"] == "replaced"
+    current = store.read("alice")
+    store.write("alice", COOKIE, current.generation, current.document)
+    assert store.import_notice("alice") is None
 
 
 def test_a_pending_import_ends_with_a_notice_a_deadline_after_its_first_lift(tmp_path, monkeypatch):
@@ -412,14 +470,19 @@ def test_a_pending_import_ends_with_a_notice_a_deadline_after_its_first_lift(tmp
     assert _on_defaults_with_notice(store)
 
 
-def test_migration_consents_each_live_model_grant(tmp_path, rig):
-    """Before N10 no model call needed consent; the migration keeps them working."""
+def test_migration_consents_declares_and_lists_each_live_model_grant(tmp_path, rig):
+    """Before N10 no model call needed consent; the migration keeps them working,
+    and the owner is shown what it allowed so they can review or revoke it."""
     with rig.ledger._connect() as db:
         db.execute("UPDATE outbound_connection_grants SET inference_required=1 "
                    "WHERE grant_id='grant-a'")
     store = _legacy_v1(tmp_path, rig.store._admissions)
     assert store.consent_active("alice", CALL, "items-api")
     assert not store.consent_active("alice", CALL, "git-exact")
+    assert store.classify("alice", "conn-a", "POST", "/v1/items")[0] == "model.call"
+    assert store.import_notice("alice") == {"reason": "", "consented": ["items-api"]}
+    receipt = next(row for row in store.receipts("alice") if row["outcome"] == "pending")
+    assert json.loads(receipt["rule"]) == {"consented": 1, "destinations": ["items-api"]}
 
 
 def _old_files(mount, *, entries=None, consents=(("patch_intake", "r-1", None),)):
@@ -523,6 +586,28 @@ def test_a_hostile_view_is_refused_fast_and_the_files_are_kept(tmp_path):
     assert payload["errors"] == 1 and (mount / lift.POLICY_FILE).exists()
 
 
+def test_one_step_budget_covers_the_whole_lift(tmp_path, monkeypatch):
+    """Re-review 6: each file fit its own budget; together they must share one."""
+    from tinyassets.boxes import authority_import as lift
+
+    mount = tmp_path / "mount"
+    (mount / lift.SIDECARS / "c").mkdir(parents=True)
+    with sqlite3.connect(mount / lift.POLICY_FILE) as db:
+        db.execute("CREATE TABLE policy (singleton INTEGER, document TEXT)")
+        db.execute("INSERT INTO policy WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL "
+                   "SELECT n+1 FROM c WHERE n<50000) SELECT 0, '' FROM c")
+    consents = mount / lift.SIDECARS / "c" / lift.CONSENTS_FILE
+    with sqlite3.connect(consents) as db:
+        db.execute("CREATE TABLE effector_consents (sink TEXT, destination TEXT, "
+                   "granted_at REAL, granted_by TEXT, revoked_at REAL)")
+        db.execute("INSERT INTO effector_consents WITH RECURSIVE c(n) AS (SELECT 1 UNION "
+                   "ALL SELECT n+1 FROM c WHERE n<50000) SELECT 's','d',1,'a',2 FROM c")
+    monkeypatch.setattr(lift, "STEP_BUDGET", 250_000)
+    assert lift.extract(mount, tmp_path / "private")["errors"] == 1
+    consents.rename(tmp_path / "aside.db")
+    assert lift.extract(mount, tmp_path / "private")["errors"] == 0  # one file alone fits
+
+
 @pytest.mark.parametrize("hostile", ["huge_value", "slow_scan", "deep_json", "many_rows"])
 def test_hostile_tables_hit_a_bound_not_the_host(tmp_path, monkeypatch, hostile):
     from tinyassets.boxes import authority_import as lift
@@ -612,12 +697,54 @@ def test_a_wake_with_damaged_files_alarms_keeps_them_and_tells_the_owner(
     assert not list(fleet.manager.authority_holding.glob("*.json"))
 
 
+@PEERCRED
+def test_the_owners_policy_read_reports_a_pending_import_and_its_notice(
+        broker, tmp_path):
+    store = _legacy_v1(tmp_path, broker.server._owner_identities)
+    broker.server._policy_store = store
+
+    def receipts():
+        with _connect(broker) as sock:
+            sock.sendall(rf.control(rf.CONNECTION, {
+                "op": "OWNER_POLICY", "action": "receipts", "principal": "alice"}))
+            return rf.read_frame_blocking(sock).control()["result"]
+
+    answer = receipts()
+    assert (answer["import_pending"], answer["import_notice"]) == (True, None)
+    store.abandon_import("alice", reason="extraction errors: 1")
+    answer = receipts()
+    assert answer["import_pending"] is False and answer["import_alarm"] is True
+    assert answer["import_notice"] == {"reason": "failed", "consented": []}
+
+
+@PEERCRED
+def test_the_router_declares_a_model_from_the_brokers_own_ledger_row(
+        broker, tmp_path, rig):
+    _session(tmp_path, "alice", COOKIE)
+    store = PolicyStore(tmp_path, broker.server._owner_identities)
+    store.bootstrap()
+    broker.server._policy_store = store
+    broker.server._ledger_for = lambda owner: rig.ledger
+    proof = {"session_hash": __import__("hashlib").sha256(COOKIE.encode()).hexdigest()}
+
+    def declare(connection_id):
+        with _connect(broker) as sock:
+            sock.sendall(rf.control(rf.CONNECTION, {
+                "op": "OWNER_POLICY", "action": "model_declare", "principal": "alice",
+                "session_proof": proof, "connection_id": connection_id}))
+            return rf.read_frame_blocking(sock).control()
+
+    assert declare("conn-a")["result"]["declared"] == 1
+    assert store.classify("alice", "conn-a", "POST", "/v1/items")[0] == "model.call"
+    assert declare("no-such-connection")["op"] == "OWNER_POLICY_REFUSED"
+
+
 def test_the_policy_read_carries_the_import_notice(tmp_path, rig):
     store = _legacy_v1(tmp_path, rig.store._admissions)
     store.abandon_import("alice", reason="extraction errors: 1")
     assert store.import_alarm("alice")
     source = Path("tinyassets/broker/server.py").read_text(encoding="utf-8")
-    assert '"import_alarm": store.import_alarm(owner)' in source
+    assert '"import_notice": store.import_notice(owner)' in source
 
 
 def test_destroying_an_owner_erases_its_held_authority(tmp_path):
@@ -687,7 +814,8 @@ def _box_channel(broker, monkeypatch, tmp_path, store):
 
 
 @PEERCRED
-@pytest.mark.parametrize("action", ["write", "issue_once", "consent_grant"])
+@pytest.mark.parametrize("action", ["write", "issue_once", "consent_grant",
+                                    "model_declare"])
 def test_the_box_channel_refuses_every_widening_even_with_proof(
         broker, monkeypatch, tmp_path, action):
     _session(tmp_path, "alice", COOKIE)
@@ -699,7 +827,7 @@ def test_the_box_channel_refuses_every_widening_even_with_proof(
         sock.sendall(rf.control(rf.CONNECTION, {
             "op": "OWNER_POLICY", "action": action, "session_proof": proof,
             "expected_generation": before.generation, "policy": before.document,
-            "sink": CALL, "destination": "items-api"}))
+            "sink": CALL, "destination": "items-api", "connection_id": "conn-a"}))
         assert rf.read_frame_blocking(sock) is None
     assert store.read("alice").generation == before.generation
     assert store.consents("alice") == []
@@ -790,31 +918,56 @@ def test_the_router_routes_refuse_inside_a_box(monkeypatch):
         assert json.loads(response.body) == {"error": "owner_authority_requires_router"}
 
 
-def test_connecting_a_model_source_consents_its_calls(monkeypatch):
-    """Review finding 1: with no exemption, the router's connect is the consent."""
+_MODEL_ENDPOINTS = [{"host": "models.example", "path_template": "/v1/chat/completions",
+                     "methods": ["POST"]}]
+
+
+@pytest.mark.parametrize("extra", [False, True])
+def test_connecting_a_model_source_consents_and_declares_only_an_exact_match(
+        monkeypatch, extra):
+    """Review finding 1 and re-review 3: the router's connect is the consent and
+    the model declaration, only for exactly the matched source's endpoints."""
     from tinyassets import onboarding
     from tinyassets.broker import policy_submit
-    from tinyassets.onboarding import owner_sessions
+    from tinyassets.onboarding import owner_sessions, source_connect
 
     calls = []
     monkeypatch.setattr(policy_submit, "submit", lambda *a, **k: calls.append((a, k)) or {})
     monkeypatch.setattr(owner_sessions, "require",
                         lambda request, owner: {"session_hash": "h" * 64})
-    result = {"destination": "model:openrouter"}
+    monkeypatch.setattr(source_connect, "model_source_match",
+                        lambda endpoints, destination: ({"id": "p"}, _MODEL_ENDPOINTS))
+    endpoints = _MODEL_ENDPOINTS + ([{"host": "models.example", "path_template": "/v1/x",
+                                      "methods": ["POST"]}] if extra else [])
+    result = {"destination": "model:p", "connection_id": "conn-m",
+              "allowed_endpoints": endpoints}
     onboarding.consent_model_source(object(), "alice", result)
+    if extra:
+        assert calls == [] and result["consent_required"] == {
+            "sink": CALL, "destination": "model:p"}
+        return
     assert result["consented"] is True
-    (_root, owner, action), fields = calls[0]
-    assert (owner, action) == ("alice", "consent_grant")
-    assert fields == {"session_proof": {"session_hash": "h" * 64}, "sink": CALL,
-                      "destination": "model:openrouter"}
+    proof = {"session_hash": "h" * 64}
+    assert [(a[1:], k) for a, k in calls] == [
+        (("alice", "consent_grant"), {"session_proof": proof, "sink": CALL,
+                                      "destination": "model:p"}),
+        (("alice", "model_declare"), {"session_proof": proof, "connection_id": "conn-m"})]
+
+
+def test_a_sessionless_model_connect_asks_for_explicit_consent(monkeypatch):
+    from tinyassets import onboarding
+    from tinyassets.onboarding import owner_sessions, source_connect
 
     def no_session(request, owner):
         raise PermissionError("no session")
 
     monkeypatch.setattr(owner_sessions, "require", no_session)
-    result = {"destination": "model:openrouter"}
+    monkeypatch.setattr(source_connect, "model_source_match",
+                        lambda endpoints, destination: ({"id": "p"}, _MODEL_ENDPOINTS))
+    result = {"destination": "model:p", "connection_id": "conn-m",
+              "allowed_endpoints": _MODEL_ENDPOINTS}
     onboarding.consent_model_source(object(), "alice", result)
-    assert result["consent_required"] == {"sink": CALL, "destination": "model:openrouter"}
+    assert result["consent_required"] == {"sink": CALL, "destination": "model:p"}
 
 
 def test_the_router_spells_a_workspace_cards_consents_itself(monkeypatch):
@@ -887,7 +1040,28 @@ def test_the_page_surfaces_consent_and_import_notices_and_no_task_grant():
     assert 'postConsent("grant",required.sink,required.destination)' in source
     # An import the broker could not trust is shown to the owner until they save.
     assert 'id="rules-import-notice"' in page
-    assert "result.import_alarm===true" in source and "checkRulesImport();" in source
+    assert "checkRulesImport();" in source and "result.import_pending===true" in source
+    assert "import_consented_labels" in source
+    # Per-agent rules can only tighten main's; the rules panel says so.
+    assert "the rules for main always apply too" in page
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_the_import_banner_explains_each_state():
+    source = Path("tinyassets/onboarding/app/main.js").read_text(encoding="utf-8")
+    script = _js_function(source, "rulesImportMessage") + """
+console.log(JSON.stringify([rulesImportMessage({import_pending:true}),
+  rulesImportMessage({import_notice:{reason:'failed',consented:[]}}),
+  rulesImportMessage({import_notice:{reason:'replaced',consented:[]}}),
+  rulesImportMessage({import_notice:{reason:'',consented:['d']},
+                      import_consented_labels:['Free models']}),
+  rulesImportMessage({})]));"""
+    out = json.loads(subprocess.run(["node", "-e", script], check=True, capture_output=True,
+                                    text=True).stdout)
+    assert "still being brought over" in out[0]
+    assert "default rules apply" in out[1] and "replaced" in out[2]
+    assert "Free models" in out[3] and "Consents" in out[3]
+    assert out[4] == ""
 
 
 @pytest.mark.parametrize("fields", [

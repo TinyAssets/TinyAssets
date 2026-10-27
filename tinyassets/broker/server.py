@@ -88,6 +88,8 @@ ERROR_CLASSES = frozenset({
     "InferenceUsageStopped", "InferenceUsageRequired", "ProviderAuthorityHeldError",
     "policy_ask", "policy_hand_off", "consent_missing", "authority_import_pending",
 })
+#: N10: owner authority widenings, accepted only on the router's owner channel.
+WIDENINGS = frozenset({"write", "issue_once", "consent_grant", "model_declare"})
 #: N10: the box channel's policy operations. None of them widens authority.
 BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify",
                                 "consents_read", "consent_revoke"})
@@ -1062,7 +1064,7 @@ class _Connection:
             proof_key = "session_proof" if "session_proof" in doc else "cookie"
             if proof_key == "session_proof" and not isinstance(doc[proof_key], dict):
                 raise PolicyRefused("interactive owner session required")
-            if self._role != OWNER and action in {"write", "issue_once", "consent_grant"}:
+            if self._role != OWNER and action in WIDENINGS:
                 raise PolicyRefused("owner authority widens only through the router")
             if self._role == BOX:
                 # N10 cutover: boxhostd lifts the old authority on the wake, under
@@ -1073,7 +1075,9 @@ class _Connection:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
                 result = {"receipts": store.receipts(owner),
-                          "import_alarm": store.import_alarm(owner)}
+                          "import_alarm": store.import_alarm(owner),
+                          "import_notice": store.import_notice(owner),
+                          "import_pending": store.import_pending(owner)}
             elif action == "proposal" and set(doc) == {
                     "op", "action", "principal", "change"}:
                 result = store.receipt_proposal(owner, owner, doc["change"])
@@ -1111,6 +1115,20 @@ class _Connection:
                     if result["revoked"]:
                         # Like a policy write: a live call under the consent ends now.
                         self._cancel_owner_streams(owner)
+            elif action == "model_declare" and set(doc) == {
+                    "op", "action", "principal", proof_key, "connection_id"}:
+                from tinyassets.broker.ledger_queries import owner_connection
+
+                store._session(owner, doc[proof_key])
+                # The endpoints are the broker's own ledger row, never the caller's.
+                resource = (owner_connection(self._server._ledger_for(owner), owner,
+                                             doc["connection_id"])
+                            if isinstance(doc["connection_id"], str) else None)
+                if resource is None:
+                    raise PolicyRefused("model declaration names no live connection")
+                result = store.declare_model(
+                    owner, doc[proof_key], doc["connection_id"],
+                    [endpoint.as_dict() for endpoint in resource.allowed_endpoints])
             elif action == "consent_grant" and set(doc) == {
                     "op", "action", "principal", proof_key, "sink", "destination"}:
                 from tinyassets.broker.authority_gate import require_grantable
@@ -1146,7 +1164,7 @@ class _Connection:
             rf.control(rf.CONNECTION, answer)
             return answer
         except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError) as exc:
-            if action in {"write", "issue_once", "consent_grant"}:
+            if action in WIDENINGS:
                 try:
                     self._server._policy_store.receipt_refusal(
                         owner, action, {k: v for k, v in doc.items()

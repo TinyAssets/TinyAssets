@@ -34,8 +34,12 @@ DEFAULT_RULES = {
     "people.message": "ask_first", "commons.publish": "ask_first", "share": "ask_first",
     "browser.action": "ask_first", "spend": "ask_first", "money.move": "hand_off",
     "security.change": "hand_off", "access.grant": "hand_off",
+    # N10: an inference call on an owner-declared model endpoint. Spend caps
+    # govern it; it is never judged as an app write.
+    "model.call": "do",
 }
 OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.write",
+                   "model": "model.call",
                    "message": "people.message", "payment": "money.move",
                    "security": "security.change", "access": "access.grant"}
 TABLES = {"rules", "approval_grants", "operation_kinds", "review_on", "review_off"}
@@ -66,6 +70,24 @@ def _validate_entry(entry: object) -> None:
         raise PolicyRefused("invalid approval rule")
     if entry["table"] == "operation_kinds" and values.get("kind") not in OPERATION_KINDS:
         raise PolicyRefused("invalid declared operation")
+
+
+def model_kinds(connection_id: str, endpoints: object) -> list[dict]:
+    """``operation_kinds`` entries declaring a connection's POST endpoints model calls.
+
+    Written only by an owner act on the router (model connect) or by the v1->v2
+    migration, so the box can never classify a call as a model call itself.
+    """
+    entries = []
+    for endpoint in endpoints if isinstance(endpoints, list) else []:
+        path = endpoint.get("path_template") if isinstance(endpoint, dict) else None
+        methods = endpoint.get("methods") if isinstance(endpoint, dict) else None
+        if (isinstance(path, str) and path.startswith("/") and isinstance(methods, list)
+                and "POST" in methods):
+            entries.append({"scope": "account", "table": "operation_kinds", "values": {
+                "connection": connection_id, "method": "POST", "path_prefix": path,
+                "kind": "model"}})
+    return entries
 
 
 def _consent_key(sink: object, destination: object) -> tuple[str, str]:
@@ -173,7 +195,7 @@ class PolicyStore:
             CREATE TABLE IF NOT EXISTS import_state (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), state TEXT NOT NULL,
                 since REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
-                alarm INTEGER NOT NULL DEFAULT 0);
+                notice TEXT NOT NULL DEFAULT '', consented TEXT NOT NULL DEFAULT '[]');
         """)
         document = {"entries": [], "egress": {"mode": "open", "destinations": []},
                     "spend": {"daily": None, "monthly": None, "transaction": None,
@@ -182,7 +204,7 @@ class PolicyStore:
         if provision and fresh:
             db.execute("INSERT OR IGNORE INTO policy VALUES (1,1,?,?)",
                        (_digest(document), _canonical(document)))
-            db.execute("INSERT OR IGNORE INTO import_state VALUES (1,'none',0,0,0)")
+            db.execute("INSERT OR IGNORE INTO import_state VALUES (1,'none',0,0,'','[]')")
             db.execute("PRAGMA user_version=2")
             version = 2
         if provision and version == 0:
@@ -211,33 +233,66 @@ class PolicyStore:
             # N10: an owner admitted before authority moved here imports its
             # box-held rules and consents once, lifted by boxhostd on its next
             # wake. Its model sources keep working: before N10 no model call was
-            # consent-gated, so each live model grant's connection is consented.
+            # consent-gated, so each live model grant's connection is consented
+            # and its inference endpoints declared model calls. The owner is
+            # shown that list (``import_notice``) to review or revoke.
             db.execute("BEGIN IMMEDIATE")
-            db.execute("INSERT OR REPLACE INTO import_state VALUES (1,'pending',0,0,0)")
-            for destination in self._model_destinations(owner):
+            grants = self._model_grants(owner)
+            consented = sorted({grant["destination"] for grant in grants})
+            row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
+                             ).fetchone()
+            if row is None:
+                raise PolicyRefused("owner policy is missing")
+            policy = json.loads(row["document"])
+            kinds = [entry for grant in grants
+                     for entry in model_kinds(grant["connection_id"], grant["endpoints"])]
+            if kinds:
+                policy["entries"] = policy["entries"] + [
+                    entry for entry in kinds if entry not in policy["entries"]]
+                self._validate(owner, policy)
+                db.execute("UPDATE policy SET generation=?,digest=?,document=? "
+                           "WHERE singleton=1", (row["generation"] + 1, _digest(policy),
+                                                 _canonical(policy)))
+            db.execute("INSERT OR REPLACE INTO import_state VALUES (1,'pending',0,0,'',?)",
+                       (_canonical(consented),))
+            for destination in consented:
                 db.execute("INSERT OR IGNORE INTO consents VALUES (?,?,?,?,NULL)",
                            (CALL_SINK, destination, time.time(), "migration"))
-            db.execute("INSERT INTO receipts(at,kind,owner,outcome) VALUES (?,?,?,?)",
-                       (time.time(), "import", owner, "pending"))
+            db.execute("INSERT INTO receipts(at,kind,owner,rule,outcome) VALUES (?,?,?,?,?)",
+                       (time.time(), "import", owner,
+                        _canonical({"consented": len(consented),
+                                    "destinations": consented})[:512], "pending"))
             db.execute("PRAGMA user_version=2")
             db.commit()
         return db
 
-    def _model_destinations(self, owner: str) -> list[str]:
-        """Destinations of this owner's live model grants, read from the ledger once."""
+    def _model_grants(self, owner: str) -> list[dict]:
+        """This owner's live model grants, read from the ledger once at migration."""
         path = self._root / ".broker" / "outbound.db"
         if not path.is_file():
             return []
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as ledger:
             try:
                 rows = ledger.execute(
-                    "SELECT DISTINCT c.destination FROM outbound_connections c "
+                    "SELECT DISTINCT c.destination, c.connection_id, c.allowed_endpoints_json "
+                    "FROM outbound_connections c "
                     "JOIN outbound_connection_grants g ON g.connection_id=c.connection_id "
                     "WHERE c.owner_user_id=? AND c.revoked_at IS NULL "
                     "AND g.revoked_at IS NULL AND g.inference_required=1", (owner,)).fetchall()
             except sqlite3.OperationalError:
                 return []  # A ledger from before model metering holds no model grant.
-        return [row[0] for row in rows if isinstance(row[0], str) and row[0]]
+        grants = []
+        for destination, connection_id, endpoints in rows:
+            if not (isinstance(destination, str) and destination
+                    and isinstance(connection_id, str) and connection_id):
+                continue
+            try:
+                parsed = json.loads(endpoints or "[]")
+            except (TypeError, ValueError):
+                parsed = []
+            grants.append({"destination": destination, "connection_id": connection_id,
+                           "endpoints": parsed})
+        return grants
 
     def erase(self, owner: str) -> int:
         """Erase policy custody under terminal admission."""
@@ -359,10 +414,13 @@ class PolicyStore:
                        "generation,outcome) VALUES (?,?,?,?,?,?,?,?)",
                        (time.time(), "write", owner, session_id, row["digest"], digest,
                         generation, "committed"))
-            # Saving their rules is the owner's review: it clears an import notice.
-            db.execute("UPDATE import_state SET alarm=0 WHERE singleton=1")
-            if db.execute("UPDATE import_state SET state='none' WHERE singleton=1 "
-                          "AND state='pending'").rowcount:
+            if not db.execute("UPDATE import_state SET state='none',notice='replaced' "
+                              "WHERE singleton=1 AND state='pending'").rowcount:
+                # Saving their rules is the owner's review: it clears the notice.
+                db.execute("UPDATE import_state SET notice='',consented='[]' "
+                           "WHERE singleton=1")
+            else:
+                # The old rules are replaced, not lost silently: the notice says so.
                 # The owner's own write wins; old box rows arriving later are dropped.
                 db.execute("INSERT INTO receipts(at,kind,owner,rule,decision,outcome) "
                            "VALUES (?,?,?,?,?,?)", (time.time(), "import", owner,
@@ -371,6 +429,43 @@ class PolicyStore:
             db.commit()
         self._import_settled.add(owner)
         return OwnerPolicy(owner, generation, digest, document)
+
+    def declare_model(self, owner: str, proof: dict, connection_id: str,
+                      endpoints: object) -> dict:
+        """Owner widening (router only): this connection's POST endpoints are model calls.
+
+        It neither supersedes a pending import nor counts as the owner's review,
+        unlike a full policy write.
+        """
+        session_id = self._session(owner, proof)
+        if not isinstance(connection_id, str) or not connection_id or len(connection_id) > 128:
+            raise PolicyRefused("invalid model declaration")
+        kinds = model_kinds(connection_id, endpoints)
+        if not kinds:
+            raise PolicyRefused("invalid model declaration")
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
+                             ).fetchone()
+            if row is None:
+                raise PolicyRefused("owner policy has not been bootstrapped")
+            policy = json.loads(row["document"])
+            if _digest(policy) != row["digest"]:
+                raise RuntimeError("policy digest mismatch")
+            added = [entry for entry in kinds if entry not in policy["entries"]]
+            generation, digest = row["generation"], row["digest"]
+            if added:
+                policy["entries"] = policy["entries"] + added
+                self._validate(owner, policy)
+                generation, digest = generation + 1, _digest(policy)
+                db.execute("UPDATE policy SET generation=?,digest=?,document=? "
+                           "WHERE singleton=1", (generation, digest, _canonical(policy)))
+            db.execute("INSERT INTO receipts(at,kind,owner,session_id,old_digest,new_digest,"
+                       "generation,rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (time.time(), "model_declare", owner, session_id, row["digest"],
+                        digest, generation, connection_id, "allow", "committed"))
+            db.commit()
+        return {"generation": generation, "declared": len(added)}
 
     def receipt_volume(self, owner: str, session_id: str, *, snapshot_id: str,
                        generation: int, outcome: str) -> None:
@@ -580,7 +675,8 @@ class PolicyStore:
                     and values.get("method", "") in ("", method)
                     and (prefix == "/" or path == prefix or path.startswith(prefix + "/"))):
                 matches.append(values.get("kind"))
-        severity = {"read": 0, "write": 1, "delete": 2, "message": 3,
+        # An owner's own write or stronger declaration outranks a model declaration.
+        severity = {"read": 0, "model": 0.5, "write": 1, "delete": 2, "message": 3,
                     "payment": 4, "security": 4, "access": 4}
         return max(matches, key=lambda kind: severity.get(kind, 4), default=None)
 
@@ -760,9 +856,26 @@ class PolicyStore:
 
     def import_alarm(self, owner: str) -> bool:
         """Whether the owner should be told their earlier rules were not all imported."""
+        notice = self.import_notice(owner)
+        return bool(notice and notice["reason"])
+
+    def import_notice(self, owner: str) -> dict | None:
+        """What the owner should review: why the import ended, and what was consented.
+
+        ``reason`` is ``failed`` (not imported: defaults), ``partial`` (invalid
+        rows dropped), ``replaced`` (their own save came first) or ``""``.
+        ``consented`` lists the destinations the migration consented for them.
+        Cleared by the owner's next save of their rules.
+        """
         with closing(self._connect(owner)) as db:
-            row = db.execute("SELECT alarm FROM import_state WHERE singleton=1").fetchone()
-        return bool(row and row["alarm"])
+            row = db.execute("SELECT notice,consented FROM import_state WHERE singleton=1"
+                             ).fetchone()
+        if row is None:
+            return None
+        consented = json.loads(row["consented"] or "[]")
+        if not row["notice"] and not consented:
+            return None
+        return {"reason": row["notice"], "consented": consented}
 
     def import_pending(self, owner: str) -> bool:
         """Pending until imported, superseded or past its deadline (then defaults)."""
@@ -795,7 +908,7 @@ class PolicyStore:
     def abandon_import(self, owner: str, *, reason: str) -> None:
         """The import cannot be trusted: the defaults a new owner gets, loudly.
 
-        An ALARM receipt and log, and an owner-visible notice (``import_alarm``)
+        An ALARM receipt and log, and an owner-visible notice (``import_notice``)
         that their earlier rules could not be imported and should be reviewed.
         The agent keeps working on the defaults; nothing is pinned stricter.
         """
@@ -805,7 +918,8 @@ class PolicyStore:
             current = db.execute("SELECT generation,digest FROM policy WHERE singleton=1"
                                  ).fetchone()
             if row is not None and row["state"] == "pending" and current is not None:
-                db.execute("UPDATE import_state SET state='none',alarm=1 WHERE singleton=1")
+                db.execute("UPDATE import_state SET state='none',notice='failed' "
+                           "WHERE singleton=1")
                 db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,generation,"
                            "rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?)",
                            (time.time(), "import", owner, current["digest"], current["digest"],
@@ -870,8 +984,8 @@ class PolicyStore:
                 "INSERT OR IGNORE INTO consents VALUES (?,?,?,?,NULL)",
                 (item["sink"], item["destination"], item["granted_at"], item["granted_by"]),
             ).rowcount for item in consents)
-            db.execute("UPDATE import_state SET state='done',alarm=? WHERE singleton=1",
-                       (int(bool(dropped)),))
+            db.execute("UPDATE import_state SET state='done',notice=? WHERE singleton=1",
+                       ("partial" if dropped else "",))
             counts = {"entries": len(kept), "consents": inserted, "dropped": dropped}
             db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,request_digest,"
                        "generation,rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?,?)",

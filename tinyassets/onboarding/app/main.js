@@ -9205,6 +9205,22 @@
   }
   // N10: tell the owner when the broker could not import their earlier rules.
   // Saving their rules (a router write) clears it.
+  // What the broker's import state tells the owner (N10), in one sentence or two.
+  function rulesImportMessage(result){
+    if(result.import_pending===true)
+      return "Your earlier rules are still being brought over. They apply after your agent next starts.";
+    const notice=result.import_notice||null;
+    if(!notice)return "";
+    const reasons={failed:"Your earlier rules could not be brought over in this update, so the default rules apply.",
+      partial:"Some of your earlier rules could not be brought over in this update.",
+      replaced:"Your save replaced the rules from before this update."};
+    const parts=[];
+    if(reasons[notice.reason])parts.push(reasons[notice.reason]);
+    const labels=Array.isArray(result.import_consented_labels)?result.import_consented_labels:[];
+    if(labels.length)parts.push("Live calls stay allowed for "+labels.join(", ")+
+      "; review or revoke them under Consents.");
+    return parts.length?parts.join(" ")+" Review your rules.":"";
+  }
   async function checkRulesImport(){
     const banner=$("rules-import-notice");
     if(!banner)return;
@@ -9212,7 +9228,9 @@
       const response=await fetch("/app/api/policy",{credentials:"same-origin",
         headers:authHeaders()});
       const result=await response.json();
-      banner.hidden=!(response.ok&&result.import_alarm===true);
+      const message=rulesImportMessage(response.ok?result:{});
+      $("rules-import-text").textContent=message;
+      banner.hidden=!message;
     }catch(error){banner.hidden=true;}
     $("rules-import-review").onclick=()=>{banner.hidden=true;$("btn-account").click();};
   }

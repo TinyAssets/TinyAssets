@@ -11,7 +11,7 @@ _OLD_FILES = (".action-policy.db", ".effector_consents.db")
 #: The boxhostd extractor, the stopped cutover's census and the storage classification.
 _NAMES_OLD_FILES = {"tinyassets/boxes/authority_import.py",
                     "tinyassets/box_layout_migration.py", "tinyassets/storage_accounting.py"}
-_WIDENINGS = {"write", "issue_once", "consent_grant"}
+_WIDENINGS = {"write", "issue_once", "consent_grant", "model_declare"}
 
 
 def _calls(tree):

@@ -11,9 +11,10 @@ Everything on the volume is the owner's, so it is hostile input to root code:
 no link is followed at any level, each file must be one regular file with one
 link and a bounded size, and SQLite parses a private copy opened immutable and
 read-only, with a WAL folded in first, under hard limits (value length, SQL
-shape), a step budget, a wall-clock deadline and a row bound. Both names must
-be one plain table (never a view or a virtual table). Any error yields no rows
-and an error count, which the broker turns into strict defaults and an ALARM.
+shape), one step budget and one wall-clock deadline for the whole lift (all
+files together), and a row bound. Both names must be one plain table (never a
+view or a virtual table). Any error yields no rows and an error count, which
+the broker turns into the defaults, an ALARM and a notice to the owner.
 The files are removed only by ``remove``, after a lift with no error was held.
 
 Delete this module once every owner's import has settled.
@@ -82,27 +83,39 @@ def _read(name: str, parent: int) -> bytes | None:
     return data
 
 
-def _harden(db: sqlite3.Connection, deadline: float) -> None:
+class _Budget:
+    """One wall-clock deadline and one step budget for the whole lift, all files."""
+
+    def __init__(self) -> None:
+        self.deadline = time.monotonic() + DEADLINE_S
+        self.spent = 0
+
+    def exhausted(self) -> bool:
+        return self.spent > STEP_BUDGET or time.monotonic() > self.deadline
+
+
+def _harden(db: sqlite3.Connection, budget: _Budget) -> None:
     for limit, value in _LIMITS:
         db.setlimit(limit, value)
-    spent = [0]
 
     def progress() -> int:
-        spent[0] += _STEPS
-        return int(spent[0] > STEP_BUDGET or time.monotonic() > deadline)
+        budget.spent += _STEPS
+        return int(budget.exhausted())
 
     db.set_progress_handler(progress, _STEPS)
     db.execute("PRAGMA trusted_schema=OFF")
     db.execute("PRAGMA cell_size_check=ON")
 
 
-def _rows(name: str, parent: int, private: Path, table: str, query: str) -> list | None:
+def _rows(name: str, parent: int, private: Path, table: str, query: str,
+          budget: _Budget) -> list | None:
     """The query's rows from a private immutable copy, or None when there is no file."""
+    if budget.exhausted():
+        raise ValueError("authority lift budget exhausted")
     data = _read(name, parent)
     if data is None:
         return None
     wal = _read(name + "-wal", parent)
-    deadline = time.monotonic() + DEADLINE_S
     work = Path(tempfile.mkdtemp(dir=private))
     try:
         copy = work / "copy.db"
@@ -111,7 +124,7 @@ def _rows(name: str, parent: int, private: Path, table: str, query: str) -> list
             # Fold the WAL into the private copy once, then never read it again.
             (work / "copy.db-wal").write_bytes(wal)
             with closing(sqlite3.connect(copy, timeout=0, isolation_level=None)) as db:
-                _harden(db, deadline)
+                _harden(db, budget)
                 busy, logged, folded = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if busy or logged != folded:
                     raise ValueError("authority WAL did not fold")
@@ -119,7 +132,7 @@ def _rows(name: str, parent: int, private: Path, table: str, query: str) -> list
                 (work / ("copy.db" + suffix)).unlink(missing_ok=True)
         uri = copy.as_uri() + "?mode=ro&immutable=1"
         with closing(sqlite3.connect(uri, uri=True, timeout=0)) as db:
-            _harden(db, deadline)
+            _harden(db, budget)
             db.execute("PRAGMA query_only=ON")
             schema = db.execute("SELECT type, sql FROM sqlite_master "
                                 "WHERE lower(name)=lower(?)", (table,)).fetchall()
@@ -160,6 +173,7 @@ def _policy_entries(rows: list) -> list:
 def extract(mountpoint: Path, private: Path) -> dict:
     """Lift the old rows, touching nothing; ``errors`` counts what could not be read."""
     entries, consents, errors, found = [], [], 0, 0
+    budget = _Budget()
     private.mkdir(mode=0o700, parents=True, exist_ok=True)
     root = os.open(mountpoint, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     opened = [root]
@@ -172,14 +186,14 @@ def extract(mountpoint: Path, private: Path) -> dict:
             try:
                 if name == POLICY_FILE:
                     rows = _rows(name, parent, private, "policy",
-                                 "SELECT document FROM policy WHERE singleton=1")
+                                 "SELECT document FROM policy WHERE singleton=1", budget)
                     if rows is not None:
                         found += 1
                         entries += _policy_entries(rows)
                 else:
                     rows = _rows(name, parent, private, "effector_consents",
                                  "SELECT sink,destination,granted_at,granted_by "
-                                 "FROM effector_consents WHERE revoked_at IS NULL")
+                                 "FROM effector_consents WHERE revoked_at IS NULL", budget)
                     if rows is not None:
                         found += 1
                         consents += [
