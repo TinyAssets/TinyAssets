@@ -86,7 +86,15 @@ The founder's words: "Insert a 'trusted front' slice (router answers registered 
 - **Live acceptance:** Board race; the existing post-c6 multiplayer tests pass on the shared primitive
 - **Depends on:** S1
 
-- [ ] Collections: broker collection store; published app rooms answered on the trusted side; `app_room`'s own compare-and-swap deleted.
+- [x] Collections: broker collection store (`collection_rows` in `broker/conversations.py`,
+  owner-channel op `COLLECTION`: compare-and-swap `write`, `pull` after a `seq` cursor, private
+  rows); the board expressible as `collection='board'` (its doors are S5b); published app rooms
+  (`/app/<slug>/state`) answered on the trusted side by `room_door.py` from the publisher's store
+  as `room:<app>:main`; `app_room`'s own compare-and-swap and the box-side `state.json` deleted;
+  registry row S34 converged with `test_revision_primitive`. Live acceptance owed: the board
+  race and the post-c6 multiplayer flow against staging. Gaps: an erased player's rows stay in
+  other publishers' stores until that publisher clears them; the box-side
+  `apps/<slug>/state.json` files are left on volumes, unmigrated (founder decision).
 
 ## P0-3 code
 

@@ -289,11 +289,12 @@ SHAPES: dict[str, Shape] = {
     "N11": Shape(("tinyassets/app_object.py",)),  # one user-built app; the command center
     # ledger-boundary: test_ledger_boundary (S3a.1).
     "S30": Shape(("tinyassets/broker/message_ledger.py", "tinyassets/broker/conversations.py")),
+    # revision-primitive: test_revision_primitive (S5a).
+    "S34": Shape(("tinyassets/broker/conversations.py",)),
     # Rows from the device-first plan; each slice adds its guard.
     "S31": Shape(("tinyassets/agent_recipes/**",)),
     "S32": Shape(("tinyassets/broker/server.py",)),  # ROOM_POST
     "S33": Shape(("tinyassets/live_view.py",)),
-    "S34": Shape(("tinyassets/conversation_store.py",)),
     "S35": Shape(("tinyassets/agent_loop/**",)),
     "N12": Shape(("tinyassets/metering/**",)),
 }

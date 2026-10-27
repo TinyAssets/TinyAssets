@@ -628,16 +628,21 @@ class _Connection:
             except Exception as exc:
                 answer = {"op": "MCP_EVENTS_ERROR", "error": error_answer(exc)}
             await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op in {"OUTSIDE_AGENTS", "ROOM_POST", "MAILBOX_RECEIPT"}:
-            # S30: the router's verified caller; the box channel never reaches here.
-            from tinyassets.broker.message_ledger import router_operation
+        elif op in {"OUTSIDE_AGENTS", "ROOM_POST", "MAILBOX_RECEIPT", "COLLECTION"}:
+            # S30, S34: the router's verified caller; the box channel never reaches here.
+            from tinyassets.broker import conversations, message_ledger
 
             try:
                 if not self._server._fence.admits(doc.pop("generation", None),
                                                   doc.pop("token", None)):
                     raise PermissionError("fenced")
-                result = await asyncio.to_thread(router_operation, *self._server.ledger,
-                                                 self._server._policy_store, doc)
+                if op == "COLLECTION":
+                    result = await asyncio.to_thread(conversations.router_operation,
+                                                     self._server.ledger[1], doc)
+                else:
+                    result = await asyncio.to_thread(message_ledger.router_operation,
+                                                     *self._server.ledger,
+                                                     self._server._policy_store, doc)
                 answer = {"op": op + "_IS", "result": result}
             except (PermissionError, ValueError) as exc:
                 # A refusal's own reason; an operating-system error names no path.

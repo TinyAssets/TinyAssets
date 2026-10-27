@@ -1,8 +1,8 @@
 """Published app route bindings. The shared layer stores slug and owner only.
 
-Room records, player records and the app document stay in the owner's box.
-This file is the copy T10 makes so the router can select a box without
-opening an owner volume.
+The app document stays in the owner's box; its room and player records are a
+collection in the owner's broker store (S34). This file is the copy T10 makes
+so the router can select that owner without opening an owner volume.
 """
 
 from __future__ import annotations
@@ -79,9 +79,10 @@ def unbind(root, owner: str, slug: str) -> dict:
     with _LOCK:
         document = _read(root)
         current = document.get(slug)
-        if current is None:
+        if current is None or isinstance(current, dict) and current.get("owner") != owner:
+            # Idempotent: nothing of this owner's is bound; another owner's stays.
             return {"slug": slug, "owner": owner, "published": False}
-        if not isinstance(current, dict) or current.get("owner") != owner:
+        if not isinstance(current, dict):
             raise PermissionError("app slug is not this owner's")
         del document[slug]
         _write(root, document)

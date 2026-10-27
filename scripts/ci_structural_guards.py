@@ -22,6 +22,11 @@ GUARDS = {
         "broker/conversations.py, import those only from broker/server.py and account "
         "erasure, and keep OUTSIDE_AGENTS, ROOM_POST and MAILBOX_RECEIPT off the box channel. "
     ),
+    "test_revision_primitive": (
+        "Keep one compare-and-swap primitive: put shared rows in a collection in "
+        "broker/conversations.py, reached by COLLECTION on the owner channel only, and answer "
+        "room doors on the trusted side without forwarding to, asking or waking a box. "
+    ),
     "test_policy_writers": (
         "Keep policy writes in the broker store, reachable only through the protected "
         "owner-door policy route. Retire the former editable rule modules. "

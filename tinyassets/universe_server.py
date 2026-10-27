@@ -4154,7 +4154,9 @@ def create_streamable_http_app() -> Starlette:
 
     app_routes = onboarding_routes()
     if owner_mode:
-        app_routes = [route for route in app_routes if route.path != "/app/account/delete"]
+        # The router answers app rooms from the broker (S34); the box serves none.
+        app_routes = [route for route in app_routes
+                      if route.path not in {"/app/account/delete", "/app/{slug}/state"}]
     else:
         app_routes = [route for route in app_routes if not forwarded_path(route.path)]
 

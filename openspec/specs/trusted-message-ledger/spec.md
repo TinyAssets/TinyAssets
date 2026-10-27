@@ -1,7 +1,8 @@
 # Trusted message ledger
 
 ## Purpose
-Hold who sent what to whom, and who read it, where no box can rewrite it (ADR-025, row S30).
+Hold who sent what to whom, and who read it, where no box can rewrite it (ADR-025, row S30),
+and the shared rows of rooms and the board on one revision primitive (row S34).
 S3a.1 builds the core for the 1:1 dm room; S3a.2 adds the doors and S3b the wakes.
 
 ## Requirements
@@ -17,6 +18,34 @@ broker SHALL open them, and only the router's owner channel SHALL reach `OUTSIDE
 #### Scenario: A box sends a ledger op
 - **WHEN** the box channel sends any of the three ops
 - **THEN** the broker drops the frame and opens no ledger file
+
+### Requirement: One revision primitive
+S34, W8, W9 Tier A. `conversations.db` SHALL hold `collection_rows`, the repo's one
+compare-and-swap primitive: rows keyed by collection and row id, each with a revision, an
+etag and the collection's next `seq`, written only while the presented etag is the row's
+(empty creates it) and pulled after a `seq` cursor; payloads SHALL be stored and returned
+verbatim, and a private row SHALL be visible to and writable by its writer alone. Rows and
+payload bytes SHALL be bounded per writer other than the owner in one collection, per
+collection and per owner, and a write past a bound SHALL be refused. Only the store's owner
+SHALL clear a collection or one writer's rows in it; a clear SHALL never lower the
+collection's `seq`. A clear leaves no tombstone: a reader pulling after its cursor does not
+see cleared rows disappear, and a compare-and-swap on a cleared row gets a conflict with an
+empty etag, from which the client recovers by creating the row again. A row SHALL count
+against its creator's row share for as long as it exists, whoever takes it over; payload
+bytes SHALL count against the current writer, so taking over a shared row charges its whole
+size to the new writer. Clearing by writer SHALL remove every row that account created or
+last wrote. The board
+SHALL be `collection='board'`; a published app's room SHALL be `room:<app>:main`. Only the
+router's owner channel SHALL reach `COLLECTION`, with the store owner and the caller chosen
+by the router (a published slug's publisher from the published directory, the caller from
+its verified identity), never by a request field. The router SHALL answer
+`/app/<slug>/state` itself, and SHALL never forward, ask or wake a box for it; the
+publisher SHALL clear it with `DELETE` from their protected owner session. Every
+router-answered `/app/` path SHALL refuse a caller with an `outside_origin`, as the box does.
+
+#### Scenario: Two writers move one board task at once
+- **WHEN** two writers present the same etag for one `board` row
+- **THEN** one commits and the other gets a conflict carrying the row as it now stands
 
 ### Requirement: Outside agents register from a verified identity
 Registering or disabling an agent SHALL need the owner's protected-session proof, checked
