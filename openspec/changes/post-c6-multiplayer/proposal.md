@@ -6,7 +6,7 @@ Several signed-in accounts need to use one app at the same time. After C6 and C1
 
 - Publish a slug as a route binding only: slug and owner, copied out so the router can select the box.
 - Forward the authenticated player into that box as the verified caller. The player cannot supply the owner or the caller.
-- Keep the app document, room records and player records under the owner's root, with compare-and-swap on each write.
+- Keep the app document under the owner's root, and room and player records in the owner's broker-held conversation store (S5a), with compare-and-swap on each write.
 - Refuse a visiting player's use of the owner's private pages and other non-app surfaces.
 
 ## Capabilities

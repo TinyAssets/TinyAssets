@@ -1980,15 +1980,12 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets import room_door
     from tinyassets.app_object import handle_apps
     from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.api_keys import handle as handle_api_keys
     from tinyassets.onboarding.app_modules import handle_app_module
-    from tinyassets.onboarding.app_play import (
-        handle_app_document,
-        handle_app_publish,
-        handle_app_state,
-    )
+    from tinyassets.onboarding.app_play import handle_app_document, handle_app_publish
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.inline_requests import handle_approval
@@ -2084,7 +2081,8 @@ def onboarding_routes() -> list[Any]:
         *owner_door_routes(),
         # A published app lives in its owner's box. Specific product routes
         # above keep their paths; a slug cannot use a reserved first segment.
-        Route("/app/{slug}/state", handle_app_state, methods=["GET", "POST"]),
+        # S34: answered by the router from the publisher's broker store (room_door).
+        Route("/app/{slug}/state", room_door.handle, methods=["GET", "POST"]),
         Route("/app/{slug}/publish", handle_app_publish, methods=["POST"]),
         Route("/app/{slug}", handle_app_document, methods=["GET", "HEAD", "POST"]),
     ]

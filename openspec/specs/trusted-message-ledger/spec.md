@@ -1,7 +1,8 @@
 # Trusted message ledger
 
 ## Purpose
-Hold who sent what to whom, and who read it, where no box can rewrite it (ADR-025, row S30).
+Hold who sent what to whom, and who read it, where no box can rewrite it (ADR-025, row S30),
+and the shared rows of rooms and the board on one revision primitive (row S34).
 S3a.1 builds the core for the 1:1 dm room; S3a.2 adds the doors and S3b the wakes.
 
 ## Requirements
@@ -17,6 +18,22 @@ broker SHALL open them, and only the router's owner channel SHALL reach `OUTSIDE
 #### Scenario: A box sends a ledger op
 - **WHEN** the box channel sends any of the three ops
 - **THEN** the broker drops the frame and opens no ledger file
+
+### Requirement: One revision primitive
+S34, W8, W9 Tier A. `conversations.db` SHALL hold `collection_rows`, the repo's one
+compare-and-swap primitive: rows keyed by collection and row id, each with a revision, an
+etag and the collection's next `seq`, written only while the presented etag is the row's
+(empty creates it) and pulled after a `seq` cursor; payloads SHALL be stored and returned
+verbatim, and a private row SHALL be visible to and writable by its writer alone. The board
+SHALL be `collection='board'`; a published app's room SHALL be `room:<app>:main`. Only the
+router's owner channel SHALL reach `COLLECTION`, with the store owner and the caller chosen
+by the router (a published slug's publisher from the published directory, the caller from
+its verified identity), never by a request field. The router SHALL answer
+`/app/<slug>/state` itself, and SHALL never forward, ask or wake a box for it.
+
+#### Scenario: Two writers move one board task at once
+- **WHEN** two writers present the same etag for one `board` row
+- **THEN** one commits and the other gets a conflict carrying the row as it now stands
 
 ### Requirement: Outside agents register from a verified identity
 Registering or disabling an agent SHALL need the owner's protected-session proof, checked

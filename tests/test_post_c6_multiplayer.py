@@ -7,13 +7,18 @@ import base64
 import json
 import os
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 
 import pytest
 
-from tinyassets.app_room import Conflict, cas, read_app, sync, write_app
+from tests.test_collections import _rows, broker  # noqa: F401
+from tinyassets import room_door
+from tinyassets.app_room import read_app, write_app
 from tinyassets.auth.middleware import _current_identity
 from tinyassets.auth.provider import Identity
+from tinyassets.broker.client import CollectionConflict as Conflict
+from tinyassets.broker.client import collection_request
 from tinyassets.published_apps import bind, owner_for
 
 pytestmark = pytest.mark.verifies(
@@ -34,6 +39,21 @@ _SHARED = (
 )
 
 
+def _call(root, caller: str, owner: str):
+    """The router's collection call: ``owner``'s broker store, ``caller`` verified."""
+    return partial(collection_request, Path(root).parent, Identity(caller, caller), owner=owner)
+
+
+def cas(root, slug, *, scope, key, value, expected_etag, caller, owner):
+    """A room write as the router answers it, on the publisher's collection."""
+    return room_door.write(_call(root, caller, owner), slug, scope=scope, key=key, value=value,
+                           expected_etag=expected_etag, caller=caller)
+
+
+def sync(root, slug, *, since, caller, owner):
+    return room_door.pull(_call(root, caller, owner), slug, since=since)
+
+
 def _runtime(monkeypatch, root: Path, owner: str = "alice"):
     from tinyassets import owner_runtime
 
@@ -42,7 +62,7 @@ def _runtime(monkeypatch, root: Path, owner: str = "alice"):
     ))
 
 
-def test_app_and_records_stay_in_the_owner_box(tmp_path: Path):
+def test_app_and_records_stay_in_the_owner_box(tmp_path: Path, broker):  # noqa: F811
     """A second account adds no copy, and the binding holds no room body."""
     owner = tmp_path / "alice"
     other = tmp_path / "bob"
@@ -65,13 +85,14 @@ def test_app_and_records_stay_in_the_owner_box(tmp_path: Path):
     assert sync(other, "chess", since=0, caller="bob", owner="bob") == {
         "seq": 0, "records": [],
     }
-    assert (owner / "apps" / "chess" / "state.json").is_file()
+    assert [row[:2] for row in _rows(tmp_path, "alice")] == [("room:chess:main", "room:turn")]
     assert committed["writer"] == "bob"
     with pytest.raises(PermissionError):
         bind(tmp_path, "bob", "chess", "Chess")
 
 
-def test_same_etag_commits_once_and_player_records_stay_with_the_caller(tmp_path: Path):
+def test_same_etag_commits_once_and_player_records_stay_with_the_caller(
+        tmp_path: Path, broker):  # noqa: F811
     """Two room writes cannot share an etag, and a body cannot choose the writer."""
     root = tmp_path / "alice"
     write_app(root, "chess", name="Chess", markup="")
@@ -263,18 +284,15 @@ def test_visitor_private_tools_and_room_door(tmp_path: Path, monkeypatch):
     assert asyncio.run(once("/mcp", "POST", None, account="alice")) == 200
 
 
-def test_state_route_attributes_the_verified_caller(tmp_path: Path, monkeypatch):
+def test_state_route_attributes_the_verified_caller(
+        tmp_path: Path, monkeypatch, broker):  # noqa: F811
     """The room door writes as the caller on the scope, not a user id in the body."""
     from starlette.requests import Request
 
-    from tinyassets.onboarding.app_play import handle_app_state
+    from tinyassets.room_door import handle
 
-    root = tmp_path / "alice"
-    _runtime(monkeypatch, root)
-    write_app(root, "chess", name="Chess", markup="")
-    from tinyassets.app_room import mark_published
-
-    mark_published(root, "chess", published=True)
+    bind(tmp_path, "alice", "chess", "Chess")
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
     payload = json.dumps({
         "scope": "room", "key": "turn", "value": {"user_id": "alice"},
         "expected_etag": "",
@@ -283,11 +301,14 @@ def test_state_route_attributes_the_verified_caller(tmp_path: Path, monkeypatch)
     async def receive():
         return {"type": "http.request", "body": payload, "more_body": False}
 
-    response = asyncio.run(handle_app_state(Request({
-        "type": "http", "method": "POST", "path": "/app/chess/state",
-        "path_params": {"slug": "chess"}, "query_string": b"",
-        "headers": [(b"content-type", b"application/json")],
-        "tinyassets_caller_user_id": "bob",
-    }, receive)))
+    token = _current_identity.set(Identity(user_id="bob", username="bob"))
+    try:
+        response = asyncio.run(handle(Request({
+            "type": "http", "method": "POST", "path": "/app/chess/state",
+            "path_params": {"slug": "chess"}, "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+        }, receive)))
+    finally:
+        _current_identity.reset(token)
     assert response.status_code == 200
     assert json.loads(response.body)["writer"] == "bob"

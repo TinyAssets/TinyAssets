@@ -627,7 +627,8 @@ ROOT_ENTRIES: dict[str, str] = {
     ".runtime": "platform: provider runtime",
     "policy.db": "platform: broker-owned account policy under .broker/accounts",
     "message_ledger.db": "platform: broker-held message ledger under .broker/accounts (S30)",
-    "conversations.db": "platform: broker-held message bodies under .broker/accounts (S30)",
+    "conversations.db": ("platform: broker-held message bodies and collections (app rooms, "
+                         "board) under .broker/accounts (S30, S34)"),
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",

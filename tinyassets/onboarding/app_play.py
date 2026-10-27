@@ -1,7 +1,8 @@
 """HTTP surface for one app that lives in its owner's box.
 
 Visiting players arrive only after the router has checked the published slug
-and attached their authenticated account. State writes are compare-and-swap.
+and attached their authenticated account. The app's room is not here: the router
+answers it from the publisher's broker store (``room_door``).
 """
 
 from __future__ import annotations
@@ -20,14 +21,10 @@ def _caller(request: Request, owner: str) -> str:
 
 
 def _failure(exc: Exception) -> JSONResponse:
-    from tinyassets.app_room import Conflict
-
     if isinstance(exc, FileNotFoundError):
         return JSONResponse({"error": "not_found"}, status_code=404)
     if isinstance(exc, PermissionError):
         return JSONResponse({"error": "not_published"}, status_code=403)
-    if isinstance(exc, Conflict):
-        return JSONResponse({"error": "conflict", "etag": exc.etag}, status_code=409)
     if isinstance(exc, ValueError):
         return JSONResponse({"error": "invalid"}, status_code=400)
     raise exc
@@ -57,36 +54,6 @@ async def handle_app_document(request: Request) -> JSONResponse:
     except Exception as exc:
         return _failure(exc)
     return JSONResponse(document)
-
-
-async def handle_app_state(request: Request) -> JSONResponse:
-    from tinyassets.app_room import cas, sync
-
-    runtime = current()
-    slug = request.path_params["slug"]
-    caller = _caller(request, runtime.principal)
-    try:
-        if request.method == "GET":
-            raw = request.query_params.get("since", "0")
-            if not raw.isdecimal():
-                raise ValueError("invalid sync cursor")
-            result = sync(
-                runtime.root, slug, since=int(raw), caller=caller,
-                owner=runtime.principal,
-            )
-        else:
-            body = await request.json()
-            if not isinstance(body, dict) or set(body) != {
-                    "scope", "key", "value", "expected_etag"}:
-                raise ValueError("invalid state write")
-            result = cas(
-                runtime.root, slug, scope=body["scope"], key=body["key"],
-                value=body["value"], expected_etag=body["expected_etag"],
-                caller=caller, owner=runtime.principal,
-            )
-    except Exception as exc:
-        return _failure(exc)
-    return JSONResponse(result)
 
 
 def request_publication(payload: dict) -> dict:

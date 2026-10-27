@@ -52,16 +52,21 @@ class Front:
 
 @dataclass(frozen=True)
 class Trusted:
-    """One registered answer. An ``owner`` answer needs a verified owner and their box."""
+    """One registered answer. An ``owner`` answer needs a verified owner and their box.
+
+    ``session``: a browser's owner-session cookie names the caller, as on a forwarded door.
+    """
     answer: object
     owner: bool = True
+    session: bool = False
 
 
 class TrustedFront:
     """The router's one registry of requests it answers itself (ADR-030).
 
     MCP requests are keyed by JSON-RPC method, tool name and ``target``; app
-    requests by path (a trailing ``/`` names the subtree) and method. Every
+    requests by path (a trailing ``/`` names the subtree, a ``*`` one whole
+    segment) and method. Every
     other request on an owner door is forwarded to the owner's box with its
     original bytes; a path outside the owner doors (discovery, ``/mcp/pulse``,
     a non-canonical spelling) gets the router's own shared answer, as before.
@@ -83,7 +88,7 @@ class TrustedFront:
             return answer
         return register
 
-    def app(self, path, *methods, public=False):
+    def app(self, path, *methods, public=False, session=False):
         """The router's own route table answers ``path``; ``public`` GETs skip admission."""
         async def shared(front):
             await _serve_shared(front, public)
@@ -91,13 +96,12 @@ class TrustedFront:
         for method in methods or (ANY,):
             if (path, method) in self.app_routes:
                 raise ValueError(f"{path} {method} is already registered")
-            self.app_routes[path, method] = Trusted(shared, owner=False)
+            self.app_routes[path, method] = Trusted(shared, owner=False, session=session)
 
     def _app(self, path, method):
         """The registration answering ``method`` on ``path``; ``method=None`` asks for any."""
         for (key, verb), trusted in self.app_routes.items():
-            if (method is None or verb in {method, ANY}) and (
-                    key == path or key.endswith("/") and path.startswith(key)):
+            if (method is None or verb in {method, ANY}) and _covers(key, path):
                 return trusted
         return None
 
@@ -134,6 +138,15 @@ class TrustedFront:
             # An owner answer: the same 404 and maintenance checks as forwarding come first.
             return Trusted(_batch_refused), replay
         return (found[0] if found else None), replay
+
+
+def _covers(key, path):
+    """``key`` names ``path`` exactly, as a trailing-``/`` subtree, or with ``*`` segments."""
+    if key.endswith("/"):
+        return path.startswith(key)
+    keys, parts = key.split("/"), path.split("/")
+    return len(keys) == len(parts) and all(
+        k == p or k == "*" and p for k, p in zip(keys, parts))
 
 
 def mcp_key(document):
@@ -201,6 +214,10 @@ for _path in ("/app/account/delete", "/app/client-error", "/app/token",
 for _path in ("/app", "/app/sw.js", "/app/ui-frame", "/app/oauth/client-metadata.json",
               "/app/m/"):
     TRUSTED.app(_path, public=True)
+# S34: a published app's room is a collection in its publisher's broker store
+# (room_door); a signed-in browser's session names the player, as it did at the box.
+for _path in ("/app/*/state",):
+    TRUSTED.app(_path, session=True)
 
 
 @TRUSTED.mcp("events/subscribe")
@@ -225,6 +242,15 @@ def forwarded_path(path: str, method: str | None = None) -> bool:
     Without ``method``, whether every method of ``path`` reaches the box.
     """
     return _door(path) and TRUSTED._app(path, method) is None
+
+
+def session_door(path: str, method: str) -> bool:
+    """Whether a browser's owner-session cookie names the caller on ``path``.
+
+    A door the box answers, or a registration the router answers in its place.
+    """
+    trusted = TRUSTED._app(path, method)
+    return _door(path) and (trusted is None or trusted.session)
 
 
 @dataclass(frozen=True)

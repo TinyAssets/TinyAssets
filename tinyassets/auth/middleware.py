@@ -1315,9 +1315,9 @@ class AuthContextMiddleware:
                     from starlette.requests import Request
 
                     from tinyassets.onboarding import owner_sessions
-                    from tinyassets.owner_router import forwarded_path
+                    from tinyassets.owner_router import session_door
 
-                    if forwarded_path(path, method):
+                    if session_door(path, method):
                         request = Request(scope)
                         if method in {"GET", "HEAD"}:
                             session = await run_in_threadpool(

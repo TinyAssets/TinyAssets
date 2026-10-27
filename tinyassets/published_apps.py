@@ -1,8 +1,8 @@
 """Published app route bindings. The shared layer stores slug and owner only.
 
-Room records, player records and the app document stay in the owner's box.
-This file is the copy T10 makes so the router can select a box without
-opening an owner volume.
+The app document stays in the owner's box; its room and player records are a
+collection in the owner's broker store (S34). This file is the copy T10 makes
+so the router can select that owner without opening an owner volume.
 """
 
 from __future__ import annotations

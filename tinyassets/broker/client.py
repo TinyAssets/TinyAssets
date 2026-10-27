@@ -516,3 +516,39 @@ def ledger_request(data_root: Path, identity: Any, op: str, action: str,
     if answer.get("op") != op + "_IS" or not isinstance(answer.get("result"), dict):
         raise RuntimeError("ledger unavailable")
     return answer["result"]
+
+
+class CollectionConflict(Exception):
+    """A compare-and-swap lost; ``current`` is the row as stored, or None (S34)."""
+
+    def __init__(self, current: dict | None) -> None:
+        super().__init__("conflict")
+        self.current = current
+
+    @property
+    def etag(self) -> str:
+        return self.current["etag"] if self.current else ""
+
+
+def collection_request(data_root: Path, identity: Any, action: str, *, owner: str,
+                       **fields: Any) -> dict[str, Any]:
+    """The router's owner-role ``COLLECTION`` call on ``owner``'s store (S34).
+
+    The caller is the router-verified ``identity``'s account, never a request field.
+    The router picks ``owner`` itself: the caller's own store, or a published app's
+    publisher from the published directory.
+    """
+    from tinyassets.broker.owner_identities import _owner_request
+
+    if action not in {"write", "pull"}:
+        raise ValueError("unsupported collection operation")
+    answer = _owner_request(data_root, {**fields, "op": "COLLECTION", "action": action,
+                                        "principal": owner, "caller": identity.user_id})
+    if answer.get("op") == "COLLECTION_REFUSED":
+        raise BrokerRefused(answer.get("reason") or "collection request refused")
+    result = answer.get("result")
+    if answer.get("op") != "COLLECTION_IS" or not isinstance(result, dict):
+        raise RuntimeError("collection unavailable")
+    if "conflict" in result:
+        raise CollectionConflict(result["conflict"])
+    return result
