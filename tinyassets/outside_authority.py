@@ -73,6 +73,19 @@ def admit(data_root, identity) -> None:
     identity.metadata["outside_origin"] = {**bound, **{k: grant[k] for k in STAMP}}
 
 
+def still_granted(data_root, identity) -> bool:
+    """Router: whether the grant stamped on ``identity`` still stands, unchanged."""
+    from tinyassets.broker.policy_submit import submit
+
+    bound = identity.metadata["outside_origin"]
+    try:
+        grant = submit(data_root, identity.user_id, "outside_check", client=bound["client"],
+                       authenticated_at=bound.get("authenticated_at"))
+    except Exception:  # noqa: BLE001 - a refused or unreadable grant does not stand
+        return False
+    return grant["generation"] == bound.get("generation")
+
+
 def refresh(owner, bound) -> dict:
     """Box: the grant as it stands now, for work that outlives the call that stamped it.
 
@@ -92,6 +105,18 @@ def refresh(owner, bound) -> dict:
     if grant["generation"] != bound.get("generation"):
         raise OutsideRefused("outside client authority changed")
     return {**bound, **{k: grant[k] for k in STAMP}}
+
+
+def refreshed(identity):
+    """``identity`` with its grant as it stands now, for a launch that outlives its call
+    (``ta`` dispatch, extension checks); an owner identity is returned unchanged."""
+    from dataclasses import replace
+
+    bound = identity.metadata.get("outside_origin")
+    if bound is None:
+        return identity
+    return replace(identity, metadata={**identity.metadata,
+                                       "outside_origin": refresh(identity.user_id, bound)})
 
 
 def check_identity(identity, *, universe=None, agent=None, capability=None):

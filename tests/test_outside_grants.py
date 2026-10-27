@@ -18,7 +18,17 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from tests.support.outside_grants import LocalBroker, RouterAdmission
-from tests.test_n10_rules_at_open import COOKIE, _check, _rule, rig  # noqa: F401
+from tests.test_broker_server import broker  # noqa: F401
+from tests.test_n10_rules_at_open import (  # noqa: F401
+    COOKIE,
+    PEERCRED,
+    _box_channel,
+    _box_open,
+    _box_rig,
+    _check,
+    _rule,
+    rig,
+)
 from tinyassets.auth.provider import Identity
 from tinyassets.broker.policy import PolicyRefused
 from tinyassets.outside_authority import OutsideRefused, check_identity, check_mcp_request
@@ -289,3 +299,249 @@ def test_a_grant_change_ends_that_clients_open_streams(grants):
     grants.streams.update(enumerate([mine, *others]))
     grants.grant("alice", CHATGPT["client"], source="mcp", mode="revoked")
     assert grants.cancelled == [mine]
+
+
+# -- Revocation reaches durable work (security review of #5343) -------------------
+
+
+def _keyed(grants, monkeypatch, *scopes):
+    """A key and its grant, as the router mints them, and its identity as stamped."""
+    from tinyassets.api_keys import ApiKeyStore, _client, _family
+
+    keys = ApiKeyStore(grants.root)
+    monkeypatch.setattr("tinyassets.api_keys.current_store", lambda base=None: keys)
+    key = keys.mint("alice", name="durable")
+    grants.grant("alice", _client(key["key_id"]), mode="scoped" if scopes else "full",
+                 scopes=scopes)
+    identity = Identity("alice", "alice", metadata={
+        "auth_provider": "api_key",
+        "outside_origin": {"client": _client(key["key_id"]), "family": _family(key["key_id"])}})
+    admit(identity)
+    return key, identity
+
+
+def test_a_key_revoke_stops_its_stored_run_automation_and_subscription(grants, monkeypatch):
+    from functools import partial
+
+    from tinyassets.broker.server import _outside_admits
+    from tinyassets.outside_authority import run_identity, stored_identity
+    from tinyassets.router_credentials import _dispatch
+    from tinyassets.runs import _connect, create_run
+
+    key, identity = _keyed(grants, monkeypatch)
+    bound = identity.metadata["outside_origin"]
+    saved = json.dumps({"owner": "alice", "bound": bound, "capabilities": []})
+    run_id = create_run(grants.root, branch_def_id="b", thread_id="", inputs={},
+                        actor="alice", owner_user_id="alice", queue_universe_id="home")
+    with _connect(grants.root) as conn:
+        conn.execute("UPDATE runs SET outside_origin_json=? WHERE run_id=?", (saved, run_id))
+    admits = partial(_outside_admits, grants.store, "alice")
+    with run_identity(grants.root, run_id), stored_identity(saved, "alice"):
+        pass  # both admitted while the key is live
+    assert admits(bound)
+    _dispatch(grants.root, "alice", {"operation": "key_revoke", "key_id": key["key_id"]})
+    with pytest.raises(OutsideRefused):
+        with run_identity(grants.root, run_id):
+            pass
+    with pytest.raises(OutsideRefused):  # an automation's saved identity
+        with stored_identity(saved, "alice"):
+            pass
+    assert not admits(bound)  # the broker revokes its event subscription at capture
+    assert grants.store.outside_list("alice")[0]["mode"] == "revoked"
+    assert ("router", "outside_revoke") in grants.calls
+
+
+def test_a_key_revoke_fails_loudly_when_the_broker_cannot_answer(grants, monkeypatch):
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.broker import owner_identities
+    from tinyassets.router_credentials import _dispatch
+
+    key, _ = _keyed(grants, monkeypatch)
+
+    def down(root, doc):
+        raise RuntimeError("owner identity broker is unavailable")
+
+    monkeypatch.setattr(owner_identities, "_owner_request", down)
+    with pytest.raises(RuntimeError):
+        _dispatch(grants.root, "alice", {"operation": "key_revoke", "key_id": key["key_id"]})
+    # Not half done: the key stays live until its grant is revoked, and is shown so.
+    assert ApiKeyStore(grants.root).list("alice")["keys"][0]["revoked_at"] is None
+
+
+def test_a_withdrawn_owner_refuses_every_outside_grant(grants):
+    from tests.support.admission import drive, projection
+    from tinyassets.broker.admission import local_mutate
+    from tinyassets.broker.server import _outside_admits
+
+    stamped = admit(outside(CHATGPT))
+    identities = grants.store._admissions
+    drive(local_mutate(identities.path, "alice", "suspend", reason="billing", suspended=True,
+                       routing=projection(identities.path)))
+    # Account revocation and deletion run withdrawn: no grant admits, none needs a revoke.
+    with pytest.raises(PolicyRefused):
+        grants.store.outside_check("alice", CHATGPT["client"], CHATGPT["authenticated_at"])
+    assert not _outside_admits(grants.store, "alice", stamped)
+
+
+def test_a_launch_rereads_the_grant_on_each_ta_and_extension_call(grants):
+    from types import SimpleNamespace
+
+    from tinyassets.extension_capabilities import ExtensionCapabilities, ExtensionError
+    from tinyassets.ta_capabilities import Capabilities
+
+    stamped = outside(CHATGPT)
+    admit(stamped)
+    context = SimpleNamespace(universe="home", initiating_agent="main", research=False,
+                              delegated_authority="serving-owner", approval_id=None)
+    ta = object.__new__(Capabilities)
+    ta.outside_identity, ta.context = stamped, context
+    ta.check_authority = lambda: "stop here"  # past the outside check
+    message = {"op": "call", "name": "read_graph"}
+    assert asyncio.run(ta._dispatch(message)) == {
+        "error": "serving owner authority unavailable"}
+    extensions = object.__new__(ExtensionCapabilities)
+    extensions.backend = SimpleNamespace(outside_identity=stamped, context=context,
+                                         check_authority=lambda: None)
+    extensions._authority()
+    grants.grant("alice", CHATGPT["client"], source="mcp", mode="scoped", scopes=[HOME])
+    # The launch's stamp is unchanged; its next call reads the rescope and refuses.
+    assert asyncio.run(ta._dispatch(message)) == {
+        "error": "outside client capability not granted"}
+    with pytest.raises(ExtensionError, match="outside client authority unavailable"):
+        extensions._authority()
+
+
+def test_an_open_forwarded_stream_ends_when_its_grant_changes(grants, monkeypatch):
+    import anyio
+
+    from tinyassets import owner_router
+
+    stamped = outside(CHATGPT)
+    admit(stamped)
+    monkeypatch.setattr(owner_router, "OUTSIDE_RECHECK_S", 0.01)
+
+    async def watched(change=None):
+        """Whether the watcher ended the stream before it ran its course."""
+        ran = []
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(owner_router._watch_grant, stamped, tasks.cancel_scope)
+            if change is not None:
+                await anyio.to_thread.run_sync(change)
+            await anyio.sleep(1)
+            ran.append(True)  # reached only when the watcher let the stream run
+            tasks.cancel_scope.cancel()
+        return not ran
+
+    assert anyio.run(watched) is False  # an unchanged grant keeps the stream open
+    assert anyio.run(watched, lambda: grants.grant(
+        "alice", CHATGPT["client"], source="mcp", mode="revoked")) is True
+
+
+def test_the_deny_switch_reaches_the_broker_too(grants, monkeypatch):
+    from tinyassets.broker.server import _outside_admits
+
+    stamped = admit(outside(CHATGPT))
+    monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")
+    for call in (lambda: grants.store.outside_admit("alice", CLAUDE["client"], "mcp", 100),
+                 lambda: grants.store.outside_check("alice", CHATGPT["client"], 100)):
+        with pytest.raises(PolicyRefused, match="switched off"):
+            call()
+    assert not _outside_admits(grants.store, "alice", stamped)  # events capture
+    from tinyassets.broker.authority_gate import outside_grant  # the OPEN gate's read
+
+    with pytest.raises(PolicyRefused, match="switched off"):
+        outside_grant(grants.store, "alice", CHATGPT["client"] + ":1:100")
+
+
+def test_a_lost_grant_answer_keeps_the_key_its_committed_grant_belongs_to(grants,
+                                                                         monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets.api_keys import ApiKeyStore, _client
+    from tinyassets.broker import owner_identities
+    from tinyassets.onboarding.api_keys import _mint
+
+    monkeypatch.setattr(router_credentials, "mint_key", lambda root, owner, **kw: (
+        ApiKeyStore(root).mint(owner, **kw)))
+    answering = owner_identities._owner_request
+
+    def lost(root, doc):
+        answer = answering(root, doc)  # the broker commits
+        if doc.get("action") == "outside_set":
+            raise RuntimeError("the answer was lost")
+        return answer
+
+    monkeypatch.setattr(owner_identities, "_owner_request", lost)
+    minted = _mint("alice", grants.proofs["alice"], {"name": "bot", "scopes": []})
+    assert minted["key"].startswith("ta_key_")
+    assert grants.store.outside_list("alice")[0]["client"] == _client(minted["key_id"])
+    # With no grant committed, the key goes: never a key without its grant.
+    def refused(root, doc):
+        if doc.get("action") == "outside_set":
+            raise RuntimeError("the broker never answered")
+        return answering(root, doc)
+
+    monkeypatch.setattr(owner_identities, "_owner_request", refused)
+    with pytest.raises(RuntimeError):
+        _mint("alice", grants.proofs["alice"], {"name": "bot", "scopes": []})
+    assert [k["key_id"] for k in ApiKeyStore(grants.root).list("alice")["keys"]] == [
+        minted["key_id"]]
+
+
+def test_a_sign_in_just_before_a_revoke_stays_dead_after_a_re_grant(grants):
+    import time
+
+    admit(outside(CHATGPT))
+    grants.grant("alice", CHATGPT["client"], source="mcp", mode="revoked")
+    grants.grant("alice", CHATGPT["client"], source="mcp", mode="full")
+    skewed = {**CHATGPT, "authenticated_at": int(time.time()) + 2}  # a clock a little ahead
+    with pytest.raises(OutsideRefused, match="fresh sign-in"):
+        admit(outside(skewed))
+
+
+def test_a_scoped_client_reaches_its_mailbox_only_with_the_tool_granted(grants, monkeypatch):
+    from tinyassets import mailbox_door
+
+    calls = []
+
+    def ledger(identity, op, action, **fields):
+        calls.append((op, action))
+        if (op, action) == ("OUTSIDE_AGENTS", "list"):
+            return {"agents": [{"agent_id": "agent_1", "command_center_id": "home",
+                                "outside_client": CHATGPT["client"],
+                                "outside_family": CHATGPT["family"], "disabled_reason": None}]}
+        return {"reader": "agent_1", "cursor": 0, "messages": [], "more": False}
+
+    monkeypatch.setattr(mailbox_door, "_ledger", ledger)
+    admit(outside(CHATGPT))
+    grants.grant("alice", CHATGPT["client"], source="mcp", mode="scoped",
+                 scopes=[{**HOME, "capability": "write_graph"}])
+    identity = outside(CHATGPT)
+    admit(identity)
+    with pytest.raises(mailbox_door.Refused, match="not granted"):
+        mailbox_door.read(identity)
+    assert ("MAILBOX_RECEIPT", "read") not in calls
+    mailbox_door.ack(identity, through=0)  # write_graph in its own command center
+    grants.grant("alice", CHATGPT["client"], source="mcp", mode="scoped", scopes=[HOME])
+    admit(identity)
+    assert mailbox_door.read(identity)["messages"] == []
+
+
+@PEERCRED
+def test_an_open_registered_after_a_revoke_rechecks_its_grant(broker, monkeypatch, tmp_path):
+    from tinyassets.broker import authority_gate
+
+    store, _ledger = _box_rig(broker, tmp_path)
+    client = "6" * 64
+    store.outside_admit("alice", client, "mcp", 100)
+    gate = authority_gate.check
+
+    def racing(policy, *args, **kwargs):
+        refusal = gate(policy, *args, **kwargs)
+        policy.outside_revoke("alice", client)  # lands between the gate and registration
+        return refusal
+
+    monkeypatch.setattr(authority_gate, "check", racing)
+    with _box_channel(broker, monkeypatch, store) as sock:
+        end = _box_open(sock, authority={"agent": "main", "outside": client + ":1:100"})
+    assert (end["op"], end["error_class"], end["stream_sent"]) == ("END", "refused", False)
+    assert broker.sent == []

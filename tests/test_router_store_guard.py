@@ -115,6 +115,7 @@ _MAILBOX_DOOR_IMPORTS = {
     "tinyassets.engine_result_bounds",  # the read_graph ceiling
     "tinyassets.mcp_events_http",  # the box's own modern-envelope checks
     "tinyassets.onboarding",  # the app's identity, same-origin and body helpers
+    "tinyassets.outside_authority",  # a scoped client's stamp check (P0-3), no store
     "tinyassets.owner_router",
     "tinyassets.owner_runtime",
     "tinyassets.rest_api",  # the API-key identity and body helpers

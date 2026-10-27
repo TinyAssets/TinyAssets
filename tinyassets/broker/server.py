@@ -93,7 +93,7 @@ ERROR_CLASSES = frozenset({
 WIDENINGS = frozenset({"write", "issue_once", "apply_proposal", "outside_set"})
 #: P0-3: the router's verified caller, never the box's word: an outside client's
 #: admission (which records an MCP client ``full``) and a held key request's read.
-ROUTER_ONLY = frozenset({"outside_admit", "held"})
+ROUTER_ONLY = frozenset({"outside_admit", "outside_revoke", "held"})
 #: N10: the box channel's policy operations. None of them widens authority.
 BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify",
                                 "outside_check", "outside_list"})
@@ -1192,12 +1192,11 @@ class _Connection:
                                               "expected_generation", "name")}
                 result = store.outside_set(owner, doc[proof_key], **fields,
                                            proposal=doc.get("proposal"))
-                # The client's next call meets the new grant; its open streams end now.
-                with self._server._streams_lock:
-                    streams = [s for s in self._server._streams.values()
-                               if s.namespace == owner and s.outside == doc["client"]]
-                for stream in streams:
-                    self._server.cancel(stream)
+                self._end_outside_streams(owner, doc["client"])
+            elif action == "outside_revoke" and set(doc) == {
+                    "op", "action", "principal", "client"}:
+                result = store.outside_revoke(owner, doc["client"])
+                self._end_outside_streams(owner, doc["client"])
             elif action == "held" and set(doc) == {"op", "action", "principal", "request_id"}:
                 from tinyassets.broker.policy import _digest
 
@@ -1227,6 +1226,15 @@ class _Connection:
                     _LOG.exception("policy refusal receipt unavailable")
             reason = str(exc) if isinstance(exc, PolicyRefused) else "policy unavailable"
             return {"op": "OWNER_POLICY_REFUSED", "reason": reason}
+
+    def _end_outside_streams(self, owner: str, client: str) -> None:
+        """P0-3: a changed grant ends that client's open streams; its next call meets it.
+        A stream registered after this snapshot rechecks the grant itself (``_open``)."""
+        with self._server._streams_lock:
+            streams = [s for s in self._server._streams.values()
+                       if s.namespace == owner and s.outside == client]
+        for stream in streams:
+            self._server.cancel(stream)
 
     def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import local_operation, validate
@@ -1502,6 +1510,18 @@ class _Connection:
                             rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream))
                 with self._server._streams_lock:
                     self._server._streams[(self._key, stream_id)] = stream
+                if stream.outside:
+                    # A grant change committed before this registration missed the
+                    # stream in its cancel snapshot: recheck the grant now it is listed.
+                    from tinyassets.broker.authority_gate import outside_grant
+
+                    try:
+                        outside_grant(self._server._policy_store, principal, label)
+                    except Exception:  # noqa: BLE001 - a changed or unreadable grant: no send
+                        with self._server._streams_lock:
+                            self._server._streams.pop((self._key, stream_id), None)
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return "refused"
                 try:
                     from tinyassets.broker.egress import identity
 

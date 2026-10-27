@@ -36,6 +36,8 @@ ANY = "*"
 OUTSIDE_SURFACE = "outside clients use the MCP capability surface"
 #: The router's refusal of an outside client whose grant does not admit this call.
 OUTSIDE_REFUSED = "outside client capability not granted"
+#: How often an outside client's open forwarded stream rechecks its grant (P0-3).
+OUTSIDE_RECHECK_S = 15
 
 
 @dataclass(frozen=True)
@@ -686,6 +688,19 @@ def door_headers(scope, identity, route: BoxRoute, box_owner=None):
     return owner, headers
 
 
+async def _watch_grant(identity, cancel_scope) -> None:
+    """End an outside client's open forwarded stream (an SSE ``GET /mcp``, a streamed
+    turn) within ``OUTSIDE_RECHECK_S`` of its grant changing or being revoked."""
+    from tinyassets.outside_authority import still_granted
+    from tinyassets.storage import data_dir
+
+    while True:
+        await anyio.sleep(OUTSIDE_RECHECK_S)
+        if not await run_in_threadpool(still_granted, data_dir(), identity):
+            break
+    cancel_scope.cancel()
+
+
 async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True,
                   box_owner=None):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
@@ -711,6 +726,9 @@ async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True,
                         tasks.cancel_scope.cancel()
 
                     tasks.start_soon(disconnect)
+                    if (identity is not None
+                            and identity.metadata.get("outside_origin") is not None):
+                        tasks.start_soon(_watch_grant, identity, tasks.cancel_scope)
                     async for chunk in response.aiter_raw():
                         await send({"type": "http.response.body", "body": chunk,
                                     "more_body": True})

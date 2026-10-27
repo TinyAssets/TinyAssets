@@ -1106,6 +1106,7 @@ first-party issuer|client pairs in TINYASSETS_FIRST_PARTY_CLIENTS, set in the sa
 change, so the owner's own app never becomes an outside client. No pre-grant is
 needed: a newly verified client starts `full` (decision A1) in the broker's grants,
 and the owner scopes or revokes it with POST /app/outside-clients.
-TINYASSETS_OUTSIDE_DENY=1 on the router refuses every outside client. Prove
+TINYASSETS_OUTSIDE_DENY=1 in /etc/tinyassets/env (compose passes it to the daemon
+and the broker) refuses every outside client and its durable work. Prove
 independent client revoke and first-party survival live.
 This account-only evidence does not block the main-compatible K1 code or wait on U1.

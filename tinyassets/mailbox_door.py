@@ -68,9 +68,25 @@ def _count(value, name: str, low: int, high: int | None = None) -> int:
     return value
 
 
+def _scope(identity, capability: str) -> None:
+    """A scoped outside client reaches its own mailbox only with ``capability`` granted
+    in the command center its agent is registered in (P0-3). ``full`` and the owner pass."""
+    bound = identity.metadata.get("outside_origin")
+    if bound is None or bound.get("mode") != "scoped":
+        return
+    from tinyassets.outside_authority import check_identity
+
+    try:  # the stamp is this call's own admission at the router
+        check_identity(identity, universe=_own_agent(identity)["command_center_id"],
+                       agent="main", capability=capability)
+    except PermissionError as exc:
+        raise Refused(403, "refused", str(exc)) from None
+
+
 def read(identity, *, cursor=0, limit=30) -> dict:
     """The caller's own mail past its cursor; ``cursor`` acks through it first."""
     _count(limit, "limit", 1, 100)
+    _scope(identity, "read_graph")
     if _count(cursor, "cursor", 0):
         _ledger(identity, "MAILBOX_RECEIPT", "ack", through=cursor)
     import os
@@ -102,18 +118,24 @@ def read(identity, *, cursor=0, limit=30) -> dict:
 
 
 def ack(identity, *, through) -> dict:
+    _scope(identity, "write_graph")
     return _ledger(identity, "MAILBOX_RECEIPT", "ack", through=_count(through, "through", 0))
 
 
-def own_room(identity) -> str:
-    """An outside agent's one ``dm:`` room, from its verified identity."""
+def _own_agent(identity) -> dict:
+    """An outside agent's one enabled registry row, from its verified identity."""
     origin = identity.metadata["outside_origin"]
-    mine = [agent["agent_id"] for agent in _ledger(identity, "OUTSIDE_AGENTS", "list")["agents"]
+    mine = [agent for agent in _ledger(identity, "OUTSIDE_AGENTS", "list")["agents"]
             if agent["disabled_reason"] is None and (agent["outside_client"], agent[
                 "outside_family"]) == (origin["client"], origin["family"])]
     if len(mine) != 1:  # as the ledger's own reader check
         raise Refused(403, "refused", "this outside identity is not one enabled agent")
-    return "dm:" + mine[0]
+    return mine[0]
+
+
+def own_room(identity) -> str:
+    """An outside agent's one ``dm:`` room, from its verified identity."""
+    return "dm:" + _own_agent(identity)["agent_id"]
 
 
 def post(identity, *, client_message_id, body, parent_id=None, room_id=None, to=None) -> dict:
@@ -126,6 +148,7 @@ def post(identity, *, client_message_id, body, parent_id=None, room_id=None, to=
             raise Refused(400, "invalid_request", f"{name} is required text")
     if parent_id is not None and not isinstance(parent_id, str):
         raise Refused(400, "invalid_request", "parent_id is a message id")
+    _scope(identity, "write_graph")
     room = room_id or own_room(identity)
     return _ledger(identity, "ROOM_POST", "post", room_id=room,
                    client_message_id=client_message_id, body=body, parent_id=parent_id or None)

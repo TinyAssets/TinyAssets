@@ -52,6 +52,9 @@ OUTSIDE_MODES = ("full", "scoped", "revoked")
 OUTSIDE_SOURCES = ("mcp", "api_key")
 #: An outside client's ``last_seen`` is coarse, so admission is a read most calls.
 SEEN_INTERVAL_S = 60
+#: A sign-in this close to a revoke counts as before it: the identity provider's
+#: ``auth_time`` and the broker's clock need not agree to the second.
+REVOKE_CLOCK_MARGIN_S = 5
 
 def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -465,12 +468,15 @@ class PolicyStore:
     @staticmethod
     def _grant(row, authenticated_at) -> dict:
         """The grant a call is admitted under, or a refusal naming why."""
+        if os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1":
+            raise PolicyRefused("outside clients are switched off")
         if row is None:
             raise PolicyRefused("outside client has no grant")
         if row["mode"] == "revoked":
             raise PolicyRefused("outside client revoked")
-        if row["revoked_at"] is not None and (type(authenticated_at) is not int
-                                              or authenticated_at <= row["revoked_at"]):
+        if row["revoked_at"] is not None and (
+                type(authenticated_at) is not int
+                or authenticated_at <= row["revoked_at"] + REVOKE_CLOCK_MARGIN_S):
             # A credential signed in before a revoke never comes back with a re-grant.
             raise PolicyRefused("a fresh sign-in is required after a revoke")
         return {"mode": row["mode"], "scopes": json.loads(row["scopes"]),
@@ -513,6 +519,32 @@ class PolicyStore:
         with closing(self._connect(owner)) as db:
             rows = db.execute("SELECT * FROM outside_clients ORDER BY first_seen, client")
             return [{**dict(row), "scopes": json.loads(row["scopes"])} for row in rows]
+
+    def outside_revoke(self, owner: str, client: str) -> dict:
+        """Router only, a narrowing (no session proof): revoke one client's grant now.
+
+        A key's revoke calls it, so durable work and OPEN stop with the key. A client
+        with no grant has nothing to revoke; an already revoked one stays as it is.
+        """
+        _outside_client(client)
+        now = time.time()
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM outside_clients WHERE client=?", (client,)).fetchone()
+            if row is None or row["mode"] == "revoked":
+                db.commit()
+                return {"client": client, "revoked": row is not None,
+                        "generation": row["generation"] if row else 0}
+            generation = row["generation"] + 1
+            db.execute("UPDATE outside_clients SET mode='revoked', scopes='[]', generation=?, "
+                       "revoked_at=? WHERE client=?", (generation, now, client))
+            db.execute("INSERT INTO receipts(at,kind,owner,request_digest,generation,rule,"
+                       "decision,outcome) VALUES (?,?,?,?,?,?,?,?)",
+                       (now, "outside_grant", owner, _digest({"client": client,
+                                                               "mode": "revoked"}),
+                        generation, client, "revoked", "committed"))
+            db.commit()
+        return {"client": client, "revoked": True, "generation": generation}
 
     def outside_set(self, owner: str, proof: str | dict, *, client: str, source: str,
                     mode: str, scopes: list, expected_generation: int, name: str = "",

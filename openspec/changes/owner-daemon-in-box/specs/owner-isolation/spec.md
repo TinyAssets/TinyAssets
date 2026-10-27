@@ -291,7 +291,11 @@ exact `{universe, agent, capability}` triples; or `revoked`. Only the router's o
 channel, with a live protected owner session, SHALL change a grant. A key's grant
 SHALL be written with the key, and a key without one SHALL be refused, never widened.
 The router SHALL admit every outside call against its grant before it answers or
-forwards it, and a box SHALL refuse an outside identity the router did not stamp.
+forwards it, and a box SHALL refuse an outside identity the router did not stamp. Work
+that outlives its call (a run, an automation, an event subscription, a launch's next
+`ta` call, an OPEN, an open forwarded stream) SHALL meet the grant as it stands, and a
+key's revoke SHALL revoke its grant first. `TINYASSETS_OUTSIDE_DENY=1` SHALL refuse
+outside work in the router and the broker alike.
 
 #### Scenario: A revoked client is refused before any door
 - **WHEN** the owner revokes an outside client's grant
@@ -300,6 +304,10 @@ forwards it, and a box SHALL refuse an outside identity the router did not stamp
 #### Scenario: A scoped client keeps only its scopes
 - **WHEN** a scoped client calls a capability outside its triples
 - **THEN** it is refused, and a call inside them is admitted
+
+#### Scenario: A key's revoke stops its durable work
+- **WHEN** the owner revokes an API key that a stored run, an automation and an event subscription were made under
+- **THEN** each refuses at its next step, and an OPEN labelled with that key is refused
 
 #### Scenario: The box cannot write a grant
 - **WHEN** a box sends a grant change or an admission on its channel

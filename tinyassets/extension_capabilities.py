@@ -141,9 +141,12 @@ class ExtensionCapabilities:
 
         identity = getattr(self.backend, "outside_identity", None) or current_identity_or_none()
         if identity is not None:
-            from tinyassets.outside_authority import check_identity
+            from tinyassets.outside_authority import check_identity, refreshed
 
-            check_identity(identity)
+            try:
+                check_identity(refreshed(identity))  # the grant as it stands now
+            except PermissionError as exc:
+                raise ExtensionError("outside client authority unavailable") from exc
         if (lifecycle and identity is not None
                 and identity.metadata.get("outside_origin") is not None):
             raise ExtensionError("outside clients cannot mutate extension owner lifecycle")
@@ -214,8 +217,9 @@ class ExtensionCapabilities:
             raise ExtensionError("connection slot does not declare required verb")
         identity = getattr(self.backend, "outside_identity", None)
         if identity is not None:
-            from tinyassets.outside_authority import check_identity
+            from tinyassets.outside_authority import check_identity, refreshed
 
+            identity = refreshed(identity)  # the grant as it stands now
             for required in row["verbs"]:
                 check_identity(identity, universe=self.backend.context.universe,
                                agent=self.backend.context.initiating_agent,

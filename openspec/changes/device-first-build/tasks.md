@@ -107,7 +107,8 @@ S0's row above.
     `revoked`); changed only by `outside_set` on the router's owner channel from the
     protected session (`/app/outside-clients`, `/app/api-keys/mint`); the router admits
     every outside call and stamps its grant, the box refuses an unstamped one, and OPEN
-    binds the stamped label. The box-held `.outside-client-authority.sqlite3`, its
+    binds the stamped label; a key's revoke revokes its grant, durable work rereads it,
+    and `TINYASSETS_OUTSIDE_DENY` holds in the broker too. The box-held `.outside-client-authority.sqlite3`, its
     durable switch and its effect leases are deleted. Still owed: effector consents (N10
     above), and the claim probe and setting.
 

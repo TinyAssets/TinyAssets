@@ -9,10 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 #: Owner policy widenings: only the broker applies them, only the router submits them.
 _WIDENINGS = {"write", "issue_once", "outside_set"}
 #: P0-3: the router's verified caller only (an MCP client's ``full`` row, a held request).
-_ROUTER_ONLY = {"outside_admit", "held"}
+_ROUTER_ONLY = {"outside_admit", "outside_revoke", "held"}
 #: The router modules that submit outside-client grants and admissions (P0-3).
 _GRANT_ROUTES = {"tinyassets/onboarding/__init__.py", "tinyassets/onboarding/outside_clients.py",
-                 "tinyassets/onboarding/api_keys.py", "tinyassets/outside_authority.py"}
+                 "tinyassets/onboarding/api_keys.py", "tinyassets/outside_authority.py",
+                 "tinyassets/router_credentials.py"}
 #: Where the broker spends approvals and matches standing grants: its OPEN gate.
 _GATE_ONLY = {"consume_once", "standing_grant", "receipt_gate"}
 

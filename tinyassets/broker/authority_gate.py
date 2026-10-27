@@ -123,7 +123,7 @@ def _agents(store, owner: str, asserted: str, action_class: str) -> tuple[list[s
     return sorted({MAIN_AGENT, label}), label
 
 
-def _outside(store, owner: str, label: str) -> tuple[str, str]:
+def outside_grant(store, owner: str, label: str) -> tuple[str, str]:
     """(client, mode) of the outside grant an OPEN is labelled with, unchanged since."""
     client, _, rest = label.partition(":")
     generation, _, authenticated = rest.partition(":")
@@ -168,7 +168,7 @@ def check(store, ledger, *, owner: str, grant_id: str, connection_id: str, verb:
     agent = authority.get("agent") or MAIN_AGENT
     try:
         action_class, operation, origin = _meaning(store, owner, connection_id, verb, request)
-        client, mode = (_outside(store, owner, authority["outside"])
+        client, mode = (outside_grant(store, owner, authority["outside"])
                         if authority.get("outside") else ("", "full"))
     except (PermissionError, ValueError):
         store.receipt_gate(owner, request_digest, f"unreadable agent={agent}"[:512], "deny")

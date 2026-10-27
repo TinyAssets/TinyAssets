@@ -107,12 +107,23 @@ def _mint(owner: str, proof: dict, data: object) -> dict:
     minted = mint_key(root, owner, name=name, request_ref=ref)
     if minted.get("already_created"):
         return minted
+    client = _client(minted["key_id"])
     try:
-        submit(root, owner, "outside_set", session_proof=proof,
-               client=_client(minted["key_id"]), source="api_key",
-               mode="scoped" if scopes else "full", scopes=scopes, expected_generation=0,
-               name=minted["name"], **({"proposal": proposal} if proposal else {}))
-    except BaseException:
+        submit(root, owner, "outside_set", session_proof=proof, client=client,
+               source="api_key", mode="scoped" if scopes else "full", scopes=scopes,
+               expected_generation=0, name=minted["name"],
+               **({"proposal": proposal} if proposal else {}))
+    except BaseException as failure:
+        # A lost answer may follow a committed grant (and an applied request): keep the
+        # key then. Discard it only when the broker shows no grant; when it cannot say,
+        # keep it, refused at admission until a grant exists, and visible to revoke.
+        try:
+            granted = any(row["client"] == client for row in
+                          submit(root, owner, "outside_list")["clients"])
+        except Exception:  # noqa: BLE001 - unknown: raise the original, keep the key
+            raise failure from None
+        if granted:
+            return {**minted, "scopes": scopes}
         ApiKeyStore(root).discard(owner, minted["key_id"])  # never a key without its grant
         raise
     return {**minted, "scopes": scopes}

@@ -174,6 +174,9 @@ services:
       # deep hardening is post-live per AGENTS.md § Review sequencing).
       TINYASSETS_ONBOARDING_APP: "1"
       TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED: ${TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED:-1}
+      # The one outside-client off switch (P0-3), set in /etc/tinyassets/env: the
+      # router refuses outside calls and the broker their durable work, from one value.
+      TINYASSETS_OUTSIDE_DENY: ${TINYASSETS_OUTSIDE_DENY:-0}
     # NOT /etc/tinyassets/env. That file is the box's whole secret store and
     # this file's interpolation source (`--env-file`): the tunnel token, the
     # log-shipping token and an account-wide DigitalOcean token have all lived
@@ -231,6 +234,8 @@ services:
         required: false
     environment:
       TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED: ${TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED:-1}
+      # The same outside-client off switch as the daemon's (P0-3).
+      TINYASSETS_OUTSIDE_DENY: ${TINYASSETS_OUTSIDE_DENY:-0}
     volumes:
       - tinyassets-data:/data
       # Separate broker-only keys. Never included in data-volume backups.
