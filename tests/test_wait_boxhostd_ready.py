@@ -3,7 +3,11 @@
 import pytest
 
 from scripts.wait_boxhostd_ready import (
-    PUBLISH_TRANSFERS, SNAPSHOT_TRANSFER_S, WAIT_TIMEOUT_S, wait_ready)
+    PUBLISH_TRANSFERS,
+    SNAPSHOT_TRANSFER_S,
+    WAIT_TIMEOUT_S,
+    wait_ready,
+)
 
 pytestmark = pytest.mark.verifies("owner-daemon-in-box:D11")
 
@@ -24,10 +28,14 @@ def test_only_the_exact_ready_document_counts():
         lambda operation: {"ready": True, "background_active": 0},
         broker_probe=lambda operation: {"ready": True},
         timeout=2, interval=1, clock=lambda: clock[0], sleep=sleep)
+    logged = []
+    named = {"ready": False, "tasks": 0, "pending": {"snapshot": 1},
+             "faults": {"lifecycle_error:tick_owner:RuntimeError": 1}}
     assert not wait_ready(
-        lambda operation: {"ready": True},
-        broker_probe=lambda operation: {"ready": False, "pending": {"snapshot": 1}},
-        timeout=2, interval=1, clock=lambda: clock[0], sleep=sleep)
+        lambda operation: {"ready": True}, broker_probe=lambda operation: named,
+        timeout=2, interval=1, clock=lambda: clock[0], sleep=sleep, log=logged.append)
+    # The deploy log carries the broker's named fault verbatim.
+    assert logged == [{"host": {"ready": True}, "broker": named}]
 
 
 def test_waits_for_two_idle_signals_after_busy_lifecycle():

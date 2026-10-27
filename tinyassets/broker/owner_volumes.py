@@ -49,6 +49,9 @@ def schema(db):
     # backup pins it. Prune clears it when the pin is gone.
     _add_column(db, "owner_snapshots", "pinned",
                 "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))")
+    # The last prune's delete of this row failed: a fixed class and when.
+    _add_column(db, "owner_snapshots", "delete_fault", "TEXT")
+    _add_column(db, "owner_snapshots", "delete_fault_at", "REAL")
 
 
 def provision(db, owner, uid):
@@ -108,13 +111,14 @@ def deferred(work, last_published, now):
 
 
 def _excess(db, owner, current, work):
-    """(snapshot_id, pinned) for each row past the cap that nothing retains.
+    """(snapshot_id, settled) for each row past the cap that nothing retains.
 
     Retained: the current snapshot, then the newest rows until seven, plus an
-    in-flight restore source or pre-restore copy. ``pinned`` is the stored
-    refusal from the last prune that asked to delete the row.
+    in-flight restore source or pre-restore copy. ``settled`` is the stored
+    outcome of the last prune that asked to delete the row: pinned, or failed.
     """
-    rows = db.execute("SELECT snapshot_id, pinned FROM owner_snapshots WHERE principal=? "
+    rows = db.execute("SELECT snapshot_id, pinned OR delete_fault IS NOT NULL "
+                      "FROM owner_snapshots WHERE principal=? "
                       "ORDER BY sequence DESC", (owner,)).fetchall()
     retained = {current}
     for snapshot_id, _ in rows:
@@ -142,8 +146,9 @@ def _owed(db, *, include_running, now):
     it alone and the volume is formatted on first wake, so counting it made
     deploy readiness wait for a wake that the readiness window never issues.
     A deferred stop is not owed until its quiet period ends. An excess row a
-    platform backup pinned is not owed: prune is forbidden to delete it, so
-    counting it held deploy readiness and re-sent tick_owner every tick.
+    platform backup pinned, or whose delete failed, is not owed: it is a
+    stored fact, and counting it held deploy readiness and re-sent tick_owner
+    every tick. A failure is named in ``faults``, not waited on.
     """
     from tinyassets.broker.admission import admission
 
@@ -160,7 +165,7 @@ def _owed(db, *, include_running, now):
         if (work and kind != "create" and (include_running or kind != "running")
                 and not deferred(work, published, now)):
             reasons.append(kind if isinstance(kind, str) else "work")
-        if snapshots and any(not pinned for _, pinned in _excess(
+        if snapshots and any(not settled for _, settled in _excess(
                 db, principal, snapshot_id, work)):
             reasons.append("excess_snapshots")
         if local and asleep_at is not None and asleep_at < now - COLD_AFTER and snapshot_id:
@@ -183,6 +188,36 @@ def pending_counts(identities, *, include_running=False):
             for key in reasons:
                 counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+_OUTCOME = re.compile(
+    r"deleted|pinned|failed:(?:rclone_exit_-?[0-9]{1,3}|rclone_timeout|catalog_unreadable)")
+
+
+def delete_outcomes(result, snapshot_ids=None):
+    """The host's per-id delete outcomes, or a loud refusal.
+
+    Any other reply, including an older host's ``{"deleted": True}``, is
+    refused rather than read as success.
+    """
+    outcomes = result.get("outcomes") if isinstance(result, dict) and set(result) == {
+        "outcomes"} else None
+    if (not isinstance(outcomes, dict)
+            or (snapshot_ids is not None and set(outcomes) != set(snapshot_ids))
+            or any(not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32}", key)
+                   or not isinstance(value, str) or not _OUTCOME.fullmatch(value)
+                   for key, value in outcomes.items())):
+        raise RuntimeError("delete_snapshots reply is not per-id outcomes; "
+                           "boxhostd and the broker disagree on version")
+    return outcomes
+
+
+def faults(identities):
+    """Stored delete failures by class. They never hold readiness."""
+    with closing(identities._connect(write=False)) as db:
+        return {f"snapshot_delete_failed:{fault}": count for fault, count in db.execute(
+            "SELECT delete_fault, COUNT(*) FROM owner_snapshots "
+            "WHERE delete_fault IS NOT NULL GROUP BY delete_fault ORDER BY delete_fault")}
 
 
 def snapshot_deferred(identities, owner):
@@ -224,7 +259,7 @@ def dispatch(identities, document):
               "publish": {"snapshot_id", "sha256"},
               "restore": {"snapshot_id"}, "continue_restore": set(),
               "restored": {"snapshot_id"}, "pending": set(),
-              "snapshots": set(), "forget": {"snapshot_id"}, "pinned": {"snapshot_ids"},
+              "snapshots": set(), "forget": {"snapshot_id"}, "pruned": {"outcomes"},
               "wake": set(), "evict": set(), "evicted": set(), "erase": set(),
               "sleep_refused": set(),
               "image_absent": set()}
@@ -416,25 +451,28 @@ def dispatch(identities, document):
             return [dict(zip(("snapshot_id", "sha256", "published_at"), row)) for row in db.execute(
                 "SELECT snapshot_id,snapshot_sha256,published_at FROM owner_snapshots "
                 "WHERE principal=? ORDER BY sequence DESC", (owner,))]
-        elif action == "forget":
+        elif action in {"forget", "pruned"}:
             protected = {record["snapshot_id"]}
             if work:
                 protected.update(work.get(key) for key in (
                     "snapshot_id", "restore_snapshot_id", "pre_snapshot_id"))
-            if arguments["snapshot_id"] in protected:
-                raise PermissionError("map references this snapshot")
-            db.execute("DELETE FROM owner_snapshots WHERE principal=? AND snapshot_id=?",
-                       (owner, arguments["snapshot_id"]))
-        elif action == "pinned":
-            # The host refused these deletes because a platform backup pins
-            # them. The flag keeps them out of owed work; prune clears it.
-            refused = arguments["snapshot_ids"]
-            if not isinstance(refused, list) or any(not isinstance(item, str)
-                                                    for item in refused):
-                raise ValueError("invalid volume lifecycle arguments")
-            db.execute("UPDATE owner_snapshots SET pinned=0 WHERE principal=?", (owner,))
-            db.executemany("UPDATE owner_snapshots SET pinned=1 WHERE principal=? "
-                           "AND snapshot_id=?", [(owner, item) for item in refused])
+            # One prune's outcomes in one transaction: a deleted row is
+            # forgotten; a pinned or failed row stays as a stored fact.
+            outcomes = (delete_outcomes({"outcomes": arguments["outcomes"]})
+                        if action == "pruned" else {arguments["snapshot_id"]: "deleted"})
+            now = time.time()
+            for snapshot_id, outcome in outcomes.items():
+                if outcome == "deleted":
+                    if snapshot_id in protected:
+                        raise PermissionError("map references this snapshot")
+                    db.execute("DELETE FROM owner_snapshots WHERE principal=? "
+                               "AND snapshot_id=?", (owner, snapshot_id))
+                    continue
+                fault = outcome.removeprefix("failed:") if outcome != "pinned" else None
+                db.execute("UPDATE owner_snapshots SET pinned=?,delete_fault=?,"
+                           "delete_fault_at=? WHERE principal=? AND snapshot_id=?",
+                           (int(fault is None), fault, now if fault else None,
+                            owner, snapshot_id))
         db.execute("UPDATE owner_volumes SET work=? WHERE principal=?",
                    (json.dumps(work) if work else None, owner))
         record["work"] = work

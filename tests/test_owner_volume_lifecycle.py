@@ -27,6 +27,8 @@ class Images:
         self.fail_upload = False
         # (uid, snapshot_id) a platform backup manifest pins; None is unreadable.
         self.pins = set()
+        # snapshot_id -> the failed outcome its delete reports.
+        self.fail_delete = {}
 
     @contextmanager
     def operation(self, uid, *, blocking=True, shared=False):
@@ -85,15 +87,20 @@ class Images:
         self.events.append(("delete", uid))
 
     def delete_snapshots(self, uid, snapshot_ids, released):
+        if snapshot_ids is None:
+            snapshot_ids = [key[1] for key in self.remote if key[0] == uid]
         if self.pins is None:
-            raise ValueError("unreadable retained platform backup")
-        refused = [snapshot_id for snapshot_id in snapshot_ids or []
-                   if (uid, snapshot_id) in self.pins and snapshot_id not in released]
-        for key in list(self.remote):
-            if (key[0] == uid and key[1] not in refused
-                    and (snapshot_ids is None or key[1] in snapshot_ids)):
-                self.remote.pop(key)
-        return refused
+            return dict.fromkeys(snapshot_ids, "failed:catalog_unreadable")
+        outcomes = {}
+        for snapshot_id in snapshot_ids:
+            if (uid, snapshot_id) in self.pins and snapshot_id not in released:
+                outcomes[snapshot_id] = "pinned"
+            elif snapshot_id in self.fail_delete:
+                outcomes[snapshot_id] = self.fail_delete[snapshot_id]
+            else:
+                self.remote.pop((uid, snapshot_id), None)
+                outcomes[snapshot_id] = "deleted"
+        return outcomes
 
 
 class Admission:
@@ -285,16 +292,18 @@ def test_platform_pins_are_not_unfinished_snapshot_work(storage):
     with sqlite3.connect(storage.identities.path) as db:
         db.execute("UPDATE owner_volumes SET work=NULL WHERE principal='alice'")
 
-    # A pinned row alone asks nothing; an unreadable catalog keeps every row.
+    # A pinned row alone asks nothing; an unreadable catalog keeps every row
+    # as a stored fault that names itself and does not hold readiness.
     seen.clear()
     drive(storage.lifecycle.prune("alice"))
     assert seen == []
     _seed_snapshots(storage, "alice", ["f" * 32], current=alice_ids[-1])
     storage.volumes.pins = None
-    with pytest.raises(RuntimeError, match="unreadable"):
-        drive(storage.lifecycle.prune("alice"))
+    drive(storage.lifecycle.prune("alice"))
     assert len(storage.lifecycle.volume("alice", "snapshots")) == 10
-    assert owner_volumes.pending(storage.identities, include_running=False) == ["alice"]
+    assert owner_volumes.pending(storage.identities, include_running=False) == []
+    assert owner_volumes.faults(storage.identities) == {
+        "snapshot_delete_failed:catalog_unreadable": 3}
 
 
 def _pin_first_copy_then_publish_past_the_cap(storage):
@@ -342,6 +351,120 @@ def test_a_released_pin_is_deleted_by_the_next_prune(storage):
     with sqlite3.connect(storage.identities.path) as db:
         assert db.execute("SELECT COUNT(*) FROM owner_snapshots WHERE pinned=1").fetchone() == (0,)
     assert owner_volumes.excess(storage.identities, "alice") == []
+
+
+@pytest.fixture
+def trail(monkeypatch):
+    events = []
+    monkeypatch.setattr("tinyassets.observability.emit",
+                        lambda event, **fields: events.append((event, fields)))
+    return events
+
+
+def _stored(storage):
+    with sqlite3.connect(storage.identities.path) as db:
+        return {row[0]: row[1:] for row in db.execute(
+            "SELECT snapshot_id, pinned, delete_fault, delete_fault_at IS NOT NULL "
+            "FROM owner_snapshots WHERE principal='alice'")}
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_failed_delete_beside_a_pin_is_stored_and_named(storage, trail, caplog):
+    """Deploy 40461575370: one rclone failure must not hide the pin or hold readiness."""
+    routing = storage.lifecycle.lifecycle
+    alice = storage.lifecycle.volume("alice")["uid"]
+    ids = [f"{i:032x}" for i in range(9)]
+    _seed_snapshots(storage, "alice", ids, current=ids[-1])
+    storage.volumes.pins = {(alice, ids[0])}
+    storage.volumes.fail_delete = {ids[1]: "failed:rclone_exit_5"}
+    assert drive(routing.readiness())["pending"] == {"excess_snapshots": 1}
+
+    drive(storage.lifecycle.prune("alice"))
+    stored = _stored(storage)
+    assert stored[ids[0]] == (1, None, 0)
+    assert stored[ids[1]] == (0, "rclone_exit_5", 1)
+    assert owner_volumes.pending(storage.identities) == []
+    assert drive(routing.readiness()) == {"ready": True}
+    fault = "snapshot_delete_failed:rclone_exit_5"
+    assert owner_volumes.faults(storage.identities) == {fault: 1}
+    assert [(event, fields["fault"], fields["snapshot"]) for event, fields in trail] == [
+        ("lifecycle.fault", fault, ids[1])]
+    assert any(record.levelname == "ERROR" and fault in record.getMessage()
+               and ids[1] in record.getMessage() for record in caplog.records)
+    # Any reply that is not ready names the stored fault.
+    routing.tasks = {"bob": SimpleNamespace(done=lambda: False)}
+    assert drive(routing.readiness()) == {
+        "ready": False, "tasks": 1, "pending": {}, "faults": {fault: 1}}
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_failed_row_is_retried_only_with_a_deletable_row(storage, trail):
+    ids = [f"{i:032x}" for i in range(9)]
+    _seed_snapshots(storage, "alice", ids, current=ids[-1])
+    storage.volumes.fail_delete = {ids[0]: "failed:rclone_exit_5",
+                                   ids[1]: "failed:rclone_timeout"}
+    drive(storage.lifecycle.prune("alice"))
+    assert set(_stored(storage)) == set(ids)
+    storage.volumes.fail_delete = {}
+    seen = []
+    original = storage.lifecycle.execute
+    storage.lifecycle.execute = lambda operation, **fields: (
+        seen.append(fields.get("snapshot_ids")), original(operation, **fields))[1]
+    drive(storage.lifecycle.prune("alice"))
+    assert seen == []
+
+    _seed_snapshots(storage, "alice", ["f" * 32], current=ids[-1])
+    drive(storage.lifecycle.prune("alice"))
+    assert seen == [[ids[2], ids[1], ids[0]]]
+    assert set(_stored(storage)) == {*ids[3:], "f" * 32}
+    assert owner_volumes.faults(storage.identities) == {}
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+@pytest.mark.parametrize("reply", [{"deleted": True}, {"deleted": False, "pinned": []},
+                                   {"outcomes": {}}])
+def test_an_old_or_partial_delete_reply_is_refused(storage, reply):
+    """A new broker beside an old boxhostd never reads a reply as success."""
+    ids = [f"{i:032x}" for i in range(9)]
+    _seed_snapshots(storage, "alice", ids, current=ids[-1])
+    storage.lifecycle.execute = lambda operation, **fields: reply
+    with pytest.raises(RuntimeError, match="per-id outcomes"):
+        drive(storage.lifecycle.prune("alice"))
+    assert set(_stored(storage)) == set(ids)
+    assert owner_volumes.pending(storage.identities) == ["alice"]
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C2')
+def test_a_raising_tick_is_counted_and_named_by_class(storage, trail):
+    routing = storage.lifecycle.lifecycle
+    ids = [f"{i:032x}" for i in range(9)]
+    _seed_snapshots(storage, "alice", ids, current=ids[-1])
+    recover = storage.lifecycle.recover
+
+    async def broken(owner):
+        raise RuntimeError("owner box lifecycle failed: private detail")
+
+    storage.lifecycle.recover = broken
+
+    async def tick_twice():
+        for _ in range(2):
+            await routing.start("alice", storage.lifecycle.tick_owner, serialized=False)
+        return await routing.readiness()
+
+    fault = "lifecycle_error:tick_owner:RuntimeError"
+    assert drive(tick_twice()) == {"ready": False, "tasks": 0,
+                                   "pending": {"excess_snapshots": 1}, "faults": {fault: 1}}
+    assert [fields["fault"] for _, fields in trail] == [fault]
+    assert "private detail" not in repr(trail)
+
+    storage.lifecycle.recover = recover
+
+    async def tick_once():
+        await routing.start("alice", storage.lifecycle.tick_owner, serialized=False)
+        return await routing.readiness()
+
+    assert drive(tick_once()) == {"ready": True}
+    assert routing.errors == {}
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C1')

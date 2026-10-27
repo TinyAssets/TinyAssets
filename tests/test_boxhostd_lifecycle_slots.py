@@ -57,6 +57,8 @@ def test_broker_readiness_counts_durable_pending_and_running_work(monkeypatch):
         broker = BrokerLifecycle.__new__(BrokerLifecycle)
         broker.identities = SimpleNamespace(work_ready=True)
         broker.tasks = {}
+        broker.errors = {}
+        monkeypatch.setattr(owner_volumes, "faults", lambda _: {})
         monkeypatch.setattr(owner_volumes, "pending", lambda _, **__: ["owner"])
         monkeypatch.setattr(owner_volumes, "pending_counts", lambda _, **__: {"snapshot": 1})
         blocked = await broker.readiness()

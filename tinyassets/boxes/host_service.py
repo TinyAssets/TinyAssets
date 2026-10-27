@@ -245,11 +245,9 @@ class HostService:
                         self.daemons.destroy(owner_uid)
                         return {"destroyed": True}
                     if operation == "delete_snapshots":
-                        refused = self.volumes.delete_snapshots(
-                            owner_uid, document["snapshot_ids"], document["released"])
-                        # The broker stores the refused ids as pinned rows.
-                        return ({"deleted": False, "pinned": refused} if refused
-                                else {"deleted": True})
+                        # One outcome per id; the broker stores each in one transaction.
+                        return {"outcomes": self.volumes.delete_snapshots(
+                            owner_uid, document["snapshot_ids"], document["released"])}
                     if operation == "create":
                         try:
                             self.volumes.create(owner_uid, document["quota"])

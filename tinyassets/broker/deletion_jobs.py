@@ -244,9 +244,13 @@ class DeletionJobs:
             "op": "BOX_VOLUME", "principal": job["owner"], "action": "erase", "arguments": {}})
 
     async def _snapshots(self, job):
+        from tinyassets.broker.owner_volumes import delete_outcomes
+
         record = self._erase_snapshot_map(job)
-        if await self.server.routing.volumes.host(job["owner"], "delete_snapshots",
-                snapshot_ids=None, released=record["work"]["released"]) != {"deleted": True}:
+        outcomes = delete_outcomes(await self.server.routing.volumes.host(
+            job["owner"], "delete_snapshots", snapshot_ids=None,
+            released=record["work"]["released"]))
+        if any(outcome != "deleted" for outcome in outcomes.values()):
             raise RuntimeError("owner snapshot deletion remains pending")
 
     def _custody(self, job):
