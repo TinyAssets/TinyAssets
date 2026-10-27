@@ -339,6 +339,10 @@ RETIRED_ACCOUNT_LIMITS = re.compile(
     r"BYTES_PER_HOUR|BUDGET_WINDOW_S|usage_notice|charge_dispatch|"
     r"dispatch_window_usage)\b"
 )
+#: N12 metering-not-admission: the only importers of tinyassets.metering, so no
+#: admission module reads a receipt and S26 stays two limits.
+METERING_IMPORTERS = ("tinyassets/metering/**", "tinyassets/boxes/host_service.py",
+                      "tinyassets/broker/public_egress.py", "scripts/metering_receipts.py")
 PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
     r"\s*\(\s*['\"](/[^'\"]*)"
@@ -841,9 +845,42 @@ def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
     return problems
 
 
+def imported_modules(rel: str, source: str) -> set[str]:
+    """Every module an import anywhere in ``source`` can bind, relative ones resolved."""
+    package = PurePosixPath(rel).with_suffix("").parts[:-1]
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: max(0, len(package) - node.level + 1)] if node.level else ()
+            module = ".".join((*base, *([node.module] if node.module else [])))
+            names.update({module} | {f"{module}.{alias.name}" for alias in node.names})
+        elif (isinstance(node, ast.Call) and node.args
+              and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+              and ast.unparse(node.func) in {"__import__", "importlib.import_module",
+                                             "import_module"}):
+            names.add(node.args[0].value)  # A literal dynamic import binds that module too.
+    return names
+
+
+def metering_import_problems(root: Path = ROOT) -> list[str]:
+    problems = []
+    for path in files("tinyassets/**/*.py", root) + files("scripts/**/*.py", root):
+        rel = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8", errors="replace")
+        if "metering" not in source or any(registered_path(rel, g) for g in METERING_IMPORTERS):
+            continue
+        if any(name == "tinyassets.metering" or name.startswith("tinyassets.metering.")
+               for name in imported_modules(rel, source)):
+            problems.append(f"N12 metering-not-admission: {rel} imports tinyassets.metering")
+    return problems
+
+
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
     problems.extend(control_plane_policy_problems(root))
+    problems.extend(metering_import_problems(root))
     problems.extend(dead_entry_problems(root))
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())

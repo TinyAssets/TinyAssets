@@ -53,6 +53,13 @@ class GvisorRuntime:
         """What the box's cgroup holds now; the broker admits wakes against it."""
         return int((self.cgroup_parent / self.box_id(uid) / "memory.current").read_text())
 
+    def usage(self, uid: int) -> dict:
+        """W10 receipt facts, read before runsc deletes the cgroup at stop."""
+        cgroup = self.cgroup_parent / self.box_id(uid)
+        cpu = dict(line.split() for line in (cgroup / "cpu.stat").read_text().splitlines())
+        return {"peak_memory_bytes": int((cgroup / "memory.peak").read_text()),
+                "cpu_usec": int(cpu["usage_usec"])}
+
     @staticmethod
     def box_id(uid: int) -> str:
         if type(uid) is not int or not 300001 <= uid <= 399999:

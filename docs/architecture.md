@@ -117,6 +117,7 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/wiki/`, `tinyassets/daemon_wiki.py` | Wiki pages and the curated OKF export. |
 | `tinyassets/auth/`, `tinyassets/principals.py` | WorkOS AuthKit sessions and principals. |
 | `tinyassets/payments/` | Stored payment history and schema; paid-market execution is retired. |
+| `tinyassets/metering/` | Cost-driver receipts (W10): box-awake intervals, relay bytes, storage samples, daily rollup; measured, never enforced. |
 
 ### Domains
 
@@ -198,7 +199,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | N9 | `model_call` returns media (images, audio, video) (founder 2026-10-11, frontier baseline #4624) | `model_call` outputs typed media parts with a receipt per call | none | unbuilt | `call-sites` plus a media-receipt test (planned) | after C3 (S1) |
 | N10 | Owner-only policy layer (ADR-019, frontier baseline v2 #4624) | one broker-private account policy; protected owner-session writes; read-only agent projection; every broker decision receipted | P5 egress gate implemented in draft; no retired egress rules imported; action rules and once-approvals are broker-held and enforced at OPEN (a1), but effector consents and outside-client grants stay in-box until a2/b2; floor/live acceptance pending | drifted | `policy-writers` (`test_policy_writers`): only protected owner sessions write policy or authorize credential destination scope | C6 close-out |
 | N11 | One user-built app (founder 2026-10-12) | `tinyassets/app_object.py`: the command center's id, manifest and default screen; the launch list is `GET /app/apps` inside the existing `/app` shell (S16) | none | converged | `test_app_object`; `app_manifest` outside that module is a second path | — |
-| N12 | Cost-driver receipts (founder 2026-10-26) | `metering/` intervals and daily rollup, measured, never enforced | none yet | unbuilt | `metering-not-admission` (planned): no admission module imports `tinyassets.metering`, so S26 stays two limits | M |
+| N12 | Cost-driver receipts (founder 2026-10-26) | `metering/` intervals and daily rollup, measured, never enforced: boxhostd records box-awake intervals, peak memory and storage samples, the broker relay bytes, each in its own private state; root on the host reads them (`scripts/metering_receipts.py`) | none | converged | `metering-not-admission`: no admission module imports `tinyassets.metering`, so S26 stays two limits; `check_shapes.py` N12 allows the import, in any form, only in the metering package, `boxes/host_service.py`, `broker/public_egress.py` and the founder read; `test_metering` | M |
 
 Findings against a row go in [`docs/concerns/`](concerns/); a new shape is a
 new row with its guard in the same PR.

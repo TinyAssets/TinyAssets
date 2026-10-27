@@ -371,8 +371,12 @@ def host_lock(state: Path):
         os.close(descriptor)
 
 
-def recover_daemons(runtime):
-    """Prove the previous controller's sandboxes stopped before admission."""
+def recover_daemons(runtime, meter=None):
+    """Prove the previous controller's sandboxes stopped before admission.
+
+    The previous controller's open receipt intervals close here too: a box
+    still running ends now, any other at the last time it was seen running.
+    """
     states = json.loads(runtime._command("list", "--format=json").stdout)
     if states is None:  # Pinned runsc serializes its empty Go slice as JSON null.
         states = []
@@ -390,8 +394,15 @@ def recover_daemons(runtime):
         if runtime.box_id(uid) != path.name or path.is_symlink():
             raise BoxError("unexpected sandbox bundle")
         owners.add(uid)
+    running = {int(state["id"].removeprefix("owner-")) for state in states
+               if state.get("status") == "running"}
+    usage = {}
     for uid in sorted(owners):
+        if meter is not None and uid in running:
+            usage[uid] = meter.measure(runtime.usage, uid) or {}
         runtime.stop(uid)
+    if meter is not None:
+        meter.recover(time.time(), usage)
 
 
 def main(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
@@ -439,7 +450,10 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         state_root=state / "runsc",
         bundle_root=state / "bundles",
         cgroup_parent=cgroup_parent)
-    recover_daemons(runtime)
+    from tinyassets.metering import Meter
+
+    meter = Meter(state / "metering.db", source="boxhostd")  # root-private, never a box mount
+    recover_daemons(runtime, meter)
     from tinyassets.cutover_control import protect_root
 
     protect_root(data_root)
@@ -450,7 +464,8 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
     daemons = OwnerDaemons(
         runtime, admission, volumes, relays, RUNTIME,
         # 2 GiB: headroom for the agent plus one subscription CLI run.
-        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(2 * 1024**3))))
+        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(2 * 1024**3))),
+        meter=meter)
     daemons.images = Images(rootfs.parent, state / "images.json", rootfs)
     service = HostService(admission, volumes, relays, daemons)
     stop = threading.Event()

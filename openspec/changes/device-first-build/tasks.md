@@ -179,4 +179,5 @@ S5a's row above.
 - **Live acceptance:** A week of receipts with cost per driver in dollars
 - **Depends on:** S2
 
-- [ ] Metering (branch `m-metering`, PR pending).
+- [x] Box-awake intervals, peak memory, relay bytes, storage samples, daily rollup, founder-only
+  read. Live acceptance owed: a week of receipts with cost per driver in dollars.
