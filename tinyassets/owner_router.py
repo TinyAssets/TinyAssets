@@ -102,6 +102,29 @@ class TrustedFront:
                 raise ValueError(f"{path} {method} is already registered")
             self.app_routes[path, method] = Trusted(shared, owner=False, session=session)
 
+    def box_routes(self, routes):
+        """What a box mounts of ``routes``: each loses the methods registered here (ADR-030).
+
+        The router never forwards a registered request, so the box never builds
+        its route. A route left with no method is dropped whole.
+        """
+        from starlette.routing import Route
+
+        kept = []
+        for route in routes:
+            methods = getattr(route, "methods", None)
+            if methods is None:  # Any method, or a mount: all or nothing.
+                if self._app(route.path, None) is None:
+                    kept.append(route)
+                continue
+            left = sorted(verb for verb in methods if self._app(route.path, verb) is None)
+            if len(left) == len(methods):
+                kept.append(route)
+            elif left:
+                kept.append(Route(route.path, route.endpoint, methods=left, name=route.name,
+                                  include_in_schema=route.include_in_schema))
+        return kept
+
     def _app(self, path, method):
         """The registration answering ``method`` on ``path``; ``method=None`` asks for any."""
         for (key, verb), trusted in self.app_routes.items():
@@ -231,6 +254,9 @@ for _path in ("/app", "/app/sw.js", "/app/ui-frame", "/app/oauth/client-metadata
 # (room_door); a signed-in browser's session names the player, as it did at the box.
 for _path in ("/app/*/state",):
     TRUSTED.app(_path, session=True)
+# A rate-limited log line from the signed-in app; it needs no owner state.
+for _path in ("/app/trace",):
+    TRUSTED.app(_path, "POST", session=True)
 
 
 @TRUSTED.mcp("events/subscribe")

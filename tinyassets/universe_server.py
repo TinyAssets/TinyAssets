@@ -4150,14 +4150,10 @@ def create_streamable_http_app() -> Starlette:
         return _PulseJSON(payload)
 
     from tinyassets.observability import client_error
-    from tinyassets.owner_router import OwnerRouter, forwarded_path
+    from tinyassets.owner_router import TRUSTED, OwnerRouter, forwarded_path
 
     app_routes = onboarding_routes()
-    if owner_mode:
-        # The router answers app rooms from the broker (S34); the box serves none.
-        app_routes = [route for route in app_routes
-                      if route.path not in {"/app/account/delete", "/app/{slug}/state"}]
-    else:
+    if not owner_mode:
         app_routes = [route for route in app_routes if not forwarded_path(route.path)]
 
     app = Starlette(
@@ -4180,6 +4176,10 @@ def create_streamable_http_app() -> Starlette:
         ],
         lifespan=lifespan,
     )
+    if owner_mode:
+        # ADR-030: the box builds only what the router forwards; the router
+        # answers every TRUSTED.app registration, so none is mounted here.
+        app.router.routes = TRUSTED.box_routes(app.router.routes)
     app.state.path = "/mcp"
     app.state.transport_type = "streamable-http"
     # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
