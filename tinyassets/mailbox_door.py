@@ -71,36 +71,28 @@ def read(identity, *, cursor=0, limit=30) -> dict:
     _count(limit, "limit", 1, 100)
     if _count(cursor, "cursor", 0):
         _ledger(identity, "MAILBOX_RECEIPT", "ack", through=cursor)
-    mail = _ledger(identity, "MAILBOX_RECEIPT", "read", limit=limit)
-    messages = mail["messages"]
-    if identity.metadata.get("outside_origin") is not None:
-        from tinyassets.untrusted import envelope
-
-        messages = [{**message, "body": None if message["body"] is None else envelope(
-            "mailbox:" + message["sender_id"], message["body"])} for message in messages]
-    page = _fit(messages)
-    # After that ack the ledger's own cursor is at least ``cursor``. The cut sets
-    # next_cursor, so the rest comes back on the next read; none is acknowledged.
-    return {**mail, "messages": page, "more": len(page) < len(messages),
-            "next_cursor": page[-1]["seq"] if page else mail["cursor"]}
-
-
-def _fit(messages: list) -> list:
-    """Whole messages under the box's read_graph ceiling; at least one, none ever cut."""
     import os
 
     from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES
     from tinyassets.engine_result_bounds import resolve_ceiling
+    from tinyassets.untrusted import envelope
 
-    # The environment as the box reads it; the router has no served model context.
-    budget, page, used = resolve_ceiling(dict(os.environ)) - CEILING_HEADROOM_BYTES, [], 0
-    for message in messages:
-        used += len(json.dumps(message, separators=(",", ":"), default=str,
-                               ensure_ascii=False).encode())
-        if page and used > budget:
-            break
-        page.append(message)
-    return page
+    outside = identity.metadata.get("outside_origin") is not None
+    # The ledger pages whole messages under the box's read_graph ceiling (the
+    # environment as the box reads it; the router has no served model context),
+    # padded per message for the envelope wrapped around an outside reader's body.
+    pad = len(json.dumps(envelope("mailbox:" + "x" * 64, ""), separators=(",", ":"))) - 2
+    mail = _ledger(identity, "MAILBOX_RECEIPT", "read", limit=limit,
+                   max_bytes=resolve_ceiling(dict(os.environ)) - CEILING_HEADROOM_BYTES,
+                   pad_bytes=pad if outside else 0)
+    messages = mail["messages"]
+    if outside:
+        messages = [{**message, "body": None if message["body"] is None else envelope(
+            "mailbox:" + message["sender_id"], message["body"])} for message in messages]
+    # After that ack the ledger's own cursor is at least ``cursor``; a page the
+    # ledger cut ends at next_cursor, and the rest stays unread for the next read.
+    return {**mail, "messages": messages,
+            "next_cursor": messages[-1]["seq"] if messages else mail["cursor"]}
 
 
 def ack(identity, *, through) -> dict:

@@ -234,10 +234,23 @@ class MessageLedger:
 
     # -- MAILBOX_RECEIPT ----------------------------------------------------
 
-    def read(self, owner: str, *, origin: dict | None, limit: int, bodies) -> dict:
-        """Messages to this reader past its cursor; a reread returns the same message_ids."""
+    def read(self, owner: str, *, origin: dict | None, limit: int, bodies,
+             max_bytes: int | None = None, pad_bytes: int = 0) -> dict:
+        """Messages to this reader past its cursor; a reread returns the same message_ids.
+
+        ``max_bytes`` bounds the page: whole messages (each measured as returned,
+        plus ``pad_bytes`` for the caller's own wrapping) while they fit, and at
+        least one; a body is never cut. Only a returned message is marked read and
+        receipted, so a held-back one stays unread until a read returns it.
+        """
         if type(limit) is not int or not 0 < limit <= MAX_READ:
             raise ValueError(f"limit is 1 to {MAX_READ}")
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1):
+            raise ValueError("max_bytes is a positive integer")
+        if type(pad_bytes) is not int or pad_bytes < 0:
+            raise ValueError("pad_bytes is a non-negative integer")
+        keep = ("seq", "message_id", "room_id", "sender_kind", "sender_id", "parent_id",
+                "chain_depth", "created_at")
         with self._write(owner) as db:
             reader = self._reader(db, origin)
             cursor = db.execute("SELECT through_seq FROM ledger_cursors WHERE reader=?",
@@ -247,23 +260,27 @@ class MessageLedger:
                 "SELECT m.*, r.state FROM ledger_messages m JOIN ledger_recipients r ON "
                 "r.message_id=m.message_id AND r.agent_id=? WHERE m.seq>? ORDER BY m.seq "
                 "LIMIT ?", (reader, cursor, limit)).fetchall()
-            now = time.time()
+            texts = bodies({row["message_id"]: row["body_sha256"] for row in rows})
+            # A reply's own receipt already holds its time to reply; show it, never recompute.
+            replied = {ref: json.loads(detail)["reply_s"] for ref, detail in db.execute(
+                "SELECT ref, detail_json FROM ledger_receipts WHERE kind='reply' AND ref IN "
+                f"({','.join('?' * len(rows))})", [row["message_id"] for row in rows])}
+            messages, used, now = [], 0, time.time()
             for row in rows:
+                message = {**{k: row[k] for k in keep}, "reply_s": replied.get(
+                    row["message_id"]), **texts[row["message_id"]]}
+                used += pad_bytes + len(json.dumps(message, separators=(",", ":"), default=str,
+                                                   ensure_ascii=False).encode())
+                if messages and max_bytes is not None and used > max_bytes:
+                    break
+                messages.append(message)
                 if row["state"] in ("queued", "woken"):
                     db.execute("UPDATE ledger_recipients SET state='read',changed_at=? "
                                "WHERE message_id=? AND agent_id=?",
                                (now, row["message_id"], reader))
                     self._receipt(db, owner, reader, "read", row["message_id"], now)
-            # A reply's own receipt already holds its time to reply; show it, never recompute.
-            replied = {ref: json.loads(detail)["reply_s"] for ref, detail in db.execute(
-                "SELECT ref, detail_json FROM ledger_receipts WHERE kind='reply' AND ref IN "
-                f"({','.join('?' * len(rows))})", [row["message_id"] for row in rows])}
-        texts = bodies({row["message_id"]: row["body_sha256"] for row in rows})
-        keep = ("seq", "message_id", "room_id", "sender_kind", "sender_id", "parent_id",
-                "chain_depth", "created_at")
-        return {"reader": reader, "cursor": cursor, "messages": [
-            {**{k: row[k] for k in keep}, "reply_s": replied.get(row["message_id"]),
-             **texts[row["message_id"]]} for row in rows]}
+        return {"reader": reader, "cursor": cursor, "messages": messages,
+                "more": len(messages) < len(rows)}
 
     def ack(self, owner: str, *, origin: dict | None, through: int) -> dict:
         if type(through) is not int or through < 0:
@@ -360,8 +377,9 @@ def router_operation(ledger: MessageLedger, conversations, sessions, doc: dict) 
         return ledger.post(owner, origin=origin, put_body=partial(conversations.put, owner),
                            **fields)
     if action == "read":
-        exactly("limit")
-        return ledger.read(owner, origin=origin, limit=fields["limit"],
-                           bodies=partial(conversations.bodies, owner))
+        if "limit" not in fields or not set(fields) <= {"limit", "max_bytes", "pad_bytes"}:
+            raise ValueError("invalid ledger request")
+        return ledger.read(owner, origin=origin, bodies=partial(conversations.bodies, owner),
+                           **fields)
     exactly("through")
     return ledger.ack(owner, origin=origin, through=fields["through"])

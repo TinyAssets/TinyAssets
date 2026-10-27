@@ -45,8 +45,9 @@ The owner's chain depth SHALL be 0; an agent's SHALL be its parent's plus 1.
 
 ### Requirement: A reader sees only its own mail
 W3-R3, W3-R5. `MAILBOX_RECEIPT read` SHALL return only the reader's messages past its
-cursor, moving them from `queued` to `read` with a `read` receipt; `ack` SHALL advance the
-cursor and never move it back. A body whose hash no longer matches the ledger SHALL be
+cursor, moving them from `queued` to `read` with a `read` receipt; with `max_bytes` it SHALL
+return whole messages under that budget, at least one, and SHALL mark and receipt only the
+messages it returns. `ack` SHALL advance the cursor and never move it back. A body whose hash no longer matches the ledger SHALL be
 withheld and flagged `tampered`.
 
 #### Scenario: A retried wake starts a second session
