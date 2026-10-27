@@ -1317,7 +1317,7 @@ class AuthContextMiddleware:
                     from tinyassets.onboarding import owner_sessions
                     from tinyassets.owner_router import forwarded_path
 
-                    if forwarded_path(path):
+                    if forwarded_path(path, method):
                         request = Request(scope)
                         if method in {"GET", "HEAD"}:
                             session = await run_in_threadpool(

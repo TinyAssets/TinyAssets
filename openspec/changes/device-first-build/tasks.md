@@ -1,8 +1,11 @@
+Build order is the founder's 2026-10-26 re-sequence: "Trusted front → S3a ledger → S5a collections → P0-3 code → S3b events → ADR-030 tool-by-tool → S2a loop worker → S4/S5b", then the plan's later slices.
+
 Each slice below carries its row of the plan's Build slices table ("TinyAssets — Agents
 Everywhere, Device-First: Architecture Plan", Code spec tab): Requirement IDs, Ships, Deletes,
-Live acceptance and Depends on are the plan's words, with code formatting added. The order
-follows dependencies, so nothing is built in a wrong shape to be rebuilt later. Metering (M) runs
-beside the others from S2 on. Slice names (S0, S2a, ...) are build slices, not registry row IDs.
+Live acceptance and Depends on are the plan's words, with code formatting added. Open slices
+follow the founder's order above; a split slice (S3a and S3b, S5a and S5b) carries its plan row
+once, at its first part. Metering (M) runs beside the others from S2 on. Slice names (S0, S2a,
+...) are build slices, not registry row IDs.
 
 The checklist items are this repo's additions. An item is ticked in the PR that lands it. A landed
 item whose live acceptance is still owed says so.
@@ -17,12 +20,12 @@ item whose live acceptance is still owed says so.
 
 - [x] P0-1, P0-4, P0-5 Restored event tests; callbacks through broker egress; deliveries on the broker tick (#5317). Live acceptance owed: the live ChatGPT subscribe succeeds.
 - [x] P0-2 Refuse websocket scopes (#5315).
-- [ ] N10 owner authority in the broker (P0-3's prerequisite): action rules, once-approvals, effector consents and outside-client grant modes in `broker/policy.py`'s per-owner store (plan module map: "Room caps and per-agent grant modes as owner policy (N10)"; founder 2026-10-26: trusted per-owner stores are broker-held SQLite), written only from a protected owner session and enforced at OPEN; the box channel cannot widen authority. Connect-flow consent is built with W7/W11, not here.
-- [ ] P0-3 Outside agents distinguishable from the owner: grant modes (full by default, scoped per agent), `check_identity` consults grants, then the claim probe and setting.
 - [x] P0-6 Zero idle tail (#5316). Live acceptance owed: the canary still wakes during a deploy (fix PR #5330 open).
 - [x] P0-7 Admission against a memory budget (#5319). Live acceptance owed: with thin work only,
   far more than 6 boxes run at once.
 - [x] P0-8 Multiplexed relay (#5320).
+
+P0-3 is open; it is built fourth, under "P0-3 code" below.
 
 ## S1 Architecture on record
 
@@ -47,6 +50,62 @@ item whose live acceptance is still owed says so.
 
 - [x] `execution` on every source record; the `free` field deleted (#5322). Live acceptance owed: a connected Codex on staging keeps working with no reconnect.
 
+## Trusted front
+
+The founder's words: "Insert a 'trusted front' slice (router answers registered MCP tools itself, forwards the rest to the box) before S3/S5".
+
+- [x] One registry in the router (`owner_router.TRUSTED`): MCP requests keyed by JSON-RPC method, tool and target, app requests by path and method, answered from the verified identity; everything else forwarded with its original bytes, `tools/list` included. The `events/subscribe` door and the router's shared app routes fold into it; `test_trusted_front` holds the one dispatch point. No new targets.
+
+## S3a Ledger
+
+- **Requirement IDs:** W3-R1 to W3-R6, W4
+- **Ships:** Agent registry, message ledger, broker ops, `outside_wakes.py`, `mailbox.message`, `read_graph target=mailbox`, `mailbox_ack`
+- **Deletes:** None
+- **Live acceptance:** The first users' agent wakes on a message, reads it and replies; time to reply recorded
+- **Depends on:** S0, S1
+
+- [x] S3a.1 Message ledger core (#5336): `broker/message_ledger.py` (`outside_agents`,
+  `ledger_messages`, `ledger_recipients`, `ledger_receipts`, `ledger_cursors`) and
+  `broker/conversations.py` (`message_bodies`), broker-held per owner; owner-channel ops
+  `OUTSIDE_AGENTS`, `ROOM_POST` (1:1) and `MAILBOX_RECEIPT`; `pull` delivery only; registry
+  row S30 converged with `test_ledger_boundary`. No public surface yet.
+- [ ] S3a.2 Doors: trusted-front registrations for `read_graph target=mailbox`,
+  `write_graph room_message` and `mailbox_ack`, the REST routes and
+  `/app/api/outside-agents`. Until P0-3, its MCP doors refuse an outside-looking caller with
+  no `outside_origin` rather than read it as the owner. Live: an API-key agent reads and
+  replies, and time to reply is recorded.
+
+## S5a Collections
+
+- **Requirement IDs:** W8, W9 Tier A
+- **Ships:** The generic collection; the board on it; published app rooms moved onto it
+- **Deletes:** `app_room.py`'s own compare-and-swap
+- **Live acceptance:** Board race; the existing post-c6 multiplayer tests pass on the shared primitive
+- **Depends on:** S1
+
+- [ ] Collections: broker collection store; published app rooms answered on the trusted side; `app_room`'s own compare-and-swap deleted.
+
+## P0-3 code
+
+S0's row above.
+
+- [ ] N10 owner authority in the broker (P0-3's prerequisite): action rules, once-approvals, effector consents and outside-client grant modes in `broker/policy.py`'s per-owner store (plan module map: "Room caps and per-agent grant modes as owner policy (N10)"; founder 2026-10-26: trusted per-owner stores are broker-held SQLite), written only from a protected owner session and enforced at OPEN; the box channel cannot widen authority. Connect-flow consent is built with W7/W11, not here. Stage a1 (action rules and once-approvals) is PR #5333.
+- [ ] P0-3 Outside agents distinguishable from the owner: grant modes (full by default, scoped per agent), `check_identity` consults grants, then the claim probe and setting.
+
+## S3b Events
+
+S3a's row above.
+
+- [ ] Wakes: `ledger_wakes`, the `AGENT_WAKE` broker op, `control_plane/outside_wakes.py` and
+  `mailbox.message` events; the wake delivery methods are admitted with them. Live: a ChatGPT
+  agent wakes on a message, reads it and replies.
+
+## ADR-030 tool by tool
+
+ADR-030 (accepted): owner MCP, app and `/api` requests are served on the trusted side through `BoxProvider` calls.
+
+- [ ] Move each owner tool and app route to the trusted side as a trusted-front registration, one by one; the box keeps tools, user code and owner files.
+
 ## S2a Loop worker
 
 - **Requirement IDs:** A8
@@ -56,27 +115,6 @@ item whose live acceptance is still owed says so.
 - **Depends on:** S0, S1
 
 - [ ] The loop worker. Open first: since C6 the loop runs in the box, not the shared daemon, and no slice moves serving out of the box (`docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md`, a founder decision at S2a).
-
-## S3 Ledger and first outside agent
-
-- **Requirement IDs:** W3-R1 to W3-R6, W4
-- **Ships:** Agent registry, message ledger, broker ops, `outside_wakes.py`, `mailbox.message`, `read_graph target=mailbox`, `mailbox_ack`
-- **Deletes:** None
-- **Live acceptance:** The first users' agent wakes on a message, reads it and replies; time to reply recorded
-- **Depends on:** S0, S1
-
-- S3a Ledger and doors:
-  - [x] S3a.1 Message ledger core: `broker/message_ledger.py` (`outside_agents`,
-    `ledger_messages`, `ledger_recipients`, `ledger_receipts`, `ledger_cursors`) and
-    `broker/conversations.py` (`message_bodies`), broker-held per owner; owner-channel ops
-    `OUTSIDE_AGENTS`, `ROOM_POST` (1:1) and `MAILBOX_RECEIPT`; `pull` delivery only; registry
-    row S30 converged with `test_ledger_boundary`. No public surface yet.
-  - [ ] S3a.2 Doors: router and trusted-front registrations, `read_graph target=mailbox`,
-    `write_graph room_message` and `mailbox_ack`, the REST routes; live acceptance owed here.
-    Until P0-3, its MCP doors refuse an outside-looking caller with no `outside_origin`
-    rather than read it as the owner (or gate on it as P0-3 settles).
-- [ ] S3b Wakes: `ledger_wakes`, the `AGENT_WAKE` broker op, `control_plane/outside_wakes.py`
-  and `mailbox.message`; the wake delivery methods are admitted with them.
 
 ## S4 Rooms, status and onboarding
 
@@ -88,15 +126,11 @@ item whose live acceptance is still owed says so.
 
 - [ ] Rooms, status and onboarding.
 
-## S5 One revision primitive
+## S5b Board
 
-- **Requirement IDs:** W8, W9 Tier A
-- **Ships:** The generic collection; the board on it; published app rooms moved onto it
-- **Deletes:** `app_room.py`'s own compare-and-swap
-- **Live acceptance:** Board race; the existing post-c6 multiplayer tests pass on the shared primitive
-- **Depends on:** S1
+S5a's row above.
 
-- [ ] One revision primitive.
+- [ ] Task board on the collection store.
 
 ## S6 App manifest and agent players
 

@@ -21,7 +21,6 @@ from starlette.responses import JSONResponse
 
 from tinyassets.asgi_scope import refuse_non_http
 from tinyassets.mcp_events_http import door as events_door
-from tinyassets.mcp_events_http import routed as events_routed
 
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
@@ -29,21 +28,186 @@ _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity",
             b"x-tinyassets-caller-user-id"}
 _INBOUND_PROOF = {b"x-slack-signature", b"x-hub-signature-256",
                   b"x-slack-request-timestamp", b"proxy-authorization"}
-_SHARED_APP = {
-    "/app/account/delete",
-    "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
-    "/app/owner-sign-in", "/app/owner-sign-in/complete",
-    "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
-    # Sign-in navigation: its rows live in the router's owner-sessions store.
-    "/app/approval-handoff", "/app/connections",
-    # Undo stays on the router: the session proof never enters the box.
-    "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
-    # N10: owner policy widens only here, with the proof, on the owner channel.
-    "/app/api/policy",
-}
-_SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
-                        "/app/approval-handoff/", "/app/model-connect/",
-                        "/app/account/deletion/")
+_MCP = frozenset({"/mcp", "/mcp/"})
+ANY = "*"
+
+
+@dataclass(frozen=True)
+class Front:
+    """What a trusted handler sees: the request and the router's verified identity.
+
+    ``route`` is the caller's own box, set for owner registrations only. A
+    handler reaches owner state through OWNER-role broker ops, never a box mount.
+    """
+    router: OwnerRouter
+    scope: dict
+    receive: object
+    send: object
+    identity: object = None
+    route: BoxRoute | None = None
+
+    async def ask_box(self, document):
+        return await box_result(self.scope, self.identity, self.route, document)
+
+
+@dataclass(frozen=True)
+class Trusted:
+    """One registered answer. An ``owner`` answer needs a verified owner and their box."""
+    answer: object
+    owner: bool = True
+
+
+class TrustedFront:
+    """The router's one registry of requests it answers itself (ADR-030).
+
+    MCP requests are keyed by JSON-RPC method, tool name and ``target``; app
+    requests by path (a trailing ``/`` names the subtree) and method. Every
+    other request on an owner door is forwarded to the owner's box with its
+    original bytes; a path outside the owner doors (discovery, ``/mcp/pulse``,
+    a non-canonical spelling) gets the router's own shared answer, as before.
+    """
+
+    def __init__(self):
+        self.mcp_routes: dict[tuple[str, str | None, str | None], Trusted] = {}
+        self.app_routes: dict[tuple[str, str], Trusted] = {}
+
+    def mcp(self, method, tool=None, target=None):
+        key = (method, tool, target)
+        if method == "tools/list":  # S12: the box serves the one canonical tools list
+            raise ValueError("tools/list stays the box's")
+
+        def register(answer):
+            if key in self.mcp_routes:
+                raise ValueError(f"{key} is already registered")
+            self.mcp_routes[key] = Trusted(answer)
+            return answer
+        return register
+
+    def app(self, path, *methods, public=False):
+        """The router's own route table answers ``path``; ``public`` GETs skip admission."""
+        async def shared(front):
+            await _serve_shared(front, public)
+
+        for method in methods or (ANY,):
+            if (path, method) in self.app_routes:
+                raise ValueError(f"{path} {method} is already registered")
+            self.app_routes[path, method] = Trusted(shared, owner=False)
+
+    def _app(self, path, method):
+        """The registration answering ``method`` on ``path``; ``method=None`` asks for any."""
+        for (key, verb), trusted in self.app_routes.items():
+            if (method is None or verb in {method, ANY}) and (
+                    key == path or key.endswith("/") and path.startswith(key)):
+                return trusted
+        return None
+
+    async def match(self, scope, receive):
+        """``(Trusted | None, receive)``: the one lookup for every request.
+
+        A POST to ``/mcp`` is read up to the request bound. Anything that is
+        not a registered request -- over the bound (no registered request is
+        that large), not JSON, or unregistered -- is replayed to the box with
+        the bytes already read, then the rest of the stream, so the box applies
+        its own limits and errors as before. Duplicate keys resolve last-wins,
+        as the box's parsers do. Only a batch holding a registered request is
+        refused: forwarding it would let that request bypass the router.
+        """
+        path, method = scope["path"], scope["method"]
+        trusted = self._app(path, method)
+        if trusted is not None or not _door(path):
+            return trusted or Trusted(_shared_default, owner=False), receive
+        if path not in _MCP or method != "POST":
+            return None, receive
+        from tinyassets.auth.middleware import _buffer_request_body, _replay_receive
+
+        body, messages, disconnected, oversized = await _buffer_request_body(receive)
+        if disconnected:
+            return Trusted(_ignore, owner=False), receive
+        replay = _replay_receive(messages, receive)
+        try:
+            document = None if oversized else json.loads(body)
+        except (ValueError, TypeError, RecursionError):  # The box answers these itself.
+            document = None
+        batch = document if isinstance(document, list) else [document]
+        found = [self.mcp_routes[key] for key in map(mcp_key, batch) if key in self.mcp_routes]
+        if found and isinstance(document, list):
+            # An owner answer: the same 404 and maintenance checks as forwarding come first.
+            return Trusted(_batch_refused), replay
+        return (found[0] if found else None), replay
+
+
+def mcp_key(document):
+    """``(method, tool, target)`` of one JSON-RPC request, as the box would dispatch it."""
+    if not isinstance(document, dict) or not isinstance(document.get("method"), str):
+        return None
+    if document["method"] != "tools/call":
+        return document["method"], None, None
+    params = document.get("params")
+    params = params if isinstance(params, dict) else {}
+    arguments = params.get("arguments")
+    target = arguments.get("target") if isinstance(arguments, dict) else None
+    name = params.get("name")
+    # The box reads ``target`` stripped and lower-cased; so does the key.
+    return ("tools/call", name if isinstance(name, str) else None,
+            target.strip().lower() if isinstance(target, str) else None)
+
+
+def _door(path: str) -> bool:
+    return (path.startswith("/app/") or path in {"/mcp", "/mcp/", "/mcp/events", "/api"}
+            or path.startswith(("/api/", "/hooks/inbound/")))
+
+
+async def _batch_refused(front):
+    await JSONResponse({"jsonrpc": "2.0", "id": None, "error": {
+        "code": -32600, "message": "Invalid JSON-RPC request"}}, status_code=400)(
+            front.scope, front.receive, front.send)
+
+
+async def _ignore(front):
+    """The client left before its request body arrived; nothing is answered."""
+
+
+async def _serve_shared(front, public):
+    """The router's own route table; only immutable public assets skip closed admission."""
+    from tinyassets.router_traffic import admits
+    from tinyassets.storage import data_dir
+
+    scope = front.scope
+    if not (public and scope["method"] in {"GET", "HEAD"}) and not await run_in_threadpool(
+            admits, data_dir(), front.identity.user_id if front.identity else None):
+        return await JSONResponse({"error": "maintenance"}, status_code=503)(
+            scope, front.receive, front.send)
+    await front.router.app(scope, front.receive, front.send)
+
+
+async def _shared_default(front):
+    await _serve_shared(front, False)
+
+
+TRUSTED = TrustedFront()
+# The router's own app pages, sign-in and callbacks. Anonymous token, OAuth and
+# billing callbacks write shared authority, so only static assets are public.
+for _path in ("/app/account/delete", "/app/client-error", "/app/token",
+              "/app/native-sign-in", "/app/owner-sign-in", "/app/owner-sign-in/complete",
+              # Sign-in navigation: its rows live in the router's owner-sessions store.
+              "/app/approval-handoff", "/app/connections",
+              # Undo stays on the router: the session proof never enters the box.
+              "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
+              # N10: owner policy widens only here, with the proof, on the owner channel.
+              "/app/api/policy",
+              "/app/billing/", "/app/run/", "/app/model-callback/",
+              "/app/approval-handoff/", "/app/model-connect/", "/app/account/deletion/"):
+    TRUSTED.app(_path)
+for _path in ("/app", "/app/sw.js", "/app/ui-frame", "/app/oauth/client-metadata.json",
+              "/app/m/"):
+    TRUSTED.app(_path, public=True)
+
+
+@TRUSTED.mcp("events/subscribe")
+@TRUSTED.mcp("events/unsubscribe")
+async def _events(front):
+    """P0-4: subscriptions live in the broker; the box only authorizes the caller."""
+    await events_door(front.scope, front.receive, front.send, front.identity, front.ask_box)
 
 
 def hook_token(path: str) -> str | None:
@@ -55,12 +219,12 @@ def hook_token(path: str) -> str | None:
     return None
 
 
-def forwarded_path(path: str) -> bool:
-    """Owner doors are removed from the shared route table, not shadowed."""
-    if path.startswith("/app/"):
-        return path not in _SHARED_APP and not path.startswith(_SHARED_APP_PREFIXES)
-    return (path in {"/mcp", "/mcp/", "/mcp/events", "/api"}
-            or path.startswith(("/api/", "/hooks/inbound/")))
+def forwarded_path(path: str, method: str | None = None) -> bool:
+    """Owner doors are removed from the shared route table, not shadowed.
+
+    Without ``method``, whether every method of ``path`` reaches the box.
+    """
+    return _door(path) and TRUSTED._app(path, method) is None
 
 
 @dataclass(frozen=True)
@@ -115,8 +279,7 @@ class OwnerRouter:
             return await self.app(scope, receive, send)
         if scope["type"] != "http":
             return await refuse_non_http(scope, send)
-        from tinyassets.auth.middleware import current_identity_or_none, published_box_owner
-        from tinyassets.router_traffic import admits
+        from tinyassets.auth.middleware import current_identity_or_none
         from tinyassets.routing_snapshot import snapshot
         from tinyassets.storage import data_dir
 
@@ -126,20 +289,22 @@ class OwnerRouter:
             return await JSONResponse({"error": "routing_unavailable"}, status_code=503)(
                 scope, receive, send)
         identity = current_identity_or_none()
-        if not forwarded_path(scope["path"]):
-            # Only immutable public app assets may bypass closed admission.
-            # Anonymous token, OAuth and billing callbacks can write shared
-            # authority too.
-            path = scope["path"]
-            probe = (scope["method"] in {"GET", "HEAD"} and (
-                path in {"/app", "/app/sw.js", "/app/ui-frame",
-                         "/app/oauth/client-metadata.json"}
-                or path.startswith("/app/m/")))
-            if not probe and not await run_in_threadpool(
-                    admits, data_dir(), identity.user_id if identity else None):
-                return await JSONResponse({"error": "maintenance"}, status_code=503)(
-                    scope, receive, send)
-            return await self.app(scope, receive, send)
+        trusted, receive = await TRUSTED.match(scope, receive)
+        route = None
+        if trusted is None or trusted.owner:
+            routed = await self._owner(scope, receive, send, identity, forward_only=trusted is None)
+            if routed is None:
+                return
+            identity, route = routed
+        # The one place the router answers a request instead of forwarding it.
+        await trusted.answer(Front(self, scope, receive, send, identity, route))
+
+    async def _owner(self, scope, receive, send, identity, *, forward_only):
+        """``(identity, route)`` of the caller's own box, or ``None`` once forwarded or refused."""
+        from tinyassets.auth.middleware import published_box_owner
+        from tinyassets.router_traffic import admits
+        from tinyassets.storage import data_dir
+
         token = hook_token(scope["path"])
         if token is not None:
             return await inbound(scope, receive, send, token, self.resolver)
@@ -182,14 +347,10 @@ class OwnerRouter:
         except (OSError, RuntimeError):
             return await _unavailable()(scope, receive, send)
         if box_owner != identity.user_id:
-            await forward(scope, receive, send, identity, route, box_owner=box_owner)
-        elif events_routed(scope):
-            async def ask_box(document):
-                return await box_result(scope, identity, route, document)
-
-            await events_door(scope, receive, send, identity, ask_box)
-        else:
-            await forward(scope, receive, send, identity, route)
+            return await forward(scope, receive, send, identity, route, box_owner=box_owner)
+        if forward_only:
+            return await forward(scope, receive, send, identity, route)
+        return identity, route
 
 
 #: The largest JSON-RPC answer the router reads from a box for itself.

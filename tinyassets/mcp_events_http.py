@@ -4,7 +4,8 @@ The modern tool transport is the same FastMCP server in stateless JSON mode.
 Only protocol envelopes are adapted; tool dispatch and auth are never bypassed.
 
 ``events/subscribe`` and ``events/unsubscribe`` are answered by the router
-(:func:`door`): subscriptions live in the broker (ADR-025). The box answers only
+(:func:`door`, registered in ``owner_router.TRUSTED``): subscriptions live in the
+broker (ADR-025). The box answers only
 whether the verified caller may follow the workflow, which needs owner files.
 """
 
@@ -25,7 +26,6 @@ from tinyassets.mcp_events import DEFINITION, NAME, arguments, authorize
 VERSION = "2026-07-28"
 LEGACY = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 FORWARDED = {"tools/list", "tools/call", "prompts/list", "prompts/get", "ping"}
-SUBSCRIPTIONS = {"events/subscribe", "events/unsubscribe"}
 logger = logging.getLogger(__name__)
 
 
@@ -133,15 +133,6 @@ def _same_client(verified, admitted):
     return isinstance(admitted, dict) and all(
         admitted.get(key) == verified.get(key)
         for key in ("client", "family", "authenticated_at"))
-
-
-def routed(scope):
-    """Whether the router answers this request itself instead of forwarding it."""
-    if scope.get("method") != "POST" or scope.get("path") not in {"/mcp", "/mcp/"}:
-        return False
-    headers = Headers(scope=scope)
-    return (headers.get("mcp-protocol-version") == VERSION
-            and headers.get("mcp-method") in SUBSCRIPTIONS)
 
 
 async def door(scope, receive, send, identity, ask_box):

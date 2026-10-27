@@ -156,7 +156,15 @@ The router SHALL authenticate the caller, select the owner's box from its
 installed routing snapshot and forward with the per-box secret. It SHALL hold no
 billing, deletion, erasure or custody logic. Forwarding to a box that is already
 running SHALL need no synchronous control-plane lookup. The box SHALL
-authenticate every incoming request with its own per-box credential.
+authenticate every incoming request with its own per-box credential. The router
+SHALL answer a request itself only when its one registry of trusted handlers
+names it (MCP by JSON-RPC method, tool and target; app by path and method), from
+its verified identity (ADR-030). It SHALL forward every other request with its
+original bytes, and `tools/list` SHALL stay the box's.
+
+#### Scenario: Only registered requests are answered on the trusted side
+- **WHEN** a POST to `/mcp` names no registered method, tool and target
+- **THEN** the owner's box receives the original bytes, including a body over the router's read bound or one that is not JSON; only a batch holding a registered request is refused
 
 #### Scenario: Routing survives a control-plane outage
 - **WHEN** the routing snapshot is installed, the owner's box is awake, and control-plane lookups and lifecycle calls are unavailable
