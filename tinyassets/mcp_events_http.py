@@ -21,7 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from tinyassets.mcp_event_webhooks import EventError
-from tinyassets.mcp_events import DEFINITION, NAME, arguments, authorize
+from tinyassets.mcp_events import EVENTS, MAILBOX, NAME, arguments, authorize
 
 VERSION = "2026-07-28"
 LEGACY = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -158,7 +158,8 @@ async def door(scope, receive, send, identity, ask_box):
         ident = document["id"]
         action = document["method"].removeprefix("events/")
         authority = identity.metadata.get("outside_origin")
-        if action == "subscribe":
+        # A mailbox subscribe is checked in the broker, against the agent's registry row.
+        if action == "subscribe" and params.get("name") != MAILBOX:
             granted = await ask_box({**document, "params": {
                 key: params[key] for key in ("_meta", "name", "arguments") if key in params}})
             if set(granted) != {"authorized", "authority", "resultType"} or granted[
@@ -265,7 +266,8 @@ class MCPEventsMiddleware:
                 if params.get("cursor") is not None:
                     raise EventError(-32602, "Invalid catalog cursor")
                 # No owner-specific identifiers or resource inventory in the catalog.
-                result = {"events": [DEFINITION], "ttlMs": 0, "cacheScope": "private"}
+                result = {"events": [d for d, _ in EVENTS.values()], "ttlMs": 0,
+                          "cacheScope": "private"}
             elif method == "events/subscribe":
                 # The router asks this before it subscribes in the broker; it
                 # never sends the delivery block here (see door()).

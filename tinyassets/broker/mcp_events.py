@@ -25,6 +25,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from tinyassets.mcp_event_webhooks import (
@@ -36,7 +37,7 @@ from tinyassets.mcp_event_webhooks import (
     signing_key,
     verify,
 )
-from tinyassets.mcp_events import NAME, arguments
+from tinyassets.mcp_events import EVENTS, MAILBOX, NAME
 
 MAX_TTL = 86400
 MAX_ATTEMPTS = 8
@@ -48,6 +49,8 @@ MAX_SUBSCRIPTIONS = 128
 MAX_PENDING = 512
 #: Deliveries per pass. Each send is bounded at 10 s, so shutdown joins at most this many.
 PASS_LIMIT = 4
+#: The stored arguments a delivery matches on: a workflow's scope or a mailbox's agent.
+_SCOPE = ("command_center_id", "branch_def_id", "agent_id")
 logger = logging.getLogger(__name__)
 
 
@@ -55,12 +58,24 @@ def _iso(stamp):
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _retry_after(value, now):
+    """A 429's Retry-After in seconds (delta or HTTP date), one minute if unreadable."""
+    from email.utils import parsedate_to_datetime
+
+    try:
+        seconds = (float(value) if value.strip().isdigit()
+                   else parsedate_to_datetime(value).timestamp() - now)
+    except (AttributeError, TypeError, ValueError):
+        seconds = 60.0
+    return min(max(seconds, 1.0), float(MAX_TTL))
+
+
 def egress_sender(binding):
     """POST through the owner's egress policy: ``binding(owner)`` is the broker's."""
     from tinyassets.broker.egress import destination
 
-    def send(owner, url, body, headers):
-        return post(url, body, headers,
+    def send(owner, url, body, headers, **options):
+        return post(url, body, headers, **options,
                     resolve=lambda host, port: destination(binding(owner), host, port))
 
     return send
@@ -120,14 +135,15 @@ class EventStore:
         return config
 
     def _identity(self, owner, params):
-        if not isinstance(params, dict) or params.get("name") != NAME:
+        if not isinstance(params, dict) or params.get("name") not in EVENTS:
             raise EventError(-32602, "Unknown event")
-        args = arguments(params.get("arguments"))
+        name = params["name"]
+        args = EVENTS[name][1](params.get("arguments"))
         delivery = params.get("delivery")
         if not isinstance(delivery, dict) or delivery.get("mode") != "webhook":
             raise EventError(-32602, "Only webhook delivery is supported")
         url = callback_url(delivery.get("url"))
-        ident = "sub_" + hashlib.sha256(canonical([owner, url, NAME, args]).encode()).hexdigest()
+        ident = "sub_" + hashlib.sha256(canonical([owner, url, name, args]).encode()).hexdigest()
         return ident, args, url
 
     def _admit_verification(self, owner):
@@ -160,13 +176,22 @@ class EventStore:
             >= MAX_SUBSCRIPTIONS
         )
 
-    def subscribe(self, owner, params, *, authority=None):
-        """``owner`` and ``authority`` come from the router's verified identity."""
+    def subscribe(self, owner, params, *, authority=None, agents=None):
+        """``owner`` and ``authority`` come from the router's verified identity.
+
+        ``agents`` is the ledger's registry check: a ``mailbox.message`` subscribe is
+        admitted only for the caller's own enabled ``mcp_event`` agent (W4).
+        """
         ident, args, url = self._identity(owner, params)
+        scope = canonical({k: v for k, v in args.items() if k in _SCOPE})
         secret = params["delivery"].get("secret")
         signing_key(secret)
         if params.get("cursor") is not None:
             raise EventError(-32602, "This event does not support replay")
+        if params["name"] == MAILBOX:
+            if authority is None or agents is None:
+                raise PermissionError("an agent subscribes from its verified outside identity")
+            agents(owner, origin={k: authority[k] for k in ("client", "family")}, **args)
         ttl = params.get("ttlMs", MAX_TTL * 1000)
         if ttl is not None and (type(ttl) is not int or ttl <= 0):
             raise EventError(-32602, "ttlMs must be a positive integer or null")
@@ -210,7 +235,7 @@ class EventStore:
                 (
                     ident,
                     owner,
-                    canonical({k: args[k] for k in ("command_center_id", "branch_def_id")}),
+                    scope,
                     canonical(config),
                     1,
                     starts,
@@ -219,6 +244,12 @@ class EventStore:
                     (current[0] + 1) if current else 1,
                 ),
             )
+            if params["name"] == MAILBOX:  # One callback per agent: the newest replaces it.
+                for other in conn.execute(
+                    "SELECT id FROM subscriptions WHERE owner=? AND active=1 AND arguments=? "
+                    "AND id!=?", (owner, scope, ident)
+                ).fetchall():
+                    self._revoke(conn, other[0], owner)
         return {
             "id": ident,
             "refreshBefore": _iso(now + lifetime),
@@ -256,6 +287,70 @@ class EventStore:
             "AND state IN ('pending','sending')",
             (ident,),
         )
+
+    def revoke_agent(self, owner, agent_id):
+        """The agent was disabled or left ``mcp_event``: end its doorbell, erase its callback."""
+        if not self.path.exists():
+            return 0
+        with self.db() as conn:
+            found = [row["id"] for row in conn.execute(
+                "SELECT id,arguments FROM subscriptions WHERE owner=? AND active=1", (owner,))
+                if json.loads(row["arguments"]).get("agent_id") == agent_id]
+            for ident in found:
+                self._revoke(conn, ident, owner)
+        return len(found)
+
+    def send_wake(self, owner, target, wake_id, *, mark):
+        """AGENT_WAKE's one send for ``mailbox.message``: IDs only, signed, via owner egress.
+
+        ``target`` is the ledger's claimed agent (its IDs, client, family and mailbox
+        cursor). ``mark()`` makes may-have-sent durable before the first byte leaves.
+        Returns the wake's next state and a detail of status codes only.
+        """
+        now = self.clock()
+        scope = canonical({k: target[k] for k in ("agent_id", "command_center_id")})
+        config = None
+        if self.path.exists():
+            with self.db() as conn:
+                row = conn.execute(
+                    "SELECT * FROM subscriptions WHERE owner=? AND active=1 AND expires>? "
+                    "AND arguments=? ORDER BY starts DESC LIMIT 1", (owner, now, scope)
+                ).fetchone()
+                try:
+                    config = row and self._open(row)
+                    held = (config or {}).get("authority") or {}
+                    if config and (held.get("client"), held.get("family")) != (
+                            target["client"], target["family"]):
+                        raise ValueError("subscription is not this agent's client")
+                except ValueError:
+                    self._revoke(conn, row["id"], owner)
+                    config = None
+        if not config:
+            return "suppressed", {"reason": "no_subscription"}
+        event = "evt_" + hashlib.sha256(
+            canonical([owner, target["agent_id"], wake_id]).encode()).hexdigest()
+        body = canonical({"eventId": event, "name": MAILBOX, "timestamp": _iso(now),
+                          "cursor": None, "data": {k: target[k] for k in (
+                              "command_center_id", "agent_id", "cursor")}}).encode()
+        old = config.get("old_secret") if config.get("rotation_until", 0) > now else None
+        headers = signed_headers(row["id"], event, body, config["secret"], old_secret=old,
+                                 now=now)
+        mark()
+        try:
+            status, _, retry = self.sender(owner, config["url"], body, headers,
+                                           retry_after=True)
+        except PermissionError:  # the owner's egress refused the host: nothing left
+            return "failed", {"reason": "egress_refused"}
+        except Exception:  # a byte may have left; never replayed (no URL, key or body here)
+            return "unknown", {}
+        if 200 <= status < 300:
+            return "sent", {"status": status}
+        if status == 429:
+            return "rate_limited", {"status": 429, "retry_after": _retry_after(retry, now)}
+        if status == 410:
+            with self.db() as conn:
+                self._revoke(conn, row["id"], owner)
+        return "failed", {"status": status}
 
     def _candidates(self, conn, owner, event):
         """Live subscriptions for this run's scope; an unreadable one is revoked."""
@@ -448,8 +543,10 @@ class EventDeliveries:
     retry is owed to this clock alone: it needs no box awake and no other activity.
     """
 
-    def __init__(self, store):
+    def __init__(self, store, wakes=None):
         self.store = store
+        #: Outside-agent wakes (``control_plane/outside_wakes.run_due``) ride the same pass.
+        self.wakes = wakes
         self._task = None
         self._again = False
         self._stopping = False
@@ -464,11 +561,12 @@ class EventDeliveries:
     async def _run(self):
         while self._again and not self._stopping:
             self._again = False
-            try:
-                sent = await asyncio.to_thread(self.store.pump, limit=PASS_LIMIT)
-            except Exception:
-                logger.error("MCP event delivery pass failed")
-                return
+            sent = 0
+            for work in (partial(self.store.pump, limit=PASS_LIMIT), self.wakes):
+                try:  # A failed half is not counted, so it cannot spin the pass.
+                    sent += await asyncio.to_thread(work) if work else 0
+                except Exception:
+                    logger.error("MCP event delivery pass failed")
             # Another pass while anything was due: each owner's next delivery takes
             # its turn. A sent delivery's next due is in the future, so this ends.
             self._again = self._again or sent > 0
@@ -479,7 +577,7 @@ class EventDeliveries:
             await asyncio.gather(self._task, return_exceptions=True)
 
 
-def router_operation(store, identities, doc):
+def router_operation(store, identities, doc, *, agents=None):
     """The router's verified caller subscribes; the request body never names an owner."""
     from tinyassets.broker.admission import require_admitted
 
@@ -491,7 +589,7 @@ def router_operation(store, identities, doc):
         raise ValueError("invalid MCP events request")
     require_admitted(identities, owner)
     if doc["action"] == "subscribe":
-        return store.subscribe(owner, doc["params"], authority=authority)
+        return store.subscribe(owner, doc["params"], authority=authority, agents=agents)
     if doc["action"] == "unsubscribe":
         return store.unsubscribe(owner, doc["params"])
     raise ValueError("invalid MCP events request")

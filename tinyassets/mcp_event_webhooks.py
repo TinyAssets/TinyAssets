@@ -77,7 +77,7 @@ def signed_headers(subscription_id, event_id, body, secret, *, old_secret=None, 
     }
 
 
-def post(url, body, headers, *, resolve):
+def post(url, body, headers, *, resolve, retry_after=False):
     """One bounded POST. ``resolve(host, port)`` returns pinned public addresses.
 
     The broker passes ``broker.egress.destination`` bound to the owner, so every
@@ -114,6 +114,8 @@ def post(url, body, headers, *, resolve):
         content = response.read(4097)
         if len(content) > 4096:
             raise EventError(-32015, "Callback verification failed", reason="response_too_large")
+        if retry_after:  # AGENT_WAKE reads a 429's Retry-After; nothing else is kept
+            return response.status, content, response.getheader("Retry-After")
         return response.status, content
     finally:
         connection.close()

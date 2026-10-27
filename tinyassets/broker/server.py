@@ -216,8 +216,17 @@ class BrokerServer:
 
             self._mcp_events = EventDeliveries(EventStore(
                 self._owner_identities.path.parent / "mcp-events.db",
-                sender=egress_sender(self.egress_binding)))
+                sender=egress_sender(self.egress_binding)), wakes=self._outside_wakes)
         return self._mcp_events
+
+    def _outside_wakes(self):
+        """S3b: outside-agent wakes on the delivery pass, each one through AGENT_WAKE."""
+        from tinyassets.broker.message_ledger import agent_wake
+        from tinyassets.control_plane.outside_wakes import run_due
+
+        ledger = self.ledger[0]
+        return run_due(ledger, now=time.time(), send=lambda wake, now: agent_wake(
+            ledger, self.mcp_events.store, self._ops, wake, now=now))
 
     @property
     def ledger(self):
@@ -623,7 +632,8 @@ class _Connection:
             try:
                 result = await asyncio.to_thread(
                     router_operation, self._server.mcp_events.store,
-                    self._server._owner_identities, doc)
+                    self._server._owner_identities, doc,
+                    agents=self._server.ledger[0].mailbox_subscriber)
                 answer = {"op": "MCP_EVENTS_IS", "result": result}
             except Exception as exc:
                 answer = {"op": "MCP_EVENTS_ERROR", "error": error_answer(exc)}
@@ -643,6 +653,14 @@ class _Connection:
                     result = await asyncio.to_thread(message_ledger.router_operation,
                                                      *self._server.ledger,
                                                      self._server._policy_store, doc)
+                    deliveries = self._server.mcp_events
+                    if op == "ROOM_POST":  # a wake it opened goes out now, not next tick
+                        deliveries.kick()
+                    elif "agent_id" in result and (result["disabled_reason"] or result[
+                            "delivery_method"] not in message_ledger.WAKING):
+                        # Disabled or no longer rung: its doorbell ends, its callback is erased.
+                        await asyncio.to_thread(deliveries.store.revoke_agent,
+                                                doc["principal"], result["agent_id"])
                 answer = {"op": op + "_IS", "result": result}
             except (PermissionError, ValueError) as exc:
                 # A refusal's own reason; an operating-system error names no path.
