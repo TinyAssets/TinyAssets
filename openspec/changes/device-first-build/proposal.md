@@ -13,9 +13,9 @@ correct overall shape from the start, so nothing is built in a wrong shape and r
   2026-10-26"). #5324 deferred them on the founder's 2026-10-26 answer "Narrow it". That
   deferral is withdrawn by the founder's 2026-10-27 instruction to build the plan of record:
   > "review the doc and build only the correct architecture even if that leaves things
-  > broken until the rest is done" (founder, 2026-10-27)
+  > broken until the rest is done" (founder, 2026-10-27T01:23Z)
 
-  Earlier, on 2026-10-26, the founder had asked:
+  Earlier, at 2026-10-26T19:22Z, the founder had asked:
   > "I thought we were going to fix it so that each box doesn't build the full app server?"
 - How owner isolation holds once serving leaves the box is open:
   `docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md`, a founder decision at
@@ -24,7 +24,11 @@ correct overall shape from the start, so nothing is built in a wrong shape and r
 - Registry rows S30 to S35 and N12 are added, each with its planned guard; each slice turns
   its guard on. S33, S34 and S35 read drifted, because their second path is live today
   (inferred liveness in `live_view`, `app_room.cas`, the loop in the box); the rest read
-  unbuilt.
+  unbuilt. The plan's S1 says "listed as unbuilt"; drifted is the registry legend's word
+  for a row whose second path is live.
+- Deviation: each row's "Lands in" follows the plan's Build slices table (S30, S31 in S3;
+  S32, S33 in S4; N12 in M). The plan's own registry table is off by one (S30, S31 in S2;
+  S32, S33 in S3; N12 in S4), and no earlier slice builds those rows.
 
 ## Capabilities
 

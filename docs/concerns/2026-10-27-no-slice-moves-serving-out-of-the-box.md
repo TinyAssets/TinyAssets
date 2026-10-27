@@ -7,6 +7,9 @@ summary: ADR-030 serves owner MCP, app and /api requests on the trusted side, bu
 
 # No build slice moves owner serving out of the box
 
+**Filed:** 2026-10-27
+**Verified:** 2026-10-27, on main da3e21f04
+**Severity:** P1
 **Requirement IDs:** A8, A9, ADR-023, ADR-030, Direction 5.
 **Status:** founder decision at S2a.
 
@@ -14,11 +17,12 @@ summary: ADR-030 serves owner MCP, app and /api requests on the trusted side, bu
 
 - Each box runs the whole app server. `tinyassets/owner_daemon.py` `create_app`
   builds `universe_server.create_streamable_http_app()`. The plan measured this
-  in gVisor at about 145 MiB awake and a 3.7 s cold start.
+  in gVisor at 95 to 145 MiB awake (ADR-030) and a 3.7 s cold start.
 - The served code is large: once the app is built, the box has loaded 212
   `tinyassets` modules, about 117,000 lines (84,000 at import). Those modules
-  name 65 distinct SQLite database files on the owner volume. #5324 cited
-  about 66,000 lines and 113 stores; its method is not recorded.
+  hold 65 SQLite path literals, about 62 file names, some of them broker-side
+  stores. #5324 cited about 66,000 lines and 113 stores; its method is not
+  recorded.
 - Only boxhostd can see an owner volume. `boxes/host_service.py` unshares a
   private mount namespace before serving, so only that namespace and its
   `runsc` children see attachments.

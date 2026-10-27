@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted (founder, 2026-10-26; the deferral in #5324 withdrawn by the
-founder's 2026-10-27 instruction to build the plan of record). Amends ADR-019 and ADR-022 on what a box
-runs.
+Accepted (founder, 2026-10-26). The deferral in #5324 is withdrawn: on
+2026-10-27T01:23Z the founder said to "review the doc and build only the
+correct architecture", and the plan records this decision as A9. Amends ADR-019
+and ADR-022 on what a box runs.
 
 ## Date
 

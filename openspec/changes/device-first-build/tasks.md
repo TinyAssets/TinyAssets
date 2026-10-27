@@ -4,8 +4,8 @@ Live acceptance and Depends on are the plan's words, with code formatting added.
 follows dependencies, so nothing is built in a wrong shape to be rebuilt later. Metering (M) runs
 beside the others from S2 on. Slice names (S0, S2a, ...) are build slices, not registry row IDs.
 
-The checklist items are this repo's additions. An item is ticked when its PR merged. A merged item
-whose live acceptance is still owed says so.
+The checklist items are this repo's additions. An item is ticked in the PR that lands it. A landed
+item whose live acceptance is still owed says so.
 
 ## S0 Repairs
 
@@ -20,7 +20,8 @@ whose live acceptance is still owed says so.
 - [ ] N10 owner authority in the broker (P0-3's prerequisite): action rules, once-approvals, effector consents and outside-client grant modes in `broker/policy.py`'s per-owner store (plan module map: "Room caps and per-agent grant modes as owner policy (N10)"; founder 2026-10-26: trusted per-owner stores are broker-held SQLite), written only from a protected owner session and enforced at OPEN; the box channel cannot widen authority. Connect-flow consent is built with W7/W11, not here.
 - [ ] P0-3 Outside agents distinguishable from the owner: grant modes (full by default, scoped per agent), `check_identity` consults grants, then the claim probe and setting.
 - [x] P0-6 Zero idle tail (#5316). Live acceptance owed: the canary still wakes during a deploy (fix PR #5330 open).
-- [x] P0-7 Admission against a memory budget (#5319).
+- [x] P0-7 Admission against a memory budget (#5319). Live acceptance owed: with thin work only,
+  far more than 6 boxes run at once.
 - [x] P0-8 Multiplexed relay (#5320).
 
 ## S1 Architecture on record
@@ -33,6 +34,8 @@ whose live acceptance is still owed says so.
 
 - [x] ADR-024 to ADR-029 and ADR-031 accepted (#5324); ADR-023 and ADR-030 accepted (#5328).
 - [x] Registry rows S29 (#5322), S30 to S35 and N12 (#5328) listed with their planned guards.
+  Deviation: S33 to S35 read drifted, not unbuilt, because their second path is live today; each
+  row's "Lands in" follows this table, not the plan's registry table, which is off by one.
 
 ## S2 Placement
 
