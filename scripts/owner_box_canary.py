@@ -19,10 +19,30 @@ from scripts._canary_common import (  # noqa: E402
     owner_canary_sign_in,
 )
 
-
 # Broker wake_timeout is 60s. The router holds OWNER_BOX_WAKE for 70s.
 # Sign-in waits longer than both so that wait can finish.
 SIGN_IN_BUDGET = 90
+# Truthy markers the converse envelopes set. Checked before "error" because a
+# held setup carries none. Only these fixed names reach the receipt, never text.
+_TURN_FLAGS = ("needs_connection", "retryable_setup", "auth_required",
+               "auth_scope_required", "home_unavailable", "agent_not_found",
+               "consumer_selection")
+_SEND_STATES = ("pending", "running", "held", "completed", "uncertain")
+
+
+def _reply_failure(value):
+    """A fixed code for a converse result that is not the nonce reply."""
+    if not isinstance(value, dict):
+        return "canary_result_not_object"
+    flag = next((name for name in _TURN_FLAGS if value.get(name)), None)
+    if flag:
+        return "canary_turn_" + flag
+    if "error" in value:
+        return "canary_turn_error"
+    if value.get("already_received"):
+        state = value.get("state")
+        return "canary_send_" + (state if state in _SEND_STATES else "unknown")
+    return "canary_reply_mismatch" if "reply" in value else "canary_reply_missing"
 
 
 def wake(origin: str, *, timeout=180):
@@ -80,8 +100,9 @@ def probe(origin: str, expected_sha: str, *, timeout=180):
             value = json.loads(_extract_tool_text(tool))
         except ValueError:
             raise RuntimeError("canary_reply_missing") from None
-    if not isinstance(value, dict) or value.get("reply", "").strip() != nonce:
-        raise RuntimeError("canary_reply_mismatch")
+    reply = value.get("reply") if isinstance(value, dict) else None
+    if not isinstance(reply, str) or reply.strip() != nonce:
+        raise RuntimeError(_reply_failure(value))
     # No response text, owner identifiers or credentials enter the deploy receipt.
     return True
 
