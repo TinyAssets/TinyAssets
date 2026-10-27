@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import httpx
 import pytest
@@ -66,6 +67,13 @@ def test_deploy_drains_real_request_then_router_wakes_published_image(
     asyncio.run(exercise())
     assert results == [{"slept": 1, "asleep": 0, "busy": 1, "unresponsive": 0,
                          "incomplete": 0}]
+    # The router returns on the client's disconnect; the box ends that stream on its own
+    # clock. A forced sleep refuses work in flight, so wait (bounded) for the box to
+    # settle it: a request that never leaves the box's activity count fails here.
+    deadline = time.monotonic() + 10
+    while (active := manager._rpc(manager.boxes[uid])["active"]):
+        assert time.monotonic() < deadline, f"alice's box still holds {active} request(s)"
+        time.sleep(0.05)
     # Alice was left serving; her own ordinary sleep comes later. Bob slept.
     drive(broker.server.routing.sleep("alice"))
     assert original.poll() == 0 and other.poll() == 0
