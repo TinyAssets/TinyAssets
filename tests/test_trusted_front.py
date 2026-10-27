@@ -222,7 +222,8 @@ def test_an_oversized_or_unreadable_body_reaches_the_box_byte_for_byte(door):
     oversized = call("board")[:-1] + b" " * (1_048_576 + 1) + b"}"
     bodies = [oversized, b"not json",
               b'{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}',
-              b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":NaN}}']
+              b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":NaN}}',
+              b"[" * 200_000 + b"]" * 200_000]  # too deep to parse: the box refuses it
     for body in bodies:
         assert post(body, chunk=65536).text == "box"
     assert boxed == bodies and answered == []

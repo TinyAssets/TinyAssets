@@ -62,7 +62,9 @@ class TrustedFront:
 
     MCP requests are keyed by JSON-RPC method, tool name and ``target``; app
     requests by path (a trailing ``/`` names the subtree) and method. Every
-    other request is forwarded to the owner's box with its original bytes.
+    other request on an owner door is forwarded to the owner's box with its
+    original bytes; a path outside the owner doors (discovery, ``/mcp/pulse``,
+    a non-canonical spelling) gets the router's own shared answer, as before.
     """
 
     def __init__(self):
@@ -124,7 +126,7 @@ class TrustedFront:
         replay = _replay_receive(messages, receive)
         try:
             document = None if oversized else json.loads(body)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):  # The box answers these itself.
             document = None
         batch = document if isinstance(document, list) else [document]
         found = [self.mcp_routes[key] for key in map(mcp_key, batch) if key in self.mcp_routes]
