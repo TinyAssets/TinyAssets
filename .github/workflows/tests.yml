@@ -162,6 +162,26 @@ jobs:
       - name: Run every structural guard with repair instructions
         run: python -m scripts.ci_structural_guards
 
+  # The TypeScript platform workspace (ADR-032): typecheck, then its tests in the
+  # real workerd runtime. Not a required check yet, and nothing here deploys.
+  platform-tests:
+    name: platform-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
   # The required surface runs as SHARDS in parallel, then ONE aggregate job
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs

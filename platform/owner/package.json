@@ -1,0 +1,15 @@
+{
+  "name": "@tinyassets/owner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.9",
+    "@cloudflare/workers-types": "5.20261027.1",
+    "@types/node": "22.20.5",
+    "vitest": "5.0.5",
+    "wrangler": "4.154.0"
+  }
+}

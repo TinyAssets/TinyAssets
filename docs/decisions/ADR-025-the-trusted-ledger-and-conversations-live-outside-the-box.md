@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted (founder, 2026-10-26). Extends ADR-019 and N10. Trusted
-per-owner stores are broker-held SQLite (founder, 2026-10-26).
+Accepted (founder, 2026-10-26). Extends ADR-019 and N10. Store technology
+superseded by ADR-032: the trusted per-owner stores, broker-held SQLite here
+(founder, 2026-10-26), live in each owner's SQLite-backed Durable Object; the
+placement principle stands.
 
 ## Date
 

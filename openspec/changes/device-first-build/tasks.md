@@ -1,3 +1,5 @@
+From 2026-10-27 the build order is `clean-sheet-platform` (ADR-032); the plan's later slices (S4, S6–S10) are rebuilt there on the new architecture.
+
 Build order is the founder's 2026-10-26 re-sequence: "Trusted front → S3a ledger → S5a collections → P0-3 code → S3b events → ADR-030 tool-by-tool → S2a loop worker → S4/S5b", then the plan's later slices.
 
 Each slice below carries its row of the plan's Build slices table ("TinyAssets — Agents

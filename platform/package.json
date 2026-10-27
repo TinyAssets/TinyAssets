@@ -1,0 +1,18 @@
+{
+  "name": "tinyassets-platform",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "owner"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}
