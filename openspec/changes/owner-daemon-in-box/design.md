@@ -559,10 +559,18 @@ per-owner `policy.db` holds one document (action rules, operation kinds,
 standing grants, egress, spend), one-use approvals and effector consents; the
 router alone widens them (`/app/api/policy`, `/app/api/consents`); the box
 channel reads, previews, decides and narrows; and `broker/authority_gate.py`
-decides every box OPEN. On the first wake of a pending owner, boxhostd lifts
-`.action-policy.db` and the box consent files from the attached volume before
-the sandbox starts (`boxes/authority_import.py`), deletes them, and the broker
-imports the rows under the wake's owner lock.
+decides every box OPEN on facts the box cannot write: no ledger fact exempts a
+model call (the router consents a model source when it is connected), an
+unconfigured agent label decides as `main`, task and binding labels are not
+accepted, and a git call must be its granted verb's own endpoint. On the first
+wake of a pending owner, boxhostd lifts `.action-policy.db` and the box consent
+files from the attached volume before the sandbox starts
+(`boxes/authority_import.py`: plain tables only, immutable private copy, hard
+SQLite limits, a step budget and a deadline), holds the rows in
+`/var/lib/boxhostd/state/authority-import`, then deletes the files; the broker
+imports the rows under the wake's owner lock. Until then box operations wait;
+an untrusted import ends in ask-first defaults with an alarm, and the owner's
+own first write supersedes it.
 
 ### C9. Wake index is two columns (T7)
 Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, and drop the

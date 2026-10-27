@@ -2342,9 +2342,8 @@ def _grant_workspace_consent(
     missing = [destination for destination in destinations
                if not is_consent_active(udir, sink=WORKSPACE_SINK, destination=destination)]
     if missing:
-        return {"error": "consent_route_required", "request_pending": True,
-                "consents": [{"sink": WORKSPACE_SINK, "destination": destination}
-                             for destination in missing]}
+        # The page grants what its own card shows; this answer names nothing.
+        return {"error": "consent_route_required", "request_pending": True}
     resolve_request(
         udir,
         request_id,
@@ -2450,11 +2449,10 @@ def _grant_patch_intake(
             "request_pending": True,
         }
     # N10: the broker holds the grant, and only the owner's protected view
-    # (the router's /app/api/consents) writes it. This answer closes the
-    # request once that grant is observed; until then it names what to grant.
+    # (the router's /app/api/consents) writes it, from what its own card shows.
+    # This answer closes the request once that grant is observed.
     if not consent_is_active(udir, receiver_id):
-        return {"error": "consent_route_required", "request_pending": True,
-                "consents": [{"sink": PATCH_INTAKE_SINK, "destination": receiver_id}]}
+        return {"error": "consent_route_required", "request_pending": True}
     if not resolve_request(
         udir, request_id, status="answered", answer=answer, feedback=feedback,
         dont_ask_again=False, decision="allowed",

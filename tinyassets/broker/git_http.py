@@ -11,7 +11,13 @@ import ssl
 import time
 
 from tinyassets.storage import outbound_connections as oc
-from tinyassets.storage.workspace_authority import connection_git_host, require_git_scope
+from tinyassets.storage.workspace_authority import (
+    connection_git_host,
+    has_git_scope,
+    require_git_scope,
+)
+
+GIT_REQUEST_FIELDS = frozenset({"host", "method", "target", "agent", "incarnation", "upload"})
 
 
 def credential_endpoints(resource):
@@ -30,6 +36,28 @@ def credential_endpoints(resource):
             oc.OutboundEndpoint(host, f"/{repo}.git/{service}", ("POST",)),
         ))
     return tuple(endpoints)
+
+
+def git_target(resource, verb, request) -> tuple[str, str]:
+    """The ``(kind, repo)`` an exact git request reaches, or PermissionError.
+
+    The verb must be one of the connection's own git scopes, the host its git
+    host, and the target exactly one of that verb's two endpoints: a git_read
+    reaches only upload-pack, a git_write only receive-pack, of that one repo.
+    """
+    kind, repo = require_git_scope(verb)
+    if not isinstance(request, dict) or set(request) != GIT_REQUEST_FIELDS:
+        raise PermissionError("invalid git request")
+    if not has_git_scope(resource, kind, repo):
+        raise PermissionError("git verb is not one of the connection's scopes")
+    if request["host"] != connection_git_host(resource):
+        raise PermissionError("git host is not the connection's")
+    service = "git-upload-pack" if kind == "git_read" else "git-receive-pack"
+    if (request["method"], request["target"]) not in {
+            ("GET", f"/{repo}.git/info/refs?service={service}"),
+            ("POST", f"/{repo}.git/{service}")}:
+        raise PermissionError("git target is not the verb's own endpoint")
+    return kind, repo
 
 
 class CheckedStream:
@@ -56,10 +84,7 @@ def dispatch(broker, grant_id, verb, request, *, body=None, guard=None,
     if initial is None:
         raise oc.GrantResolutionError("git grant unavailable")
     resource, stamp = initial
-    kind, _ = require_git_scope(verb)
-    if not isinstance(request, dict) or set(request) != {
-            "host", "method", "target", "agent", "incarnation", "upload"}:
-        raise PermissionError("invalid git request")
+    kind, _ = git_target(resource, verb, request)
     service = "git-upload-pack" if kind == "git_read" else "git-receive-pack"
     url = f"https://{request['host']}{request['target']}"
     canonical = oc._parse_canonical_https_url(url, allowed_ports=frozenset({443}))

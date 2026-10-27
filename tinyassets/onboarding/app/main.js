@@ -8171,6 +8171,9 @@
       const box=document.createElement('section'); box.className='rtab-body inline-approval';
       box.setAttribute('aria-label','Action approval');
       const title=document.createElement('h3'), destination=document.createElement('p');
+      // The exact request a once-approval is minted for (N10): method, URL, body.
+      const wire=document.createElement('pre'); wire.setAttribute('aria-label','Exact request');
+      wire.style.cssText='white-space:pre-wrap;word-break:break-all;margin:0';
       const draft=document.createElement('textarea'); draft.setAttribute('aria-label','Action draft');
       draft.style.cssText='width:100%;box-sizing:border-box;min-height:5em';
       const details=document.createElement('p'), note=document.createElement('p');
@@ -8187,11 +8190,21 @@
       const signIn=document.createElement('a'); signIn.href='/app/owner-sign-in';
       signIn.target='_blank'; signIn.rel='noopener'; signIn.textContent='Sign in to approve'; signIn.hidden=true;
       if(NATIVE||DESKTOP_SHELL){signIn.removeAttribute('href');signIn.textContent=ownerProofUnavailable();}
-      box.append(title,destination,draft,details,scope,predicate,controls,signIn,note);
+      box.append(title,destination,wire,draft,details,scope,predicate,controls,signIn,note);
       function show(value){
         preview=value;
         title.textContent=value.title;
         destination.textContent=value.destination;
+        const env=value.action&&value.action.envelope;
+        wire.hidden=!env;
+        if(env){
+          const call=env.arguments||{}, sent=call.request||{};
+          wire.textContent=[String(call.verb||'').toUpperCase()+' '+env.destination,
+            ...(sent.headers!=null?['Headers: '+JSON.stringify(sent.headers)]:[]),
+            ...(sent.header_name?['Credential header: '+sent.header_name]:[]),
+            ...('body' in sent?['Body: '+(typeof sent.body==='string'?sent.body:
+              JSON.stringify(sent.body,null,2))]:[])].join('\n');
+        }
         if(!dirty){
           originalDraft=typeof value.draft==='string'?value.draft:JSON.stringify(value.draft??null,null,2);
           draft.value=originalDraft;
@@ -9178,13 +9191,31 @@
   }
 
   // The owner's consents are router-served (N10); a box answer only observes them.
-  async function postConsent(action,sink,destination){
+  async function postConsentBody(body){
     const response=await fetch("/app/api/consents",{method:"POST",credentials:"same-origin",
       headers:{...authHeaders(),"Content-Type":"application/json"},
-      body:JSON.stringify({action,sink,destination})});
+      body:JSON.stringify(body)});
     const result=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(result.reason||result.error||"consent refused");
     return result;
+  }
+  async function postConsent(action,sink,destination){
+    return postConsentBody({action,sink,destination});
+  }
+  // What this card itself asks the owner to allow, in words, and the router
+  // grants that say exactly that. A box answer never names what is granted.
+  function cardConsents(req){
+    const a=req.action||{}, text=v=>typeof v==="string"&&v.trim()?v.trim():"";
+    if(a.type==="grant_patch_intake"&&text(a.receiver_id))
+      return {label:"sending reports to the intake "+text(a.receiver_id),
+        grants:[{action:"grant",sink:"patch_intake",destination:text(a.receiver_id)}]};
+    if(a.type==="grant_workspace_consent"&&Array.isArray(a.consents)&&a.consents.length&&
+       a.consents.every(c=>text(c))&&text(a.connection_id)&&text(a.repo)&&text(a.host))
+      return {label:a.consents.map(c=>text(c).replace(/^workspace_/,"")).join(", ")+" of "+
+        text(a.repo)+" on "+text(a.host)+" through connection "+text(a.connection_id),
+        grants:[{action:"grant_workspace",connection_id:text(a.connection_id),
+          repo:text(a.repo),host:text(a.host),consents:a.consents.map(text)}]};
+    return null;
   }
   async function answerRail(req, mode, note, buttons){
     let itemAnswered=false;
@@ -9261,17 +9292,30 @@
             scopes:action.scopes||[],git_host:action.git_host||""}});
         await refreshRail();
       }else r=await MCP.answerRequest(payload);
-      if(mode==='accept'&&r&&r.error==='consent_route_required'&&Array.isArray(r.consents)){
-        try{
-          for(const consent of r.consents)
-            await postConsent('grant',consent.sink,consent.destination);
-          r=await InlineApprovals.post('answer',payload);
-        }catch(error){r={error:'consent_not_granted',detail:error.message,request_pending:true};}
+      if(mode==='accept'&&r&&r.error==='consent_route_required'){
+        // Grant only what this card names, shown to the owner first (N10).
+        const plan=cardConsents(req);
+        if(!plan)r={error:'consent_not_granted',request_pending:true,
+          detail:'this request does not name a consent this app can grant'};
+        else if(req.consentShown!==plan.label){
+          req.consentShown=plan.label;
+          r={error:'consent_confirmation_required',request_pending:true,
+            detail:'Accept again to allow '+plan.label+'.'};
+        }else{
+          try{
+            for(const grant of plan.grants)await postConsentBody(grant);
+            delete req.consentShown;
+            r=req.action.type==='grant_patch_intake'?await InlineApprovals.post('answer',payload)
+              :await MCP.answerRequest(payload);
+          }catch(error){r={error:'consent_not_granted',detail:error.message,request_pending:true};}
+        }
       }
       if(installAsk&&(installLogin!==MCP._loginEpoch||installScope!==queueScope))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
-        if(mode === "accept" && r.request_pending === true){
+        if(r.error === "consent_confirmation_required"){
+          note.textContent = r.detail;
+        } else if(mode === "accept" && r.request_pending === true){
           // Reconnection may have paused this agent. Keep the actionable error
           // here; do not promise an unpowered agent has received a relay.
           note.textContent = "Setup is not confirmed: " + (r.detail || r.error)

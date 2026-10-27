@@ -358,6 +358,12 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     )
     ledger.grant_connection(grant_id="grant-model", connection_id="conn-model",
                             owner_user_id="owner")
+    from tests.support.broker_double import grant_consent
+
+    # N10: no model call is exempt at the broker; connecting a model source on
+    # the router is the owner's consent to call it.
+    grant_consent(shared, owner="owner", sink="authenticated_external_call",
+                  destination="compute:conn-model")
     fields = dict(universe_id="center", owner_user_id="owner", access_method="api_key_http",
                   protocol="openai_chat", ref="grant-model", model="reply-model")
     definition = ProviderDefinition(id=_definition_id(**fields), **fields,
@@ -952,7 +958,7 @@ def test_box_channel_policy_write_is_refused_whatever_the_proof(box, proof_kind)
     root.mkdir(exist_ok=True)
     proof = "a" * 64
     with sqlite3.connect(root / "owner-sessions.db") as db:
-        db.execute("CREATE TABLE owner_sessions (session_hash TEXT PRIMARY KEY, "
+        db.execute("CREATE TABLE IF NOT EXISTS owner_sessions (session_hash TEXT PRIMARY KEY, "
                    "identity_json TEXT, expires_at REAL)")
         db.execute("INSERT INTO owner_sessions VALUES (?, ?, ?)", (
             hashlib.sha256(proof.encode()).hexdigest(),
@@ -990,7 +996,7 @@ def test_connection_committer_comes_from_live_owner_session(box, monkeypatch, pr
         "user_id": "other" if proof_kind == "foreign" else "owner"}),
         "expires_at": 0 if proof_kind == "expired" else time.time() + 1000}
     with sqlite3.connect(root / "owner-sessions.db") as db:
-        db.execute("CREATE TABLE owner_sessions (session_hash TEXT PRIMARY KEY, "
+        db.execute("CREATE TABLE IF NOT EXISTS owner_sessions (session_hash TEXT PRIMARY KEY, "
                    "identity_json TEXT, expires_at REAL)")
         db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", tuple(session.values()))
     monkeypatch.setattr("tinyassets.onboarding.owner_sessions.router_owner_session",

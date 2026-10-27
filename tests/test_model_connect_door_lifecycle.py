@@ -5,6 +5,7 @@ import asyncio
 import json
 import multiprocessing
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -299,6 +300,12 @@ def lifecycle(tmp_path, monkeypatch, request):
         db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
                    (owner_sessions.hashed("owner-cookie"), json.dumps({"user_id": "owner"}),
                     time.time() + 600))
+    # Production mounts one /data for the router and the broker, so the broker
+    # rechecks the router's session rows (N10: the model connect grants consent).
+    # This harness splits the roots; give the broker the same row.
+    (custody / ".runtime").mkdir(exist_ok=True)
+    shutil.copy2(router / ".runtime" / "owner-sessions.db",
+                 custody / ".runtime" / "owner-sessions.db")
     app = OwnerRouter(Starlette(routes=[
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/oauth/client-metadata.json", handle_client_metadata),
@@ -347,6 +354,7 @@ def _box_call(rig, grant, connection, *, succeeds):
     code = """
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from tinyassets import owner_runtime, policy_rules

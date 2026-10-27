@@ -454,7 +454,9 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
     daemons = OwnerDaemons(
         runtime, admission, volumes, relays, RUNTIME,
         # 2 GiB: headroom for the agent plus one subscription CLI run.
-        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(2 * 1024**3))))
+        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(2 * 1024**3))),
+        # N10: persistent and root-only, unlike the runtime directory (tmpfs).
+        authority_holding=state / "authority-import")
     daemons.images = Images(rootfs.parent, state / "images.json", rootfs)
     service = HostService(admission, volumes, relays, daemons)
     stop = threading.Event()

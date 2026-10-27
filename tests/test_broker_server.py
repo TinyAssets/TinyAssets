@@ -96,7 +96,7 @@ class Ledger:
         return object(), object()
 
     def grant_requires_inference_usage(self, grant_id):
-        """The broker's own fact: this harness's one grant is a model source (N10 gate)."""
+        """Usage accounting's question; the N10 gate never asks it (box-writable)."""
         return True
 
 
@@ -417,6 +417,11 @@ def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
         return {"op": "BOX_ADMITTED", "uid": 300001, "quota": 1024**3}
 
     monkeypatch.setattr(box_admission, "resolve_owner", admitted)
+    # This harness's ledger is not a real one, so the owner-authority gate cannot
+    # read its facts; test_n10_authority proves the gate against a real ledger.
+    from tinyassets.broker import authority_gate
+
+    monkeypatch.setattr(authority_gate, "check", lambda *_a, **_k: None)
     with _connect(broker) as sock:
         sock.sendall(rf.control(rf.CONNECTION, {
             "op": "BOX_CHANNEL", "principal": "alice"}))

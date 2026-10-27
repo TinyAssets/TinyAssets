@@ -230,12 +230,15 @@ async def handle_model_connect(request):
 
     try:
         result = await run_in_threadpool(run)
-        if result.get("status") == "provisioned" and not result.get("request_ref"):
+        if result.get("status") == "provisioned":
             from tinyassets.onboarding.source_connect import model_source
 
             if model_source(result.get("allowed_endpoints", []),
                             result.get("destination", "")) is not None:
-                result["model_confirmation"] = {"grant_id": result["grant_id"]}
+                await run_in_threadpool(onboarding.consent_model_source, request,
+                                        identity.user_id, result)
+                if not result.get("request_ref"):
+                    result["model_confirmation"] = {"grant_id": result["grant_id"]}
         return JSONResponse(result, headers=_HEADERS)
     except (hosted.HostedAuthError, FlowError) as exc:
         detail = getattr(exc, "detail", "") if operation in {"deposit", "rotate"} else ""

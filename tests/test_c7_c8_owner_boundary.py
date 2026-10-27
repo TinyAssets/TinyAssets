@@ -144,6 +144,13 @@ def test_git_public_destination_scopes_credential_to_service(git_server, chain, 
 
     monkeypatch.setattr(oc, "_default_open_socket", open_local)
     chain.state["responses"] = [{"body": b"public git response"}]
+    if host != "git.test":
+        # N10 review: a git call reaches only its own verb's endpoints on the
+        # connection's git host; another host is refused before any dial.
+        with pytest.raises(PermissionError):
+            _git_request(git_server, host)
+        assert chain.state.get("requests", []) == []
+        return
     heads, body = _git_request(git_server, host)
     assert len(heads) == 1
     assert body == b"public git response"

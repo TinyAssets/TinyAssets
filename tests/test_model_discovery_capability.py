@@ -77,6 +77,11 @@ def rig(tmp_path, monkeypatch):
         owner_user_id="owner",
 
     )
+    from tests.support.broker_double import grant_consent
+
+    # N10: the router's model connect consents its calls; no model call is exempt.
+    grant_consent(tmp_path, owner="owner", sink="authenticated_external_call",
+                  destination="compute:models")
     definition = definitions.register_definition(
         universe_id="u-models",
         owner_user_id="owner",

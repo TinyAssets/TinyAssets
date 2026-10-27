@@ -70,6 +70,12 @@ def seed_http_assignment(
 
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
+    from tests.support.broker_double import grant_consent
+
+    # N10: connecting a model source on the router consents its calls; the
+    # broker exempts no model call.
+    grant_consent(base_path, owner=owner_user_id, sink="authenticated_external_call",
+                  destination="compute:synthetic")
     definition = register_definition(
         universe_id=universe_id,
         owner_user_id=owner_user_id,

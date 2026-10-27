@@ -86,7 +86,7 @@ ERROR_CLASSES = frozenset({
     "GrantPathRefused",
     "SsrfValidationError", "fenced", "duplicate", "expired", "refused",
     "InferenceUsageStopped", "InferenceUsageRequired", "ProviderAuthorityHeldError",
-    "policy_ask", "policy_hand_off", "consent_missing",
+    "policy_ask", "policy_hand_off", "consent_missing", "authority_import_pending",
 })
 #: N10: the box channel's policy operations. None of them widens authority.
 BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify",
@@ -1039,6 +1039,12 @@ class _Connection:
             return False
         return True
 
+    def _cancel_owner_streams(self, owner: str) -> None:
+        with self._server._streams_lock:
+            streams = [s for s in self._server._streams.values() if s.namespace == owner]
+        for stream in streams:
+            self._server.cancel(stream)
+
     def _owner_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Recheck the protected-session proof against the router's live rows."""
         from tinyassets.broker.owner_identities import validate_principal
@@ -1060,8 +1066,9 @@ class _Connection:
                 raise PolicyRefused("owner authority widens only through the router")
             if self._role == BOX:
                 # N10 cutover: boxhostd lifts the old authority on the wake, under
-                # the owner lock; a box acting while it is pending gets defaults.
-                store.abandon_import(owner)
+                # the owner lock. Until it settles a box waits (retryable); a box
+                # can never end the import.
+                store.require_settled(owner)
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
@@ -1074,11 +1081,7 @@ class _Connection:
                 with store.lock(owner):
                     result = store.write(owner, doc[proof_key], doc["expected_generation"],
                                          doc["policy"]).projection()
-                    with self._server._streams_lock:
-                        streams = [s for s in self._server._streams.values()
-                                   if s.namespace == owner]
-                    for stream in streams:
-                        self._server.cancel(stream)
+                    self._cancel_owner_streams(owner)
             elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
                 request = doc["request"]
                 if not isinstance(request, dict) or set(request) != {
@@ -1101,8 +1104,12 @@ class _Connection:
                                                      active_only=doc["active_only"])}
             elif action == "consent_revoke" and set(doc) == {
                     "op", "action", "principal", "sink", "destination"}:
-                result = {"revoked": store.revoke_consent(owner, doc["sink"],
-                                                          doc["destination"])}
+                with store.lock(owner):
+                    result = {"revoked": store.revoke_consent(owner, doc["sink"],
+                                                              doc["destination"])}
+                    if result["revoked"]:
+                        # Like a policy write: a live call under the consent ends now.
+                        self._cancel_owner_streams(owner)
             elif action == "consent_grant" and set(doc) == {
                     "op", "action", "principal", proof_key, "sink", "destination"}:
                 from tinyassets.broker.authority_gate import require_grantable
@@ -1122,15 +1129,16 @@ class _Connection:
                         or not all(isinstance(doc[k], str) for k in (
                             "grant_id", "connection_id", "verb", "destination"))):
                     raise PolicyRefused("invalid once approval")
+                from tinyassets.broker.authority_gate import once_request_digest
+
                 # The exact wire request the box's OPEN will carry, digested
                 # the way OPEN digests it.
-                wire = {"url": doc["destination"]}
-                wire.update({k: v for k, v in doc["request"].items()
-                             if k in {"headers", "body", "header_name"}})
                 result = store.issue_once(owner, doc[proof_key], doc["expected_generation"],
-                                          request_digest(grant_id=doc["grant_id"],
-                                                         connection_id=doc["connection_id"],
-                                                         verb=doc["verb"], request=wire))
+                                          once_request_digest(
+                                              grant_id=doc["grant_id"],
+                                              connection_id=doc["connection_id"],
+                                              verb=doc["verb"], request=doc["request"],
+                                              destination=doc["destination"]))
             else:
                 raise PolicyRefused("unsupported policy operation")
             answer = {"op": "OWNER_POLICY_RESULT", "result": result}

@@ -770,6 +770,12 @@ _AUTHORITY_REFUSALS = {
                  "this connection's destination; the owner grants it in the protected "
                  "view before the effect can fire."),
     },
+    "authority_import_pending": {
+        "reason": "authority_import_pending", "error_kind": "authority_import_pending",
+        "retryable": True,
+        "hint": ("Your owner's rules are still moving to the platform after an update; "
+                 "nothing was sent. Retry this call shortly."),
+    },
 }
 
 
@@ -1274,7 +1280,6 @@ def _run(
             "destination": destination,
         }
 
-    wire_request: dict[str, Any] = {"url": url}
     headers = request.get("headers")
     user_agent_error = _declared_user_agent_error(headers)
     if user_agent_error:
@@ -1285,8 +1290,7 @@ def _run(
             "connection_id": connection_id,
             "destination": destination,
         }
-    if headers is not None:
-        wire_request["headers"] = headers
+    body = None
     if "body" in request:
         body, transform_error = apply_body_transforms(
             request.get("body"), run_state,
@@ -1300,24 +1304,24 @@ def _run(
                 "matched_output_key": matched_key,
                 "connection_id": connection_id,
             }
-        wire_request["body"] = body
-    header_name = _str_field(request, "header_name")
-    if header_name:
-        wire_request["header_name"] = header_name
+    from tinyassets.broker.authority_gate import once_wire
+
+    # One builder with the router's once-approval digest (N10), so an owner's
+    # approval of the card's exact request matches this call's OPEN.
+    wire_request: dict[str, Any] = once_wire(
+        url, {**request, "body": body} if "body" in request else request)
 
     proxy = None
     from tinyassets.bound_requests import take_policy_approval
 
     policy_approval = take_policy_approval() if approved_agent else None
     # The broker's OPEN is the binding check (N10): it spends the one-use
-    # approval or matches the standing grant itself. These are labels only.
+    # approval or matches the standing grant itself. The agent is a label the
+    # broker distrusts; no task or binding label is sent (the broker would not
+    # accept it).
     authority = {"agent": rule_agent} if rule_agent else {}
     if policy_approval is not None:
         authority["approval"] = policy_approval
-    if isinstance(scoped, dict):
-        authority["binding_revision"] = str(scoped.get("binding_revision") or "")
-        if scoped.get("task_id"):
-            authority["task_id"] = str(scoped["task_id"])
     try:
         proxy = _open_connection_proxy(
             data_root=data_root,

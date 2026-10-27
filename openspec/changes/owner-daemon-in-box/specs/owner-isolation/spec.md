@@ -84,7 +84,8 @@ lifecycle operation at a time. Two one-shot migrations are the only
 exceptions to these rules, and each SHALL be deleted once it has run: the
 cutover migration, and the N10 authority import, in which boxhostd lifts an
 owner's old action-policy and consent files out of the stopped volume before
-the box starts, refusing links and oversized files, and deletes them.
+the box starts, refusing links, oversized files and anything but plain tables,
+and deletes them only once their rows are held on the host.
 
 #### Scenario: Destroying an owner deletes the volume without a walk
 - **WHEN** an owner's deletion job reaches the destroy step
@@ -271,19 +272,26 @@ transaction (N10). Only the router SHALL widen that authority (a policy write,
 a one-use approval, a consent grant), on its owner channel with the owner's
 protected-session proof; the box channel SHALL refuse every widening whatever
 proof it presents, and MAY read, preview, decide and narrow. The broker SHALL
-decide a box's OPEN by the owner's rules for every call except a model source
-known from its own ledger, SHALL spend a matching one-use approval or match a
-standing grant for an ask, and SHALL require the owner's consent for every
-non-read call. An owner admitted before this change SHALL import its box-held
-rules and consents once, lifted by boxhostd from the attached volume before
-the box starts and imported by the broker under the wake's owner lock.
+decide every box OPEN, model calls included, by the owner's rules and by
+nothing the box can write: an agent label the owner never configured decides as
+`main`, a box-supplied task or binding label is not accepted, a git call reaches
+only the endpoints of its own granted verb and repository, and a GET or HEAD
+with a body or a method override is a write. It SHALL spend a matching one-use
+approval or match a site or always standing grant for an ask, and SHALL require
+the owner's consent for every non-read call before spending an approval.
+Connecting a model source through the router SHALL grant consent to call it. An
+owner admitted before this change SHALL import its box-held rules and consents
+once, lifted by boxhostd from the attached volume before the box starts and
+imported by the broker under the wake's owner lock; until then box operations
+SHALL wait (retryably), and an import that cannot be trusted SHALL end in
+ask-first defaults with an alarm, never in laxer defaults.
 
 #### Scenario: A box cannot widen its owner's authority
 - **WHEN** a box sends a policy write, a one-use approval or a consent grant, with or without a session proof
 - **THEN** the broker refuses it and the owner's policy generation is unchanged
 
 #### Scenario: An agent's direct OPEN meets the owner's rules
-- **WHEN** a box opens a non-model call that the owner's rules ask first for, without an approval
+- **WHEN** a box opens a call that the owner's rules ask first for, without an approval, whatever ledger facts or labels the box wrote
 - **THEN** the broker refuses the stream before any byte is sent and receipts the refusal
 - **AND** a one-use approval of exactly that request admits it once, and not after the policy generation changes
 
@@ -293,8 +301,9 @@ the box starts and imported by the broker under the wake's owner lock.
 
 #### Scenario: The box's old authority is imported once
 - **WHEN** the broker wakes a pending owner whose volume holds its old rules and consents
-- **THEN** boxhostd lifts and deletes the files before the box starts, and the broker imports the valid entries, counting the invalid ones in one receipt
-- **AND** a linked, multiply linked or oversized file yields no rows, defaults and an alarm
+- **THEN** boxhostd lifts the files before the box starts and deletes them once the rows are held, and the broker imports the valid entries, adding ask-first defaults if any were invalid
+- **AND** a linked, oversized or non-table file yields no rows, keeps the files, and ends in ask-first defaults and an alarm
+- **AND** a box operation before the import settles is refused retryably and cannot end the import
 - **AND** a wake of a settled owner never reads the files
 
 ### Requirement: Platform recovery is separate from owner restore

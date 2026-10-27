@@ -1248,6 +1248,8 @@ async def _handle_consents(request: Any) -> Any:
     if refused is not None:
         return refused
     data = await _read_small_json(request)
+    if isinstance(data, dict) and data.get("action") == "grant_workspace":
+        return await _grant_workspace_consents(owner, proof, data)
     if (not isinstance(data, dict) or set(data) != {"action", "sink", "destination"}
             or data["action"] not in {"grant", "revoke"}
             or not isinstance(data["sink"], str) or not isinstance(data["destination"], str)):
@@ -1260,6 +1262,74 @@ async def _handle_consents(request: Any) -> Any:
         result, refused = await _owner_authority_submit(
             owner, "consent_revoke", sink=data["sink"], destination=data["destination"])
     return refused or JSONResponse(result, headers=_NO_STORE)
+
+
+def consent_model_source(request, owner, result):
+    """N10: connecting a model source on the router is the owner's consent to call it.
+
+    No model call is exempt from the broker's gate, and only an interactive
+    owner session on this router channel can grant a consent. Without one the
+    connection stands but its calls wait for the Consents panel; the result
+    says so instead of reporting a working source.
+    """
+    import logging
+
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.authority_gate import CALL_SINK
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.broker.policy_submit import submit
+    from tinyassets.onboarding.owner_sessions import require
+
+    try:
+        session = require(request, owner=owner)
+        submit(_base_path(), owner, "consent_grant",
+               session_proof={"session_hash": session["session_hash"]},
+               sink=CALL_SINK, destination=result["destination"])
+    except (PermissionError, PolicyRefused, RuntimeError) as exc:
+        # A broker refusal reason is a fixed, secret-free sentence.
+        logging.getLogger(__name__).warning(
+            "model source consent not granted: %s%s", type(exc).__name__,
+            f" ({exc})" if isinstance(exc, PolicyRefused) else "")
+        result["consent_required"] = {"sink": CALL_SINK, "destination": result["destination"]}
+        return
+    result["consented"] = True
+
+
+async def _grant_workspace_consents(owner: str, proof: Any, data: dict) -> Any:
+    """A workspace consent card's grants, spelled here as the sink reads them.
+
+    The page sends the connection, repository, host and operations its card
+    showed; the destination string is built by the one function the sink uses,
+    and the broker checks the connection is the owner's, live, at that host.
+    """
+    from starlette.responses import JSONResponse
+
+    from tinyassets.storage.workspace_authority import (
+        WORKSPACE_SINK,
+        GitScopeError,
+        workspace_consent_destination,
+    )
+
+    fields = ("connection_id", "repo", "host")
+    try:
+        if (set(data) != {"action", *fields, "consents"}
+                or not all(isinstance(data[key], str) for key in fields)
+                or not isinstance(data["consents"], list) or not 0 < len(data["consents"]) <= 3):
+            raise GitScopeError("invalid workspace consent")
+        destinations = [workspace_consent_destination(
+            consent, data["repo"], connection_id=data["connection_id"], host=data["host"])
+            for consent in data["consents"]]
+    except (GitScopeError, TypeError, ValueError):
+        return JSONResponse({"error": "invalid_consent"}, status_code=400, headers=_NO_STORE)
+    granted = []
+    for destination in destinations:
+        result, refused = await _owner_authority_submit(
+            owner, "consent_grant", session_proof=proof, sink=WORKSPACE_SINK,
+            destination=destination)
+        if refused is not None:
+            return refused
+        granted.append(result)
+    return JSONResponse({"consents": granted}, headers=_NO_STORE)
 
 
 async def _handle_account_timezone(request: Any) -> Any:

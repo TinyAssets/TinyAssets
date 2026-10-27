@@ -60,8 +60,9 @@ def _raise_for(end: dict[str, Any]) -> None:
         raise EgressPolicyRefused({"host": detail["host"], "port": detail["port"]},
                                   detail["generation"], detail["decision"])
     outcome = end.get("outcome")
-    if outcome == "refused" and error_class in {"policy_ask", "policy_hand_off",
-                                                "consent_missing"}:
+    from tinyassets.broker.authority_gate import REFUSALS
+
+    if outcome == "refused" and error_class in REFUSALS:
         raise AuthorityRefused(error_class)
     if error_class == "GrantPathRefused":
         raise GrantPathRefused("requested method and path are not covered by the connection grant")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import http.client
 import json
 import logging
@@ -38,10 +39,13 @@ class Box:
 class OwnerDaemons:
     def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
                  memory_bytes=1024**3, startup_timeout=60, images=None,
-                 answer_probe=4, answer_silence=600):
+                 answer_probe=4, answer_silence=600, authority_holding=None):
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
         self.directory = Path(directory)
+        # N10: lifted authority waits here for the broker. Production passes
+        # host-private persistent storage, so a lift survives a host restart.
+        self.authority_holding = Path(authority_holding or self.directory / "authority-import")
         self.memory_bytes, self.startup_timeout = memory_bytes, startup_timeout
         # A wake retries a silent box's status for answer_probe seconds. It is
         # replaced only once nothing has answered for answer_silence seconds,
@@ -154,8 +158,8 @@ class OwnerDaemons:
         if record["uid"] != box.uid:
             raise BoxError("broker owner reservation changed")
         # N10: lifted before the sandbox exists, so the box never sees the files.
-        box.authority = (self._lift_authority(box.uid, mount)
-                         if record.get("import_authority") else self._settle_authority(box.uid))
+        box.authority = (self._lift_authority(box, mount)
+                         if record.get("import_authority") else self._settle_authority(box))
         relay = self.relays.bind(box.owner, box.uid)
         box.secret = record["secret"]
         directory, secret = self._paths(box.uid, box.secret)
@@ -169,22 +173,34 @@ class OwnerDaemons:
                            volume_mount=volume_mount,
                            volume_generation=record["volume_generation"], **launch_options)
 
-    def _held_authority(self, uid):
-        held = self.directory / "authority-import"
-        held.mkdir(mode=0o700, exist_ok=True)
-        if held.is_symlink() or not held.is_dir():
+    def _held_authority(self, box):
+        """Root-only holding area, one file per (uid, owner): never another owner's rows."""
+        held = self.authority_holding
+        held.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = held.lstat()
+        if (held.is_symlink() or not held.is_dir() or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077):
             raise BoxError("authority import directory is not host-private")
-        return held, held / str(uid)
+        key = hashlib.sha256(box.owner.encode()).hexdigest()[:32]
+        return held, held / f"{box.uid}-{key}.json"
 
-    def _lift_authority(self, uid, mount):
-        """Extract once; hold the rows until the broker stops asking (it settled)."""
-        from tinyassets.boxes.authority_import import extract
+    def _lift_authority(self, box, mount):
+        """Extract once; hold the rows until the broker stops asking (it settled).
 
-        held, path = self._held_authority(uid)
+        The volume's files are removed only after a lift with no error is held,
+        so a failed or partial lift never loses the owner's old rules.
+        """
+        from tinyassets.boxes.authority_import import extract, remove
+
+        held, path = self._held_authority(box)
         if path.is_file():
-            return json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            remove(Path(mount.mountpoint))
+            return {**payload, "held": True}
         payload = extract(Path(mount.mountpoint), held / "work")
-        stage = held / f".{uid}.stage"
+        if payload["errors"]:
+            return {**payload, "held": False}
+        stage = held / f".{path.name}.stage"
         stage.unlink(missing_ok=True)
         fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -192,10 +208,11 @@ class OwnerDaemons:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(stage, path)
-        return payload
+        remove(Path(mount.mountpoint))
+        return {**payload, "held": False}
 
-    def _settle_authority(self, uid):
-        _held, path = self._held_authority(uid)
+    def _settle_authority(self, box):
+        _held, path = self._held_authority(box)
         path.unlink(missing_ok=True)
         return None
 
