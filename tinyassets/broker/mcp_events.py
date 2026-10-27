@@ -176,11 +176,12 @@ class EventStore:
             >= MAX_SUBSCRIPTIONS
         )
 
-    def subscribe(self, owner, params, *, authority=None, agents=None):
+    def subscribe(self, owner, params, *, authority=None, agents=None, grant=None):
         """``owner`` and ``authority`` come from the router's verified identity.
 
         ``agents`` is the ledger's registry check: a ``mailbox.message`` subscribe is
-        admitted only for the caller's own enabled ``mcp_event`` agent (W4).
+        admitted only for the caller's own enabled ``mcp_event`` agent (W4). ``grant``
+        is the broker's check of the client's grant as stamped (P0-3).
         """
         ident, args, url = self._identity(owner, params)
         scope = canonical({k: v for k, v in args.items() if k in _SCOPE})
@@ -190,8 +191,9 @@ class EventStore:
             raise EventError(-32602, "This event does not support replay")
         mailbox = params["name"] == MAILBOX
         if mailbox:
-            if authority is None or agents is None:
+            if authority is None or agents is None or grant is None:
                 raise PermissionError("an agent subscribes from its verified outside identity")
+            grant(owner, authority, args["command_center_id"])
             origin = {k: authority[k] for k in ("client", "family")}
             agents(owner, origin=origin, **args)
         ttl = params.get("ttlMs", MAX_TTL * 1000)
@@ -317,11 +319,13 @@ class EventStore:
                 self._revoke(conn, ident, owner)
         return len(found)
 
-    def send_wake(self, owner, target, wake_id, *, mark):
+    def send_wake(self, owner, target, wake_id, *, mark, admits):
         """AGENT_WAKE's one send for ``mailbox.message``: IDs only, signed, via owner egress.
 
         ``target`` is the ledger's claimed agent (its IDs, client, family and mailbox
         cursor). ``mark()`` makes may-have-sent durable before the first byte leaves.
+        ``admits(authority)`` is the broker's grant check of the subscription's saved
+        authority (P0-3): one it no longer admits is revoked and nothing is sent.
         Returns the wake's next state and a detail of status codes only.
         """
         now = self.clock()
@@ -342,6 +346,9 @@ class EventStore:
                 except ValueError:
                     self._revoke(conn, row["id"], owner)
                     config = None
+                if config and not admits(config["authority"]):
+                    self._revoke(conn, row["id"], owner)
+                    return "suppressed", {"reason": "grant"}
         if not config:
             return "suppressed", {"reason": "no_subscription"}
         event = "evt_" + hashlib.sha256(
@@ -597,7 +604,7 @@ class EventDeliveries:
             await asyncio.gather(self._task, return_exceptions=True)
 
 
-def router_operation(store, identities, doc, *, agents=None):
+def router_operation(store, identities, doc, *, agents=None, grant=None):
     """The router's verified caller subscribes; the request body never names an owner."""
     from tinyassets.broker.admission import require_admitted
 
@@ -609,7 +616,8 @@ def router_operation(store, identities, doc, *, agents=None):
         raise ValueError("invalid MCP events request")
     require_admitted(identities, owner)
     if doc["action"] == "subscribe":
-        return store.subscribe(owner, doc["params"], authority=authority, agents=agents)
+        return store.subscribe(owner, doc["params"], authority=authority, agents=agents,
+                               grant=grant)
     if doc["action"] == "unsubscribe":
         return store.unsubscribe(owner, doc["params"], authority=authority)
     raise ValueError("invalid MCP events request")

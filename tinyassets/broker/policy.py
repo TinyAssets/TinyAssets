@@ -128,6 +128,21 @@ def open_account_db(path: Path, admissions, owner: str,
     return db
 
 
+def outside_denied() -> bool:
+    """The one outside-client off switch, as this process sees it (P0-3, deny-only)."""
+    return os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1"
+
+
+def outside_admits(store, owner: str, authority) -> bool:
+    """Whether the broker's grant still admits saved outside work's ``authority``: the
+    same generation, not revoked, not switched off. No store or an unreadable grant: no."""
+    try:
+        store.outside_standing(owner, authority)
+    except Exception:  # noqa: BLE001 - a refused or unreadable grant never admits
+        return False
+    return True
+
+
 def outside_scopes(value: object) -> list:
     """Exact ``{universe, agent, capability}`` triples; a wildcard is never a scope."""
     if (not isinstance(value, list) or len(value) > 64 or any(
@@ -468,7 +483,7 @@ class PolicyStore:
     @staticmethod
     def _grant(row, authenticated_at) -> dict:
         """The grant a call is admitted under, or a refusal naming why."""
-        if os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1":
+        if outside_denied():
             raise PolicyRefused("outside clients are switched off")
         if row is None:
             raise PolicyRefused("outside client has no grant")
@@ -514,6 +529,24 @@ class PolicyStore:
         with closing(self._connect(owner)) as db:
             row = db.execute("SELECT * FROM outside_clients WHERE client=?", (client,)).fetchone()
         return self._grant(row, authenticated_at)
+
+    def outside_standing(self, owner: str, authority: dict) -> dict:
+        """The grant saved work was admitted under (a stamped ``authority``), unchanged
+        since: the same generation, not revoked, not switched off. Else a refusal."""
+        grant = self.outside_check(owner, authority["client"], authority.get("authenticated_at"))
+        if grant["generation"] != authority.get("generation"):
+            raise PolicyRefused("outside client authority changed")
+        return grant
+
+    def outside_live(self, owner: str, client: str) -> bool:
+        """Whether a client's grant stands at all: a row, not revoked, not switched off."""
+        if outside_denied():
+            return False
+        _outside_client(client)
+        with closing(self._connect(owner)) as db:
+            row = db.execute("SELECT mode FROM outside_clients WHERE client=?",
+                             (client,)).fetchone()
+        return row is not None and row["mode"] != "revoked"
 
     def outside_list(self, owner: str) -> list[dict]:
         with closing(self._connect(owner)) as db:

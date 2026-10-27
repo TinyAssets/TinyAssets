@@ -59,6 +59,7 @@ from tinyassets import rpc_frames as rf
 from tinyassets.broker.admission import owner_call
 from tinyassets.broker.fence import Fence, Fenced
 from tinyassets.broker.ops import OpIdInvalid, OpStore
+from tinyassets.broker.policy import outside_admits
 from tinyassets.storage.outbound_connections import BrokerStreamStop
 
 _LOG = logging.getLogger(__name__)
@@ -233,7 +234,8 @@ class BrokerServer:
 
         ledger = self.ledger[0]
         return run_due(ledger, now=time.time(), send=lambda wake, now: agent_wake(
-            ledger, self.mcp_events.store, self._ops, wake, now=now))
+            ledger, self.mcp_events.store, self._ops, wake, now=now,
+            grants=self._policy_store))
 
     @property
     def ledger(self):
@@ -599,7 +601,7 @@ class _Connection:
                 try:
                     result = await asyncio.to_thread(
                         box_operation, deliveries.store, self._box_owner, doc,
-                        partial(_outside_admits, self._server._policy_store, self._box_owner))
+                        partial(outside_admits, self._server._policy_store, self._box_owner))
                     answer = {"op": "BOX_RESULT", "result": result}
                     if doc.get("action") == "capture" and result["queued"]:
                         deliveries.kick()
@@ -641,7 +643,8 @@ class _Connection:
                 result = await asyncio.to_thread(
                     router_operation, self._server.mcp_events.store,
                     self._server._owner_identities, doc,
-                    agents=self._server.ledger[0].mailbox_subscriber)
+                    agents=self._server.ledger[0].mailbox_subscriber,
+                    grant=partial(_mailbox_grant, self._server._policy_store))
                 answer = {"op": "MCP_EVENTS_IS", "result": result}
             except Exception as exc:
                 answer = {"op": "MCP_EVENTS_ERROR", "error": error_answer(exc)}
@@ -1252,12 +1255,23 @@ class _Connection:
 
     def _end_outside_streams(self, owner: str, client: str) -> None:
         """P0-3: a changed grant ends that client's open streams; its next call meets it.
-        A stream registered after this snapshot rechecks the grant itself (``_open``)."""
+        A stream registered after this snapshot rechecks the grant itself (``_open``).
+
+        Its ledger agents' open wakes are suppressed and their doorbells revoked, their
+        callbacks erased (S3b M3): the agent subscribes again under the new grant. A
+        wake claimed meanwhile meets the grant at its claim and its send.
+        """
         with self._server._streams_lock:
             streams = [s for s in self._server._streams.values()
                        if s.namespace == owner and s.outside == client]
         for stream in streams:
             self._server.cancel(stream)
+        try:
+            ledger = self._server.ledger[0]
+            for agent_id in ledger.suppress_client(owner, client, "grant"):
+                self._server.mcp_events.store.revoke_agent(owner, agent_id)
+        except Exception:  # noqa: BLE001 - committed; the claim and send checks still hold
+            _LOG.exception("ALARM: outside agent wakes not revoked with their grant")
 
     def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import local_operation, validate
@@ -1790,14 +1804,17 @@ class _Fenced(BrokerStreamStop):
     pass
 
 
-def _outside_admits(store, owner: str, authority: Any) -> bool:
-    """P0-3: whether the broker's grant still admits an outside client's saved authority:
-    the same generation, not revoked. An unreadable grant never admits."""
-    try:
-        grant = store.outside_check(owner, authority["client"], authority.get("authenticated_at"))
-    except Exception:  # noqa: BLE001 - no store, a refused or unreadable grant: not admitted
-        return False
-    return grant["generation"] == authority.get("generation")
+def _mailbox_grant(store, owner: str, authority: dict, command_center_id: str) -> None:
+    """P0-3: a ``mailbox.message`` subscribe stands on the client's broker grant as the
+    router stamped it, and a scoped client needs ``read_graph`` in that command center."""
+    from tinyassets.broker.policy import PolicyRefused
+
+    if store is None:
+        raise PolicyRefused("policy store unavailable")
+    grant = store.outside_standing(owner, authority)
+    if grant["mode"] == "scoped" and {"universe": command_center_id, "agent": "main",
+                                      "capability": "read_graph"} not in grant["scopes"]:
+        raise PolicyRefused("outside client capability not granted")
 
 
 def _owner(principal: Any) -> str:

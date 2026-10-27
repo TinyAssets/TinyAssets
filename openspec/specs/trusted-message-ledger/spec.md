@@ -104,10 +104,19 @@ SHALL suppress the wake and revoke the agent's callbacks. A send with no answer,
 whose journal shows a byte may have left, SHALL settle `unknown` with a `wake_sent` receipt
 and SHALL never be replayed; one the journal proves unsent SHALL be due again.
 
-Owed, not built here: revoking an outside client's grant SHALL end its wakes and erase its
-callbacks as disabling the agent does (M3, waits on #5343's broker-held grants, and blocks S31
-reading converged once that lands); bounding `ledger_wakes` growth and the per-pass scan of
-every owner's ledger belong to S4's caps (L5).
+Revoking, rescoping or otherwise changing an outside client's grant (P0-3) SHALL end its
+agents' wakes and erase their callbacks as disabling the agent does: the grant change
+suppresses their open wakes and revokes their `mailbox.message` subscriptions, a claim
+SHALL suppress a wake whose client's grant is revoked or switched off, and a send SHALL
+revoke a subscription whose saved grant generation is no longer the client's. A
+`mailbox.message` subscribe SHALL stand on the client's broker grant as the router stamped
+it, and a scoped client SHALL need `read_graph` in the agent's command center. Owed, not
+built here: bounding `ledger_wakes` growth and the per-pass scan of every owner's ledger
+belong to S4's caps (L5).
+
+#### Scenario: A revoked grant rings nothing
+- **WHEN** the owner revokes the grant of a subscribed `mcp_event` agent's client with mail waiting
+- **THEN** no wake is sent and the agent's subscription and callback are erased
 
 #### Scenario: The callback answers 429
 - **WHEN** a wake is answered 429 with Retry-After 120 and another message arrives

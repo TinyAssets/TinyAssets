@@ -323,7 +323,7 @@ def _keyed(grants, monkeypatch, *scopes):
 def test_a_key_revoke_stops_its_stored_run_automation_and_subscription(grants, monkeypatch):
     from functools import partial
 
-    from tinyassets.broker.server import _outside_admits
+    from tinyassets.broker.policy import outside_admits as _outside_admits
     from tinyassets.outside_authority import run_identity, stored_identity
     from tinyassets.router_credentials import _dispatch
     from tinyassets.runs import _connect, create_run
@@ -371,7 +371,7 @@ def test_a_key_revoke_fails_loudly_when_the_broker_cannot_answer(grants, monkeyp
 def test_a_withdrawn_owner_refuses_every_outside_grant(grants):
     from tests.support.admission import drive, projection
     from tinyassets.broker.admission import local_mutate
-    from tinyassets.broker.server import _outside_admits
+    from tinyassets.broker.policy import outside_admits as _outside_admits
 
     stamped = admit(outside(CHATGPT))
     identities = grants.store._admissions
@@ -438,7 +438,7 @@ def test_an_open_forwarded_stream_ends_when_its_grant_changes(grants, monkeypatc
 
 
 def test_the_deny_switch_reaches_the_broker_too(grants, monkeypatch):
-    from tinyassets.broker.server import _outside_admits
+    from tinyassets.broker.policy import outside_admits as _outside_admits
 
     stamped = admit(outside(CHATGPT))
     monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")

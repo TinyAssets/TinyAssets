@@ -158,13 +158,10 @@ async def door(scope, receive, send, identity, ask_box):
         ident = document["id"]
         action = document["method"].removeprefix("events/")
         authority = identity.metadata.get("outside_origin")
-        # A mailbox subscribe is checked in the broker, against the agent's registry row.
-        if action == "subscribe" and params.get("name") == MAILBOX:
-            # The box's admission is skipped, so the outside kill switches are checked here.
-            from tinyassets.outside_authority import OutsideClientAuthority
-
-            await run_in_threadpool(OutsideClientAuthority(data_dir()).require_switched_on)
-        elif action == "subscribe":
+        # A mailbox subscribe is checked in the broker, against the agent's registry row
+        # and the client's grant as the router's admission stamped it (P0-3; that
+        # admission already refused a revoked client and TINYASSETS_OUTSIDE_DENY).
+        if action == "subscribe" and params.get("name") != MAILBOX:
             granted = await ask_box({**document, "params": {
                 key: params[key] for key in ("_meta", "name", "arguments") if key in params}})
             if set(granted) != {"authorized", "authority", "resultType"} or granted[

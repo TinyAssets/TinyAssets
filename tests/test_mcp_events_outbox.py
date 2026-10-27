@@ -216,7 +216,7 @@ def test_the_broker_revokes_a_subscription_its_grant_no_longer_admits(home, chan
                                                                      monkeypatch):
     from functools import partial
 
-    from tinyassets.broker.server import _outside_admits
+    from tinyassets.broker.policy import outside_admits as _outside_admits
 
     grants, bound = _outside_grant(home, monkeypatch)
     channel.store.subscribe(OWNER, channel.document, authority=bound)

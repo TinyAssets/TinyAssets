@@ -18,6 +18,7 @@ from tinyassets.broker.mcp_events import EventDeliveries, EventStore, error_answ
 from tinyassets.broker.message_ledger import LedgerRefused, MessageLedger, agent_wake
 from tinyassets.broker.ops import OpStore, new_op_id
 from tinyassets.broker.policy import PolicyStore, account_path
+from tinyassets.broker.server import _mailbox_grant
 from tinyassets.control_plane.outside_wakes import run_due
 from tinyassets.mcp_event_webhooks import canonical
 from tinyassets.mcp_events import EVENTS, MAILBOX
@@ -44,6 +45,16 @@ def wk(rig, tmp_path):  # noqa: F811
     store = EventStore(tmp_path / "mcp-events.db", sender=sender)
     ops = OpStore(tmp_path / "ops.db")
     ledger = MessageLedger(rig.root, rig.identities)
+    # P0-3: each client's broker grant, full by default as its first verified call makes it.
+    grants = PolicyStore(rig.root, rig.identities)
+    for origin in (MUSE, DOT):
+        grants.outside_admit("alice", origin["client"], "mcp", None)
+    grant = partial(_mailbox_grant, grants)
+
+    def stamp(origin):
+        """An origin as the router's admission stamps it."""
+        current = grants.outside_check("alice", origin["client"], None)
+        return {**origin, "authenticated_at": 1.0, "generation": current["generation"]}
 
     def register(origin, method="mcp_event"):
         return rig.call("OUTSIDE_AGENTS", "register", origin, session_proof=PROOF,
@@ -51,13 +62,12 @@ def wk(rig, tmp_path):  # noqa: F811
                         display_name="Muse", delivery_method=method, recipe_id=None)["agent_id"]
 
     def subscribe(agent, origin=MUSE, **kwargs):
-        return store.subscribe("alice", mailbox(agent, **kwargs),
-                               authority={**origin, "authenticated_at": 1.0},
-                               agents=ledger.mailbox_subscriber)
+        return store.subscribe("alice", mailbox(agent, **kwargs), authority=stamp(origin),
+                               agents=ledger.mailbox_subscriber, grant=grant)
 
     def tick(now=None):
         return run_due(ledger, now=time.time() if now is None else now,
-                       send=partial(agent_wake, ledger, store, ops))
+                       send=partial(agent_wake, ledger, store, ops, grants=grants))
 
     def table(name):
         with rig.db() as db:
@@ -65,6 +75,7 @@ def wk(rig, tmp_path):  # noqa: F811
 
     return SimpleNamespace(rig=rig, sent=sent, answers=answers, store=store, ops=ops,
                            ledger=ledger, register=register, subscribe=subscribe, tick=tick,
+                           grants=grants, grant=grant, stamp=stamp,
                            table=table, receipts=lambda: [r["kind"] for r in table(
                                "ledger_receipts") if r["kind"] not in ("read", "reply")])
 
@@ -134,7 +145,8 @@ def test_an_ambiguous_send_is_unknown_and_never_replayed(wk):
         [open_wake] = [w for w in wk.table("ledger_wakes") if w["state"] == "pending"]
         op_id, at = new_op_id(), time.time()
         assert wk.ops.admit("agent_wake:alice", op_id, "digest").kind == "new"
-        assert wk.ledger.claim_wake("alice", open_wake["wake_id"], op_id=op_id, now=at)
+        assert wk.ledger.claim_wake("alice", open_wake["wake_id"], op_id=op_id, now=at,
+                                    live=lambda owner, client: True)
         if mark:
             wk.ops.mark_may_have_sent("agent_wake:alice", op_id)
         wk.ops.recover()  # the restart
@@ -240,7 +252,8 @@ def test_wakes_ride_the_brokers_event_delivery_pass(wk):
     muse = wk.register(MUSE)
     wk.subscribe(muse)
     wk.rig.post(None, f"dm:{muse}", cmid="c1")
-    server = SimpleNamespace(ledger=(wk.ledger, None), _ops=wk.ops)
+    server = SimpleNamespace(ledger=(wk.ledger, None), _ops=wk.ops,
+                             _policy_store=wk.grants)
     server.mcp_events = EventDeliveries(wk.store, wakes=partial(
         BrokerServer._outside_wakes, server))
 
@@ -321,7 +334,8 @@ def test_a_subscribe_racing_a_disable_and_a_suppressing_claim_leave_no_live_secr
             raise LedgerRefused("not this caller's mcp_event agent")
 
     with pytest.raises(LedgerRefused):
-        wk.store.subscribe("alice", mailbox(muse), authority=MUSE, agents=disabled_meanwhile)
+        wk.store.subscribe("alice", mailbox(muse), authority=wk.stamp(MUSE),
+                           agents=disabled_meanwhile, grant=wk.grant)
     with wk.store.db() as conn:
         assert [tuple(r) for r in conn.execute("SELECT active, config FROM subscriptions")] == [
             (0, "")]
@@ -393,3 +407,73 @@ def test_a_callback_refused_before_any_connection_fails_not_unknown(wk, monkeypa
     [wake] = wk.table("ledger_wakes")
     assert (wake["state"], json.loads(wake["receipt_json"])["reason"]) == ("failed", "not_sent")
     assert wk.receipts() == ["failed"]
+
+
+# -- M3: a changed or revoked outside-client grant ends wakes (P0-3) ---------------
+
+
+def _subscriptions(wk):
+    with wk.store.db() as conn:
+        return {tuple(r) for r in conn.execute("SELECT active, config FROM subscriptions")}
+
+
+@pytest.mark.verifies("trusted-message-ledger:AGENT_WAKE sends once, through the op journal")
+def test_a_revoked_grant_suppresses_the_wake_and_erases_the_callback(wk):
+    from tinyassets.broker.server import OWNER, _Connection
+
+    muse = wk.register(MUSE)
+    wk.subscribe(muse)
+    wk.rig.post(None, f"dm:{muse}", cmid="c1")
+    peer = object.__new__(_Connection)
+    peer._role = OWNER
+    peer._server = SimpleNamespace(
+        _policy_store=wk.grants, _streams={}, _streams_lock=__import__("threading").Lock(),
+        ledger=(wk.ledger, None), mcp_events=EventDeliveries(wk.store))
+    answer = peer._owner_policy({"op": "OWNER_POLICY", "action": "outside_revoke",
+                                 "principal": "alice", "client": MUSE["client"]})
+    assert answer["op"] == "OWNER_POLICY_RESULT"
+    assert [w["state"] for w in wk.table("ledger_wakes")] == ["suppressed"]
+    assert _subscriptions(wk) == {(0, "")}  # the callback URL and key are gone
+    assert wk.tick() == 0 and wk.sent == []
+    with pytest.raises(PermissionError):  # it cannot subscribe again while revoked
+        wk.subscribe(muse)
+
+
+@pytest.mark.verifies("trusted-message-ledger:AGENT_WAKE sends once, through the op journal")
+def test_the_claim_and_the_send_recheck_the_grant_themselves(wk):
+    muse = wk.register(MUSE)
+    wk.subscribe(muse)
+    wk.rig.post(None, f"dm:{muse}", cmid="c1")
+    # A revoke the broker's hook missed (a crash): the claim suppresses and revokes.
+    wk.grants.outside_revoke("alice", MUSE["client"])
+    assert wk.tick() == 0 and wk.sent == []
+    assert _subscriptions(wk) == {(0, "")}
+    # A rescope (a new generation) the hook missed: the send meets the subscription's
+    # stale grant, revokes it and sends nothing.
+    dot = wk.register(DOT, "mcp_event")
+    wk.subscribe(dot, origin=DOT)
+    wk.grants.outside_set("alice", PROOF, client=DOT["client"], source="mcp", mode="scoped",
+                          scopes=[{"universe": "alpha", "agent": "main",
+                                   "capability": "read_graph"}], expected_generation=1)
+    wk.rig.post(None, f"dm:{dot}", cmid="c2")
+    assert wk.tick() == 0 and wk.sent == []
+    assert json.loads(wk.table("ledger_wakes")[-1]["receipt_json"])["reason"] == "grant"
+    assert all(active == 0 for active, _ in _subscriptions(wk))
+    wk.subscribe(dot, origin=DOT)  # under the new grant it subscribes again, and rings
+    wk.rig.post(None, f"dm:{dot}", cmid="c3")
+    assert wk.tick() == 1 and len(wk.sent) == 1
+
+
+@pytest.mark.verifies("native-mcp-events:mailbox.message rings only the agent's own client")
+def test_a_scoped_client_subscribes_only_with_read_graph_in_its_command_center(wk):
+    muse = wk.register(MUSE)
+    wk.grants.outside_set("alice", PROOF, client=MUSE["client"], source="mcp", mode="scoped",
+                          scopes=[{"universe": "alpha", "agent": "main",
+                                   "capability": "write_graph"}], expected_generation=1)
+    with pytest.raises(PermissionError, match="not granted"):
+        wk.subscribe(muse)
+    assert _subscriptions(wk) == set()
+    wk.grants.outside_set("alice", PROOF, client=MUSE["client"], source="mcp", mode="scoped",
+                          scopes=[{"universe": "alpha", "agent": "main",
+                                   "capability": "read_graph"}], expected_generation=2)
+    assert wk.subscribe(muse)["id"].startswith("sub_")
