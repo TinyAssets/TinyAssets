@@ -2061,7 +2061,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),
         Route("/app/api/outside-agents", outside_agents, methods=["GET", "POST"]),
         Route("/app/api/agent-messages", agent_messages, methods=["GET", "POST"]),
-        Route("/app/api/board", owner_board, methods=["GET", "POST"]),
+        Route("/app/api/board", owner_board, methods=["GET", "POST", "DELETE"]),
         Route("/app/wakes", handle_wakes, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/soul", handle_soul, methods=["GET", "POST"]),

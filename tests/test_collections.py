@@ -176,7 +176,7 @@ def test_an_owners_collections_are_bounded_in_rows_and_bytes(broker, monkeypatch
 
     store = broker.store
     monkeypatch.setattr(conversations, "MAX_OWNER_ROWS", 2)
-    monkeypatch.setattr(conversations, "MAX_OWNER_BYTES", 10)
+    monkeypatch.setattr(conversations, "MAX_OWNER_BYTES", 24)  # a body counts twice: row, history
     a = store.write("alice", caller="alice", collection="room:a:main", row_id="x", body="1234",
                     expected_etag="", private=False)
     store.write("alice", caller="alice", collection="room:b:main", row_id="x", body="1234",
@@ -186,7 +186,7 @@ def test_an_owners_collections_are_bounded_in_rows_and_bytes(broker, monkeypatch
                     expected_etag="", private=False)
     with pytest.raises(PermissionError, match="owner's collections are full"):
         store.write("alice", caller="alice", collection="room:a:main", row_id="x",
-                    body="caféé", expected_etag=a["etag"], private=False)  # 7 bytes
+                    body="caféé", expected_etag=a["etag"], private=False)  # 16 + 14 - 4
     assert store.write("alice", caller="alice", collection="room:a:main", row_id="x",
                        body="123456", expected_etag=a["etag"], private=False)["revision"] == 2
     assert len(_rows(broker.root)) == 2
@@ -312,7 +312,7 @@ def test_one_visitor_fills_only_its_own_share_and_the_owner_clears(broker, monke
 
     store, room = broker.store, "room:chess:main"
     monkeypatch.setattr(conversations, "MAX_WRITER_ROWS", 2)
-    monkeypatch.setattr(conversations, "MAX_COLLECTION_BYTES", 6)
+    monkeypatch.setattr(conversations, "MAX_COLLECTION_BYTES", 12)
 
     def put(caller, row_id, body="1", collection=room):
         return store.write("alice", caller=caller, collection=collection, row_id=row_id,
@@ -324,7 +324,7 @@ def test_one_visitor_fills_only_its_own_share_and_the_owner_clears(broker, monke
         put("mallory", "c")
     put("cara", "c1")
     with pytest.raises(PermissionError, match="the collection is full"):
-        put("alice", "big", body="1234")  # 3 used + 4 > 6
+        put("alice", "big", body="1234")  # 3 rows and their history, 6, + 8 > 12
     put("alice", "big", body="1234", collection="room:go:main")
     alice = Identity(user_id="alice", username="alice")
     with pytest.raises(BrokerRefused, match="only the owner"):
@@ -339,3 +339,82 @@ def test_one_visitor_fills_only_its_own_share_and_the_owner_clears(broker, monke
     assert put("cara", "z")["seq"] == 5
     assert store.pull("alice", caller="cara", collection=room, after=4, limit=10)[
         "cursor"] == 5
+
+
+def _history(root, owner="alice"):
+    with sqlite3.connect(account_path(root, owner, "conversations.db")) as db:
+        return db.execute("SELECT collection, key, revision, op, body_json, writer "
+                          "FROM collection_history ORDER BY collection, key, revision").fetchall()
+
+
+def test_history_records_each_write_delete_and_clear_in_its_transaction(broker):
+    store, room = broker.store, "room:go:main"
+
+    def put(row_id, body, etag="", caller="bob", op="write"):
+        return store.write("alice", caller=caller, collection=room, row_id=row_id, body=body,
+                           expected_etag=etag, private=False, history_op=op)
+
+    a = put("a", "1")
+    a = put("a", "2", a["etag"], caller="cara", op="move")
+    b = put("b", "x")
+    with pytest.raises(Conflict):  # a lost swap writes no history
+        put("a", "3", "stale")
+    assert store.delete("alice", caller="alice", collection=room, row_id="a",
+                        expected_etag=a["etag"]) == {"deleted": 1}
+    assert store.clear("alice", caller="alice", collection=room, writer="bob") == {
+        "deleted": 1}
+    # A delete or clear drops the row's bodies and keeps one body-less entry.
+    assert _history(broker.root) == [(room, "a", 3, "delete", "", "alice"),
+                                     (room, "b", 2, "clear", "", "alice")]
+    assert put("a", "again")["revision"] == 4  # never a revision the row had
+    assert b["revision"] == 1
+    with pytest.raises(ValueError, match="history_op"):
+        put("c", "1", op="delete")
+
+
+def test_history_keeps_the_last_revisions_and_counts_in_the_byte_bounds(broker, monkeypatch):
+    from tinyassets.broker import conversations
+
+    store = broker.store
+    monkeypatch.setattr(conversations, "MAX_REVISIONS", 3)
+    row = {"etag": ""}
+    for n in range(5):
+        row = store.write("alice", caller="alice", collection="board", row_id="t",
+                          body=f"v{n}", expected_etag=row["etag"], private=False)
+    assert [(r[2], r[4]) for r in _history(broker.root)] == [(3, "v2"), (4, "v3"), (5, "v4")]
+    assert [e["body"] for e in store.history("alice", caller="bob", collection="board",
+                                             row_id="t")["entries"]] == ["v2", "v3", "v4"]
+    # Six bytes of history and two of the row: a new row of two needs four more.
+    monkeypatch.setattr(conversations, "MAX_COLLECTION_BYTES", 9)
+    with pytest.raises(PermissionError, match="the collection is full"):
+        store.write("alice", caller="alice", collection="board", row_id="u", body="ab",
+                    expected_etag="", private=False)
+    # A write that prunes an old entry frees its bytes in the same transaction.
+    assert store.write("alice", caller="alice", collection="board", row_id="t", body="v5",
+                       expected_etag=row["etag"], private=False)["revision"] == 6
+
+
+def test_history_is_visible_as_its_row_is(broker):
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker.client import BrokerRefused, collection_request
+
+    store, room = broker.store, "room:chess:main"
+    mine = store.write("alice", caller="bob", collection=room, row_id="p", body="secret",
+                       expected_etag="", private=True)
+    store.write("alice", caller="bob", collection=room, row_id="s", body="shared",
+                expected_etag="", private=False)
+
+    def history(caller, row_id):
+        return collection_request(broker.root, Identity(caller, caller), "history",
+                                  owner="alice", collection=room, row_id=row_id)["entries"]
+
+    assert [e["body"] for e in history("bob", "p")] == ["secret"]
+    assert history("cara", "p") == [] and history("alice", "p") == []
+    assert [(e["revision"], e["op"], e["writer"]) for e in history("cara", "s")] == [
+        (1, "write", "bob")]
+    store.delete("alice", caller="bob", collection=room, row_id="p",
+                 expected_etag=mine["etag"])
+    assert history("bob", "p") == []  # a deleted row shows no history
+    with pytest.raises(BrokerRefused, match="invalid collection request"):
+        collection_request(broker.root, Identity("bob", "bob"), "history", owner="alice",
+                           collection=room, row_id="s", limit=11)

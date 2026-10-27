@@ -531,20 +531,29 @@ class CollectionConflict(Exception):
         return self.current["etag"] if self.current else ""
 
 
+#: An outside agent's collection writer id, ``agent:<agent_id>``: a name no account has.
+AGENT_WRITER = "agent:"
+
+
 def collection_request(data_root: Path, identity: Any, action: str, *, owner: str,
-                       **fields: Any) -> dict[str, Any]:
+                       agent_id: str | None = None, **fields: Any) -> dict[str, Any]:
     """The router's owner-role ``COLLECTION`` call on ``owner``'s store (S34).
 
-    The caller is the router-verified ``identity``'s account, never a request field.
+    The caller is the router-verified ``identity``'s account, never a request field;
+    an identity with an ``outside_origin`` calls as the one enabled agent the router
+    resolved from it, ``agent:<agent_id>``, so each agent is its own bounded writer.
     The router picks ``owner`` itself: the caller's own store, or a published app's
     publisher from the published directory.
     """
     from tinyassets.broker.owner_identities import _owner_request
 
-    if action not in {"write", "pull", "get", "clear"}:
+    if action not in {"write", "pull", "get", "history", "delete", "clear"}:
         raise ValueError("unsupported collection operation")
+    if (agent_id is None) != (identity.metadata.get("outside_origin") is None):
+        raise ValueError("an outside identity calls as its one agent, and only it")
+    caller = identity.user_id if agent_id is None else AGENT_WRITER + agent_id
     answer = _owner_request(data_root, {**fields, "op": "COLLECTION", "action": action,
-                                        "principal": owner, "caller": identity.user_id})
+                                        "principal": owner, "caller": caller})
     if answer.get("op") == "COLLECTION_REFUSED":
         raise BrokerRefused(answer.get("reason") or "collection request refused")
     result = answer.get("result")

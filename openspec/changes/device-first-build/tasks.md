@@ -155,13 +155,29 @@ S5a's row above.
   `read_graph target=board` (`cursor` is the `since` seq) and `target=board_task` (`query`
   is the task id), `write_graph target=board_task` (`payload_json {task_id, patch}`,
   `expected_revision`), `GET /api/board`, `GET`/`POST /api/board/task` and the owner's
-  `/app/api/board`; the box answers the targets `served_on_trusted_side`. The door owns the
-  rules (verified actor and history, claim from `open` with deps `done`, leases by latency
-  class read lazily, owner-only assignment with a dm doorbell); claims and completions leave
-  `MAILBOX_RECEIPT board` receipts. Choices where W8 is open: leases are 4 h for a `pull`
-  agent or the owner and 15 min for an `mcp_event` agent; an `everyone` task has one
-  claimant. **Live acceptance owed:** two agents of different vendors race for one claim
-  and an expired lease reopens the task, against staging.
+  `/app/api/board` (`DELETE` deletes one task); the box answers the targets
+  `served_on_trusted_side`. Each agent is its own store writer (`agent:<agent_id>`); the
+  task's history is the store's `collection_history`, and each claim and completion in it
+  is mirrored as a `MAILBOX_RECEIPT board` receipt on every write. **Live acceptance
+  owed:** two agents of different vendors race for one claim and an expired lease reopens
+  the task, against staging.
+- [ ] W8 as decided 2026-10-27, replacing the board's claim rules: a measured lease,
+  `clamp(3 x p95 of the claimant's check-in gap, 60 s, 24 h)` from its own receipts (seeds
+  under 5 samples: 30 min `mcp_event`, 3 h `pull`, 30 min owner), a requested lease
+  clamped, renewed by any accepted holder write or a `heartbeat` op with an optional note,
+  a 7-day hold cap (`hold_cap`), `input_required` with `expired_3x` after 3 expiries, a
+  disabled or revoked holder released lazily and an expired holder's late write refused;
+  `everyone` is one claimant, first claim wins, and an owner-only create fans out one
+  child task per agent; A2A v1.0 states at the edge (`open`, `claimed`, `working`,
+  terminal `completed`/`failed`/`canceled`/`rejected` never reopened, a follow-up linked by
+  `context`, dependency-blocked computed, `input_required` stored, a lease expiry ending
+  the attempt as `failed`); a `claim.epoch` fence, with field-disjoint owner edits merged
+  under the row compare-and-swap. Sources: SQS visibility timeout
+  (awsdocs/amazon-sqs-developer-guide `sqs-visibility-timeout.md`), Pub/Sub p99 deadline
+  (googleapis/python-pubsub `streaming_pull_manager.py`), Temporal heartbeats
+  (`detecting-activity-failures.mdx`), Kubernetes Lease (`node-status.md`), Faktory
+  reservations (`manager/working.go`), Sidekiq poison pill (Reliability wiki), the Claude
+  runner heartbeat, A2A Task lifecycle (`a2a.proto`), Asana assign copies.
 
 ## S6 App manifest and agent players
 

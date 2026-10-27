@@ -45,7 +45,7 @@ _WAKE_RECEIPTS = {"sent": "wake_accepted", "rate_limited": "rate_limited",
                   "failed": "failed", "unknown": "wake_sent"}
 OPS = {"OUTSIDE_AGENTS": ("list", "register", "disable"), "ROOM_POST": ("post",),
        "MAILBOX_RECEIPT": ("read", "ack", "board")}
-#: The board's receipts (S5b): a claim and a completion, mirrored by ``board_door``.
+#: The board's receipts (S5b): a claim and a completion, mirrored from the task's history.
 BOARD_RECEIPTS = frozenset({"claim", "complete"})
 OWNER = "owner"
 MAX_READ = 100
@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS ledger_wakes(
 CREATE UNIQUE INDEX IF NOT EXISTS one_open_wake ON ledger_wakes(owner, agent_id)
   WHERE state IN('pending','rate_limited');
 CREATE INDEX IF NOT EXISTS wakes_due ON ledger_wakes(state, due);
+CREATE INDEX IF NOT EXISTS receipts_ref ON ledger_receipts(owner, kind, ref);
 """
 
 
@@ -460,18 +461,31 @@ class MessageLedger:
             self._receipt(db, owner, reader, "ack", str(through), now)
             return {"reader": reader, "through": through}
 
-    def board_receipt(self, owner: str, *, origin: dict | None, kind: str, task_id: str,
-                      revision: int) -> dict:
-        """A board claim or completion, in the verified actor's name (``owner`` or its agent)."""
-        if kind not in BOARD_RECEIPTS:
-            raise ValueError("kind is claim or complete")
-        _text(task_id, 64, "task_id")
-        if type(revision) is not int or revision < 1:
-            raise ValueError("revision is a task revision")
+    def board_receipts(self, owner: str, *, origin: dict | None, task_id: str,
+                       entries: list[dict]) -> dict:
+        """Mirror each claim and completion in a board task's history as a receipt, once.
+
+        ``entries`` are the task's ``collection_history`` (the truth). A receipt is keyed
+        by task, revision and kind, and names the entry's writer (``owner`` or its agent),
+        never the caller, who need only be the owner or one enabled agent.
+        """
+        from tinyassets.broker.client import AGENT_WRITER
+
+        recorded = []
         with self._write(owner) as db:
-            actor, now = self._reader(db, origin), time.time()
-            self._receipt(db, owner, actor, kind, task_id, now, {"revision": revision})
-            return {"agent_id": actor, "kind": kind, "ref": task_id, "at": now}
+            self._reader(db, origin)
+            for entry in entries:
+                writer, detail = entry["writer"], {"revision": entry["revision"]}
+                actor = OWNER if writer == owner else writer.removeprefix(AGENT_WRITER) if (
+                    writer.startswith(AGENT_WRITER)) else None
+                if entry["op"] not in BOARD_RECEIPTS or actor is None or db.execute(
+                        "SELECT 1 FROM ledger_receipts WHERE owner=? AND kind=? AND ref=? AND "
+                        "detail_json=?", (owner, entry["op"], task_id,
+                                          json.dumps(detail, sort_keys=True))).fetchone():
+                    continue
+                self._receipt(db, owner, actor, entry["op"], task_id, entry["at"], detail)
+                recorded.append(entry["revision"])
+        return {"task_id": task_id, "recorded": recorded}
 
 
 def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float) -> str:
@@ -586,8 +600,12 @@ def router_operation(ledger: MessageLedger, conversations, sessions, doc: dict) 
         return ledger.post(owner, origin=origin, put_body=partial(conversations.put, owner),
                            **fields)
     if action == "board":
-        exactly("kind", "task_id", "revision")
-        return ledger.board_receipt(owner, origin=origin, **fields)
+        exactly("task_id")
+        task_id = _text(fields["task_id"], 64, "task_id")
+        history = conversations.history(owner, caller=owner, collection="board",
+                                        row_id=task_id)
+        return ledger.board_receipts(owner, origin=origin, task_id=task_id,
+                                     entries=history["entries"])
     if action == "read":
         if "limit" not in fields or not set(fields) <= {"limit", "max_bytes", "pad_bytes"}:
             raise ValueError("invalid ledger request")

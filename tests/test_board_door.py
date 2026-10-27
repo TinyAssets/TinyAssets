@@ -23,7 +23,7 @@ from tinyassets import board_door, owner_router
 from tinyassets import rpc_frames as rf
 from tinyassets.auth.provider import Identity
 from tinyassets.board_door import Conflict, Refused
-from tinyassets.broker.conversations import Conversations
+from tinyassets.broker.conversations import MAX_ROW, Conversations
 from tinyassets.broker.message_ledger import MessageLedger
 from tinyassets.broker.policy import PolicyStore, account_path
 
@@ -102,10 +102,10 @@ def test_two_agents_race_for_one_claim_one_wins_and_the_other_sees_it(rig, monke
     created = _create(assignees=["everyone"])
     real, gate, outcomes = board_door._store, threading.Barrier(2), {}
 
-    def store(identity, action, **fields):
+    def store(identity, actor, action, **fields):
         if action == "write":  # both read the same row and etag before either writes
             gate.wait(timeout=10)
-        return real(identity, action, **fields)
+        return real(identity, actor, action, **fields)
 
     monkeypatch.setattr(board_door, "_store", store)
 
@@ -184,7 +184,7 @@ def test_an_expired_lease_reopens_on_read_and_persists_on_the_next_write(rig):
     assert taken["claim"] == {"agent_id": rig.muse,
                               "expires_at": rig.clock[0] + board_door.CHECKIN_LEASE_S}
     assert [(e["actor"], e["op"], e["from_state"], e["to_state"])
-            for e in rig.stored("t1")["history"]][-2:] == [
+            for e in rig.stored("t1")["change"]] == [
         ("board", "lease_expired", "in_progress", "open"),
         (rig.muse, "claim", "open", "claimed")]
 
@@ -219,9 +219,8 @@ def test_a_receipt_naming_an_agent_revokes_nothing_only_a_registry_change_does(r
     claimed = board_door.write(_agent(MUSE), task_id="t1", expected_revision=1,
                                patch={"state": "claimed"})
     assert "receipt" not in claimed  # the receipt result carries agent_id and was recorded
-    receipt = ledger_request(rig.root, _agent(MUSE), "MAILBOX_RECEIPT", "board", kind="claim",
-                             task_id="t1", revision=2)
-    assert receipt["agent_id"] == rig.muse and rig.revoked == []
+    receipt = ledger_request(rig.root, _agent(MUSE), "MAILBOX_RECEIPT", "board", task_id="t1")
+    assert receipt == {"task_id": "t1", "recorded": []} and rig.revoked == []
     _session(rig.root, "alice", COOKIE)
     ledger_request(rig.root, OWNER, "OUTSIDE_AGENTS", "disable", session_proof=PROOF,
                    agent_id=rig.muse, reason="done")
@@ -258,8 +257,9 @@ def test_history_names_the_verified_actor_never_a_patch_field(rig):
     with pytest.raises(Refused, match="payload_json takes task_id and patch"):
         board_door.tool(agent, "write_graph", "board_task", {"payload_json": json.dumps(
             {"task_id": "t1", "patch": {"title": "x"}, "actor": "owner"})})
-    made = board_door.tool(agent, "write_graph", "board_task", {"payload_json": json.dumps(
-        {"task_id": "t1", "patch": {"title": "From the agent", "body": "do X"}})})["task"]
+    board_door.tool(agent, "write_graph", "board_task", {"payload_json": json.dumps(
+        {"task_id": "t1", "patch": {"title": "From the agent", "body": "do X"}})})
+    made = board_door.tool(agent, "read_graph", "board_task", {"query": "t1"})["task"]
     assert [(e["actor"], e["op"]) for e in made["history"]] == [(rig.muse, "create")]
     # The agent's words reach the owner enveloped, and every word reaches an agent so.
     mine = board_door.task(OWNER, task_id="t1")["task"]
@@ -319,6 +319,137 @@ def test_a_disabled_agent_reads_nothing(rig):
             read()
 
 
+def test_an_agent_writes_as_its_own_bounded_writer_and_the_owner_clears_it(rig, monkeypatch):
+    """An agent is ``agent:<id>`` in the store: its share binds it, never the owner."""
+    from tinyassets.broker import conversations
+    from tinyassets.broker.client import collection_request
+
+    monkeypatch.setattr(conversations, "MAX_WRITER_ROWS", 2)
+    muse = _agent(MUSE)
+    for n in range(2):
+        board_door.write(muse, task_id=f"m{n}", expected_revision=0, patch={"title": "mine"})
+    with pytest.raises(Refused, match="this writer's share") as full:
+        board_door.write(muse, task_id="m2", expected_revision=0, patch={"title": "mine"})
+    assert full.value.status == 403
+    for n in range(3):  # the owner is never a bounded writer
+        _create(f"o{n}")
+    with rig.db("conversations.db") as conn:
+        writers = dict(conn.execute("SELECT row_id, writer FROM collection_rows"))
+        history = {tuple(r) for r in conn.execute("SELECT key, writer FROM collection_history")}
+    assert writers == {"m0": f"agent:{rig.muse}", "m1": f"agent:{rig.muse}",
+                       "o0": "alice", "o1": "alice", "o2": "alice"}
+    assert ("m0", f"agent:{rig.muse}") in history
+    # The owner clears one agent's rows by its writer id; the agent may create again.
+    assert collection_request(rig.root, OWNER, "clear", owner="alice", collection="board",
+                              writer=f"agent:{rig.muse}") == {"deleted": 2}
+    board_door.write(muse, task_id="m2", expected_revision=0, patch={"title": "mine"})
+    assert [t["task_id"] for t in board_door.board(OWNER)["tasks"]] == ["o0", "o1", "o2", "m2"]
+
+
+def test_only_the_owner_deletes_a_task_at_the_revision_it_read(rig):
+    from tinyassets.broker.client import BrokerRefused, CollectionConflict, collection_request
+
+    _create()
+    board_door.write(OWNER, task_id="t1", expected_revision=1, patch={"body": "v2"})
+    for refused in (lambda: board_door.delete(_agent(MUSE), task_id="t1", expected_revision=2),
+                    lambda: board_door.tool(_agent(MUSE), "write_graph", "board_task", {
+                        "operation": "delete", "payload_json": '{"task_id": "t1"}',
+                        "expected_revision": 2})):
+        with pytest.raises(Refused, match="only the owner deletes") as agent:
+            refused()
+        assert agent.value.status == 403
+    row = board_door._row(OWNER, "owner", "t1")
+    with pytest.raises(BrokerRefused, match="only the owner"):  # nor at the store
+        collection_request(rig.root, _agent(MUSE), "delete", owner="alice", agent_id=rig.muse,
+                           collection="board", row_id="t1", expected_etag=row["etag"])
+    with pytest.raises(Conflict) as stale:
+        board_door.delete(OWNER, task_id="t1", expected_revision=1)
+    assert stale.value.task["revision"] == 2
+    with pytest.raises(CollectionConflict) as lost:  # a stale etag loses the swap
+        collection_request(rig.root, OWNER, "delete", owner="alice", collection="board",
+                           row_id="t1", expected_etag="0" * 64)
+    assert lost.value.current["etag"] == row["etag"]
+    cursor = board_door.board(OWNER)["next_cursor"]
+    assert board_door.delete(OWNER, task_id="t1", expected_revision=2) == {
+        "deleted": "t1", "revision": 2}
+    with pytest.raises(Refused, match="no board task"):
+        board_door.task(OWNER, task_id="t1")
+    # No tombstone reaches a pull, and the cursor never goes back; the id made again
+    # goes on past the delete's revision, so no stale revision matches it.
+    assert board_door.board(OWNER, since=cursor)["tasks"] == []
+    again = _create()
+    assert (again["revision"], again["seq"]) == (4, cursor + 1)
+    assert [e["op"] for e in board_door.task(OWNER, task_id="t1")["task"]["history"]] == [
+        "create"]
+
+
+def test_an_escape_heavy_task_is_refused_before_the_store(rig):
+    patch = {"title": '"' * board_door.MAX_TITLE, "body": "\x00" * board_door.MAX_TEXT,
+             "result_refs": ['"' * board_door.MAX_REF] * board_door.MAX_IDS,
+             "depends_on": [f"{n:02d}" + "d" * 62 for n in range(board_door.MAX_IDS)]}
+    with pytest.raises(Refused) as refused:
+        board_door.write(OWNER, task_id="t1", expected_revision=0, patch=patch)
+    assert (refused.value.status, refused.value.reason) == (400, board_door.TOO_LARGE)
+    assert board_door.MAX_TASK == MAX_ROW
+    assert board_door.board(OWNER)["tasks"] == []
+
+
+def test_a_receipt_that_did_not_land_is_mirrored_on_the_next_write_once(rig, monkeypatch):
+    real, down = board_door._ledger, [True]
+
+    def ledger(identity, op, action, **fields):
+        if op == "MAILBOX_RECEIPT" and down[0]:
+            raise Refused(503, "ledger_unavailable")
+        return real(identity, op, action, **fields)
+
+    monkeypatch.setattr(board_door, "_ledger", ledger)
+    _create()
+    claimed = board_door.write(_agent(MUSE), task_id="t1", expected_revision=1,
+                               patch={"state": "claimed"})
+    assert claimed["receipt"] == "unrecorded"
+
+    def receipts():
+        with rig.db("message_ledger.db") as conn:
+            return [(r[0], r[1], json.loads(r[2])["revision"]) for r in conn.execute(
+                "SELECT agent_id, kind, detail_json FROM ledger_receipts WHERE ref='t1' "
+                "ORDER BY seq")]
+
+    assert receipts() == []
+    down[0] = False  # the history is the truth: the next write, by anyone, mirrors it
+    board_door.write(OWNER, task_id="t1", expected_revision=2, patch={"body": "note"})
+    assert receipts() == [(rig.muse, "claim", 2)]
+    board_door.write(_agent(MUSE), task_id="t1", expected_revision=3, patch={"state": "done"})
+    assert receipts() == [(rig.muse, "claim", 2), (rig.muse, "complete", 4)]
+
+
+def test_a_claim_whose_holder_is_disabled_lapses_on_the_next_read(rig):
+    _create()
+    board_door.write(_agent(MUSE), task_id="t1", expected_revision=1,
+                     patch={"state": "claimed"})
+    rig.clock[0] += 60
+    rig.ledger.disable("alice", agent_id=rig.muse, reason="gone")
+    read = board_door.task(OWNER, task_id="t1")["task"]
+    assert (read["state"], read["claim"]) == ("open", None)
+    assert read["history"][-1] == {"at": rig.clock[0], "actor": "board",
+                                   "op": "lease_expired", "from_state": "claimed",
+                                   "to_state": "open"}
+    taken = board_door.write(_agent(DOT), task_id="t1", expected_revision=2,
+                             patch={"state": "claimed"})["task"]
+    assert taken["claim"]["agent_id"] == rig.dot
+
+
+def test_an_assignment_with_a_state_change_is_in_its_history_entry(rig):
+    _create()
+    board_door.write(OWNER, task_id="t1", expected_revision=1,
+                     patch={"assignees": [rig.muse], "state": "claimed"})
+    [entry] = rig.stored("t1")["change"]
+    assert (entry["op"], entry["assigned"]) == ("claim", [rig.muse])
+    with pytest.raises(Refused, match="cursor is an integer"):
+        board_door.tool(OWNER, "read_graph", "board", {"cursor": -1})
+    with pytest.raises(Refused, match="query is 1 to 64"):
+        board_door.tool(OWNER, "read_graph", "board_task", {"query": ""})
+
+
 # -- The doors: registered on the router, never a box -----------------------------
 
 
@@ -336,7 +467,8 @@ def test_the_board_is_rows_in_the_one_primitive_and_its_door_names_no_way_into_a
                     ("tools/call", "read_graph", "board_task"),
                     ("tools/call", "write_graph", "board_task")}
     for path, method in (("/app/api/board", "GET"), ("/app/api/board", "POST"),
-                         ("/api/board", "GET"), ("/api/board/task", "POST")):
+                         ("/app/api/board", "DELETE"), ("/api/board", "GET"),
+                         ("/api/board/task", "POST")):
         assert not owner_router.forwarded_path(path, method)
 
 
@@ -423,3 +555,9 @@ def test_an_api_key_agent_claims_and_completes_a_task_the_owner_assigned(served)
         ("owner", "create"), (agent, "claim"), (agent, "complete")]
     assert mine["result_refs"]["untrusted"] is True
     assert mine["result_refs"]["content"] == ["file:digest.md"]
+    assert request("DELETE", "/api/board/task", bearer=key, json={
+        "task_id": "t1", "expected_revision": 3}).status_code == 405
+    gone = request("DELETE", "/app/api/board", bearer="alice-app", session=True,
+                   json={"task_id": "t1", "expected_revision": 3})
+    assert gone.json() == {"deleted": "t1", "revision": 3}
+    assert request("GET", "/api/board", bearer=key).json()["tasks"] == []

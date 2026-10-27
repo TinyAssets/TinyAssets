@@ -1,23 +1,26 @@
 """S5b: the task board's doors (W8, registry row S34), all on the trusted side.
 
 The board is ``collection='board'`` in the owner's broker-held conversation store, the
-one revision primitive (``broker/conversations.py``); a task is one row, kept verbatim.
-The router answers ``read_graph target=board|board_task`` and ``write_graph
-target=board_task`` beside the mailbox doors (``mailbox_door.mcp`` runs the identity and
-kill-switch checks), ``/api/board*`` for API-key agents and ``/app/api/board`` for the
-owner, from its verified identity; none reaches, asks or wakes a box.
+one revision primitive (``broker/conversations.py``); a task is one row, kept verbatim,
+and its history is that row's ``collection_history``. The router answers ``read_graph
+target=board|board_task`` and ``write_graph target=board_task`` beside the mailbox doors
+(``mailbox_door.mcp`` runs the identity and kill-switch checks), ``/api/board*`` for
+API-key agents and ``/app/api/board`` for the owner, from its verified identity; none
+reaches, asks or wakes a box.
 
 The door owns the board's rules:
 
 * The actor is the verified identity: ``owner``, or the one enabled agent its
-  ``outside_origin`` names. A patch names no actor and no history; the door writes both.
+  ``outside_origin`` names, which reaches the store as its own writer
+  (``agent:<agent_id>``), bounded per writer. A patch names no actor and no history.
 * A write names the revision it read. Another revision, or a compare-and-swap lost on
-  the row's etag, is a conflict carrying the current task.
-* A claim holds a lease sized to the claimant's latency class. Nothing sweeps (ADR-026):
-  a read shows a lapsed claim as ``open``, and the next write persists exactly that, with
-  its ``lease_expired`` history entry.
-* Claims and completions leave ledger receipts; assigning mails each new assignee a
-  doorbell in its dm room. The board never grants spend.
+  the row's etag, is a conflict carrying the current task. Only the owner deletes one.
+* A claim holds a lease sized to the claimant's delivery method. Nothing sweeps
+  (ADR-026): a read shows a claim past its lease, or held by an agent no longer enabled,
+  as ``open``, and the next write persists exactly that, with a ``lease_expired`` entry.
+* Claims and completions in a task's history are mirrored as ledger receipts, once each,
+  on every write to it; assigning mails each new assignee a doorbell in its dm room.
+  The board never grants spend.
 """
 from __future__ import annotations
 
@@ -52,7 +55,7 @@ EVERYONE = "everyone"
 STATES = ("open", "claimed", "in_progress", "done", "blocked")
 #: The states a claim holds, and its lease runs in.
 HELD = frozenset({"claimed", "in_progress", "blocked"})
-#: Leases by latency class: a ``pull`` agent checks in, an ``mcp_event`` agent is woken.
+#: Leases by delivery method: a ``pull`` agent checks in, an ``mcp_event`` agent is woken.
 CHECKIN_LEASE_S = 4 * 3600
 LIVE_LEASE_S = 15 * 60
 LEASES = {"pull": CHECKIN_LEASE_S, "mcp_event": LIVE_LEASE_S}
@@ -61,9 +64,13 @@ MAX_TITLE = 200
 MAX_TEXT = 8000
 MAX_IDS = 16
 MAX_REF = 512
-MAX_HISTORY = 50
 PAGE = 100  # the store's own pull bound
+RECEIPTS = frozenset({"claim", "complete"})
 DEPS_OPEN = "every depends_on task must be done first"
+TOO_LARGE = "the task is too large to store"
+MAX_TASK = 65536  # the store's row limit (``conversations.MAX_ROW``), in characters
+STALE = "expected_revision is not the task's revision"
+CHANGED = "the task changed while this write was made"
 DOORBELL = ("Board task {task_id} is assigned to you. Read it with read_graph "
             "target=board_task query={task_id}, or GET /api/board/task?task_id={task_id}.")
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
@@ -81,13 +88,14 @@ class Conflict(Refused):
         return {**super().body(), "task": self.task}
 
 
-def _store(identity, action: str, **fields) -> dict:
-    """The verified identity's own board; a lost compare-and-swap raises CollectionConflict."""
+def _store(identity, actor: str, action: str, **fields) -> dict:
+    """The owner's board, as ``actor``; a lost compare-and-swap raises CollectionConflict."""
     from tinyassets.broker.client import BrokerRefused, collection_request
     from tinyassets.storage import data_dir
 
     try:
         return collection_request(data_dir(), identity, action, owner=identity.user_id,
+                                  agent_id=None if actor == OWNER else actor,
                                   collection=COLLECTION, **fields)
     except BrokerRefused as exc:
         if str(exc) == "ledger unavailable":
@@ -97,31 +105,38 @@ def _store(identity, action: str, **fields) -> dict:
         raise Refused(503, "ledger_unavailable") from None
 
 
-def _row(identity, task_id: str) -> dict | None:
+def _row(identity, actor: str, task_id: str) -> dict | None:
     """One task's row by its key, or None."""
-    return _store(identity, "get", row_id=task_id)["row"]
+    return _store(identity, actor, "get", row_id=task_id)["row"]
 
 
-def _agents(identity) -> list[dict]:
-    return [agent for agent in _ledger(identity, "OUTSIDE_AGENTS", "list")["agents"]
-            if agent["disabled_reason"] is None]
+def _history(identity, actor: str, task_id: str) -> list[dict]:
+    """A task's history: each kept revision's own entries, oldest first."""
+    entries = _store(identity, actor, "history", row_id=task_id)
+    # A delete leaves a body-less entry; a task made again starts its history after it.
+    return [change for entry in entries["entries"] if entry["body"]
+            for change in json.loads(entry["body"])["change"]]
 
 
-def _actor(identity) -> tuple[str, int]:
-    """``(actor, lease seconds)`` of the verified identity; an outside one is one enabled agent."""
+def _who(identity) -> tuple[str, int, set[str]]:
+    """``(actor, lease seconds, holders)``: the verified identity's actor, ``owner`` or its
+    one enabled agent, and everyone whose claim still holds (the owner, each enabled agent)."""
+    agents = [agent for agent in _ledger(identity, "OUTSIDE_AGENTS", "list")["agents"]
+              if agent["disabled_reason"] is None]
+    holders = {OWNER, *(agent["agent_id"] for agent in agents)}
     origin = identity.metadata.get("outside_origin")
     if origin is None:
-        return OWNER, CHECKIN_LEASE_S
-    mine = [agent for agent in _agents(identity) if (
+        return OWNER, CHECKIN_LEASE_S, holders
+    mine = [agent for agent in agents if (
         agent["outside_client"], agent["outside_family"]) == (origin["client"], origin["family"])]
     if len(mine) != 1:  # as the ledger's own reader check
         raise Refused(403, "refused", "this outside identity is not one enabled agent")
-    return mine[0]["agent_id"], LEASES.get(mine[0]["delivery_method"], CHECKIN_LEASE_S)
+    return mine[0]["agent_id"], LEASES.get(mine[0]["delivery_method"], CHECKIN_LEASE_S), holders
 
 
-def _task_id(value) -> str:
+def _task_id(value, name: str = "task_id") -> str:
     if not isinstance(value, str) or _ID.fullmatch(value) is None:
-        raise Refused(400, "invalid_request", "task_id is 1 to 64 letters, digits or _.:-")
+        raise Refused(400, "invalid_request", f"{name} is 1 to 64 letters, digits or _.:-")
     return value
 
 
@@ -132,23 +147,34 @@ def _ids(value, name: str) -> list[str]:
     return value
 
 
-def _lapsed(task: dict, now: float) -> dict:
-    """A held claim past its lease is open again; the entry is dated when the lease ran out."""
+def _names(assignees: list[str], agent_id: str) -> bool:
+    """Whether a task's assignees let ``agent_id`` claim it: the one ``everyone`` rule.
+
+    ``everyone``, or no assignee, names every enabled agent; one claim holds the task,
+    as for any other.
+    """
+    return not assignees or EVERYONE in assignees or agent_id in assignees
+
+
+def _lapsed(task: dict, now: float, holders: set[str]) -> tuple[dict, dict | None]:
+    """A held claim past its lease, or whose holder is no longer enabled, is open again:
+    the task as read, and its ``lease_expired`` entry, dated when the claim stopped holding."""
     claim = task["claim"]
-    if task["state"] not in HELD or claim is None or claim["expires_at"] > now:
-        return task
-    entry = {"at": claim["expires_at"], "actor": LAPSE, "op": "lease_expired",
+    if task["state"] not in HELD or claim is None or (
+            claim["expires_at"] > now and claim["agent_id"] in holders):
+        return task, None
+    entry = {"at": min(claim["expires_at"], now), "actor": LAPSE, "op": "lease_expired",
              "from_state": task["state"], "to_state": "open"}
-    return {**task, "state": "open", "claim": None,
-            "history": [*task["history"], entry][-MAX_HISTORY:]}
+    return {**task, "state": "open", "claim": None}, entry
 
 
-def _view(row: dict, now: float, outside: bool, *, whole: bool = True) -> dict:
+def _view(row: dict, now: float, outside: bool, holders: set[str], *, whole: bool = True,
+          history: list[dict] | None = None) -> dict:
     """A task as a reader sees it. Another party's text is enveloped, as mailbox bodies are:
     every text an outside agent reads, and every agent's text the owner reads."""
     from tinyassets.untrusted import envelope
 
-    task = _lapsed(json.loads(row["body"]), now)
+    task, lapse = _lapsed(json.loads(row["body"]), now, holders)
 
     def text(field):
         by = task["authors"].get(field, OWNER)
@@ -159,16 +185,10 @@ def _view(row: dict, now: float, outside: bool, *, whole: bool = True) -> dict:
             "state": task["state"], "claim": task["claim"], "assignees": task["assignees"],
             "depends_on": task["depends_on"], "title": text("title")}
     if whole:
-        view.update(body=text("body"), result_refs=text("result_refs"),
-                    history=task["history"])
+        view.update(body=text("body"), result_refs=text("result_refs"))
+    if history is not None:
+        view["history"] = [*history, *([lapse] if lapse else [])]
     return view
-
-
-def _outside_reader(identity) -> bool:
-    outside = identity.metadata.get("outside_origin") is not None
-    if outside:
-        _actor(identity)  # a disabled or unregistered agent reads nothing
-    return outside
 
 
 def board(identity, *, since=0, limit=30) -> dict:
@@ -178,12 +198,12 @@ def board(identity, *, since=0, limit=30) -> dict:
 
     _count(since, "since", 0)
     _count(limit, "limit", 1, PAGE)
-    outside = _outside_reader(identity)
-    page = _store(identity, "pull", after=since, limit=limit)
+    actor, _, holders = _who(identity)  # a disabled or unregistered agent reads nothing
+    page = _store(identity, actor, "pull", after=since, limit=limit)
     budget = resolve_ceiling(dict(os.environ)) - CEILING_HEADROOM_BYTES
     tasks, used, now = [], 0, time.time()
     for row in page["rows"]:
-        summary = _view(row, now, outside, whole=False)
+        summary = _view(row, now, actor != OWNER, holders, whole=False)
         used += len(json.dumps(summary, separators=(",", ":"), ensure_ascii=False).encode())
         if tasks and used > budget:
             break
@@ -196,20 +216,19 @@ def board(identity, *, since=0, limit=30) -> dict:
 
 def task(identity, *, task_id) -> dict:
     _task_id(task_id)
-    outside = _outside_reader(identity)
-    row = _row(identity, task_id)
+    actor, _, holders = _who(identity)
+    row = _row(identity, actor, task_id)
     if row is None:
         raise Refused(404, "not_found", "no board task has this task_id")
-    return {"task": _view(row, time.time(), outside)}
+    return {"task": _view(row, time.time(), actor != OWNER, holders,
+                          history=_history(identity, actor, task_id))}
 
 
 def _move(task: dict, state: str, *, actor: str, lease: int, now: float, lookup) -> str:
     """One state change, its rules and its history op. ``claimed`` comes only from ``open``."""
     before = task["state"]
     if state == "claimed":
-        named = task["assignees"]
-        # "everyone" or no assignee: any enabled agent may claim; one claimant holds it.
-        if actor != OWNER and named and EVERYONE not in named and actor not in named:
+        if actor != OWNER and not _names(task["assignees"], actor):
             raise Refused(403, "refused", "this task is assigned to other agents")
         for dep in map(lookup, task["depends_on"]):
             if dep is None or json.loads(dep["body"])["state"] != "done":
@@ -229,7 +248,7 @@ def _move(task: dict, state: str, *, actor: str, lease: int, now: float, lookup)
 
 
 def _change(task: dict, patch: dict, *, actor: str, lease: int, now: float, lookup,
-            created: bool, agents) -> tuple[str, list[str]]:
+            created: bool, enabled: set[str]) -> tuple[str, list[str]]:
     """Apply ``patch`` for ``actor``: the history op and the agents newly assigned."""
     holder = task["claim"]["agent_id"] if task["claim"] else None
     state = patch.get("state", task["state"])
@@ -246,8 +265,7 @@ def _change(task: dict, patch: dict, *, actor: str, lease: int, now: float, look
     if "assignees" in patch:
         if actor != OWNER:  # deviation from W8: assigning is the owner's
             raise Refused(403, "refused", "only the owner assigns a task")
-        named, enabled = _ids(patch["assignees"], "assignees"), {
-            agent["agent_id"] for agent in agents()}
+        named = _ids(patch["assignees"], "assignees")
         if not set(named) <= enabled | {EVERYONE}:
             raise Refused(400, "invalid_request", "assignees are enabled agent ids or everyone")
         fresh = [item for item in named if item not in task["assignees"]]
@@ -292,38 +310,39 @@ def write(identity, *, task_id, expected_revision, patch) -> dict:
     if not isinstance(patch, dict) or not set(patch) <= FIELDS:
         # An actor, history, claim or revision is the door's to write, never a patch's.
         raise Refused(400, "invalid_request", "patch takes " + ", ".join(sorted(FIELDS)))
-    actor, lease = _actor(identity)
-    outside = identity.metadata.get("outside_origin") is not None
-    row, now = _row(identity, task_id), time.time()
+    actor, lease, holders = _who(identity)
+    outside = actor != OWNER
+    row, now = _row(identity, actor, task_id), time.time()
     if (row["revision"] if row else 0) != expected_revision:
-        raise Conflict(row and _view(row, now, outside),
-                       "expected_revision is not the task's revision")
-    task = _lapsed(json.loads(row["body"]), now) if row else {
+        raise Conflict(row and _view(row, now, outside, holders), STALE)
+    task, lapse = _lapsed(json.loads(row["body"]), now, holders) if row else ({
         "task_id": task_id, "title": "", "body": "", "assignees": [], "depends_on": [],
-        "state": "open", "claim": None, "result_refs": [], "authors": {}, "history": []}
+        "state": "open", "claim": None, "result_refs": [], "authors": {}}, None)
     if patch.get("state") == "claimed" and task["state"] != "open":
-        raise Conflict(_view(row, now, outside), "the task is not open")
+        raise Conflict(_view(row, now, outside, holders), "the task is not open")
     before = task["state"]
     op, newly = _change(task, patch, actor=actor, lease=lease, now=now,
-                        lookup=lambda dep: _row(identity, dep), created=row is None,
-                        agents=lambda: _agents(identity))
-    task["history"] = [*task["history"], {"at": now, "actor": actor, "op": op,
-                                          "from_state": before, "to_state": task["state"]}
-                       ][-MAX_HISTORY:]
+                        lookup=lambda dep: _row(identity, actor, dep), created=row is None,
+                        enabled=holders - {OWNER})
+    entry = {"at": now, "actor": actor, "op": op, "from_state": before,
+             "to_state": task["state"], **({"assigned": newly} if "assignees" in patch else {})}
+    # The entries this revision adds; the store's history keeps each revision's.
+    task["change"] = [*([lapse] if lapse else []), entry]
+    body = json.dumps(task, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if len(body) > MAX_TASK:  # escapes can outgrow the field limits
+        raise Refused(400, "invalid_request", TOO_LARGE)
     try:
-        saved = _store(identity, "write", row_id=task_id, expected_etag=row["etag"] if row
-                       else "", private=False, body=json.dumps(
-                           task, sort_keys=True, separators=(",", ":"), ensure_ascii=False))["row"]
+        saved = _store(identity, actor, "write", row_id=task_id, expected_etag=row["etag"] if row
+                       else "", private=False, body=body, history_op=op)["row"]
     except CollectionConflict as exc:  # another writer committed after this one read
-        raise Conflict(exc.current and _view(exc.current, now, outside),
-                       "the task changed while this write was made") from None
-    result = {"task": _view(saved, now, outside)}
-    if op in ("claim", "complete"):
-        try:
-            _ledger(identity, "MAILBOX_RECEIPT", "board", kind=op, task_id=task_id,
-                    revision=saved["revision"])
-        except Refused:  # the task change is committed; say the receipt is not
-            _LOG.exception("ALARM: board %s receipt unrecorded", op)
+        raise Conflict(exc.current and _view(exc.current, now, outside, holders),
+                       CHANGED) from None
+    result = {"task": _view(saved, now, outside, holders)}
+    try:  # every claim and completion still in the history, once each, this one included
+        _ledger(identity, "MAILBOX_RECEIPT", "board", task_id=task_id)
+    except Refused:  # the task change is committed; the next write mirrors it again
+        _LOG.exception("ALARM: board %s receipts unmirrored", task_id)
+        if op in RECEIPTS:
             result["receipt"] = "unrecorded"
     for agent_id in newly:
         try:
@@ -336,23 +355,55 @@ def write(identity, *, task_id, expected_revision, patch) -> dict:
     return result
 
 
+def delete(identity, *, task_id, expected_revision) -> dict:
+    """The owner deletes one task at the revision it read: a compare-and-swap on its etag."""
+    from tinyassets.broker.client import CollectionConflict
+
+    _task_id(task_id)
+    _count(expected_revision, "expected_revision", 1)
+    if identity.metadata.get("outside_origin") is not None:
+        raise Refused(403, "refused", "only the owner deletes a task")
+    _, _, holders = _who(identity)
+    row, now = _row(identity, OWNER, task_id), time.time()
+    if (row["revision"] if row else 0) != expected_revision:
+        raise Conflict(row and _view(row, now, False, holders), STALE)
+    try:
+        _store(identity, OWNER, "delete", row_id=task_id, expected_etag=row["etag"])
+    except CollectionConflict as exc:
+        raise Conflict(exc.current and _view(exc.current, now, False, holders),
+                       CHANGED) from None
+    return {"deleted": task_id, "revision": expected_revision}
+
+
 def _write_body(identity, data) -> dict:
     if not isinstance(data, dict) or set(data) != {"task_id", "expected_revision", "patch"}:
         raise Refused(400, "invalid_request", "the body is {task_id, expected_revision, patch}")
     return write(identity, **data)
 
 
+def _delete_body(identity, data) -> dict:
+    if not isinstance(data, dict) or set(data) != {"task_id", "expected_revision"}:
+        raise Refused(400, "invalid_request", "the body is {task_id, expected_revision}")
+    return delete(identity, **data)
+
+
 def tool(identity, name: str, target: str, arguments: dict) -> dict:
     """``mailbox_door.mcp``'s answer for the board targets."""
     if name == "write_graph":
         payload = _payload(arguments)
+        revision = arguments.get("expected_revision", 0)
+        if arguments.get("operation") == "delete":
+            if not set(payload) <= {"task_id"}:
+                raise Refused(400, "invalid_request", "payload_json takes task_id")
+            return delete(identity, task_id=payload.get("task_id"), expected_revision=revision)
         if not set(payload) <= {"task_id", "patch"}:
             raise Refused(400, "invalid_request", "payload_json takes task_id and patch")
         return write(identity, task_id=payload.get("task_id"), patch=payload.get("patch"),
-                     expected_revision=arguments.get("expected_revision", 0))
+                     expected_revision=revision)
     if target == "board_task":
-        return task(identity, task_id=arguments.get("query"))
-    return board(identity, since=arguments.get("cursor", 0), limit=arguments.get("limit", 30))
+        return task(identity, task_id=_task_id(arguments.get("query"), "query"))
+    return board(identity, since=_count(arguments.get("cursor", 0), "cursor", 0),
+                 limit=arguments.get("limit", 30))
 
 
 async def mcp(front) -> None:
@@ -397,7 +448,8 @@ def rest_routes() -> list:
 
 
 async def owner_board(request):
-    """GET reads the board (``since``, ``limit``) or one task (``task_id``); POST writes one."""
+    """GET reads the board (``since``, ``limit``) or one task (``task_id``); POST writes one;
+    DELETE ``{task_id, expected_revision}`` deletes one."""
     from tinyassets.onboarding import _read_small_json
 
     identity, _, refused = await _owner(request)
@@ -411,4 +463,5 @@ async def owner_board(request):
     data = await _read_small_json(request, limit=65536)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_HEADERS)
-    return await _answer(_write_body, identity, data)
+    return await _answer(_delete_body if request.method == "DELETE" else _write_body,
+                         identity, data)

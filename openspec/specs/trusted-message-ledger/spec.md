@@ -24,24 +24,34 @@ S34, W8, W9 Tier A. `conversations.db` SHALL hold `collection_rows`, the repo's 
 compare-and-swap primitive: rows keyed by collection and row id, each with a revision, an
 etag and the collection's next `seq`, written only while the presented etag is the row's
 (empty creates it), pulled after a `seq` cursor and read one by key (`get`, which pull's
-visibility rules bound); payloads SHALL be stored and returned verbatim, and a private row SHALL be visible to and writable by its writer alone. Rows and
-payload bytes SHALL be bounded per writer other than the owner in one collection, per
-collection and per owner, and a write past a bound SHALL be refused. Only the store's owner
-SHALL clear a collection or one writer's rows in it; a clear SHALL never lower the
-collection's `seq`. A clear leaves no tombstone: a reader pulling after its cursor does not
-see cleared rows disappear, and a compare-and-swap on a cleared row gets a conflict with an
-empty etag, from which the client recovers by creating the row again. A row SHALL count
-against its creator's row share for as long as it exists, whoever takes it over; payload
-bytes SHALL count against the current writer, so taking over a shared row charges its whole
-size to the new writer. Clearing by writer SHALL remove every row that account created or
-last wrote. The board
-SHALL be `collection='board'`; a published app's room SHALL be `room:<app>:main`. Only the
-router's owner channel SHALL reach `COLLECTION`, with the store owner and the caller chosen
-by the router (a published slug's publisher from the published directory, the caller from
-its verified identity), never by a request field. The router SHALL answer
-`/app/<slug>/state` itself, and SHALL never forward, ask or wake a box for it; the
+visibility rules bound); payloads SHALL be stored and returned verbatim, and a private row
+SHALL be visible to and writable by its writer alone. Beside it `collection_history`
+(collection, key, revision, op, body_json, at, writer) SHALL record, in the same
+transaction, each write (the revision committed, its body, its writer and the op the caller
+names, `write` by default) and each delete or clear of a row (one body-less entry, the row's
+earlier bodies dropped); a row made again under a key SHALL go on from the next revision,
+never repeating one. A row SHALL keep its last `MAX_REVISIONS` entries, pruned in the
+write's transaction, and `history` SHALL read them, oldest first, as `get` would show the
+row. Rows and payload bytes, history bytes included, SHALL be bounded per writer other than
+the owner in one collection, per collection and per owner, and a write past a bound SHALL be
+refused. Only the store's owner SHALL delete a row (`delete`, a compare-and-swap on its
+etag) or clear a collection or one writer's rows in it; neither SHALL lower the collection's
+`seq`. Neither leaves a tombstone a pull shows: a reader pulling after its cursor does not
+see erased rows disappear, a `get` finds nothing, and a compare-and-swap on an erased row
+gets a conflict with an empty etag, from which the client recovers by creating the row
+again. A row SHALL count against its creator's row share for as long as it exists, whoever
+takes it over; payload bytes SHALL count against the current writer, so taking over a shared
+row charges its whole size to the new writer. Clearing by writer SHALL remove every row that
+writer created or last wrote. The board SHALL be `collection='board'`; a published app's
+room SHALL be `room:<app>:main`. Only the router's owner channel SHALL reach `COLLECTION`,
+with the store owner and the caller chosen by the router (a published slug's publisher from
+the published directory, the caller from its verified identity; an identity with an
+`outside_origin` calls as the one enabled agent the router resolved from it,
+`agent:<agent_id>`, a writer no account is), never by a request field. The router SHALL
+answer `/app/<slug>/state` itself, and SHALL never forward, ask or wake a box for it; the
 publisher SHALL clear it with `DELETE` from their protected owner session. Every
-router-answered `/app/` path SHALL refuse a caller with an `outside_origin`, as the box does.
+router-answered `/app/` path SHALL refuse a caller with an `outside_origin`, as the box
+does.
 
 #### Scenario: Two writers move one board task at once
 - **WHEN** two writers present the same etag for one `board` row
@@ -51,28 +61,37 @@ router-answered `/app/` path SHALL refuse a caller with an `outside_origin`, as 
 S5b, W8. The router SHALL answer `read_graph target=board` (task summaries after a `seq`
 cursor, whole tasks under the `read_graph` ceiling) and `target=board_task` (`query` names
 the task), `write_graph target=board_task` (`payload_json {task_id, patch}` and
-`expected_revision`, 0 to create), `GET /api/board`, `GET` and `POST /api/board/task` for API
-keys and the owner's `/app/api/board` behind the protected owner session, from
-`owner_router.TRUSTED` (`board_door.py`), with the mailbox doors' identity and kill-switch
-checks, and SHALL never forward, ask or wake a box; the box SHALL answer these targets
-`served_on_trusted_side`. A task SHALL be one `board` row in the owner's own store. A
+`expected_revision`, 0 to create), `GET /api/board`, `GET` and `POST /api/board/task` for
+API keys and the owner's `/app/api/board` (`DELETE {task_id, expected_revision}` deletes
+one) behind the protected owner session, from `owner_router.TRUSTED` (`board_door.py`), with
+the mailbox doors' identity and kill-switch checks, and SHALL never forward, ask or wake a
+box; the box SHALL answer these targets `served_on_trusted_side`. A task SHALL be one
+`board` row in the owner's own store, and its history that row's `collection_history`. A
 write SHALL name the revision it read and SHALL be written with that row's etag; a stale
-revision or a lost compare-and-swap SHALL be a conflict carrying the current task. The
-actor SHALL be the verified identity, `owner` or its one enabled agent; a patch SHALL
-change only `title`, `body`, `assignees`, `depends_on`, `state` and `result_refs`, and
-the door SHALL write the history (`at`, `actor`, `op`, `from_state`, `to_state`, the last
-50). A claim SHALL come only from `open`, with every `depends_on` task `done`, by the
-owner or an agent the task names (`everyone`, or no assignee, names every agent), and one
-claimant SHALL hold it, under a lease of `CHECKIN_LEASE_S` for a `pull` agent or the owner
-and `LIVE_LEASE_S` for an `mcp_event` agent, renewed by each of the claimant's writes.
-Nothing SHALL sweep: a read SHALL show a claim past its lease as `open` with a
-`lease_expired` entry dated at the expiry, and the next write SHALL persist exactly that.
-Only the claimant or the owner SHALL change a claimed task, only the owner SHALL set
-`assignees` or reopen a `done` task, and each newly assigned agent SHALL get one doorbell
-from the owner in its dm room naming the task, never its text. A claim and a completion
-SHALL leave a `claim` or `complete` receipt in the actor's name (`MAILBOX_RECEIPT board`).
-Text another party wrote SHALL reach every reader in the untrusted envelope, as mailbox
-bodies do. The board SHALL never grant spend.
+revision or a lost compare-and-swap SHALL be a conflict carrying the current task. A task
+whose serialized payload passes the row limit SHALL be refused with `400`. The actor SHALL
+be the verified identity, `owner` or its one enabled agent, which writes as its own store
+writer; a patch SHALL change only `title`, `body`, `assignees`, `depends_on`, `state` and
+`result_refs`, and the door SHALL write each revision's entries (`at`, `actor`, `op`,
+`from_state`, `to_state`, and `assigned` when the patch assigned). Only the owner SHALL
+delete a task, at the revision it read (`write_graph operation=delete` once P0-3 lets the
+owner's MCP connector in); a reader learns of a delete by reading or writing that task. A
+claim SHALL come only from `open`, with every `depends_on` task `done`, by the owner or an
+agent the task names (`everyone`, or no assignee, names every agent; one claimant holds it),
+under a lease of `CHECKIN_LEASE_S` for a `pull` agent or the owner and `LIVE_LEASE_S` for an
+`mcp_event` agent, renewed by each of the claimant's writes. Only the claimant or the owner
+SHALL change a claimed task, and only the owner SHALL set `assignees` or reopen a `done`
+task. Nothing SHALL sweep: a read SHALL show a claim past its lease, or held by an agent no
+longer enabled, as `open` with a `lease_expired` entry dated when it stopped holding, and
+the next write SHALL persist exactly that. Each newly assigned agent SHALL get one doorbell
+from the owner in its dm room naming the task, never its text. Each `claim` and `complete`
+in a task's history SHALL be mirrored as one receipt in its writer's name, keyed by task,
+revision and kind (`MAILBOX_RECEIPT board`), on every write to that task, so a receipt that
+did not land lands on the next; the write SHALL say when it did not. Text another party
+wrote SHALL reach every reader in the untrusted envelope, as mailbox bodies do. The board
+SHALL never grant spend. W8's leases, claim fencing, states and `everyone` fan-out as
+decided on 2026-10-27 replace these claim rules in the next slice (`device-first-build`
+tasks, S5b).
 
 #### Scenario: Two agents claim one task at once
 - **WHEN** two agents of different vendors claim one open task at the same revision
