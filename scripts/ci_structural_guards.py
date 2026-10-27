@@ -37,6 +37,11 @@ GUARDS = {
         "agent loader from another module. "
     ),
     "test_one_extension_unit": "Keep extensions on the v2 revision and authority boundary. ",
+    "test_trusted_front": (
+        "Register what the router answers in tinyassets/owner_router.py TRUSTED (MCP: method, "
+        "tool, target; app: path, method) and answer it at the one dispatch point; forward "
+        "everything else to the box with its original bytes. "
+    ),
     "test_platform_has_no_llm": "Bind every model call to its owner; platform calls fail closed. ",
     "test_private_by_default": "Creation must declare private visibility. ",
     "test_capability_health": (

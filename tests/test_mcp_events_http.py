@@ -12,7 +12,7 @@ from tinyassets.auth import middleware as auth
 from tinyassets.auth.provider import Identity
 from tinyassets.mcp_browser_cors import McpBrowserCors
 from tinyassets.mcp_event_webhooks import EventError
-from tinyassets.mcp_events_http import VERSION, MCPEventsMiddleware, door, routed
+from tinyassets.mcp_events_http import VERSION, MCPEventsMiddleware, door
 
 
 def request(method, **params):
@@ -365,19 +365,27 @@ async def test_router_validates_the_envelope_before_box_or_broker(router_door):
 
 
 @pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
-def test_only_modern_subscription_posts_are_routed():
-    def scope(method="POST", path="/mcp", **head):
-        return {"type": "http", "method": method, "path": path,
-                "headers": [(k.encode(), v.encode()) for k, v in head.items()]}
+def test_subscription_posts_are_routed_by_their_body():
+    from tinyassets.owner_router import TRUSTED, _events
 
-    modern = {"mcp-protocol-version": VERSION}
-    assert routed(scope(**modern, **{"mcp-method": "events/subscribe"}))
-    assert routed(scope(path="/mcp/", **modern, **{"mcp-method": "events/unsubscribe"}))
-    assert not routed(scope(**modern, **{"mcp-method": "events/list"}))
-    assert not routed(scope(**{"mcp-protocol-version": "2025-11-25",
-                               "mcp-method": "events/subscribe"}))
-    assert not routed(scope(method="GET", **modern, **{"mcp-method": "events/subscribe"}))
-    assert not routed(scope(path="/app/x", **modern, **{"mcp-method": "events/subscribe"}))
+    def matched(method, path="/mcp", verb="POST", **head):
+        scope = {"type": "http", "method": verb, "path": path,
+                 "headers": [(k.encode(), v.encode()) for k, v in head.items()]}
+        body = json.dumps(request(method)).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        trusted, _ = asyncio.run(TRUSTED.match(scope, receive))
+        return trusted is not None and trusted.answer is _events
+
+    assert matched("events/subscribe") and matched("events/unsubscribe", path="/mcp/")
+    # The body decides, so a missing or mismatched header cannot steer one to the box.
+    assert matched("events/subscribe", **{"mcp-protocol-version": "2025-11-25",
+                                          "mcp-method": "tools/call"})
+    assert not matched("events/list")
+    assert not matched("events/subscribe", verb="GET")
+    assert not matched("events/subscribe", path="/app/x")
 
 
 @pytest.mark.verifies("native-mcp-events:The router subscribes; a box never sees the callback")
