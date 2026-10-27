@@ -115,6 +115,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
         "/app/account/timezone", "/app/ui-prefs",
         "/app/api/policy", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
+        # S30: the owner's outside agents and their dm rooms (router-served).
+        "/app/api/outside-agents", "/app/api/agent-messages",
         "/app/turn/interrupt", "/app/turn/pending",
         # The activities live projection (harness D2a).
         "/app/live",

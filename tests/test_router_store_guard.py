@@ -92,6 +92,9 @@ _ROUTER_IMPORTS = {
     "tinyassets.mcp_events_http",
     "tinyassets.mcp_event_webhooks",  # EventError, the bounded refusal type; no I/O.
     "tinyassets.asgi_scope",  # The non-HTTP refusal both doors share; imports nothing.
+    # S30's doors: ledger requests on the broker's owner channel; no owner store.
+    "tinyassets.mailbox_door",
+    "tinyassets.engine_result_bounds",  # The tool result's text block; pure string work.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
     "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.
@@ -241,6 +244,9 @@ _ROLE_DISPATCH = {
     ),
     ('onboarding/__init__.py', '_handle_policy'): (
         'Router submits owner policy writes and once-approvals (N10); a box cannot widen them.'
+    ),
+    ('mailbox_door.py', '_owner'): (
+        'Router serves the owner\'s outside agents and dm rooms (S30); a box holds no mail.'
     ),
     ('onboarding/session_store.py', 'store_dir'): (
         'Router owns refresh sessions; direct box access must refuse.'

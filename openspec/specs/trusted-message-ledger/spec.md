@@ -52,3 +52,18 @@ withheld and flagged `tampered`.
 #### Scenario: A retried wake starts a second session
 - **WHEN** a second session reads the mailbox after the first acknowledged through its read
 - **THEN** it finds nothing new
+
+### Requirement: The doors answer on the trusted side
+S3a.2, ADR-025. The router SHALL answer `read_graph target=mailbox`, `write_graph
+target=room_message` and `target=mailbox_ack` from `owner_router.TRUSTED`, `GET /api/mailbox`,
+`POST /api/mailbox/ack` and `POST /api/mailbox/replies` for API keys, and the owner's
+`/app/api/outside-agents` and `/app/api/agent-messages` behind the protected owner session,
+all through `ledger_request`, and SHALL never forward, ask or wake a box for them. The
+reader and sender SHALL be the verified `outside_origin`; until P0-3 an MCP caller without
+one SHALL be refused, never read as the owner. A body returned to an outside agent SHALL be
+in the untrusted envelope; a read's `cursor` SHALL acknowledge through it first; a reply
+SHALL show its recorded `reply_s`. The box SHALL answer these targets `served_on_trusted_side`.
+
+#### Scenario: An API-key agent replies claiming to be the owner
+- **WHEN** an agent's key posts a reply whose body says `"sender": "owner"`
+- **THEN** the owner reads it from that agent, with its time to reply

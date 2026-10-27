@@ -104,6 +104,7 @@ beside `cloudflared` and a log shipper.
 |---|---|
 | `tinyassets/boxes/` | `BoxProvider`, the only way to touch a command center's files or run its code. |
 | `tinyassets/owner_router.py` | The shared door: from the verified identity, its `TRUSTED` registry (MCP method, tool and target; app path and method) answers on the trusted side; every other request reaches the owner's box unchanged. |
+| `tinyassets/mailbox_door.py` | The ledger's doors in that registry (S30): the mailbox MCP targets, `/api/mailbox*` for API-key agents, the owner's `/app/api/outside-agents` and `/app/api/agent-messages`. |
 | `tinyassets/control_plane/` | Lease, triggers, scheduler tick, wake path. |
 | `tinyassets/owner_lease.py`, `tinyassets/storage/owner_fence.py` | The execution owner's lease and fence. |
 

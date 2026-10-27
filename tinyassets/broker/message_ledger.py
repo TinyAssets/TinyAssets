@@ -254,11 +254,16 @@ class MessageLedger:
                                "WHERE message_id=? AND agent_id=?",
                                (now, row["message_id"], reader))
                     self._receipt(db, owner, reader, "read", row["message_id"], now)
+            # A reply's own receipt already holds its time to reply; show it, never recompute.
+            replied = {ref: json.loads(detail)["reply_s"] for ref, detail in db.execute(
+                "SELECT ref, detail_json FROM ledger_receipts WHERE kind='reply' AND ref IN "
+                f"({','.join('?' * len(rows))})", [row["message_id"] for row in rows])}
         texts = bodies({row["message_id"]: row["body_sha256"] for row in rows})
         keep = ("seq", "message_id", "room_id", "sender_kind", "sender_id", "parent_id",
                 "chain_depth", "created_at")
         return {"reader": reader, "cursor": cursor, "messages": [
-            {**{k: row[k] for k in keep}, **texts[row["message_id"]]} for row in rows]}
+            {**{k: row[k] for k in keep}, "reply_s": replied.get(row["message_id"]),
+             **texts[row["message_id"]]} for row in rows]}
 
     def ack(self, owner: str, *, origin: dict | None, through: int) -> dict:
         if type(through) is not int or through < 0:

@@ -16,10 +16,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 import anyio
 import httpx
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect, Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from tinyassets.asgi_scope import refuse_non_http
+from tinyassets.mailbox_door import mcp as mailbox_mcp
 from tinyassets.mcp_events_http import door as events_door
 
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
@@ -195,6 +197,9 @@ for _path in ("/app/account/delete", "/app/client-error", "/app/token",
               "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
               # N10: owner policy widens only here, with the proof, on the owner channel.
               "/app/api/policy",
+              # S30: the owner's outside agents and their dm rooms (mailbox_door).
+              "/app/api/outside-agents", "/app/api/agent-messages",
+              "/api/mailbox", "/api/mailbox/ack", "/api/mailbox/replies",
               "/app/billing/", "/app/run/", "/app/model-callback/",
               "/app/approval-handoff/", "/app/model-connect/", "/app/account/deletion/"):
     TRUSTED.app(_path)
@@ -208,6 +213,50 @@ for _path in ("/app", "/app/sw.js", "/app/ui-frame", "/app/oauth/client-metadata
 async def _events(front):
     """P0-4: subscriptions live in the broker; the box only authorizes the caller."""
     await events_door(front.scope, front.receive, front.send, front.identity, front.ask_box)
+
+
+@TRUSTED.mcp("tools/call", "read_graph", "mailbox")
+@TRUSTED.mcp("tools/call", "write_graph", "room_message")
+@TRUSTED.mcp("tools/call", "write_graph", "mailbox_ack")
+async def _mailbox(front):
+    """S3a.2: the ledger lives in the broker (ADR-025); reading or posting wakes no box."""
+    await mailbox_mcp(front)
+
+
+def tool_result(structured: dict) -> dict:
+    """A ``tools/call`` result in the box's own shape (``universe_server._structured_return``)."""
+    from tinyassets.engine_result_bounds import faithful_text
+
+    return {"content": [{"type": "text", "text": faithful_text(structured)}],
+            "structuredContent": structured, "isError": False}
+
+
+async def mcp_answer(front, ident, *, result=None, error=None):
+    """The router's one composed JSON-RPC answer, framed as the box frames it for this client.
+
+    A 2026-07-28 request gets stateless JSON with ``resultType``. A legacy client that
+    accepts a stream (every first-party and hosted client today) gets the box's one SSE
+    ``message`` event; its session id is box-held, so the router echoes the client's own
+    and never mints or checks one: the answer depends only on the verified identity.
+    """
+    from tinyassets.mcp_events_http import VERSION
+
+    headers = Headers(scope=front.scope)
+    modern = headers.get("mcp-protocol-version") == VERSION
+    if result is not None and modern:
+        result = {**result, "resultType": "complete"}
+    body = json.dumps({"jsonrpc": "2.0", "id": ident,
+                       **({"error": error} if error is not None else {"result": result})},
+                      separators=(",", ":")).encode()
+    if modern or "text/event-stream" not in headers.get("accept", ""):
+        framed = {"content-type": "application/json", "cache-control": "no-store"}
+    else:
+        body = b"event: message\r\ndata: " + body + b"\r\n\r\n"
+        framed = {"content-type": "text/event-stream", "x-accel-buffering": "no",
+                  "cache-control": "no-cache, no-transform"}
+        if headers.get("mcp-session-id"):
+            framed["mcp-session-id"] = headers["mcp-session-id"]
+    await Response(body, headers=framed)(front.scope, front.receive, front.send)
 
 
 def hook_token(path: str) -> str | None:
