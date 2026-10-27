@@ -64,7 +64,16 @@ The founder's words: "Insert a 'trusted front' slice (router answers registered 
 - **Live acceptance:** The first users' agent wakes on a message, reads it and replies; time to reply recorded
 - **Depends on:** S0, S1
 
-- [ ] Ledger: broker message ledger and agent registry; mailbox read, ack and 1:1 reply, registered in the trusted front. Live: an API-key agent reads and replies, and time to reply is recorded.
+- [x] S3a.1 Message ledger core (#5336): `broker/message_ledger.py` (`outside_agents`,
+  `ledger_messages`, `ledger_recipients`, `ledger_receipts`, `ledger_cursors`) and
+  `broker/conversations.py` (`message_bodies`), broker-held per owner; owner-channel ops
+  `OUTSIDE_AGENTS`, `ROOM_POST` (1:1) and `MAILBOX_RECEIPT`; `pull` delivery only; registry
+  row S30 converged with `test_ledger_boundary`. No public surface yet.
+- [ ] S3a.2 Doors: trusted-front registrations for `read_graph target=mailbox`,
+  `write_graph room_message` and `mailbox_ack`, the REST routes and
+  `/app/api/outside-agents`. Until P0-3, its MCP doors refuse an outside-looking caller with
+  no `outside_origin` rather than read it as the owner. Live: an API-key agent reads and
+  replies, and time to reply is recorded.
 
 ## S5a Collections
 
@@ -87,7 +96,9 @@ S0's row above.
 
 S3a's row above.
 
-- [ ] `mailbox.message` events. Live: a ChatGPT agent wakes on a message, reads it and replies.
+- [ ] Wakes: `ledger_wakes`, the `AGENT_WAKE` broker op, `control_plane/outside_wakes.py` and
+  `mailbox.message` events; the wake delivery methods are admitted with them. Live: a ChatGPT
+  agent wakes on a message, reads it and replies.
 
 ## ADR-030 tool by tool
 

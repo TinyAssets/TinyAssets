@@ -17,6 +17,11 @@ GUARDS = {
         "Send owner messages through converse and the box-local durable intake; "
         "remove browser steering, destructive claims and duplicate send transports. "
     ),
+    "test_ledger_boundary": (
+        "Name the S30 ledger and body stores only in broker/message_ledger.py and "
+        "broker/conversations.py, import those only from broker/server.py and account "
+        "erasure, and keep OUTSIDE_AGENTS, ROOM_POST and MAILBOX_RECEIPT off the box channel. "
+    ),
     "test_policy_writers": (
         "Keep policy writes in the broker store, reachable only through the protected "
         "owner-door policy route. Retire the former editable rule modules. "

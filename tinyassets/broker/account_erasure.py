@@ -63,6 +63,11 @@ def local_erase(ledger, *, principal, command_center, erase_external_keys=True):
     from tinyassets.broker.vault import erase_owner
 
     erase_owner(ledger._data_root, principal)
+    # S30: the owner's trusted ledger and bodies, by their own modules only.
+    from tinyassets.broker import conversations, message_ledger
+
+    for store in (message_ledger, conversations):
+        store.erase(ledger._data_root, principal)
     from tinyassets.broker.browser_vault import key_path
 
     path = key_path(ledger, principal)

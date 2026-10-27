@@ -181,6 +181,7 @@ class BrokerServer:
         self._ops.recover()
         self._next_wakes = None
         self._mcp_events = None
+        self._ledger = None
         self._deletion_jobs = None
         self._routing = None
 
@@ -217,6 +218,17 @@ class BrokerServer:
                 self._owner_identities.path.parent / "mcp-events.db",
                 sender=egress_sender(self.egress_binding)))
         return self._mcp_events
+
+    @property
+    def ledger(self):
+        """ADR-025 stores; only this module opens them, for the owner channel alone."""
+        if self._ledger is None:
+            from tinyassets.broker.conversations import Conversations
+            from tinyassets.broker.message_ledger import MessageLedger
+
+            self._ledger = (MessageLedger(self._data_root, self._owner_identities),
+                            Conversations(self._data_root, self._owner_identities))
+        return self._ledger
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         self._loop = asyncio.get_running_loop()
@@ -615,6 +627,25 @@ class _Connection:
                 answer = {"op": "MCP_EVENTS_IS", "result": result}
             except Exception as exc:
                 answer = {"op": "MCP_EVENTS_ERROR", "error": error_answer(exc)}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op in {"OUTSIDE_AGENTS", "ROOM_POST", "MAILBOX_RECEIPT"}:
+            # S30: the router's verified caller; the box channel never reaches here.
+            from tinyassets.broker.message_ledger import router_operation
+
+            try:
+                if not self._server._fence.admits(doc.pop("generation", None),
+                                                  doc.pop("token", None)):
+                    raise PermissionError("fenced")
+                result = await asyncio.to_thread(router_operation, *self._server.ledger,
+                                                 self._server._policy_store, doc)
+                answer = {"op": op + "_IS", "result": result}
+            except (PermissionError, ValueError) as exc:
+                # A refusal's own reason; an operating-system error names no path.
+                answer = {"op": op + "_REFUSED", "reason": "ledger unavailable"
+                          if getattr(exc, "errno", None) else str(exc)}
+            except Exception:
+                _LOG.exception("ledger operation unavailable")
+                answer = {"op": op + "_REFUSED", "reason": "ledger unavailable"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "DELETION_JOB":
             from tinyassets.broker.deletion_jobs import WithdrawalPending
