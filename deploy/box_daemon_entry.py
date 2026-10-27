@@ -5,8 +5,33 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
+import sys
 from pathlib import Path
+
+
+def _exit_on_signal(signum, _frame) -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001 - a flush must not hold up the exit
+            pass
+    os._exit(128 + signum)
+
+
+def exit_on_sigterm() -> None:
+    """Give PID 1 the SIGTERM every other process gets.
+
+    This process is PID 1 in the daemon container, and Linux ignores any signal
+    PID 1 has no handler for. So `docker stop` always ran to SIGKILL: during
+    startup, before uvicorn installs its handler, and after uvicorn's graceful
+    shutdown, whose re-raised SIGTERM was ignored while interpreter exit joined
+    a worker thread still serving a request. This process is the router; owner
+    turns run in their boxes and outlive a dropped reply stream, which uvicorn
+    has already drained for `GRACEFUL_SHUTDOWN_S` by the time this runs.
+    """
+    signal.signal(signal.SIGTERM, _exit_on_signal)
 
 
 def check_layout(data: Path) -> None:
@@ -30,6 +55,7 @@ def check_layout(data: Path) -> None:
 
 
 def main() -> None:
+    exit_on_sigterm()
     data = Path(os.environ.get("TINYASSETS_DATA_DIR", "/data"))
     check_layout(data)
     from tinyassets.boxes.daemon_control import broker_bootstrap

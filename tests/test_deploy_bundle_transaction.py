@@ -338,6 +338,12 @@ def compose_config(compose_file, env_values, interpolate_values=True):
 def main(argv):
     record(argv)
     state = load_state()
+    # A container sent SIGTERM exits once its drain delay has passed.
+    for container in (state.get("containers") or {}).values():
+        if container.get("term_exit_at") and container["term_exit_at"] <= time.time():
+            del container["term_exit_at"]
+            container["status"] = "exited"
+            save_state(state)
 
     if argv[:1] == ["create"]:
         if state.get("create_fail"):
@@ -511,9 +517,9 @@ def main(argv):
         if container is not None and container.get("status", "running") == "running":
             print("c0ffee")
         return 0
-    if argv[:1] in (["stop"], ["start"]):
+    if argv[:1] in (["stop"], ["start"], ["kill"]):
         container = (state.get("containers") or {}).get(argv[-1])
-        if argv[0] == "stop" and state.get("stop_refused"):
+        if argv[0] in ("stop", "kill") and state.get("stop_refused"):
             sys.stderr.write(
                 "fake docker: stop refused for %s status=%s\n"
                 % (argv[-1], (container or {}).get("status", "missing"))
@@ -525,15 +531,22 @@ def main(argv):
                 % (argv[-1], (container or {}).get("status", "missing"))
             )
             return 1
-        if argv[0] == "stop" and state.get("stop_delay_s"):
-            delay = state.pop("stop_delay_s")
+        # How long the daemon runs on after SIGTERM: once (stop_delay_s), or
+        # per image, so only the daemon running that image is slow to stop.
+        delay = 0
+        if argv[0] != "start":
+            delay = state.pop("stop_delay_s", 0) or (state.get("stop_delay_images") or {}).get(
+                (container or {}).get("image_ref"), 0)
             save_state(state)
-            time.sleep(delay)
-        # Per image: only the daemon running that image is slow to stop.
-        slow = (state.get("stop_delay_images") or {}).get((container or {}).get("image_ref"))
-        if argv[0] == "stop" and slow:
-            time.sleep(slow)
+        if argv[0] == "kill" and "--signal" in argv and delay and container is not None:
+            container["term_exit_at"] = time.time() + delay
+            save_state(state)
+            return 0
+        if argv[0] == "stop" and delay:
+            # docker stop SIGKILLs after --time.
+            time.sleep(min(delay, int(argv[argv.index("--time") + 1]) if "--time" in argv else 10))
         if container is not None:
+            container.pop("term_exit_at", None)
             container["status"] = "running" if argv[0] == "start" else "exited"
             save_state(state)
         return 0
@@ -587,8 +600,6 @@ def main(argv):
             print(container.get("image_ref", ""))
         elif ".Config.Env" in fmt:
             print(json.dumps(container.get("config_env") or []))
-        elif "{{.Id}}" in fmt:
-            print(container.get("id", ""))
         else:
             print("")
         return 0
@@ -691,10 +702,7 @@ def main(argv):
                 if kind == "unreadable":
                     os.makedirs(os.path.join(extra_dir, "environ"), exist_ok=True)
             containers = state.setdefault("containers", {})
-            # Each converge creates a new container, so a new id.
-            state["container_seq"] = state.get("container_seq", 0) + 1
             containers["tinyassets-daemon"] = {
-                "id": "%064x" % state["container_seq"],
                 "status": "running",
                 "health": health,
                 "image_id": image_id(ref),
@@ -1798,12 +1806,17 @@ def test_idle_or_unhealthy_daemon_at_the_drain_bound_still_swaps(box: Box):
     assert box.env_image() == OLD_IMAGE
 
 
+def _sigkills(calls: list[str]) -> list[str]:
+    return [line for line in calls if line.startswith(("stop ", "kill "))
+            and "--signal SIGTERM" not in line and "tinyassets-daemon" in line]
+
+
 @pytest.mark.parametrize("health", ["healthy", "starting"])
 def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box: Box, health):
-    """A healthy daemon that was not proved idle is still a cut turn.
+    """A daemon that was not proved idle may be serving a turn at the bound.
 
-    So is a `starting` one this run did not create: Docker resets health to
-    `starting` on every restart, so that state alone proves nothing.
+    So may a `starting` one: Docker resets health to `starting` on every
+    restart. The refusal comes before any SIGKILL and leaves it running.
     """
     box.stage_bundle()
     deployed = box.run(NEW_IMAGE)
@@ -1818,63 +1831,84 @@ def test_healthy_daemon_without_an_idle_proof_still_refuses_the_drain_bound(box:
     refused = box.run("--restore-bundle", OLD_IMAGE)
 
     assert refused.returncode == 3, refused.stdout + refused.stderr
-    assert _result(refused) == "rollback_failed"
+    assert _result(refused) == "drain_refused"
+    assert f"running_image={NEW_IMAGE}" in refused.stdout
     assert "refusing this deploy rather than accepting a cut turn" in refused.stderr
     assert "no in-flight turn, continuing the swap" not in refused.stdout
     calls = box.docker_calls_text().splitlines()[marked:]
+    assert "kill --signal SIGTERM tinyassets-daemon" in calls
+    assert not _sigkills(calls)
     assert not any(" up " in line and "compose" in line for line in calls)
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert (daemon["status"], daemon["image_ref"]) == ("running", NEW_IMAGE)
 
 
-def _post_deploy_rollback(box: Box, **rollback_state):
+def _post_deploy_rollback(box: Box, slow_image: str | None = None, **rollback_state):
     host_env = _stage_required_host_bundle(box)
     deployed = box.run(NEW_IMAGE, **host_env)
     assert _result(deployed) == "deployed", deployed.stdout + deployed.stderr
-    # The rollback image's daemon is slow to stop when the return to the
-    # candidate replaces it.
-    box.set_docker_state(stop_delay_images={OLD_IMAGE: _drain_bound_s() + 1}, **rollback_state)
-    return box.run(
+    if slow_image:
+        # This image's daemon runs on past the drain bound after SIGTERM, as
+        # one whose entry predates exit_on_sigterm does.
+        rollback_state["stop_delay_images"] = {slow_image: _drain_bound_s() + 1}
+    box.set_docker_state(**rollback_state)
+    marked = len(box.docker_calls_text().splitlines())
+    result = box.run(
         "--post-deploy-failure", NEW_IMAGE,
         IMAGE_ROLLBACK_ALLOWED="1", ROLLBACK_IMAGE=OLD_IMAGE, **host_env,
     )
+    return result, box.docker_calls_text().splitlines()[marked:]
 
 
-def test_return_to_candidate_stops_a_never_healthy_rollback_daemon(box: Box):
-    """2026-10-27: compose created the rollback daemon, then failed because it
-    never went healthy. When the return to the candidate stopped it, it was
-    `starting` (Docker resets health on a restart-policy restart) and ignored
-    SIGTERM to the drain bound. The cut-turn refusal fired and production was
-    left with no daemon. This run created that daemon and never saw it pass
-    health, and cloudflared waits on its health, so no turn could reach it."""
-    failed = _post_deploy_rollback(
+def test_return_to_candidate_after_a_rollback_that_never_went_healthy(box: Box):
+    """2026-10-27: compose created the rollback daemon, which never went
+    healthy, and the run returned to the candidate. A daemon that exits on
+    SIGTERM stops within the bound, so the candidate comes back and is
+    accepted again (best-effort, logged)."""
+    held, _ = _post_deploy_rollback(
         box, up_partial_images=[OLD_IMAGE],
         unhealthy_images=[OLD_IMAGE], unhealthy_health="starting",
     )
 
-    out = failed.stdout + failed.stderr
-    assert failed.returncode == 2, out
-    assert _result(failed) == "candidate_held"
-    assert "returning to" in failed.stderr
-    assert "prior starting" in failed.stdout
-    assert "never healthy in this run 1" in failed.stdout
+    out = held.stdout + held.stderr
+    assert held.returncode == 2, out
+    assert _result(held) == "candidate_held"
+    assert "returning to" in held.stderr
+    assert "prior starting" in held.stdout
+    assert f"returned candidate {NEW_IMAGE} passed acceptance" in held.stdout
     assert "refusing this deploy rather than accepting a cut turn" not in out
     assert box.env_image() == NEW_IMAGE
     assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == NEW_IMAGE
     assert (box.root / "boxhostd" / "tinyassets" / "release.txt").read_text() == "new\n"
 
 
-def test_return_to_candidate_still_refuses_a_rollback_daemon_seen_healthy(box: Box):
-    """The waiver is only for a daemon this run never saw pass health. A
-    rollback daemon that went healthy (accept failed later, on log forwarding)
-    may be serving a turn, so the drain bound still refuses."""
-    failed = _post_deploy_rollback(box, logs_status="exited")
+@pytest.mark.parametrize("rollback_state", [
+    # Compose failed and the daemon never went healthy (the 2026-10-27 shape,
+    # on an image that ignores SIGTERM).
+    {"up_partial_images": [OLD_IMAGE], "unhealthy_images": [OLD_IMAGE],
+     "unhealthy_health": "starting"},
+    # Compose failed with the daemon healthy.
+    {"up_partial_images": [OLD_IMAGE]},
+    # The daemon passed health; acceptance failed later, on log forwarding.
+    {"logs_status": "exited"},
+], ids=["never-healthy", "compose-failed-healthy", "accepted-health"])
+def test_return_to_candidate_leaves_a_slow_rollback_daemon_running(box: Box, rollback_state):
+    """The return to the candidate never SIGKILLs a daemon that may be serving
+    a turn. Past the bound it refuses and the rollback daemon keeps running;
+    the runtime files name the candidate, which the next converge starts."""
+    refused, calls = _post_deploy_rollback(box, slow_image=OLD_IMAGE, **rollback_state)
 
-    out = failed.stdout + failed.stderr
-    assert failed.returncode == 3, out
-    assert _result(failed) == "rollback_failed"
-    assert "returning to" in failed.stderr
-    assert "prior healthy" in failed.stdout
-    assert "refusing this deploy rather than accepting a cut turn" in failed.stderr
-    assert "never healthy in this run" not in failed.stdout
+    out = refused.stdout + refused.stderr
+    assert refused.returncode == 3, out
+    assert _result(refused) == "drain_refused"
+    assert f"running_image={OLD_IMAGE}" in refused.stdout
+    assert "returning to" in refused.stderr
+    assert "refusing this deploy rather than accepting a cut turn" in refused.stderr
+    assert calls.count("kill --signal SIGTERM tinyassets-daemon") == 2
+    assert not _sigkills(calls)
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert (daemon["status"], daemon["image_ref"]) == ("running", OLD_IMAGE)
+    assert box.env_image() == NEW_IMAGE
 
 
 def test_a_failed_docker_stop_still_refuses_an_unhealthy_daemon(box: Box):

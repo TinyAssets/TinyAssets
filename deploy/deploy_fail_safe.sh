@@ -492,17 +492,24 @@ container_state() {
   docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || echo error
 }
 
-container_id() {
-  # Prints the full container id, or nothing when it cannot be read.
-  docker inspect -f '{{.Id}}' "$1" 2>/dev/null || true
+daemon_running() {
+  [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]
 }
 
-# The daemon container the last restart_stack converge created in this run,
-# and whether this run ever saw it pass health. A successful `compose up`
-# counts as passing: cloudflared waits on the daemon's service_healthy. Read by
-# the next restart_stack's drain bound (see there).
-CONVERGED_DAEMON_ID=""
-CONVERGED_DAEMON_PASSED_HEALTH=0
+# restart_stack left the old daemon running at the drain bound (see there).
+# Every recovery path stops here: another converge would signal it again. The
+# unit stays stopped, so unless a deploy converges first, the watchdog's next
+# pass (daemon-watchdog.timer) restarts the daemon onto what ENV_FILE names.
+DRAIN_REFUSED=0
+drain_refused() {
+  local running named
+  running="$(docker inspect -f '{{.Config.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || echo unknown)"
+  named="$(sed -n 's/^TINYASSETS_IMAGE=//p' "$ENV_FILE" | head -1)"
+  err "${DAEMON_CONTAINER} still runs ${running} after SIGTERM, left to finish its turn; ${ENV_FILE} names ${named:-nothing}, which the next converge starts"
+  echo "deploy_result=drain_refused"
+  echo "running_image=${running}"
+  exit 3
+}
 
 # Health probe: wait up to HEALTH_TIMEOUT for the daemon to be healthy.
 # Fail-fast on terminal states; do NOT accept a bare "running" (no healthcheck
@@ -512,7 +519,7 @@ health_ok() {
   while [ "$SECONDS" -lt "$deadline" ]; do
     status="$(container_state "$DAEMON_CONTAINER")"
     case "$status" in
-      healthy)          CONVERGED_DAEMON_PASSED_HEALTH=1; return 0 ;;
+      healthy)          return 0 ;;
       dead|exited)      err "daemon container terminal state '${status}'"; return 1 ;;
       error|missing)    errs=$((errs + 1)); [ "$errs" -ge "$INSPECT_ERR_TOLERANCE" ] && { err "daemon inspect unavailable ${errs}x"; return 1; } ;;
       *)                errs=0 ;;   # starting / running (no healthcheck verdict yet) -> keep waiting
@@ -879,45 +886,39 @@ restart_stack() {
   systemctl stop "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
   # Stop the old daemon separately so the measured drain excludes the new
-  # image's startup. Docker SIGKILLs after --time. That cuts a turn only when
-  # a healthy daemon may still be serving one. A proved-idle probe, or a
-  # daemon that is already unhealthy, means the process is wedged and not
-  # serving: SIGKILL must not refuse the swap (the 143b1a92 rollback image
-  # never exits on SIGTERM, so every forward deploy deadlocked on this bound).
-  # A non-zero `docker stop` still refuses. Compose keeps its own bound in
+  # image's startup. SIGTERM first, then wait up to the bound; the SIGKILL
+  # decision comes before any SIGKILL. An image whose entry has
+  # exit_on_sigterm (deploy/box_daemon_entry.py) exits within uvicorn's
+  # GRACEFUL_SHUTDOWN_S. One still running at the bound is killed only when it
+  # cannot be serving a turn: a proved-idle probe, or a daemon already
+  # unhealthy (the 143b1a92 rollback image never exits on SIGTERM). Any other
+  # daemon is left running and the deploy refuses. Refusing after the kill
+  # protected no turn and left production with nothing running (Deploy prod
+  # 2026-10-27). A failed signal still refuses. Compose keeps its own bound in
   # case another writer recreated the daemon.
-  #
-  # The third waiver: the daemon being stopped is the one this run's previous
-  # converge created, this run never saw it pass health, and it is not healthy
-  # now. It never answered its own MCP pulse, and that converge removed
-  # cloudflared and starts it only behind the daemon's service_healthy, so no
-  # public turn can have reached it. This is the
-  # rollback (or the return to a candidate that passed health) replacing an
-  # image that never came up. Docker resets health to `starting` on every
-  # restart, so `starting` alone is not that proof; the container id and
-  # this run's own observations are. (2026-10-27: a never-healthy rollback
-  # daemon, `starting` after a restart-policy restart, hit the bound and the
-  # refusal left production with no daemon.)
-  local started elapsed prior_state="" prior_id="" never_healthy=0
-  if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+  local started elapsed prior_state=""
+  if daemon_running; then
     prior_state="$(container_state "$DAEMON_CONTAINER")"
-    prior_id="$(container_id "$DAEMON_CONTAINER")"
-    if [ -n "$prior_id" ] && [ "$prior_id" = "$CONVERGED_DAEMON_ID" ] \
-       && [ "$CONVERGED_DAEMON_PASSED_HEALTH" = 0 ] && [ "$prior_state" != healthy ]; then
-      never_healthy=1
-    fi
     started="$SECONDS"
-    if ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"; then
+    if ! docker kill --signal SIGTERM "$DAEMON_CONTAINER" >/dev/null && daemon_running; then
       err "the old daemon did not stop cleanly"
       return 1
     fi
+    while daemon_running && [ $((SECONDS - started)) -lt "$MAX_DAEMON_STOP_GRACE_S" ]; do
+      sleep 1
+    done
     elapsed=$((SECONDS - started))
     log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s, prior ${prior_state:-unknown})"
-    if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
-      if [ "$TURNS_IDLE_PROVED" = "1" ] || [ "$prior_state" = "unhealthy" ] || [ "$never_healthy" = 1 ]; then
-        log "old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound (prior ${prior_state:-unknown}, idle proved ${TURNS_IDLE_PROVED}, never healthy in this run ${never_healthy}); no in-flight turn, continuing the swap"
+    if daemon_running; then
+      if [ "$TURNS_IDLE_PROVED" = "1" ] || [ "$prior_state" = "unhealthy" ]; then
+        log "old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound (prior ${prior_state:-unknown}, idle proved ${TURNS_IDLE_PROVED}); no in-flight turn, continuing the swap"
+        if ! docker stop --time 0 "$DAEMON_CONTAINER" >/dev/null; then
+          err "the old daemon did not stop cleanly"
+          return 1
+        fi
       else
-        err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
+        DRAIN_REFUSED=1
+        err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn. It was not killed and is still running"
         return 1
       fi
     fi
@@ -937,17 +938,12 @@ restart_stack() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
     rm -f -s broker daemon cloudflared logs >/dev/null 2>&1 || true
   started="$SECONDS"
-  CONVERGED_DAEMON_ID=""
-  CONVERGED_DAEMON_PASSED_HEALTH=0
   if ! TINYASSETS_IMAGE="$image" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
         up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
     elapsed=$((SECONDS - started))
-    CONVERGED_DAEMON_ID="$(container_id "$DAEMON_CONTAINER")"
     err "docker compose up -d failed after ${elapsed}s"
     return 1
   fi
-  CONVERGED_DAEMON_ID="$(container_id "$DAEMON_CONTAINER")"
-  CONVERGED_DAEMON_PASSED_HEALTH=1
   elapsed=$((SECONDS - started))
   log "converge took ${elapsed}s after the old daemon stopped"
   systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
@@ -2968,18 +2964,25 @@ if [ "$MIGRATION_OK" = "1" ]; then
 fi
 
 # --- 6. unhealthy -> hold the candidate, or restore then roll back --------
+[ "$DRAIN_REFUSED" != 1 ] || drain_refused
 if [ "$RESTORE_BUNDLE" = 1 ]; then
   if [ "$POST_DEPLOY_FAILURE" = 1 ] && [ -n "${CANDIDATE_HOLD_SNAPSHOT:-}" ] \
      && [ -d "$CANDIDATE_HOLD_SNAPSHOT" ] && [ -n "${CANDIDATE_HOLD_IMAGE:-}" ]; then
     err "requested rollback did not become healthy; returning to ${CANDIDATE_HOLD_IMAGE}"
-    # restart_stack stops the rollback daemon without the cut-turn refusal
-    # only when this run created it and never saw it pass health.
     if restore_bundle_from "$CANDIDATE_HOLD_SNAPSHOT" \
        && set_image "$CANDIDATE_HOLD_IMAGE" && restart_stack; then
       clear_dirty || true
+      # Best-effort: the candidate is held either way, as the last image that
+      # passed health, and the log says whether it passes acceptance again.
+      if accept "$CANDIDATE_HOLD_IMAGE"; then
+        log "returned candidate ${CANDIDATE_HOLD_IMAGE} passed acceptance"
+      else
+        err "returned candidate ${CANDIDATE_HOLD_IMAGE} did not pass acceptance; holding it anyway"
+      fi
       log "candidate held: ${CANDIDATE_HOLD_IMAGE} is the last image that passed health"
       finish candidate_held "$CANDIDATE_HOLD_IMAGE" 2
     fi
+    [ "$DRAIN_REFUSED" != 1 ] || drain_refused
     err "could not return to the candidate that passed health"
   fi
   err "requested rollback failed; refusing to pair its restored bundle with another image"
@@ -3042,6 +3045,7 @@ if ! set_image "$PREV_IMAGE"; then
   exit 3
 fi
 if ! restart_stack; then
+  [ "$DRAIN_REFUSED" != 1 ] || drain_refused
   err "the rollback converge failed — manual intervention required"
   echo "deploy_result=rollback_failed"
   exit 3

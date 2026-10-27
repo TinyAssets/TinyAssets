@@ -342,7 +342,8 @@ USER tinyassets
 
 EXPOSE 8001
 
-# No tini: the D60 bootstrap must be PID1 (it reaps adopted orphans itself).
+# No tini: the CMD runs as PID 1 and installs its own SIGTERM exit
+# (deploy/box_daemon_entry.py), since PID 1 has no default signal action.
 # ta-entry.sh strips platform credentials, checks static data, then execs the
 # CMD in place.
 ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]

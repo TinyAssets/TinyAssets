@@ -338,7 +338,7 @@ def test_restart_stack_removes_services_before_one_compose_up():
     body = script[start:script.index("\n# Compose recreates a container", start)]
     positions = [
         body.index('systemctl stop "$UNIT"'),
-        body.index('docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"'),
+        body.index('docker kill --signal SIGTERM "$DAEMON_CONTAINER"'),
         body.index("docker stop tinyassets-broker"),
         body.index("rm -f -s broker daemon cloudflared logs"),
         body.index('up -d --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs'),
