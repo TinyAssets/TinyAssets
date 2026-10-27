@@ -29,6 +29,33 @@ from tinyassets.broker.server import BOX_HOST
 from tinyassets.owner_public_egress import JAIL_PROXY_URL, PROXY_ENV
 
 
+def _owner_write(store, proof, generation, policy):
+    """The owner's write, made where the router's owner channel makes it (N10)."""
+    from tests.support.broker_double import broker_process
+
+    with broker_process():
+        return store.write("alice", proof, generation, policy)
+
+
+def _router_submit(running):
+    """``policy_submit.submit`` as the broker's owner channel answers it, on its loop."""
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.broker.server import OWNER, _Connection
+
+    peer = object.__new__(_Connection)
+    peer._role, peer._server = OWNER, running.server
+
+    def submit(_root, owner, action, **fields):
+        answer = asyncio.run_coroutine_threadsafe(peer._policy_operation({
+            "op": "OWNER_POLICY", "action": action, "principal": owner, **fields}),
+            running.loop).result(30)
+        if answer["op"] == "OWNER_POLICY_REFUSED":
+            raise PolicyRefused(answer["reason"])
+        return answer["result"]
+
+    return submit
+
+
 @pytest.fixture
 def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
     from tinyassets.boxes import bootstrap, relay
@@ -120,8 +147,8 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
                           fence=lambda: (0, ""))
     snapshot = client.owner_policy("read")
     snapshot["policy"]["egress"]["mode"] = "ask"
-    client.owner_policy("write", session_proof=proof,
-                        expected_generation=snapshot["generation"], policy=snapshot["policy"])
+    # N10: the owner writes through the router's channel, never the box's.
+    _owner_write(store, proof, snapshot["generation"], snapshot["policy"])
     monkeypatch.setattr("tinyassets.broker.public_egress.destination",
                         lambda binding, host, port: destination(
                             binding, host, port, resolver=lambda *_: ["8.8.8.8"]))
@@ -163,34 +190,41 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
         assert b"403 Forbidden" in run(native, code).stdout
         return
 
-    async def approve(row):
+    async def apply(row):
         async def receive():
             return {"type": "http.request", "body": json.dumps({
                 "action": "apply_proposal", "center": "center",
-                "request_id": row["request_id"]}).encode()}
+                "request_id": row["request_id"], "shown": row["action"]}).encode()}
 
         request = Request({"type": "http", "method": "POST", "path": "/app/api/policy",
                            "query_string": b"scope=egress", "headers": [
                                (b"host", b"app.test"), (b"origin", b"https://app.test"),
                                (b"content-type", b"application/json")]}, receive)
-        with identity_context(Identity(user_id="alice", username="alice",
-                                       metadata={"router_owner_session": session})):
+        with identity_context(Identity(user_id="alice", username="alice")):
             return await onboarding._handle_policy(request)
+
+    def approve(row):
+        # N10: the router serves the proposal's apply, on its owner channel.
+        from tests.support.broker_double import broker_process
+
+        with monkeypatch.context() as patch, broker_process():
+            patch.setattr("tinyassets.onboarding.owner_sessions.require",
+                          lambda *_a, **_k: session)
+            patch.setattr("tinyassets.broker.policy_submit.submit",
+                          _router_submit(native.broker))
+            return asyncio.run(apply(row))
 
     # An intervening owner edit makes the displayed proposal stale.
     current = client.owner_policy("read")
-    client.owner_policy("write", session_proof=proof,
-                        expected_generation=current["generation"], policy=current["policy"])
-    assert asyncio.run(approve(rows[0])).status_code == 409
+    _owner_write(store, proof, current["generation"], current["policy"])
+    assert approve(rows[0]).status_code == 409
     assert not client.owner_policy("read")["policy"]["egress"]["destinations"]
     assert b"403 Forbidden" in run(native, code).stdout
     refreshed = list_pending(native.home)[-1]
-    response = asyncio.run(approve(refreshed))
+    response = approve(refreshed)
     assert response.status_code == 200, response.body
     with pytest.raises(PermissionError):
-        client.owner_policy("write", session_proof=proof,
-                            expected_generation=proposal["expected_generation"],
-                            policy=proposal["policy"])
+        _owner_write(store, proof, proposal["expected_generation"], proposal["policy"])
     assert destination(native.broker.server.egress_binding("alice"), "example.test", 443,
                        resolver=lambda *_: ["8.8.8.8"]) == ["8.8.8.8"]
     assert store.read("alice").document["egress"]["destinations"] == [
@@ -513,10 +547,11 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(
     proof = {"session_hash": hashlib.sha256(cookie.encode()).hexdigest()}
 
     def policy(destinations):
+        # N10: the owner writes through the router's channel, never the box's.
         current = client.owner_policy("read")
         current["policy"]["egress"] = {"mode": mode, "destinations": destinations}
-        client.owner_policy("write", session_proof=proof,
-                            expected_generation=current["generation"], policy=current["policy"])
+        _owner_write(native.broker.server._policy_store, proof, current["generation"],
+                     current["policy"])
 
     policy([])
     with routes(client, [git_origin.record], "developer") as env:

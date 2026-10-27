@@ -2190,10 +2190,9 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
                 raise RuntimeError("policy digest mismatch")
             document.pop("egress", None)
             db.execute("DROP TABLE IF EXISTS once_approvals")
+            # N10: account action rules stay broker-held beside spend.
             document["entries"] = [entry for entry in document["entries"]
-                                   if entry["scope"] == "account"
-                                   and entry["values"].get("action_class") in
-                                   {"spend", "money.move"}]
+                                   if entry["scope"] == "account"]
             digest = _digest(document)
             db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
                        (generation + 1, digest, _canonical(document)))
@@ -2455,19 +2454,9 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
 
         for owner in plan:
             tree = mounts / str(owner.uid)
-            from tinyassets.action_policy import initialize as initialize_action_policy
             from tinyassets.owner_centers import Centers
 
-            account = hashlib.sha256(owner.principal.encode()).hexdigest()
-            source_policy = data / ".broker/accounts" / account / "policy.db"
-            entries = []
-            if source_policy.exists():
-                with closing(sqlite3.connect(source_policy.as_uri() + "?mode=ro", uri=True)) as db:
-                    raw = db.execute("SELECT document FROM policy WHERE singleton=1").fetchone()[0]
-                entries = [entry for entry in json.loads(raw)["entries"]
-                           if entry["scope"] == "account"
-                           and entry["values"].get("action_class") not in {"spend", "money.move"}]
-            initialize_action_policy(tree / ".action-policy.db", {"entries": entries})
+            # N10: owner action rules stay in the broker's account policy.
             centers = Centers(tree)
             for center in owner.centers:
                 centers.create(center)

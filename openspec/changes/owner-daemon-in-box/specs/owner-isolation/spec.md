@@ -260,23 +260,20 @@ connections from a box SHALL be impossible.
 - **THEN** the proxy sends the request with no credential
 - **AND** no adapter or discovery reader independently refuses the destination or operation
 
-### Requirement: Owner action policy belongs to the box
-The owner box SHALL store and decide workspace file, shell and workflow rules,
-private app reads and writes, action classifications and action approvals. The
-broker SHALL retain credential scope and spending controls only. A local action
-policy request SHALL NOT require a shared policy decision. The stopped cutover
-SHALL move retained account action rules into the owner volume, retain spending
-rules in broker custody, and remove the egress section and shared action approvals.
+### Requirement: Owner action policy is held by the broker and enforced at OPEN
+The broker SHALL hold each owner's action rules, action classifications,
+standing grants and one-use approvals in its per-owner policy store, beside
+spending and egress policy. Only the router's owner channel, with a live
+protected owner session, SHALL widen them. A box OPEN SHALL meet the owner's
+rules at the broker whatever the box asserts; the box's own checks are advisory.
 
-#### Scenario: Action rules do not require shared authority
-- **WHEN** the owner changes a workspace shell rule through the protected owner session
-- **THEN** the box stores and applies the rule without contacting the broker policy service
-- **AND** the broker policy document contains no owner-local action rule
+#### Scenario: The box cannot write its own rules
+- **WHEN** a box sends a policy write or a one-use approval on its channel, with or without a session proof
+- **THEN** the broker refuses it and the owner's policy generation is unchanged
 
-#### Scenario: A cutover separates policy ownership
-- **WHEN** the stopped cutover retains an account policy
-- **THEN** action rules move into the box and monetary rules and spend limits remain in the broker
-- **AND** neither policy has an egress mode or destination allowlist
+#### Scenario: An ask-first call needs the owner's exact approval
+- **WHEN** a box OPEN is classified under an ask-first rule
+- **THEN** the broker sends nothing unless the OPEN carries an unspent one-use approval of exactly that request at the current generation, or a live standing grant matches
 
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before

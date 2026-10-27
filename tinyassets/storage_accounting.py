@@ -571,7 +571,6 @@ STORES: dict[str, Store] = {
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
     ".ta-cli": "platform: owner-box source declarations and connection state; volume quota applies",
-    ".action-policy.db": "platform: box-local action policy, charged by owner volume quota",
     ".centers.db": "platform: box-local center membership, charged by owner volume quota",
     "credential-custody.db": "platform: broker credential ownership",
     "plans.db": "platform: broker billing plan state",

@@ -38,6 +38,8 @@ _SHARED_APP = {
     "/app/approval-handoff", "/app/connections",
     # Undo stays on the router: the session proof never enters the box.
     "/app/owner/restore", "/app/owner/checkpoint", "/app/owner/restore-points",
+    # N10: owner policy widens only here, with the proof, on the owner channel.
+    "/app/api/policy",
 }
 _SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
                         "/app/approval-handoff/", "/app/model-connect/",

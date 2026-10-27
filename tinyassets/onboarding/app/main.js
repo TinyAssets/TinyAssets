@@ -9196,7 +9196,7 @@
         const response=await fetch('/app/api/policy',{method:'POST',credentials:'same-origin',
           headers:Object.assign({'Content-Type':'application/json'},authHeaders()),
           body:JSON.stringify({action:'apply_proposal',center:req.universe_id||queueScope,
-            request_id:req.request_id})});
+            request_id:req.request_id,shown:req.action})});
         r=await response.json().catch(()=>({error:'policy_response_unavailable'}));
         if(!response.ok&&!r.error)r.error='policy_apply_failed';
       }else if(req.action?.type==='policy_proposal'){

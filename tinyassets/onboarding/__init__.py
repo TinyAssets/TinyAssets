@@ -1145,118 +1145,95 @@ async def _handle_profile(request: Any) -> Any:
     return JSONResponse(profile, headers=_NO_STORE)
 
 async def _handle_policy(request: Any) -> Any:
-    """Edit local action rules, or the separately broker-held spending policy."""
-    from functools import partial
+    """The owner's one broker-held policy (N10): read, write, apply a proposal, approve once.
 
+    Router-served: the protected-session proof travels only on the router's
+    owner channel to the broker, and a box never widens the owner's policy.
+    """
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.action_policy import PolicyRefused
-    from tinyassets.action_policy import owner_policy_operation as action_policy
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.broker.client import BrokerRefused
-    from tinyassets.broker.client import owner_policy_operation as spending_policy
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.broker.policy_submit import submit
     from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.owner_runtime import current
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
     denied = _app_identity_required()
     if denied is not None:
         return denied
-    identity = current_identity()
-    owner = identity.user_id
-    center = await run_in_threadpool(_read_home, identity)
-    if not center:
-        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
-    scope = request.query_params.get("scope", "actions")
-    if scope not in {"actions", "spend", "egress"}:
-        return JSONResponse({"error": "invalid_policy_scope"}, status_code=400)
-    owner_policy_operation = (partial(action_policy, center=center)
-                              if scope == "actions" else spending_policy)
-    if request.method == "GET":
-        result = await run_in_threadpool(owner_policy_operation, _base_path(), owner, "read")
-        receipts = await run_in_threadpool(
-            owner_policy_operation, _base_path(), owner, "receipts")
-        return JSONResponse({**result, **receipts, "center": center}, headers=_NO_STORE)
-    if not _same_origin_json(request, str(app_config().get("resource") or "")):
-        return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
+    if current() is not None:
+        return JSONResponse({"error": "policy_requires_owner_session"}, status_code=403,
                             headers=_NO_STORE)
+    if request.query_params.get("scope", "actions") not in {"actions", "spend", "egress"}:
+        return JSONResponse({"error": "invalid_policy_scope"}, status_code=400)
+    owner = current_identity().user_id
+
+    async def call(action, **fields):
+        return await run_in_threadpool(submit, _base_path(), owner, action, **fields)
+
+    def refused(error, status, exc=None):
+        body = {"error": error, **({"reason": str(exc)} if exc is not None else {})}
+        return JSONResponse(body, status_code=status, headers=_NO_STORE)
+
+    try:
+        if request.method == "GET":
+            return JSONResponse({**await call("read"), **await call("receipts")},
+                                headers=_NO_STORE)
+    except PolicyRefused as exc:
+        return refused("policy_unavailable", 403, exc)
+    except RuntimeError:
+        return refused("policy_unavailable", 503)
+    if not _same_origin_json(request, str(app_config().get("resource") or "")):
+        return refused("cross_origin_rejected", 403)
     try:
         session = require(request, owner=owner)
     except PermissionError:
-        return JSONResponse({"error": "interactive_owner_session_required"},
-                            status_code=403, headers=_NO_STORE)
-    session_proof = {"session_hash": session["session_hash"]}
-    data = await _read_small_json(request)
+        return refused("interactive_owner_session_required", 403)
+    proof = {"session_hash": session["session_hash"]}
+    data = await _read_small_json(request, limit=32768)  # a shown proposal is <=12 kB
     if not isinstance(data, dict):
-        return JSONResponse({"error": "invalid_policy"}, status_code=400,
-                            headers=_NO_STORE)
-    if set(data) == {"expected_generation", "policy"}:
-        action, fields = "write", dict(expected_generation=data["expected_generation"],
-                                       policy=data["policy"])
-    elif data.get("action") == "apply_proposal" and set(data) == {
-            "action", "center", "request_id"}:
-        from tinyassets.api.pending_requests import displayed_row_matches
-        from tinyassets.owner_centers import admitted_owner
-        from tinyassets.storage.pending_requests import get_request, resolve_request
-
-        proposed_center = data["center"]
-        if (not isinstance(proposed_center, str)
-                or not isinstance(data["request_id"], str)
-                or await run_in_threadpool(admitted_owner, _base_path(), center=proposed_center)
-                != owner):
-            return JSONResponse({"error": "proposal_not_found"}, status_code=404,
-                                headers=_NO_STORE)
-        pending_home = _base_path() / proposed_center
-        row = await run_in_threadpool(get_request, pending_home, data["request_id"])
-        if (row is None or row["status"] != "pending" or not displayed_row_matches(row)
-                or row["action"].get("type") != "policy_proposal"):
-            return JSONResponse({"error": "proposal_not_found"}, status_code=404,
-                                headers=_NO_STORE)
-        proposal = row["action"]
-        if "egress" in proposal["policy"]:
-            owner_policy_operation = spending_policy
-        if "egress" in proposal["policy"]:
-            owner_policy_operation = spending_policy
-        try:
-            result = await run_in_threadpool(
-                owner_policy_operation, _base_path(), owner, "write",
-                session_proof=session_proof,
-                expected_generation=proposal["expected_generation"],
-                policy=proposal["policy"])
-        except (BrokerRefused, PolicyRefused):
-            return JSONResponse({"error": "policy_changed_or_session_required"},
-                                status_code=409, headers=_NO_STORE)
-        resolved = await run_in_threadpool(
-            resolve_request, pending_home, data["request_id"], status="answered",
-            answer={"policy_digest": result["digest"]}, decision="accepted")
-        if not resolved:
-            return JSONResponse({"error": "policy_applied_request_unresolved",
-                                 "generation": result["generation"]}, status_code=503,
-                                headers=_NO_STORE)
-        return JSONResponse({**result, "center": proposed_center,
-                             "request_id": data["request_id"]}, headers=_NO_STORE)
-    elif data.get("action") == "issue_once" and set(data) == {
-            "action", "expected_generation", "center", "grant_id", "connection_id",
-            "verb", "request", "destination"}:
-        action = "issue_once"
-        fields = {key: value for key, value in data.items() if key != "action"}
-    else:
-        return JSONResponse({"error": "invalid_policy"}, status_code=400,
-                            headers=_NO_STORE)
+        return refused("invalid_policy", 400)
     try:
-        result = await run_in_threadpool(
-            owner_policy_operation, _base_path(), owner, action,
-            session_proof=session_proof, **fields)
-    except (BrokerRefused, PolicyRefused):
-        return JSONResponse({"error": "interactive_owner_session_required"},
-                            status_code=403, headers=_NO_STORE)
-    if action == "write":
-        receipts = await run_in_threadpool(
-            owner_policy_operation, _base_path(), owner, "receipts")
-        result = {**result, **receipts}
-    return JSONResponse({**result, "center": center}, headers=_NO_STORE)
+        if data.get("action") == "apply_proposal" and set(data) == {
+                "action", "center", "request_id", "shown"}:
+            from tinyassets.broker.policy import _digest
+
+            # The broker applies the held card only if it is still pending and is
+            # the proposal this page showed. The page itself is box-served until
+            # ADR-030 (docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md).
+            if not isinstance(data["shown"], dict) or not isinstance(data["request_id"], str):
+                return refused("invalid_policy", 400)
+            try:
+                result = await call("apply_proposal", session_proof=proof,
+                                    request_id=data["request_id"],
+                                    digest=_digest(data["shown"]))
+            except PolicyRefused as exc:
+                return refused("policy_changed_or_session_required", 409, exc)
+            return JSONResponse({**result, "center": data["center"],
+                                 "request_id": data["request_id"]}, headers=_NO_STORE)
+        if set(data) == {"expected_generation", "policy"}:
+            action, fields = "write", data
+        elif data.get("action") == "issue_once" and set(data) == {
+                "action", "expected_generation", "center", "grant_id", "connection_id",
+                "verb", "request", "destination"}:
+            action = "issue_once"
+            fields = {key: value for key, value in data.items()
+                      if key not in {"action", "center"}}
+        else:
+            return refused("invalid_policy", 400)
+        try:
+            result = await call(action, session_proof=proof, **fields)
+        except PolicyRefused as exc:
+            return refused("interactive_owner_session_required", 403, exc)
+        if action == "write":
+            result = {**result, **await call("receipts")}
+    except RuntimeError:
+        return refused("policy_unavailable", 503)
+    return JSONResponse(result, headers=_NO_STORE)
 
 
 async def _handle_account_timezone(request: Any) -> Any:

@@ -814,7 +814,8 @@ class _BrokerChannel:
         self._connection_id = connection_id
         self._closed = False
 
-    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None,
+                authority=None) -> Any:
         from tinyassets.broker.ops import new_op_id
 
         if self._closed:
@@ -826,7 +827,8 @@ class _BrokerChannel:
                                     op_id=(inference_usage.operation_id
                                            if inference_usage is not None else new_op_id()),
                                     **({"inference_usage": inference_usage.document()}
-                                       if inference_usage is not None else {}))
+                                       if inference_usage is not None else {}),
+                                    **({"authority": authority} if authority else {}))
 
     @asynccontextmanager
     async def stream(self, verb, request, *, inference_usage=None, operation_id):
@@ -887,10 +889,13 @@ class ScopedConnectionProxy:
     access_mode: str = ACCESS_EXACT
     _channel: _BrokerChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
-    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None,
+                authority=None) -> Any:
+        """``authority``: the box-asserted labels the broker's N10 rules gate reads."""
         return self._channel.request(
             verb, request, **({"inference_usage": inference_usage}
                              if inference_usage is not None else {}),
+            **({"authority": authority} if authority else {}),
         )
 
     @asynccontextmanager
