@@ -238,6 +238,81 @@ def test_only_verified_tokens_supply_opaque_connection_metadata(keypair):
     assert _provider(keypair).resolve_token(token + "invalid") is None
 
 
+@pytest.fixture
+def claim_shapes(monkeypatch, caplog):
+    """The token_claim_shape events emitted, parsed, from fresh rate-limit state."""
+    import json
+
+    monkeypatch.setattr(workos_provider_module, "_claim_shape_log_state", {})
+    monkeypatch.setattr(workos_provider_module, "_rejection_log_now", lambda: 100.0)
+    events = logging.getLogger("tinyassets.events")
+    events.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="tinyassets.events")
+    yield lambda: [
+        json.loads(r.getMessage()) for r in caplog.records
+        if '"event":"token_claim_shape"' in r.getMessage()
+    ]
+    events.removeHandler(caplog.handler)
+
+
+@pytest.mark.verifies(
+    'identity-auth-and-access-control:'
+    'Bearer JWT validation is fail-closed, RS256-pinned, and audience-bound',
+)
+def test_claim_shape_logged_once_per_shape_without_values(
+        keypair, claim_shapes, monkeypatch, caplog):
+    import hashlib
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP_CLIENT_ID", "client_first_party")
+    monkeypatch.setattr(workos_provider_module, "_CLAIM_SHAPE_CAP", 4)
+    provider = _provider(keypair)
+    outside = _sign(keypair, client_id="client_outside_x", sid="sid_secret_v",
+                    user_01HSECRETACCOUNT="v", auth_time=1)
+    for token in (outside, outside, _sign(keypair, client_id="client_first_party")):
+        assert provider.verified_claims(token) is not None
+    first, second = claim_shapes()  # same shape twice -> one line
+    assert first["claim_keys"] == sorted(
+        ["auth_time", "sub", "sid", "iss", "iat", "exp", "email", "client_id"])
+    assert first["unknown_claims"] == 1  # counted, never named
+    assert first["client_id_present"] and not first["first_party"]
+    stored = hashlib.sha256((ISSUER + "\0client_outside_x").encode()).hexdigest()
+    assert len(first["client_tag"]) == 12 and first["client_tag"] not in stored
+    assert first["token_type"] == "JWT" and "context" not in first
+    assert first["client_kind"] == "other"  # no request: the fixed-set default
+    from tinyassets import observability
+
+    marker = observability._client.set("chatgpt")
+    try:
+        provider.verified_claims(_sign(keypair, client_id="client_labelled"))
+    finally:
+        observability._client.reset(marker)
+    assert claim_shapes()[-1]["client_kind"] == "chatgpt"
+    assert second["first_party"] and second["client_tag"] != first["client_tag"]
+    assert provider.verified_claims(_sign(keypair, extra_claim="v")) is not None
+    third = claim_shapes()[3]  # a different claim set -> its own line
+    assert not third["client_id_present"] and "client_tag" not in third
+    # A full table drops new shapes instead of evicting old ones and re-logging.
+    for n in range(5):
+        provider.verified_claims(_sign(keypair, client_id=f"client_dcr_{n}"))
+        provider.verified_claims(outside)
+    assert len(claim_shapes()) == 4
+    for secret in ("user_workos_123", "founder@example.com", "sid_secret_v",
+                   "client_outside_x", "client_first_party", "HSECRETACCOUNT", outside):
+        assert secret not in caplog.text
+
+
+@pytest.mark.verifies(
+    'identity-auth-and-access-control:'
+    'Bearer JWT validation is fail-closed, RS256-pinned, and audience-bound',
+)
+def test_a_claim_shape_receipt_failure_never_fails_verification(keypair, monkeypatch):
+    def broken(*args, **kwargs):
+        raise UnicodeEncodeError("utf-8", "x", 0, 1, "lone surrogate")
+
+    monkeypatch.setattr(workos_provider_module, "_emit_claim_shape", broken)
+    assert _provider(keypair).verified_claims(_sign(keypair)) is not None
+
+
 
 
 

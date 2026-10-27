@@ -278,6 +278,11 @@ def _now() -> str:
     return f"{base}.{int((clock % 1) * 1_000_000):06d}Z"
 
 
+def current_client_kind() -> str:
+    """The request's classified client kind (a fixed set), never an identity."""
+    return _client.get() or "other"
+
+
 def _context_snapshot() -> dict[str, Any] | None:
     if not _request_active.get():
         return None
