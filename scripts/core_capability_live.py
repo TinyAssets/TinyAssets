@@ -85,6 +85,20 @@ def refusal(name, arguments, code):
     return ProbeFailure(" ".join(f"{name} {where} refused: {failure_code(code)}{server}".split()))
 
 
+def answer(name, arguments, result):
+    """The tool's JSON object, or its refusal. A ``status: rejected`` envelope
+    (the validator refused a spec) is a refusal too, never a success. Error
+    codes only: a transport exception or body must not publish credentials."""
+    value = json.loads(result.data) if isinstance(result.data, str) else result.data
+    if not isinstance(value, dict):
+        raise refusal(name, arguments, "tool_failed")
+    if value.get("status") == "rejected":
+        raise refusal(name, arguments, "; ".join(map(str, value.get("errors") or ["rejected"])))
+    if result.is_error or value.get("error"):
+        raise refusal(name, arguments, value.get("error", "tool_failed"))
+    return value
+
+
 def passed(report, capability, observation):
     report["capabilities"].append(
         dict(
@@ -201,15 +215,7 @@ async def exercise(config, http, token, report):
     async with Client(stream_transport(token, transport_observations), timeout=180) as client:
 
         async def call(name, **arguments):
-            result = await client.call_tool(name, arguments)
-            value = json.loads(result.data) if isinstance(result.data, str) else result.data
-            if result.is_error or not isinstance(value, dict) or value.get("error"):
-                # Error codes only: a transport exception or body must not publish credentials.
-                code = (
-                    value.get("error", "tool_failed") if isinstance(value, dict) else "tool_failed"
-                )
-                raise refusal(name, arguments, code)
-            return value
+            return answer(name, arguments, await client.call_tool(name, arguments))
 
         # Imported here: core_capability_image.py mounts this file without the package.
         from scripts.core_canary_provision import ProvisionError, provision

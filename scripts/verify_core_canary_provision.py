@@ -13,7 +13,6 @@ other deploy continues. A ready canary writes ``provisioned=1``.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import sys
@@ -40,12 +39,7 @@ async def _provision(config: dict) -> None:
         async with Client(live.stream_transport(token, {}), timeout=180) as client:
 
             async def call(name, **arguments):
-                result = await client.call_tool(name, arguments)
-                value = json.loads(result.data) if isinstance(result.data, str) else result.data
-                if result.is_error or not isinstance(value, dict) or value.get("error"):
-                    code = value.get("error", "tool_failed") if isinstance(value, dict) else ""
-                    raise live.refusal(name, arguments, code)
-                return value
+                return live.answer(name, arguments, await client.call_tool(name, arguments))
 
             await provision(config, http, live.ORIGIN, call)
 
