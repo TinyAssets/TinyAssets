@@ -200,6 +200,19 @@ def test_daily_rollup_splits_an_interval_across_every_day_it_spans(tmp_path):
 
 
 @pytest.mark.verifies("cost-driver-receipts:One receipt per owner per day")
+def test_a_superseded_interval_gives_back_the_days_it_never_ran(tmp_path):
+    meter = Meter(tmp_path / "metering.db", source="boxhostd")
+    meter.open_interval("a", 300001, DAY + 82800)  # 23:00 on the 20th; seen until 00:00
+    meter.seen(300001, DAY + 86400)
+    meter.daily(DAY + 86400 + 60, lambda: {})  # rolled while open: counted to midnight
+    meter.daily(DAY + 2 * 86400 + 60, lambda: {})  # and all of the 21st
+    # Its close was lost; the next start supersedes it at its last sighting.
+    meter.open_interval("a", 300001, DAY + 2 * 86400 + 120)
+    events = meter.receipts("2026-10-20", "2026-10-21")["events"]
+    assert [(e["time"][:10], e["data"]["quantity"]) for e in events] == [("2026-10-20", 3600)]
+
+
+@pytest.mark.verifies("cost-driver-receipts:One receipt per owner per day")
 def test_an_unfinished_day_is_refused(tmp_path):
     meter = Meter(tmp_path / "metering.db", source="broker")
     meter.add("a", "relay", 10, time.time())
@@ -252,7 +265,9 @@ def test_only_the_allowlist_imports_metering_in_any_form(tmp_path):
                     "from tinyassets.metering import Meter", "from tinyassets import metering",
                     "from .. import metering", "from ..metering import Meter",
                     "from tinyassets import (\n    usage_policy,\n    metering,\n)",
-                    "def wake():\n    from tinyassets import metering"):
+                    "def wake():\n    from tinyassets import metering",
+                    "meter = __import__('tinyassets.metering')",
+                    "import importlib\nmeter = importlib.import_module('tinyassets.metering')"):
         routing.write_text(planted + "\n")
         assert check_shapes.metering_import_problems(tmp_path) == refused, planted
     routing.unlink()

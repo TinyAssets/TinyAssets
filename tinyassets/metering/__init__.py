@@ -119,11 +119,15 @@ class Meter:
     @_recorded
     def open_interval(self, owner: str, uid: int, at: float, size_class=RESERVED_CLASS):
         with closing(self._connect()) as db, db:
+            began = db.execute("SELECT MIN(started_at) FROM meter_intervals "
+                               "WHERE uid=? AND ended_at IS NULL", (uid,)).fetchone()[0]
             db.execute("UPDATE meter_intervals SET ended_at=seen_at, end_reason='superseded' "
                        "WHERE uid=? AND ended_at IS NULL", (uid,))
             db.execute("INSERT INTO meter_intervals (owner, uid, size_class, started_at, "
                        "seen_at) VALUES (?,?,?,?,?)", (owner, uid, size_class, at, at))
         self._seen[uid] = at
+        if began is not None:  # A superseded interval's earlier days drop its open tail.
+            self._reroll(began, at)
 
     @_recorded
     def seen(self, uid: int, at: float):

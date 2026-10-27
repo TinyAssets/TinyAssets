@@ -853,6 +853,11 @@ def imported_modules(rel: str, source: str) -> set[str]:
             base = package[: max(0, len(package) - node.level + 1)] if node.level else ()
             module = ".".join((*base, *([node.module] if node.module else [])))
             names.update({module} | {f"{module}.{alias.name}" for alias in node.names})
+        elif (isinstance(node, ast.Call) and node.args
+              and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+              and ast.unparse(node.func) in {"__import__", "importlib.import_module",
+                                             "import_module"}):
+            names.add(node.args[0].value)  # A literal dynamic import binds that module too.
     return names
 
 
