@@ -576,6 +576,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "credential-custody.db": "platform: broker credential ownership",
     "plans.db": "platform: broker billing plan state",
     "next-wake.db": "platform: broker next-wake index and last successful wake timestamps",
+    "metering.db": "platform: W10 cost-driver receipts in boxhostd and broker private state",
     "mcp-events.db": "platform: broker MCP event subscriptions, bounded per owner, and deliveries",
     ".published": "platform: shared copies of explicitly published definitions",
     ".custody.lock": "platform: broker credential publication and erasure lock",

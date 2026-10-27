@@ -36,7 +36,7 @@ class Box:
 class OwnerDaemons:
     def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
                  memory_bytes=1024**3, startup_timeout=60, images=None,
-                 answer_probe=4, answer_silence=600):
+                 answer_probe=4, answer_silence=600, meter=None):
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
         self.directory = Path(directory)
@@ -49,6 +49,8 @@ class OwnerDaemons:
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
         self.images = images
+        # W10 receipts (tinyassets.metering); None only where a host records none.
+        self.meter = meter
 
     def _rpc(self, box, operation="status", **body):
         client = http.client.HTTPConnection("owner", timeout=2)
@@ -102,9 +104,9 @@ class OwnerDaemons:
             try:
                 return self._launch(box, deadline, launch=launch)
             except Exception:
-                self.runtime.stop(box.uid)
-                self.volumes.detach(box.uid)
-                box.awake = False
+                with self._stopping(box, "start_failed"):
+                    self.runtime.stop(box.uid)
+                    self.volumes.detach(box.uid)
                 raise
 
     def _launch(self, box, deadline, *, launch=None):
@@ -157,6 +159,8 @@ class OwnerDaemons:
         # Mark execution started before touching runsc; uncertain cleanup stays visible.
         box.awake = True
         box.started = time.monotonic()
+        if self.meter is not None:
+            self.meter.open_interval(box.owner, box.uid, time.time())
         if record.get("rewind"):
             launch_options["rewind"] = True
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
@@ -169,18 +173,38 @@ class OwnerDaemons:
         box.error = str(error)
         log.error("owner daemon uid=%s failures=%s: %s", box.uid, box.failures, box.error)
 
+    @contextlib.contextmanager
+    def _stopping(self, box, reason):
+        """Every awake box's stop: cgroup facts first, then the stop, then its receipt."""
+        usage = self.meter and self.meter.measure(self.runtime.usage, box.uid)
+        yield
+        box.awake = False
+        if self.meter is not None:
+            self.meter.close_interval(box.uid, reason, time.time(), usage)
+
+    def _storage(self):
+        """Each owner image's allocated and provisioned bytes, from the trusted store."""
+        owners = {box.uid: box.owner for box in list(self.boxes.values())}
+        sizes = {}
+        for image in self.volumes.store.glob("*.img"):
+            if image.stem.isdigit():
+                info = image.stat()
+                uid = int(image.stem)
+                sizes[uid] = (owners.get(uid), info.st_blocks * 512, info.st_size)
+        return sizes
+
     def _stop(self, box, *, retire=False):
         if box.awake:
-            if retire:
-                try:
-                    self._rpc(box, "revoke")
-                except (OSError, http.client.HTTPException):
-                    pass  # A dead/unreachable ingress is still followed by a proven stop.
-                self.runtime.stop(box.uid)
-            else:
-                self.runtime.shutdown(box.uid)
-                self.volumes.detach(box.uid)
-            box.awake = False
+            with self._stopping(box, "retired" if retire else "stopped"):
+                if retire:
+                    try:
+                        self._rpc(box, "revoke")
+                    except (OSError, http.client.HTTPException):
+                        pass  # A dead/unreachable ingress is still followed by a proven stop.
+                    self.runtime.stop(box.uid)
+                else:
+                    self.runtime.shutdown(box.uid)
+                    self.volumes.detach(box.uid)
         box.secret = ""
         box.error, box.failures = "", 0
         (self.directory / "secrets" / str(box.uid)).unlink(missing_ok=True)
@@ -271,12 +295,12 @@ class OwnerDaemons:
                 # Running, but its own app has answered nothing for answer_silence:
                 # it can neither serve nor drain, and nothing else ever replaces it.
                 # Replace it like a crash; its volume is reattached as it stands.
-                self.runtime.stop(uid)
-                box.awake = False
+                with self._stopping(box, "unanswering"):
+                    self.runtime.stop(uid)
                 self._failed(box, BoxError("owner daemon stopped answering"))
             if box.awake:
-                self.runtime.stop(uid)
-                box.awake = False
+                with self._stopping(box, "crashed"):
+                    self.runtime.stop(uid)
                 self._failed(box, BoxError("owner daemon crashed"))
             try:
                 self._start(box, deadline, launch=record)
@@ -342,6 +366,8 @@ class OwnerDaemons:
 
     def maintain(self):
         """Observe exited processes; only the broker selects the next transition."""
+        if self.meter is not None:
+            self.meter.daily(time.time(), self._storage)
         with self.condition:
             boxes = [box for box in self.boxes.values() if box.awake]
         for box in boxes:
@@ -349,11 +375,13 @@ class OwnerDaemons:
                 with self.volumes.operation(box.uid, blocking=False, shared=True):
                     crashed = box.awake and not self.runtime.alive(box.uid)
                 if not crashed:
+                    if self.meter is not None:
+                        self.meter.seen(box.uid, time.time())
                     continue
                 with self.volumes.operation(box.uid, blocking=False):
                     if box.awake and not self.runtime.alive(box.uid):
-                        self.runtime.stop(box.uid)
-                        box.awake = False
+                        with self._stopping(box, "crashed"):
+                            self.runtime.stop(box.uid)
                         self._failed(box, BoxError("owner daemon crashed"))
             except BlockingIOError:
                 continue

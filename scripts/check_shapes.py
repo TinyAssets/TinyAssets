@@ -291,7 +291,15 @@ SHAPES: dict[str, Shape] = {
     "S33": Shape(("tinyassets/live_view.py",)),
     "S34": Shape(("tinyassets/conversation_store.py",)),
     "S35": Shape(("tinyassets/agent_loop/**",)),
-    "N12": Shape(("tinyassets/metering/**",)),
+    "N12": Shape(  # metering-not-admission: the receipts live in tinyassets/metering/
+        # and no admission module reads them, so S26 stays two limits.
+        ("tinyassets/usage_policy.py", "tinyassets/engine_admissions.py",
+         "tinyassets/boxes/admission.py", "tinyassets/broker/admission.py",
+         "tinyassets/broker/box_admission.py", "tinyassets/broker/lifecycle_config.py",
+         "tinyassets/broker/routing.py"),
+        forbid=(r"(?m)^\s*(?:import\s+tinyassets\.metering\b|from\s+tinyassets\.metering\b"
+                r"|from\s+tinyassets\s+import\s[^\n]*\bmetering\b)",),
+    ),
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {
@@ -838,6 +846,16 @@ def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
     return problems
 
 
+def forbidden(shape_id: str, shape: Shape, root: Path = ROOT) -> list[str]:
+    return [
+        f"{shape_id} forbid: {path.relative_to(root)} matches {pattern}"
+        for pattern in shape.forbid
+        for glob in shape.paths
+        for path in files(glob, root)
+        if re.search(pattern, path.read_text(encoding="utf-8", errors="replace"))
+    ]
+
+
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
     problems.extend(control_plane_policy_problems(root))
@@ -866,13 +884,7 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             problems.append(f"{shape_id} converged: {count} old-path occurrences remain")
         if status == "drifted" and shape.old and not count:
             problems.append(f"{shape_id} registry-parity: zero old paths; mark converged")
-        for pattern in shape.forbid:
-            for glob in shape.paths:
-                for path in files(glob, root):
-                    if re.search(pattern, path.read_text(encoding="utf-8", errors="replace")):
-                        problems.append(
-                            f"{shape_id} forbid: {path.relative_to(root)} matches {pattern}"
-                        )
+        problems.extend(forbidden(shape_id, shape, root))
     if added is None:
         added = git_added(root)
     for rel in sorted(added):

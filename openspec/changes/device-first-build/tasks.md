@@ -58,4 +58,4 @@ build slices, not registry row IDs.
 
 ## M Metering
 
-- [ ] Box-awake intervals by size class, peak memory, relay bytes, daily rollup, founder-only read.
+- [ ] Box-awake intervals by size class, peak memory, relay bytes, daily rollup, founder-only read. Acceptance still owed: a week of receipts with cost per driver in dollars.
