@@ -18,6 +18,7 @@ from scripts._canary_common import (  # noqa: E402
     _post,
     owner_canary_sign_in,
 )
+from tinyassets.conversation_failure import FAILURE_CODES  # noqa: E402
 
 # Broker wake_timeout is 60s. The router holds OWNER_BOX_WAKE for 70s.
 # Sign-in waits longer than both so that wait can finish.
@@ -38,7 +39,11 @@ def _reply_failure(value):
     if flag:
         return "canary_turn_" + flag
     if "error" in value:
-        return "canary_turn_error"
+        # The served turn's class, from its closed set; any other value is dropped.
+        failure = value.get("turn_failure")
+        code = failure.get("code") if isinstance(failure, dict) else None
+        return "canary_" + (code if isinstance(code, str) and code in FAILURE_CODES
+                            else "turn_error")
     if value.get("already_received"):
         state = value.get("state")
         return "canary_send_" + (state if state in _SEND_STATES else "unknown")

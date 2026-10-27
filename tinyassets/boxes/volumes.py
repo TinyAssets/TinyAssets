@@ -103,21 +103,27 @@ class OwnerVolumes:
         with self._lock(uid):
             return self._image(uid).stat().st_size
 
+    def _present(self, uid: int) -> list[str]:
+        """The snapshot ids this owner's offsite namespace holds, from one listing."""
+        names = self._run("rclone", "lsf", "--recursive", "--files-only", self.remote,
+                          "--include", f"/{uid}/**").stdout.splitlines()
+        return [name.removeprefix(f"{uid}/").removesuffix(".img.gz") for name in names]
+
     def delete_snapshots(self, uid: int, snapshot_ids, released) -> dict[str, str]:
         """One deletion path; only map-released references may retire a pin.
 
         Returns one outcome per id: ``deleted``, ``pinned`` (a platform backup
         still pins it), or ``failed:<class>`` with a fixed class, never rclone's
         text. One failed object no longer hides what happened to the others.
+        An object absent from the owner's listing is already gone; rclone
+        before v1.62 exits 1 for a missing file, the same as a real failure.
         """
         from tinyassets.platform_backup import pinned_snapshots, retention_lock
 
         with self._lock(uid), retention_lock():
-            if snapshot_ids is None:
-                names = self._run("rclone", "lsf", "--recursive", "--files-only", self.remote,
-                                  "--include", f"/{uid}/**").stdout.splitlines()
-                snapshot_ids = [name.removeprefix(f"{uid}/").removesuffix(".img.gz")
-                                for name in names]
+            erasing = snapshot_ids is None
+            if erasing:
+                snapshot_ids = self._present(uid)
             if (not isinstance(snapshot_ids, list) or not isinstance(released, list)
                     or any(not isinstance(item, str) or not re.fullmatch(r"[a-f0-9]{32}", item)
                            for item in [*snapshot_ids, *released])):
@@ -127,19 +133,28 @@ class OwnerVolumes:
             except (subprocess.SubprocessError, ValueError):
                 # No empty-on-error fallback: an unreadable catalog deletes nothing.
                 return dict.fromkeys(snapshot_ids, "failed:catalog_unreadable")
+            try:
+                present = set(snapshot_ids) if erasing else set(self._present(uid))
+            except subprocess.SubprocessError:
+                present = None
             outcomes = {}
             for snapshot_id in snapshot_ids:
                 if (uid, snapshot_id) in pins and snapshot_id not in released:
                     outcomes[snapshot_id] = "pinned"
                     continue
+                if present is None:
+                    # Without the listing, gone and undeletable look the same.
+                    outcomes[snapshot_id] = "failed:catalog_unreadable"
+                    continue
                 outcomes[snapshot_id] = "deleted"
+                if snapshot_id not in present:
+                    continue
                 try:
                     self._run("rclone", "deletefile",
                               f"{self.remote}/{uid}/{snapshot_id}.img.gz")
                 except subprocess.CalledProcessError as exc:
-                    # rclone 3 is directory not found and 4 is file not found.
-                    # The object is already gone, so the broker may forget the
-                    # row. Any other exit keeps the row and names the code.
+                    # Newer rclone exits 3 or 4 when the object went after the
+                    # listing. Any other exit keeps the row and names the code.
                     if exc.returncode not in {3, 4}:
                         outcomes[snapshot_id] = f"failed:rclone_exit_{exc.returncode}"
                 except subprocess.TimeoutExpired:

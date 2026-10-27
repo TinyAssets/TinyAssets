@@ -287,6 +287,12 @@ LEAK = "private model text LEAK-0123"
 
 @pytest.mark.parametrize("result,code", [
     ({"error": LEAK, "failure_notice": LEAK, "history_saved": True}, "canary_turn_error"),
+    ({"error": LEAK, "turn_failure": {"code": "provider_rate_limited", "stage": "model_request",
+                                      "effects": "none"}}, "canary_provider_rate_limited"),
+    ({"error": LEAK, "turn_failure": {"code": LEAK}}, "canary_turn_error"),
+    ({"error": LEAK, "turn_failure": {"code": ["timed_out"]}}, "canary_turn_error"),
+    ({"error": LEAK, "turn_failure": "timed_out"}, "canary_turn_error"),
+    ({"error": LEAK, "turn_failure": ["timed_out"]}, "canary_turn_error"),
     ({"status": "held", "note": LEAK, "needs_connection": {"handle": LEAK},
       "retryable_setup": True}, "canary_turn_needs_connection"),
     ({"error": LEAK, "retryable_setup": True}, "canary_turn_retryable_setup"),
@@ -318,6 +324,12 @@ def test_a_failed_turn_names_its_cause_with_a_fixed_code_in_the_receipt(
                                  lambda: canary.probe(origin, SHA), lambda: None)
     assert status == 1 and receipt["reason"] == code
     assert "LEAK" not in json.dumps(receipt)
+
+
+def test_every_turn_failure_code_is_a_safe_receipt_reason():
+    for code in canary.FAILURE_CODES:
+        reason = canary._reply_failure({"error": LEAK, "turn_failure": {"code": code}})
+        assert reason == "canary_" + code and driver._SAFE_CODE.fullmatch(reason)
 
 
 def test_the_reply_must_equal_the_nonce_apart_from_surrounding_space(router_box):
