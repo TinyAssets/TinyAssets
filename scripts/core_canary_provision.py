@@ -30,17 +30,18 @@ SERVICE_PATH = "/sign"
 BRANCH = "canary-echo"
 BRANCH_SPEC = {
     "name": BRANCH,
-    "entry_point": "echo",
+    # The node is ``repeat``: a node id may not share a state field's name.
+    "entry_point": "repeat",
     "node_defs": [
         {
-            "node_id": "echo",
-            "display_name": "Echo",
+            "node_id": "repeat",
+            "display_name": "Repeat",
             "input_keys": ["nonce"],
             "output_keys": ["echo"],
             "source_code": 'def run(state):\n    return {"echo": state["nonce"]}\n',
         }
     ],
-    "edges": [{"from": "echo", "to": "END"}],
+    "edges": [{"from": "repeat", "to": "END"}],
     "state_schema": [{"name": "nonce", "type": "str"}, {"name": "echo", "type": "str"}],
 }
 SECRETS = ("TINYASSETS_CANARY_HMAC_KEY", "TINYASSETS_CANARY_SESSION_KEY")
@@ -168,6 +169,9 @@ async def ensure_branch(call) -> str:
     created = await call(
         "write_graph", target="branch", operation="create", payload_json=json.dumps(BRANCH_SPEC)
     )
+    if created.get("status") == "rejected":
+        count = len(created.get("errors") or ())
+        raise ProvisionError(f"branch create rejected the spec ({count} error(s))")
     branch_id = created.get("branch_def_id") or (created.get("branch") or {}).get("branch_def_id")
     if not branch_id:
         raise ProvisionError("branch create returned no branch id")
