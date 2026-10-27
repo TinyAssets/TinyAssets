@@ -86,7 +86,12 @@ ERROR_CLASSES = frozenset({
     "GrantPathRefused",
     "SsrfValidationError", "fenced", "duplicate", "expired", "refused",
     "InferenceUsageStopped", "InferenceUsageRequired", "ProviderAuthorityHeldError",
+    "policy_ask", "policy_hand_off",
 })
+#: N10: owner policy widenings, accepted only on the router's owner channel.
+WIDENINGS = frozenset({"write", "issue_once"})
+#: N10: the box channel's policy operations. None of them widens authority.
+BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify"})
 
 
 def peer_uid(sock: socket.socket) -> int:
@@ -479,12 +484,13 @@ class _Connection:
                     "reason": "restore is not available on the box channel"}))
                 return
             if op == "OWNER_POLICY":
-                if doc.get("action") not in {"read", "receipts", "decide", "proposal", "write"}:
+                # N10: the box reads, decides and proposes. Every widening is
+                # the router's, whatever proof the box presents.
+                if (doc.get("action") not in BOX_POLICY_ACTIONS
+                        or "session_proof" in doc or "cookie" in doc):
                     raise rf.FrameError("unsupported box policy operation")
-                if doc["action"] == "write" and "session_proof" not in doc:
-                    raise rf.FrameError("protected policy changes require shared door proof")
                 doc = {**doc, "principal": self._box_owner}
-                answer = await self._policy_operation(doc)
+                answer = await asyncio.to_thread(self._owner_policy, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op == "BOX_PING" and self._usage_leases:
@@ -986,6 +992,11 @@ class _Connection:
             return {"op": "OWNER_VOLUME_REFUSED", "reason": reason}
 
     async def _policy_operation(self, doc):
+        if isinstance(doc, dict) and ("generation" in doc or "token" in doc):
+            # The router's owner-role calls carry the fence (policy_submit).
+            if not self._server._fence.admits(doc.get("generation"), doc.get("token")):
+                return {"op": "OWNER_POLICY_REFUSED", "reason": "fenced"}
+            doc = {k: v for k, v in doc.items() if k not in {"generation", "token"}}
         if doc.get("action") != "write":
             return await asyncio.to_thread(self._owner_policy, doc)
         from tinyassets.broker.admission import owner_lock, thread_work
@@ -1046,13 +1057,46 @@ class _Connection:
             proof_key = "session_proof" if "session_proof" in doc else "cookie"
             if proof_key == "session_proof" and not isinstance(doc[proof_key], dict):
                 raise PolicyRefused("interactive owner session required")
+            if self._role != OWNER and action in WIDENINGS:
+                raise PolicyRefused("owner policy widens only through the router")
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
                 result = {"receipts": store.receipts(owner)}
-            elif action == "proposal" and set(doc) == {
+            elif action == "proposal" and set(doc) - {"request_id"} == {
                     "op", "action", "principal", "change"}:
-                result = store.receipt_proposal(owner, owner, doc["change"])
+                result = store.receipt_proposal(owner, owner, doc["change"],
+                                                doc.get("request_id"))
+            elif action == "proposal_read" and set(doc) == {
+                    "op", "action", "principal", "request_id"}:
+                proposal = store.proposal(owner, doc["request_id"])
+                if proposal is None:
+                    raise PolicyRefused("proposal not found")
+                result = {"proposal": proposal}
+            elif action == "classify" and set(doc) == {
+                    "op", "action", "principal", "connection", "method", "path"}:
+                if not all(isinstance(doc[k], str) for k in ("connection", "method", "path")):
+                    raise PolicyRefused("invalid classification request")
+                action_class, operation = store.classify(
+                    owner, doc["connection"], doc["method"], doc["path"])
+                result = {"action_class": action_class, "operation": operation}
+            elif action == "issue_once" and set(doc) == {
+                    "op", "action", "principal", proof_key, "expected_generation", "grant_id",
+                    "connection_id", "verb", "request", "destination"}:
+                if (not isinstance(doc["request"], dict)
+                        or not all(isinstance(doc[k], str) for k in (
+                            "grant_id", "connection_id", "verb", "destination"))):
+                    raise PolicyRefused("invalid once approval")
+                from tinyassets.broker.authority_gate import once_request_digest
+
+                # The exact wire request the box's OPEN will carry, digested
+                # the way OPEN digests it.
+                result = store.issue_once(owner, doc[proof_key], doc["expected_generation"],
+                                          once_request_digest(
+                                              grant_id=doc["grant_id"],
+                                              connection_id=doc["connection_id"],
+                                              verb=doc["verb"], request=doc["request"],
+                                              destination=doc["destination"]))
             elif action == "write" and set(doc) == {
                     "op", "action", "principal", proof_key, "expected_generation", "policy"}:
                 with store.lock(owner):
@@ -1076,7 +1120,7 @@ class _Connection:
             rf.control(rf.CONNECTION, answer)
             return answer
         except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError) as exc:
-            if action == "write":
+            if action in WIDENINGS:
                 try:
                     self._server._policy_store.receipt_refusal(
                         owner, action, {k: v for k, v in doc.items()
@@ -1126,10 +1170,13 @@ class _Connection:
                 raise ValueError("unsupported connect fields")
             _owner(doc["principal"])
             validate(doc["document"])
-            committed_via = "door" if self._role == OWNER else "box"
+            # N10: a door commit is a router-only ledger fact; the box channel
+            # never carries the owner's session proof.
+            if "session_proof" in doc and self._role != OWNER:
+                raise PermissionError("the box channel carries no owner session proof")
             if "session_proof" in doc:
                 self._server._policy_store._session(doc["principal"], doc["session_proof"])
-                committed_via = "door"
+            committed_via = "door" if self._role == OWNER else "box"
             if self._role == BOX and ("request_ref" in doc["document"]
                     or doc["document"].get("secret")
                     or doc["document"]["action"] in {
@@ -1310,10 +1357,14 @@ class _Connection:
                     try:
                         store = self._server._policy_store
                         spend = store.read(principal).document["spend"]
-                        if (doc.get("inference_usage") is not None
-                                and (spend["source_ceilings"] or any(
-                                    spend[key] is not None for key in
-                                    ("daily", "monthly", "transaction", "ask_above")))):
+                        capped = spend["source_ceilings"] or any(
+                            spend[key] is not None for key in
+                            ("daily", "monthly", "transaction", "ask_above"))
+                        # N10: inference is the broker's own classification (the
+                        # grant's metering latch), never only the box's usage flag.
+                        if capped and (doc.get("inference_usage") is not None or (
+                                str(verb).upper() in {"POST", "MODEL_DUPLEX"}
+                                and ledger.grant_requires_inference_usage(grant_id))):
                             store.decide(principal, center=command_center, action_class="spend",
                                          connection=connection_id, source=connection_id)
                             self._server._ops.finish(namespace, op_id, "refused")
@@ -1321,6 +1372,23 @@ class _Connection:
                     except Exception:  # noqa: BLE001 - policy unavailability never permits a send
                         self._server._ops.finish(namespace, op_id, "refused")
                         return "refused"
+                if self._role == BOX and self._server._policy_store is not None:
+                    # N10: the binding rules gate. The box's own checks are advisory.
+                    # (broker/process.py always builds the store; like the spend
+                    # check above, only a protocol double runs without one.)
+                    from tinyassets.broker.authority_gate import authority_fields, check
+
+                    try:
+                        refusal = check(self._server._policy_store, ledger, owner=principal,
+                                        grant_id=grant_id, connection_id=connection_id,
+                                        verb=verb, request=request, request_digest=digest,
+                                        authority=authority_fields(doc.get("authority")))
+                    except Exception:  # noqa: BLE001 - unreadable rules never permit a send
+                        _LOG.exception("owner rules gate unavailable")
+                        refusal = "refused"
+                    if refusal is not None:
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return refusal
                 stream = _Stream(stream_id, generation, token, namespace, op_id,
                                  deadline=time.monotonic() + _stream_budget(request),
                                  credit=credit)

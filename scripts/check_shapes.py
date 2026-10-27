@@ -140,6 +140,9 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/router/**/*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
         ("tinyassets/owner_router.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
         ("tinyassets/**/*.py", r"\b(?:class\s+BoxExecutor|def\s+start_exec)\b"),
+        # N10 a1: the box holds no action rules or once-approvals of its own.
+        ("tinyassets/action_policy.py", ""),
+        ("tinyassets/**/*.py", r"\.action-policy\.db|tinyassets\.action_policy\b"),
     ), ceiling=0),
     "S9": Shape(
         ("tinyassets/control_plane/**",),

@@ -70,36 +70,39 @@ def test_public_broker_destination_uses_only_its_own_credential(box, chain, host
     assert len(chain.state["requests"]) == 1
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8')
-def test_broker_neither_stores_nor_decides_owner_actions(box):
+@pytest.mark.verifies('owner-daemon-in-box:C8',
+                      'owner-daemon-in-box:Owner action policy is held by the broker '
+                      'and enforced at OPEN')
+def test_the_broker_stores_and_decides_owner_actions(box):
     store = box.broker.server._policy_store
     document = store.read("owner").document
     assert set(document) == {"entries", "spend", "egress"}
     for action in ("workspace.files", "workspace.shell", "workspace.workflows", "app.read",
                    "app.write"):
-        with pytest.raises(PermissionError, match="spending action required"):
-            store.decide("owner", center="center", action_class=action)
-        with pytest.raises(PermissionError, match="invalid approval rule"):
-            store._validate("owner", {**document, "entries": [{"scope": "account",
-                "table": "rules", "values": {"action_class": action, "behaviour": "do"}}]})
+        assert store.decide("owner", center="owner", action_class=action)["decision"] == "allow"
+        store._validate("owner", {**document, "entries": [{"scope": "account",
+            "table": "rules", "values": {"action_class": action, "behaviour": "do"}}]})
+    with pytest.raises(PermissionError, match="unknown action class"):
+        store.decide("owner", center="owner", action_class="anything.else")
+    assert not (box.root / ".action-policy.db").exists()
 
 
-@pytest.mark.verifies('owner-daemon-in-box:C8')
+@pytest.mark.verifies('owner-daemon-in-box:C8',
+                      'owner-daemon-in-box:Owner action policy is held by the broker '
+                      'and enforced at OPEN')
 @pytest.mark.parametrize("missing", ["row", "file"])
-def test_missing_local_policy_is_never_recreated_by_a_decision(box, missing):
+def test_missing_owner_policy_is_never_recreated_by_a_decision(box, missing):
     import sqlite3
 
-    from tinyassets.action_policy import ActionPolicyStore
-
-    path = box.root / ".action-policy.db"
+    store = box.broker.server._policy_store
+    path = store._path("owner")
     if missing == "row":
         with sqlite3.connect(path) as db:
             db.execute("DELETE FROM policy")
     else:
         path.unlink()
-    store = ActionPolicyStore(box.root / "center")
-    with pytest.raises((PermissionError, sqlite3.OperationalError)):
-        store.decide("owner", center="center", action_class="workspace.shell")
+    with pytest.raises((PermissionError, RuntimeError)):
+        store.decide("owner", center="owner", action_class="workspace.shell")
     assert path.exists() == (missing == "row")
 
 
@@ -181,23 +184,3 @@ def test_public_operation_without_credential_authority_uses_no_secret(box, chain
     assert resolved == ([] if missing == "operation" else [True])
     assert "Authorization" not in chain.state["requests"][0]["headers"]
 
-
-@pytest.mark.verifies('owner-daemon-in-box:C1')
-def test_policy_initialization_releases_the_volume_handle(tmp_path, monkeypatch):
-    import sqlite3
-
-    from tinyassets.action_policy import initialize
-
-    opened = []
-    connect = sqlite3.connect
-
-    def track(*args, **kwargs):
-        connection = connect(*args, **kwargs)
-        opened.append(connection)
-        return connection
-
-    monkeypatch.setattr(sqlite3, "connect", track)
-    initialize(tmp_path / ".action-policy.db")
-    assert len(opened) == 1
-    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
-        opened[0].execute("SELECT 1")

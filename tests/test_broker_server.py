@@ -95,6 +95,9 @@ class Ledger:
             raise GrantResolutionError("outbound connection grant identity mismatch")
         return object(), object()
 
+    def grant_requires_inference_usage(self, grant_id):
+        return False
+
 
 @pytest.fixture(autouse=True)
 def _no_revocations():
@@ -397,12 +400,16 @@ def _connect(broker):
 
 @pytest.mark.parametrize("attempt", ["policy", "foreign", "valid"])
 def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
-    broker, monkeypatch, attempt,
+    broker, monkeypatch, tmp_path, attempt,
 ):
     from tinyassets.broker import box_admission
+    from tinyassets.broker.policy import PolicyStore
     from tinyassets.broker.server import BOX_HOST
 
     broker.server._roles = {os.getuid(): BOX_HOST}
+    # N10: a box OPEN meets the owner's rules, held by the broker.
+    broker.server._policy_store = PolicyStore(tmp_path, broker.server._owner_identities)
+    broker.server._policy_store.bootstrap()
 
     def admitted(identities, request, *, data_root=None):
         assert request == {"op": "BOX_PUBLIC", "principal": "alice"}
