@@ -2,11 +2,8 @@
 
 ## Status
 
-Proposed. Would amend ADR-019 (where the loop runs) and ADR-022 (its P3 row:
-"loop in the box"). Deferred (founder, 2026-10-26): moving serving out means
-relocating about 113 owner stores and about 66,000 lines of serving, and
-one shared trusted server would make owner isolation an app check again
-(Direction 5). Revisit with metering receipts (N12) at real user counts.
+Accepted (founder, 2026-10-26). Amends ADR-019 (where the loop runs) and
+ADR-022 (its P3 row: "loop in the box").
 
 ## Date
 
@@ -62,12 +59,9 @@ one shared trusted server would make owner isolation an app check again
 
 ## Consequences
 
-- If accepted, ADR-022's P3 loop move, which C6 carried out, is reversed:
-  the loop leaves the box for the loop-worker pool, never for the shared
-  daemon. The loop worker would be built after owner serving leaves the box
-  (ADR-030), since while the converse handler runs in the box the box stays
-  awake through every model call wherever the loop runs. P3's other duties
-  land elsewhere:
+- ADR-022's P3 loop move, which C6 carried out, is reversed: the loop
+  leaves the box for the loop-worker pool, never for the shared daemon.
+  P3's other duties land elsewhere:
   - **Owner-session minting in broker custody** (ADR-019's P1 residual, the
     daemon-writable owner-session table) stays owed as its own step, unchanged
     in scope, under S8.
@@ -75,6 +69,8 @@ one shared trusted server would make owner isolation an app check again
     hosted CLIs sign in through the vendor's own flow, so no token is leased.
   - **The cross-user floor completes, and S8 reads converged,** when the
     owner-session move lands and the loop runs in the loop-worker pool.
+- The loop worker records its native agents' messages in the ledger
+  (ADR-025); user code in the box posts only as native, flagged.
 - A box wakes only for tool and customization calls.
 - The box harness shrinks to tools, user code and owner files (ADR-030).
 - A new registry row (proposed S35), added with its guard in the loop-worker

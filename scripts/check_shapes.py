@@ -284,6 +284,14 @@ SHAPES: dict[str, Shape] = {
     "N9": Shape(("tinyassets/model_call.py",)),  # call-sites, media-receipt
     "N10": Shape(("tinyassets/boxes/**", "tinyassets/broker/**")),  # owner-policy-write
     "N11": Shape(("tinyassets/app_object.py",)),  # one user-built app; the command center
+    # Unbuilt rows from the device-first plan; each slice adds its guard.
+    "S30": Shape(("tinyassets/broker/message_ledger.py",)),
+    "S31": Shape(("tinyassets/agent_recipes/**",)),
+    "S32": Shape(("tinyassets/rooms.py",)),
+    "S33": Shape(("tinyassets/live_view.py",)),
+    "S34": Shape(("tinyassets/conversation_store.py",)),
+    "S35": Shape(("tinyassets/agent_loop/**",)),
+    "N12": Shape(("tinyassets/metering/**",)),
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {

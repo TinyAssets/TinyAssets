@@ -39,10 +39,10 @@ def test_s2_retains_executor_measure_and_s3_tracks_duplicate(tmp_path):
 def test_registry_parity_catches_added_row():
     rows = check_shapes.registry_rows(
         "| S1 | one | path | old | drifted | guard | C3 |\n"
-        "| N12 | new | path | old | unbuilt | guard | C13 |"
+        "| N99 | new | path | old | unbuilt | guard | C13 |"
     )
-    assert rows["N12"] == "unbuilt"
-    assert set(rows) - set(check_shapes.SHAPES) == {"N12"}
+    assert rows["N99"] == "unbuilt"
+    assert set(rows) - set(check_shapes.SHAPES) == {"N99"}
 
 
 def test_old_count_is_a_ceiling(tmp_path: Path):

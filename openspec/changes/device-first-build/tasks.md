@@ -1,40 +1,61 @@
-## 0. Repairs (plan slice S0)
+The order is the plan's Build slices table (Code spec tab), unchanged: dependencies first,
+nothing built in a wrong shape to be rebuilt later. Slice names (S0, S2a, ...) are the plan's
+build slices, not registry row IDs.
 
+## S0 Repairs
+
+- [x] P0-1, P0-4, P0-5 Restored event tests; callbacks through broker egress; deliveries on the broker tick (#5317).
 - [x] P0-2 Refuse websocket scopes (#5315).
-- [x] P0-6 Zero idle tail (#5316).
-- [x] P0-1, P0-4, P0-5 Restored event tests; callbacks through broker egress; deliveries on the tick (#5317).
-- [ ] P0-7 Admission against a memory budget (#5319).
+- [ ] P0-3 Outside agents distinguishable from the owner: grant modes (full by default, scoped per agent), `check_identity` consults grants, then the claim probe and setting.
+- [ ] P0-6 Zero idle tail (#5316). Acceptance still owed: the canary still wakes during a deploy.
+- [x] P0-7 Admission against a memory budget (#5319).
 - [x] P0-8 Multiplexed relay (#5320).
 
-## 1. Architecture on record (plan slice S1)
+## S1 Architecture on record
 
-- [x] ADR-023 to ADR-031 merged as proposals.
-- [x] ADR-024 to ADR-029 and ADR-031 accepted; ADR-023 and ADR-030 deferred; ADR-023's context corrected; rows S3 and S8 say where the loop and serving run.
+- [x] ADR-023 to ADR-031 accepted.
+- [x] Registry rows S29 to S35 and N12 listed, unbuilt rows with their planned guards.
 
-## 2. Placement (plan slice S2)
+## S2 Placement
 
 - [x] `execution` on every source record; the `free` field deleted (#5322).
 
-## 3. Authority leaves the box (N10)
+## S2a Loop worker (A8, ADR-023)
 
-- [ ] Action rules and approvals, effector consents and outside-client grants move to broker per-owner stores. Only protected owner sessions write them, and the box reads a projection.
+- [ ] The execution owner runs as its own pool of unprivileged processes outside the daemon and every box; turns resume from the generation-fenced journal; extension points call into the box. Live: killing a worker mid-turn leaves the turn held and a fresh worker picks it up with no replay; box memory falls to tool time in the metering receipts.
 
-## 4. Cross-owner state on the trusted side (ADR-025)
+## S3 Ledger and first outside agent
 
-- [ ] Trusted front: the router answers registered cross-owner MCP requests and forwards the rest to the box. The events door folds into it.
-- [ ] Ledger: broker message ledger and agent registry; mailbox read, ack and 1:1 reply. Live: an API-key agent reads and replies, and time to reply is recorded.
-- [ ] Collections: broker collection store; published app rooms answered on the trusted side; `app_room`'s own compare-and-swap deleted.
-- [ ] P0-3: a full-by-default grant mode on the moved outside-client authority, then the host claim settings and the claims probe.
-- [ ] `mailbox.message` events. Live: a ChatGPT agent wakes on a message, reads it and replies.
+- [ ] Agent registry, message ledger, broker ops, wakes on the tick, `mailbox.message`, `read_graph target=mailbox`, `mailbox_ack`. Live: the first user's agent wakes on a message, reads it and replies; time to reply recorded.
 
-## 5. Box cost
+## S4 Rooms, status and onboarding
 
-- [ ] Metering receipts (N12): box-awake intervals, peak memory and relay bytes.
-- [ ] Measure what the box's app server loads at start and while awake, then slim it (lazy imports, unused services).
-- [ ] Revisit ADR-023 and ADR-030 with the receipts.
+- [ ] Room bodies, `room_message`, `converse(room_id)`, caps; agent recipes, including Muse over MCP with a scoped key; bubbles, "+ add agent", handshake; status from receipts. Deletes the external-agent panel, `renderExternalAgents()` and the agent `<select>`.
 
-## 6. On top
+## S5 One revision primitive
 
-- [ ] Rooms, status and onboarding (plan slice S4).
-- [ ] Task board on the collection store (plan slice S5b).
-- [ ] The plan's later slices (S6 to S10).
+- [ ] The generic collection; the board on it; published app rooms moved onto it. Deletes `app_room.py`'s own compare-and-swap.
+
+## S6 App manifest and agent players
+
+- [ ] Manifest fields; seat-scoped grants for agents in someone else's app; match records. Deletes the second app shape.
+
+## S7 Device runner
+
+- [ ] Pairing, parked polls at the broker, device launcher with pinned templates, capability advert, presence. Deletes `tinyassets/desktop/` tray, dashboard, notifications and pystray.
+
+## S8 Real-time relay
+
+- [ ] One relay object per match, `MATCH_TICKET`, bridge actions, host election, checkpoints, zone leases, catch-up package.
+
+## S9 Claude and Grok wakes
+
+- [ ] Scheduled-task and webhook recipes; tokens stored through the reshaped vault.
+
+## S10 Sign in with ChatGPT
+
+- [ ] Source record on device placement (locally hosted).
+
+## M Metering
+
+- [ ] Box-awake intervals by size class, peak memory, relay bytes, daily rollup, founder-only read.
