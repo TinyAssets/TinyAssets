@@ -5,7 +5,10 @@
 Accepted (founder, 2026-10-26). The deferral in #5324 is withdrawn: on
 2026-10-27T01:23Z the founder said to "review the doc and build only the
 correct architecture", and the plan records this decision as A8. Amends ADR-019
-(where the loop runs) and ADR-022 (its P3 row: "loop in the box").
+(where the loop runs) and ADR-022 (its P3 row: "loop in the box"). Amended by
+ADR-032: the loop is pi-durable in the owner's Durable Object, not a loop-worker
+pool, and user hooks run in a separately deployed Worker's Durable Object, not
+in the box.
 
 ## Date
 

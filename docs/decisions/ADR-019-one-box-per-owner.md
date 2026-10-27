@@ -6,6 +6,9 @@ Accepted (founder decisions 2026-10-11). Amends ADR-012. The driver choice
 is evidenced and the Firecracker trigger fixed by ADR-022. Amended by ADR-023
 (the loop leaves the box), ADR-025 (messaging state outside the box), ADR-026
 (lifecycle) and ADR-030 (the box holds only tools, user code and owner files).
+Amended by ADR-032: the box becomes a per-owner Firecracker microVM sandbox
+woken only for `bash`, and the owner-only policy lives in the owner's Durable
+Object.
 
 ## Date
 

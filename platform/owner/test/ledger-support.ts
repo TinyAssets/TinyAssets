@@ -46,7 +46,7 @@ export interface Post {
  * Each test gets a fresh owner, so no test sees another's ledger.
  */
 export function rig() {
-  const owner = `alice-${crypto.randomUUID()}`;
+  const owner = `owner-${crypto.randomUUID()}`;
   const stub: DurableObjectStub<OwnerDO> = env.OWNER.getByName(owner);
   const bind = (origin: Origin | null, extra: Partial<LedgerBinding> = {}): LedgerBinding =>
     ({ owner, caller: owner, origin, ...extra });

@@ -119,7 +119,6 @@ describe("one open wake per ringing recipient", () => {
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "revoked" });
     // A wake left open by a direct store change, as a crash would.
     await r.sql("UPDATE ledger_wakes SET state = 'pending', settled_at = NULL");
-    await r.sql("UPDATE ledger_usage SET settled_wakes = settled_wakes - 1");
     expect(await r.tick()).toBe(0);
     expect(r.sender.sent).toEqual([]);
     expect(r.sender.revoked).toEqual([muse]);

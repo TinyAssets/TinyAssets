@@ -2,10 +2,10 @@
 
 ## Status
 
-Accepted (founder, 2026-10-27). Supersedes ADR-022. Supersedes the
-single-droplet topology, the box storage model, broker-held SQLite as the
-trusted store technology, and the router and broker serving design, as listed
-below. Build order: `openspec/changes/clean-sheet-platform/`.
+Accepted (founder, 2026-10-27). Supersedes ADR-022. Amends ADR-019, ADR-023
+and ADR-030. Supersedes the single-droplet topology, the box storage model,
+broker-held SQLite as the trusted store technology (ADR-025's), and the router
+and broker serving design, as listed below. Build order: `openspec/changes/clean-sheet-platform/`.
 
 ## Date
 
@@ -43,19 +43,64 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    revision primitive with history, policy, grants, sessions, connection
    metadata and sealed credentials, subscriptions, the session event log, one
    schedule driven by one alarm, and hibernating app WebSockets. The runtime
-   keeps each object's storage private. The class has no binding to its own
-   namespace, and no module keeps mutable state at top level, since objects of
-   one class can share an isolate.
+   keeps each object's storage private. The object's code has no way to another
+   owner's object: its Worker binds nothing, the `disable_ctx_exports` flag
+   keeps the runtime from handing it its own namespaces as `ctx.exports`, and
+   its source never imports `env`. No module keeps mutable state at top level
+   or writes through the global object, since objects of one class can share an
+   isolate.
 2. **Stateless edge Workers are the only binder.** Only they turn a verified
    credential (OAuth, `/api` key hash, inbound signature) into an owner, and
-   reach that owner's object by `getByName(owner)`. The caller reaches the
-   object as a typed argument, never a request field. Cross-owner traffic goes
+   reach that owner's object by `getByName(owner)`. The object serves only the
+   owner it is named by (`ctx.id.name`) and refuses when it has no name. The
+   caller reaches the object as a typed argument, never a request field. Cross-owner traffic goes
    through a postmaster Worker that reads the sender object's outbox.
 3. **A gateway Worker holds no owner state and opens one owner's sealed
    credential per call,** meters usage, and swaps placeholder credentials on
    sandbox egress. No credential sits in the loop or the sandbox.
-4. **pi-durable is the loop,** hosted in the owner's object. User hooks run in
-   a sandboxed isolate beside it; shell-level code runs in the microVM.
+4. **pi-durable is the loop, hosted in the owner's object, on its own
+   mechanisms** (source-checked against pi-durable 1.4.0 and agents 0.31.0,
+   2026-10-28). Where pi-durable has a native mechanism it is used and ours
+   goes:
+   - its hook names: `beforeRequest`, `afterResponse`, `onYield`,
+     `beforeTool`, `afterTool`, `afterTools`, `beforeCompact`;
+   - its transcript and turn-journal store, in the owner's object;
+   - one pi `ExecutionEnv` for tool plumbing: its file methods call the file
+     service and its `exec` wakes the microVM, checked with pi's conformance
+     tests; `ta` is a trusted pi-durable tool;
+   - `replay: "unsafe"` by default, so a call a crash cut off comes back
+     interrupted and is never rerun; only pure reads are marked safe;
+   - its compaction, steering, subagents and `sleepUntil` wakes;
+   - the Agent Skills format for skills;
+   - deferred MCP tools through `tool_search` and code mode, so the model
+     still sees four tools plus `ta`;
+   - `pi.agent` for per-conversation settings.
+
+   Kept differences, each with its one reason:
+   - User hooks run out of process: pi extensions run with full permissions,
+     and the owner's object holds the ledger and credentials.
+   - The model gateway, plugged in as a pi-ai custom provider: multi-tenant
+     receipts and spend caps; Cloudflare's AI Gateway path routes only four
+     API types.
+   - The ledger and mailbox identity: pi has no cross-agent authorship.
+   - Owner policy feeds pi's settings: only the owner may write policy.
+   - Our own manifest for executable package parts: pi-durable cannot load
+     pi-coding-agent extensions, which target Node and pi's in-process
+     extension API.
+
+   **User hooks run in a separately deployed Worker's Durable Object,** not in
+   a Dynamic Worker inside the owner's object. pi measured on Cloudflare
+   (October 2026) that code computing for 10 s in a Dynamic Worker loaded by
+   the session object delayed every other request to that object by the full
+   10 s; in a separate Worker's object the delay was about 50 ms. The owner's
+   object calls a hook over RPC, with JSON in and out and a timeout. A
+   `beforeTool` hook that times out or errors blocks the call. Decisions that
+   must survive a crash are held by `api.memo` on the trusted side.
+   Declarative package parts (skills, prompts, model routing, tool schemas,
+   settings) load into the loop as data; shell-level code runs in the microVM.
+
+   **pi is pinned to 1.4.x:** agents supports one pi minor, and pi's
+   unreleased main already removes `retryTask`, which agents 0.31.0 calls.
 5. **Owner files live in versioned per-owner object storage** behind a
    trusted file API. A Firecracker microVM sandbox (E2B first, self-hostable
    later) is woken only for `bash`; its disk is a warm cache.
@@ -118,7 +163,8 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
 - https://platform.claude.com/docs/en/managed-agents/vaults
 - https://raw.githubusercontent.com/cloudflare/agents/main/README.md
 - pi 1.4.0 and pi-durable 1.4.0 (npm `@earendil-works/pi-coding-agent`,
-  `@earendil-works/pi-durable`)
+  `@earendil-works/pi-durable`), and Cloudflare agents 0.31.0
+  (`agents/harness/pi`), source-checked 2026-10-28
 - Cloudflare docs repo (`cloudflare/cloudflare-docs`, 2026-10-27): Durable
   Objects limits, pricing, lifecycle, in-memory state, alarms, data location;
   Workers OAuth Provider v1; Agents harness for pi

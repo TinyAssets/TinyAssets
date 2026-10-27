@@ -6,9 +6,22 @@ import type { Binding, OwnerDO } from "../src/owner-do";
 
 export type Stub = DurableObjectStub<OwnerDO>;
 
-/** A fresh owner object; each test gets its own, so no test sees another's rows. */
-export function ownerObject(): Stub {
-  return env.OWNER.getByName(crypto.randomUUID());
+/** An owner of its own and its object, reached as a binder reaches it: by name. */
+export interface Owner {
+  /** The owner, unique to the test, so no test sees another's rows. */
+  readonly name: string;
+  readonly stub: Stub;
+  /** The binder's binding: `caller` on `owner`'s object (this owner by default). */
+  as(caller: string, owner?: string): Binding;
+}
+
+export function ownerObject(): Owner {
+  const name = `owner-${crypto.randomUUID()}`;
+  return {
+    name,
+    stub: env.OWNER.getByName(name),
+    as: (caller, owner = name) => ({ owner, caller }),
+  };
 }
 
 /**
@@ -22,10 +35,6 @@ export async function failure(call: () => Promise<unknown>): Promise<Error> {
     return error as Error;
   }
   throw new Error("expected the call to fail");
-}
-
-export function as(caller: string, owner = "alice"): Binding {
-  return { owner, caller };
 }
 
 /** The primitive on `stub`'s own storage, with some bounds lowered for the test. */

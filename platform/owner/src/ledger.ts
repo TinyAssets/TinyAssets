@@ -386,19 +386,10 @@ export class Ledger {
     return this.#storage.sql;
   }
 
+  /** The owner-wide counters; only migration 2's triggers write them. */
   #usage(): Usage {
     return this.#sql.exec<Usage>(
       "SELECT agents, messages, body_bytes, settled_wakes FROM ledger_usage").one();
-  }
-
-  /** Add to the owner-wide counters, in the caller's transaction. */
-  #count(change: Partial<Usage>): void {
-    this.#sql.exec(
-      "UPDATE ledger_usage SET agents = agents + ?, messages = messages + ?, " +
-        "body_bytes = body_bytes + ?, settled_wakes = settled_wakes + ?",
-      change.agents ?? 0, change.messages ?? 0, change.body_bytes ?? 0,
-      change.settled_wakes ?? 0,
-    );
   }
 
   #agent(agentId: string): Agent | undefined {
@@ -463,7 +454,6 @@ export class Ledger {
         if (this.#usage().agents >= this.#limits.maxAgents) {
           throw new Refused("the owner's agent registry is full");
         }
-        this.#count({ agents: 1 });
         agentId = "agent_" + token(8);
         sql.exec(
           "INSERT INTO outside_agents (agent_id, command_center_id, outside_client, " +
@@ -611,11 +601,6 @@ export class Ledger {
       sql.exec("INSERT INTO message_bodies VALUES (?, ?, ?, ?)", messageId, room, body, now);
       sql.exec("INSERT INTO ledger_recipients VALUES (?, ?, ?, 'queued', ?)",
                messageId, recipient, seq, now);
-      this.#count({ messages: 1, body_bytes: size });
-      if (kind === "outside") {
-        sql.exec("UPDATE outside_agents SET unacked_to_owner = unacked_to_owner + 1 " +
-                   "WHERE agent_id = ?", sender);
-      }
       // One open wake per ringing recipient; never one for the message's own sender. A
       // new wake waits out the agent's batch window, so a burst of mail rings once (W3).
       if (WAKING.includes(agent.delivery_method) && recipient === agent.agent_id
@@ -664,8 +649,8 @@ export class Ledger {
           && held.body_bytes + size <= limits.maxBodyBytes) {
         return;
       }
-      const done = sql.exec<{ message_id: string; body_bytes: number }>(
-        "SELECT message_id, body_bytes FROM ledger_messages WHERE unacked = 0 " +
+      const done = sql.exec<{ message_id: string }>(
+        "SELECT message_id FROM ledger_messages WHERE unacked = 0 " +
           "ORDER BY seq LIMIT 1",
       ).toArray()[0];
       if (done === undefined) {
@@ -674,7 +659,6 @@ export class Ledger {
       for (const table of ["message_bodies", "ledger_recipients", "ledger_messages"]) {
         sql.exec(`DELETE FROM ${table} WHERE message_id = ?`, done.message_id);
       }
-      this.#count({ messages: -1, body_bytes: -done.body_bytes });
     }
   }
 
@@ -779,21 +763,12 @@ export class Ledger {
                    "DO UPDATE SET through_seq = excluded.through_seq, at = excluded.at",
                  reader, through, now);
         this.#receipt(reader, "ack", String(through), now);
-        // The counters the bounds read: each newly acked message has one recipient fewer
-        // to wait for, and an outside sender's share frees what the owner acked.
-        const acked = sql.exec<{ message_id: string; sender_id: string; sender_kind: string }>(
-          "SELECT m.message_id, m.sender_id, m.sender_kind FROM ledger_recipients r " +
-            "JOIN ledger_messages m ON m.message_id = r.message_id " +
-            "WHERE r.agent_id = ? AND r.seq > ? AND r.seq <= ?", reader, before, through,
-        ).toArray();
-        for (const message of acked) {
-          sql.exec("UPDATE ledger_messages SET unacked = unacked - 1 WHERE message_id = ?",
-                   message.message_id);
-          if (reader === OWNER && message.sender_kind === "outside") {
-            sql.exec("UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1 " +
-                       "WHERE agent_id = ?", message.sender_id);
-          }
-        }
+        // Each newly acked message has one recipient fewer to wait for (an index range of
+        // this reader's own mail); at zero it can be evicted, and a trigger frees its
+        // outside sender's share.
+        sql.exec("UPDATE ledger_messages SET unacked = unacked - 1 WHERE message_id IN " +
+                   "(SELECT message_id FROM ledger_recipients WHERE agent_id = ? " +
+                   "AND seq > ? AND seq <= ?)", reader, before, through);
       }
       return { reader, through: Math.max(before, through) };
     });
@@ -815,30 +790,25 @@ export class Ledger {
   // -- wakes (S3b, W3) --------------------------------------------------------
 
   #suppress(agentId: string, reason: string, now: number): void {
-    const suppressed = this.#sql.exec(
+    this.#sql.exec(
       "UPDATE ledger_wakes SET state = 'suppressed', receipt_json = ?, settled_at = ? " +
-        `WHERE agent_id = ? AND ${OPEN} RETURNING wake_id`, canonical({ reason }), now, agentId,
-    ).toArray().length;
-    this.#count({ settled_wakes: suppressed });
+        `WHERE agent_id = ? AND ${OPEN}`, canonical({ reason }), now, agentId,
+    );
     this.#prune(now);
   }
 
   /** Settled wake rows kept for the retention, and at most `maxSettledWakes` of them. */
   #prune(now: number): void {
     const sql = this.#sql;
-    let removed = sql.exec(
-      "DELETE FROM ledger_wakes WHERE settled_at IS NOT NULL AND settled_at < ? " +
-        "RETURNING wake_id", now - this.#limits.settledWakeRetentionS,
-    ).toArray().length;
-    const over = this.#usage().settled_wakes - removed - this.#limits.maxSettledWakes;
+    sql.exec("DELETE FROM ledger_wakes WHERE settled_at IS NOT NULL AND settled_at < ?",
+             now - this.#limits.settledWakeRetentionS);
+    const over = this.#usage().settled_wakes - this.#limits.maxSettledWakes;
     if (over > 0) {
-      removed += sql.exec(
+      sql.exec(
         "DELETE FROM ledger_wakes WHERE wake_id IN (SELECT wake_id FROM ledger_wakes " +
-          "WHERE settled_at IS NOT NULL ORDER BY settled_at, rowid LIMIT ?) RETURNING wake_id",
-        over,
-      ).toArray().length;
+          "WHERE settled_at IS NOT NULL ORDER BY settled_at, rowid LIMIT ?)", over,
+      );
     }
-    this.#count({ settled_wakes: -removed });
   }
 
   /**
@@ -976,7 +946,6 @@ export class Ledger {
         "UPDATE ledger_wakes SET state = ?, due = ?, receipt_json = ?, settled_at = ? " +
           "WHERE wake_id = ?", state, due, canonical(detail), settled ? now : null, wakeId,
       );
-      this.#count({ settled_wakes: settled ? 1 : 0 });
       if (state === "sent") {
         sql.exec(
           "UPDATE ledger_recipients SET state = 'woken', changed_at = ? WHERE agent_id = ? " +

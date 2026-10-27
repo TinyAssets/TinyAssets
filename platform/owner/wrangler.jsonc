@@ -1,12 +1,13 @@
 // The per-owner Durable Object (ADR-032). Not deployed yet: no workflow deploys
 // platform/. Edge Workers bind OWNER to this class by script_name from their own
-// configs; this Worker never binds its own namespace (guards/config.test.ts).
+// configs. This Worker binds nothing, and `disable_ctx_exports` keeps the runtime
+// from handing the object its own namespace as `ctx.exports` (guards/config.test.ts).
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-owner",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-23",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
   "workers_dev": false,
   "preview_urls": false,
   "migrations": [

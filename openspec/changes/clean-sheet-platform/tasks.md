@@ -18,16 +18,24 @@ live acceptance is still owed says so.
 - [ ] Edge Workers as the only binder: the OAuth server (Workers OAuth Provider),
   the stateless MCP handler, `/api` keys, `/hooks/inbound`, and the owner
   directory (key and token hashes, published apps; no owner content).
+- [ ] Owner admission, the Python `require_admitted` (an owner suspended, or a
+  restored identity map not yet reconciled, admits no work): a deliberate
+  difference from the ported primitive, which `OwnerDO` does not check. The
+  binder refuses an unadmitted owner before it reaches the object, from the
+  directory's admission state.
 
 ## 3. Owner object
 
 - [x] 3.1 The `platform/` TypeScript workspace: pinned versions, lockfile,
   `wrangler`, tests in workerd. No deploy.
-- [x] 3.2 `OwnerDO`: SQLite-backed, schema migrated on wake, its owner fixed at
-  first use, the caller a typed RPC argument; guards for module-level state and
-  for a binding to its own namespace.
+- [x] 3.2 `OwnerDO`: SQLite-backed, schema migrated on wake, serving only the
+  owner it is named by (its stored owner a second check), the caller a typed RPC
+  argument; `disable_ctx_exports` set; guards for module-level state and writes
+  through the global object, for a config that binds nothing, and for `exports`
+  or `env` reach in the source.
 - [x] 3.3 The one revision primitive (S34) ported from `broker/conversations.py`
-  (`s5b-board`), with history and every bound; the Python tests ported.
+  (`s5b-board`), with history and every bound; the Python tests ported. The
+  bounds read per-scope counters kept by triggers in each write's transaction.
 - [ ] 3.4 The ledger, receipts and bodies; the mailbox.
 - [ ] 3.5 Policy, grants and sessions.
 - [ ] 3.6 The schedule: one table, one self-rearming alarm.
@@ -39,7 +47,14 @@ live acceptance is still owed says so.
 
 ## 5. Agent
 
-- [ ] pi-durable in the owner's object, packages, hooks in a sandboxed isolate.
+- [ ] pi-durable 1.4.x in the owner's object on its own mechanisms (hook names,
+  transcript store, one `ExecutionEnv`, `replay: "unsafe"` by default,
+  compaction, steering, subagents, `sleepUntil`, Agent Skills, deferred MCP
+  tools through `tool_search` and code mode, `pi.agent` settings), with
+  ADR-032's kept differences; packages.
+- [ ] User hooks in a separately deployed Worker's Durable Object, called over
+  RPC with JSON in and out and a timeout. A `beforeTool` timeout or error blocks
+  the call; `api.memo` holds decisions that must survive a crash.
 
 ## 6. Files and sandbox
 
