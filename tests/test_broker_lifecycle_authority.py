@@ -87,7 +87,9 @@ def authority(tmp_path, monkeypatch):
             assert fields["snapshot_ids"] is None
             assert fields["released"] == released
         events.append(operation)
-        return {"destroyed" if operation == "destroy" else "deleted": True}
+        if operation == "delete_snapshots":
+            return {"outcomes": {}}
+        return {"destroyed": True}
 
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
     server.routing.volumes.execute = host
@@ -615,7 +617,7 @@ def test_copy_releases_owner_lock_and_cannot_publish_over_new_wake(authority):
             assert fields == {"uid": a.identities.owner_machine("alice"),
                               "snapshot_ids": [abandoned], "released": []}
             deleted.extend(fields["snapshot_ids"])
-            return {"deleted": True}
+            return {"outcomes": {abandoned: "deleted"}}
         return a.host(operation, **fields)
     lifecycle.execute = host
 

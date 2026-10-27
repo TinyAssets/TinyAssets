@@ -21,6 +21,17 @@ LOCAL_STAGING = 20 * _GIB
 WAKE_LEASE = 10
 
 
+def report_fault(owner, fault, snapshot_id=None):
+    """log.error plus one trail event fetch-prod-logs can grep; never message text."""
+    from tinyassets.broker.admission import digest
+    from tinyassets.observability import emit
+
+    owner_hash = digest(owner)[:16]
+    log.error("lifecycle fault=%s owner=%s snapshot=%s", fault, owner_hash, snapshot_id)
+    emit("lifecycle.fault", session_id=None, trace_id=None, fault=fault,
+         owner=owner_hash, snapshot=snapshot_id)
+
+
 class VolumeBudgetRefused(PermissionError):
     """An optional checkpoint or restore does not fit the fleet storage cap."""
 
@@ -211,8 +222,11 @@ class VolumeLifecycle:
             async with owner_lock(self.identities.path, owner):
                 published = commit()
         if result is not None and not published:
-            await self.host(owner, "delete_snapshots",
-                            snapshot_ids=[work["snapshot_id"]], released=[])
+            ids = [work["snapshot_id"]]
+            outcomes = owner_volumes.delete_outcomes(await self.host(
+                owner, "delete_snapshots", snapshot_ids=ids, released=[]), ids)
+            if outcomes != dict.fromkeys(ids, "deleted"):
+                raise RuntimeError("unpublished snapshot deletion remains pending")
         return self.volume(owner, "pending")
 
     async def _finish_restore(self, owner):
@@ -245,23 +259,23 @@ class VolumeLifecycle:
         return await self._finish_restore(owner)
 
     async def prune(self, owner):
-        """Delete excess rows in one host call, and store which ones a backup pins.
+        """Delete excess rows in one host call, and store each row's outcome.
 
-        A pinned row is asked again only with a row prune can delete. That
-        call reads the pin catalog anyway, so a pin the backup released since
-        is seen there and the row goes. A pinned row alone asks nothing.
+        A pinned or failed row is a stored fact, asked again only with a row
+        prune can delete. That call reads the pin catalog anyway, so a pin the
+        backup released since is seen there and the row goes; a failed delete
+        is tried again. A settled row alone asks nothing.
         """
         excess = owner_volumes.excess(self.identities, owner)
-        if all(pinned for _, pinned in excess):
+        if all(settled for _, settled in excess):
             return
         snapshot_ids = [snapshot_id for snapshot_id, _ in excess]
-        result = await self.host(owner, "delete_snapshots",
-                                 snapshot_ids=snapshot_ids, released=[])
-        refused = [] if result == {"deleted": True} else result["pinned"]
-        for snapshot_id in snapshot_ids:
-            if snapshot_id not in refused:
-                self.volume(owner, "forget", snapshot_id=snapshot_id)
-        self.volume(owner, "pinned", snapshot_ids=refused)
+        outcomes = owner_volumes.delete_outcomes(await self.host(
+            owner, "delete_snapshots", snapshot_ids=snapshot_ids, released=[]), snapshot_ids)
+        self.volume(owner, "pruned", outcomes=outcomes)
+        for snapshot_id, outcome in outcomes.items():
+            if outcome.startswith("failed:"):
+                report_fault(owner, "snapshot_delete_" + outcome, snapshot_id)
 
     async def evict(self, owner):
         if self.volume(owner, "evict") is None:

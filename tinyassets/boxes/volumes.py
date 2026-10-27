@@ -103,10 +103,12 @@ class OwnerVolumes:
         with self._lock(uid):
             return self._image(uid).stat().st_size
 
-    def delete_snapshots(self, uid: int, snapshot_ids, released) -> list[str]:
+    def delete_snapshots(self, uid: int, snapshot_ids, released) -> dict[str, str]:
         """One deletion path; only map-released references may retire a pin.
 
-        Returns the ids a platform backup still pins, which were not deleted.
+        Returns one outcome per id: ``deleted``, ``pinned`` (a platform backup
+        still pins it), or ``failed:<class>`` with a fixed class, never rclone's
+        text. One failed object no longer hides what happened to the others.
         """
         from tinyassets.platform_backup import pinned_snapshots, retention_lock
 
@@ -120,22 +122,29 @@ class OwnerVolumes:
                     or any(not isinstance(item, str) or not re.fullmatch(r"[a-f0-9]{32}", item)
                            for item in [*snapshot_ids, *released])):
                 raise VolumeError("snapshot references are required")
-            pins = pinned_snapshots(self.remote)
-            refused = []
+            try:
+                pins = pinned_snapshots(self.remote)
+            except (subprocess.SubprocessError, ValueError):
+                # No empty-on-error fallback: an unreadable catalog deletes nothing.
+                return dict.fromkeys(snapshot_ids, "failed:catalog_unreadable")
+            outcomes = {}
             for snapshot_id in snapshot_ids:
                 if (uid, snapshot_id) in pins and snapshot_id not in released:
-                    refused.append(snapshot_id)
+                    outcomes[snapshot_id] = "pinned"
                     continue
+                outcomes[snapshot_id] = "deleted"
                 try:
                     self._run("rclone", "deletefile",
                               f"{self.remote}/{uid}/{snapshot_id}.img.gz")
                 except subprocess.CalledProcessError as exc:
                     # rclone 3 is directory not found and 4 is file not found.
                     # The object is already gone, so the broker may forget the
-                    # row. Any other failure stays raised and the row remains.
+                    # row. Any other exit keeps the row and names the code.
                     if exc.returncode not in {3, 4}:
-                        raise
-            return refused
+                        outcomes[snapshot_id] = f"failed:rclone_exit_{exc.returncode}"
+                except subprocess.TimeoutExpired:
+                    outcomes[snapshot_id] = "failed:rclone_timeout"
+            return outcomes
 
     @staticmethod
     def _sync(path: Path) -> None:

@@ -41,6 +41,8 @@ class BrokerLifecycle:
         self.awake = set(awake_owners(self.identities, stopping=True))
         self.facts = {}
         self.tasks = {}
+        # owner -> fault token of its last lifecycle task, while that task raises.
+        self.errors = {}
         # Shared awake-slot reservation: scheduled waiters release this condition;
         # an interactive eviction and its replacement launch reserve one slot.
         self._capacity = asyncio.Condition()
@@ -221,10 +223,13 @@ class BrokerLifecycle:
     async def readiness(self):
         """Include durable work that the next waker tick has not dispatched.
 
-        The same owed work as the tick: a row a platform backup pins is a
-        stored fact, so it is not counted and no host call is made here.
+        The same owed work as the tick: a row a platform backup pins, or whose
+        delete failed, is a stored fact, so it is not counted and no host call
+        is made here. The ready reply stays exactly ``{"ready": True}`` for
+        wait_boxhostd_ready; a not-ready reply names stored faults and the
+        last lifecycle error of each owner, by class only.
         """
-        from tinyassets.broker.owner_volumes import pending, pending_counts
+        from tinyassets.broker.owner_volumes import faults, pending, pending_counts
 
         if not self.identities.work_ready:
             return {"ready": False, "blocked": "admission"}
@@ -237,7 +242,12 @@ class BrokerLifecycle:
             pending_counts, self.identities, include_running=False) if owners else {})
         if not tasks and not counts:
             return {"ready": True}
-        return {"ready": False, "tasks": tasks, "pending": counts}
+        named = await asyncio.to_thread(faults, self.identities)
+        for owner, fault in self.errors.items():
+            if owner in owners:
+                named[fault] = named.get(fault, 0) + 1
+        return {"ready": False, "tasks": tasks, "pending": counts,
+                **({"faults": named} if named else {})}
 
     def _drain_cause(self, stage, exc):
         """Fixed ``stage:Class`` token. The exception text is not part of it."""
@@ -386,10 +396,23 @@ class BrokerLifecycle:
     async def _work(self, owner, operation, serialized):
         try:
             if serialized:
-                return await owner_call(self.identities.path, owner, operation, owner)
-            return await operation(owner)
-        except Exception:
+                result = await owner_call(self.identities.path, owner, operation, owner)
+            else:
+                result = await operation(owner)
+        except Exception as exc:
             log.exception("owner lifecycle work remains pending owner=%s", owner)
+            # Named by class and operation, never the message, so the next
+            # readiness reply says which error holds it.
+            fault = (f"lifecycle_error:{operation.__name__.lstrip('_')}:"
+                     f"{type(exc).__name__}")
+            if self.errors.get(owner) != fault:
+                from tinyassets.broker.volume_lifecycle import report_fault
+
+                report_fault(owner, fault)
+            self.errors[owner] = fault
+            return None
+        self.errors.pop(owner, None)
+        return result
 
     async def close(self):
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)

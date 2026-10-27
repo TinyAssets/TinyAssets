@@ -82,7 +82,7 @@ def jobs(boxes, broker, admitted, tmp_path, monkeypatch):  # noqa: F811
         if operation == "delete_snapshots":
             remote.transfer("delete", remote.transport.remote,
                             "--include", f"/{fields['uid']}/**")
-            return {"deleted": True}
+            return {"outcomes": {}}
         return original(operation, owner, **fields)
 
     monkeypatch.setattr(daemon_control, "request", control)
@@ -198,6 +198,28 @@ def test_failure_records_retry_and_never_runs_a_later_step(jobs, tmp_path, monke
     assert job["failed_step"] == step
     assert job["retry_at"] > 0
     monkeypatch.setattr(jobs.service, "_" + step, original)
+    assert drive(jobs.service.resume_loaded_job(job))["status"] == "deleted"
+
+
+@pytest.mark.verifies('owner-daemon-in-box:C6')
+@pytest.mark.parametrize("reply", [
+    {"outcomes": {"a" * 32: "deleted", "b" * 32: "failed:rclone_exit_5"}},
+    {"outcomes": {"b" * 32: "pinned"}},
+    {"deleted": True},
+])
+def test_erasure_fails_loudly_while_any_snapshot_is_not_deleted(jobs, reply):
+    volumes = jobs.server.routing.volumes
+    working = volumes.execute
+    volumes.execute = lambda operation, **fields: (
+        reply if operation == "delete_snapshots" else working(operation, **fields))
+    complete_deletion(jobs.service, "alice")
+    job = jobs.remote.load(digest("alice"))
+    assert job["failed_step"] == "snapshots" and "snapshots" not in job["completed_steps"]
+    assert list(jobs.server.routing.errors.values()) == [
+        "lifecycle_error:resume_owner:RuntimeError"]
+    with pytest.raises(RuntimeError, match="remains pending|per-id outcomes"):
+        drive(jobs.service.resume_loaded_job(job))
+    volumes.execute = working
     assert drive(jobs.service.resume_loaded_job(job))["status"] == "deleted"
 
 
@@ -721,10 +743,10 @@ def test_actual_rclone_local_remote_survives_restart_and_preserves_other_uid(tmp
     volumes.remote = ":local:" + str(remote)
     host = HostService(None, volumes, None, SimpleNamespace(
         runtime=GvisorRuntime, condition=threading.RLock()))
-    for _ in range(2):
+    for expected in ({"a" * 32: "deleted"}, {}):
         assert host.lifecycle({"lifecycle": "delete_snapshots", "uid": 300001,
                                "snapshot_ids": None, "released": []}, 1002) == {
-            "deleted": True}
+            "outcomes": expected}
     assert not list((remote / "300001").iterdir())
     assert (remote / "300002" / ("a" * 32 + ".img.gz")).read_bytes() == b"opaque bytes"
     assert records.load(job["id"]) == job

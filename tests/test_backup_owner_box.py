@@ -137,13 +137,13 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    assert volumes.delete_snapshots(300001, ["a" * 32], []) == ["a" * 32]
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) == {"a" * 32: "pinned"}
     assert snapshot.read_bytes() == b"retained snapshot"
-    assert volumes.delete_snapshots(300001, ["c" * 32], []) == []
+    assert volumes.delete_snapshots(300001, ["c" * 32], []) == {"c" * 32: "deleted"}
     assert not stale.exists()
     next((remote / "platform").glob("*.json")).write_text("corrupt catalog")
-    with pytest.raises(ValueError):
-        volumes.delete_snapshots(300001, ["a" * 32], [])
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) == {
+        "a" * 32: "failed:catalog_unreadable"}
     assert snapshot.read_bytes() == b"retained snapshot"
 
 
@@ -163,14 +163,17 @@ def test_absent_snapshot_object_is_deleted_and_a_pin_is_not(shared_backup, monke
 
     monkeypatch.setattr(volumes, "_run", run)
     codes.append(3)
-    assert volumes.delete_snapshots(300001, ["c" * 32], []) == []
+    assert volumes.delete_snapshots(300001, ["c" * 32], []) == {"c" * 32: "deleted"}
     codes.append(4)
-    assert volumes.delete_snapshots(300001, ["d" * 32], []) == []
+    assert volumes.delete_snapshots(300001, ["d" * 32], []) == {"d" * 32: "deleted"}
     codes.append(1)
-    with pytest.raises(subprocess.CalledProcessError) as raised:
-        volumes.delete_snapshots(300001, ["e" * 32], [])
-    assert raised.value.returncode == 1
-    assert volumes.delete_snapshots(300001, ["a" * 32], []) == ["a" * 32]
+    assert volumes.delete_snapshots(300001, ["e" * 32], []) == {
+        "e" * 32: "failed:rclone_exit_1"}
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) == {"a" * 32: "pinned"}
+    # A failed object is named by exit code; it does not hide the pin beside it.
+    codes.append(5)
+    assert volumes.delete_snapshots(300001, ["e" * 32, "a" * 32], []) == {
+        "e" * 32: "failed:rclone_exit_5", "a" * 32: "pinned"}
     assert codes == []
 
 
@@ -206,7 +209,7 @@ def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
         assert not pruning.done()
         release.set()
         assert publication.result(timeout=15)["snapshots"]
-        assert pruning.result(timeout=15) == ["a" * 32]
+        assert pruning.result(timeout=15) == {"a" * 32: "pinned"}
     assert snapshot.read_bytes() == b"snapshot being captured"
 
 
@@ -275,7 +278,7 @@ def test_erasure_preserves_a_pin_not_explicitly_released(shared_backup, monkeypa
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    assert volumes.delete_snapshots(300001, ["a" * 32, "c" * 32], ["a" * 32]) == [
-        "c" * 32]
+    assert volumes.delete_snapshots(300001, ["a" * 32, "c" * 32], ["a" * 32]) == {
+        "a" * 32: "deleted", "c" * 32: "pinned"}
     assert not released.exists()
     assert retained.read_bytes() == b"unreleased pin"
