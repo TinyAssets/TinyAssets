@@ -1204,7 +1204,7 @@ async def _handle_policy(request: Any) -> Any:
 
             # The broker applies the held card only if it is still pending and is
             # the proposal this page showed. The page itself is box-served until
-            # ADR-030 (docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md).
+            # ADR-030's owner-bound serving lands.
             if not isinstance(data["shown"], dict) or not isinstance(data["request_id"], str):
                 return refused("invalid_policy", 400)
             try:

@@ -127,6 +127,14 @@ ADR-030 (accepted): owner MCP, app and `/api` requests are served on the trusted
 
 - [ ] Move each owner tool and app route to the trusted side as a trusted-front registration, one by one; the box keeps tools, user code and owner files.
 
+ADR-030's isolation decision (founder, 2026-10-27): a shared router authenticates and routes; each request is served by a shared worker holding only a broker connection bound to that owner by file descriptor, as the box channel is. Built before the loop worker, which uses the same channels.
+
+- [ ] Owner-bound broker channels: the router opens a connection bound to one owner and hands it to a worker under a uid with no broker role; the owner-channel `principal` parameter is deleted below the router. The trusted-front doors (`mailbox_door`, `room_door`, the board) move onto it.
+- [ ] Platform stores on the owner volume move to the owner's broker store, one per PR, with the matching ADR-030 tool move.
+- [ ] A remote `BoxProvider` driver for owner files, so trusted code reads and writes them without the app server in the box.
+- [ ] `owner_daemon`'s app-server path, `OwnerIngress`'s HTTP surface and `TRUSTED.box_routes` deleted once nothing is forwarded.
+- [ ] Later: the broker verifies owner sessions and API keys itself, so the bound owner comes from the credential (ADR-022 residual).
+
 ## S2a Loop worker
 
 - **Requirement IDs:** A8
@@ -135,7 +143,7 @@ ADR-030 (accepted): owner MCP, app and `/api` requests are served on the trusted
 - **Live acceptance:** Killing a worker mid-turn leaves the turn held and a fresh worker picks it up with no replay; box memory falls to tool time in the metering receipts
 - **Depends on:** S0, S1
 
-- [ ] The loop worker. Open first: since C6 the loop runs in the box, not the shared daemon, and no slice moves serving out of the box (`docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md`, a founder decision at S2a).
+- [ ] The loop worker, on the owner-bound channels above. Since C6 the loop runs in the box, not the shared daemon.
 
 ## S4 Rooms, status and onboarding
 

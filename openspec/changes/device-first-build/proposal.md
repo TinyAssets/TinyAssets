@@ -17,9 +17,8 @@ correct overall shape from the start, so nothing is built in a wrong shape and r
 
   Earlier, at 2026-10-26T19:22Z, the founder had asked:
   > "I thought we were going to fix it so that each box doesn't build the full app server?"
-- How owner isolation holds once serving leaves the box is open:
-  `docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md`, a founder decision at
-  S2a.
+- Owner isolation once serving leaves the box: owner-bound broker channels (ADR-030,
+  founder decision 2026-10-27), built as the "Owner-bound serving" slice.
 - The build order in `tasks.md` is the plan's Build slices table.
 - Registry rows S30 to S35 and N12 are added, each with its planned guard; each slice turns
   its guard on. S33, S34 and S35 read drifted, because their second path is live today
