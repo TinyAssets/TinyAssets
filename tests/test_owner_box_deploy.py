@@ -202,7 +202,8 @@ def router_box(monkeypatch, tmp_path):
                        base64.urlsafe_b64encode(b"k" * 32).decode())
     monkeypatch.setenv("TINYASSETS_CANARY_SESSION_STATE", str(tmp_path / "session"))
     monkeypatch.setenv("TINYASSETS_CANARY_SESSION_SEED", canary_session.seal("handle-0"))
-    state = SimpleNamespace(failure="", calls=[], broker_turns=0, handle="handle-0")
+    state = SimpleNamespace(failure="", calls=[], broker_turns=0, handle="handle-0",
+                            result=None)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -243,9 +244,13 @@ def router_box(monkeypatch, tmp_path):
                 state.broker_turns += 1  # synthetic model egress seam
                 nonce = doc["params"]["arguments"]["message"].split()[-1]
                 result = {"reply": "bad" if state.failure == "reply" else nonce}
+                if state.result is not None:
+                    result = state.result(nonce) if callable(state.result) else state.result
+                # A string is sent as the tool's text content, as a JSON-text reply.
+                body = ({"content": [{"type": "text", "text": result}]}
+                        if isinstance(result, str) else {"structuredContent": result})
                 return self.respond({"jsonrpc": "2.0", "id": 2, "result": {
-                    "isError": state.failure == "tool_error", "structuredContent": result}},
-                    turn=True)
+                    "isError": state.failure == "tool_error", **body}}, turn=True)
             self.respond({"jsonrpc": "2.0", "id": 1, "result": {}})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -275,6 +280,53 @@ def test_canary_fails_closed_on_auth_identity_box_revision_and_reply(router_box,
     assert capsys.readouterr().err == "owner_box_canary=failed\n"
     if failure in {"login", "wrong_home", "stale_sha"}:
         assert state.broker_turns == 0
+
+
+LEAK = "private model text LEAK-0123"
+
+
+@pytest.mark.parametrize("result,code", [
+    ({"error": LEAK, "failure_notice": LEAK, "history_saved": True}, "canary_turn_error"),
+    ({"status": "held", "note": LEAK, "needs_connection": {"handle": LEAK},
+      "retryable_setup": True}, "canary_turn_needs_connection"),
+    ({"error": LEAK, "retryable_setup": True}, "canary_turn_retryable_setup"),
+    ({"error": LEAK, "auth_required": True}, "canary_turn_auth_required"),
+    ({"error": LEAK, "auth_scope_required": True}, "canary_turn_auth_scope_required"),
+    ({"error": LEAK, "home_unavailable": True}, "canary_turn_home_unavailable"),
+    ({"error": LEAK, "agent_not_found": True}, "canary_turn_agent_not_found"),
+    ({"error": "consumer_request_required", "consumer_selection": {"binding_id": LEAK}},
+     "canary_turn_consumer_selection"),
+    ({"already_received": True, "state": "pending"}, "canary_send_pending"),
+    ({"already_received": True, "state": "uncertain"}, "canary_send_uncertain"),
+    ({"already_received": True, "state": "held"}, "canary_send_held"),
+    ({"already_received": True, "state": LEAK}, "canary_send_unknown"),
+    ({"already_received": True, "state": {"x": LEAK}}, "canary_send_unknown"),
+    ({"universe_id": LEAK}, "canary_reply_missing"),
+    (json.dumps([LEAK]), "canary_result_not_object"),
+    (LEAK, "canary_reply_missing"),
+    ({"reply": LEAK}, "canary_reply_mismatch"),
+    ({"reply": None}, "canary_reply_mismatch"),
+])
+def test_a_failed_turn_names_its_cause_with_a_fixed_code_in_the_receipt(
+        router_box, result, code):
+    origin, state = router_box
+    state.result = result
+    with pytest.raises(RuntimeError) as caught:
+        canary.probe(origin, SHA)
+    assert str(caught.value) == code
+    receipt, status = driver.run(lambda: {"slept": 1, "asleep": 0, "incomplete": 0},
+                                 lambda: canary.probe(origin, SHA), lambda: None)
+    assert status == 1 and receipt["reason"] == code
+    assert "LEAK" not in json.dumps(receipt)
+
+
+def test_the_reply_must_equal_the_nonce_apart_from_surrounding_space(router_box):
+    origin, state = router_box
+    state.result = lambda nonce: {"reply": " " + nonce + "\n"}
+    assert canary.probe(origin, SHA) is True
+    state.result = lambda nonce: {"reply": nonce + " and more"}
+    with pytest.raises(RuntimeError, match="^canary_reply_mismatch$"):
+        canary.probe(origin, SHA)
 
 
 def test_canary_missing_credentials_never_contacts_any_router(monkeypatch):
