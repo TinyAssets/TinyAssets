@@ -449,6 +449,14 @@
     <button id="app-update-banner-open" type="button">Update</button>
     <button id="app-update-dismiss" type="button" aria-label="Dismiss update notice">Dismiss</button>
   </div>
+  <div id="source-consent-notice" class="app-update-banner" role="alert" hidden>
+    <span id="source-consent-text"></span>
+    <button id="source-consent-allow" type="button">Allow live calls for this source</button>
+  </div>
+  <div id="rules-import-notice" class="app-update-banner" role="alert" hidden>
+    <span>Your earlier rules could not be brought over in this update. Review your rules.</span>
+    <button id="rules-import-review" type="button">Review rules</button>
+  </div>
   <div id="app-update-required" class="app-update-required" role="alert" hidden>
     <div class="card"><h1>Update required</h1><p>Update the app to continue.</p>
       <button id="app-update-required-open" class="btn btn--primary" type="button">Update</button>

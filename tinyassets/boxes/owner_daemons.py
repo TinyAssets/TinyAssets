@@ -211,6 +211,14 @@ class OwnerDaemons:
         remove(Path(mount.mountpoint))
         return {**payload, "held": False}
 
+    def _erase_held_authority(self, uid):
+        """Account erasure: no lifted rule of this uid's owner outlives the volume."""
+        held = self.authority_holding
+        if not held.is_dir() or held.is_symlink():
+            return
+        for path in (*held.glob(f"{int(uid)}-*.json"), *held.glob(f".{int(uid)}-*.stage")):
+            path.unlink(missing_ok=True)
+
     def _settle_authority(self, box):
         _held, path = self._held_authority(box)
         path.unlink(missing_ok=True)
@@ -372,6 +380,7 @@ class OwnerDaemons:
             self.relays.retire(uid)
             socket_tree(self.directory, uid)
             (self.directory / "secrets" / str(uid)).unlink(missing_ok=True)
+            self._erase_held_authority(uid)
             with self.condition:
                 self.boxes.pop(uid, None)
 

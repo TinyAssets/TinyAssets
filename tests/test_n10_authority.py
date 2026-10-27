@@ -319,12 +319,16 @@ def _legacy_v1(tmp_path, identities=None):
     return restarted
 
 
-def _fallback(store, owner="alice"):
-    return [entry for entry in store.read(owner).document["entries"]
-            if str(entry["values"].get("id", "")).startswith("n10-import-fallback:")]
+def _on_defaults_with_notice(store, owner="alice"):
+    """The ALARM paths: a new owner's defaults, an alarm receipt, a notice to review."""
+    assert store.import_alarm(owner)
+    assert store.decide(owner, center=owner, action_class="app.write")["decision"] == "allow"
+    assert any(row["kind"] == "import" and row["decision"] == "alarm"
+               for row in store.receipts(owner))
+    return True
 
 
-def test_an_import_is_accepted_once_and_strict_when_rows_were_invalid(tmp_path, caplog):
+def test_an_import_is_accepted_once_and_alarms_when_rows_were_invalid(tmp_path, caplog):
     store = _legacy_v1(tmp_path)
     assert store.import_pending("alice") and not store.import_pending("bob")
     document = {"source_digest": "sha256:" + "0" * 64, "entries": [
@@ -338,22 +342,21 @@ def test_an_import_is_accepted_once_and_strict_when_rows_were_invalid(tmp_path, 
     result = store.import_authority("alice", document)
     assert (result["entries"], result["consents"], result["dropped"]) == (1, 1, 2)
     assert store.decide("alice", center="alice", action_class="share")["decision"] == "deny"
-    # A row that could not be read never becomes a laxer default.
-    assert store.decide("alice", center="alice", action_class="app.write")["decision"] == "ask"
-    assert _fallback(store) and "ALARM" in caplog.text
+    # A row that could not be read is reported to the owner, never silently lost.
+    assert _on_defaults_with_notice(store) and "ALARM" in caplog.text
     assert store.consent_active("alice", CALL, "items-api")
     with pytest.raises(PolicyRefused, match="not pending"):
         store.import_authority("alice", document)
     receipt = next(row for row in store.receipts("alice") if row["kind"] == "import"
-                   and row["outcome"] == "strict_defaults")
+                   and row["outcome"] == "partial")
     assert json.loads(receipt["rule"]) == {"entries": 1, "consents": 1, "dropped": 2}
 
 
-def test_a_clean_import_adds_no_fallback(tmp_path):
+def test_a_clean_import_raises_no_notice(tmp_path):
     store = _legacy_v1(tmp_path)
     store.import_authority("alice", {"source_digest": "sha256:" + "0" * 64,
                                      "entries": [], "consents": []})
-    assert _fallback(store) == []
+    assert not store.import_alarm("alice")
     assert store.decide("alice", center="alice", action_class="app.write")["decision"] \
         == "allow"
 
@@ -370,16 +373,20 @@ def test_a_box_operation_waits_for_the_import_and_cannot_end_it(tmp_path, rig):
     assert gate == "authority_import_pending" and store.import_pending("alice")
 
 
-def test_an_abandoned_import_alarms_and_asks_first(tmp_path, caplog):
-    """Review finding 10c: strict, never DEFAULT_RULES."""
+def test_an_abandoned_import_alarms_and_tells_the_owner(tmp_path, caplog):
+    """Review finding 10c, as decided: the defaults (the agent keeps working),
+    an ALARM, and a notice until the owner saves their rules."""
     store = _legacy_v1(tmp_path)
+    _session(tmp_path, "alice", COOKIE)
     store.abandon_import("alice", reason="extraction errors: 1")
     assert "ALARM: owner authority import abandoned for alice" in caplog.text
     with pytest.raises(PolicyRefused, match="not pending"):
         store.import_authority("alice", {"source_digest": "", "entries": [], "consents": []})
-    for action_class in ("app.read", "app.write", "workspace.shell"):
-        assert store.decide("alice", center="alice",
-                            action_class=action_class)["decision"] == "ask"
+    assert _on_defaults_with_notice(store)
+    current = store.read("alice")
+    assert current.document["entries"] == []
+    store.write("alice", COOKIE, current.generation, current.document)
+    assert not store.import_alarm("alice")
 
 
 def test_the_owners_first_router_write_supersedes_the_import(tmp_path):
@@ -393,7 +400,7 @@ def test_the_owners_first_router_write_supersedes_the_import(tmp_path):
     assert any(row["outcome"] == "superseded" for row in store.receipts("alice"))
 
 
-def test_a_pending_import_ends_strict_a_deadline_after_its_first_lift(tmp_path, monkeypatch):
+def test_a_pending_import_ends_with_a_notice_a_deadline_after_its_first_lift(tmp_path, monkeypatch):
     from tinyassets.broker import policy
 
     store = _legacy_v1(tmp_path)
@@ -402,7 +409,7 @@ def test_a_pending_import_ends_strict_a_deadline_after_its_first_lift(tmp_path, 
     assert store.note_import_attempt("alice") == 1
     monkeypatch.setattr(policy.time, "time", lambda: 1_000.0 + policy.IMPORT_DEADLINE_S + 1)
     assert not store.import_pending("alice")
-    assert _fallback(store)
+    assert _on_defaults_with_notice(store)
 
 
 def test_migration_consents_each_live_model_grant(tmp_path, rig):
@@ -588,7 +595,7 @@ def test_a_wake_of_a_pending_owner_imports_its_old_files_once(fleet, tmp_path, m
     assert list(fleet.manager.authority_holding.glob("*.json"))  # held until settled
 
 
-def test_a_wake_with_damaged_files_alarms_keeps_them_and_asks_first(
+def test_a_wake_with_damaged_files_alarms_keeps_them_and_tells_the_owner(
         fleet, tmp_path, monkeypatch, caplog):
     from tinyassets.boxes import authority_import as lift
 
@@ -600,21 +607,41 @@ def test_a_wake_with_damaged_files_alarms_keeps_them_and_asks_first(
     fleet.wake("a")
     assert (mount / lift.POLICY_FILE).is_symlink() and consents.exists()
     assert "ALARM: owner authority import abandoned for a" in caplog.text
-    assert store.decide("a", center="a", action_class="app.write")["decision"] == "ask"
+    assert _on_defaults_with_notice(store, "a")
     assert not store.import_pending("a")
     assert not list(fleet.manager.authority_holding.glob("*.json"))
 
 
-def test_a_retried_lift_with_no_held_rows_and_no_files_is_strict(tmp_path, caplog):
-    from tinyassets.broker.routing import BrokerLifecycle
+def test_the_policy_read_carries_the_import_notice(tmp_path, rig):
+    store = _legacy_v1(tmp_path, rig.store._admissions)
+    store.abandon_import("alice", reason="extraction errors: 1")
+    assert store.import_alarm("alice")
+    source = Path("tinyassets/broker/server.py").read_text(encoding="utf-8")
+    assert '"import_alarm": store.import_alarm(owner)' in source
 
-    store = _legacy_v1(tmp_path)
-    store.note_import_attempt("alice")
-    store.note_import_attempt("alice")
-    BrokerLifecycle._settle_import(store, "alice", {
-        "source_digest": "sha256:" + "0" * 64, "entries": [], "consents": [], "errors": 0,
-        "found": 0, "held": False}, attempt=2)
-    assert "ALARM" in caplog.text and _fallback(store)
+
+def test_destroying_an_owner_erases_its_held_authority(tmp_path):
+    from contextlib import nullcontext
+
+    from tinyassets.boxes.owner_daemons import Box, OwnerDaemons
+
+    calls = []
+    runtime = SimpleNamespace(box_id=lambda uid: f"owner-{uid}",
+                              stop=lambda uid: calls.append(("stop", uid)))
+    volumes = SimpleNamespace(operation=lambda uid, **_: nullcontext(),
+                              delete=lambda uid: calls.append(("delete", uid)))
+    relays = SimpleNamespace(retire=lambda uid: calls.append(("relay", uid)))
+    daemons = OwnerDaemons(runtime, None, volumes, relays, tmp_path / "run",
+                           authority_holding=tmp_path / "state" / "authority-import")
+    _held, mine = daemons._held_authority(Box("alice", 300001))
+    _held, other = daemons._held_authority(Box("bob", 300002))
+    mine.write_text("{}")
+    other.write_text("{}")
+    (mine.parent / f".{mine.name}.stage").write_text("{}")
+    daemons.destroy(300001)
+    assert ("delete", 300001) in calls
+    assert not mine.exists() and not (mine.parent / f".{mine.name}.stage").exists()
+    assert other.exists()
 
 
 def test_the_holding_area_is_keyed_by_uid_and_owner(tmp_path):
@@ -847,6 +874,20 @@ console.log(JSON.stringify(out));"""
                                  "consents": ["workspace_push"]}]
     assert "owner/repo" in out[1]["label"] and "git.test" in out[1]["label"]
     assert out[2:] == [None, None]
+
+
+def test_the_page_surfaces_consent_and_import_notices_and_no_task_grant():
+    page = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+    source = Path("tinyassets/onboarding/app/main.js").read_text(encoding="utf-8")
+    # Task-scoped grants never match at the broker, so the card does not offer one.
+    assert "Allow for this task" not in source
+    # A source connected without a session gets an explicit router consent action.
+    assert "Allow live calls for this source" in page
+    assert source.count("if(result.consent_required) offerSourceConsent(") == 2
+    assert 'postConsent("grant",required.sink,required.destination)' in source
+    # An import the broker could not trust is shown to the owner until they save.
+    assert 'id="rules-import-notice"' in page
+    assert "result.import_alarm===true" in source and "checkRulesImport();" in source
 
 
 @pytest.mark.parametrize("fields", [

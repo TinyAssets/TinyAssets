@@ -130,25 +130,24 @@ class BrokerLifecycle:
 
         store = getattr(self.server, "_policy_store", None)
         pending = store is not None and store.import_pending(owner)
-        attempt = 0
         if pending:
-            # N10: boxhostd lifts the box's old authority before the box starts.
-            attempt = store.note_import_attempt(owner)
+            # N10: boxhostd lifts the box's old authority before the box starts;
+            # the first request starts the import's deadline.
+            store.note_import_attempt(owner)
             record = {**record, "import_authority": True}
         result = request("wake", owner, record=record, scheduled=scheduled)
         if {k: v for k, v in result.items() if k != "authority"} != {"uid": record["uid"]}:
             raise RuntimeError("broker-bound box did not become ready")
         if pending:
-            self._settle_import(store, owner, result.get("authority"), attempt=attempt)
+            self._settle_import(store, owner, result.get("authority"))
         return result["uid"]
 
     @staticmethod
-    def _settle_import(store, owner, payload, *, attempt=1):
+    def _settle_import(store, owner, payload):
         """Import under this wake's owner lock, before any box operation can run.
 
-        Never a silent default: an extraction error, or a retried lift that finds
-        neither the held rows nor the files (the earlier lift removed them and its
-        holding file is gone), ends the import with strict defaults and an ALARM.
+        Never a silent default: an extraction error ends the import with the
+        defaults, an ALARM and a notice the owner sees.
         """
         from tinyassets.broker.policy import PolicyRefused
 
@@ -162,9 +161,6 @@ class BrokerLifecycle:
                 or payload["errors"] != 0):
             errors = payload.get("errors") if isinstance(payload, dict) else "invalid"
             store.abandon_import(owner, reason=f"extraction errors: {errors}")
-            return
-        if attempt > 1 and not payload["held"] and payload["found"] == 0:
-            store.abandon_import(owner, reason="a retried lift found no held rows or files")
             return
         try:
             store.import_authority(owner, {key: payload[key] for key in fields})

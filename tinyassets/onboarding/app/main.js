@@ -4687,6 +4687,7 @@
     // reachable until a later store submission declares and verifies that surface.
     if(!NATIVE) Voice.refreshCapability();
     loadPlan();
+    checkRulesImport();
     // Not awaited: nothing about the chat waits on the history peek, and the
     // walkthrough rides on it rather than on a timer.
     offerFirstRunWalkthrough();
@@ -5316,6 +5317,7 @@
         const error=new Error(result.error||"model_connection_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
+      if(result.consent_required) offerSourceConsent(result.consent_required);
       if(result.model_confirmation)
         return InlineApprovals.post("model_connection",{...result.model_confirmation,universe_id:center});
       return result;
@@ -7113,6 +7115,7 @@
         const error=new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
+      if(result.consent_required) offerSourceConsent(result.consent_required);
       if(result.model_confirmation)
         return InlineApprovals.post("model_connection",{...result.model_confirmation,universe_id:center});
       return result;
@@ -8180,7 +8183,8 @@
       note.setAttribute('role','status');
       const controls=document.createElement('div'); controls.className='rtab-actions';
       const scope=document.createElement('select');scope.setAttribute('aria-label','Approval scope');
-      const labels={once:'Allow once',task:'Allow for this task',site:'Allow for this site',always:'Always allow'};
+      // A task-scoped grant never matches at the broker (N10): the task is the box's word.
+      const labels={once:'Allow once',site:'Allow for this site',always:'Always allow'};
       for(const [value,label] of Object.entries(labels)){
         const option=document.createElement('option');option.value=value;option.textContent=label;scope.appendChild(option);
       }
@@ -8213,7 +8217,7 @@
         const grant=value.predicate;
         predicate.textContent=grant ? (value.purpose||'Permission')+' / '+grant.operation+' '+grant.origin+' / '+
           (grant.scope==='once'?'This action only':grant.scope==='task'?'This task until '+new Date(grant.expires_at*1000).toLocaleString():'Until revoked in Rules') : 'This action only';
-        scope.value=value.scope||'once';buttons.approve.textContent=labels[scope.value];
+        scope.value=labels[value.scope]?value.scope:'once';buttons.approve.textContent=labels[scope.value];
         note.textContent=value.approval_unavailable||(value.result?JSON.stringify(value.result):'');
         for(const [key,button] of Object.entries(buttons)){
           const canAct=['pending','deferred'].includes(value.status) ||
@@ -9198,6 +9202,39 @@
     const result=await response.json().catch(()=>({}));
     if(!response.ok)throw new Error(result.reason||result.error||"consent refused");
     return result;
+  }
+  // N10: tell the owner when the broker could not import their earlier rules.
+  // Saving their rules (a router write) clears it.
+  async function checkRulesImport(){
+    const banner=$("rules-import-notice");
+    if(!banner)return;
+    try{
+      const response=await fetch("/app/api/policy",{credentials:"same-origin",
+        headers:authHeaders()});
+      const result=await response.json();
+      banner.hidden=!(response.ok&&result.import_alarm===true);
+    }catch(error){banner.hidden=true;}
+    $("rules-import-review").onclick=()=>{banner.hidden=true;$("btn-account").click();};
+  }
+  // N10: a source connected without a live owner session has no consent yet;
+  // its calls are refused until the owner allows them here, on the router.
+  function offerSourceConsent(required){
+    const banner=$("source-consent-notice"), button=$("source-consent-allow");
+    if(!banner||!required||typeof required.destination!=="string")return;
+    $("source-consent-text").textContent="Live calls to "+required.destination+
+      " are off until you allow them.";
+    banner.hidden=false;
+    button.disabled=false;
+    button.onclick=async()=>{
+      button.disabled=true;
+      try{
+        await postConsent("grant",required.sink,required.destination);
+        banner.hidden=true;
+      }catch(error){
+        $("source-consent-text").textContent="Could not allow live calls: "+error.message;
+        button.disabled=false;
+      }
+    };
   }
   async function postConsent(action,sink,destination){
     return postConsentBody({action,sink,destination});

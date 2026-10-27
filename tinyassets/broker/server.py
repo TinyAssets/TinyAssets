@@ -1072,7 +1072,8 @@ class _Connection:
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
-                result = {"receipts": store.receipts(owner)}
+                result = {"receipts": store.receipts(owner),
+                          "import_alarm": store.import_alarm(owner)}
             elif action == "proposal" and set(doc) == {
                     "op", "action", "principal", "change"}:
                 result = store.receipt_proposal(owner, owner, doc["change"])

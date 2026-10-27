@@ -283,8 +283,9 @@ Connecting a model source through the router SHALL grant consent to call it. An
 owner admitted before this change SHALL import its box-held rules and consents
 once, lifted by boxhostd from the attached volume before the box starts and
 imported by the broker under the wake's owner lock; until then box operations
-SHALL wait (retryably), and an import that cannot be trusted SHALL end in
-ask-first defaults with an alarm, never in laxer defaults.
+SHALL wait (retryably). An import that cannot be trusted, or that drops
+invalid rows, SHALL end with the defaults a new owner gets, an alarm receipt,
+and a notice to the owner to review their rules until they next save them.
 
 #### Scenario: A box cannot widen its owner's authority
 - **WHEN** a box sends a policy write, a one-use approval or a consent grant, with or without a session proof
@@ -301,8 +302,8 @@ ask-first defaults with an alarm, never in laxer defaults.
 
 #### Scenario: The box's old authority is imported once
 - **WHEN** the broker wakes a pending owner whose volume holds its old rules and consents
-- **THEN** boxhostd lifts the files before the box starts and deletes them once the rows are held, and the broker imports the valid entries, adding ask-first defaults if any were invalid
-- **AND** a linked, oversized or non-table file yields no rows, keeps the files, and ends in ask-first defaults and an alarm
+- **THEN** boxhostd lifts the files before the box starts and deletes them once the rows are held, and the broker imports the valid entries, raising the owner's review notice if any were invalid
+- **AND** a linked, oversized or non-table file yields no rows, keeps the files, and ends in the defaults, an alarm and the owner's review notice
 - **AND** a box operation before the import settles is refused retryably and cannot end the import
 - **AND** a wake of a settled owner never reads the files
 

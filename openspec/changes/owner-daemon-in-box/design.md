@@ -569,8 +569,9 @@ files from the attached volume before the sandbox starts
 SQLite limits, a step budget and a deadline), holds the rows in
 `/var/lib/boxhostd/state/authority-import`, then deletes the files; the broker
 imports the rows under the wake's owner lock. Until then box operations wait;
-an untrusted import ends in ask-first defaults with an alarm, and the owner's
-own first write supersedes it.
+an untrusted import ends in the defaults with an alarm and a notice the owner
+sees until they save their rules, and the owner's own first write supersedes
+it. Destroying an owner erases its held rows.
 
 ### C9. Wake index is two columns (T7)
 Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, and drop the

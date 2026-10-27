@@ -41,7 +41,7 @@ OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.writ
 TABLES = {"rules", "approval_grants", "operation_kinds", "review_on", "review_off"}
 #: The import of box-held authority (N10 cutover): pending once, then done or none.
 IMPORT_STATES = ("none", "pending", "done")
-#: A pending import this long after its first lift request ends with strict
+#: A pending import this long after its first lift request ends with the
 #: defaults and an ALARM. An owner who never wakes is never failed by it.
 IMPORT_DEADLINE_S = 30 * 86400
 CALL_SINK = "authenticated_external_call"
@@ -66,16 +66,6 @@ def _validate_entry(entry: object) -> None:
         raise PolicyRefused("invalid approval rule")
     if entry["table"] == "operation_kinds" and values.get("kind") not in OPERATION_KINDS:
         raise PolicyRefused("invalid declared operation")
-
-
-def _strict_fallback() -> list[dict]:
-    """Ask first for every class whose default is laxer: the N10 import's failure floor."""
-    strict = BEHAVIOURS.index("ask_first")
-    return [{"scope": "account", "table": "rules", "values": {
-                "id": f"n10-import-fallback:{action_class}", "agent": "main",
-                "action_class": action_class, "behaviour": "ask_first"}}
-            for action_class, behaviour in sorted(DEFAULT_RULES.items())
-            if BEHAVIOURS.index(behaviour) < strict]
 
 
 def _consent_key(sink: object, destination: object) -> tuple[str, str]:
@@ -182,7 +172,8 @@ class PolicyStore:
                 granted_by TEXT NOT NULL, revoked_at REAL, PRIMARY KEY (sink, destination));
             CREATE TABLE IF NOT EXISTS import_state (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), state TEXT NOT NULL,
-                since REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0);
+                since REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+                alarm INTEGER NOT NULL DEFAULT 0);
         """)
         document = {"entries": [], "egress": {"mode": "open", "destinations": []},
                     "spend": {"daily": None, "monthly": None, "transaction": None,
@@ -191,7 +182,7 @@ class PolicyStore:
         if provision and fresh:
             db.execute("INSERT OR IGNORE INTO policy VALUES (1,1,?,?)",
                        (_digest(document), _canonical(document)))
-            db.execute("INSERT OR IGNORE INTO import_state VALUES (1,'none',0,0)")
+            db.execute("INSERT OR IGNORE INTO import_state VALUES (1,'none',0,0,0)")
             db.execute("PRAGMA user_version=2")
             version = 2
         if provision and version == 0:
@@ -222,7 +213,7 @@ class PolicyStore:
             # wake. Its model sources keep working: before N10 no model call was
             # consent-gated, so each live model grant's connection is consented.
             db.execute("BEGIN IMMEDIATE")
-            db.execute("INSERT OR REPLACE INTO import_state VALUES (1,'pending',0,0)")
+            db.execute("INSERT OR REPLACE INTO import_state VALUES (1,'pending',0,0,0)")
             for destination in self._model_destinations(owner):
                 db.execute("INSERT OR IGNORE INTO consents VALUES (?,?,?,?,NULL)",
                            (CALL_SINK, destination, time.time(), "migration"))
@@ -368,6 +359,8 @@ class PolicyStore:
                        "generation,outcome) VALUES (?,?,?,?,?,?,?,?)",
                        (time.time(), "write", owner, session_id, row["digest"], digest,
                         generation, "committed"))
+            # Saving their rules is the owner's review: it clears an import notice.
+            db.execute("UPDATE import_state SET alarm=0 WHERE singleton=1")
             if db.execute("UPDATE import_state SET state='none' WHERE singleton=1 "
                           "AND state='pending'").rowcount:
                 # The owner's own write wins; old box rows arriving later are dropped.
@@ -765,8 +758,14 @@ class PolicyStore:
             db.commit()
         return bool(hit)
 
+    def import_alarm(self, owner: str) -> bool:
+        """Whether the owner should be told their earlier rules were not all imported."""
+        with closing(self._connect(owner)) as db:
+            row = db.execute("SELECT alarm FROM import_state WHERE singleton=1").fetchone()
+        return bool(row and row["alarm"])
+
     def import_pending(self, owner: str) -> bool:
-        """Pending until imported, superseded or past its deadline (strict defaults)."""
+        """Pending until imported, superseded or past its deadline (then defaults)."""
         if owner in self._import_settled:
             return False
         with closing(self._connect(owner)) as db:
@@ -794,28 +793,23 @@ class PolicyStore:
         return row["attempts"] if row else 0
 
     def abandon_import(self, owner: str, *, reason: str) -> None:
-        """The import cannot be trusted: strict defaults (ask first), loudly.
+        """The import cannot be trusted: the defaults a new owner gets, loudly.
 
-        Every action class whose default is laxer than ask_first is pinned to
-        ask_first for the main agent, so nothing the owner had restricted is
-        silently allowed while they review their rules.
+        An ALARM receipt and log, and an owner-visible notice (``import_alarm``)
+        that their earlier rules could not be imported and should be reviewed.
+        The agent keeps working on the defaults; nothing is pinned stricter.
         """
         with closing(self._connect(owner)) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT state FROM import_state WHERE singleton=1").fetchone()
-            current = db.execute("SELECT generation,digest,document FROM policy "
-                                 "WHERE singleton=1").fetchone()
+            current = db.execute("SELECT generation,digest FROM policy WHERE singleton=1"
+                                 ).fetchone()
             if row is not None and row["state"] == "pending" and current is not None:
-                policy = json.loads(current["document"])
-                policy["entries"] = policy["entries"] + _strict_fallback()
-                generation, digest = current["generation"] + 1, _digest(policy)
-                db.execute("UPDATE policy SET generation=?,digest=?,document=? "
-                           "WHERE singleton=1", (generation, digest, _canonical(policy)))
-                db.execute("UPDATE import_state SET state='none' WHERE singleton=1")
+                db.execute("UPDATE import_state SET state='none',alarm=1 WHERE singleton=1")
                 db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,generation,"
                            "rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?)",
-                           (time.time(), "import", owner, current["digest"], digest,
-                            generation, reason[:512], "alarm", "strict_defaults"))
+                           (time.time(), "import", owner, current["digest"], current["digest"],
+                            current["generation"], reason[:512], "alarm", "defaults"))
                 _LOG.error("ALARM: owner authority import abandoned for %s: %s", owner, reason)
             db.commit()
         self._import_settled.add(owner)
@@ -823,9 +817,9 @@ class PolicyStore:
     def import_authority(self, owner: str, document: object) -> dict:
         """Accept boxhostd's one lift while pending; never a silent partial import.
 
-        Valid rows are kept. If any row was invalid, the strict fallback is added
-        in the same transaction (with an ALARM), so a restriction that could not
-        be read is never silently replaced by a laxer default.
+        Valid rows are kept. If any row was invalid, the same transaction raises
+        the owner-visible notice and an ALARM receipt, so the owner reviews the
+        rules that could not be read.
         """
         if (not isinstance(document, dict)
                 or set(document) != {"source_digest", "entries", "consents"}
@@ -867,8 +861,7 @@ class PolicyStore:
             policy = json.loads(row["document"])
             if _digest(policy) != row["digest"]:
                 raise RuntimeError("policy digest mismatch")
-            policy["entries"] = policy["entries"] + kept + (
-                _strict_fallback() if dropped else [])
+            policy["entries"] = policy["entries"] + kept
             self._validate(owner, policy)
             generation, digest = row["generation"] + 1, _digest(policy)
             db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
@@ -877,17 +870,18 @@ class PolicyStore:
                 "INSERT OR IGNORE INTO consents VALUES (?,?,?,?,NULL)",
                 (item["sink"], item["destination"], item["granted_at"], item["granted_by"]),
             ).rowcount for item in consents)
-            db.execute("UPDATE import_state SET state='done' WHERE singleton=1")
+            db.execute("UPDATE import_state SET state='done',alarm=? WHERE singleton=1",
+                       (int(bool(dropped)),))
             counts = {"entries": len(kept), "consents": inserted, "dropped": dropped}
             db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,request_digest,"
                        "generation,rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?,?,?)",
                        (time.time(), "import", owner, row["digest"], digest,
                         document["source_digest"], generation, _canonical(counts),
                         "alarm" if dropped else "allow",
-                        "strict_defaults" if dropped else "committed"))
+                        "partial" if dropped else "committed"))
             db.commit()
         if dropped:
-            _LOG.error("ALARM: owner authority import for %s dropped %s invalid rows; "
-                       "strict defaults added", owner, dropped)
+            _LOG.error("ALARM: owner authority import for %s dropped %s invalid rows",
+                       owner, dropped)
         self._import_settled.add(owner)
         return {"generation": generation, **counts}
