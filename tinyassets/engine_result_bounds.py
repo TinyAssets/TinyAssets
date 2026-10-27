@@ -111,6 +111,46 @@ _MARKER_NOTE = (
 )
 
 
+#: The text ``content`` block of an MCP tool result; ``structuredContent`` carries all.
+TEXT_CONTENT_MAX_CHARS = 6000
+
+
+def faithful_text(value: object) -> str:
+    """Build the text ``content`` block for an MCP tool result.
+
+    Text-only MCP clients read only the ``content`` text block and never parse
+    ``structuredContent`` — so the text must carry the *real* payload, never a
+    placeholder. Prior behaviour replaced oversized payloads with a lossy
+    key-count stub ("Full payload is in structuredContent."), which made reads
+    silently look empty to those clients (read_page bodies, get_status caveats,
+    goals lists, etc.).
+
+    Contract:
+    - Payload fits the text budget -> emit the full payload as JSON (pretty
+      when that also fits, else compact). Fully faithful, no data lost.
+    - Payload exceeds the budget -> render as much real, readable data as fits
+      and append an explicit truncation pointer to ``structuredContent`` for
+      the elided remainder. Still bounded (the 6000-char ceiling that already
+      governed the under-budget path), so a hosted client's token budget is unchanged;
+      the difference is real data instead of a placeholder.
+
+    The box (``universe_server``) and the router's own answers
+    (``owner_router.tool_result``) share it, so both halves render one way.
+    """
+    compact = json.dumps(value, separators=(",", ":"), default=str)
+    if len(compact) <= TEXT_CONTENT_MAX_CHARS:
+        pretty = json.dumps(value, indent=2, default=str)
+        return pretty if len(pretty) <= TEXT_CONTENT_MAX_CHARS else compact
+
+    marker = (
+        f"\n... [truncated: {len(compact)} chars total; "
+        "full payload in structuredContent]"
+    )
+    keep = max(0, TEXT_CONTENT_MAX_CHARS - len(marker))
+    pretty = json.dumps(value, indent=2, default=str)
+    return pretty[:keep] + marker
+
+
 def narrowing_hint(tool: str) -> str:
     """The one line telling this tool's caller how to ask for less."""
     return NARROWING_HINTS.get(tool, _GENERIC_HINT)

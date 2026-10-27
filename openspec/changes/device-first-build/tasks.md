@@ -69,11 +69,14 @@ The founder's words: "Insert a 'trusted front' slice (router answers registered 
   `broker/conversations.py` (`message_bodies`), broker-held per owner; owner-channel ops
   `OUTSIDE_AGENTS`, `ROOM_POST` (1:1) and `MAILBOX_RECEIPT`; `pull` delivery only; registry
   row S30 converged with `test_ledger_boundary`. No public surface yet.
-- [ ] S3a.2 Doors: trusted-front registrations for `read_graph target=mailbox`,
-  `write_graph room_message` and `mailbox_ack`, the REST routes and
-  `/app/api/outside-agents`. Until P0-3, its MCP doors refuse an outside-looking caller with
-  no `outside_origin` rather than read it as the owner. Live: an API-key agent reads and
-  replies, and time to reply is recorded.
+- [x] S3a.2 Doors (`mailbox_door.py`): trusted-front registrations for `read_graph
+  target=mailbox`, `write_graph room_message` and `mailbox_ack` (legacy clients get the
+  box's SSE framing), `GET /api/mailbox`, `POST /api/mailbox/ack` and
+  `/api/mailbox/replies`, and the owner's `/app/api/outside-agents` and
+  `/app/api/agent-messages`; the box answers the targets `served_on_trusted_side`. Until
+  P0-3, its MCP doors refuse a caller with no `outside_origin` rather than read it as the
+  owner. **Live acceptance still owed:** an API-key agent reads and replies, and time to
+  reply is recorded.
 
 ## S5a Collections
 

@@ -61,6 +61,12 @@ def test_the_router_answers_at_one_dispatch_point():
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "JSONResponse":
             keys = {key.value for key in node.args[0].keys if isinstance(key, ast.Constant)}
             assert keys & {"error", "challenge"}, f"line {node.lineno} answers beside TRUSTED"
+    # A registered answer the router composes is framed in one place, mcp_answer.
+    builders = {function.name for function in ast.walk(tree)
+                if isinstance(function, ast.AsyncFunctionDef | ast.FunctionDef)
+                for node in ast.walk(function) if isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == "Response"}
+    assert builders == {"mcp_answer"}, f"answers composed in {builders}"
 
 
 @pytest.mark.verifies("owner-daemon-in-box:The router only authenticates, maps and forwards")

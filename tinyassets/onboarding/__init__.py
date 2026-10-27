@@ -1982,6 +1982,7 @@ def onboarding_routes() -> list[Any]:
 
     from tinyassets import room_door
     from tinyassets.app_object import handle_apps
+    from tinyassets.mailbox_door import agent_messages, outside_agents
     from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.api_keys import handle as handle_api_keys
     from tinyassets.onboarding.app_modules import handle_app_module
@@ -2057,6 +2058,8 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),
+        Route("/app/api/outside-agents", outside_agents, methods=["GET", "POST"]),
+        Route("/app/api/agent-messages", agent_messages, methods=["GET", "POST"]),
         Route("/app/wakes", handle_wakes, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/soul", handle_soul, methods=["GET", "POST"]),
