@@ -78,9 +78,29 @@ def read(identity, *, cursor=0, limit=30) -> dict:
 
         messages = [{**message, "body": None if message["body"] is None else envelope(
             "mailbox:" + message["sender_id"], message["body"])} for message in messages]
-    # After that ack the ledger's own cursor is at least ``cursor``.
-    return {**mail, "messages": messages,
-            "next_cursor": messages[-1]["seq"] if messages else mail["cursor"]}
+    page = _fit(messages)
+    # After that ack the ledger's own cursor is at least ``cursor``. The cut sets
+    # next_cursor, so the rest comes back on the next read; none is acknowledged.
+    return {**mail, "messages": page, "more": len(page) < len(messages),
+            "next_cursor": page[-1]["seq"] if page else mail["cursor"]}
+
+
+def _fit(messages: list) -> list:
+    """Whole messages under the box's read_graph ceiling; at least one, none ever cut."""
+    import os
+
+    from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES
+    from tinyassets.engine_result_bounds import resolve_ceiling
+
+    # The environment as the box reads it; the router has no served model context.
+    budget, page, used = resolve_ceiling(dict(os.environ)) - CEILING_HEADROOM_BYTES, [], 0
+    for message in messages:
+        used += len(json.dumps(message, separators=(",", ":"), default=str,
+                               ensure_ascii=False).encode())
+        if page and used > budget:
+            break
+        page.append(message)
+    return page
 
 
 def ack(identity, *, through) -> dict:

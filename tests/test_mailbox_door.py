@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_broker_server import _connect, broker  # noqa: F401
+from tests.test_message_ledger import rig  # noqa: F401
 from tinyassets import mailbox_door, owner_router
 from tinyassets.auth.provider import Identity
 
@@ -252,6 +254,41 @@ def test_the_router_built_result_is_the_boxs_own_shape():
     assert answered.headers["content-type"] == "text/event-stream"
     data = answered.content.split(b"\r\n")[1].removeprefix(b"data: ")
     assert json.loads(data)["result"] == owner_router.tool_result(structured)
+
+
+@pytest.mark.parametrize("ceiling", [None, "40000", "4096"])
+def test_a_read_pages_whole_bodies_under_the_ceiling_and_loses_none(
+        rig, monkeypatch, ceiling):
+    from tests.test_message_ledger import MUSE as ORIGIN
+    from tinyassets.broker import client
+    from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES
+    from tinyassets.engine_result_bounds import CEILING_ENV, resolve_ceiling
+
+    if ceiling is not None:
+        monkeypatch.setenv(CEILING_ENV, ceiling)
+    else:
+        monkeypatch.delenv(CEILING_ENV, raising=False)
+    room = "dm:" + rig.register(ORIGIN)
+    sent = [rig.post(None, room, body=str(n) * 16000, cmid=f"c{n}")["message_id"]
+            for n in range(5)]
+    monkeypatch.setattr(client, "ledger_request", lambda root, identity, op, action, **fields:
+                        rig.call(op, action, identity.metadata.get("outside_origin"), **fields))
+    agent = Identity("alice", "alice", metadata={"outside_origin": ORIGIN})
+    budget = resolve_ceiling(dict(os.environ)) - CEILING_HEADROOM_BYTES
+    seen, cursor, pages = [], 0, 0
+    while True:
+        page = mailbox_door.read(agent, cursor=cursor, limit=10)
+        if not page["messages"]:
+            break
+        pages += 1
+        size = len(json.dumps(page["messages"], separators=(",", ":"),
+                              ensure_ascii=False).encode())
+        assert len(page["messages"]) == 1 or size <= budget
+        assert all(len(m["body"]["content"]) == 16000 for m in page["messages"])  # never cut
+        assert page["more"] is (len(seen) + len(page["messages"]) < len(sent))
+        seen += [m["message_id"] for m in page["messages"]]
+        cursor = page["next_cursor"]
+    assert seen == sent and pages == {None: 5, "40000": 3, "4096": 5}[ceiling]
 
 
 # -- End to end: the real router app, broker, ledger and key store ----------------

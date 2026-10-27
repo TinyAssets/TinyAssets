@@ -61,7 +61,9 @@ target=room_message` and `target=mailbox_ack` from `owner_router.TRUSTED`, `GET 
 all through `ledger_request`, and SHALL never forward, ask or wake a box for them. The
 reader and sender SHALL be the verified `outside_origin`; until P0-3 an MCP caller without
 one SHALL be refused, never read as the owner. A body returned to an outside agent SHALL be
-in the untrusted envelope; a read's `cursor` SHALL acknowledge through it first; a reply
+in the untrusted envelope; a read's `cursor` SHALL acknowledge through it first; a read
+SHALL return whole messages under the `read_graph` ceiling, at least one, with
+`next_cursor` at the cut; a reply
 SHALL show its recorded `reply_s`. The box SHALL answer these targets `served_on_trusted_side`.
 
 #### Scenario: An API-key agent replies claiming to be the owner
