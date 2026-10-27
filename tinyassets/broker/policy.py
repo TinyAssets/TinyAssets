@@ -40,6 +40,11 @@ OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.writ
 TABLES = {"rules", "approval_grants", "operation_kinds", "review_on", "review_off"}
 SCHEMA_VERSION = 2
 ONCE_TTL_S = 300
+#: Held agent proposals: pending ones are never evicted; a full set refuses more.
+PROPOSAL_TTL_S = 30 * 86400
+PENDING_PROPOSALS = 200
+#: Receipt kinds a box can mint at will; listed apart so they never push others out.
+BOX_RECEIPT_KINDS = ("proposal", "decision")
 
 def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -136,7 +141,8 @@ class PolicyStore:
                 session_id TEXT NOT NULL, generation INTEGER NOT NULL,
                 expires_at REAL NOT NULL, consumed_at REAL);
             CREATE TABLE IF NOT EXISTS proposals (
-                request_id TEXT PRIMARY KEY, document TEXT NOT NULL, at REAL NOT NULL);
+                request_id TEXT PRIMARY KEY, digest TEXT NOT NULL, document TEXT NOT NULL,
+                at REAL NOT NULL, applied_at REAL);
         """)
         document = {"entries": [], "egress": {"mode": "open", "destinations": []},
                     "spend": {"daily": None, "monthly": None, "transaction": None,
@@ -233,11 +239,14 @@ class PolicyStore:
             _LOG.error("ALARM: owner policy refused for %s: %s", owner, reason)
 
     def receipts(self, owner: str) -> list[dict]:
+        """The last 50 receipts of each bucket: box-mintable kinds are counted apart."""
+        columns = ("SELECT id,at,kind,old_digest,new_digest,request_digest,generation,rule,"
+                   "decision,outcome FROM receipts WHERE kind {} (?,?) ORDER BY id DESC LIMIT 50")
         with closing(self._connect(owner)) as db:
-            rows = db.execute(
-                "SELECT at,kind,old_digest,new_digest,request_digest,generation,rule,"
-                "decision,outcome FROM receipts ORDER BY id DESC LIMIT 50").fetchall()
-        return [dict(row) for row in rows]
+            rows = [*db.execute(columns.format("NOT IN"), BOX_RECEIPT_KINDS),
+                    *db.execute(columns.format("IN"), BOX_RECEIPT_KINDS)]
+        rows.sort(key=lambda row: -row["id"])
+        return [{key: row[key] for key in row.keys() if key != "id"} for row in rows]
 
     def read(self, owner: str) -> OwnerPolicy:
         with closing(self._connect(owner)) as db:
@@ -271,11 +280,23 @@ class PolicyStore:
             raise PolicyRefused("policy generation changed")
 
     def write(self, owner: str, cookie: str | dict, expected_generation: int,
-              document: dict) -> OwnerPolicy:
+              document: dict, proposal: dict | None = None) -> OwnerPolicy:
+        """Commit a policy; with ``proposal``, only as that held card's one apply.
+
+        ``proposal`` names the card (``request_id``) and the digest of the
+        proposal the owner was shown. The held proposal must be pending, unexpired,
+        carry exactly that digest and this document, and is marked applied in the
+        same transaction, so it applies at most once.
+        """
         session_id = self._session(owner, cookie)
         self._validate(owner, document)
         if type(expected_generation) is not int or expected_generation < 1:
             raise PolicyRefused("expected policy generation required")
+        if proposal is not None and (
+                not isinstance(proposal, dict) or set(proposal) != {"request_id", "digest"}
+                or not all(isinstance(value, str) and 0 < len(value) <= 128
+                           for value in proposal.values())):
+            raise PolicyRefused("invalid proposal apply")
         with closing(self._connect(owner)) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT generation,digest FROM policy WHERE singleton=1").fetchone()
@@ -283,6 +304,18 @@ class PolicyStore:
                 raise PolicyRefused("owner policy has not been bootstrapped")
             if row["generation"] != expected_generation:
                 raise PolicyRefused("policy generation changed")
+            if proposal is not None:
+                held = db.execute(
+                    "SELECT digest,document FROM proposals WHERE request_id=? "
+                    "AND applied_at IS NULL AND at>?",
+                    (proposal["request_id"], time.time() - PROPOSAL_TTL_S)).fetchone()
+                change = json.loads(held["document"]) if held is not None else {}
+                if (held is None or held["digest"] != proposal["digest"]
+                        or change.get("policy") != document
+                        or change.get("expected_generation") != expected_generation):
+                    raise PolicyRefused("proposal is not the pending card shown")
+                db.execute("UPDATE proposals SET applied_at=? WHERE request_id=?",
+                           (time.time(), proposal["request_id"]))
             generation, digest = row["generation"] + 1, _digest(document)
             db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
                        (generation, digest, _canonical(document)))
@@ -323,8 +356,11 @@ class PolicyStore:
                          request_id: str | None = None) -> dict:
         """Receipt an agent's proposal; with its card's id, hold it for the owner.
 
-        The router applies a held proposal only through an owner-session write;
-        the first document held under a card id is the one it applies.
+        The router applies a held proposal only through an owner-session write.
+        A card's held proposal is immutable: refiling its id with another document
+        is refused (the same document again is a no-op). Pending proposals are
+        never evicted; a full pending set refuses new ones, and only applied or
+        expired proposals are pruned.
         """
         if not isinstance(change, dict) or len(_canonical(change)) > 16000:
             raise PolicyRefused("invalid policy proposal")
@@ -334,26 +370,39 @@ class PolicyStore:
         policy = self.read(owner)
         digest = _digest(change)
         now = time.time()
-        with closing(self._connect(owner)) as db, db:
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if request_id is not None:
+                db.execute("DELETE FROM proposals WHERE at<? OR (applied_at IS NOT NULL "
+                           "AND request_id NOT IN (SELECT request_id FROM proposals "
+                           "WHERE applied_at IS NOT NULL ORDER BY applied_at DESC LIMIT ?))",
+                           (now - PROPOSAL_TTL_S, PENDING_PROPOSALS))
+                held = db.execute("SELECT digest FROM proposals WHERE request_id=?",
+                                  (request_id,)).fetchone()
+                if held is not None and held["digest"] != digest:
+                    raise PolicyRefused("a proposal is already held for this card")
+                if held is None:
+                    pending = db.execute("SELECT count(*) FROM proposals "
+                                         "WHERE applied_at IS NULL").fetchone()[0]
+                    if pending >= PENDING_PROPOSALS:
+                        raise PolicyRefused("too many pending policy proposals")
+                    db.execute("INSERT INTO proposals VALUES (?,?,?,?,NULL)",
+                               (request_id, digest, _canonical(change), now))
             db.execute("INSERT INTO receipts(at,kind,owner,request_digest,generation,"
                        "rule,decision,outcome) VALUES (?,?,?,?,?,?,?,?)",
                        (now, "proposal", owner, digest, policy.generation,
                         "owner_policy", "ask", "requested"))
-            if request_id is not None:
-                db.execute("DELETE FROM proposals WHERE at<? OR request_id NOT IN ("
-                           "SELECT request_id FROM proposals ORDER BY at DESC LIMIT 199)",
-                           (now - 30 * 86400,))
-                db.execute("INSERT OR IGNORE INTO proposals VALUES (?,?,?)",
-                           (request_id, _canonical(change), now))
+            db.commit()
         return {"request_digest": digest, "generation": policy.generation}
 
     def proposal(self, owner: str, request_id: object) -> dict | None:
-        """The proposal held under a card id, or None."""
+        """The pending, unexpired proposal held under a card id, or None."""
         if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
             return None
         with closing(self._connect(owner)) as db:
-            row = db.execute("SELECT document FROM proposals WHERE request_id=?",
-                             (request_id,)).fetchone()
+            row = db.execute("SELECT document FROM proposals WHERE request_id=? "
+                             "AND applied_at IS NULL AND at>?",
+                             (request_id, time.time() - PROPOSAL_TTL_S)).fetchone()
         return json.loads(row["document"]) if row is not None else None
 
     def receipt_egress(self, owner, generation, destination, decision):

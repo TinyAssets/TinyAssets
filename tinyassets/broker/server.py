@@ -89,7 +89,7 @@ ERROR_CLASSES = frozenset({
     "policy_ask", "policy_hand_off",
 })
 #: N10: owner policy widenings, accepted only on the router's owner channel.
-WIDENINGS = frozenset({"write", "issue_once"})
+WIDENINGS = frozenset({"write", "issue_once", "apply_proposal"})
 #: N10: the box channel's policy operations. None of them widens authority.
 BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify"})
 
@@ -997,6 +997,10 @@ class _Connection:
             if not self._server._fence.admits(doc.get("generation"), doc.get("token")):
                 return {"op": "OWNER_POLICY_REFUSED", "reason": "fenced"}
             doc = {k: v for k, v in doc.items() if k not in {"generation", "token"}}
+        if isinstance(doc, dict) and doc.get("action") == "apply_proposal":
+            doc = await asyncio.to_thread(self._proposal_write, doc)
+            if doc.get("op") == "OWNER_POLICY_REFUSED":
+                return doc
         if doc.get("action") != "write":
             return await asyncio.to_thread(self._owner_policy, doc)
         from tinyassets.broker.admission import owner_lock, thread_work
@@ -1028,8 +1032,8 @@ class _Connection:
         if store is None or not isinstance(doc, dict) or doc.get("op") != "OWNER_POLICY":
             return False
         proof_key = "session_proof" if "session_proof" in doc else "cookie"
-        if set(doc) != {"op", "action", "principal", proof_key, "expected_generation",
-                        "policy"}:
+        if set(doc) - {"proposal"} != {"op", "action", "principal", proof_key,
+                                       "expected_generation", "policy"}:
             return False
         if proof_key == "session_proof" and not isinstance(doc.get(proof_key), dict):
             return False
@@ -1039,6 +1043,33 @@ class _Connection:
         except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError):
             return False
         return True
+
+    def _proposal_write(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """``apply_proposal`` as the write of the held proposal it names (router only).
+
+        The write itself rechecks that the card is still pending, carries the
+        digest of what the owner was shown, and marks it applied atomically.
+        """
+        from tinyassets.broker.policy import PolicyRefused
+
+        try:
+            store = self._server._policy_store
+            if self._role != OWNER:
+                raise PolicyRefused("owner policy widens only through the router")
+            if store is None or set(doc) != {"op", "action", "principal", "session_proof",
+                                             "request_id", "digest"}:
+                raise PolicyRefused("invalid proposal apply")
+            held = store.proposal(doc["principal"], doc["request_id"])
+            if not isinstance(held, dict) or held.get("type") != "policy_proposal":
+                raise PolicyRefused("proposal not found")
+            return {"op": "OWNER_POLICY", "action": "write", "principal": doc["principal"],
+                    "session_proof": doc["session_proof"],
+                    "expected_generation": held.get("expected_generation"),
+                    "policy": held.get("policy"),
+                    "proposal": {"request_id": doc["request_id"], "digest": doc["digest"]}}
+        except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError) as exc:
+            return {"op": "OWNER_POLICY_REFUSED",
+                    "reason": str(exc) if isinstance(exc, PolicyRefused) else "policy unavailable"}
 
     def _owner_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Recheck the protected-session proof against the router's live rows."""
@@ -1067,12 +1098,6 @@ class _Connection:
                     "op", "action", "principal", "change"}:
                 result = store.receipt_proposal(owner, owner, doc["change"],
                                                 doc.get("request_id"))
-            elif action == "proposal_read" and set(doc) == {
-                    "op", "action", "principal", "request_id"}:
-                proposal = store.proposal(owner, doc["request_id"])
-                if proposal is None:
-                    raise PolicyRefused("proposal not found")
-                result = {"proposal": proposal}
             elif action == "classify" and set(doc) == {
                     "op", "action", "principal", "connection", "method", "path"}:
                 if not all(isinstance(doc[k], str) for k in ("connection", "method", "path")):
@@ -1097,11 +1122,11 @@ class _Connection:
                                               connection_id=doc["connection_id"],
                                               verb=doc["verb"], request=doc["request"],
                                               destination=doc["destination"]))
-            elif action == "write" and set(doc) == {
+            elif action == "write" and set(doc) - {"proposal"} == {
                     "op", "action", "principal", proof_key, "expected_generation", "policy"}:
                 with store.lock(owner):
                     result = store.write(owner, doc[proof_key], doc["expected_generation"],
-                                         doc["policy"]).projection()
+                                         doc["policy"], doc.get("proposal")).projection()
                     with self._server._streams_lock:
                         streams = [s for s in self._server._streams.values()
                                    if s.namespace == owner]

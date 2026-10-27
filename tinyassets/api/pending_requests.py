@@ -1331,13 +1331,19 @@ def request_from_user(
     if row.get("error"):
         return row
     if action.get("type") == "policy_proposal" and not row.get("settled"):
-        from tinyassets.broker.client import owner_policy_operation
+        from tinyassets.broker.client import BrokerRefused, owner_policy_operation
         from tinyassets.owner_centers import admitted_owner
+        from tinyassets.storage.pending_requests import resolve_request
 
         # N10: the broker holds the proposal under this card's id; the router
-        # applies it only through the owner's protected session.
-        owner_policy_operation(udir.parent, admitted_owner(udir.parent, center=_uid),
-                               "proposal", change=action, request_id=row["request_id"])
+        # applies it only through the owner's protected session. A card the
+        # broker will not hold is closed, never left unappliable.
+        try:
+            owner_policy_operation(udir.parent, admitted_owner(udir.parent, center=_uid),
+                                   "proposal", change=action, request_id=row["request_id"])
+        except BrokerRefused as exc:
+            resolve_request(udir, row["request_id"], status="dismissed", decision="declined")
+            return {"error": "policy_proposal_refused", "detail": str(exc)}
     if row.get("settled"):
         # Already decided in a past interaction. This is the "it might know from
         # past interaction what it is allowed" case: a standing ALLOW means go

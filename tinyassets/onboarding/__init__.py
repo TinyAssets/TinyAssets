@@ -1194,20 +1194,23 @@ async def _handle_policy(request: Any) -> Any:
     except PermissionError:
         return refused("interactive_owner_session_required", 403)
     proof = {"session_hash": session["session_hash"]}
-    data = await _read_small_json(request)
+    data = await _read_small_json(request, limit=32768)  # a shown proposal is <=12 kB
     if not isinstance(data, dict):
         return refused("invalid_policy", 400)
     try:
         if data.get("action") == "apply_proposal" and set(data) == {
-                "action", "center", "request_id"}:
+                "action", "center", "request_id", "shown"}:
+            from tinyassets.broker.policy import _digest
+
+            # The broker applies the held card only if it is still pending and is
+            # the proposal this page showed. The page itself is box-served until
+            # ADR-030 (docs/concerns/2026-10-27-no-slice-moves-serving-out-of-the-box.md).
+            if not isinstance(data["shown"], dict) or not isinstance(data["request_id"], str):
+                return refused("invalid_policy", 400)
             try:
-                held = (await call("proposal_read", request_id=data["request_id"]))["proposal"]
-            except PolicyRefused:
-                return refused("proposal_not_found", 404)
-            try:
-                result = await call("write", session_proof=proof,
-                                    expected_generation=held.get("expected_generation"),
-                                    policy=held.get("policy"))
+                result = await call("apply_proposal", session_proof=proof,
+                                    request_id=data["request_id"],
+                                    digest=_digest(data["shown"]))
             except PolicyRefused as exc:
                 return refused("policy_changed_or_session_required", 409, exc)
             return JSONResponse({**result, "center": data["center"],

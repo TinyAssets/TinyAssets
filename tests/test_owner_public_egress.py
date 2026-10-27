@@ -37,17 +37,18 @@ def _owner_write(store, proof, generation, policy):
         return store.write("alice", proof, generation, policy)
 
 
-def _router_submit(server):
-    """``policy_submit.submit`` as the router's owner channel answers it, in-process."""
+def _router_submit(running):
+    """``policy_submit.submit`` as the broker's owner channel answers it, on its loop."""
     from tinyassets.broker.policy import PolicyRefused
     from tinyassets.broker.server import OWNER, _Connection
 
     peer = object.__new__(_Connection)
-    peer._role, peer._server = OWNER, server
+    peer._role, peer._server = OWNER, running.server
 
     def submit(_root, owner, action, **fields):
-        answer = peer._owner_policy({"op": "OWNER_POLICY", "action": action,
-                                     "principal": owner, **fields})
+        answer = asyncio.run_coroutine_threadsafe(peer._policy_operation({
+            "op": "OWNER_POLICY", "action": action, "principal": owner, **fields}),
+            running.loop).result(30)
         if answer["op"] == "OWNER_POLICY_REFUSED":
             raise PolicyRefused(answer["reason"])
         return answer["result"]
@@ -193,7 +194,7 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
         async def receive():
             return {"type": "http.request", "body": json.dumps({
                 "action": "apply_proposal", "center": "center",
-                "request_id": row["request_id"]}).encode()}
+                "request_id": row["request_id"], "shown": row["action"]}).encode()}
 
         request = Request({"type": "http", "method": "POST", "path": "/app/api/policy",
                            "query_string": b"scope=egress", "headers": [
@@ -210,7 +211,7 @@ def test_raw_ask_creates_one_standing_proposal_and_retries(native, monkeypatch, 
             patch.setattr("tinyassets.onboarding.owner_sessions.require",
                           lambda *_a, **_k: session)
             patch.setattr("tinyassets.broker.policy_submit.submit",
-                          _router_submit(native.broker.server))
+                          _router_submit(native.broker))
             return asyncio.run(apply(row))
 
     # An intervening owner edit makes the displayed proposal stale.

@@ -934,14 +934,14 @@ def test_box_channel_refuses_removed_refresh_operations(box, operation):
         assert rf.read_frame_blocking(channel) is None
 
 
-def _live_owner_session(box, owner="owner"):
+def _live_owner_session(box, owner="owner", expires_at=None):
     import hashlib
 
     root = box.shared / ".runtime"
     root.mkdir(exist_ok=True)
     proof = hashlib.sha256(b"synthetic-owner-session").hexdigest()
     session = {"session_hash": proof, "identity_json": json.dumps({"user_id": owner}),
-               "expires_at": time.time() + 1000}
+               "expires_at": time.time() + 1000 if expires_at is None else expires_at}
     with sqlite3.connect(root / "owner-sessions.db") as db:
         db.execute("CREATE TABLE owner_sessions (session_hash TEXT PRIMARY KEY, "
                    "identity_json TEXT, expires_at REAL)")
@@ -977,6 +977,47 @@ def test_the_box_channel_refuses_every_policy_widening_even_with_a_live_proof(bo
     assert not [row for row in box.broker.server._policy_store.receipts("owner")
                 if row["kind"] in {"write", "once_approval"}]
     assert not list(box.root.rglob("owner-sessions.db"))
+
+
+@pytest.mark.verifies(
+    'owner-network-egress-policy:Only the owner writes standing egress policy')
+@pytest.mark.parametrize("proof_kind", ["valid", "foreign", "expired", "missing"])
+def test_the_router_connect_door_refuses_a_foreign_or_expired_owner_proof(box, proof_kind):
+    """The router's owner channel: a presented proof must be the owner's and live."""
+    import threading
+
+    from tinyassets.broker.server import OWNER, _Connection
+
+    session = _live_owner_session(box, owner="other" if proof_kind == "foreign" else "owner",
+                                  expires_at=0 if proof_kind == "expired" else None)
+    router = object.__new__(_Connection)
+    router._role, router._server, router._closed = OWNER, box.broker.server, threading.Event()
+    document = {"action": "prepare", "destination": "router-test", "expected": "",
+                "secret": "", "policy": {"auth_scheme": "none", "scopes": ["GET"],
+                    "endpoints": [{"host": "router.example.com", "path_template": "/",
+                                   "methods": ["GET"]}], "access_mode": "exact", "git_host": ""}}
+
+    def connect(document):
+        from tests.support.broker_double import broker_process
+
+        with broker_process():  # this call runs in the broker, not in the box
+            return router._http_connect({
+                "op": "HTTP_CONNECT", "principal": "owner", **box.broker.state,
+                "document": document,
+                **({} if proof_kind == "missing"
+                   else {"session_proof": {"session_hash": session["session_hash"]}})})
+
+    if proof_kind in {"foreign", "expired"}:
+        assert connect(document)["op"] == "HTTP_CONNECT_REFUSED"
+        return
+    revision = connect(document)["result"]["revision"]
+    assert connect({**document, "action": "commit", "expected": revision})["op"] == (
+        "HTTP_CONNECT_RESULT")
+    with box.ledger._connect() as db:
+        row = db.execute("SELECT committed_via,owner_egress_json FROM outbound_connections "
+                         "WHERE destination='router-test'").fetchone()
+    assert row["committed_via"] == "door"
+    assert json.loads(row["owner_egress_json"]) == [{"host": "router.example.com", "port": 443}]
 
 
 @pytest.mark.verifies(

@@ -9,6 +9,12 @@ The box's labels are distrusted: an agent label the owner never configured
 decides as ``main``; a task id is not accepted at all, so a task-scoped
 standing grant never matches here (that call is asked again) and a standing
 grant matches on the broker's own facts only.
+
+The label's scope is the box's word: once the owner configures an agent, its
+rules join ``main``'s (strictest wins), and a standing grant naming that agent
+covers whatever the box labels as that agent. The broker cannot tell which
+process inside the box made the call, so a per-agent grant is a grant to the
+box under that name.
 """
 from __future__ import annotations
 

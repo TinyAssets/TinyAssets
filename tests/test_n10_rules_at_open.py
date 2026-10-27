@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import json
 import os
 import socket
@@ -226,8 +228,9 @@ def test_a_box_proposal_is_held_for_the_router_to_apply(rig):
     change = {"type": "policy_proposal", "expected_generation": current.generation,
               "policy": current.document}
     rig.store.receipt_proposal("alice", "alice", change, "request-1")
-    rig.store.receipt_proposal("alice", "alice", {**change, "policy": {}}, "request-1")
-    assert rig.store.proposal("alice", "request-1") == change  # the first one held
+    with pytest.raises(PermissionError, match="already held"):  # immutable per card
+        rig.store.receipt_proposal("alice", "alice", {**change, "policy": {}}, "request-1")
+    assert rig.store.proposal("alice", "request-1") == change
     assert rig.store.proposal("alice", "request-2") is None
     assert rig.store.read("alice").generation == current.generation
 
@@ -251,13 +254,24 @@ def _box_rig(running, tmp_path):
     store = PolicyStore(tmp_path, running.server._owner_identities)
     store.bootstrap()
     ledger = _ledger(tmp_path)
+    ledger.create_connection(
+        connection_id="git-a", owner_user_id="alice", connection_class="http",
+        scopes=("git_read:owner/repo",), provider="http", destination="git-a",
+        credential_ref="vault://http/git-a", connection_type="http", auth_scheme="bearer",
+        git_host="git.test",
+        allowed_endpoints=[{"host": "git.test", "path_template": "/api", "methods": ["GET"]}])
+    ledger.grant_connection(grant_id="grant-git", connection_id="git-a", owner_user_id="alice")
     running.server._ledger_for = lambda owner: ledger
     return store, ledger
 
 
+_OPS = itertools.count(1)
+
+
 def _box_open(sock, **extra):
     sock.sendall(rf.control(1, {
-        "op": "OPEN", "op_id": new_op_id(), "principal": "alice", "grant_id": "grant-a",
+        "op": "OPEN", "op_id": new_op_id(f"{next(_OPS):016d}"), "principal": "alice",
+        "grant_id": "grant-a",
         "connection_id": "conn-a", "verb": "POST", "credit": 8192,
         "request": {"url": URL, "body": "{}"}, "generation": -1, "token": "box", **extra}))
     return rf.read_frame_blocking(sock).control()
@@ -291,6 +305,140 @@ def test_spend_caps_meet_a_metered_grant_the_box_calls_without_its_usage_flag(
     assert (end["op"], end["error_class"], end["stream_sent"]) == ("END", "refused", False)
     assert broker.sent == []
     assert any(row["rule"] == "spend_amount_required" for row in store.receipts("alice"))
+
+
+def _git_open(target, method="GET"):
+    return dict(grant_id="grant-git", connection_id="git-a", verb="git_read:owner/repo",
+                request={"host": "git.test", "method": method, "target": target,
+                         "agent": "git/2", "incarnation": "i", "upload": method == "POST"})
+
+
+@PEERCRED
+@pytest.mark.parametrize("extra,refusal", [
+    (dict(verb="model_duplex", request={"url": URL}), "policy_hand_off"),
+    (dict(verb="GET", request={"url": URL}), None),
+    (dict(verb="GET", request={"url": URL, "body": "{}"}), "policy_hand_off"),
+    (dict(verb="HEAD", request={"url": URL, "body": "x"}), "policy_hand_off"),
+    (dict(verb="GET", request={"url": URL, "headers": {"X-HTTP-Method-Override": "DELETE"}}),
+     "policy_hand_off"),
+    (_git_open("/owner/repo.git/info/refs?service=git-upload-pack"), None),
+    (_git_open("/owner/other.git/git-upload-pack", "POST"), "policy_hand_off"),
+    (_git_open("/owner/repo.git/git-receive-pack", "POST"), "policy_hand_off"),
+])
+def test_the_box_open_path_reads_each_call_itself(broker, monkeypatch, tmp_path, extra,
+                                                  refusal):
+    """Through the real OPEN: duplex, a disguised read and a git read elsewhere are writes."""
+    store, _ledger = _box_rig(broker, tmp_path)
+    _rule(SimpleNamespace(store=store), "app.write", "hand_off", entries=[
+        {"scope": "account", "table": "operation_kinds", "values": {
+            "connection": "conn-a", "method": method, "kind": "read"}}
+        for method in ("GET", "HEAD")])
+    with _box_channel(broker, monkeypatch, store) as sock:
+        first = _box_open(sock, **extra)
+    if refusal is None:
+        assert first["op"] == "ADMITTED"
+    else:
+        assert (first["op"], first["error_class"], first["stream_sent"]) == (
+            "END", refusal, False)
+        assert broker.sent == []
+
+
+def _box_policy(sock, **doc):
+    sock.sendall(rf.control(rf.CONNECTION, {"op": "OWNER_POLICY", **doc}))
+    return rf.read_frame_blocking(sock).control()
+
+
+@PEERCRED
+def test_a_held_proposal_cannot_be_swapped_flooded_or_applied_twice(broker, monkeypatch,
+                                                                     tmp_path):
+    """Review of #5333: the owner's accept applies exactly the pending card it showed."""
+    import asyncio
+
+    from tinyassets import onboarding, owner_runtime
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+    from tinyassets.broker import policy, policy_submit
+    from tinyassets.broker.policy import PolicyRefused
+    from tinyassets.broker.server import OWNER, _Connection
+    from tinyassets.onboarding import owner_sessions
+
+    store, _ledger = _box_rig(broker, tmp_path)
+    monkeypatch.setattr(policy, "PENDING_PROPOSALS", 5)
+    current = store.read("alice")
+    doc_a = json.loads(json.dumps(current.document))
+    doc_a["entries"].append({"scope": "account", "table": "rules", "values": {
+        "agent": "main", "action_class": "app.write", "behaviour": "ask_first"}})
+    doc_b = json.loads(json.dumps(current.document))
+    doc_b["entries"] += [{"scope": "account", "table": "rules", "values": {
+        "agent": "main", "action_class": cls, "behaviour": "do"}}
+        for cls in ("money.move", "security.change", "access.grant", "spend")]
+    shown_a, change_b = ({"type": "policy_proposal", "expected_generation": current.generation,
+                          "policy": doc} for doc in (doc_a, doc_b))
+    with _box_channel(broker, monkeypatch, store) as sock:
+        def propose(request_id, change):
+            return _box_policy(sock, action="proposal", change=change, request_id=request_id)
+
+        assert propose("card-r", shown_a)["op"] == "OWNER_POLICY_RESULT"
+        assert propose("card-r", shown_a)["op"] == "OWNER_POLICY_RESULT"  # same doc: no-op
+        assert propose("card-r", change_b)["op"] == "OWNER_POLICY_REFUSED"  # refiling
+        flood = [propose(f"flood-{i}", {"x": i})["op"] for i in range(8)]
+        assert flood == ["OWNER_POLICY_RESULT"] * 4 + ["OWNER_POLICY_REFUSED"] * 4
+        assert store.proposal("alice", "card-r") == shown_a  # never evicted
+
+    peer = object.__new__(_Connection)
+    peer._role, peer._server = OWNER, broker.server
+
+    def submit(_root, owner, action, **fields):
+        answer = asyncio.run_coroutine_threadsafe(peer._policy_operation({
+            "op": "OWNER_POLICY", "action": action, "principal": owner, **fields}),
+            broker.loop).result(30)
+        if answer["op"] != "OWNER_POLICY_RESULT":
+            raise PolicyRefused(answer["reason"])
+        return answer["result"]
+
+    monkeypatch.setattr(policy_submit, "submit", submit)
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "_same_origin_json", lambda *a, **k: True)
+    monkeypatch.setattr(owner_runtime, "current", lambda: None)
+    monkeypatch.setattr(middleware, "current_identity",
+                        lambda: SimpleNamespace(user_id="alice"))
+    monkeypatch.setattr(owner_sessions, "require", lambda request, owner: {
+        "session_hash": hashlib.sha256(COOKIE.encode()).hexdigest()})
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+
+    def accept(shown):
+        async def body(*_a, **_k):
+            return {"action": "apply_proposal", "center": "alpha", "request_id": "card-r",
+                    "shown": shown}
+
+        monkeypatch.setattr(onboarding, "_read_small_json", body)
+        return asyncio.run(onboarding._handle_policy(
+            SimpleNamespace(method="POST", query_params={})))
+
+    assert accept(change_b).status_code == 409  # not the card the owner was shown
+    assert store.read("alice").generation == current.generation
+    assert accept(shown_a).status_code == 200
+    assert store.read("alice").document == doc_a
+    assert accept(shown_a).status_code == 409  # applied at most once
+    assert store.read("alice").generation == current.generation + 1
+    with _box_channel(broker, monkeypatch, store) as sock:
+        assert _box_policy(sock, action="proposal", change=change_b,
+                           request_id="card-r")["op"] == "OWNER_POLICY_REFUSED"
+        # The applied card left the pending set, so a new card is held again.
+        assert _box_policy(sock, action="proposal", change={"x": "next"},
+                           request_id="card-next")["op"] == "OWNER_POLICY_RESULT"
+
+
+def test_box_mintable_receipts_cannot_push_a_gate_refusal_out_of_view(rig):
+    _rule(rig, "app.write", "hand_off")
+    assert _check(rig) == "policy_hand_off"
+    for i in range(60):
+        rig.store.receipt_proposal("alice", "alice", {"x": i})
+        rig.store.decide("alice", center="alice", action_class="app.read")
+    receipts = rig.store.receipts("alice")
+    assert any(row["kind"] == "gate" and row["decision"] == "deny" for row in receipts)
+    assert sum(row["kind"] in {"proposal", "decision"} for row in receipts) == 50
 
 
 def test_the_router_policy_route_refuses_inside_a_box(monkeypatch):

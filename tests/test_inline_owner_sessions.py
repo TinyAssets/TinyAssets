@@ -124,7 +124,7 @@ def test_policy_bearer_write_cannot_bypass_owner_session(
 
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
     monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "alpha")
-    async def payload(_request):
+    async def payload(_request, **_limit):
         return {"expected_generation": current.generation, "policy": current.document}
     monkeypatch.setattr(onboarding, "_read_small_json", payload)
     # N10: the router serves this route and submits on its owner channel.
