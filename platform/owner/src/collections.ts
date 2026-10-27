@@ -60,11 +60,10 @@ export const LIMITS: Limits = Object.freeze({
 
 /** The history ops a write never names. */
 const ERASES: readonly string[] = Object.freeze(["delete", "clear"]);
-const SIZE =
-  "SELECT COUNT(*) AS n, COALESCE(SUM(length(CAST(body AS BLOB))), 0) AS bytes " +
-  "FROM collection_rows";
-const HISTORY_SIZE =
-  "SELECT COALESCE(SUM(length(CAST(body_json AS BLOB))), 0) AS bytes FROM collection_history";
+/** One scope's counters (`collection_usage`, kept by the schema's triggers). */
+const USAGE =
+  "SELECT rows, row_bytes + history_bytes AS bytes FROM collection_usage " +
+  "WHERE scope = ? AND collection = ? AND who = ?";
 /** Python's `str.isidentifier()`. */
 const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u;
 const LONE_SURROGATE = /\p{Cs}/u;
@@ -146,11 +145,19 @@ export class Collections {
     return this.#storage.sql;
   }
 
+  /** A scope's rows and payload bytes (its rows' and its history's), read by key. */
+  #usage(scope: "owner" | "collection" | "writer" | "creator", collection: string,
+         who: string): { rows: number; bytes: number } {
+    return this.#sql.exec<{ rows: number; bytes: number }>(USAGE, scope, collection, who)
+      .toArray()[0] ?? { rows: 0, bytes: 0 };
+  }
+
   /**
    * Refuse a write that would take its writer, collection or owner past a bound.
    *
    * Bytes are the rows' and their history's, measured after this write's prune; the
-   * write adds its body twice, as the row and as its history entry.
+   * write adds its body twice, as the row and as its history entry. Each bound reads
+   * its scope's counters, which the schema's triggers keep in this same transaction.
    */
   #bound(owner: string, caller: string, collection: string, row: StoredRow | undefined,
          body: string): void {
@@ -158,11 +165,11 @@ export class Collections {
     const size = utf8Bytes(body);
     const old = row === undefined ? 0 : utf8Bytes(row.body);
     const add = row === undefined ? 1 : 0;
-    type Check = [string, string, unknown[], number, number, number, number];
+    type Check = [string, { rows: number; bytes: number }, number, number, number, number];
     const checks: Check[] = [
-      ["the owner's collections are full", "", [], limits.maxOwnerRows, limits.maxOwnerBytes,
-        add, 2 * size - old],
-      ["the collection is full", " WHERE collection = ?", [collection], limits.maxRows,
+      ["the owner's collections are full", this.#usage("owner", "", ""), limits.maxOwnerRows,
+        limits.maxOwnerBytes, add, 2 * size - old],
+      ["the collection is full", this.#usage("collection", collection, ""), limits.maxRows,
         limits.maxCollectionBytes, add, 2 * size - old],
     ];
     if (caller !== owner) {
@@ -172,19 +179,15 @@ export class Collections {
       const mine = row !== undefined && row.writer === caller;
       const share = "this writer's share of the collection is full";
       checks.unshift(
-        [share, " WHERE collection = ? AND creator = ?", [collection, caller],
-          limits.maxWriterRows, limits.maxWriterBytes, add, 0],
-        [share, " WHERE collection = ? AND writer = ?", [collection, caller],
-          limits.maxWriterRows, limits.maxWriterBytes, 0, 2 * size - (mine ? old : 0)],
+        [share, this.#usage("creator", collection, caller), limits.maxWriterRows,
+          limits.maxWriterBytes, add, 0],
+        [share, this.#usage("writer", collection, caller), limits.maxWriterRows,
+          limits.maxWriterBytes, 0, 2 * size - (mine ? old : 0)],
       );
     }
-    for (const [reason, where, params, maxRows, maxBytes, moreRows, moreBytes] of checks) {
-      const used = this.#sql.exec<{ n: number; bytes: number }>(SIZE + where, ...params).one();
-      let bytes = used.bytes;
-      if (moreBytes > 0) {
-        bytes += this.#sql.exec<{ bytes: number }>(HISTORY_SIZE + where, ...params).one().bytes;
-      }
-      if ((moreRows && used.n + moreRows > maxRows) || (moreBytes > 0 && bytes + moreBytes > maxBytes)) {
+    for (const [reason, used, maxRows, maxBytes, moreRows, moreBytes] of checks) {
+      if ((moreRows && used.rows + moreRows > maxRows)
+          || (moreBytes > 0 && used.bytes + moreBytes > maxBytes)) {
         throw new Refused(reason);
       }
     }

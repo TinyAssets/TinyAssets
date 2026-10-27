@@ -5,7 +5,10 @@
 Accepted (founder, 2026-10-26). The deferral in #5324 is withdrawn: on
 2026-10-27T01:23Z the founder said to "review the doc and build only the
 correct architecture", and the plan records this decision as A9. Amends ADR-019
-and ADR-022 on what a box runs.
+and ADR-022 on what a box runs. Amended by ADR-032: owner files live in object
+storage behind a trusted file API, and owner requests are served by edge
+Workers and the owner's Durable Object, not the router and `BoxProvider`; the
+split rule stands.
 
 ## Date
 

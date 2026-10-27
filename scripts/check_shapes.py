@@ -295,7 +295,8 @@ SHAPES: dict[str, Shape] = {
     "S31": Shape(("tinyassets/agent_recipes/**",)),
     "S32": Shape(("tinyassets/broker/server.py",)),  # ROOM_POST
     "S33": Shape(("tinyassets/live_view.py",)),
-    "S35": Shape(("tinyassets/agent_loop/**",)),
+    # loop-placement (planned): ADR-032; pi-durable in OwnerDO.
+    "S35": Shape(("platform/owner/**",)),
     # owner-object (planned): ADR-032; the broker path retires at the cutover.
     "S36": Shape(("platform/owner/**",)),
     "N12": Shape(("tinyassets/metering/**",)),

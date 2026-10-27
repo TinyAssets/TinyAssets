@@ -4,12 +4,16 @@
  * Only an edge Worker (the binder) turns a verified credential into an owner and a
  * caller, and it reaches this object by `getByName(owner)`. Every RPC method takes that
  * {@link Binding} as its first, typed argument; nothing in a request body names the
- * owner or the caller. The object stores its owner on first use and refuses any other,
- * so a binder bug that reaches the wrong object fails loudly instead of acting there.
+ * owner or the caller. The object serves only the owner it is named by (`ctx.id.name`),
+ * refuses when it has no name, and also stores that owner on first use and refuses any
+ * other, so a binder bug that reaches the wrong object fails loudly instead of acting
+ * there.
  *
- * This class has no binding to its own namespace (the `wrangler.jsonc` guard), so its
- * code cannot reach another owner's object, and the module keeps no mutable state at
- * top level (the module-state guard), since objects of one class can share an isolate.
+ * Its code cannot reach another owner's object: the Worker binds nothing, the runtime
+ * hands it no `ctx.exports` (`disable_ctx_exports`), and its source never names
+ * `exports` or imports `env` (the config and self-reach guards). The module keeps no
+ * mutable state at top level (the module-state guard), since objects of one class can
+ * share an isolate.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -63,15 +67,20 @@ export interface Conflicted {
   readonly conflict: Row | null;
 }
 
-/** The request's fields are exactly `required`, plus any of `optional`. */
+/**
+ * The request's fields are exactly `required`, plus any of `optional`, and none is
+ * `undefined`: a field sent is a value, as the Python door refused `None`.
+ */
 function fields(request: unknown, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
   if (typeof request !== "object" || request === null || Array.isArray(request)) {
     throw new Invalid("invalid collection request");
   }
-  const keys = Object.keys(request);
+  const entries = Object.entries(request);
+  const keys = entries.map(([key]) => key);
   if (!required.every((key) => keys.includes(key))
-      || !keys.every((key) => required.includes(key) || optional.includes(key))) {
+      || !keys.every((key) => required.includes(key) || optional.includes(key))
+      || entries.some(([, value]) => value === undefined)) {
     throw new Invalid("invalid collection request");
   }
   return request as Record<string, unknown>;
@@ -99,13 +108,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
-  /** The owner this object serves: stored on first use, and every other one refused. */
+  /**
+   * The owner this object serves: the name it was reached by, and every other one
+   * refused. The stored owner, fixed at first use, is a second check of the same.
+   */
   #bind(binding: Binding): { owner: string; caller: string } {
     if (typeof binding !== "object" || binding === null) {
       throw new Invalid("invalid owner principal");
     }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
+    const named = this.ctx.id.name;
+    if (named === undefined) {
+      throw new Refused("this object is not named by an owner");
+    }
+    if (named !== owner) {
+      throw new Refused("this object belongs to another owner");
+    }
     const sql = this.ctx.storage.sql;
     const stored = sql.exec<{ owner: string }>("SELECT owner FROM object_owner").toArray()[0];
     if (stored === undefined) {

@@ -32,6 +32,9 @@ per-owner isolation is the runtime's, not our handlers' (Direction 5).
 Each slice adds its own capability. The first is the owner object with the one
 revision primitive (S34's rules, ported).
 
+- `owner-object`: one object per owner, named by its owner, with no reach to
+  another owner's object; its schema migrated on wake; the revision primitive.
+
 ### Modified Capabilities
 
 ## Impact
