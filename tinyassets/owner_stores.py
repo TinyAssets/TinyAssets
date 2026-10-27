@@ -48,6 +48,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/cutover_deletions.py",
     "tinyassets/broker/next_wake.py",
     "tinyassets/broker/owner_sources.py",
+    # W10 receipts in boxhostd's and the broker's private state; no owner writes them.
+    "tinyassets/metering/__init__.py",
     # T3/C2: broker-only permanent volume binding and snapshot publication.
     "tinyassets/broker/owner_volumes.py",
     # Offline C3 recovery writes shared staging with services stopped.

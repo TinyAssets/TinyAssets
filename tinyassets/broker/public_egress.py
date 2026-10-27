@@ -2,11 +2,14 @@
 
 import asyncio
 import contextlib
+import functools
 import sqlite3
+import time
+from pathlib import Path
 
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.network import EgressRefused, _destination
-from tinyassets.broker.admission import owner_lock
+from tinyassets.broker.admission import owner_lock, thread_work
 from tinyassets.broker.box_admission import resolve_owner
 from tinyassets.broker.egress import EgressPolicyRefused, destination
 from tinyassets.storage.outbound_connections import SsrfValidationError
@@ -20,6 +23,13 @@ class PublicEgress:
         self.active = {}
         self.channels = {}
 
+    @functools.cached_property
+    def meter(self):
+        """W10 relay bytes, beside the owner identities in the broker's private state."""
+        from tinyassets.metering import Meter
+
+        return Meter(Path(self.identities.path).parent / "metering.db", source="broker")
+
     async def serve(self, reader, writer, document):
         # Called only for BOX_HOST, before any guest bytes are interpreted as
         # raw HTTP. Owner identity originates in the root's mounted relay.
@@ -27,6 +37,7 @@ class PublicEgress:
         admitted = False
         upstream = None
         pumps = []
+        moved = [0]  # both directions, counted by the pumps
         task = asyncio.current_task()
         self.channels[task] = (owner, writer)
         try:
@@ -61,9 +72,10 @@ class PublicEgress:
                 await asyncio.wait_for(writer.drain(), 30)
             else:
                 upstream.write(first)
+                moved[0] += len(first)
                 await asyncio.wait_for(upstream.drain(), 30)
-            pumps = [asyncio.create_task(self._pump(reader, upstream)),
-                     asyncio.create_task(self._pump(incoming, writer))]
+            pumps = [asyncio.create_task(self._pump(reader, upstream, moved)),
+                     asyncio.create_task(self._pump(incoming, writer, moved))]
             await asyncio.gather(*pumps)
         except EgressPolicyRefused as exc:
             import json
@@ -95,6 +107,8 @@ class PublicEgress:
                     del self.active[owner]
             writer.close()
             await asyncio.gather(*pumps, return_exceptions=True)
+            if moved[0]:  # off the loop that routes every owner; a failure is counted
+                await thread_work(self.meter.add, owner, "relay", moved[0], time.time())
 
     def close_owner(self, owner):
         for task, (principal, writer) in tuple(self.channels.items()):
@@ -103,9 +117,10 @@ class PublicEgress:
                 task.cancel()
 
     @staticmethod
-    async def _pump(reader, writer):
+    async def _pump(reader, writer, moved):
         while data := await asyncio.wait_for(reader.read(65536), 300):
             writer.write(data)
+            moved[0] += len(data)
             await asyncio.wait_for(writer.drain(), 300)
         if writer.can_write_eof():
             writer.write_eof()
