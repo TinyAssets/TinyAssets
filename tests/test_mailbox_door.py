@@ -45,7 +45,10 @@ def test_no_mailbox_door_names_a_way_into_a_box():
              if isinstance(node, (ast.Name, ast.Attribute))}
     assert not names & {"forward", "ask_box", "box_result", "route", "resolve_box",
                         "wake_owner", "admit_box"}
-    keys = {key for key in owner_router.TRUSTED.mcp_routes if key[0] == "tools/call"}
+    from tinyassets import board_door
+
+    keys = {key for key in owner_router.TRUSTED.mcp_routes if key[0] == "tools/call"
+            and key[2] not in board_door.READS | board_door.WRITES}
     assert keys == {("tools/call", "read_graph", "mailbox"),
                     ("tools/call", "write_graph", "room_message"),
                     ("tools/call", "write_graph", "mailbox_ack")}

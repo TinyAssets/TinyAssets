@@ -47,6 +47,37 @@ router-answered `/app/` path SHALL refuse a caller with an `outside_origin`, as 
 - **WHEN** two writers present the same etag for one `board` row
 - **THEN** one commits and the other gets a conflict carrying the row as it now stands
 
+### Requirement: The board
+S5b, W8. The router SHALL answer `read_graph target=board` (task summaries after a `seq`
+cursor, whole tasks under the `read_graph` ceiling) and `target=board_task` (`query` names
+the task), `write_graph target=board_task` (`payload_json {task_id, patch}` and
+`expected_revision`, 0 to create), `GET /api/board`, `GET` and `POST /api/board/task` for API
+keys and the owner's `/app/api/board` behind the protected owner session, from
+`owner_router.TRUSTED` (`board_door.py`), with the mailbox doors' identity and kill-switch
+checks, and SHALL never forward, ask or wake a box; the box SHALL answer these targets
+`served_on_trusted_side`. A task SHALL be one `board` row in the owner's own store. A
+write SHALL name the revision it read and SHALL be written with that row's etag; a stale
+revision or a lost compare-and-swap SHALL be a conflict carrying the current task. The
+actor SHALL be the verified identity, `owner` or its one enabled agent; a patch SHALL
+change only `title`, `body`, `assignees`, `depends_on`, `state` and `result_refs`, and
+the door SHALL write the history (`at`, `actor`, `op`, `from_state`, `to_state`, the last
+50). A claim SHALL come only from `open`, with every `depends_on` task `done`, by the
+owner or an agent the task names (`everyone`, or no assignee, names every agent), and one
+claimant SHALL hold it, under a lease of `CHECKIN_LEASE_S` for a `pull` agent or the owner
+and `LIVE_LEASE_S` for an `mcp_event` agent, renewed by each of the claimant's writes.
+Nothing SHALL sweep: a read SHALL show a claim past its lease as `open` with a
+`lease_expired` entry dated at the expiry, and the next write SHALL persist exactly that.
+Only the claimant or the owner SHALL change a claimed task, only the owner SHALL set
+`assignees` or reopen a `done` task, and each newly assigned agent SHALL get one doorbell
+from the owner in its dm room naming the task, never its text. A claim and a completion
+SHALL leave a `claim` or `complete` receipt in the actor's name (`MAILBOX_RECEIPT board`).
+Text another party wrote SHALL reach every reader in the untrusted envelope, as mailbox
+bodies do. The board SHALL never grant spend.
+
+#### Scenario: Two agents claim one task at once
+- **WHEN** two agents of different vendors claim one open task at the same revision
+- **THEN** one holds the claim and the other gets a conflict carrying the task as claimed
+
 ### Requirement: Outside agents register from a verified identity
 Registering or disabling an agent SHALL need the owner's protected-session proof, checked
 against the live router row, and a refusal SHALL leave a receipt. An `api_key` agent SHALL

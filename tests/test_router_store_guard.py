@@ -95,6 +95,9 @@ _ROUTER_IMPORTS = {
     # S30's doors: ledger requests on the broker's owner channel; no owner store.
     # Scanned in its own right below, against _MAILBOX_DOOR_IMPORTS.
     "tinyassets.mailbox_door",
+    # S5b's board doors: collection and ledger requests on the owner channel. Scanned
+    # in their own right below, against _BOARD_DOOR_IMPORTS.
+    "tinyassets.board_door",
     "tinyassets.engine_result_bounds",  # The tool result's text block; pure string work.
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
@@ -117,6 +120,19 @@ _MAILBOX_DOOR_IMPORTS = {
     "tinyassets.owner_router",
     "tinyassets.owner_runtime",
     "tinyassets.rest_api",  # the API-key identity and body helpers
+    "tinyassets.storage",  # data_dir only
+    "tinyassets.untrusted",
+}
+
+#: What the router's board doors may import: the mailbox doors' helpers, the broker's
+#: owner channel and pure helpers. A new owner-store import fails here.
+_BOARD_DOOR_IMPORTS = {
+    "tinyassets.broker.client",  # collection_request and CollectionConflict
+    "tinyassets.engine_read_views",  # the ceiling's headroom constant
+    "tinyassets.engine_result_bounds",  # the read_graph ceiling
+    "tinyassets.mailbox_door",  # identity, kill-switch, ledger and answer helpers
+    "tinyassets.onboarding",  # the owner's bounded body helper
+    "tinyassets.rest_api",  # the API-key body helper
     "tinyassets.storage",  # data_dir only
     "tinyassets.untrusted",
 }
@@ -162,6 +178,11 @@ def test_the_mailbox_doors_import_only_router_state_and_never_open_files():
     assert _router_owner_io(door.read_text(encoding="utf-8"), _MAILBOX_DOOR_IMPORTS) == []
     assert _router_owner_io("from tinyassets.daemon_server import _connect",
                             _MAILBOX_DOOR_IMPORTS)
+
+
+def test_the_board_doors_import_only_router_state_and_never_open_files():
+    door = Path(__file__).resolve().parents[1] / "tinyassets" / "board_door.py"
+    assert _router_owner_io(door.read_text(encoding="utf-8"), _BOARD_DOOR_IMPORTS) == []
 
 
 @pytest.mark.parametrize("source", [

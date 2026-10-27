@@ -151,7 +151,17 @@ ADR-030 (accepted): owner MCP, app and `/api` requests are served on the trusted
 
 S5a's row above.
 
-- [ ] Task board on the collection store.
+- [x] Task board on the collection store (`board_door.py`): trusted-front registrations for
+  `read_graph target=board` (`cursor` is the `since` seq) and `target=board_task` (`query`
+  is the task id), `write_graph target=board_task` (`payload_json {task_id, patch}`,
+  `expected_revision`), `GET /api/board`, `GET`/`POST /api/board/task` and the owner's
+  `/app/api/board`; the box answers the targets `served_on_trusted_side`. The door owns the
+  rules (verified actor and history, claim from `open` with deps `done`, leases by latency
+  class read lazily, owner-only assignment with a dm doorbell); claims and completions leave
+  `MAILBOX_RECEIPT board` receipts. Choices where W8 is open: leases are 4 h for a `pull`
+  agent or the owner and 15 min for an `mcp_event` agent; an `everyone` task has one
+  claimant. **Live acceptance owed:** two agents of different vendors race for one claim
+  and an expired lease reopens the task, against staging.
 
 ## S6 App manifest and agent players
 

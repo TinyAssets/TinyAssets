@@ -55,6 +55,8 @@ _MODEL_DOOR = frozenset({
     # S30: a mailbox read pages whole messages under the same ceiling and sets
     # next_cursor at the cut, so every page is complete and nothing is lost.
     "tinyassets/mailbox_door.py",
+    # S5b: a board read pages whole task summaries under the same ceiling.
+    "tinyassets/board_door.py",
 })
 
 

@@ -44,7 +44,9 @@ SUPPRESSED = "suppressed"
 _WAKE_RECEIPTS = {"sent": "wake_accepted", "rate_limited": "rate_limited",
                   "failed": "failed", "unknown": "wake_sent"}
 OPS = {"OUTSIDE_AGENTS": ("list", "register", "disable"), "ROOM_POST": ("post",),
-       "MAILBOX_RECEIPT": ("read", "ack")}
+       "MAILBOX_RECEIPT": ("read", "ack", "board")}
+#: The board's receipts (S5b): a claim and a completion, mirrored by ``board_door``.
+BOARD_RECEIPTS = frozenset({"claim", "complete"})
 OWNER = "owner"
 MAX_READ = 100
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -458,6 +460,20 @@ class MessageLedger:
             self._receipt(db, owner, reader, "ack", str(through), now)
             return {"reader": reader, "through": through}
 
+    def board_receipt(self, owner: str, *, origin: dict | None, kind: str, task_id: str,
+                      revision: int) -> dict:
+        """A board claim or completion, in the verified actor's name (``owner`` or its agent)."""
+        if kind not in BOARD_RECEIPTS:
+            raise ValueError("kind is claim or complete")
+        _text(task_id, 64, "task_id")
+        if type(revision) is not int or revision < 1:
+            raise ValueError("revision is a task revision")
+        with self._write(owner) as db:
+            actor, now = self._reader(db, origin), time.time()
+            self._receipt(db, owner, actor, kind, task_id, now, {"revision": revision})
+            # "actor", never "agent_id": the server reads an agent_id result as a registry change.
+            return {"actor": actor, "kind": kind, "ref": task_id, "at": now}
+
 
 def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float) -> str:
     """AGENT_WAKE (W3): one wake through broker egress, under the op journal (``ops.py``).
@@ -570,6 +586,9 @@ def router_operation(ledger: MessageLedger, conversations, sessions, doc: dict) 
         exactly("room_id", "client_message_id", "body", "parent_id")
         return ledger.post(owner, origin=origin, put_body=partial(conversations.put, owner),
                            **fields)
+    if action == "board":
+        exactly("kind", "task_id", "revision")
+        return ledger.board_receipt(owner, origin=origin, **fields)
     if action == "read":
         if "limit" not in fields or not set(fields) <= {"limit", "max_bytes", "pad_bytes"}:
             raise ValueError("invalid ledger request")

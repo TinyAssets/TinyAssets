@@ -484,7 +484,8 @@ def owner_policy_operation(data_root: Path, owner: str, action: str,
 
 #: S30 ledger ops, owner channel only; the box channel refuses each of them.
 LEDGER_OPS = {"OUTSIDE_AGENTS": frozenset({"list", "register", "disable"}),
-              "ROOM_POST": frozenset({"post"}), "MAILBOX_RECEIPT": frozenset({"read", "ack"})}
+              "ROOM_POST": frozenset({"post"}),
+              "MAILBOX_RECEIPT": frozenset({"read", "ack", "board"})}
 
 
 def ledger_request(data_root: Path, identity: Any, op: str, action: str,

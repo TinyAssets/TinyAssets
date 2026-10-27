@@ -816,11 +816,15 @@ def read_graph(
         cursor: For target=mailbox (an outside agent's own messages, with limit;
             each body arrives in an untrusted envelope; reply with write_graph
             target=room_message), the next_cursor the previous read returned:
-            reading with it acknowledges every message through it.
+            reading with it acknowledges every message through it. For
+            target=board (task summaries changed after the cursor; paging with
+            next_cursor), the seq to read after; target=board_task with
+            query=<task_id> reads one task; change one with write_graph
+            target=board_task.
     """
-    from tinyassets import mailbox_door
+    from tinyassets import board_door, mailbox_door
 
-    if (target or "").strip().lower() in mailbox_door.READS:
+    if (target or "").strip().lower() in mailbox_door.READS | board_door.READS:
         return mailbox_door.served_on_trusted_side(target.strip().lower())
     # THE MODEL DOOR. The read itself is the shared domain dispatch
     # (``tinyassets.api.graph_reads``), which is complete; what this adds is only
@@ -1126,6 +1130,9 @@ def write_graph(
             parent_id}: room_id is its own dm room, to defaults to the parent's author,
             and resending a client_message_id is idempotent. target=mailbox_ack,
             payload_json {through: <seq>}, acknowledges its mailbox through that seq.
+            target=board_task, payload_json {task_id, patch} with expected_revision
+            (0 creates) changes one task; patch takes title, body, state,
+            depends_on, result_refs; a stale revision returns the current task.
         operation: With target=command_center, set_visibility changes who else may see
             that command center, taking `visibility` as `private` or `public` and
             `graph_id` for the command center. Everything in a command center is private until
@@ -1305,9 +1312,9 @@ def write_graph(
             needs schema_version=1, name, description, tags, and components.
         expected_revision: Current binding revision required by update.
     """
-    from tinyassets import mailbox_door
+    from tinyassets import board_door, mailbox_door
 
-    if target.strip().lower() in mailbox_door.WRITES:
+    if target.strip().lower() in mailbox_door.WRITES | board_door.WRITES:
         return mailbox_door.served_on_trusted_side(target.strip().lower())
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -4048,6 +4055,7 @@ def create_streamable_http_app() -> Starlette:
     from starlette.routing import Route as _HookRoute
 
     from tinyassets.auth.wellknown import starlette_discovery_routes
+    from tinyassets.board_door import rest_routes as board_rest_routes
     from tinyassets.mailbox_door import rest_routes as mailbox_rest_routes
     from tinyassets.onboarding import onboarding_routes
     from tinyassets.rest_api import rest_api_routes
@@ -4169,9 +4177,10 @@ def create_streamable_http_app() -> Starlette:
             # before the MCP transport so the exact path resolves first.
             *app_routes,
             # REST door for programmatic clients (API keys only; see the
-            # auth middleware's `_serve_rest_api`). The mailbox routes are the
-            # router's own (owner_router.TRUSTED); the rest reach the box.
-            *(rest_api_routes() if owner_mode else mailbox_rest_routes()),
+            # auth middleware's `_serve_rest_api`). The mailbox and board routes
+            # are the router's own (owner_router.TRUSTED); the rest reach the box.
+            *(rest_api_routes() if owner_mode else [*mailbox_rest_routes(),
+                                                    *board_rest_routes()]),
             *(canonical_app.routes if owner_mode else []),
         ],
         lifespan=lifespan,

@@ -117,6 +117,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/api/policy", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
         # S30: the owner's outside agents and their dm rooms (router-served).
         "/app/api/outside-agents", "/app/api/agent-messages",
+        # S5b: the owner's task board (router-served).
+        "/app/api/board",
         "/app/turn/interrupt", "/app/turn/pending",
         # The activities live projection (harness D2a).
         "/app/live",

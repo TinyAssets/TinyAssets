@@ -21,6 +21,7 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from tinyassets.asgi_scope import refuse_non_http
+from tinyassets.board_door import mcp as board_mcp
 from tinyassets.mailbox_door import mcp as mailbox_mcp
 from tinyassets.mcp_events_http import door as events_door
 
@@ -283,6 +284,8 @@ for _path in ("/app/account/delete", "/app/client-error", "/app/token",
               # S30: the owner's outside agents and their dm rooms (mailbox_door).
               "/app/api/outside-agents", "/app/api/agent-messages",
               "/api/mailbox", "/api/mailbox/ack", "/api/mailbox/replies",
+              # S5b: the owner's task board (board_door).
+              "/app/api/board", "/api/board", "/api/board/task",
               "/app/billing/", "/app/run/", "/app/model-callback/",
               "/app/approval-handoff/", "/app/model-connect/", "/app/account/deletion/"):
     TRUSTED.app(_path)
@@ -311,6 +314,14 @@ async def _events(front):
 async def _mailbox(front):
     """S3a.2: the ledger lives in the broker (ADR-025); reading or posting wakes no box."""
     await mailbox_mcp(front)
+
+
+@TRUSTED.mcp("tools/call", "read_graph", "board")
+@TRUSTED.mcp("tools/call", "read_graph", "board_task")
+@TRUSTED.mcp("tools/call", "write_graph", "board_task")
+async def _board(front):
+    """S5b: the board is a collection in the broker's conversation store; no box holds it."""
+    await board_mcp(front)
 
 
 def tool_result(structured: dict) -> dict:

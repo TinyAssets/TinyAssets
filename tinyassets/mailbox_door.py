@@ -140,7 +140,8 @@ def _payload(arguments: dict) -> dict:
     return payload
 
 
-def _tool(identity, target: str, arguments: dict) -> dict:
+def _tool(identity, name: str, target: str, arguments: dict) -> dict:
+    """One registered mailbox call; each target names one tool, so ``name`` is unread."""
     if target == "mailbox":
         return read(identity, cursor=arguments.get("cursor", 0),
                     limit=arguments.get("limit", 30))
@@ -151,8 +152,12 @@ def _tool(identity, target: str, arguments: dict) -> dict:
         "room_id", "client_message_id", "body", "parent_id", "to")})
 
 
-async def mcp(front) -> None:
-    """``read_graph target=mailbox``, ``write_graph target=room_message|mailbox_ack``."""
+async def mcp(front, tool=None) -> None:
+    """``read_graph target=mailbox``, ``write_graph target=room_message|mailbox_ack``.
+
+    ``tool(identity, name, target, arguments)`` answers another door's targets
+    (``board_door``) behind the same envelope, identity and kill-switch checks.
+    """
     from tinyassets.auth.middleware import _buffer_request_body
     from tinyassets.mcp_events_http import VERSION, Envelope, parse, refusal
     from tinyassets.owner_router import mcp_answer, mcp_key, tool_result
@@ -161,7 +166,7 @@ async def mcp(front) -> None:
     if disconnected:
         return
     document = json.loads(raw)  # the registry already read it as one registered request
-    ident, (_, _, target) = document.get("id"), mcp_key(document)
+    ident, (_, name, target) = document.get("id"), mcp_key(document)
     headers = Headers(scope=front.scope)
     if headers.get("mcp-protocol-version") == VERSION:
         try:  # the box's own envelope checks for a modern request
@@ -175,7 +180,7 @@ async def mcp(front) -> None:
     try:
         await run_in_threadpool(switched_on)
         result = await run_in_threadpool(
-            _tool, front.identity, target, document["params"]["arguments"])
+            tool or _tool, front.identity, name, target, document["params"]["arguments"])
     except Refused as exc:
         if exc.status == 503:
             return await mcp_answer(front, ident, error={"code": -32603,
