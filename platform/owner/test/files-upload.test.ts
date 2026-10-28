@@ -635,11 +635,32 @@ describe("a chunk between a pass's units", () => {
     const begun = await begin(r, [piece]);
     const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
+      await filesOn(gate.storage, gate.write).namespace();  // made: the put goes out
       const files = filesOn(gate.storage, faulty(gate.write, () => true));
       return failure(() => files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]));
     });
     expect(failed.message).toBe(STORAGE_FAULT);
     expect(await chunk(r, sha)).toMatchObject({ stored: 0 });
+  });
+
+  it("fails a whole write with the fault that left its intent open, when its abort fails",
+     async () => {
+    const r = await rig();
+    const down: ChunkStore = {
+      putChunks: async () => { throw new Error("FILES is down"); },
+      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
+      deleteChunks: (space, shas) => env.FILES.deleteChunks(space, shas),
+    };
+    const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const gate = new WriteGate(state.storage);
+      await filesOn(gate.storage, gate.write).namespace();
+      // The write's units: its intent, then (the put refused) its abort, which fails.
+      const files = filesOn(gate.storage, faulty(gate.write, (n) => n === 2), down);
+      return failure(() => files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 16),
+                                       { expected: null, writer: "owner" }));
+    });
+    expect(failed.message).toBe(STORAGE_FAULT);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 1 }]);
   });
 
   it("ends a whole write's intent when its commit is refused", async () => {

@@ -156,6 +156,22 @@ describe("a turn in the owner's object", () => {
     expect(history.changes.map((c) => c.writer)).toEqual([`client:${stamp.client}`]);
   });
 
+  it("runs a conversation's tools from its own working directory", async () => {
+    const r = agentObject();
+    const answer = await r.in(async (instance) => {
+      const pi = await instance.agent.harness.pi();
+      const deep = await pi.createConversation({
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: AUTO.provider, modelId: AUTO.id }, cwd: "/workspace/deep" },
+      }, BG);
+      instance.script = [calls(fauxToolCall("write", { path: "here.md", content: "x" })), echo];
+      return instance.agent.harness.prompt("write it", { session: String(deep.id) });
+    });
+    expect(answer.status).toBe("done");
+    const read = await r.stub.fileRead(r.as(), { path: "/workspace/deep/here.md" });
+    expect(new TextDecoder().decode(read.inline)).toBe("x");
+  });
+
   it("brings an unsafe tool an eviction cut off back interrupted, never run twice, and " +
      "runs a cut-off read again", async () => {
     const r = agentObject();
