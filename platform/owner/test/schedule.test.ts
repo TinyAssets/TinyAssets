@@ -140,7 +140,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       due: row.payload === null ? null : (JSON.parse(row.payload) as { due?: unknown }).due,
     }])),
   };
-  const schedule = new Schedule(lanes, () => p.now, () => scope.current());
+  const schedule = new Schedule(lanes, () => p.now, scope);
   const host = { ctx, constructor: { name: "ProbeHost" } } as unknown as OwnerDO;
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }
@@ -514,6 +514,32 @@ describe("the object's schedule", () => {
     const earliest = Math.min(jobs["files"]!.time, jobs["wakes"]!.time);
     expect(earliest).toBe(jobs["wakes"]!.time);  // the claim's lease, before the upload's expiry
     expect(await alarmOf(r.stub)).toBe(earliest / 1000);
+  });
+
+  it("draws its doors' and its alarm's file-store calls on its own invocations", async () => {
+    const r = await rig();
+    const path = "/workspace/one.bin";
+    const bytes = new Uint8Array(5000).fill(7);
+    // A door's put and get each run in the door's own scope: a part handed any other
+    // scope would throw here, outside every invocation.
+    const written = await r.stub.fileWrite(r.bind(null), { path, expected_etag: null,
+                                                           content: bytes });
+    const version = (written as { entry: { version: number } }).entry.version;
+    expect((await r.stub.fileReadChunks(r.bind(null), { path, version, first: 0, count: 1 }))
+      .chunks).toEqual([bytes]);
+    await r.stub.fileRemove(r.bind(null), { path, expected_etag: null, recursive: false });
+    await r.stub.fileHistoryPurge(r.bind(null), { path });
+    const [{ sha256 }] = await sqlIn(r.stub, "SELECT sha256 FROM file_chunks") as
+      [{ sha256: string }];
+    // The alarm's files pass deletes the garbage chunk in the alarm's scope; a schedule
+    // handed another scope would run no pass, and the chunk would stay.
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/d", expected_etag: null });
+    // The door re-derived the files job: due now.
+    expect((await laneJobs(r.stub))["files"]!.time).toBeLessThanOrEqual(Date.now());
+    await runInDurableObject(r.stub, (instance: OwnerDO) => instance.alarm());
+    expect(await sqlIn(r.stub, "SELECT sha256 FROM file_chunks WHERE sha256 = ?", sha256))
+      .toEqual([]);
   });
 
   it("is driven by the object's alarm alone: no fetch or WebSocket handler is installed",

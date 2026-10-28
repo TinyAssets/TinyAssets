@@ -24,8 +24,7 @@ export function inScope<R>(stub: DurableObjectStub<OwnerDO>,
 export function filesOn(storage: DurableObjectStorage, scope: CallScope,
                         store: ChunkStore = env.FILES,
                         limits: Partial<FileLimits> = {}): Files {
-  return new Files(storage, store, () => ({ ...FILE_DEFAULTS, ...limits }),
-                   () => scope.current());
+  return new Files(storage, store, () => ({ ...FILE_DEFAULTS, ...limits }), scope);
 }
 
 /**

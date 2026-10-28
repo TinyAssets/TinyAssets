@@ -502,8 +502,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#sessions = new Sessions(ctx.storage);
     this.#ledger = new Ledger(ctx.storage, this.#grants);
     this.#files = new Files(ctx.storage, env.FILES,
-                            () => fileSettings(this.#policy.read().document),
-                            () => this.#calls.current());
+                            () => fileSettings(this.#policy.read().document), this.#calls);
     this.#work = new Scheduled(ctx.storage, this.#grants);
     this.#registrations = new Registrations(ctx.storage, this.#grants);
     // The lanes of the one schedule. There is no global tick; each owner's object
@@ -511,7 +510,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#schedule = new Schedule(ownerLanes({
       ledger: this.#ledger, files: this.#files, work: this.#work,
       sender: () => this.#sender, runner: () => this.#runner, clock, runWakes, runWork,
-    }), clock, () => this.#calls.current());
+    }), clock, this.#calls);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);

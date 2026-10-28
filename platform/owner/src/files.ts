@@ -62,7 +62,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 
-import type { Calls } from "./calls";
+import type { CallScope } from "./calls";
 import { Invalid, Refused } from "./errors";
 import { inTime } from "./schedule";
 import {
@@ -397,16 +397,16 @@ export class Files {
   readonly #storage: DurableObjectStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
-  /** The budget of the invocation running now (`CallScope.current`), which throws outside one. */
-  readonly #calls: () => Calls;
+  /** The object's invocations, whose current budget each call draws on (throws outside one). */
+  readonly #scope: CallScope;
   readonly #watchers = new Set<(paths: string[]) => void>();
 
   constructor(storage: DurableObjectStorage, store: ChunkStore, limits: () => FileLimits,
-              calls: () => Calls) {
+              scope: CallScope) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
-    this.#calls = calls;
+    this.#scope = scope;
   }
 
   get #sql(): SqlStorage {
@@ -632,7 +632,7 @@ export class Files {
     }
     const ns = this.ns();
     const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
-    this.#calls().draw("files", groups.length);
+    this.#scope.current().draw("files", groups.length);
     const out: Uint8Array[] = [];
     for (const group of groups) {
       out.push(...await this.#store.getChunks(ns, group.map((item) => item.read)));
@@ -902,7 +902,7 @@ export class Files {
         throw new Refused("a kept chunk of this file is gone; write it whole");
       }
       const groups = batches(puts);
-      this.#calls().draw("files", groups.length);
+      this.#scope.current().draw("files", groups.length);
       for (const group of groups) {
         await this.#put(group);
       }
@@ -1049,7 +1049,7 @@ export class Files {
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
       throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
-    this.#calls().draw("files", 1);
+    this.#scope.current().draw("files", 1);
     await this.#put(puts);
     return { created: puts.length };
   }
@@ -1588,7 +1588,7 @@ export class Files {
     if (due.length === 0 || until - Date.now() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
-    this.#calls().draw("files", 1);
+    this.#scope.current().draw("files", 1);
     this.#storage.transactionSync(() => {
       for (const sha256 of due) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",

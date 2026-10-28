@@ -11,10 +11,15 @@
  *
  * The budget is ambient. The object holds one {@link CallScope} (an `AsyncLocalStorage` on
  * the instance, never at module level), and each invocation enters a fresh scope: every
- * RPC door, and the alarm, which covers every Lifecycle job it drives, PiHarness's turn
- * among them. Whatever makes a call reads the scope's budget (`CallScope.current`) rather
- * than taking one as an argument, so PiHarness's environment factory, which is handed no
- * job, still draws on its alarm's budget. The runtime delivers another RPC to the object
+ * RPC door, and the alarm, which covers the Lifecycle jobs it drives. Whatever makes a call
+ * reads the scope's budget (`CallScope.current`) rather than taking one as an argument, so
+ * a factory handed no job, as PiHarness's environment factory is, can still draw. Which
+ * budget a pi task draws on is not shown yet: pi-durable's scheduler starts tasks from a
+ * long-lived drain loop kicked by `queueMicrotask`, so a task draws on the budget of the
+ * invocation whose async context started that loop, which may not be the invocation that
+ * kicked the task, and a loop started outside any scope throws on every task. The agent
+ * slice owes those checks (tasks 5), and the cap probe whether workerd attributes a
+ * service call the same way (tasks 6). The runtime delivers another RPC to the object
  * whenever one in flight awaits I/O; each runs in its own scope, so interleaved doors never
  * share a count. A draw outside any scope is a bug and throws (Fact 8: no fallback budget).
  * The cap probe before the gateway slice (tasks 6) confirms or adjusts these numbers, and

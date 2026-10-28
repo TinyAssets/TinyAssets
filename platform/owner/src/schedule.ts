@@ -38,7 +38,7 @@
  *   `WAKE_SEND_MS`, which the lane holds itself, a chunk delete's remaining budget, never
  *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
  *   may run it again. A pass draws on its alarm's call budget (`calls.ts`), which every
- *   job that alarm drives shares, PiHarness's among them.
+ *   job that alarm drives shares; a pi task's budget is its starting context's (tasks 5).
  * - Each lane fences its own work in its rows (a wake's claim lease and may-have-sent
  *   mark, a chunk's `deleting` state, a work row's claim), so a run Lifecycle repeats
  *   takes nothing the first took, and unknown work is never replayed.
@@ -62,7 +62,7 @@ import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import type { Calls } from "./calls";
+import type { CallScope } from "./calls";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
 export const SCHEDULE = "owner-schedule";
@@ -121,16 +121,16 @@ function setFor(job: LifecycleJob): number {
 export class Schedule extends LifecycleCapability {
   readonly #lanes: ReadonlyMap<string, Lane>;
   readonly #clock: () => number;
-  /** The budget of the invocation running now (`CallScope.current`), which throws outside one. */
-  readonly #calls: () => Calls;
+  /** The object's invocations: a job runs only inside one (`CallScope.current` throws outside). */
+  readonly #scope: CallScope;
   readonly #passMs: number;
 
-  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, calls: () => Calls,
+  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, scope: CallScope,
               passMs: number = LANE_PASS_S * 1000) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
     this.#clock = clock;
-    this.#calls = calls;
+    this.#scope = scope;
     this.#passMs = passMs;
   }
 
@@ -181,7 +181,7 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn)) {
       return undefined;  // no lane of this code's: done
     }
-    this.#calls();
+    this.#scope.current();
     await lane.run(this.#clock(), Date.now() + this.#passMs);
     await this.#set(job.fn, null);
     return undefined;  // superseded by the set above

@@ -437,7 +437,7 @@ A whole-file read or write by the environment SHALL move at most 16 MiB, and `re
 - **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed
 
 ### Requirement: One call budget per invocation
-Every service-binding call the object makes SHALL draw from the ambient budget of the platform invocation it runs in: the alarm, which covers every Lifecycle job it drives, PiHarness's included, or an RPC door, each entering a fresh scope held on the object's instance. Callers SHALL read the scope rather than take a budget as an argument, and a draw outside any scope SHALL throw.
+Every service-binding call the object makes SHALL draw from the ambient budget of the invocation whose async context it runs in: the alarm, which covers the Lifecycle jobs it drives, or an RPC door, each entering a fresh scope held on the object's instance; a pi task's is the invocation whose context started it. Callers SHALL read the scope rather than take a budget as an argument, and a draw outside any scope SHALL throw.
 
 #### Scenario: A call outside any invocation
 - **WHEN** a file-store call is made outside any invocation's scope

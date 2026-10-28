@@ -179,6 +179,12 @@ live acceptance is still owed says so.
   `_end_outside_streams`). PiHarness installs with `lifecycle.use` beside the schedule;
   since the object installs none of Lifecycle's runtime handlers, every door that reaches
   pi awaits `lifecycle.start()` first, so PiHarness's `onStart` (pi's open) has run.
+  Owed by slice 6's call scope (`calls.ts`), whose budget a pi task takes from the async
+  context that started pi-durable's drain loop (its scheduler kicks it with
+  `queueMicrotask`): a turn kicked by alarm B while door A's drain is still running draws
+  on B's budget, or the slice shows that workerd attributes the service calls the same
+  way the scope does; and pi is never opened or kicked outside a scope, the constructor's
+  `blockConcurrencyWhile` included, where every task would throw.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks
@@ -223,7 +229,9 @@ live acceptance is still owed says so.
   call reads the scope's budget (`Files`, `Schedule.onJob`, `runWakes` and `runWork`
   through what they call), never a threaded one; a draw outside any scope throws. The
   PiHarness wiring (5) builds its `ExecutionEnv` with no budget: its tool calls draw on the
-  alarm's scope. `FILES` may bring the budget to 24 of the 32 service calls, the other 8
+  budget of the invocation whose async context started the pi task, which the agent slice
+  checks (5). `Files` and `Schedule` take the object's scope itself, so the object's only
+  wiring choice, which scope, is tested through the object. `FILES` may bring the budget to 24 of the 32 service calls, the other 8
   named for the gateway (4) and hooks (5), which draw from the same budget when they land;
   every draw is refused, naming the budget, before a call would cross it. Whether the cap
   applies per Durable Object event is still the probe below, before the gateway slice. A
@@ -253,7 +261,8 @@ live acceptance is still owed says so.
   against one pi turn, including whether the cap applies per Durable Object event, before
   the gateway slice. It confirms or adjusts `INVOCATION_CALLS` and `GATEWAY_HOOKS_HEADROOM`
   (`calls.ts`), whose budget already models one platform invocation (the alarm, or a
-  door).
+  door), and answers whether workerd attributes a service call to the invocation whose
+  async context started it, as the scope does.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
@@ -267,7 +276,9 @@ live acceptance is still owed says so.
 
 - [ ] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions.
 - [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
-  (ChatGPT MCP Events, then Claude `/fire`); it consumes the schedule's open wakes and
+  (ChatGPT MCP Events, then Claude `/fire`), its construction tested through the object,
+  since the lanes read it through a getter whose capture no test can tell until then; it
+  consumes the schedule's open wakes and
   revokes, and a send finishes inside the 60 s claim lease or its outcome is `unknown`.
   The lane bounds each send and revoke itself at `WAKE_SEND_MS`, `LANE_HUNG_S -
   LANE_PASS_S` (15 s), whatever the sender does (a late send is marked and left to its
