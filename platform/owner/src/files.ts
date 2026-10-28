@@ -26,9 +26,11 @@
  *   `keep_recent` in all; a version past those goes in the change that pushed it out. A
  *   row kept only for its age is due for pruning (`prune_after`) at that age, and
  *   housekeeping prunes due rows; a retention change is applied
- *   to the rows already kept, by housekeeping too. `restore` writes an old version as a
- *   new one; `redact` drops one old version's content, whose bytes go once no other row
- *   holds the same content; `purge` drops a path's old versions.
+ *   to the rows already kept, by housekeeping too. A gone path's rows are `released`:
+ *   a change that would take history past its quota first prunes that many of them,
+ *   earliest due first, so churn of deleted paths never fills it. `restore` writes an
+ *   old version as a new one; `redact` drops one old version's content, whose bytes go
+ *   once no other row holds the same content; `purge` drops a path's old versions.
  * - Uploads (restic's order: bytes, then index, then snapshot). An upload intent
  *   declares a file's size and its chunks, cut at 4 MiB, and records them as held
  *   before any byte is sent. A chunk counts as stored only once `FILES` accepted a put
@@ -54,11 +56,13 @@
  *
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind; only chunk bytes and their deletes cross to `FILES`, between
- * transactions, at most two chunks a call. Watchers in the object (the pi environment's
- * `watch`) hear each committed change.
+ * transactions, at most two chunks a call, each call drawn first from the budget of the
+ * invocation running it (`calls.ts`), read from the object's scope. Watchers in the object
+ * (the pi environment's `watch`) hear each committed change.
  */
 import { createHash, randomBytes } from "node:crypto";
 
+import type { CallScope } from "./calls";
 import { Invalid, Refused } from "./errors";
 import { inTime } from "./schedule";
 import {
@@ -98,6 +102,11 @@ export const TEMP_TTL_S = 86_400;
 export const HOUSEKEEPING_SLACK_S = 3600;
 /** R2's most keys in one delete, and so the most chunks one alarm run deletes. */
 export const DELETE_BATCH = 1000;
+/**
+ * The least of a pass's budget a chunk delete is begun with: one that could not finish
+ * would only mark its chunks `deleting` to be tried again `GC_RETRY_S` later.
+ */
+export const DELETE_FLOOR_MS = 1000;
 /** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
 export const HOUSEKEEPING_BATCH = 500;
 export const MAX_LIST = 1000;
@@ -388,12 +397,16 @@ export class Files {
   readonly #storage: DurableObjectStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
+  /** The object's invocations, whose current budget each call draws on (throws outside one). */
+  readonly #scope: CallScope;
   readonly #watchers = new Set<(paths: string[]) => void>();
 
-  constructor(storage: DurableObjectStorage, store: ChunkStore, limits: () => FileLimits) {
+  constructor(storage: DurableObjectStorage, store: ChunkStore, limits: () => FileLimits,
+              scope: CallScope) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
+    this.#scope = scope;
   }
 
   get #sql(): SqlStorage {
@@ -437,17 +450,19 @@ export class Files {
   }
 
   /**
-   * Run `act` in one transaction, then tell watchers. Its quotas are checked at the end
-   * (`#bounds`), which never refuses a change that leaves every counter no higher, so a
-   * redaction, a purge, an abort or housekeeping always passes. `freeing` exempts the
-   * changes that free while writing a record: a remove (its delete row adds to history)
-   * and a sync commit (whose ops are bounded one by one, a remove's among them exempt).
+   * Run `act` in one transaction, then tell watchers. At the end, history is first fitted
+   * to its quota from gone paths' rows (`#fit`); then the quotas are checked (`#bounds`),
+   * which never refuses a change that leaves every counter no higher, so a redaction, a
+   * purge, an abort or housekeeping always passes. `freeing` exempts the changes that free
+   * while writing a record: a remove (its delete row adds to history) and a sync commit
+   * (whose ops are bounded one by one, a remove's among them exempt).
    */
   #change<T>(act: (touched: Touched, now: number) => T, freeing = false): T {
     const touched: Touched = [];
     const result = this.#storage.transactionSync(() => {
       const before = this.#space();
       const value = act(touched, Date.now() / 1000);
+      this.#fit(before);
       if (!freeing) {
         this.#bounds(before);
       }
@@ -474,6 +489,25 @@ export class Files {
       if (after[counter] > bound && after[counter] > before[counter]) {
         throw new Refused(reason);
       }
+    }
+  }
+
+  /**
+   * Retention run early, only on rows it has already let go: when a change took history
+   * past `max_history` (or past where it found it, if a lowered policy left it higher),
+   * prune that many of the earliest-due rows of gone paths (`released`), raising the
+   * feed's floor as housekeeping does. A live path's rows are never taken early, and the
+   * policy keeps every live path's rows within `max_history`, so once housekeeping has
+   * applied the retention in force, and with the entries quota met, there are always enough
+   * gone rows and the history quota never refuses a change.
+   * The work is bounded by the change's own: it prunes at most the rows it recorded.
+   */
+  #fit(before: Counters): void {
+    const over = this.#space().history - Math.max(this.#limits().max_history, before.history);
+    if (over > 0) {
+      this.#expire(this.#sql.exec<{ version: number; path: string }>(
+        "SELECT version, path FROM file_history WHERE released = 1 " +
+          "ORDER BY prune_after, version LIMIT ?", over).toArray());
     }
   }
 
@@ -587,16 +621,20 @@ export class Files {
     return row;
   }
 
-  /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
+  /**
+   * Chunk bytes in order, fetched from `FILES` at most two chunks a call, every call drawn
+   * from the invocation's budget before the first is made.
+   */
   async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
       Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
     const ns = this.ns();
-    const sized = reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES }));
+    const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
+    this.#scope.current().draw("files", groups.length);
     const out: Uint8Array[] = [];
-    for (const group of batches(sized)) {
+    for (const group of groups) {
       out.push(...await this.#store.getChunks(ns, group.map((item) => item.read)));
     }
     return out;
@@ -671,22 +709,27 @@ export class Files {
    * `max(keep_versions, keep_recent)` rows, and every live path's history fits in
    * `max_history` (policy.ts). On a change only the newest rows move between those
    * bands, so this looks no further than the most rows policy can keep; a policy change
-   * re-marks every row through housekeeping (`#remark`).
+   * re-marks every row through housekeeping (`#remark`). A gone path's rows are all
+   * `released`, which a live path's never are: retention has let them go, so a change at
+   * the history quota may prune them early (`#fit`); a path made again takes them back.
    */
   #retain(path: string, live: boolean): void {
     const limits = this.#limits();
     const keep = live ? limits.keep_versions : 0;
     const cap = Math.max(keep, limits.keep_recent);
+    const released = live ? 0 : 1;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC " +
       "LIMIT ? OFFSET ?";
     if (keep > 0) {
-      this.#sql.exec(`UPDATE file_history SET prune_after = NULL WHERE prune_after IS NOT NULL ` +
-                     `AND version IN (${newest})`, path, keep, 0);
+      this.#sql.exec("UPDATE file_history SET prune_after = NULL, released = 0 WHERE " +
+                       `(prune_after IS NOT NULL OR released = 1) AND version IN (${newest})`,
+                     path, keep, 0);
     }
     if (cap > keep) {
-      this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE prune_after IS NULL ` +
-                     `AND version IN (${newest})`, limits.retention_days * 86_400, path,
-                     cap - keep, keep);
+      this.#sql.exec("UPDATE file_history SET prune_after = coalesce(prune_after, at + ?), " +
+                       "released = ? WHERE (prune_after IS NULL OR released != ?) AND " +
+                       `version IN (${newest})`, limits.retention_days * 86_400, released,
+                     released, path, cap - keep, keep);
     }
     this.#sql.exec(`DELETE FROM file_history WHERE version IN (${newest})`, path, KEEP_CEILING,
                    cap);
@@ -826,6 +869,7 @@ export class Files {
    * object's own writes and the doors' small ones, at most `WHOLE_BYTES` at once.
    * `prefix` is whole chunks of content already stored that come first (an append or a
    * truncate keeps them), so only the chunks after them are cut from `bytes` and sent.
+   * Every put is drawn from the invocation's budget before the first is sent.
    */
   async write(path: unknown, bytes: unknown, options: { expected: unknown; mode?: unknown;
               writer: string; parents?: boolean; prefix?: readonly ChunkRef[] }):
@@ -857,7 +901,9 @@ export class Files {
       if (wanted.size > 0) {
         throw new Refused("a kept chunk of this file is gone; write it whole");
       }
-      for (const group of batches(puts)) {
+      const groups = batches(puts);
+      this.#scope.current().draw("files", groups.length);
+      for (const group of groups) {
         await this.#put(group);
       }
       return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents });
@@ -980,7 +1026,8 @@ export class Files {
 
   /**
    * Send bytes for chunks an intent holds, at most two chunks a call, each the size the
-   * intent declared; each is stored once `FILES` accepted it.
+   * intent declared; each is stored once `FILES` accepted it. The put is drawn from the
+   * invocation's budget first.
    */
   async upload(intentId: unknown, chunks: unknown): Promise<{ created: number }> {
     const held = new Set(this.#intent(intentId, Date.now() / 1000).chunks);
@@ -1002,6 +1049,7 @@ export class Files {
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
       throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
+    this.#scope.current().draw("files", 1);
     await this.#put(puts);
     return { created: puts.length };
   }
@@ -1375,6 +1423,7 @@ export class Files {
             }
             seen.add(path);
             const outcome = this.#syncOp(op, path, epoch, writer, now, touched);
+            this.#fit(before);
             if (op["op"] !== "remove") {
               this.#bounds(before);
             }
@@ -1513,7 +1562,9 @@ export class Files {
    * history, then delete due garbage chunks. A delete marks its chunks `deleting` (never
    * held again) before it asks `FILES`, and removes their rows only after; one that fails
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
-   * lane's contract: an outside call's failure is its rows', a throw is a bug).
+   * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
+   * is begun with less than `DELETE_FLOOR_MS` left before `until`, and the one delete is
+   * drawn from the alarm's budget first.
    */
   async collect(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
@@ -1534,9 +1585,10 @@ export class Files {
     const due = sql.exec<{ sha256: string }>(
       "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
         "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
-    if (due.length === 0 || Date.now() >= until) {
-      return;
+    if (due.length === 0 || until - Date.now() < DELETE_FLOOR_MS) {
+      return;  // too little of this pass left: the chunks stay due for a later one
     }
+    this.#scope.current().draw("files", 1);
     this.#storage.transactionSync(() => {
       for (const sha256 of due) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
@@ -1592,12 +1644,16 @@ export class Files {
    * missing the delete.
    */
   #prune(now: number): void {
-    const sql = this.#sql;
-    const due = sql.exec<{ version: number; path: string }>(
+    this.#expire(this.#sql.exec<{ version: number; path: string }>(
       "SELECT version, path FROM file_history WHERE prune_after IS NOT NULL AND " +
-        "prune_after <= ? ORDER BY prune_after LIMIT ?", now, HOUSEKEEPING_BATCH).toArray();
+        "prune_after <= ? ORDER BY prune_after LIMIT ?", now, HOUSEKEEPING_BATCH).toArray());
+  }
+
+  /** Delete these history rows, the feed's floor raised past any that was its path's newest. */
+  #expire(rows: readonly { version: number; path: string }[]): void {
+    const sql = this.#sql;
     let floor = 0;
-    for (const { version, path } of due) {
+    for (const { version, path } of rows) {
       sql.exec("DELETE FROM file_history WHERE version = ?", version);
       const newer = sql.exec("SELECT 1 FROM file_history WHERE path = ? AND version > ? LIMIT 1",
                              path, version).toArray().length > 0;

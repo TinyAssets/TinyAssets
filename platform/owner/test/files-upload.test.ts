@@ -8,10 +8,11 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { FILES_CALLS } from "../src/calls";
 import {
-  CHUNK_BYTES, type ChunkStore, chunkedId, type Entry, GC_GRACE_S, HOUSEKEEPING_SLACK_S,
-  INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS, MAX_OPEN_INTENTS,
-  sha256Hex, WHOLE_BYTES,
+  CHUNK_BYTES, type ChunkStore, chunkedId, DELETE_FLOOR_MS, type Entry, GC_GRACE_S,
+  HOUSEKEEPING_SLACK_S, INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS,
+  MAX_OPEN_INTENTS, sha256Hex, WHOLE_BYTES,
 } from "../src/files";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
@@ -373,7 +374,8 @@ describe("garbage collection", () => {
     await inFiles(r.stub, limits, async (files) => {
       for (const [name, seed] of [["u", 5], ["a", 3]] as const) {
         const [chunk] = files.open(`${other}/${name}`).chunks!;
-        expect((await files.fetch([{ sha256: chunk!.sha256 }]))[0]).toEqual(body(seed));
+        expect((await files.fetch([{ sha256: chunk!.sha256 }]))[0])
+          .toEqual(body(seed));
       }
     });
     // Only what nothing names went: a's older versions and b's bytes.
@@ -433,6 +435,25 @@ describe("a chunk", () => {
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", holds: 1, gc_after: null });
   });
 
+  it("is sent on the invocation's call budget, refused before the put when it is spent",
+     async () => {
+    const r = await rig();
+    const piece = filled(INLINE_BYTES + 1, 11);
+    const sha = sha256Hex(piece);
+    const begun = await begin(r, [piece]);
+    expect((await failure(() => inFiles(r.stub, {}, (files, _state, calls) => {
+      calls.draw("files", FILES_CALLS);
+      return files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]);
+    }))).name).toBe("CallsSpent");
+    expect(await chunk(r, sha)).toMatchObject({ stored: 0 });
+    expect(await inBucket(r, sha)).toBe(false);
+    // Each door call is its own entry: more uploads than one budget holds all land.
+    for (let i = 0; i <= FILES_CALLS; i++) {
+      const { committed } = await upload(r, `${W}/u${i}.bin`, [filled(INLINE_BYTES + 1, i)]);
+      expect(entryOf(committed).size).toBe(INLINE_BYTES + 1);
+    }
+  });
+
   it("sent but never committed is garbage that revives without being sent again", async () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 9);
@@ -465,15 +486,37 @@ describe("a chunk", () => {
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
     expect((await failure(() => begin(r, [piece]))).message)
       .toBe("a chunk of this upload is being deleted; begin again");
-    // A delete that outlasts its pass's budget is tried again, as a failed one is, and a
-    // pass already past its budget takes none.
+    // A delete that outlasts its pass's budget is tried again, as a failed one is.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000, Date.now() + 20), hung);
+    await inFiles(r.stub, {}, (files) => files.collect(
+      Date.now() / 1000, Date.now() + DELETE_FLOOR_MS + 20), hung);
     expect((await chunk(r, sha))!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000, Date.now() - 1));
-    expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
+    // A pass with less than DELETE_FLOOR_MS left, or none, begins no delete: FILES is not
+    // asked, and the chunk waits in its row as it was.
+    const asked: string[][] = [];
+    const recording: ChunkStore = { ...failing, deleteChunks: async (_ns, shas) => {
+      asked.push(shas);
+      return { deleted: shas.length };
+    } };
+    // Half a second is too little to begin one (the floor is a second), and so is none.
+    expect(DELETE_FLOOR_MS).toBeGreaterThan(500);
+    for (const left of [500, -1]) {
+      await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+      await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000,
+                                                         Date.now() + left), recording);
+      expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
+    }
+    expect(asked).toEqual([]);
+    // The delete is drawn from the alarm's call budget first: a spent one is refused before
+    // the chunk is marked or FILES asked, a bug the lane backs off.
+    await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1");
+    expect((await failure(() => inFiles(r.stub, {}, (files, _state, calls) => {
+      calls.draw("files", FILES_CALLS);
+      return files.collect(Date.now() / 1000);
+    }, recording))).name).toBe("CallsSpent");
+    expect([asked, await chunk(r, sha)]).toEqual([[], expect.objectContaining({
+      state: "garbage", gc_after: 1 })]);
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);

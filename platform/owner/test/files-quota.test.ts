@@ -6,6 +6,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { Calls } from "../src/calls";
 import {
   CHUNK_BYTES, type FileLimits, INLINE_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS,
 } from "../src/files";
@@ -108,16 +109,15 @@ describe("a file quota", () => {
         await files.write(`${W}/${name}`, text(name), { expected: null, writer: "o" });
       }
     });
-    // A delete adds a history row, but only frees: a full history never refuses it.
+    // A delete adds a history row, but only frees: a full history never refuses it, and
+    // gone paths' rows make room for what adds history, so the rename lands too.
     await inFiles(r.stub, { max_history: 4, max_entries: 1, max_inline_bytes: 1 },
                   async (files) => {
       files.remove(`${W}/a`, { expected: null, writer: "o" });
-      expect(() => files.rename(`${W}/b`, `${W}/c`, { expected: null, replace: true,
-                                                     writer: "o" }))
-        .toThrow("the owner's file history is at its quota");
-      files.remove(`${W}/b`, { expected: null, writer: "o" });
+      files.rename(`${W}/b`, `${W}/c`, { expected: null, replace: true, writer: "o" });
+      files.remove(`${W}/c`, { expected: null, writer: "o" });
     });
-    expect((await r.stub.fileUsage(r.bind(null))).entries).toBe(2);
+    expect(await r.stub.fileUsage(r.bind(null))).toMatchObject({ entries: 1, history: 4 });
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
   });
@@ -149,22 +149,143 @@ describe("a full history", () => {
     expect(kept).toEqual(counted);
   });
 
-  it("is never a dead end: a purge or a retention change makes room", async () => {
+  it("is never filled by gone paths' churn: a change at its quota prunes their rows first " +
+     "(slice 4 L1)", async () => {
+    const r = await rig();
+    // The reviewer's probe: a policy that validates (5 entries x max(1, 2) <= 10), then
+    // create-and-delete pairs of unique names, past what history holds.
+    await setPolicy(r, { max_entries: 5, keep_versions: 1, keep_recent: 2, max_history: 10 });
+    for (let i = 0; i < 8; i++) {
+      await write(r, `${W}/n${i}`, `${i}`);  // version 2i + 1
+      await r.stub.fileRemove(r.bind(null), { path: `${W}/n${i}`, expected_etag: null,
+                                              recursive: false });  // version 2i + 2
+    }
+    // Every write landed; the six earliest-due rows went, n0 to n2's, and the feed's floor
+    // rose past n2's delete, the newest pruned row that was its path's newest.
+    expect(await sqlIn(r.stub, "SELECT version, released FROM file_history ORDER BY version"))
+      .toEqual(Array.from({ length: 10 }, (_v, i) => ({ version: i + 7, released: 1 })));
+    expect(await sqlIn(r.stub, "SELECT feed_floor, history FROM file_space"))
+      .toEqual([{ feed_floor: 6, history: 10 }]);
+    expect((await r.stub.fileChanges(r.bind(null), { after: 5, limit: 10 })).reset).toBe(true);
+    const behind = await r.stub.fileChanges(r.bind(null), { after: 6, limit: 10 });
+    expect([behind.reset, behind.changes.map((change) => change.version)])
+      .toEqual([false, Array.from({ length: 10 }, (_v, i) => i + 7)]);
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+  });
+
+  it("takes only gone paths' rows early, never a live path's kept for its age", async () => {
+    const r = await rig();
+    await setPolicy(r, { max_entries: 5, keep_versions: 1, keep_recent: 2, max_history: 10 });
+    for (const round of ["1", "2", "3"]) {
+      await write(r, `${W}/live`, round);  // versions 1 to 3; 2 is kept for its age
+    }
+    for (let i = 0; i < 6; i++) {
+      await write(r, `${W}/n${i}`, `${i}`);
+      await r.stub.fileRemove(r.bind(null), { path: `${W}/n${i}`, expected_etag: null,
+                                              recursive: false });
+    }
+    // The live path's version 2 is the earliest due, but it is not let go: gone rows went.
+    expect(await sqlIn(r.stub, "SELECT version, released, prune_after IS NOT NULL AS due " +
+                                 "FROM file_history WHERE path = ? ORDER BY version",
+                       `${W}/live`))
+      .toEqual([{ version: 2, released: 0, due: 1 }, { version: 3, released: 0, due: 0 }]);
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(10);
+    // A path made again takes its rows back from the gone ones.
+    await write(r, `${W}/n5`, "again");
+    expect(await sqlIn(r.stub, "SELECT released FROM file_history WHERE path = ? " +
+                                 "ORDER BY version", `${W}/n5`))
+      .toEqual([{ released: 0 }, { released: 0 }]);
+  });
+
+  it("releases every kept row of a path that goes, those kept for their age too", async () => {
+    const r = await rig();
+    await setPolicy(r, { max_entries: 3, keep_versions: 1, keep_recent: 3, max_history: 9 });
+    await write(r, `${W}/old`, "1");
+    await write(r, `${W}/old`, "2");  // version 1 is now kept for its age, due to go
+    expect(await sqlIn(r.stub, "SELECT released, prune_after IS NOT NULL AS due " +
+                                 "FROM file_history ORDER BY version"))
+      .toEqual([{ released: 0, due: 1 }, { released: 0, due: 0 }]);
+    await r.stub.fileRemove(r.bind(null), { path: `${W}/old`, expected_etag: null,
+                                            recursive: false });
+    expect(await sqlIn(r.stub, "SELECT released, prune_after IS NOT NULL AS due " +
+                                 "FROM file_history ORDER BY version"))
+      .toEqual([{ released: 1, due: 1 }, { released: 1, due: 1 }, { released: 1, due: 1 }]);
+  });
+
+  it("never lowers the feed's floor when it prunes a path older than one purged", async () => {
+    const r = await rig();
+    await setPolicy(r, { max_entries: 5, keep_versions: 1, keep_recent: 2, max_history: 10 });
+    const pair = async (name: string) => {
+      await write(r, `${W}/${name}`, name);
+      await r.stub.fileRemove(r.bind(null), { path: `${W}/${name}`, expected_etag: null,
+                                              recursive: false });
+    };
+    for (let i = 0; i < 5; i++) {
+      await pair(`n${i}`);  // versions 2i + 1 and 2i + 2
+    }
+    expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/n4` }))
+      .toEqual({ purged: 2 });  // the floor rises to n4's delete, version 10
+    await pair("n5");
+    await pair("n6");  // takes n0's write, then n0's delete, version 2: its path's newest
+    expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
+      .toEqual([{ feed_floor: 10 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history WHERE path = ?",
+                       `${W}/n0`)).toEqual([{ n: 0 }]);
+  });
+
+  it("raises the feed's floor to the newest pruned path-end, in whatever order rows come due",
+     async () => {
+    const r = await rig();
+    for (const name of ["a", "b"]) {
+      await write(r, `${W}/${name}`, name);
+      await r.stub.fileRemove(r.bind(null), { path: `${W}/${name}`, expected_etag: null,
+                                              recursive: false });
+    }
+    // Rows marked under two retentions, as a re-mark still under way leaves them: b's
+    // delete (version 4) due before a's (version 2), both writes not yet.
+    await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN 4 THEN 1 " +
+                          "WHEN 2 THEN 2 ELSE 9000000000 END");
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
+      .toEqual([{ feed_floor: 4 }]);
+    expect(await sqlIn(r.stub, "SELECT version FROM file_history ORDER BY version"))
+      .toEqual([{ version: 1 }, { version: 3 }]);
+  });
+
+  it("prunes early no more than the change took past where it found history", async () => {
+    const r = await rig();
+    await inFiles(r.stub, {}, async (files) => {
+      for (let i = 0; i < 6; i++) {
+        await files.write(`${W}/n${i}`, text(`${i}`), { expected: null, writer: "o" });
+        files.remove(`${W}/n${i}`, { expected: null, writer: "o" });
+      }
+    });
+    // A quota lowered under what is kept: a change brings history back to where it was,
+    // not down to the quota, so its work stays its own size.
+    await inFiles(r.stub, { max_history: 4 }, (files) =>
+      files.write(`${W}/live`, text("1"), { expected: null, writer: "o" }));
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(12);
+    // A sync op at the quota makes its room the same way.
+    const synced = await inFiles(r.stub, { max_history: 4 }, (files) => {
+      const lease = files.leaseAcquire("sandbox");
+      return files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
+        { op: "write", path: `${W}/synced`, base: null, inline: text("s") },
+      ] });
+    });
+    expect(synced.outcomes.map((outcome) => outcome.outcome)).toEqual(["committed"]);
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(12);
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+  });
+
+  it("is re-marked by a retention change, on the one schedule", async () => {
     const r = await rig();
     await setPolicy(r, { max_entries: 2, keep_versions: 1, keep_recent: 1, max_history: 2 });
-    // A deleted path keeps its delete for the window: the history live files never fill.
-    await write(r, `${W}/a`, "1");
-    await r.stub.fileRemove(r.bind(null), { path: `${W}/a`, expected_etag: null,
-                                            recursive: false });
     await write(r, `${W}/b`, "1");
-    expect((await failure(() => write(r, `${W}/c`, "1"))).message).toBe(full);
-    // The owner's purge drops a gone path's history, never refused.
-    expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/a` }))
-      .toEqual({ purged: 1 });
     await write(r, `${W}/c`, "1");
     await r.stub.fileRemove(r.bind(null), { path: `${W}/c`, expected_etag: null,
                                             recursive: false });
-    expect((await failure(() => write(r, `${W}/d`, "1"))).message).toBe(full);
     // A retention change re-marks the rows already kept, on the one schedule.
     await setPolicy(r, { max_entries: 2, keep_versions: 1, keep_recent: 1, max_history: 2,
                          retention_days: 0 });

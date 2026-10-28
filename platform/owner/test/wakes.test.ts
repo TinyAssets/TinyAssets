@@ -11,10 +11,15 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { clock, HOUR_S, type Ledger, outcome, retryAfter, WAKE_LEASE_S } from "../src/ledger";
-import { runWakes, WAKE_RETRY_S } from "../src/wakes";
+import {
+  clock, HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
+} from "../src/ledger";
+import { LANE_HUNG_S, LANE_PASS_S } from "../src/schedule";
+import { runWakes, WAKE_RETRY_S, WAKE_SEND_MS, WAKES_PER_ALARM } from "../src/wakes";
 import type { OwnerDO } from "../src/owner-do";
-import { DOT, ledgerOn, MCP, MUSE, origin, rig, type Rig, wakeReceipts } from "./ledger-support";
+import {
+  DOT, FakeSender, ledgerOn, MCP, MUSE, origin, rig, type Rig, wakeReceipts,
+} from "./ledger-support";
 import { drainDue, failure, laneJobs } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
@@ -38,6 +43,29 @@ function ringing(ledger: Ledger, from = MUSE, perHour = 12): string {
   const id = ledger.register(from, MCP, RINGS).agent_id;
   ledger.setWakeLimits(id, perHour, 0);
   return id;
+}
+
+/**
+ * A doorbell that ignores its own bound: each send and revoke hangs until `release`, and a
+ * send never calls `mark()` first, so only the lane can mark it.
+ */
+class HangingSender extends FakeSender {
+  readonly #waiting: (() => void)[] = [];
+
+  release(): void {
+    this.#waiting.splice(0).forEach((resolve) => resolve());
+  }
+
+  override async send(target: WakeTarget, _mark: () => void): Promise<Outcome> {
+    this.sent.push(target);
+    await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    return { state: "sent", status: 202 };
+  }
+
+  override async revoke(agentId: string, generation: number): Promise<void> {
+    this.revoked.push([agentId, generation]);
+    await new Promise<void>((resolve) => this.#waiting.push(resolve));
+  }
 }
 
 /**
@@ -595,10 +623,61 @@ describe("the wakes lane of the object's one schedule", () => {
       const ledger = ledgerOn(state.storage);
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      expect(await runWakes(ledger, r.sender, () => t, 16, Date.now() - 1)).toBe(0);
+      expect(await runWakes(ledger, r.sender, () => t, 16, WAKE_SEND_MS, Date.now() - 1))
+        .toBe(0);
       return ledger.dueOpen(t, 16).length;
     });
     expect(open).toBe(1);
+  });
+
+  it("bounds each send itself: a late one is marked, left to its lease, never sent again " +
+     "(slice 5 N2)", async () => {
+    expect(WAKE_SEND_MS).toBe((LANE_HUNG_S - LANE_PASS_S) * 1000);
+    const r = await rig();
+    const t = clock();
+    const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+      const ledger = ledgerOn(state.storage);
+      const row = () => state.storage.sql.exec(
+        "SELECT state, marked FROM ledger_wakes WHERE kind = 'wake'").one();
+      ledger.post(null, `dm:${ringing(ledger)}`, "c1", "hello", null, t - 100);
+      const hanging = new HangingSender();
+      const started = Date.now();
+      const accepted = await runWakes(ledger, hanging, () => t, WAKES_PER_ALARM, 30);
+      const took = Date.now() - started;
+      const late = row();
+      hanging.release();  // its answer comes after the pass let it go, and settles nothing
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const released = row();
+      // Its lease lapses: a byte may have left, so it is unknown, never sent again.
+      await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, WAKES_PER_ALARM, 30);
+      return { accepted, took, late, released, after: row(), sent: hanging.sent.length };
+    });
+    expect(out.accepted).toBe(0);
+    expect(out.took).toBeLessThan(1000);
+    expect([out.late, out.released]).toEqual([{ state: "sending", marked: 1 },
+                                              { state: "sending", marked: 1 }]);
+    expect([out.after, out.sent]).toEqual([{ state: "unknown", marked: 1 }, 1]);
+  });
+
+  it("bounds each revoke itself: a late one is due again after its lease", async () => {
+    const r = await rig();
+    const t = clock();
+    const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+      const ledger = ledgerOn(state.storage);
+      const row = () => state.storage.sql.exec(
+        "SELECT state, marked FROM ledger_wakes WHERE kind = 'revoke'").one();
+      const muse = ringing(ledger);
+      ledger.subscriber(MUSE, "alpha", muse);
+      ledger.register(MUSE, MCP, { ...RINGS, delivery_method: "pull" }, t);  // off mcp_event
+      const hanging = new HangingSender();
+      await runWakes(ledger, hanging, () => t, WAKES_PER_ALARM, 30);
+      const late = row();
+      const sender = new FakeSender();
+      await runWakes(ledger, sender, () => t + WAKE_LEASE_S, WAKES_PER_ALARM, 30);
+      return { late, after: row(), revoked: [hanging.revoked.length, sender.revoked.length] };
+    });
+    expect(out).toEqual({ late: { state: "sending", marked: 0 },
+                          after: { state: "sent", marked: 0 }, revoked: [1, 1] });
   });
 
   it("backs a row whose step fails off in its own row, never in a loop (review N8)",
