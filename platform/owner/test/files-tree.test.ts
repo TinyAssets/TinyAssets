@@ -5,6 +5,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { Calls } from "../src/calls";
 import { type Entry, type Files, INLINE_BYTES } from "../src/files";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
@@ -83,7 +84,8 @@ async function bytesAt(files: Files, path: string): Promise<Uint8Array> {
   if (content.inline !== undefined) {
     return content.inline;
   }
-  const pieces = await files.fetch((content.chunks ?? []).map((c) => ({ sha256: c.sha256 })));
+  const pieces = await files.fetch((content.chunks ?? [])
+    .map((c) => ({ sha256: c.sha256 })));
   return new Uint8Array(pieces.flatMap((piece) => [...piece]));
 }
 

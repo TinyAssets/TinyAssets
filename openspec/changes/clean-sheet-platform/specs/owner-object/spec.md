@@ -347,6 +347,17 @@ History SHALL keep each live path's newest `keep_versions` and its versions youn
 - **WHEN** a path is written twelve times under the default policy
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
+### Requirement: Gone paths' history makes room at the quota
+A change that would take history past `max_history` SHALL first prune that many of the earliest-due rows of paths that are gone, which retention has already let go, raising the change feed's floor past any pruned row that was its path's newest, and never lowering it. It SHALL prune no more rows than it recorded, and never a live path's row.
+
+#### Scenario: Deleted paths' churn
+- **WHEN** a policy of 5 entries, `keep_versions` 1, `keep_recent` 2 and `max_history` 10 holds, and eight files of unique names are each written and removed
+- **THEN** every write lands, history holds the ten newest rows, and a feed reader behind the pruned rows is told to rescan
+
+#### Scenario: A live path's version kept for its age
+- **WHEN** history is at its quota and a live path's oldest kept version is the earliest due
+- **THEN** a change prunes a gone path's row, and the live path keeps its version
+
 ### Requirement: Every entry holds its content
 Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
 
@@ -361,9 +372,9 @@ Each file entry SHALL hold a reference to its content, in every root, as each ke
 ### Requirement: The owner frees history, and temporary files keep none
 A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
 
-#### Scenario: History at its quota
-- **WHEN** history rows reach `max_history`
-- **THEN** a write is refused, and the owner frees room by a purge or a lowered retention without either being refused
+#### Scenario: A purge at any time
+- **WHEN** the owner purges a path's history
+- **THEN** every version but its current one goes, never refused for a quota, and a gone path's history goes whole
 
 ### Requirement: File quotas are owner policy, refused loudly
 Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks they hold, and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults) or a fixed ceiling, read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind.
@@ -373,7 +384,7 @@ Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks th
 - **THEN** it is refused, and no parent directory, history row or content of it is kept
 
 ### Requirement: A quota never blocks a change that frees
-A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it.
+A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
 
 #### Scenario: A full owner removes files
 - **WHEN** every counter is at its bound and the owner removes a file
@@ -419,8 +430,26 @@ The owner's pi `ExecutionEnv` SHALL serve its file methods from the manifest and
 - **THEN** the first write fails with `changed since read` and the other's content stays
 
 ### Requirement: The environment stays inside a request's limits and keeps bytes verbatim
-A whole-file read or write by the environment SHALL move at most 16 MiB, and one environment, built per tool call, SHALL make at most 24 calls to the files Worker, each refused as `not_supported` before it is made. `readTextFile` SHALL keep a byte-order mark.
+A whole-file read or write by the environment SHALL move at most 16 MiB, and `readTextFile` SHALL keep a byte-order mark.
 
 #### Scenario: pi's edit of a file with a BOM
 - **WHEN** pi's `edit` changes one line of a CRLF file that starts with a BOM
 - **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed
+
+### Requirement: One call budget per invocation
+Every service-binding call the object makes SHALL draw from the ambient budget of the invocation whose async context it runs in: the alarm, which covers the Lifecycle jobs it drives, or an RPC door, each entering a fresh scope held on the object's instance; a pi task's is the invocation whose context started it. Callers SHALL read the scope rather than take a budget as an argument, and a draw outside any scope SHALL throw.
+
+#### Scenario: A call outside any invocation
+- **WHEN** a file-store call is made outside any invocation's scope
+- **THEN** it throws before the call is made
+
+### Requirement: A call past the invocation's budget is refused
+The files Worker MAY bring an invocation's budget to 24 of the 32 service-binding calls, the rest named for the gateway and hooks, and a call that would cross it SHALL be refused before it is made, naming the budget (`not_supported` to pi).
+
+#### Scenario: Two tool calls in one turn
+- **WHEN** two tool calls in one alarm each read 12 two-chunk files
+- **THEN** the next read in that alarm is refused before its call, and the next alarm's reads draw on a budget of their own
+
+#### Scenario: Two doors at once
+- **WHEN** two invocations run in the object at once, interleaving at every call
+- **THEN** each draws on its own budget

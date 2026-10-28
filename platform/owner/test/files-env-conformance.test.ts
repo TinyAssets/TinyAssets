@@ -15,11 +15,14 @@ import { describe, expect, it } from "vitest";
 import {
   BATCH_BYTES as WORKER_BATCH_BYTES, CHUNK_BYTES as WORKER_CHUNK_BYTES,
 } from "../../files/src/keys";
+import {
+  Calls, CallScope, CallsSpent, FILES_CALLS, GATEWAY_HOOKS_HEADROOM, INVOCATION_CALLS,
+} from "../src/calls";
 import { BATCH_BYTES, CHUNK_BYTES, type ChunkStore, Files, INLINE_BYTES, sha256Hex } from "../src/files";
-import { FILES_CALLS, ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
+import { ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
 import type { OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
-import { lostContent, ownerObject, sqlIn } from "./support";
+import { filesOn, inScope, lostContent, ownerObject, sqlIn } from "./support";
 
 const context = BACKGROUND_CONTEXT;
 /** The schedule's sync, which the object wires in; these cases drive no schedule. */
@@ -27,8 +30,8 @@ const rearm = async (): Promise<void> => undefined;
 
 /** A fresh owner's object, and its files, for the length of `use`. */
 function inOwner(use: (files: Files) => Promise<void>): Promise<void> {
-  return runInDurableObject(ownerObject().stub, (_instance: OwnerDO, state) =>
-    use(new Files(state.storage, env.FILES, () => FILE_DEFAULTS)));
+  return inScope(ownerObject().stub, (_instance: OwnerDO, state, scope) =>
+    use(filesOn(state.storage, scope, env.FILES)));
 }
 
 type Get = { sha256: string; offset?: number; length?: number };
@@ -112,7 +115,8 @@ describe("the owner's environment", () => {
 
   it("answers exec as shell_unavailable until the sandbox slice", async () => {
     await inOwner(async (files) => {
-      const result = await new OwnerFilesEnv({ files, rearm }).exec("true", undefined, context);
+      const result = await new OwnerFilesEnv({ files, rearm })
+        .exec("true", undefined, context);
       expect(result.ok ? null : result.error.code).toBe("shell_unavailable");
     });
   });
@@ -136,7 +140,7 @@ describe("the owner's environment", () => {
   });
 
   it("refuses an append when the file changed while it fetched the tail", async () => {
-    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+    await inScope(ownerObject().stub, async (_instance: OwnerDO, state, scope) => {
       let race: (() => Promise<unknown>) | null = null;
       const store = {
         putChunks: (ns: string, chunks: { sha256: string; bytes: Uint8Array }[]) =>
@@ -150,7 +154,7 @@ describe("the owner's environment", () => {
         },
         deleteChunks: (ns: string, shas: string[]) => env.FILES.deleteChunks(ns, shas),
       };
-      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+      const files = filesOn(state.storage, scope, store);
       const fs = new OwnerFilesEnv({ files, rearm });
       getOrThrow(await fs.writeFile("log.txt", new Uint8Array(5000).fill(65), context));
       race = () => files.write("/workspace/log.txt", new Uint8Array([66]),
@@ -232,9 +236,9 @@ describe("the owner's environment", () => {
 
   it("fetches only the kept tail and puts only the new last chunk on an append or truncate",
      async () => {
-    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+    await inScope(ownerObject().stub, async (_instance: OwnerDO, state, scope) => {
       const { store, gets, puts } = counting();
-      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+      const files = filesOn(state.storage, scope, store);
       const fs = new OwnerFilesEnv({ files, rearm });
       const big = new Uint8Array(CHUNK_BYTES + 10).map((_, i) => i % 251);
       getOrThrow(await fs.writeFile("big.bin", big, context));
@@ -255,9 +259,9 @@ describe("the owner's environment", () => {
   });
 
   it("reads a large file two chunks a call, by range or line, never whole", async () => {
-    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+    await inScope(ownerObject().stub, async (_instance: OwnerDO, state, scope) => {
       const { store, gets } = counting();
-      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+      const files = filesOn(state.storage, scope, store);
       const fs = new OwnerFilesEnv({ files, rearm });
       // Five chunks, 16 MiB and one byte, sent by upload as the HTTP door will.
       const piece = new Uint8Array(CHUNK_BYTES).fill(65);
@@ -295,8 +299,8 @@ describe("the owner's environment", () => {
      async () => {
     const r = ownerObject();
     const big = new Uint8Array(INLINE_BYTES + 100).fill(66);
-    await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
-      const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
+    await inScope(r.stub, async (_instance: OwnerDO, state, scope) => {
+      const files = filesOn(state.storage, scope, env.FILES);
       const fs = new OwnerFilesEnv({ files, rearm });
       for (const [name, body] of [["small.txt", "small"], ["big.bin", big]] as const) {
         const spill = getOrThrow(await fs.createTempFile({ prefix: "spill-" }, context));
@@ -308,8 +312,8 @@ describe("the owner's environment", () => {
       expect(getOrThrow(await fs.readBinaryFile("big.bin", context))).toEqual(big);
     });
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
-      const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
+    await inScope(r.stub, async (_instance: OwnerDO, state, scope) => {
+      const files = filesOn(state.storage, scope, env.FILES);
       await files.collect(Date.now() / 1000);
       const fs = new OwnerFilesEnv({ files, rearm });
       expect(getOrThrow(await fs.readBinaryFile("big.bin", context))).toEqual(big);
@@ -330,33 +334,127 @@ describe("the owner's environment", () => {
     });
   });
 
-  it("refuses a tool call's file-store call past its budget, before making it", async () => {
-    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
-      const { store, gets } = counting();
-      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+  it("draws every tool call of one invocation from its one budget, refused before a call " +
+     "past it", async () => {
+    await inScope(ownerObject().stub, async (_instance: OwnerDO, state, scope) => {
+      const { store, gets, puts } = counting();
+      const files = filesOn(state.storage, scope, store);
       await files.write("/workspace/two.bin", new Uint8Array(2 * CHUNK_BYTES).fill(1),
                         { expected: null, writer: "owner" });
-      const fs = new OwnerFilesEnv({ files, rearm });
+      // One pi turn is one invocation: its tool calls, each its own environment built with
+      // no budget of its own, draw on the invocation's one.
+      await scope.run(async () => {
+        const calls = scope.current();
+        const first = new OwnerFilesEnv({ files, rearm });
+        const second = new OwnerFilesEnv({ files, rearm });
+        gets.length = 0;
+        for (let i = 0; i < FILES_CALLS / 2; i++) {
+          getOrThrow(await first.readBinaryFile("two.bin", context));
+          getOrThrow(await second.readBinaryFile("two.bin", context));
+        }
+        expect([calls.made, gets.length]).toEqual([FILES_CALLS, FILES_CALLS]);
+        const over = await second.readBinaryFile("two.bin", context);
+        expect(over.ok ? null : [over.error.code, over.error.message]).toEqual([
+          "not_supported",
+          `the invocation's call budget is spent: files calls may bring it to ${FILES_CALLS} ` +
+          `of the ${INVOCATION_CALLS} service calls one invocation makes, ${FILES_CALLS} are ` +
+          "made and 1 more were asked; read a smaller range, or fewer files at once"]);
+        expect([calls.made, gets.length]).toEqual([FILES_CALLS, FILES_CALLS]);
+        // The gateway and hooks keep their room past what FILES may take.
+        calls.draw("gateway", GATEWAY_HOOKS_HEADROOM);
+        expect(calls.made).toBe(INVOCATION_CALLS);
+        expect(() => calls.draw("hooks", 1)).toThrow(CallsSpent);
+      });
+      for (const bad of [-1, 0.5]) {
+        expect(() => new Calls().draw("files", bad)).toThrow("a draw is a whole number of calls");
+      }
+      // Another invocation's budget, which its puts draw from; a small file moves no bytes
+      // through FILES, so it costs nothing.
+      await scope.run(async () => {
+        const next = new OwnerFilesEnv({ files, rearm });
+        puts.length = 0;
+        for (let i = 0; i < FILES_CALLS; i++) {
+          getOrThrow(await next.writeFile(`p${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i),
+                                          context));
+        }
+        // Bytes no file holds yet, so the write needs a put of its own.
+        const refused = await next.writeFile("one-more.bin",
+                                             new Uint8Array(INLINE_BYTES + 1).fill(255), context);
+        expect(refused.ok ? null : refused.error.code).toBe("not_supported");
+        expect(puts).toHaveLength(FILES_CALLS);
+        expect(getOrThrow(await next.exists("one-more.bin", context))).toBe(false);
+        getOrThrow(await next.writeFile("small.txt", "small", context));
+      });
+    });
+  });
+
+  it("reads a range across more than two chunks as its calls, two chunks a call", async () => {
+    await inScope(ownerObject().stub, async (_instance: OwnerDO, state, scope) => {
+      const { store, gets } = counting();
+      const files = filesOn(state.storage, scope, store);
+      // Two whole chunks and a byte of a third: a range over all three is two calls.
+      const bytes = new Uint8Array(2 * CHUNK_BYTES + 1);
+      bytes.subarray(0, CHUNK_BYTES).fill(1);
+      bytes.subarray(CHUNK_BYTES).fill(2);
+      await files.write("/workspace/three.bin", bytes, { expected: null, writer: "owner" });
+      await scope.run(async () => {
+        const reader = getOrThrow(await new OwnerFilesEnv({ files, rearm })
+          .openBinaryReader("three.bin", undefined, context));
+        gets.length = 0;
+        const span = getOrThrow(await reader.read(0, bytes.byteLength, context));
+        expect(sha256Hex(span)).toBe(sha256Hex(bytes));
+        expect([scope.current().made, gets.map((get) => get.length)]).toEqual([2, [2, 1]]);
+      });
+      // Near the budget's end, a range that needs two calls is refused before either.
+      await scope.run(async () => {
+        const edge = scope.current();
+        edge.draw("files", FILES_CALLS - 1);
+        const near = getOrThrow(await new OwnerFilesEnv({ files, rearm })
+          .openBinaryReader("three.bin", undefined, context));
+        gets.length = 0;
+        const refused = await near.read(0, bytes.byteLength, context);
+        expect(refused.ok ? null : refused.error.code).toBe("not_supported");
+        expect([edge.made, gets.length]).toEqual([FILES_CALLS - 1, 0]);
+        expect(getOrThrow(await near.read(0, 10, context))).toEqual(bytes.slice(0, 10));
+        expect(edge.made).toBe(FILES_CALLS);
+      });
+    });
+  });
+
+  it("gives invocations running at once their own budgets", async () => {
+    await inScope(ownerObject().stub, async (_instance: OwnerDO, state, scope) => {
+      const { store, gets } = counting();
+      const files = filesOn(state.storage, scope, store);
+      await files.write("/workspace/one.bin", new Uint8Array(CHUNK_BYTES).fill(1),
+                        { expected: null, writer: "owner" });
+      // Two invocations interleave at every FILES call; neither draws on the other's count.
       gets.length = 0;
-      for (let i = 0; i < FILES_CALLS; i++) {
-        getOrThrow(await fs.readBinaryFile("two.bin", context));
-      }
-      const over = await fs.readBinaryFile("two.bin", context);
-      expect(over.ok ? null : [over.error.code, over.error.message]).toEqual(["not_supported",
-        `one tool call makes at most ${FILES_CALLS} file-store calls; read a smaller range, ` +
-        "or fewer files at once"]);
-      expect(gets).toHaveLength(FILES_CALLS);
-      // The next tool call's environment has its own budget, which its puts spend too.
-      const next = new OwnerFilesEnv({ files, rearm });
-      for (let i = 0; i < FILES_CALLS; i++) {
-        getOrThrow(await next.writeFile(`p${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i),
-                                        context));
-      }
-      const refused = await next.writeFile("one-more.bin", new Uint8Array(INLINE_BYTES + 1),
-                                           context);
-      expect(refused.ok ? null : refused.error.code).toBe("not_supported");
-      // A small file moves no bytes through FILES, so it costs nothing.
-      getOrThrow(await next.writeFile("small.txt", "small", context));
+      const runs = await Promise.all([0, 1].map(() => scope.run(async () => {
+        const fs = new OwnerFilesEnv({ files, rearm });
+        for (let i = 0; i < FILES_CALLS; i++) {
+          getOrThrow(await fs.readBinaryFile("one.bin", context));
+        }
+        return [(await fs.readBinaryFile("one.bin", context)).ok, scope.current().made];
+      })));
+      expect([runs, gets.length])
+        .toEqual([[[false, FILES_CALLS], [false, FILES_CALLS]], 2 * FILES_CALLS]);
+    });
+  });
+
+  it("refuses a file-store call outside any invocation, loudly, before making it", async () => {
+    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+      const { store, gets, puts } = counting();
+      const files = filesOn(state.storage, new CallScope(), store);
+      const outside = "a service-binding call outside any invocation's scope: enter one at " +
+        "the door or the alarm";
+      await expect(files.write("/workspace/big.bin", new Uint8Array(INLINE_BYTES + 1),
+                               { expected: null, writer: "owner" })).rejects.toThrow(outside);
+      await expect(files.fetch([{ sha256: "a".repeat(64) }])).rejects.toThrow(outside);
+      expect(() => new CallScope().current()).toThrow(outside);
+      expect([gets, puts]).toEqual([[], []]);
+      // A small write makes no call, so it needs no budget.
+      await files.write("/workspace/small.txt", new Uint8Array(3), { expected: null,
+                                                                     writer: "owner" });
     });
   });
 

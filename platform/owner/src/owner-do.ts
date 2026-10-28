@@ -45,6 +45,7 @@
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
+import { CallScope } from "./calls";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { Invalid, Refused } from "./errors";
 import {
@@ -61,14 +62,14 @@ import {
   type Change, fileSettings, Policy, type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
-import { Schedule } from "./schedule";
+import { type Lane, Schedule } from "./schedule";
 import {
   runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner,
 } from "./scheduled";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
-import { runWakes, type WakeSender, WAKES_PER_ALARM } from "./wakes";
+import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
 /**
  * Whose object this is, who is asking and through what: set by the binder from a
@@ -424,6 +425,46 @@ function flag(value: unknown, what: string): boolean {
   return value;
 }
 
+/** What the object's lanes run over: its stores, its in-process callers and the passes. */
+export interface LaneDeps {
+  readonly ledger: Ledger;
+  readonly files: {
+    nextAlarm(now: number): number | null;
+    collect(now: number, until: number): Promise<void>;
+  };
+  readonly work: Scheduled;
+  /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
+  readonly sender: () => WakeSender | null;
+  /** The scheduled-turn runner, or null until tasks 5 constructs one: read at each use. */
+  readonly runner: () => WorkRunner | null;
+  readonly clock: () => number;
+  readonly runWakes: typeof runWakes;
+  readonly runWork: typeof runWork;
+}
+
+/**
+ * The lanes of the object's one schedule (`schedule.ts`). Each lane's pass is handed the
+ * pass's wall-clock end (`until`) and passes it on, so no lane can outrun its hung
+ * timeout; the passes draw their calls from the alarm's scope. The doorbell and runner
+ * are read when a lane looks or runs, so one the object gains later is never missed.
+ * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
+ */
+export function ownerLanes(deps: LaneDeps): Readonly<Record<"wakes" | "files" | "work", Lane>> {
+  return {
+    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
+    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null),
+             run: (_now, until) => deps.runWakes(deps.ledger, deps.sender(), deps.clock,
+                                                 WAKES_PER_ALARM, WAKE_SEND_MS, until) },
+    files: { next: (now) => deps.files.nextAlarm(now),
+             run: (now, until) => deps.files.collect(now, until) },
+    // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
+    // against the authority it was made under.
+    work: { next: (now) => deps.work.nextDue(now, deps.runner() !== null),
+            run: (_now, until) => deps.runWork(deps.work, deps.runner(), deps.clock,
+                                               WORK_PER_PASS, WORK_HANDOFF_MS, until) },
+  };
+}
+
 export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #collections: Collections;
   readonly #policy: Policy;
@@ -435,6 +476,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #registrations: Registrations;
   readonly #schedule: Schedule;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
+  /**
+   * The object's invocations (`calls.ts`): the alarm and every door enter one, and every
+   * service-binding call draws on its budget. On the instance, never at module level.
+   */
+  readonly #calls = new CallScope();
   /**
    * What rings outside agents' doorbells, called in process by the `wakes` lane. None
    * until the doorbell slice (tasks 7) constructs one here; until then the lane only
@@ -456,24 +502,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#sessions = new Sessions(ctx.storage);
     this.#ledger = new Ledger(ctx.storage, this.#grants);
     this.#files = new Files(ctx.storage, env.FILES,
-                            () => fileSettings(this.#policy.read().document));
+                            () => fileSettings(this.#policy.read().document), this.#calls);
     this.#work = new Scheduled(ctx.storage, this.#grants);
     this.#registrations = new Registrations(ctx.storage, this.#grants);
     // The lanes of the one schedule. There is no global tick; each owner's object
     // schedules only itself.
-    this.#schedule = new Schedule({
-      // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
-      wakes: { next: (now) => this.#ledger.nextDue(now, this.#sender !== null),
-               run: (_now, until) => runWakes(this.#ledger, this.#sender, clock,
-                                              WAKES_PER_ALARM, until) },
-      files: { next: (now) => this.#files.nextAlarm(now),
-               run: (now, until) => this.#files.collect(now, until) },
-      // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
-      // against the authority it was made under.
-      work: { next: (now) => this.#work.nextDue(now, this.#runner !== null),
-              run: (_now, until) => runWork(this.#work, this.#runner, clock, WORK_PER_PASS,
-                                            WORK_HANDOFF_MS, until) },
-    }, clock);
+    this.#schedule = new Schedule(ownerLanes({
+      ledger: this.#ledger, files: this.#files, work: this.#work,
+      sender: () => this.#sender, runner: () => this.#runner, clock, runWakes, runWork,
+    }), clock, this.#calls);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
@@ -483,9 +520,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
-  /** The runtime's alarm, which Lifecycle owns: it drives the due jobs, then re-arms. */
+  /**
+   * The runtime's alarm, which Lifecycle owns: it drives the due jobs, then re-arms. It is
+   * one invocation, so every job it drives draws on its one call budget.
+   */
   override async alarm(): Promise<void> {
-    await this.#lifecycle.alarm();
+    await this.#calls.run(() => this.#lifecycle.alarm());
+  }
+
+  /** A door's body, run as its own invocation: a fresh call budget for all it awaits. */
+  #door<T>(act: () => T): T {
+    return this.#calls.run(act);
   }
 
   /**
@@ -591,36 +636,48 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(binding: Binding): { session: string; expires_at: number } {
-    this.#owner(binding, "open its session");
-    return this.#sessions.open(binding.authenticated_at, clock());
+    return this.#door(() => {
+      this.#owner(binding, "open its session");
+      return this.#sessions.open(binding.authenticated_at, clock());
+    });
   }
 
   sessionExtend(binding: Binding): { expires_at: number } {
-    this.#owner(binding, "renew its session");
-    return this.#sessions.extend(binding.session, clock());
+    return this.#door(() => {
+      this.#owner(binding, "renew its session");
+      return this.#sessions.extend(binding.session, clock());
+    });
   }
 
   sessionClose(binding: Binding): { closed: number } {
-    this.#owner(binding, "sign out");
-    return this.#sessions.close(binding.session);
+    return this.#door(() => {
+      this.#owner(binding, "sign out");
+      return this.#sessions.close(binding.session);
+    });
   }
 
   /** Every session signed out: account revocation and deletion (`revoke_owner`). */
   sessionCloseAll(binding: Binding): { closed: number } {
-    this.#owner(binding, "sign out");
-    return this.#sessions.closeAll();
+    return this.#door(() => {
+      this.#owner(binding, "sign out");
+      return this.#sessions.closeAll();
+    });
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------
 
   policyRead(binding: Binding): Projection {
-    const { owner } = this.#owner(binding, "read its policy");
-    return this.#policy.projection(owner);
+    return this.#door(() => {
+      const { owner } = this.#owner(binding, "read its policy");
+      return this.#policy.projection(owner);
+    });
   }
 
   policyReceipts(binding: Binding): { receipts: Receipt[] } {
-    this.#owner(binding, "read its policy");
-    return { receipts: this.#policy.receipts() };
+    return this.#door(() => {
+      this.#owner(binding, "read its policy");
+      return { receipts: this.#policy.receipts() };
+    });
   }
 
   /**
@@ -629,15 +686,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * synced after it (the `files` lane re-applies it).
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
-    const written = this.#widening(binding, "write", request, "write its policy",
-                                   ({ owner }, id) => {
-      const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
-      const done = this.#policy.write(id, r["expected_generation"], r["policy"],
-                                      r["proposal"] ?? null, clock());
-      return { owner, generation: done.generation, digest: done.digest, policy: done.document };
+    return this.#door(async () => {
+      const written = this.#widening(binding, "write", request, "write its policy",
+                                     ({ owner }, id) => {
+        const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
+        const done = this.#policy.write(id, r["expected_generation"], r["policy"],
+                                        r["proposal"] ?? null, clock());
+        return { owner, generation: done.generation, digest: done.digest, policy: done.document };
+      });
+      await this.#schedule.sync();
+      return written;
     });
-    await this.#schedule.sync();
-    return written;
   }
 
   /**
@@ -646,23 +705,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   policyPropose(binding: Binding, request: ProposeRequest):
       { request_digest: string; generation: number } {
-    const account = this.#account(binding);
-    const r = policyFields(request, ["change"], ["request_id"]);
-    this.#scope(account, "propose_policy");
-    return this.#policy.propose(r["change"], r["request_id"] ?? null,
-                                account.origin?.client ?? "owner", clock());
+    return this.#door(() => {
+      const account = this.#account(binding);
+      const r = policyFields(request, ["change"], ["request_id"]);
+      this.#scope(account, "propose_policy");
+      return this.#policy.propose(r["change"], r["request_id"] ?? null,
+                                  account.origin?.client ?? "owner", clock());
+    });
   }
 
   /** The pending card the owner is shown, and the digest its apply must name. */
   policyProposal(binding: Binding, request: CardRequest):
       { change: Change; digest: string } {
-    this.#owner(binding, "read its policy");
-    const r = policyFields(request, ["request_id"]);
-    const held = this.#policy.held(r["request_id"], clock());
-    if (held === null) {
-      throw new Refused("no pending proposal for this card");
-    }
-    return held;
+    return this.#door(() => {
+      this.#owner(binding, "read its policy");
+      const r = policyFields(request, ["request_id"]);
+      const held = this.#policy.held(r["request_id"], clock());
+      if (held === null) {
+        throw new Refused("no pending proposal for this card");
+      }
+      return held;
+    });
   }
 
   /**
@@ -672,18 +735,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
       { agent: Agent; generation: number } {
-    return this.#widening(binding, "wake_limits", request, "change its agents' policy",
-                          (_account, id) => {
-      const r = policyFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s",
-                                       "expected_generation"]);
-      return this.ctx.storage.transactionSync(() => {
-        const agent = this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
-                                                 r["batch_window_s"]);
-        const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
-                         batch_window_s: agent.batch_window_s };
-        const generation = this.#policy.changed(id, r["expected_generation"], "wake_limits",
-                                                limits, agent.agent_id, clock());
-        return { agent, generation };
+    return this.#door(() => {
+      return this.#widening(binding, "wake_limits", request, "change its agents' policy",
+                            (_account, id) => {
+        const r = policyFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s",
+                                         "expected_generation"]);
+        return this.ctx.storage.transactionSync(() => {
+          const agent = this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
+                                                   r["batch_window_s"]);
+          const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
+                           batch_window_s: agent.batch_window_s };
+          const generation = this.#policy.changed(id, r["expected_generation"], "wake_limits",
+                                                  limits, agent.agent_id, clock());
+          return { agent, generation };
+        });
       });
     });
   }
@@ -691,39 +756,45 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- OUTSIDE_CLIENTS: grants (P0-3) ---------------------------------------------
 
   grantList(binding: Binding): { clients: Client[] } {
-    this.#owner(binding, "read its outside clients");
-    return { clients: this.#grants.list() };
+    return this.#door(() => {
+      this.#owner(binding, "read its outside clients");
+      return { clients: this.#grants.list() };
+    });
   }
 
   /** The owner's widening, in its session; the client's agents' wakes end with it. */
   async grantSet(binding: Binding, request: GrantRequest):
       Promise<{ client: string; mode: string; scopes: Scope[]; generation: number }> {
-    const set = this.#widening(binding, "outside_set", request,
-                               "change an outside client's grant", (_account, id) => {
-      const r = policyFields(request, ["client", "source", "mode", "scopes",
-                                       "expected_generation", "name"]);
-      return this.ctx.storage.transactionSync(() => {
-        const changed = this.#grants.set(id, r as unknown as GrantRequest, clock());
-        this.#endClient(changed.client);
-        return changed;
+    return this.#door(async () => {
+      const set = this.#widening(binding, "outside_set", request,
+                                 "change an outside client's grant", (_account, id) => {
+        const r = policyFields(request, ["client", "source", "mode", "scopes",
+                                         "expected_generation", "name"]);
+        return this.ctx.storage.transactionSync(() => {
+          const changed = this.#grants.set(id, r as unknown as GrantRequest, clock());
+          this.#endClient(changed.client);
+          return changed;
+        });
       });
+      await this.#schedule.sync();
+      return set;
     });
-    await this.#schedule.sync();
-    return set;
   }
 
   /** A narrowing the owner's account makes without a session, as a key's revoke does. */
   async grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number }> {
-    this.#owner(binding, "revoke an outside client's grant");
-    const r = policyFields(request, ["client"]);
-    const revoked = this.ctx.storage.transactionSync(() => {
-      const result = this.#grants.revoke(r["client"], clock());
-      this.#endClient(result.client);
-      return result;
+    return this.#door(async () => {
+      this.#owner(binding, "revoke an outside client's grant");
+      const r = policyFields(request, ["client"]);
+      const revoked = this.ctx.storage.transactionSync(() => {
+        const result = this.#grants.revoke(r["client"], clock());
+        this.#endClient(result.client);
+        return result;
+      });
+      await this.#schedule.sync();
+      return revoked;
     });
-    await this.#schedule.sync();
-    return revoked;
   }
 
   /**
@@ -732,9 +803,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * refused, so the owner's account makes it without a session. Never an MCP client's.
    */
   grantForget(binding: Binding, request: ClientRequest): { client: string; forgotten: boolean } {
-    this.#owner(binding, "forget an outside client's grant");
-    const r = policyFields(request, ["client"]);
-    return this.#grants.forgetKey(r["client"], clock());
+    return this.#door(() => {
+      this.#owner(binding, "forget an outside client's grant");
+      const r = policyFields(request, ["client"]);
+      return this.#grants.forgetKey(r["client"], clock());
+    });
   }
 
   /**
@@ -744,10 +817,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   grantForgetRevoked(binding: Binding, request: ForgetRequest):
       { forgotten: string[]; mcp_fence: number } {
-    return this.#widening(binding, "outside_forget", request,
-                          "forget its revoked outside clients", (_account, id) => {
-      const r = policyFields(request, ["clients"]);
-      return this.#grants.forgetRevoked(id, r["clients"], clock());
+    return this.#door(() => {
+      return this.#widening(binding, "outside_forget", request,
+                            "forget its revoked outside clients", (_account, id) => {
+        const r = policyFields(request, ["clients"]);
+        return this.#grants.forgetRevoked(id, r["clients"], clock());
+      });
     });
   }
 
@@ -766,8 +841,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** The owner sees every agent; an outside caller only its own identity's. */
   outsideAgents(binding: Binding): { agents: Agent[] } {
-    const { origin } = this.#account(binding);
-    return { agents: this.#ledger.agents(origin) };
+    return this.#door(() => {
+      const { origin } = this.#account(binding);
+      return { agents: this.#ledger.agents(origin) };
+    });
   }
 
   /**
@@ -779,22 +856,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * together with the owner's session.
    */
   async registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
-    const agent = this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
-                                 ({ origin }) => {
-      if (origin === null) {
-        const r = ledgerFields(request, ["card_id", "digest"]);
-        return this.ctx.storage.transactionSync(() => {
-          const card = this.#registrations.take(r["card_id"], r["digest"], clock());
-          return this.#ledger.register(card.origin, card.source,
-                                       card.request as unknown as RegisterRequest);
-        });
-      }
-      const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
-                                       "recipe_id"]);
-      return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
-    }, { registering: true });
-    await this.#schedule.sync();
-    return agent;
+    return this.#door(async () => {
+      const agent = this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
+                                   ({ origin }) => {
+        if (origin === null) {
+          const r = ledgerFields(request, ["card_id", "digest"]);
+          return this.ctx.storage.transactionSync(() => {
+            const card = this.#registrations.take(r["card_id"], r["digest"], clock());
+            return this.#ledger.register(card.origin, card.source,
+                                         card.request as unknown as RegisterRequest);
+          });
+        }
+        const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
+                                         "recipe_id"]);
+        return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
+      }, { registering: true });
+      await this.#schedule.sync();
+      return agent;
+    });
   }
 
   /**
@@ -804,29 +883,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   registerPropose(binding: Binding, request: RegisterRequest):
       { card_id: string; digest: string; expires_at: number } {
-    const account = this.#account(binding);
-    if (account.origin === null || account.grant === null) {
-      throw new Refused("only an outside client files its own agent's registration");
-    }
-    if (registrant(binding.source, account.origin).kind !== "mcp") {
-      throw new Refused("an API key's agent registers from the owner's browser with the key");
-    }
-    const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
-                                     "recipe_id"]);
-    return this.#registrations.file(account.origin, (binding.source as Source).ref, {
-      client: account.origin.client, generation: account.grant.generation,
-      authenticated_at: binding.authenticated_at ?? null }, r, clock());
+    return this.#door(() => {
+      const account = this.#account(binding);
+      if (account.origin === null || account.grant === null) {
+        throw new Refused("only an outside client files its own agent's registration");
+      }
+      if (registrant(binding.source, account.origin).kind !== "mcp") {
+        throw new Refused("an API key's agent registers from the owner's browser with the key");
+      }
+      const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
+                                       "recipe_id"]);
+      return this.#registrations.file(account.origin, (binding.source as Source).ref, {
+        client: account.origin.client, generation: account.grant.generation,
+        authenticated_at: binding.authenticated_at ?? null }, r, clock());
+    });
   }
 
   /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(binding: Binding, request: RegistrationCardRequest): Card {
-    this.#owner(binding, "read its agents' registrations");
-    const r = ledgerFields(request, ["card_id"]);
-    const card = this.#registrations.card(r["card_id"], clock());
-    if (card === null) {
-      throw new Refused("no pending registration for this card");
-    }
-    return card;
+    return this.#door(() => {
+      this.#owner(binding, "read its agents' registrations");
+      const r = ledgerFields(request, ["card_id"]);
+      const card = this.#registrations.card(r["card_id"], clock());
+      if (card === null) {
+        throw new Refused("no pending registration for this card");
+      }
+      return card;
+    });
   }
 
   /**
@@ -834,52 +917,62 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * holds no owner session, and its call never carries one.
    */
   async disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
-    const agent = this.#widening(binding, "OUTSIDE_AGENTS.disable", request, null,
-                                 ({ origin }) => {
-      const r = ledgerFields(request, ["agent_id", "reason"]);
-      return this.#ledger.disable(r["agent_id"], r["reason"], origin);
+    return this.#door(async () => {
+      const agent = this.#widening(binding, "OUTSIDE_AGENTS.disable", request, null,
+                                   ({ origin }) => {
+        const r = ledgerFields(request, ["agent_id", "reason"]);
+        return this.#ledger.disable(r["agent_id"], r["reason"], origin);
+      });
+      await this.#schedule.sync();
+      return agent;
     });
-    await this.#schedule.sync();
-    return agent;
   }
 
   /** Only the owner itself, in its session, deletes an agent. */
   async deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
-    const deleted = this.#widening(binding, "OUTSIDE_AGENTS.delete", request,
-                                   "change its agents' policy", () => {
-      const r = ledgerFields(request, ["agent_id"]);
-      return this.#ledger.remove(r["agent_id"]);
+    return this.#door(async () => {
+      const deleted = this.#widening(binding, "OUTSIDE_AGENTS.delete", request,
+                                     "change its agents' policy", () => {
+        const r = ledgerFields(request, ["agent_id"]);
+        return this.#ledger.remove(r["agent_id"]);
+      });
+      await this.#schedule.sync();
+      return deleted;
     });
-    await this.#schedule.sync();
-    return deleted;
   }
 
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
 
   async roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    const account = this.#account(binding);
-    const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
-    this.#scope(account, "write_graph");
-    const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
-                                     r["body"], r["parent_id"]);
-    await this.#schedule.sync();
-    return posted;
+    return this.#door(async () => {
+      const account = this.#account(binding);
+      const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
+      this.#scope(account, "write_graph");
+      const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
+                                       r["body"], r["parent_id"]);
+      await this.#schedule.sync();
+      return posted;
+    });
   }
 
   mailboxRead(binding: Binding, request: ReadRequest): MailPage {
-    const account = this.#account(binding);
-    const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
-    this.#scope(account, "read_graph");
-    return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
-                             r["pad_bytes"] ?? 0);
+    return this.#door(() => {
+      const account = this.#account(binding);
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
+      this.#scope(account, "read_graph");
+      return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
+                               r["pad_bytes"] ?? 0);
+    });
   }
 
   mailboxAck(binding: Binding, request: AckRequest): { reader: string; through: number } {
-    const account = this.#account(binding);
-    const r = ledgerFields(request, ["through"]);
-    this.#scope(account, "write_graph");
-    return this.#ledger.ack(account.origin, r["through"]);
+    return this.#door(() => {
+      const account = this.#account(binding);
+      const r = ledgerFields(request, ["through"]);
+      this.#scope(account, "write_graph");
+      return this.#ledger.ack(account.origin, r["through"]);
+    });
   }
 
   /**
@@ -890,12 +983,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   mailboxSubscriber(binding: Binding, request: SubscriberRequest):
       { agent_id: string; generation: number } {
-    const account = this.#account(binding);
-    const r = ledgerFields(request, ["command_center_id", "agent_id"]);
-    this.#scope(account, "read_graph", r["command_center_id"]);
-    const generation = this.#ledger.subscriber(account.origin, r["command_center_id"],
-                                               r["agent_id"]);
-    return { agent_id: r["agent_id"] as string, generation };
+    return this.#door(() => {
+      const account = this.#account(binding);
+      const r = ledgerFields(request, ["command_center_id", "agent_id"]);
+      this.#scope(account, "read_graph", r["command_center_id"]);
+      const generation = this.#ledger.subscriber(account.origin, r["command_center_id"],
+                                                 r["agent_id"]);
+      return { agent_id: r["agent_id"] as string, generation };
+    });
   }
 
   /**
@@ -942,55 +1037,68 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   collectionWrite(binding: Binding, request: WriteRequest): { row: Row } | Conflicted {
-    const { owner, caller } = this.#collector(binding, "write_graph");
-    const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
-                     ["history_op"]);
-    return conflicted(() => ({
-      row: this.#collections.write(owner, caller, r["collection"] as string,
-                                   r["row_id"] as string, r["body"], r["expected_etag"],
-                                   r["private"], "history_op" in r ? r["history_op"] : "write"),
-    }));
+    return this.#door(() => {
+      const { owner, caller } = this.#collector(binding, "write_graph");
+      const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
+                       ["history_op"]);
+      return conflicted(() => ({
+        row: this.#collections.write(owner, caller, r["collection"] as string,
+                                     r["row_id"] as string, r["body"], r["expected_etag"],
+                                     r["private"], "history_op" in r ? r["history_op"] : "write"),
+      }));
+    });
   }
 
   collectionPull(binding: Binding, request: PullRequest): Page {
-    const { caller } = this.#collector(binding, "read_graph");
-    const r = fields(request, ["collection", "after", "limit"]);
-    return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
+    return this.#door(() => {
+      const { caller } = this.#collector(binding, "read_graph");
+      const r = fields(request, ["collection", "after", "limit"]);
+      return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
+    });
   }
 
   collectionGet(binding: Binding, request: KeyRequest): { row: Row | null } {
-    const { caller } = this.#collector(binding, "read_graph");
-    const r = fields(request, ["collection", "row_id"]);
-    return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
+    return this.#door(() => {
+      const { caller } = this.#collector(binding, "read_graph");
+      const r = fields(request, ["collection", "row_id"]);
+      return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
+    });
   }
 
   collectionHistory(binding: Binding, request: KeyRequest): { entries: HistoryEntry[] } {
-    const { caller } = this.#collector(binding, "read_graph");
-    const r = fields(request, ["collection", "row_id"]);
-    return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
+    return this.#door(() => {
+      const { caller } = this.#collector(binding, "read_graph");
+      const r = fields(request, ["collection", "row_id"]);
+      return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
+    });
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest): { deleted: number } | Conflicted {
-    const { owner, caller } = this.#collector(binding, "write_graph");
-    this.#ownerOnly(owner, caller, "delete");
-    const r = fields(request, ["collection", "row_id", "expected_etag"]);
-    return conflicted(() => this.#collections.delete(
-      caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
-    ));
+    return this.#door(() => {
+      const { owner, caller } = this.#collector(binding, "write_graph");
+      this.#ownerOnly(owner, caller, "delete");
+      const r = fields(request, ["collection", "row_id", "expected_etag"]);
+      return conflicted(() => this.#collections.delete(
+        caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
+      ));
+    });
   }
 
   collectionClear(binding: Binding, request: ClearRequest): { deleted: number } {
-    const { owner, caller } = this.#collector(binding, "write_graph");
-    this.#ownerOnly(owner, caller, "clear");
-    const r = fields(request, ["collection", "writer"]);
-    return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
+    return this.#door(() => {
+      const { owner, caller } = this.#collector(binding, "write_graph");
+      this.#ownerOnly(owner, caller, "clear");
+      const r = fields(request, ["collection", "writer"]);
+      return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
+    });
   }
 
   // -- FILES: the owner's file tree (plan §6) --------------------------------------
   //
   // These doors move at most two chunks a call, so no request nears the 32 service calls
   // one request may make. The HTTP and MCP doors (tasks 2) stream larger files from the
-  // binder to `FILES` itself.
+  // binder to `FILES` itself. Each door is its own invocation, with its own call budget
+  // (`calls.ts`): another RPC may run in the object whenever this one awaits `FILES`.
 
   /**
    * A file door's account: the owner's own, or an outside client admitted against its
@@ -1013,16 +1121,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   fileStat(binding: Binding, request: FileRequest): { entry: Entry | null } {
-    this.#filer(binding, "read_files");
-    const r = fileFields(request, ["path"]);
-    return { entry: this.#files.stat(r["path"]) };
+    return this.#door(() => {
+      this.#filer(binding, "read_files");
+      const r = fileFields(request, ["path"]);
+      return { entry: this.#files.stat(r["path"]) };
+    });
   }
 
   fileList(binding: Binding, request: FileListRequest):
       { entries: Entry[]; next: string | null } {
-    this.#filer(binding, "read_files");
-    const r = fileFields(request, ["dir", "limit"], ["after"]);
-    return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+    return this.#door(() => {
+      this.#filer(binding, "read_files");
+      const r = fileFields(request, ["dir", "limit"], ["after"]);
+      return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+    });
   }
 
   /**
@@ -1031,46 +1143,52 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileRead(binding: Binding, request: FileReadRequest):
       { entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] } {
-    this.#filer(binding, "read_files");
-    const r = fileFields(request, ["path"], ["etag"]);
-    const content: Content = this.#files.open(r["path"]);
-    if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
-      return { entry: content.entry, not_modified: true };
-    }
-    const { content_id: _id, ...shown } = content;
-    return shown;
+    return this.#door(() => {
+      this.#filer(binding, "read_files");
+      const r = fileFields(request, ["path"], ["etag"]);
+      const content: Content = this.#files.open(r["path"]);
+      if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
+        return { entry: content.entry, not_modified: true };
+      }
+      const { content_id: _id, ...shown } = content;
+      return shown;
+    });
   }
 
   /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
-    this.#filer(binding, "read_files");
-    const r = fileFields(request, ["path", "version", "first", "count"]);
-    const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
-    const first = r["first"];
-    const many = r["count"];
-    if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
-        || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
-        || first + many > chunks.length) {
-      throw new Invalid("first and count name 1 or 2 of the version's chunks");
-    }
-    return { chunks: await this.#files.fetch(chunks.slice(first, first + many)
-      .map(({ sha256 }) => ({ sha256 }))) };
+    return this.#door(async () => {
+      this.#filer(binding, "read_files");
+      const r = fileFields(request, ["path", "version", "first", "count"]);
+      const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
+      const first = r["first"];
+      const many = r["count"];
+      if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
+          || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
+          || first + many > chunks.length) {
+        throw new Invalid("first and count name 1 or 2 of the version's chunks");
+      }
+      return { chunks: await this.#files.fetch(chunks.slice(first, first + many)
+        .map(({ sha256 }) => ({ sha256 }))) };
+    });
   }
 
   /** Write a whole file of at most one chunk (4 MiB); larger ones go by upload. */
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
-    const content = r["content"];
-    if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-      throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
-    }
-    return this.#filing(() => fileConflicted(async () => ({
-      entry: await this.#files.write(r["path"], content, {
-        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
-    })));
+    return this.#door(async () => {
+      const account = this.#filer(binding, "write_files");
+      const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
+      const content = r["content"];
+      if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
+        throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
+      }
+      return this.#filing(() => fileConflicted(async () => ({
+        entry: await this.#files.write(r["path"], content, {
+          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+      })));
+    });
   }
 
   /**
@@ -1079,88 +1197,108 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
-    this.#filer(binding, "write_files");
-    const r = fileFields(request, ["size", "chunks"]);
-    return this.#filing(() => this.#files.begin(r["size"], r["chunks"]));
+    return this.#door(async () => {
+      this.#filer(binding, "write_files");
+      const r = fileFields(request, ["size", "chunks"]);
+      return this.#filing(() => this.#files.begin(r["size"], r["chunks"]));
+    });
   }
 
   /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
   async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
       Promise<{ created: number }> {
-    this.#filer(binding, "write_files");
-    const r = fileFields(request, ["intent_id", "chunks"]);
-    return this.#files.upload(r["intent_id"], r["chunks"]);
+    return this.#door(async () => {
+      this.#filer(binding, "write_files");
+      const r = fileFields(request, ["intent_id", "chunks"]);
+      return this.#files.upload(r["intent_id"], r["chunks"]);
+    });
   }
 
   /** Commit an upload whose chunks are all stored as the file it declared. */
   async fileUploadCommit(binding: Binding, request: UploadCommitRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
-    return this.#filing(() => fileConflicted(() => ({
-      entry: this.#files.commit(r["intent_id"], r["path"], {
-        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
-    })));
+    return this.#door(async () => {
+      const account = this.#filer(binding, "write_files");
+      const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
+      return this.#filing(() => fileConflicted(() => ({
+        entry: this.#files.commit(r["intent_id"], r["path"], {
+          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+      })));
+    });
   }
 
   async fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
-    this.#filer(binding, "write_files");
-    const r = fileFields(request, ["intent_id"]);
-    return this.#filing(() => this.#files.abort(r["intent_id"]));
+    return this.#door(async () => {
+      this.#filer(binding, "write_files");
+      const r = fileFields(request, ["intent_id"]);
+      return this.#filing(() => this.#files.abort(r["intent_id"]));
+    });
   }
 
   async fileMkdir(binding: Binding, request: MkdirRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["path", "expected_etag"]);
-    return this.#filing(() => fileConflicted(() => ({
-      entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
-                                            writer: fileWriter(account) }),
-    })));
+    return this.#door(async () => {
+      const account = this.#filer(binding, "write_files");
+      const r = fileFields(request, ["path", "expected_etag"]);
+      return this.#filing(() => fileConflicted(() => ({
+        entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
+                                              writer: fileWriter(account) }),
+      })));
+    });
   }
 
   async fileRemove(binding: Binding, request: RemoveRequest):
       Promise<{ removed: number } | FileConflicted> {
-    const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["path", "expected_etag", "recursive"]);
-    return this.#filing(() => fileConflicted(() => this.#files.remove(r["path"], {
-      expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
-      writer: fileWriter(account) })));
+    return this.#door(async () => {
+      const account = this.#filer(binding, "write_files");
+      const r = fileFields(request, ["path", "expected_etag", "recursive"]);
+      return this.#filing(() => fileConflicted(() => this.#files.remove(r["path"], {
+        expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
+        writer: fileWriter(account) })));
+    });
   }
 
   async fileRename(binding: Binding, request: RenameRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
-    return this.#filing(() => fileConflicted(() => ({
-      entry: this.#files.rename(r["from"], r["to"], {
-        expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
-        writer: fileWriter(account) }),
-    })));
+    return this.#door(async () => {
+      const account = this.#filer(binding, "write_files");
+      const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
+      return this.#filing(() => fileConflicted(() => ({
+        entry: this.#files.rename(r["from"], r["to"], {
+          expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
+          writer: fileWriter(account) }),
+      })));
+    });
   }
 
   fileHistory(binding: Binding, request: FileHistoryRequest):
       { changes: FileChange[]; next: number | null } {
-    this.#filer(binding, "read_files");
-    const r = fileFields(request, ["path", "limit"], ["before"]);
-    return this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
+    return this.#door(() => {
+      this.#filer(binding, "read_files");
+      const r = fileFields(request, ["path", "limit"], ["before"]);
+      return this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
+    });
   }
 
   async fileRestore(binding: Binding, request: RestoreRequest):
       Promise<{ entry: Entry } | FileConflicted> {
-    const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["path", "version", "expected_etag"]);
-    return this.#filing(() => fileConflicted(() => ({
-      entry: this.#files.restore(r["path"], r["version"], {
-        expected: r["expected_etag"], writer: fileWriter(account) }),
-    })));
+    return this.#door(async () => {
+      const account = this.#filer(binding, "write_files");
+      const r = fileFields(request, ["path", "version", "expected_etag"]);
+      return this.#filing(() => fileConflicted(() => ({
+        entry: this.#files.restore(r["path"], r["version"], {
+          expected: r["expected_etag"], writer: fileWriter(account) }),
+      })));
+    });
   }
 
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
   async fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
-    this.#owner(binding, "redact its file history");
-    const r = fileFields(request, ["path", "version"]);
-    return this.#filing(() => this.#files.redact(r["path"], r["version"]));
+    return this.#door(async () => {
+      this.#owner(binding, "redact its file history");
+      const r = fileFields(request, ["path", "version"]);
+      return this.#filing(() => this.#files.redact(r["path"], r["version"]));
+    });
   }
 
   /**
@@ -1168,49 +1306,63 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * outside client's, and never refused for a quota.
    */
   async fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
-    this.#owner(binding, "purge its file history");
-    const r = fileFields(request, ["path"]);
-    return this.#filing(() => this.#files.purge(r["path"]));
+    return this.#door(async () => {
+      this.#owner(binding, "purge its file history");
+      const r = fileFields(request, ["path"]);
+      return this.#filing(() => this.#files.purge(r["path"]));
+    });
   }
 
   fileChanges(binding: Binding, request: ChangesRequest):
       { changes: FileChange[]; cursor: number; reset: boolean } {
-    this.#filer(binding, "read_files");
-    const r = fileFields(request, ["after", "limit"]);
-    return this.#files.changes(r["after"], r["limit"]);
+    return this.#door(() => {
+      this.#filer(binding, "read_files");
+      const r = fileFields(request, ["after", "limit"]);
+      return this.#files.changes(r["after"], r["limit"]);
+    });
   }
 
   fileUsage(binding: Binding): Usage {
-    this.#filer(binding, "read_files");
-    return this.#files.usage();
+    return this.#door(() => {
+      this.#filer(binding, "read_files");
+      return this.#files.usage();
+    });
   }
 
   // The sync lease is the owner's own: the sandbox's sync agent reaches it through the
   // binder with a lease token (tasks 2), as the owner, never as an outside client.
 
   fileLeaseAcquire(binding: Binding, request: { holder: string }): Lease {
-    this.#owner(binding, "hold the file sync lease");
-    const r = fileFields(request, ["holder"]);
-    return this.#files.leaseAcquire(r["holder"]);
+    return this.#door(() => {
+      this.#owner(binding, "hold the file sync lease");
+      const r = fileFields(request, ["holder"]);
+      return this.#files.leaseAcquire(r["holder"]);
+    });
   }
 
   fileLeaseRenew(binding: Binding, request: LeaseRequest): Lease {
-    this.#owner(binding, "hold the file sync lease");
-    const r = fileFields(request, ["lease_id", "epoch"]);
-    return this.#files.leaseRenew(r["lease_id"], r["epoch"]);
+    return this.#door(() => {
+      this.#owner(binding, "hold the file sync lease");
+      const r = fileFields(request, ["lease_id", "epoch"]);
+      return this.#files.leaseRenew(r["lease_id"], r["epoch"]);
+    });
   }
 
   fileLeaseRelease(binding: Binding, request: LeaseRequest): { released: boolean } {
-    this.#owner(binding, "hold the file sync lease");
-    const r = fileFields(request, ["lease_id", "epoch"]);
-    return this.#files.leaseRelease(r["lease_id"], r["epoch"]);
+    return this.#door(() => {
+      this.#owner(binding, "hold the file sync lease");
+      const r = fileFields(request, ["lease_id", "epoch"]);
+      return this.#files.leaseRelease(r["lease_id"], r["epoch"]);
+    });
   }
 
   async fileSyncCommit(binding: Binding, request: SyncCommitRequest):
       Promise<{ outcomes: SyncOutcome[] }> {
-    this.#owner(binding, "hold the file sync lease");
-    const r = fileFields(request, ["lease_id", "epoch", "ops"]);
-    return this.#filing(() => this.#files.syncCommit({ lease_id: r["lease_id"],
-                                                       epoch: r["epoch"], ops: r["ops"] }));
+    return this.#door(async () => {
+      this.#owner(binding, "hold the file sync lease");
+      const r = fileFields(request, ["lease_id", "epoch", "ops"]);
+      return this.#filing(() => this.#files.syncCommit({ lease_id: r["lease_id"],
+                                                         epoch: r["epoch"], ops: r["ops"] }));
+    });
   }
 }
