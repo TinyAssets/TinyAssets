@@ -16,7 +16,7 @@ import {
 } from "../src/files";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
+import { failure, fileCounters, inFiles, lostContent, sqlIn, text } from "./support";
 
 const W = "/workspace";
 
@@ -334,6 +334,52 @@ describe("a content id", () => {
       expect((await failure(() => upload(r, `${W}/a`, pieces))).message)
         .toBe("a content id names other stored content");
     });
+});
+
+describe("garbage collection", () => {
+  it("never collects content that an entry or a kept history row names, in any root",
+     async () => {
+    const r = await rig();
+    const body = (seed: number) => filled(INLINE_BYTES + 10, seed);
+    const limits = { keep_versions: 1, keep_recent: 2 };
+    const other = await inFiles(r.stub, limits, async (files) => {
+      const o = { expected: null, writer: "o" };
+      const temp = files.tempDir("t-", "agent");
+      const kept = files.tempDir("t-", "agent");
+      for (const seed of [1, 2, 3]) {
+        await files.write(`${W}/a`, body(seed), o);
+      }
+      await files.write(`${temp}/t`, body(4), o);
+      await files.write(`${temp}/u`, body(5), o);
+      await files.write(`${temp}/same-as-a`, body(3), o);
+      files.rename(`${temp}/t`, `${W}/from-temp`, { ...o, replace: false });
+      files.rename(`${temp}/u`, `${kept}/u`, { ...o, replace: false });
+      files.rename(`${W}/a`, `${kept}/a`, { ...o, replace: false });
+      await files.write(`${W}/b`, body(6), o);
+      files.remove(`${W}/b`, o);
+      files.dropTemps([temp], "agent");
+      return kept;
+    });
+    // The rows marked as these limits keep them, every marked row due, then every garbage
+    // chunk: three passes collect all there is to collect.
+    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
+    await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
+    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
+    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
+    expect(await lostContent(r.stub)).toEqual([]);
+    expect(await read(r, `${W}/from-temp`)).toEqual(body(4));
+    await inFiles(r.stub, limits, async (files) => {
+      for (const [name, seed] of [["u", 5], ["a", 3]] as const) {
+        const [chunk] = files.open(`${other}/${name}`).chunks!;
+        expect((await files.fetch([{ sha256: chunk!.sha256 }]))[0]).toEqual(body(seed));
+      }
+    });
+    // Only what nothing names went: a's older versions and b's bytes.
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 3 }]);
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+  });
 });
 
 describe("a chunk", () => {

@@ -144,15 +144,16 @@ live acceptance is still owed says so.
   chunks' bytes a call, keys built by `keys.ts` alone), and the owner's one `FILES`
   service binding, its Worker held to one `r2_buckets` entry by the config guard.
   Quotas and retention are owner policy (the document's optional `files` table over
-  `FILE_DEFAULTS`, refused unless `max_entries` times `keep_versions` fits
-  `max_history`); a change that only frees is never refused by a quota; the owner alone
+  `FILE_DEFAULTS`, refused unless `max_entries` times the larger of `keep_versions` and
+  `keep_recent` fits `max_history`); a change that only frees is never refused by a quota; the owner alone
   purges a path's history (`fileHistoryPurge`); `/.ta/tmp` keeps no history. An upload
   declares its size and its 4 MiB plan, a chunk is stored only once `FILES` accepted
   it, content ids carry their kind and size, and a sync commit answers each op. Declared
   differences from the research: a version is named by the owner-wide seq (a dense
-  per-path counter would repeat once a deleted path's history ages out); content refs
-  count history rows only (a live entry's content is always its newest row's); a
-  whole-file SHA-256 is not stored (the content id is checked from the chunk hashes R2
+  per-path counter would repeat once a deleted path's history ages out); a content's
+  refs count every entry and every kept history row naming it, in every root (a row or
+  two more per write: 22 rows for a new one-chunk file); a whole-file SHA-256 is not
+  stored (the content id is checked from the chunk hashes R2
   verified).
 - [ ] 6.2 The pi `ExecutionEnv` over the manifest (`files-env.ts`), passing pi-durable
   1.4.0's conformance suite but for `exec`, symlinks off, with a write to a path it read

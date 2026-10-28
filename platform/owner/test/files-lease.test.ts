@@ -249,6 +249,25 @@ describe("a sync commit", () => {
     expect(await readText(r, `${W}/out`)).toBe("the API made out a file");
   });
 
+  it("refuses, as that op's outcome, a copy whose whole path would pass 4096 bytes",
+     async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    await write(r, `${W}/out`, "the API made out a file");
+    // 4096 bytes exactly: a path the sandbox may hold, whose copy under out's could not.
+    const deep = `${W}/out${`/${"x".repeat(254)}`.repeat(16)}/y`;
+    expect(new TextEncoder().encode(deep).byteLength).toBe(4096);
+    const { outcomes } = await sync(r, lease, [
+      { op: "write", path: deep, base: null, inline: text("deep") },
+      { op: "write", path: `${W}/ok`, base: null, inline: text("fine") },
+    ]);
+    expect(outcomes.map((o) => o.outcome)).toEqual(["refused", "committed"]);
+    expect(outcomes[0]).toMatchObject({ reason: "the conflict copy's path would pass 4096 " +
+      "bytes; the sandbox keeps this file and reports it each sync" });
+    expect((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
+      .map((e) => e.path)).toEqual([`${W}/ok`, `${W}/out`]);
+  });
+
   it("names copies within 255 bytes, never over another file, and one per conflict", async () => {
     const r = await rig();
     const long = `${W}/${"é".repeat(125)}x.md`;

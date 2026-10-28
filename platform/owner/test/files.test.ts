@@ -7,7 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
+import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { apiKeyOrigin } from "../src/ledger";
@@ -179,6 +179,18 @@ describe("a file write", () => {
         path: `${W}/v.bin`, version: v1, ...bad }))).message)
         .toBe("first and count name 1 or 2 of the version's chunks");
     }
+  });
+
+  it("reads at most two chunks a door call, of a file with more", async () => {
+    const r = await rig();
+    const bytes = new Uint8Array(2 * CHUNK_BYTES + 1).fill(4);
+    const { version } = await inFiles(r.stub, {}, (files) => files.write(
+      `${W}/three.bin`, bytes, { expected: null, writer: "owner" }));
+    const read = (first: number, count: number) => r.stub.fileReadChunks(
+      r.bind(null), { path: `${W}/three.bin`, version, first, count });
+    expect((await read(1, 2)).chunks.map((chunk) => chunk.byteLength)).toEqual([CHUNK_BYTES, 1]);
+    expect((await failure(() => read(0, 3))).message)
+      .toBe("first and count name 1 or 2 of the version's chunks");
   });
 
   it("keeps the mode it had when an overwrite names none", async () => {

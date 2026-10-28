@@ -125,12 +125,14 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      composite only). A call moves at most two chunks' bytes, and a request may
      make at most 32 service-binding calls. The binder, the trust root, may
      stream chunks to it with a namespace read from the owner's object.
-   - **Versions and GC:** 30 days plus each live path's last 10 versions, as
-     owner policy; chunks are reference-counted, recorded before any byte is
-     sent, counted stored only once the files Worker accepted them, and deleted
-     after a 24 h grace on the object's one schedule, so GC never lists the
-     bucket. Quotas, also owner policy, refuse loudly, but never a change that
-     only frees; the policy keeps `max_entries` times `keep_versions` within
+   - **Versions and GC:** each live path's last 10 versions, and its versions
+     of the last 30 days up to 20 in all, as owner policy; every entry and kept
+     history row holds its content, in every root; chunks are
+     reference-counted, recorded before any byte is sent, counted stored only
+     once the files Worker accepted them, and deleted after a 24 h grace on the
+     object's one schedule, so GC never lists the bucket. Quotas, also owner
+     policy, refuse loudly, but never a change that only frees; the policy keeps
+     `max_entries` times the larger of `keep_versions` and `keep_recent` within
      `max_history`, and the owner may purge a path's history.
    - **Sync:** a lease of a random id (the claim token) and a rising epoch
      (fencing). API writes never take it; when both sides changed a file the
