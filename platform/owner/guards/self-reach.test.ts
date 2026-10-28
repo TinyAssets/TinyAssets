@@ -16,7 +16,7 @@ import { parse, reporter, workerSources } from "./sources";
 
 const RUNTIME = "cloudflare:workers";
 /** What a source may import from the runtime module: the classes it extends. */
-const RUNTIME_IMPORTS = new Set(["DurableObject", "RpcTarget"]);
+const RUNTIME_IMPORTS = new Set(["DurableObject", "RpcTarget", "WorkerEntrypoint"]);
 
 function runtimeModule(node: ts.Node): boolean {
   return ts.isStringLiteralLike(node) && node.text === RUNTIME;
@@ -89,6 +89,7 @@ describe("self-reach guard", () => {
   it.each([
     "import { DurableObject } from 'cloudflare:workers';",
     "import { DurableObject, RpcTarget } from 'cloudflare:workers';",
+    "import { WorkerEntrypoint } from 'cloudflare:workers';",
     "import type { Binding } from './owner-do';",
     "export class O { m() { return this.ctx.storage.sql; } }",
   ])("allows %s", (source) => {

@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "owner"
+    "owner",
+    "files"
   ],
   "scripts": {
     "test": "npm run test --workspaces",

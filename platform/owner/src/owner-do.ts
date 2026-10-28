@@ -19,28 +19,38 @@
  * with one pinned exception: the owner's browser registering an agent for that client
  * (`registerAgent`). Every other door refuses the pair.
  *
- * Its code cannot reach another owner's object: the Worker binds nothing, the runtime
- * hands it no `ctx.exports` (`disable_ctx_exports`), and its source never names
- * `exports` or imports `env` (the config and self-reach guards). The module keeps no
- * mutable state at top level (the module-state guard), since objects of one class can
- * share an isolate.
+ * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
+ * Worker, which itself binds no Durable Object and no service; the runtime hands it no
+ * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
+ * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
+ * through `FILES`, under the owner's namespace, which only this object holds
+ * (`files.ts`). The module keeps no mutable state at top level (the module-state
+ * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
  * but its doors (`RPC_METHODS` in the tests pins the list). Claiming and settling wakes
  * is the alarm's own, in process, with the doorbell's {@link WakeSender}; no door
- * reaches it.
+ * reaches it. The same alarm runs file housekeeping (expired uploads and temporary
+ * directories, history prunes, garbage chunk deletes) through the one `#rearm`; task 3.6
+ * moves both onto the Agents SDK Lifecycle queue, which owns the object's single
+ * physical alarm once PiHarness is installed.
  */
 import { DurableObject } from "cloudflare:workers";
 
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { Invalid, Refused } from "./errors";
+import {
+  type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
+  type Entry,
+  FileConflict, Files, type Lease, type SyncOp, type SyncOutcome, type Usage,
+} from "./files";
 import { type Client, type Grant, Grants, holds, type Scope } from "./grants";
 import {
   type Agent, clock, Ledger, type MailPage, type Origin, outsideOrigin, type Posted,
   registrant, type Source,
 } from "./ledger";
 import {
-  type Change, Policy, type PolicyDocument, type Projection, type Receipt,
+  type Change, fileSettings, Policy, type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
@@ -145,8 +155,117 @@ export interface SubscriberRequest {
   readonly agent_id: string;
 }
 
-/** The object's environment: no bindings, and never one to its own namespace. */
-export type OwnerEnv = Record<never, never>;
+/**
+ * The object's environment: one service binding, `FILES`, to the files Worker, which
+ * binds no Durable Object and no service (the config guard checks both configs), and
+ * never a binding to its own namespace.
+ */
+export interface OwnerEnv {
+  readonly FILES: ChunkStore;
+}
+
+export interface FileRequest {
+  readonly path: string;
+}
+
+export interface FileListRequest {
+  readonly dir: string;
+  readonly after?: string;
+  readonly limit: number;
+}
+
+export interface FileReadRequest {
+  readonly path: string;
+  readonly etag?: string;
+}
+
+export interface FileChunksRequest {
+  readonly path: string;
+  readonly version: number;
+  readonly first: number;
+  readonly count: number;
+}
+
+export interface FileWriteRequest {
+  readonly path: string;
+  readonly expected_etag: string | null;
+  readonly content: Uint8Array;
+  readonly mode?: number;
+}
+
+export interface UploadBeginRequest {
+  /** The file's size; `chunks` are its 64-hex hashes, one for each 4 MiB. */
+  readonly size: number;
+  readonly chunks: string[];
+}
+
+export interface UploadChunksRequest {
+  readonly intent_id: string;
+  readonly chunks: { sha256: string; bytes: Uint8Array }[];
+}
+
+export interface UploadCommitRequest {
+  readonly intent_id: string;
+  readonly path: string;
+  readonly expected_etag: string | null;
+  readonly mode?: number;
+}
+
+export interface IntentRequest {
+  readonly intent_id: string;
+}
+
+export interface MkdirRequest {
+  readonly path: string;
+  readonly expected_etag: string | null;
+}
+
+export interface RemoveRequest {
+  readonly path: string;
+  readonly expected_etag: string | null;
+  readonly recursive: boolean;
+}
+
+export interface RenameRequest {
+  readonly from: string;
+  readonly to: string;
+  readonly expected_etag: string | null;
+  readonly replace: boolean;
+}
+
+export interface FileHistoryRequest {
+  readonly path: string;
+  readonly before?: number;
+  readonly limit: number;
+}
+
+export interface VersionRequest {
+  readonly path: string;
+  readonly version: number;
+}
+
+export interface RestoreRequest extends VersionRequest {
+  readonly expected_etag: string | null;
+}
+
+export interface ChangesRequest {
+  readonly after: number;
+  readonly limit: number;
+}
+
+export interface LeaseRequest {
+  readonly lease_id: string;
+  readonly epoch: number;
+}
+
+export interface SyncCommitRequest extends LeaseRequest {
+  readonly ops: SyncOp[];
+}
+
+/** A lost file compare-and-swap: answered with the entry as it stands. */
+export interface FileConflicted {
+  readonly conflict: Entry | null;
+}
 
 export interface WriteRequest {
   readonly collection: string;
@@ -203,6 +322,8 @@ interface Serves {
 }
 
 export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
+/** How long file housekeeping that failed waits before the alarm tries it again. */
+export const HOUSEKEEPING_RETRY_S = 300;
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -246,12 +367,41 @@ function conflicted<T>(act: () => T): T | Conflicted {
   }
 }
 
+function fileFields(request: unknown, required: readonly string[],
+                    optional: readonly string[] = []): Record<string, unknown> {
+  return fields(request, required, optional, "invalid file request");
+}
+
+async function fileConflicted<T>(act: () => T | Promise<T>): Promise<T | FileConflicted> {
+  try {
+    return await act();
+  } catch (error) {
+    if (error instanceof FileConflict) {
+      return { conflict: error.current };
+    }
+    throw error;
+  }
+}
+
+/** Who a file change is by, in its history: the owner, or the outside client it came through. */
+function fileWriter(account: Account): string {
+  return account.origin === null ? "owner" : `client:${account.origin.client}`;
+}
+
+function flag(value: unknown, what: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Invalid(`${what} is true or false`);
+  }
+  return value;
+}
+
 export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #collections: Collections;
   readonly #policy: Policy;
   readonly #grants: Grants;
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
+  readonly #files: Files;
   /**
    * What rings outside agents' doorbells, called in process by the alarm. None until the
    * doorbell slice (tasks 7) constructs one here; until then the alarm only recovers
@@ -266,6 +416,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#grants = new Grants(ctx.storage, this.#policy);
     this.#sessions = new Sessions(ctx.storage);
     this.#ledger = new Ledger(ctx.storage, this.#grants);
+    this.#files = new Files(ctx.storage, env.FILES,
+                            () => fileSettings(this.#policy.read().document));
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
       // The schedule as stored, for this code's sender: a deploy that adds a doorbell
@@ -275,22 +427,45 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The object's one alarm: lapsed claims, then due wakes and revokes, then rearm at the
-   * next time there is work it can do. There is no global tick; each owner's object
-   * schedules only itself.
+   * The object's one alarm: lapsed claims, then due wakes and revokes, then file
+   * housekeeping (expired uploads and temporary directories, history prunes, garbage
+   * chunk deletes), then rearm at the next time there is work it can do. There is no
+   * global tick; each owner's object schedules only itself. Housekeeping that fails is
+   * logged and tried again after `HOUSEKEEPING_RETRY_S`, never in a tight loop.
    */
   override async alarm(): Promise<void> {
     await runWakes(this.#ledger, this.#sender, clock, WAKES_PER_ALARM);
-    await this.#rearm();
+    let retry: number | null = null;
+    try {
+      await this.#files.collect(clock());
+    } catch {
+      console.error("file housekeeping failed");  // no paths or hashes in the log
+      retry = clock() + HOUSEKEEPING_RETRY_S;
+    }
+    await this.#rearm(retry);
   }
 
-  /** Point the one alarm at the next work it can do, never in the past, or clear it. */
-  async #rearm(): Promise<void> {
-    const next = this.#ledger.nextAlarm(clock(), this.#sender !== null);
+  /**
+   * Point the one alarm at the next work it can do, never in the past, or clear it: the
+   * ledger's wakes and the files' housekeeping share it. `notBefore` holds housekeeping
+   * that just failed.
+   */
+  async #rearm(notBefore: number | null = null): Promise<void> {
+    const now = clock();
+    const files = this.#files.nextAlarm(now);
+    const times = [this.#ledger.nextAlarm(now, this.#sender !== null),
+                   files === null || notBefore === null ? files : Math.max(files, notBefore)]
+      .filter((due): due is number => due !== null);
+    const next = times.length ? Math.ceil(Math.min(...times) * 1000) : null;
+    // Each set is a billed row written, and file doors rearm on every change: an alarm
+    // already where it belongs is left alone.
+    if (next === await this.ctx.storage.getAlarm()) {
+      return;
+    }
     if (next === null) {
       await this.ctx.storage.deleteAlarm();
     } else {
-      await this.ctx.storage.setAlarm(Math.ceil(next * 1000));
+      await this.ctx.storage.setAlarm(next);
     }
   }
 
@@ -425,15 +600,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return { receipts: this.#policy.receipts() };
   }
 
-  /** The owner's write, in its session; with `proposal`, a held card's one apply. */
-  policyWrite(binding: Binding, request: PolicyWriteRequest): Projection {
-    return this.#widening(binding, "write", request, "write its policy", ({ owner }, id) => {
+  /**
+   * The owner's write, in its session; with `proposal`, a held card's one apply. A new
+   * files retention is applied to rows already kept by housekeeping, so the schedule is
+   * rearmed after it.
+   */
+  async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
+    const written = this.#widening(binding, "write", request, "write its policy",
+                                   ({ owner }, id) => {
       const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
-      const written = this.#policy.write(id, r["expected_generation"], r["policy"],
-                                         r["proposal"] ?? null, clock());
-      return { owner, generation: written.generation, digest: written.digest,
-               policy: written.document };
+      const done = this.#policy.write(id, r["expected_generation"], r["policy"],
+                                      r["proposal"] ?? null, clock());
+      return { owner, generation: done.generation, digest: done.digest, policy: done.document };
     });
+    await this.#rearm();
+    return written;
   }
 
   /**
@@ -702,5 +883,233 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ownerOnly(owner, caller, "clear");
     const r = fields(request, ["collection", "writer"]);
     return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
+  }
+
+  // -- FILES: the owner's file tree (plan §6) --------------------------------------
+  //
+  // These doors move at most two chunks a call, so no request nears the 32 service calls
+  // one request may make. The HTTP and MCP doors (tasks 2) stream larger files from the
+  // binder to `FILES` itself.
+
+  /**
+   * A file door's account: the owner's own, or an outside client admitted against its
+   * grant and held to `read_files` or `write_files`. No visiting owner reaches another's
+   * files.
+   */
+  #filer(binding: Binding, capability: "read_files" | "write_files"): Account {
+    const account = this.#account(binding);
+    this.#scope(account, capability);
+    return account;
+  }
+
+  /** A changing file door: its act, then the one schedule rearmed whatever came of it. */
+  async #filing<T>(act: () => T | Promise<T>): Promise<T> {
+    try {
+      return await act();
+    } finally {
+      await this.#rearm();
+    }
+  }
+
+  fileStat(binding: Binding, request: FileRequest): { entry: Entry | null } {
+    this.#filer(binding, "read_files");
+    const r = fileFields(request, ["path"]);
+    return { entry: this.#files.stat(r["path"]) };
+  }
+
+  fileList(binding: Binding, request: FileListRequest):
+      { entries: Entry[]; next: string | null } {
+    this.#filer(binding, "read_files");
+    const r = fileFields(request, ["dir", "limit"], ["after"]);
+    return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+  }
+
+  /**
+   * A file's entry and content: its bytes when small, else its chunk list for
+   * `fileReadChunks`. With `etag` still current, only the entry (`not_modified`).
+   */
+  fileRead(binding: Binding, request: FileReadRequest):
+      { entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] } {
+    this.#filer(binding, "read_files");
+    const r = fileFields(request, ["path"], ["etag"]);
+    const content: Content = this.#files.open(r["path"]);
+    if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
+      return { entry: content.entry, not_modified: true };
+    }
+    const { content_id: _id, ...shown } = content;
+    return shown;
+  }
+
+  /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
+  async fileReadChunks(binding: Binding, request: FileChunksRequest):
+      Promise<{ chunks: Uint8Array[] }> {
+    this.#filer(binding, "read_files");
+    const r = fileFields(request, ["path", "version", "first", "count"]);
+    const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
+    const first = r["first"];
+    const many = r["count"];
+    if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
+        || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
+        || first + many > chunks.length) {
+      throw new Invalid("first and count name 1 or 2 of the version's chunks");
+    }
+    return { chunks: await this.#files.fetch(chunks.slice(first, first + many)
+      .map(({ sha256 }) => ({ sha256 }))) };
+  }
+
+  /** Write a whole file of at most one chunk (4 MiB); larger ones go by upload. */
+  async fileWrite(binding: Binding, request: FileWriteRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    const account = this.#filer(binding, "write_files");
+    const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
+    const content = r["content"];
+    if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
+      throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
+    }
+    return this.#filing(() => fileConflicted(async () => ({
+      entry: await this.#files.write(r["path"], content, {
+        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+    })));
+  }
+
+  /**
+   * Begin an upload of one file: its size and chunk hashes, and back the ones whose bytes
+   * to send.
+   */
+  async fileUploadBegin(binding: Binding, request: UploadBeginRequest):
+      Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
+    this.#filer(binding, "write_files");
+    const r = fileFields(request, ["size", "chunks"]);
+    return this.#filing(() => this.#files.begin(r["size"], r["chunks"]));
+  }
+
+  /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
+  async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
+      Promise<{ created: number }> {
+    this.#filer(binding, "write_files");
+    const r = fileFields(request, ["intent_id", "chunks"]);
+    return this.#files.upload(r["intent_id"], r["chunks"]);
+  }
+
+  /** Commit an upload whose chunks are all stored as the file it declared. */
+  async fileUploadCommit(binding: Binding, request: UploadCommitRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    const account = this.#filer(binding, "write_files");
+    const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
+    return this.#filing(() => fileConflicted(() => ({
+      entry: this.#files.commit(r["intent_id"], r["path"], {
+        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+    })));
+  }
+
+  async fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
+    this.#filer(binding, "write_files");
+    const r = fileFields(request, ["intent_id"]);
+    return this.#filing(() => this.#files.abort(r["intent_id"]));
+  }
+
+  async fileMkdir(binding: Binding, request: MkdirRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    const account = this.#filer(binding, "write_files");
+    const r = fileFields(request, ["path", "expected_etag"]);
+    return this.#filing(() => fileConflicted(() => ({
+      entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
+                                            writer: fileWriter(account) }),
+    })));
+  }
+
+  async fileRemove(binding: Binding, request: RemoveRequest):
+      Promise<{ removed: number } | FileConflicted> {
+    const account = this.#filer(binding, "write_files");
+    const r = fileFields(request, ["path", "expected_etag", "recursive"]);
+    return this.#filing(() => fileConflicted(() => this.#files.remove(r["path"], {
+      expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
+      writer: fileWriter(account) })));
+  }
+
+  async fileRename(binding: Binding, request: RenameRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    const account = this.#filer(binding, "write_files");
+    const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
+    return this.#filing(() => fileConflicted(() => ({
+      entry: this.#files.rename(r["from"], r["to"], {
+        expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
+        writer: fileWriter(account) }),
+    })));
+  }
+
+  fileHistory(binding: Binding, request: FileHistoryRequest):
+      { changes: FileChange[]; next: number | null } {
+    this.#filer(binding, "read_files");
+    const r = fileFields(request, ["path", "limit"], ["before"]);
+    return this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
+  }
+
+  async fileRestore(binding: Binding, request: RestoreRequest):
+      Promise<{ entry: Entry } | FileConflicted> {
+    const account = this.#filer(binding, "write_files");
+    const r = fileFields(request, ["path", "version", "expected_etag"]);
+    return this.#filing(() => fileConflicted(() => ({
+      entry: this.#files.restore(r["path"], r["version"], {
+        expected: r["expected_etag"], writer: fileWriter(account) }),
+    })));
+  }
+
+  /** Drop a kept version's content: the owner's own act, never an outside client's. */
+  async fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
+    this.#owner(binding, "redact its file history");
+    const r = fileFields(request, ["path", "version"]);
+    return this.#filing(() => this.#files.redact(r["path"], r["version"]));
+  }
+
+  /**
+   * Drop a path's kept versions but its current one: the owner's own act, never an
+   * outside client's, and never refused for a quota.
+   */
+  async fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
+    this.#owner(binding, "purge its file history");
+    const r = fileFields(request, ["path"]);
+    return this.#filing(() => this.#files.purge(r["path"]));
+  }
+
+  fileChanges(binding: Binding, request: ChangesRequest):
+      { changes: FileChange[]; cursor: number; reset: boolean } {
+    this.#filer(binding, "read_files");
+    const r = fileFields(request, ["after", "limit"]);
+    return this.#files.changes(r["after"], r["limit"]);
+  }
+
+  fileUsage(binding: Binding): Usage {
+    this.#filer(binding, "read_files");
+    return this.#files.usage();
+  }
+
+  // The sync lease is the owner's own: the sandbox's sync agent reaches it through the
+  // binder with a lease token (tasks 2), as the owner, never as an outside client.
+
+  fileLeaseAcquire(binding: Binding, request: { holder: string }): Lease {
+    this.#owner(binding, "hold the file sync lease");
+    const r = fileFields(request, ["holder"]);
+    return this.#files.leaseAcquire(r["holder"]);
+  }
+
+  fileLeaseRenew(binding: Binding, request: LeaseRequest): Lease {
+    this.#owner(binding, "hold the file sync lease");
+    const r = fileFields(request, ["lease_id", "epoch"]);
+    return this.#files.leaseRenew(r["lease_id"], r["epoch"]);
+  }
+
+  fileLeaseRelease(binding: Binding, request: LeaseRequest): { released: boolean } {
+    this.#owner(binding, "hold the file sync lease");
+    const r = fileFields(request, ["lease_id", "epoch"]);
+    return this.#files.leaseRelease(r["lease_id"], r["epoch"]);
+  }
+
+  async fileSyncCommit(binding: Binding, request: SyncCommitRequest):
+      Promise<{ outcomes: SyncOutcome[] }> {
+    this.#owner(binding, "hold the file sync lease");
+    const r = fileFields(request, ["lease_id", "epoch", "ops"]);
+    return this.#filing(() => this.#files.syncCommit({ lease_id: r["lease_id"],
+                                                       epoch: r["epoch"], ops: r["ops"] }));
   }
 }

@@ -11,6 +11,13 @@ Each owner's trusted state SHALL live in exactly one SQLite-backed Durable Objec
 - **WHEN** Alice's object refuses a write because her collections are full
 - **THEN** a write to Bob's object under the same bounds succeeds
 
+### Requirement: File bytes sit in a shared bucket behind the owner's manifest
+An owner's file bytes are content, not trusted state: they SHALL sit as immutable chunks in one bucket shared by all owners, reachable only through that owner's manifest and its random namespace, both held in the owner's object.
+
+#### Scenario: Two owners store the same file
+- **WHEN** Alice and Bob each write the same bytes as `/workspace/a.bin`
+- **THEN** each object's manifest names its own chunks under its own namespace, and neither object holds the other's namespace
+
 ### Requirement: An object is named by its owner and serves only that owner
 An edge Worker (the binder) SHALL reach an owner's object only by `getByName(owner)`, with the owner taken from a verified credential. The object SHALL serve a call only when the binding's owner equals the name it was reached by (`ctx.id.name`), and SHALL refuse every call when it has no name. It SHALL also store its owner on first use and refuse any call whose owner differs from the stored one. The caller SHALL reach the object only as a typed RPC argument, never as a request field.
 
@@ -35,19 +42,31 @@ An edge Worker (the binder) SHALL reach an owner's object only by `getByName(own
 - **THEN** it is refused as an invalid request and the binding's caller stays the only caller
 
 ### Requirement: An owner's object cannot reach another owner's object
-The owner Worker's config SHALL bind nothing, at top level and in every environment, its keys drawn from an allow-list with no binding key, and its flags SHALL include `disable_ctx_exports`. It SHALL be the Worker's only wrangler config. Its source SHALL never name `exports`, SHALL import from `cloudflare:workers` only the classes it extends, and SHALL keep no module-level mutable state nor write through the global object.
+The owner Worker's config SHALL bind nothing but the service bindings the next requirement allows, at top level and in every environment; its other keys SHALL be drawn from an allow-list with no binding key, and its flags SHALL include `disable_ctx_exports`. It SHALL be the Worker's only wrangler config. Its source SHALL never name `exports`, SHALL import from `cloudflare:workers` only the classes it extends, and SHALL keep no module-level mutable state nor write through the global object.
 
 #### Scenario: The object looks for its own namespace
 - **WHEN** code inside the object reads `ctx.exports`
 - **THEN** it is undefined, so no stub to another owner's object can be made
 
 #### Scenario: A binding is added to the config
-- **WHEN** a Durable Object, service, var or any other binding key is added at top level or inside an environment, or a second wrangler config file appears
+- **WHEN** a Durable Object, var or any other binding key, or a service binding the allow-list does not name, is added at top level or inside an environment, or a second wrangler config file appears
 - **THEN** the config guard fails CI
+
 
 #### Scenario: Source reaches for exports or env
 - **WHEN** a source reads `ctx.exports`, imports `exports` or `env` from `cloudflare:workers`, or writes through `globalThis`, `self` or `global`
 - **THEN** a source guard fails CI, for every script extension under `src`
+
+### Requirement: The owner Worker binds only Workers that reach nothing
+A service binding the owner Worker holds SHALL be only to a Worker the config guard's allow-list names, together with the binding kinds and counts that Worker may hold, none of which reaches another Worker or a store shared beyond its own purpose (today only `FILES`, the files Worker, holding exactly one `r2_buckets` entry). The guard SHALL check the bound Worker's own config, at top level and in every environment, and refuse any binding key the allow-list does not grant it.
+
+#### Scenario: The bound Worker gains a way on
+- **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
+- **THEN** the config guard refuses the owner Worker's `FILES` binding
+
+#### Scenario: The binding names another Worker
+- **WHEN** `FILES` is bound to another platform Worker, even one that binds nothing
+- **THEN** the config guard refuses it
 
 ### Requirement: The object migrates its schema on wake
 The object SHALL apply every schema migration past its stored version before it serves its first call after a wake, each migration in its own transaction with its version bump. A failed migration SHALL leave the version where it was and nothing of the migration behind. A stored version newer than the code's SHALL stop the object loudly. A deployed migration SHALL never change; a new shape is a new migration at the end.
@@ -192,3 +211,107 @@ Each `mailbox.message` subscribe SHALL open the agent's next subscription genera
 #### Scenario: An agent re-enabled before its revoke runs
 - **WHEN** a subscribed agent is disabled, registers again and subscribes again before the alarm runs its revoke
 - **THEN** the revoke erases the old callback only, and the agent's new callback still rings
+
+### Requirement: The owner's file manifest keeps the revision rules on file entries
+Each file change SHALL be a compare-and-swap on the entry's etag (null writes unconditionally, empty only creates), stamped with the next owner-wide seq, which names the version and never repeats across a delete, a re-create or a history prune; a lost swap SHALL be answered with the entry as it stands. Paths SHALL be stored verbatim, never normalized, and SHALL never become a bucket key. Files of 4 KiB or less SHALL be kept inline in the object.
+
+#### Scenario: A file deleted and made again
+- **WHEN** the owner writes `/workspace/a`, removes it and writes it again
+- **THEN** the three history rows carry three rising versions and the new etag matches no earlier one
+
+#### Scenario: Two names Unicode treats as one
+- **WHEN** `café` is written with a composed and with a decomposed `é`
+- **THEN** the manifest holds two files with their own contents
+
+### Requirement: Chunks are recorded before their bytes and collected without listing the bucket
+An upload SHALL declare its file's size and record its chunks, in that size's 4 MiB plan, as held before any byte is sent. A chunk SHALL count as stored only once the files Worker has accepted its put, and a commit SHALL refuse a chunk its intent does not hold or that was never stored. A chunk nothing references or holds SHALL become garbage, deleted on the owner's one schedule after a 24 h grace, without listing the bucket; a stored one MAY revive, and one being deleted SHALL never be held.
+
+#### Scenario: A commit before its bytes
+- **WHEN** an upload is begun and committed without its chunks being sent
+- **THEN** the commit is refused with "a chunk of this commit was never stored; send its bytes first", and an owner write of the same bytes later stores and reads them
+
+#### Scenario: An upload that never commits
+- **WHEN** an intent expires with a chunk it never committed
+- **THEN** the chunk becomes garbage that a later upload sends again, and its key is deleted after the grace
+
+#### Scenario: A chunk still referenced
+- **WHEN** the alarm runs with a chunk that a kept version's content is made of
+- **THEN** the chunk stays, whatever its age
+
+### Requirement: A content id names one content
+A content id SHALL name its kind (inline or chunks) and its size, and a change whose content id is already recorded with another size or other chunks SHALL fail loudly rather than reuse the recorded content.
+
+#### Scenario: A chunk list whose hash another content holds
+- **WHEN** a stored content row and a new one share an id but not a size, in either order of writing
+- **THEN** the second change fails and the first content reads as it was
+
+### Requirement: History is kept by owner policy, never dropped to make room
+History SHALL keep each live path's newest `keep_versions` and its versions younger than the policy's retention up to `keep_recent` in all, dropping a version past those in the change that pushed it out, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes.
+
+#### Scenario: A path written twelve times
+- **WHEN** a path is written twelve times under the default policy
+- **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
+
+### Requirement: Every entry holds its content
+Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
+
+#### Scenario: A file renamed out of the temporary area
+- **WHEN** a file written under `/.ta/tmp` is renamed into `/workspace`, and housekeeping then collects every due chunk
+- **THEN** the file reads back byte for byte
+
+#### Scenario: Live files' churn inside the window
+- **WHEN** ten files of one kept version each, with `keep_recent` 1 and `max_history` 10, are each written ten times inside the retention window
+- **THEN** every write lands and history holds ten rows
+
+### Requirement: The owner frees history, and temporary files keep none
+A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
+
+#### Scenario: History at its quota
+- **WHEN** history rows reach `max_history`
+- **THEN** a write is refused, and the owner frees room by a purge or a lowered retention without either being refused
+
+### Requirement: File quotas are owner policy, refused loudly
+Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks they hold, and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults) or a fixed ceiling, read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind.
+
+#### Scenario: The owner's entries at their quota
+- **WHEN** a write would add an entry past `max_entries`
+- **THEN** it is refused, and no parent directory, history row or content of it is kept
+
+### Requirement: A quota never blocks a change that frees
+A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it.
+
+#### Scenario: A full owner removes files
+- **WHEN** every counter is at its bound and the owner removes a file
+- **THEN** the remove lands
+
+### Requirement: The sync lease fences the sandbox's commits
+The sync lease SHALL be a random lease id and a rising epoch, held by one holder until it lapses or is released. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
+
+#### Scenario: A sandbox that lost its lease
+- **WHEN** a sync commit carries an earlier epoch or another lease id
+- **THEN** it is refused and nothing changes
+
+### Requirement: A sync conflict keeps both sides
+A sync op made against a version that has moved on SHALL leave the current version in place, save a write's content as a create-only copy named `<path>.ta-conflict-<epoch>` (with `-<n>` for the first free name, cut to 255 bytes), and report the conflict; a write under a parent the API made a file SHALL be saved under the parent's copy name. A directory SHALL be removed by sync only once empty.
+
+#### Scenario: A sandbox and the API edit one file
+- **WHEN** the API writes `notes.md` after the sandbox last synced it, and the sandbox then commits its own edit
+- **THEN** `notes.md` keeps the API's content and the sandbox's is saved as `notes.md.ta-conflict-<epoch>`, reported in the answer
+
+#### Scenario: A copy's name is taken
+- **WHEN** a file already sits at `notes.md.ta-conflict-<epoch>`
+- **THEN** the sandbox's content is saved as `notes.md.ta-conflict-<epoch>-2` and the other file stays
+
+### Requirement: The files Worker moves bytes and never sees a path
+The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes, moving at most two chunks' bytes a call. Its keys SHALL be only `o/<ns>/c/<sha256>`, built by one function. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes.
+
+#### Scenario: Bytes that miss their hash
+- **WHEN** a put names a hash its bytes do not have
+- **THEN** it is refused and nothing is stored
+
+### Requirement: The binder may stream an owner's chunks
+The binder is the trust root: the HTTP door's binder MAY read an owner's namespace from that owner's object and stream chunks to the files Worker itself, since a binder already reaches every owner's object; no owner's object SHALL hand out another owner's namespace.
+
+#### Scenario: The binder streams a large read
+- **WHEN** the binder serves Alice's large file
+- **THEN** it reads Alice's namespace from Alice's object and the chunk keys it asks for are under that namespace only

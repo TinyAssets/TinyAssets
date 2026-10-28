@@ -5,14 +5,17 @@
  * branch `s5b-board`). An etag compare-and-swap store is a persisting module that
  * compares a stored etag with an expected one (a line naming `etag` and `expected`
  * with `==` or `!=`, or SQL `etag = ?`), or a revision the same way beside a `seq`.
- * The collection primitive is the only one; app rooms and the board are row sets in
- * it. That list only shrinks.
+ * The collection primitive is the only one for rows; app rooms and the board are row
+ * sets in it. The owner's file manifest (`files.ts`, plan §6) keeps the same rules on
+ * file entries (an etag swap, an owner-wide seq that never repeats, history), with its
+ * own tables, because a file's content is chunk references and a directory moves as one:
+ * a deliberate second store, declared in ADR-032. That list only shrinks.
  */
 import { describe, expect, it } from "vitest";
 
 import { workerSources } from "./sources";
 
-const PRIMITIVES = new Set(["owner/src/collections.ts"]);
+const PRIMITIVES = new Set(["owner/src/collections.ts", "owner/src/files.ts"]);
 const CAS = /^(?=[^\n]*etag)(?=[^\n]*expected)(?=[^\n]*[!=]=)[^\n]*$|\betag\s*=\s*\?/im;
 const REVISION_CAS =
   /^(?=[^\n]*revision)(?=[^\n]*expected)(?=[^\n]*[!=]=)[^\n]*$|\brevision\s*=\s*\?/im;

@@ -45,6 +45,12 @@ live acceptance is still owed says so.
   source `api_key`) and a key's revoke calls `grantRevoke` first; an agent's held
   API-key request applied with its grant (`_apply_key_request`) comes with the key
   store, whose key ids it needs.
+- [ ] Owed by 6.1. The file door's bytes: the binder streams chunks to `FILES` itself
+  (decided: the binder is the trust root and already reaches every owner's object, so
+  its reading an owner's namespace from that owner's object weakens no isolation), with
+  the object's `fileUploadBegin`/`fileUploadCommit` around it and the whole-file digest
+  (`Repr-Digest`) computed and served as it streams; the object's chunk doors stay for
+  in-object callers (the environment, the sync agent's small files).
 
 ## 3. Owner object
 
@@ -88,7 +94,12 @@ live acceptance is still owed says so.
 - [ ] 3.6 The schedule: one table, one self-rearming alarm. Owed by 3.5: a scheduled
   turn or automation stamps the outside authority it was made under (client, grant
   generation, sign-in time) and is rechecked with `Grants.standing` before it runs; a
-  changed or revoked grant refuses it (the Python's `outside_standing`).
+  changed or revoked grant refuses it (the Python's `outside_standing`). Owed by 6.1:
+  the Agents SDK Lifecycle queue owns the object's single physical alarm once
+  PiHarness is installed, so the wakes' and the files' housekeeping due times (expired
+  uploads and temporary directories, history prunes, chunk deletes: `Files.nextAlarm`,
+  `Files.collect`) move onto Lifecycle jobs together, from the one `#rearm` path that
+  carries both now; no second alarm path is added before then.
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -126,8 +137,54 @@ live acceptance is still owed says so.
 
 ## 6. Files and sandbox
 
-- [ ] Per-owner object storage with the file API; the E2B sandbox through our
-  proxy; a sync agent with a single-writer lease.
+- [x] 6.1 The trusted file plane, in workerd, nothing deployed: the manifest in the
+  owner's object (migration 4: paths, versions and history, chunk references, upload
+  intents, quotas, the change feed, the sync lease with fencing and conflict copies;
+  `files.ts`, `paths.ts`), the `file*` RPC doors admitted through the binding, file
+  housekeeping on the object's one schedule (`#rearm`, also re-marking history in
+  passes of 500 paths after a retention change), the files Worker (`platform/files`:
+  the only R2 binding, verified create-once chunk puts, gets and deletes of at most two
+  chunks' bytes a call, keys built by `keys.ts` alone), and the owner's one `FILES`
+  service binding, its Worker held to one `r2_buckets` entry by the config guard.
+  Quotas and retention are owner policy (the document's optional `files` table over
+  `FILE_DEFAULTS`, refused unless `max_entries` times the larger of `keep_versions` and
+  `keep_recent` fits `max_history`); a change that only frees is never refused by a quota; the owner alone
+  purges a path's history (`fileHistoryPurge`); `/.ta/tmp` keeps no history. An upload
+  declares its size and its 4 MiB plan, a chunk is stored only once `FILES` accepted
+  it, content ids carry their kind and size, and a sync commit answers each op. Declared
+  differences from the research: a version is named by the owner-wide seq (a dense
+  per-path counter would repeat once a deleted path's history ages out); a content's
+  refs count every entry and every kept history row naming it, in every root (a row or
+  two more per write: 22 rows for a new one-chunk file); a whole-file SHA-256 is not
+  stored (the content id is checked from the chunk hashes R2
+  verified).
+- [ ] 6.2 The pi `ExecutionEnv` over the manifest (`files-env.ts`), passing pi-durable
+  1.4.0's conformance suite but for `exec`, symlinks off, with a write to a path it read
+  failing `changed since read` when another writer committed there since.
+- [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
+  `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
+  as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
+  bound to owner, lease id and expiry, resolved by the binder as the owner).
+- [ ] The sandbox: the E2B sandbox through our proxy; the in-VM sync agent (sync in from
+  the change feed, sync out as one fenced `fileSyncCommit`, a 20 s lease heartbeat and
+  15 s checkpoints, `/proc` open-file deferral and SQLite file groups, the cold-create
+  size cap); `exec` in the environment (wake, sync in, run, sync out, report conflicts
+  and a fenced sync-out in its result); symbolic links in the manifest and the
+  conformance suite's `exec` and symlink cases; and the sync-ignore defaults, which are
+  the owner's file `/workspace/.ta/sync-ignore` (`node_modules`, `.venv`, `__pycache__`,
+  `.cache`, build output), shown to the founder first since they decide what survives a
+  lost sandbox.
+- [ ] Probe, before the agent (5) runs a turn on the object: the 32-service-binding-calls
+  per request cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
+  against one pi turn, including whether the cap applies per Durable Object event.
+- [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
+  probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
+  does not emulate it); a live probe of the files Worker's create-once put, which
+  miniflare passed but the live bucket must also: `onlyIf: { etagDoesNotMatch: "*" }`
+  as a wildcard, and which R2 checks first when a key exists and the bytes miss the
+  `sha256` (the precondition or the digest), since the Worker's recheck of an existing
+  key reads either answer; the manifest tables in the nightly export; each droplet volume
+  imported into the manifest and bucket in the cutover window (9).
 
 ## 7. Wakes and outside agents
 

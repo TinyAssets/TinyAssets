@@ -2,7 +2,83 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { Collections, LIMITS, type Limits } from "../src/collections";
+import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
+import { FILE_DEFAULTS } from "../src/policy";
+
+export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
+
+/**
+ * The owner's files on `stub`'s own storage, with some settings changed, over the real
+ * files Worker or the store given.
+ */
+export function inFiles<R>(stub: DurableObjectStub<OwnerDO>, limits: Partial<FileLimits>,
+                           act: (files: Files, state: DurableObjectState) => R | Promise<R>,
+                           store: ChunkStore = env.FILES): Promise<R> {
+  return runInDurableObject(stub, (_instance: OwnerDO, state) =>
+    act(new Files(state.storage, store, () => ({ ...FILE_DEFAULTS, ...limits })), state));
+}
+
+type Row = Record<string, SqlStorageValue>;
+
+/** Rows a query returns in `stub`'s own storage. */
+export function sqlIn(stub: DurableObjectStub<OwnerDO>, statement: string,
+                      ...params: SqlStorageValue[]): Promise<Row[]> {
+  return runInDurableObject(stub, (_instance: OwnerDO, state) =>
+    state.storage.sql.exec<Row>(statement, ...params).toArray());
+}
+
+/**
+ * What the manifest names but could lose: a content an entry or a kept history row
+ * names that has no row, and a chunk of such content that is missing, garbage or being
+ * deleted. Always empty.
+ */
+export async function lostContent(stub: DurableObjectStub<OwnerDO>): Promise<Row[]> {
+  return sqlIn(stub,
+    "WITH named AS (SELECT content_id FROM file_entries WHERE content_id IS NOT NULL " +
+      "UNION SELECT content_id FROM file_history WHERE content_id IS NOT NULL) " +
+      "SELECT n.content_id, 'no content row' AS lost FROM named n " +
+      "WHERE n.content_id NOT IN (SELECT content_id FROM file_contents) " +
+      "UNION ALL SELECT x.content_id, coalesce(k.state, 'no chunk row') FROM named n " +
+      "JOIN file_content_chunks x ON x.content_id = n.content_id " +
+      "LEFT JOIN file_chunks k ON k.sha256 = x.sha256 " +
+      "WHERE k.state IS NULL OR k.state NOT IN ('live')");
+}
+
+/**
+ * Every counter and reference count the file manifest keeps, and the same numbers
+ * counted from the rows: the two must always be equal. Content anything names is never
+ * lost (`lostContent`), checked here too, so every counter check also checks that.
+ */
+export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[Row, Row]> {
+  const lost = await lostContent(stub);
+  if (lost.length > 0) {
+    throw new Error(`content the manifest names is lost: ${JSON.stringify(lost)}`);
+  }
+  const [kept] = await sqlIn(stub,
+    "SELECT entries, history, chunk_bytes, inline_bytes, intents, intent_chunks, " +
+      "(SELECT json_group_object(content_id, refs) FROM (SELECT * FROM file_contents " +
+      "ORDER BY content_id)) AS contents, " +
+      "(SELECT json_group_object(sha256, refs || '/' || holds) FROM (SELECT * FROM file_chunks " +
+      "ORDER BY sha256)) AS chunks FROM file_space");
+  const [counted] = await sqlIn(stub,
+    "SELECT (SELECT COUNT(*) FROM file_entries) AS entries, " +
+      "(SELECT COUNT(*) FROM file_history) AS history, " +
+      "(SELECT COALESCE(SUM(size), 0) FROM file_chunks WHERE state IN ('uploading', 'live')) " +
+      "AS chunk_bytes, " +
+      "(SELECT COALESCE(SUM(length(inline)), 0) FROM file_contents) AS inline_bytes, " +
+      "(SELECT COUNT(*) FROM file_intents) AS intents, " +
+      "(SELECT COALESCE(SUM(length(chunks) / 64), 0) FROM file_intents) AS intent_chunks, " +
+      "(SELECT json_group_object(content_id, n) FROM (SELECT c.content_id, " +
+      "(SELECT COUNT(*) FROM file_history h WHERE h.content_id = c.content_id) + " +
+      "(SELECT COUNT(*) FROM file_entries e WHERE e.content_id = c.content_id) AS n " +
+      "FROM file_contents c ORDER BY c.content_id)) AS contents, " +
+      "(SELECT json_group_object(sha256, r || '/' || h) FROM (SELECT k.sha256, " +
+      "(SELECT COUNT(*) FROM file_content_chunks x WHERE x.sha256 = k.sha256) AS r, " +
+      "(SELECT COUNT(*) FROM file_intents i WHERE instr(i.chunks, k.sha256) > 0) AS h " +
+      "FROM file_chunks k ORDER BY k.sha256)) AS chunks");
+  return [kept!, counted!];
+}
 
 export type Stub = DurableObjectStub<OwnerDO>;
 
