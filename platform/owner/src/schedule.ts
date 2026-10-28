@@ -34,8 +34,10 @@
  *   platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`. Every pass fits
  *   that by wall clock, not by a batch size: it takes no new row once `LANE_PASS_S` has
  *   passed, and each outside call a row makes is bounded by `LANE_HUNG_S - LANE_PASS_S`
- *   (the work hand-off's `WORK_HANDOFF_MS`, the doorbell's per-send timeout, a chunk
- *   delete's remaining budget), so a pass ends before an overlapping alarm may run it again.
+ *   (the work hand-off's `WORK_HANDOFF_MS`, each doorbell send's and revoke's
+ *   `WAKE_SEND_MS`, which the lane holds itself, a chunk delete's remaining budget, never
+ *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
+ *   may run it again. Each pass is an entry with its own call budget (`calls.ts`).
  * - Each lane fences its own work in its rows (a wake's claim lease and may-have-sent
  *   mark, a chunk's `deleting` state, a work row's claim), so a run Lifecycle repeats
  *   takes nothing the first took, and unknown work is never replayed.
@@ -58,6 +60,8 @@
 import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
+
+import { Calls } from "./calls";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
 export const SCHEDULE = "owner-schedule";
@@ -99,9 +103,11 @@ export interface Lane {
   /**
    * One short, bounded pass over what is due at `now`, taking no new row once the wall
    * clock (`Date.now()`, ms) reaches `until`. Each outside call's failure is kept in its
-   * own row, backed off there; a throw is a bug, and fails the whole pass.
+   * own row, backed off there; a throw is a bug, and fails the whole pass. `calls` is the
+   * job's own call budget (`calls.ts`): a Lifecycle job is an entry, so each pass gets a
+   * new one, which every service-binding call it makes draws from.
    */
-  run(now: number, until: number): Promise<unknown>;
+  run(now: number, until: number, calls: Calls): Promise<unknown>;
 }
 
 /** The lane's work time, in ms, that a job was set for: its payload's, else its own time. */
@@ -168,7 +174,7 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn)) {
       return undefined;  // no lane of this code's: done
     }
-    await lane.run(this.#clock(), Date.now() + this.#passMs);
+    await lane.run(this.#clock(), Date.now() + this.#passMs, new Calls());
     await this.#set(job.fn, null);
     return undefined;  // superseded by the set above
   }

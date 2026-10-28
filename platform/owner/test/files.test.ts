@@ -7,6 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { Calls, FILES_CALLS } from "../src/calls";
 import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
@@ -185,12 +186,30 @@ describe("a file write", () => {
     const r = await rig();
     const bytes = new Uint8Array(2 * CHUNK_BYTES + 1).fill(4);
     const { version } = await inFiles(r.stub, {}, (files) => files.write(
-      `${W}/three.bin`, bytes, { expected: null, writer: "owner" }));
+      `${W}/three.bin`, bytes, { expected: null, writer: "owner", calls: new Calls() }));
     const read = (first: number, count: number) => r.stub.fileReadChunks(
       r.bind(null), { path: `${W}/three.bin`, version, first, count });
     expect((await read(1, 2)).chunks.map((chunk) => chunk.byteLength)).toEqual([CHUNK_BYTES, 1]);
     expect((await failure(() => read(0, 3))).message)
       .toBe("first and count name 1 or 2 of the version's chunks");
+  });
+
+  it("gives each door call its own call budget, one after another or at once", async () => {
+    const r = await rig();
+    const version = entryOf(await write(r, `${W}/one.bin`,
+                                        new Uint8Array(INLINE_BYTES + 1).fill(6))).version;
+    const read = () => r.stub.fileReadChunks(r.bind(null), { path: `${W}/one.bin`, version,
+                                                             first: 0, count: 1 });
+    // More door reads than one budget holds, each its own entry: none draws on another's.
+    for (let i = 0; i <= FILES_CALLS; i++) {
+      expect((await read()).chunks[0]!.byteLength).toBe(INLINE_BYTES + 1);
+    }
+    const together = await Promise.all(Array.from({ length: FILES_CALLS + 1 }, read));
+    expect(together.every((answer) => answer.chunks[0]!.byteLength === INLINE_BYTES + 1))
+      .toBe(true);
+    for (let i = 0; i <= FILES_CALLS; i++) {
+      await write(r, `${W}/w${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i));
+    }
   });
 
   it("keeps the mode it had when an overwrite names none", async () => {
@@ -400,14 +419,17 @@ describe("the manifest's queries", () => {
         plan("SELECT version, path FROM file_history WHERE version > ? AND version <= ? " +
                "ORDER BY version LIMIT ?", 0, 10, 10),
         plan("SELECT MIN(prune_after) FROM file_history WHERE prune_after IS NOT NULL"),
+        plan("SELECT version, path FROM file_history WHERE released = 1 " +
+               "ORDER BY prune_after, version LIMIT ?", 10),
         plan("SELECT MIN(gc_after) FROM file_chunks WHERE gc_after IS NOT NULL"),
         plan("SELECT MIN(expires_at) FROM file_intents"),
         plan("SELECT MIN(expires_at) FROM file_temps"),
       ];
     });
     for (const plan of plans) {
-      expect(plan).not.toMatch(/SCAN (?!.*USING)/);
+      expect(plan).not.toMatch(/SCAN (?!.*USING)|TEMP B-TREE/);
     }
+    expect(plans[6]).toMatch(/USING INDEX file_history_released/);
   });
 
   it("keep every counter equal to a recount", async () => {
@@ -423,8 +445,8 @@ describe("the manifest's queries", () => {
     expect(kept).toEqual(counted);
     await inFiles(r.stub, { keep_versions: 1, retention_days: 0 }, async (files) => {
       await files.write(`${W}/z/c.bin`, new Uint8Array(INLINE_BYTES * 2).fill(5),
-                        { expected: null, writer: "t" });
-      await files.collect(Date.now() / 1000 + 10);
+                        { expected: null, writer: "t", calls: new Calls() });
+      await files.collect(new Calls(), Date.now() / 1000 + 10);
     });
     const [after, recount] = await fileCounters(r.stub);
     expect(after).toEqual(recount);

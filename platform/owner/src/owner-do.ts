@@ -45,6 +45,7 @@
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
+import { Calls } from "./calls";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { Invalid, Refused } from "./errors";
 import {
@@ -61,14 +62,14 @@ import {
   type Change, fileSettings, Policy, type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
-import { Schedule } from "./schedule";
+import { type Lane, Schedule } from "./schedule";
 import {
   runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner,
 } from "./scheduled";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
-import { runWakes, type WakeSender, WAKES_PER_ALARM } from "./wakes";
+import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
 /**
  * Whose object this is, who is asking and through what: set by the binder from a
@@ -424,6 +425,45 @@ function flag(value: unknown, what: string): boolean {
   return value;
 }
 
+/** What the object's lanes run over: its stores, its in-process callers and the passes. */
+export interface LaneDeps {
+  readonly ledger: Ledger;
+  readonly files: {
+    nextAlarm(now: number): number | null;
+    collect(calls: Calls, now: number, until: number): Promise<void>;
+  };
+  readonly work: Scheduled;
+  /** The doorbell, or null until tasks 7 constructs one. */
+  readonly sender: WakeSender | null;
+  /** The scheduled-turn runner, or null until tasks 5 constructs one. */
+  readonly runner: WorkRunner | null;
+  readonly clock: () => number;
+  readonly runWakes: typeof runWakes;
+  readonly runWork: typeof runWork;
+}
+
+/**
+ * The lanes of the object's one schedule (`schedule.ts`). Each lane's pass is handed the
+ * pass's wall-clock end (`until`) and its job's own call budget, and passes both on, so
+ * no lane can outrun its hung timeout or the invocation's calls. Exported so the wiring
+ * is tested with recording passes; `OwnerDO` gives it the real ones.
+ */
+export function ownerLanes(deps: LaneDeps): Readonly<Record<"wakes" | "files" | "work", Lane>> {
+  return {
+    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
+    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender !== null),
+             run: (_now, until) => deps.runWakes(deps.ledger, deps.sender, deps.clock,
+                                                 WAKES_PER_ALARM, WAKE_SEND_MS, until) },
+    files: { next: (now) => deps.files.nextAlarm(now),
+             run: (now, until, calls) => deps.files.collect(calls, now, until) },
+    // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
+    // against the authority it was made under.
+    work: { next: (now) => deps.work.nextDue(now, deps.runner !== null),
+            run: (_now, until) => deps.runWork(deps.work, deps.runner, deps.clock,
+                                               WORK_PER_PASS, WORK_HANDOFF_MS, until) },
+  };
+}
+
 export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #collections: Collections;
   readonly #policy: Policy;
@@ -461,19 +501,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#registrations = new Registrations(ctx.storage, this.#grants);
     // The lanes of the one schedule. There is no global tick; each owner's object
     // schedules only itself.
-    this.#schedule = new Schedule({
-      // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
-      wakes: { next: (now) => this.#ledger.nextDue(now, this.#sender !== null),
-               run: (_now, until) => runWakes(this.#ledger, this.#sender, clock,
-                                              WAKES_PER_ALARM, until) },
-      files: { next: (now) => this.#files.nextAlarm(now),
-               run: (now, until) => this.#files.collect(now, until) },
-      // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
-      // against the authority it was made under.
-      work: { next: (now) => this.#work.nextDue(now, this.#runner !== null),
-              run: (_now, until) => runWork(this.#work, this.#runner, clock, WORK_PER_PASS,
-                                            WORK_HANDOFF_MS, until) },
-    }, clock);
+    this.#schedule = new Schedule(ownerLanes({
+      ledger: this.#ledger, files: this.#files, work: this.#work, sender: this.#sender,
+      runner: this.#runner, clock, runWakes, runWork,
+    }), clock);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
@@ -990,7 +1021,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   //
   // These doors move at most two chunks a call, so no request nears the 32 service calls
   // one request may make. The HTTP and MCP doors (tasks 2) stream larger files from the
-  // binder to `FILES` itself.
+  // binder to `FILES` itself. Each door that reaches `FILES` is an entry with its own call
+  // budget (`calls.ts`), made there and passed down, never kept on the object: another
+  // RPC may run in the object whenever this one awaits `FILES`.
 
   /**
    * A file door's account: the owner's own, or an outside client admitted against its
@@ -1054,7 +1087,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         || first + many > chunks.length) {
       throw new Invalid("first and count name 1 or 2 of the version's chunks");
     }
-    return { chunks: await this.#files.fetch(chunks.slice(first, first + many)
+    return { chunks: await this.#files.fetch(new Calls(), chunks.slice(first, first + many)
       .map(({ sha256 }) => ({ sha256 }))) };
   }
 
@@ -1069,7 +1102,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     return this.#filing(() => fileConflicted(async () => ({
       entry: await this.#files.write(r["path"], content, {
-        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
+        calls: new Calls() }),
     })));
   }
 
@@ -1089,7 +1123,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       Promise<{ created: number }> {
     this.#filer(binding, "write_files");
     const r = fileFields(request, ["intent_id", "chunks"]);
-    return this.#files.upload(r["intent_id"], r["chunks"]);
+    return this.#files.upload(new Calls(), r["intent_id"], r["chunks"]);
   }
 
   /** Commit an upload whose chunks are all stored as the file it declared. */

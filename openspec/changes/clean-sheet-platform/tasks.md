@@ -213,10 +213,21 @@ live acceptance is still owed says so.
   symlinks off, with a write to a path it read failing `changed since read` when
   another writer committed there since; bytes come two chunks a `FILES` call, a
   whole-file read or write moves at most 16 MiB (larger files by range, line or
-  upload), one environment (one tool call) makes at most 24 `FILES` calls until the
-  cap probe below says otherwise, and `readTextFile` keeps a BOM. pi's `edit` shows only
-  an error's code, so a refused size or budget is `not_supported`; its reason is in the
-  message, which `read` shows.
+  upload), and `readTextFile` keeps a BOM. pi's `edit` shows only an error's code, so a
+  refused size or budget is `not_supported`; its reason is in the message, which `read`
+  shows. Slice 6 (the review carries of slices 4 and 5): one call budget per invocation
+  (`calls.ts`), not per tool call, since a whole pi turn runs in one job: each entry (an
+  RPC door that reaches `FILES`, a Lifecycle job) makes its own and passes it down, never
+  a field of the object, since RPCs interleave at every await; `FILES` may bring it to 24
+  of the 32 service calls, keeping `GATEWAY_HOOKS_HEADROOM` (8) for the gateway (tasks 4)
+  and hooks (tasks 5), which draw from the same budget when they land, and every draw is refused,
+  naming the budget, before a call would cross it. A change at the history quota first
+  prunes that many of the earliest-due rows of gone paths (`released`), raising the feed's
+  floor as housekeeping does, so the quota never refuses a change while the entries quota
+  holds; a live path's rows are never taken early. The `wakes` lane bounds each send and
+  revoke itself (`WAKE_SEND_MS`), a late send marked and left to its lease; the `files`
+  lane begins no chunk delete with less than `DELETE_FLOOR_MS` left; the lane table is
+  `ownerLanes`, its wiring tested with recording passes.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
@@ -232,7 +243,10 @@ live acceptance is still owed says so.
   lost sandbox.
 - [ ] Probe, before the agent (5) runs a turn on the object: the 32-service-binding-calls
   per request cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
-  against one pi turn, including whether the cap applies per Durable Object event.
+  against one pi turn, including whether the cap applies per Durable Object event. It
+  confirms or adjusts `INVOCATION_CALLS`, `GATEWAY_HOOKS_HEADROOM` and the per-entry unit
+  (`calls.ts`); if the cap counts one alarm event across all the jobs Lifecycle drives in
+  it, the budget moves from the job to the alarm.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
@@ -248,7 +262,9 @@ live acceptance is still owed says so.
 - [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
   (ChatGPT MCP Events, then Claude `/fire`); it consumes the schedule's open wakes and
   revokes, and a send finishes inside the 60 s claim lease or its outcome is `unknown`.
-  Each send has its own timeout of at most `LANE_HUNG_S - LANE_PASS_S` (15 s), and the
+  The lane bounds each send and revoke itself at `WAKE_SEND_MS`, `LANE_HUNG_S -
+  LANE_PASS_S` (15 s), whatever the sender does (a late send is marked and left to its
+  lease, never sent again; a late revoke is due again after it), and the
   pass takes no new row past `LANE_PASS_S`, so a pass ends inside its lane's hung
   timeout whatever the batch.
   The subscribe door tags each callback with the generation `mailboxSubscriber`
