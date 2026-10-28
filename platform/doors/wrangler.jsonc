@@ -7,7 +7,8 @@
 //   hints and the control record). Two namespaces, so their schemas never collide.
 // - DCR_ENABLED: the deprecated dynamic-registration fallback, off. OWNER_ISSUER:
 //   AuthKit's issuer, whose subjects stay owner ids; unset until the AuthKit slice, so
-//   every sign-in fails loudly.
+//   every sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
+//   namespaced, each listed by its own slice; none today, and any unlisted issuer fails.
 // `global_fetch_strictly_public` is required for Client ID Metadata Documents: the
 // provider fetches a client's metadata URL, and the flag keeps that fetch off same-zone
 // routing (its SSRF protection); without it the provider will not advertise CIMD.
@@ -19,7 +20,7 @@
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public"],
   "workers_dev": false,
   "preview_urls": false,
-  "vars": { "DCR_ENABLED": "false", "OWNER_ISSUER": "not-configured" },
+  "vars": { "DCR_ENABLED": "false", "OWNER_ISSUER": "not-configured", "FOREIGN_ISSUERS": "[]" },
   "durable_objects": {
     "bindings": [
       { "name": "OWNER", "class_name": "OwnerDO", "script_name": "tinyassets-owner" }

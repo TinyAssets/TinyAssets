@@ -57,17 +57,23 @@ type Route = (env: DoorsEnv, owner: Bound, request: Record<string, unknown>,
 /**
  * Sign-out: the session closed in the object when the browser presented it, and the
  * presented token's own grant revoked in the provider, so neither outlives it. Other
- * devices' grants stand.
+ * devices' grants stand. Like every owner-surface route it sits behind the maintenance
+ * gate: it needs the owner's object, and a `503` there is the honest answer. A token that
+ * expired or was revoked since it was validated is `401`, as it would have been a moment
+ * earlier.
  */
 async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknown,
                        token: string):
     Promise<Response> {
-  const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   const oauth = authorizationServer(env).getOAuthApi(env);
   const presented = await oauth.unwrapToken(token);
-  if (presented === null || presented.userId !== binding.owner) {
+  if (presented === null) {
+    return failure(401, "sign in required");
+  }
+  if (presented.userId !== binding.owner) {
     throw new Error("a validated first-party token unwraps to its owner's grant");
   }
+  const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   await oauth.revokeGrant(presented.grantId, binding.owner);
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
 }

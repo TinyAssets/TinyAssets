@@ -38,14 +38,18 @@ live acceptance is still owed says so.
   domain-separated (`tinyassets-mcp-client\0issuer\0client_id`), which the research's
   revoke step wrote as `issuer\0client_id`; and the SDK answers a thrown tool error as
   the tool's error result, so a bug is logged in full and answered `internal error`.
-  From slice 7's security review: an outside client naming a redirect on our own origin
-  is refused at `/authorize` (CIMD or DCR alike); sign-out revokes the presented token's
-  grant; each device keeps its own first-party grant (`revokeExistingGrants: false`),
-  while an outside client's re-authorization keeps the provider's default and replaces
-  its earlier grant (per redirect URI for CIMD); a loopback redirect's port is no part of
-  an agent's `family` (RFC 8252 §7.3); a `control` record that is there but malformed or
-  unreadable also closes the owner's surfaces; every body the doors read is bounded; no
-  token exchange callback is installed.
+  From slice 7's security review: an outside client naming a redirect on `tinyassets.io`
+  or any subdomain is refused at `/authorize` (CIMD or DCR alike); sign-out revokes the
+  presented token's grant (a token gone since validation is `401`); each device keeps its
+  own first-party grant (`revokeExistingGrants: false`), while an outside client's
+  re-authorization replaces its earlier grant from the same installation (the provider's
+  default per exact redirect URI, and the doors' own replacement across a loopback
+  client's ports); a loopback redirect's port (`localhost`, `127.0.0.0/8`, `::1`) is no
+  part of an agent's `family` (RFC 8252 §7.3); a `control` record that is there but
+  malformed or unreadable also closes the owner's surfaces; every body the doors read is
+  bounded; no token exchange callback is installed; and the owner is named from the
+  sign-in's issuer against an explicit list (`OWNER_ISSUER`, and `FOREIGN_ISSUERS`, empty
+  until a provider's slice lists its issuer), any other issuer refused loudly.
 - [ ] Live AuthKit wiring: an `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
   the code exchange and the ID token's signature, issuer, audience and `auth_time`
@@ -56,8 +60,11 @@ live acceptance is still owed says so.
   fallback (this replaces the research's "use the binder's own clock"), since the fence
   and the session's 600 s bound both rest on the sign-in's real time. The binder names
   the owner from the token's issuer and subject: AuthKit's subjects stay owner ids as
-  today, and any later issuer's (Sign in with ChatGPT) are namespaced `iss-<hash>-<sub>`,
-  so linking a second provider to an existing owner is that provider's slice's own act.
+  today, and a later issuer's (Sign in with ChatGPT) are namespaced `iss-<hash>-<sub>`
+  once that provider's slice lists it in `FOREIGN_ISSUERS` (any unlisted issuer is
+  refused), so linking a second provider to an existing owner is that slice's own act.
+  The AuthKit slice sets `OWNER_ISSUER` to the exact `iss` its tokens carry, checked
+  against a live token, since any other spelling refuses every sign-in.
 - [ ] DNS, routes and deploy: the doors Worker's routes on `tinyassets.io` (`/mcp`,
   `/api/*`, `/hooks/inbound/*`, `/app/api/*`, `/authorize`, `/oauth/*`,
   `/.well-known/oauth-*`), the `OAUTH_KV` and `DIRECTORY` namespaces, then the handles

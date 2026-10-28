@@ -23,14 +23,18 @@ The doors SHALL run their own OAuth authorization server, issuer `https://tinyas
 - **THEN** the authorization fails loudly
 
 ### Requirement: The owner is named by the sign-in's issuer and subject
-The doors SHALL name the owner from the verified sign-in's issuer and subject: the owner issuer's (AuthKit's) subject as it stands, so today's owners keep their ids, and any other issuer's subject namespaced by that issuer. With no owner issuer configured, every sign-in SHALL fail.
+The doors SHALL name the owner from the verified sign-in's issuer and subject, against an explicit list: the owner issuer's (AuthKit's) subject as it stands, so today's owners keep their ids, and a listed foreign issuer's subject namespaced by that issuer. Any other issuer SHALL be refused, and with no owner issuer configured every sign-in SHALL fail.
 
 #### Scenario: A second provider signs in a subject AuthKit also has
-- **WHEN** another issuer's sign-in carries a subject equal to an AuthKit owner's id
+- **WHEN** a listed foreign issuer's sign-in carries a subject equal to an AuthKit owner's id
 - **THEN** it names a different, namespaced owner, and the AuthKit owner's object is never reached
 
+#### Scenario: The owner issuer is spelled differently
+- **WHEN** a sign-in's issuer differs from the configured owner issuer by a trailing slash
+- **THEN** it is refused loudly and no object is reached, never taken for a new, empty owner
+
 ### Requirement: An MCP call carries its grant's original sign-in
-An MCP grant's encrypted props SHALL hold the time of the interactive sign-in that created it, and no token exchange SHALL change them, so every MCP call carries that time as `authenticated_at`. A native client's loopback port SHALL be no part of its agent identity.
+An MCP grant's encrypted props SHALL hold the time of the interactive sign-in that created it, and no token exchange SHALL change them, so every MCP call carries that time as `authenticated_at`. A native client's loopback port (`localhost`, `127.0.0.0/8`, `::1`) SHALL be no part of its agent identity, and its new grant SHALL replace its earlier ones from the same installation whatever their ports.
 
 #### Scenario: A token refreshed twice
 - **WHEN** a client signed in at T refreshes its token twice and calls a tool
@@ -87,10 +91,10 @@ Every outside call (an MCP call, an `/api` call, an outside client's authorizati
 - **THEN** outside calls and the owner's own surface and sign-in are all refused
 
 ### Requirement: Nothing but the owner surface is served on our origin
-No published app, user content or third-party page SHALL ever be served on `https://tinyassets.io`: the session cookie, the exact-`Origin` rule and the first-party redirect all rest on every page of that origin being ours. No outside client SHALL be sent access on that origin.
+No published app, user content or third-party page SHALL ever be served on `https://tinyassets.io`: the session cookie, the exact-`Origin` rule and the first-party redirect all rest on every page of that origin being ours. No outside client SHALL be sent access on `tinyassets.io` or any of its subdomains.
 
-#### Scenario: A client document names a redirect on our origin
-- **WHEN** a CIMD document or a registered client names a redirect on `https://tinyassets.io`
+#### Scenario: A client document names a redirect on one of our hosts
+- **WHEN** a CIMD document or a registered client names a redirect on `tinyassets.io` or a subdomain such as `mcp.tinyassets.io`
 - **THEN** its authorization is refused before the consent page
 
 ### Requirement: Sign-out ends the device's access, and devices sign in apart

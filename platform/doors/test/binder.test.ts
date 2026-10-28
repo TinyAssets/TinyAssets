@@ -13,11 +13,11 @@ import {
   apiKeyOrigin as doorsKeyOrigin, bindApiKey, bindKeyRegistration, bindMcp, bindOwner,
   bindSignIn, installationOf, mcpClient, mcpOrigin, ownerOf,
 } from "../src/binder";
-import { APP_RESOURCE, MCP_RESOURCE, WEB_CLIENT } from "../src/config";
+import { APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, WEB_CLIENT } from "../src/config";
 import { FAKE_ISSUER } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {
-  signInApp,
+  appCallback,
   appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient, rpcBody,
   serveFirstPartyDocument, setControl, sqlIn, url,
 } from "./support";
@@ -88,8 +88,12 @@ describe("an MCP binding", () => {
     expect(installationOf("http://127.0.0.1:5555/callback")).toBe("http://127.0.0.1/callback");
     expect(installationOf("http://[::1]:5555/cb?x=1")).toBe("http://[::1]/cb?x=1");
     expect(installationOf("http://localhost:8080/cb")).toBe("http://localhost/cb");
+    // All of 127.0.0.0/8 is loopback, as the provider counts it.
+    expect(installationOf("http://127.0.0.2:5555/cb")).toBe("http://127.0.0.2/cb");
+    expect(installationOf("http://127.255.10.1:5555/cb")).toBe("http://127.255.10.1/cb");
     for (const kept of ["https://127.0.0.1:5555/cb", "https://client.example:8443/cb",
-                        "http://127.0.0.2:5555/cb", "https://localhost:5555/cb"]) {
+                        "http://128.0.0.1:5555/cb", "https://localhost:5555/cb",
+                        "http://127.example:5555/cb"]) {
       expect(installationOf(kept)).toBe(kept);
     }
   });
@@ -177,16 +181,45 @@ describe("the other bindings", () => {
 });
 
 describe("the owner a sign-in names", () => {
+  /** The doors once two providers' slices have listed their issuers. */
+  const LISTED: DoorsEnv = { ...doorsEnv,
+    FOREIGN_ISSUERS: JSON.stringify(["https://auth.openai.com", "https://other.example"]) };
+
+  it("is listed against no foreign issuer today", () => {
+    expect(doorsEnv.FOREIGN_ISSUERS).toBe("[]");
+  });
+
   it("is the owner issuer's subject as it stands", async () => {
     expect(await ownerOf(doorsEnv, FAKE_ISSUER, "user_01H")).toBe("user_01H");
   });
 
-  it("is namespaced by any other issuer, so two issuers' subjects never meet", async () => {
+  it("is namespaced by a listed foreign issuer, so two issuers' subjects never meet",
+     async () => {
     const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
-    const chatgpt = await ownerOf(doorsEnv, "https://auth.openai.com", "user_01H");
+    const chatgpt = await ownerOf(LISTED, "https://auth.openai.com", "user_01H");
     expect(chatgpt).toBe(`iss-${sha("https://auth.openai.com").slice(0, 32)}-user_01H`);
-    expect(chatgpt).not.toBe(await ownerOf(doorsEnv, "https://other.example", "user_01H"));
-    expect(await ownerOf(doorsEnv, "https://auth.openai.com", "a:b")).toMatch(/-a%3Ab$/);
+    expect(chatgpt).not.toBe(await ownerOf(LISTED, "https://other.example", "user_01H"));
+    expect(await ownerOf(LISTED, "https://auth.openai.com", "a:b")).toMatch(/-a%3Ab$/);
+  });
+
+  it.each([
+    ["the owner issuer with a trailing slash", `${FAKE_ISSUER}/`],
+    ["the owner issuer's host in capitals", "https://UPSTREAM.test"],
+    ["an issuer no slice has listed", "https://auth.openai.com"],
+    ["a listed issuer with a trailing slash", "https://auth.openai.com/"],
+  ])("refuses %s loudly, never a new owner", async (_what, issuer) => {
+    // The unlisted issuer against today's empty list; the rest against a list with two.
+    const environment = issuer === "https://auth.openai.com" ? doorsEnv : LISTED;
+    await expect(ownerOf(environment, issuer, "user_01H"))
+      .rejects.toThrow("is neither the owner issuer nor a listed one");
+  });
+
+  it("refuses a foreign list that is malformed or names the owner issuer", async () => {
+    for (const list of ["", "{}", "[1]", "[\"http://x.example\"]",
+                        `["${FAKE_ISSUER}"]`, "[\"https://a.example\",\"https://a.example\"]"]) {
+      await expect(ownerOf({ ...doorsEnv, FOREIGN_ISSUERS: list }, "https://a.example", "u"))
+        .rejects.toThrow("FOREIGN_ISSUERS");
+    }
   });
 
   it.each([
@@ -204,15 +237,27 @@ describe("the owner a sign-in names", () => {
     }
   });
 
-  it("is what a sign-in through another issuer is bound to", async () => {
+  it("is what a sign-in through a listed foreign issuer is bound to", async () => {
     const restoreDocument = serveFirstPartyDocument();
     try {
       const subject = owner();
-      const app = await signInApp({ owner: subject, issuer: "https://auth.openai.com" });
-      const named = await ownerOf(doorsEnv, "https://auth.openai.com", subject);
-      expect(await appPost("session/extend", app.access_token, app.session, {})).toMatchObject(
-        { status: 200 });
+      const { back } = await appCallback({ owner: subject, issuer: "https://auth.openai.com" },
+                                         LISTED);
+      expect(new URL(back.headers.get("Location")!).searchParams.get("code")).toBeTruthy();
+      const named = await ownerOf(LISTED, "https://auth.openai.com", subject);
       expect(await reached(named)).toBe(true);
+      expect(await reached(subject)).toBe(false);
+    } finally {
+      restoreDocument();
+    }
+  });
+
+  it("refuses a sign-in from an issuer off the list before any object", async () => {
+    const restoreDocument = serveFirstPartyDocument();
+    try {
+      const subject = owner();
+      await expect(appCallback({ owner: subject, issuer: `${FAKE_ISSUER}/` }))
+        .rejects.toThrow("is neither the owner issuer nor a listed one");
       expect(await reached(subject)).toBe(false);
     } finally {
       restoreDocument();

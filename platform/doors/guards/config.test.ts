@@ -8,8 +8,10 @@
  *   reaches every owner's object by name; only `src/binder.ts` names it.
  * - `OAUTH_KV` and `DIRECTORY`: two KV namespaces, distinct, with placeholder ids
  *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
- * - Two vars: `DCR_ENABLED` `"false"`, and `OWNER_ISSUER` unset (`not-configured`) until
- *   the AuthKit slice names AuthKit's issuer, so every sign-in fails loudly.
+ * - Three vars: `DCR_ENABLED` `"false"`; `OWNER_ISSUER` unset (`not-configured`) until
+ *   the AuthKit slice names AuthKit's issuer, so every sign-in fails loudly; and
+ *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
+ *   issuer is refused, never taken for a new owner.
  * - No service: `FILES` joins with the file-bytes door (tasks 2, owed by 6.1), and rate
  *   limits with their binding (tasks 2).
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
@@ -38,6 +40,8 @@ const KEYS: ReadonlySet<string> = new Set([
   "preview_urls", "vars", "durable_objects", "kv_namespaces",
 ]);
 const KV: readonly string[] = Object.freeze(["DIRECTORY", "OAUTH_KV"]);
+const VARS = Object.freeze({ DCR_ENABLED: "false", OWNER_ISSUER: "not-configured",
+                             FOREIGN_ISSUERS: "[]" });
 
 type Config = Record<string, unknown>;
 
@@ -85,9 +89,9 @@ export function doorsConfigProblems(config: Config,
       || flags.some((flag) => !FLAGS.includes(String(flag)))) {
     problems.push(`compatibility_flags are exactly ${FLAGS.join(", ")}`);
   }
-  if (JSON.stringify(config["vars"])
-      !== JSON.stringify({ DCR_ENABLED: "false", OWNER_ISSUER: "not-configured" })) {
-    problems.push("vars are exactly DCR_ENABLED \"false\" and OWNER_ISSUER unset");
+  if (JSON.stringify(config["vars"]) !== JSON.stringify(VARS)) {
+    problems.push("vars are exactly DCR_ENABLED \"false\", OWNER_ISSUER unset and no " +
+                  "FOREIGN_ISSUERS");
   }
   const objects = config["durable_objects"] as { bindings?: unknown } | undefined;
   const bindings = objects?.bindings;
@@ -143,11 +147,12 @@ describe("doors Worker config", () => {
                                       simple: { limit: 120, period: 60 } }] }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
     ["ctx.exports", { compatibility_flags: [...FLAGS, "enable_ctx_exports"] }],
-    ["DCR on", { vars: { DCR_ENABLED: "true", OWNER_ISSUER: "not-configured" } }],
-    ["an owner issuer before AuthKit", { vars: { DCR_ENABLED: "false",
-                                                 OWNER_ISSUER: "https://evil.example" } }],
-    ["another var", { vars: { DCR_ENABLED: "false", OWNER_ISSUER: "not-configured",
-                              OWNER: "alice" } }],
+    ["DCR on", { vars: { ...VARS, DCR_ENABLED: "true" } }],
+    ["an owner issuer before AuthKit", { vars: { ...VARS, OWNER_ISSUER: "https://evil.example" } }],
+    ["a foreign issuer before its slice", { vars: { ...VARS,
+      FOREIGN_ISSUERS: "[\"https://auth.openai.com\"]" } }],
+    ["no foreign issuer list", { vars: { DCR_ENABLED: "false", OWNER_ISSUER: "not-configured" } }],
+    ["another var", { vars: { ...VARS, OWNER: "alice" } }],
     ["OWNER to another script", { durable_objects: { bindings: [
       { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-files" }] } }],
     ["OWNER in this script", { durable_objects: { bindings: [

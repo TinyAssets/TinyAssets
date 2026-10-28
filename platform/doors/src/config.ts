@@ -6,7 +6,8 @@
 import type { OwnerDO } from "../../owner/src/owner-do";
 
 /** The one configured public origin; the Capacitor WebView loads it too. */
-export const PUBLIC_ORIGIN = "https://tinyassets.io";
+export const PUBLIC_HOST = "tinyassets.io";
+export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`;
 /** The authorization server's RFC 8414 issuer: our own, not the identity vendor's. */
 export const ISSUER = PUBLIC_ORIGIN;
 /** The outside resource: MCP clients' tokens are bound to it. */
@@ -68,7 +69,15 @@ export interface DoorsEnv {
    * owners keep theirs); every other issuer's subjects are namespaced (`binder.ts`).
    */
   readonly OWNER_ISSUER: string;
+  /**
+   * The other upstream issuers whose sign-ins name namespaced owners, as a JSON array:
+   * each named by the slice that adds its provider (Sign in with ChatGPT, S10). Empty
+   * today. Any issuer neither here nor `OWNER_ISSUER` is refused.
+   */
+  readonly FOREIGN_ISSUERS: string;
 }
+
+const ISSUER_URL = /^https:\/\/[^\s]+$/;
 
 /** The owner issuer, an https URL; unset, every sign-in fails loudly. */
 export function ownerIssuer(env: DoorsEnv): string {
@@ -76,10 +85,26 @@ export function ownerIssuer(env: DoorsEnv): string {
   if (issuer === ISSUER_NOT_CONFIGURED) {
     throw new Error("OWNER_ISSUER is not configured (tasks 2: AuthKit)");
   }
-  if (typeof issuer !== "string" || !/^https:\/\/[^\s]+$/.test(issuer)) {
+  if (typeof issuer !== "string" || !ISSUER_URL.test(issuer)) {
     throw new Error("OWNER_ISSUER is an https issuer URL");
   }
   return issuer;
+}
+
+/** The listed foreign issuers: distinct https URLs, none of them the owner issuer. */
+export function foreignIssuers(env: DoorsEnv): readonly string[] {
+  let listed: unknown;
+  try {
+    listed = JSON.parse(env.FOREIGN_ISSUERS);
+  } catch {
+    listed = null;
+  }
+  if (!Array.isArray(listed) || listed.some((i) => typeof i !== "string" || !ISSUER_URL.test(i))
+      || new Set(listed).size !== listed.length || listed.includes(env.OWNER_ISSUER)) {
+    throw new Error("FOREIGN_ISSUERS is a JSON array of distinct https issuers, " +
+                    "never the owner issuer");
+  }
+  return listed as string[];
 }
 
 /** Whether the deprecated DCR fallback is on. Anything but the two spellings is a config bug. */

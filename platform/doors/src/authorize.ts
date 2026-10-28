@@ -33,11 +33,12 @@ import { type AppProps, bindSignIn, type McpProps, mcpOrigin, ownerOf } from "./
 import { boundedText, TOO_LARGE } from "./body";
 import {
   APP_RESOURCE, AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS,
-  MCP_RESOURCE, now, PUBLIC_ORIGIN, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
+  MCP_RESOURCE, now, PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
 } from "./config";
 import { outsideOpen, ownerOpen } from "./control";
 import { readControl } from "./directory";
 import { authorizationServer } from "./oauth";
+import { replaceInstallation } from "./revoke";
 import { mediaType, sessionCookie } from "./session";
 import type { Upstream } from "./upstream";
 
@@ -72,6 +73,12 @@ async function s256(verifier: string): Promise<string> {
 
 function granted(scope: readonly string[]): string[] {
   return scope.filter((s) => SCOPES.includes(s));
+}
+
+/** Whether a redirect URI is on one of our hosts: the apex or any subdomain. */
+export function ours(redirectUri: string): boolean {
+  const host = new URL(redirectUri).hostname;
+  return host === PUBLIC_HOST || host.endsWith(`.${PUBLIC_HOST}`);
 }
 
 function firstParty(request: AuthRequest): boolean {
@@ -158,10 +165,11 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
           || (parsed.resource !== APP_RESOURCE && parsed.resource !== MCP_RESOURCE)) {
         return redirect(authorizationErrorRedirect(parsed, "access_denied"));
       }
-      // Only our own app is sent access on our own origin: an outside client naming a
-      // redirect there (a CIMD document or a registration may) would have the consent
-      // page say the access goes to TinyAssets.
-      if (!forApp && new URL(parsed.redirectUri).origin === PUBLIC_ORIGIN) {
+      // Only our own app is sent access on our own hosts (`tinyassets.io` and every
+      // subdomain, `mcp.` among them): an outside client naming a redirect there (a CIMD
+      // document or a registration may) would have the consent page say the access goes
+      // to TinyAssets.
+      if (!forApp && ours(parsed.redirectUri)) {
         return text(400, "This app may not send access to TinyAssets itself.");
       }
       if (forApp) {
@@ -235,9 +243,12 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
       kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
       source_ref: original.clientId, authenticated_at: signedIn.authenticated_at,
     };
-    // The provider's default stands: a re-authorization replaces the client's earlier
-    // grant for this owner, scoped for a CIMD client to the same redirect URI, so one
-    // installation's sign-in never revokes another's and stale grants never pile up.
+    // A re-authorization replaces the client's earlier grant from the same installation,
+    // so one installation's sign-in never revokes another's and stale grants never pile
+    // up. The provider's default does it per exact redirect URI for a CIMD client; a
+    // loopback client's port changes per sign-in, so its earlier grants from any port of
+    // the same installation go first.
+    await replaceInstallation(env, owner, original.clientId, original.redirectUri);
     const { redirectTo } = await oauth.completeAuthorization({
       request: original, userId: owner, metadata: {}, scope, props });
     return redirect(redirectTo, headers);

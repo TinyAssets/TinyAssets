@@ -23,7 +23,8 @@ import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
 import { principal } from "../../owner/src/text";
 
 import {
-  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, ISSUER, MCP_RESOURCE, ownerIssuer,
+  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
+  ownerIssuer,
 } from "./config";
 import type { KeyEntry } from "./directory";
 import type { SignIn } from "./upstream";
@@ -76,12 +77,17 @@ export async function mcpOrigin(clientId: string, redirectUri: string):
   };
 }
 
-const LOOPBACK_HOSTS: readonly string[] = Object.freeze(["127.0.0.1", "[::1]", "localhost"]);
+const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+/** A loopback host, as the provider counts one: `localhost`, `127.0.0.0/8` and `::1`. */
+export function loopback(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "[::1]" || LOOPBACK_V4.test(hostname);
+}
 
 /** A redirect URI as an installation: a loopback one without its port. */
 export function installationOf(redirectUri: string): string {
   const url = new URL(redirectUri);
-  if (url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname)) {
+  if (url.protocol === "http:" && loopback(url.hostname)) {
     url.port = "";
     return url.href;
   }
@@ -92,11 +98,13 @@ export function installationOf(redirectUri: string): string {
 const FOREIGN = "iss-";
 
 /**
- * The owner a verified upstream sign-in names, from its issuer and subject. The owner
- * issuer's (AuthKit's) subject is the owner id as it stands, so today's owners keep
- * theirs; any other issuer's subject (Sign in with ChatGPT, say) is namespaced by its
- * issuer, so two providers' subjects never name one owner. Linking a second provider to
- * an existing owner is that provider's slice's own act.
+ * The owner a verified upstream sign-in names, from its issuer and subject, against an
+ * explicit allow-list. The owner issuer's (AuthKit's) subject is the owner id as it
+ * stands, so today's owners keep theirs. A listed foreign issuer's subject (Sign in with
+ * ChatGPT, say, once its slice lists it) is namespaced by that issuer, so two providers'
+ * subjects never name one owner; linking it to an existing owner is that slice's act.
+ * Any other issuer is refused loudly, so an `iss` that differs from the configured one
+ * by so much as a trailing slash can never move an owner into a new, empty account.
  */
 export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): Promise<string> {
   if (typeof issuer !== "string" || !issuer || typeof subject !== "string") {
@@ -107,6 +115,10 @@ export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): P
       throw new Error("the owner issuer's subject is outside the owner namespace");
     }
     return principal(subject);
+  }
+  if (!foreignIssuers(env).includes(issuer)) {
+    throw new Error(`the sign-in's issuer ${JSON.stringify(issuer)} is neither the owner ` +
+                    "issuer nor a listed one");
   }
   return principal(`${FOREIGN}${(await sha256(issuer)).slice(0, 32)}-${
     encodeURIComponent(principal(subject))}`);

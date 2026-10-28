@@ -79,6 +79,28 @@ describe("L1: an outside client is never sent access on our own origin", () => {
     expect(page.headers.getSetCookie()).toEqual([]);
   });
 
+  it.each([
+    ["another path on the apex", "https://tinyassets.io/elsewhere"],
+    ["the mcp. subdomain", "https://mcp.tinyassets.io/cb"],
+    ["a deeper subdomain", "https://a.b.tinyassets.io/cb"],
+  ])("refuses a client naming a redirect on %s", async (_what, redirect) => {
+    const evil = "https://evil.example/client.json";
+    serveDocument(evil, { client_id: evil, client_name: "TinyAssets", redirect_uris: [redirect],
+                          token_endpoint_auth_method: "none" });
+    const { challenge } = await pkce();
+    const page = await call(new Request(authorizeUrl({ clientId: evil, redirectUri: redirect },
+                                                     challenge), { headers: { ...NAVIGATE } }));
+    expect(page.status).toBe(400);
+  });
+
+  it("serves a client on a host that only ends like ours", async () => {
+    const client = await registerClient("Look-alike", "https://nottinyassets.io/cb");
+    const { challenge } = await pkce();
+    const page = await call(new Request(authorizeUrl(client, challenge),
+                                        { headers: { ...NAVIGATE } }));
+    expect(page.status).toBe(200);
+  });
+
   it("still serves a CIMD client on its own domain", async () => {
     const real = "https://claude.example/client.json";
     serveDocument(real, { client_id: real, client_name: "Claude",
@@ -116,6 +138,79 @@ describe("L2: sign-out ends the presented token", () => {
       .toBe(401);
     expect((await appPost("session/extend", laptop.access_token, laptop.session, {})).status)
       .toBe(200);
+  });
+});
+
+describe("sign-out at the edges", () => {
+  /** The doors with token records that vanish on their second read, as at expiry. */
+  function expiringAfterValidation(): DoorsEnv {
+    const real = env.OAUTH_KV;
+    const reads = new Map<string, number>();
+    const kv = {
+      get: (name: string, options: never) => {
+        const seen = (reads.get(name) ?? 0) + 1;
+        reads.set(name, seen);
+        return name.startsWith("token:") && seen > 1 ? Promise.resolve(null)
+                                                      : real.get(name, options);
+      },
+      put: real.put.bind(real), delete: real.delete.bind(real), list: real.list.bind(real),
+      getWithMetadata: real.getWithMetadata.bind(real),
+    } as unknown as KVNamespace;
+    return { ...doorsEnv, OAUTH_KV: kv };
+  }
+
+  it("answers a token that expires after validation 401, not 500", async () => {
+    const app = await signInApp({ owner: owner() });
+    const response = await call(new Request(url("/app/api/session/close"), {
+      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+                                 Authorization: `Bearer ${app.access_token}`,
+                                 Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }),
+      expiringAfterValidation());
+    expect(response.status).toBe(401);
+  });
+
+  it("stays behind the maintenance gate", async () => {
+    const app = await signInApp({ owner: owner() });
+    await setControl({ ...OPEN, ordinary: "none" });
+    expect((await appPost("session/close", app.access_token, app.session, {})).status).toBe(503);
+  });
+});
+
+describe("loopback clients' grants", () => {
+  const CLI = "https://cli.example/client.json";
+
+  /** Connect a CIMD client for `who` on `redirect`. */
+  async function connectCimd(who: string, redirect: string) {
+    return connect({ clientId: CLI, redirectUri: redirect }, { owner: who });
+  }
+
+  async function grantsOf(who: string): Promise<string[]> {
+    const oauth = authorizationServer(doorsEnv).getOAuthApi(doorsEnv);
+    return (await oauth.listUserGrants(who)).items
+      .filter((g) => g.clientId === CLI).map((g) => g.redirectUri ?? "");
+  }
+
+  it("are replaced per installation, whatever port each sign-in used", async () => {
+    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+                         redirect_uris: ["http://127.0.0.1/callback"],
+                         token_endpoint_auth_method: "none" });
+    const alice = owner();
+    const first = await connectCimd(alice, "http://127.0.0.1:5555/callback");
+    await connectCimd(alice, "http://127.0.0.1:6666/callback");
+    expect(await grantsOf(alice)).toEqual(["http://127.0.0.1:6666/callback"]);
+    expect((await refresh({ clientId: CLI, redirectUri: "" }, first.refresh_token)).status)
+      .toBe(400);
+  });
+
+  it("keep each non-loopback installation's own grant", async () => {
+    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+                         redirect_uris: ["https://a.example/cb", "https://b.example/cb"],
+                         token_endpoint_auth_method: "none" });
+    const alice = owner();
+    await connectCimd(alice, "https://a.example/cb");
+    await connectCimd(alice, "https://b.example/cb");
+    expect((await grantsOf(alice)).sort()).toEqual(["https://a.example/cb",
+                                                    "https://b.example/cb"]);
   });
 });
 
@@ -374,8 +469,23 @@ describe("L7: the provider revoke reads every page", () => {
     }
     const bound = { binding: { owner: alice, caller: alice, origin: null },
                     stub: env.OWNER.getByName(alice) };
-    const done = await revokeClient(doorsEnv, bound, await mcpClient(client.clientId), 1);
+    // The provider's grant listing, observed: each page holds the one grant asked for.
+    const real = env.OAUTH_KV;
+    const limits: unknown[] = [];
+    const observed = { ...doorsEnv, OAUTH_KV: {
+      get: real.get.bind(real), put: real.put.bind(real), delete: real.delete.bind(real),
+      getWithMetadata: real.getWithMetadata.bind(real),
+      list: (options: KVNamespaceListOptions) => {
+        if (options.prefix?.startsWith("grant:")) {
+          limits.push(options.limit);
+        }
+        return real.list(options);
+      },
+    } as unknown as KVNamespace };
+    const done = await revokeClient(observed, bound, await mcpClient(client.clientId), 1);
     expect(done.grants).toBe(3);
+    expect(limits.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(limits)).toEqual(new Set([1]));
     const left = (await oauth.listUserGrants(alice)).items.filter((g) => g.resource !== APP_RESOURCE);
     expect(left.map((g) => g.clientId)).not.toContain(client.clientId);
     expect(left).toHaveLength(1);
