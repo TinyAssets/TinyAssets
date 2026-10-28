@@ -574,7 +574,9 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     // The pre-revoke credential, and any client whose sign-in is unknown or older than the
     // latest forgotten revoke, is never recorded; a sign-in after it is, as `full`.
     for (const binding of [r.bind(CHATGPT, { authenticated_at: signedBefore }), r.bind(CHATGPT),
-                           r.bind(DOT, { authenticated_at: Math.floor(t - 2 * DAY) })]) {
+                           r.bind(DOT, { authenticated_at: Math.floor(t - 2 * DAY) }),
+                           // within the revoke's clock margin: counted as before it
+                           r.bind(DOT, { authenticated_at: Math.ceil(t - DAY) + 2 })]) {
       expect((await failure(() => r.stub.outsideAgents(binding))).message)
         .toBe("a fresh sign-in is required after a revoke");
     }

@@ -26,13 +26,16 @@ const TURN = Object.freeze({ prompt: "check the board" });
  */
 class ScriptedRunner implements WorkRunner {
   readonly ran: WorkTarget[] = [];
-  readonly answers: ("handed" | "failed" | "crash" | "early" | "slow")[] = [];
+  readonly answers: ("handed" | "failed" | "crash" | "early" | "slow" | "stall")[] = [];
   slowMs = 200;
 
   async handOff(target: WorkTarget, mark: () => void) {
     const answer = this.answers.shift() ?? "handed";
     if (answer === "early") {
       throw new Error("died before the work began");
+    }
+    if (answer === "stall") {  // stalls before its mark, then hands it over
+      await new Promise((resolve) => setTimeout(resolve, this.slowMs));
     }
     mark();  // throws when the claim lapsed: the runner stops before any effect
     this.ran.push(target);
@@ -43,7 +46,7 @@ class ScriptedRunner implements WorkRunner {
     if (answer === "crash") {
       throw new Error("died after the work began");
     }
-    return { state: answer };
+    return { state: answer === "stall" ? "handed" as const : answer };
   }
 }
 
@@ -314,6 +317,21 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
     expect((await states(r))[0]!["state"]).toBe("unknown");  // never handed again
     expect(runner.ran).toHaveLength(2);
+  });
+
+  it("marks a hand-off that stalls before its mark, so it is never handed again",
+     async () => {
+    const r = await rig();
+    const runner = new ScriptedRunner();
+    runner.answers.push("stall");
+    const t = clock();
+    await inWork(r, async ({ work }) => {
+      work.add("turn", t - 1, TURN, null, t);
+      expect(await runWork(work, runner, () => t, 16, 20)).toBe(0);
+    });
+    expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 1 }]);
+    await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
+    expect((await states(r))[0]!["state"]).toBe("unknown");
   });
 
   it("backs a failing row off in its own row, never in a loop", async () => {

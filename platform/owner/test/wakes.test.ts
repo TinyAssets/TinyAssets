@@ -574,6 +574,20 @@ describe("a revoke of a suppressed agent's callbacks", () => {
 });
 
 describe("the wakes lane of the object's one schedule", () => {
+  it("defers a row only later, never before its claim's lease", async () => {
+    const r = await rig();
+    const t = clock();
+    const due = await r.inLedger({}, (ledger) => {
+      const muse = ringing(ledger);
+      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      const [wake] = ledger.dueOpen(t, 1);
+      expect(ledger.claim(wake!.wake_id, t).outcome).toBe("claimed");
+      ledger.defer(wake!.wake_id, t + 1);
+      return ledger.nextDue(t, false);
+    });
+    expect(due).toBe(t + WAKE_LEASE_S);
+  });
+
   it("backs a row whose step fails off in its own row, never in a loop (review N8)",
      async () => {
     const r = await rig();
