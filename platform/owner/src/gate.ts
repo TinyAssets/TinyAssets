@@ -32,8 +32,9 @@
  * written before the refusal is thrown is kept. Reads stay direct.
  *
  * The modules the object builds see its storage only through `storage`, a view that
- * refuses, loudly, any statement but a `SELECT` and any `transactionSync` outside a unit
- * (Fact 8: a write that could land in pi's transaction is a crash, not a hope). A unit
+ * refuses, loudly, any statement but a single `SELECT` (nothing after it) and any
+ * `transactionSync` outside a unit (Fact 8: a write that could land in pi's transaction is
+ * a crash, not a hope). A unit
  * inside another, and a unit that returns a promise, are refused the same way. Units in
  * pi's own callbacks (a commit's `conversationCreated`) never come here: they write through
  * pi's transaction handle, and a unit queued from inside pi's transaction would wait on it
