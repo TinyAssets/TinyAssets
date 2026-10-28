@@ -1,0 +1,30 @@
+// The doors Worker: the binder, our OAuth authorization server, the stateless MCP door,
+// `/api` keys and the owner surface (ADR-032 Decision 2). Not deployable: no routes, no
+// workers.dev or preview URL, and its two KV namespaces are placeholders, so a deploy
+// cannot succeed. It binds exactly what guards/config.test.ts allows:
+// - OWNER: the owner Worker's namespace, by script_name. Only src/binder.ts reaches it.
+// - OAUTH_KV: the OAuth provider's own store; DIRECTORY: the owner directory (routing
+//   hints and the control record). Two namespaces, so their schemas never collide.
+// - DCR_ENABLED: the deprecated dynamic-registration fallback, off.
+// `global_fetch_strictly_public` is required for Client ID Metadata Documents: the
+// provider fetches a client's metadata URL, and the flag keeps that fetch off same-zone
+// routing (its SSRF protection); without it the provider will not advertise CIMD.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-doors",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": { "DCR_ENABLED": "false" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OWNER", "class_name": "OwnerDO", "script_name": "tinyassets-owner" }
+    ]
+  },
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "not-provisioned-oauth" },
+    { "binding": "DIRECTORY", "id": "not-provisioned-directory" }
+  ]
+}
