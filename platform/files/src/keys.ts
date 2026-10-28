@@ -14,8 +14,8 @@ export class Invalid extends Error {
 
 /** A chunk's most bytes; the owner's chunker cuts files at exactly this size. */
 export const CHUNK_BYTES = 4 * 1024 * 1024;
-/** The most bytes one put or get call moves: six whole chunks, under RPC's 32 MiB. */
-export const BATCH_BYTES = 6 * CHUNK_BYTES;
+/** The most bytes one put or get call moves: two whole chunks, well under RPC's 32 MiB. */
+export const BATCH_BYTES = 2 * CHUNK_BYTES;
 /** R2's most keys in one delete. */
 export const DELETE_BATCH = 1000;
 

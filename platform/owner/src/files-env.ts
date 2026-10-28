@@ -18,6 +18,9 @@
  *   refused, never overwritten. pi's own mutation queue is not a lock against those.
  * - `appendFile` and `truncateFile` keep the chunks before the one they touch and send
  *   only the rest, each against the version it read in the same call.
+ * - Bytes come from `FILES` two chunks a call. A whole-file read, and a write, moves at
+ *   most `WHOLE_BYTES` (16 MiB) through the object; a larger file is read by range or
+ *   by line, and sent by upload.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
  * - `listFiles` walks depth first in byte order and, inside a work tree (a `.git` entry
@@ -38,8 +41,8 @@ import {
 
 import { Invalid, Refused } from "./errors";
 import {
-  CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode, FileConflict,
-  FileFault, type Files,
+  BATCH_BYTES, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
+  FileConflict, FileFault, type Files, sha256Hex, WHOLE_BYTES,
 } from "./files";
 import { nameOf, parentOf, resolve, ROOTS, storedPath, within, WORKSPACE } from "./paths";
 import { utf8Bytes } from "./text";
@@ -321,20 +324,32 @@ class PinnedReader implements BinaryReader {
   }
 }
 
-/** A pinned content's bytes in order, one chunk at a time. */
+/** A pinned content's bytes in order, two chunks (one `FILES` call) at a time. */
 async function* pieces(files: Files, content: Content): AsyncGenerator<Uint8Array> {
   if (content.inline !== undefined) {
     yield content.inline;
     return;
   }
-  for (const chunk of content.chunks ?? []) {
-    yield (await files.fetch([{ sha256: chunk.sha256 }]))[0]!;
+  const chunks = content.chunks ?? [];
+  const pair = BATCH_BYTES / CHUNK_BYTES;
+  for (let at = 0; at < chunks.length; at += pair) {
+    yield join(await files.fetch(chunks.slice(at, at + pair)
+      .map((chunk) => ({ sha256: chunk.sha256 }))));
+  }
+}
+
+/** Refuse moving more than `WHOLE_BYTES` through the object at once. */
+function capped(bytes: number, what: string): void {
+  if (bytes > WHOLE_BYTES) {
+    throw new Invalid(`${what} moves at most ${WHOLE_BYTES} bytes at once; ` +
+                      "read larger files by range or by line");
   }
 }
 
 /** Bytes `[from, to)` of a pinned content: only the chunks that hold them. */
 async function readRange(files: Files, content: Content, from: number, to: number):
     Promise<Uint8Array> {
+  capped(to - from, "a read");
   if (content.inline !== undefined) {
     return content.inline.slice(from, to);
   }
@@ -349,6 +364,7 @@ async function readRange(files: Files, content: Content, from: number, to: numbe
 }
 
 async function wholeBytes(files: Files, content: Content): Promise<Uint8Array> {
+  capped(content.entry.size, "a whole-file read");
   const out: Uint8Array[] = [];
   for await (const piece of pieces(files, content)) {
     out.push(piece);
@@ -483,7 +499,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
     this.#writer = options.writer ?? "agent";
     this.cwd = options.cwd ?? WORKSPACE;
     this.#rearm = options.rearm ?? (async () => undefined);
-    this.id = `ta-files:${this.#files.ns()}`;
+    // Named by a hash of the namespace, which never leaves the object itself.
+    this.id = `ta-files:${sha256Hex(`ta-env\n${this.#files.ns()}`).slice(0, 32)}`;
   }
 
   /** A stored path for `path`: outside the owner's roots, missing to a read, refused to a write. */
@@ -659,6 +676,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
       if (size === current.entry.size) {
         return;
       }
+      capped(size - current.entry.size, "a truncate that grows a file");
       const { prefix, tail } = await this.#kept(current, Math.min(size, current.entry.size));
       const grow = new Uint8Array(Math.max(0, size - current.entry.size));
       await this.#write(at, join([tail, grow]), current.entry.etag,

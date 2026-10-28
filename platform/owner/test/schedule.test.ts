@@ -306,8 +306,7 @@ describe("the object's schedule", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.post(null, `dm:${muse}`);
-    await r.stub.fileUploadBegin(r.bind(null), { chunks: [{ sha256: "e".repeat(64),
-                                                           size: 5000 }] });
+    await r.stub.fileUploadBegin(r.bind(null), { size: 5000, chunks: ["e".repeat(64)] });
     const t = Date.now() / 1000;
     await r.inLedger({}, (ledger) => {
       const claim = ledger.claim(ledger.dueOpen(t + 120, 1)[0]!.wake_id, t + 120);

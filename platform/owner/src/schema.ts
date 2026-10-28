@@ -16,7 +16,7 @@
  * test ties the two); raising the ceiling is a new migration.
  */
 import { GC_GRACE_S } from "./files";
-import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON } from "./policy";
+import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 
 export type Migration = readonly string[];
 
@@ -68,6 +68,9 @@ const COUNTED = "('uploading', 'live')";
 /** Move `file_space.chunk_bytes` by a chunk row's size, when its state counts. */
 const CHUNK_USAGE = (sign: string, row: string) =>
   `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED});`;
+/** A file entry in the temporary area, which keeps no history. */
+const TEMP_ENTRY = (row: string) =>
+  `${row}.content_id IS NOT NULL AND (${row}.parent = '/.ta/tmp' OR ${row}.parent GLOB '/.ta/tmp/*')`;
 
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
@@ -498,13 +501,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // row retention lets go of with its due index.
   //
   // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
-  // (chunks uploading or live) and inline bytes, which the quotas read; a content's
-  // `refs` (its history rows: a live entry's content is always its newest row's) and a
-  // chunk's `refs` (contents made of it). A content no row refers to goes, with its chunk
-  // list; a chunk no content refers to and no upload holds becomes garbage, deleted by
-  // the `files` lane after `GC_GRACE_S` (24 h, SQLite's clock: the schedule compares it with the
-  // object's, and a day's grace does not mind which). A history row never changes but
-  // for its prune time and a redaction of its content.
+  // (chunks uploading or live), inline bytes, open intents and the chunks they hold,
+  // which the bounds read; a content's `refs` (its history rows, and the temporary
+  // area's entries, which keep no history: a live workspace entry's content is always its
+  // newest row's) and a chunk's `refs` (contents made of it). A content nothing refers
+  // to goes, with its chunk list; a chunk no content refers to and no upload holds
+  // becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h, SQLite's clock:
+  // the schedule compares it with the object's, and a day's grace does not mind which).
+  // A history row never changes but for its prune time and a redaction of its content.
   Object.freeze([
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       // The owner's chunk namespace, made on first use (files.ts `ns`).
@@ -514,10 +518,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "history INTEGER NOT NULL CHECK (history >= 0), " +
       "chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes >= 0), " +
       "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
+      "intents INTEGER NOT NULL CHECK (intents >= 0), " +
+      "intent_chunks INTEGER NOT NULL CHECK (intent_chunks >= 0), " +
       // The sync lease: its claim token, fencing epoch (only rising), holder and expiry.
       "lease_id TEXT, epoch INTEGER NOT NULL CHECK (epoch >= 0), holder TEXT, " +
-      "lease_expires REAL NOT NULL)",
-    "INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0)",
+      "lease_expires REAL NOT NULL, " +
+      // The retention every kept row is marked by, and how far housekeeping has re-marked
+      // the rows for a newer one.
+      "retained_keep INTEGER NOT NULL, retained_days INTEGER NOT NULL, retain_cursor TEXT)",
+    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, ${
+      FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.retention_days}, NULL)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
       "WHEN NEW.epoch < OLD.epoch BEGIN SELECT RAISE(ABORT, 'the lease epoch only rises'); END",
     "CREATE TRIGGER file_seq_rises BEFORE UPDATE OF seq ON file_space " +
@@ -534,8 +544,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (inline IS NULL OR length(inline) = size)) WITHOUT ROWID",
     "CREATE TABLE file_content_chunks (content_id TEXT NOT NULL, idx INTEGER NOT NULL, " +
       "sha256 TEXT NOT NULL, PRIMARY KEY (content_id, idx)) WITHOUT ROWID",
-    // `stored`: R2 holds the bytes (a commit made it live); an upload that never committed
-    // is garbage that is never revived.
+    // `stored`: the files Worker accepted a put R2 verified, recorded after it resolved,
+    // and nothing else; a commit refuses a chunk not stored, and garbage never stored is
+    // sent again, never revived.
     "CREATE TABLE file_chunks (sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64), " +
       "size INTEGER NOT NULL CHECK (size BETWEEN 1 AND 4194304), " +
       "state TEXT NOT NULL CHECK (state IN ('uploading', 'live', 'garbage', 'deleting')), " +
@@ -545,9 +556,17 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK ((gc_after IS NOT NULL) = (state IN ('garbage', 'deleting'))), " +
       "CHECK (state != 'live' OR stored = 1)) WITHOUT ROWID",
     "CREATE INDEX file_chunks_due ON file_chunks (gc_after) WHERE gc_after IS NOT NULL",
-    "CREATE TABLE file_intents (intent_id TEXT PRIMARY KEY, chunks TEXT NOT NULL, " +
-      "expires_at REAL NOT NULL) WITHOUT ROWID",
+    // An upload of one file: its size and its chunks in order (64 hex each, repeats kept).
+    "CREATE TABLE file_intents (intent_id TEXT PRIMARY KEY, size INTEGER NOT NULL, " +
+      "chunks TEXT NOT NULL CHECK (length(chunks) % 64 = 0), expires_at REAL NOT NULL) " +
+      "WITHOUT ROWID",
     "CREATE INDEX file_intents_due ON file_intents (expires_at)",
+    "CREATE TRIGGER file_intents_added AFTER INSERT ON file_intents BEGIN " +
+      "UPDATE file_space SET intents = intents + 1, " +
+      "intent_chunks = intent_chunks + length(NEW.chunks) / 64; END",
+    "CREATE TRIGGER file_intents_removed AFTER DELETE ON file_intents BEGIN " +
+      "UPDATE file_space SET intents = intents - 1, " +
+      "intent_chunks = intent_chunks - length(OLD.chunks) / 64; END",
     // The version is the rowid: the feed reads a key range.
     "CREATE TABLE file_history (version INTEGER PRIMARY KEY, path TEXT NOT NULL, " +
       "op TEXT NOT NULL CHECK (op IN ('write', 'mkdir', 'delete', 'rename_from', " +
@@ -563,6 +582,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE file_space SET entries = entries + 1; END",
     "CREATE TRIGGER file_entries_removed AFTER DELETE ON file_entries BEGIN " +
       "UPDATE file_space SET entries = entries - 1; END",
+    // The temporary area keeps no history, so its entries hold their own content.
+    `CREATE TRIGGER file_temp_held AFTER INSERT ON file_entries WHEN ${TEMP_ENTRY("NEW")} ` +
+      "BEGIN UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
+    `CREATE TRIGGER file_temp_released AFTER DELETE ON file_entries WHEN ${TEMP_ENTRY("OLD")} ` +
+      "BEGIN UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_temp_changed AFTER UPDATE OF content_id ON file_entries " +
+      `WHEN ${TEMP_ENTRY("NEW")} BEGIN ` +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
     "CREATE TRIGGER file_history_added AFTER INSERT ON file_history BEGIN " +
       "UPDATE file_space SET history = history + 1; " +
       "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
@@ -598,7 +626,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
         CHUNK_USAGE("-", "OLD")} END`,
     "CREATE TRIGGER file_chunks_released AFTER UPDATE OF refs, holds ON file_chunks " +
       "WHEN NEW.refs = 0 AND NEW.holds = 0 AND NEW.state IN ('uploading', 'live') BEGIN " +
-      "UPDATE file_chunks SET state = 'garbage', stored = (NEW.state = 'live'), " +
+      "UPDATE file_chunks SET state = 'garbage', " +
       `gc_after = unixepoch('subsec') + ${GC_GRACE_S} WHERE sha256 = NEW.sha256; END`,
   ]),
 ]);

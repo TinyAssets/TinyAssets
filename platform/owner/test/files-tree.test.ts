@@ -142,6 +142,19 @@ describe("a rename", () => {
       .map((c) => c.op)).toEqual(["rename_to", "write"]);
   });
 
+  it("onto itself changes nothing, as the environment's does, but still swaps", async () => {
+    const r = await rig();
+    const made = entryOf(await write(r, `${W}/same`));
+    expect(entryOf(await rename(r, `${W}/same`, `${W}/same`))).toEqual(made);
+    expect(entryOf(await rename(r, `${W}/same`, `${W}/same`, false, made.etag))).toEqual(made);
+    expect(await rename(r, `${W}/same`, `${W}/same`, false, "x".repeat(64)))
+      .toEqual({ conflict: made });
+    expect((await failure(() => rename(r, `${W}/none`, `${W}/none`))).message)
+      .toBe("not_found: no such file or directory");
+    expect((await r.stub.fileHistory(r.bind(null), { path: `${W}/same`, limit: 5 })).changes)
+      .toHaveLength(1);
+  });
+
   it("swaps on the source's etag", async () => {
     const r = await rig();
     const made = entryOf(await write(r, `${W}/a`));

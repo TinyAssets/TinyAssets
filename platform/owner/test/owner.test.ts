@@ -25,14 +25,15 @@ const PULL = { collection: "board", after: 0, limit: 1 };
 const RPC_METHODS = Object.freeze([
   "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
   "collectionWrite", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
-  "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList", "fileMkdir", "fileRead",
-  "fileReadChunks", "fileRedact", "fileRemove", "fileRename", "fileRestore", "fileStat",
-  "fileSyncCommit", "fileUploadAbort", "fileUploadBegin", "fileUploadChunks", "fileUploadCommit",
-  "fileUsage", "fileWrite", "grantForget", "grantForgetRevoked", "grantList", "grantRevoke",
-  "grantSet", "mailboxAck", "mailboxRead", "mailboxSubscriber", "outsideAgents", "policyProposal",
-  "policyPropose", "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite",
-  "registerAgent", "registerProposal", "registerPropose", "roomPost", "sessionClose",
-  "sessionCloseAll", "sessionExtend", "sessionOpen",
+  "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",
+  "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
+  "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
+  "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite", "grantForget",
+  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailboxAck", "mailboxRead",
+  "mailboxSubscriber", "outsideAgents", "policyProposal", "policyPropose", "policyRead",
+  "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent", "registerProposal",
+  "registerPropose", "roomPost", "sessionClose", "sessionCloseAll", "sessionExtend",
+  "sessionOpen",
 ]);
 
 describe("schema migration on wake", () => {

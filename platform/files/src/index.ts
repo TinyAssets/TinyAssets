@@ -11,8 +11,8 @@
  * caller can name another owner's chunks without first being that owner's object.
  *
  * Each method takes a batch, because a request may make at most 32 service-binding calls
- * (Workers service bindings): one call moves up to `BATCH_BYTES`, under the 32 MiB a
- * serialized RPC may carry.
+ * (Workers service bindings): one call moves up to `BATCH_BYTES` (two chunks), well under
+ * the 32 MiB a serialized RPC may carry and the memory an isolate shares.
  *
  * - `putChunks` is create-once (`etagDoesNotMatch: "*"`) and passes each hash to R2's
  *   `put` `sha256` option, which verifies the bytes (a mismatch is R2's `BadDigest`,

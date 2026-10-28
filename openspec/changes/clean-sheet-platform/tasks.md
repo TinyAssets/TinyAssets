@@ -47,6 +47,12 @@ live acceptance is still owed says so.
   lifetime is at most `MCP_SIGN_IN_LIFETIME_S` (30 days), held by a binder test; an
   agent's held API-key request applied with its grant (`_apply_key_request`) comes with the key
   store, whose key ids it needs.
+- [ ] Owed by 6.1. The file door's bytes: the binder streams chunks to `FILES` itself
+  (decided: the binder is the trust root and already reaches every owner's object, so
+  its reading an owner's namespace from that owner's object weakens no isolation), with
+  the object's `fileUploadBegin`/`fileUploadCommit` around it and the whole-file digest
+  (`Repr-Digest`) computed and served as it streams; the object's chunk doors stay for
+  in-object callers (the environment, the sync agent's small files).
 
 ## 3. Owner object
 
@@ -157,25 +163,32 @@ live acceptance is still owed says so.
   owner's object (migration 4: paths, versions and history, chunk references, upload
   intents, quotas, the change feed, the sync lease with fencing and conflict copies;
   `files.ts`, `paths.ts`), the `file*` RPC doors admitted through the binding, file
-  housekeeping on the object's one schedule, the files Worker (`platform/files`: the
-  only R2 binding, verified create-once batched chunk puts, gets and deletes, keys built
-  by `keys.ts` alone), the owner's one `FILES` service binding, and the pi
-  `ExecutionEnv` (`files-env.ts`) passing pi-durable 1.4.0's conformance suite but for
-  `exec`, symlinks off. Quotas and retention are owner policy (the document's optional
-  `files` table over `FILE_DEFAULTS`). Declared differences from the research: a
-  version is named by the owner-wide seq (a dense per-path counter would repeat once a
-  deleted path's history ages out); content refs count history rows only (a live
-  entry's content is always its newest row's); a whole-file SHA-256 is not stored (the
-  content id is checked from the chunk hashes R2 verified); the RPC chunk doors move
-  bytes through the object, so the namespace never leaves it.
+  housekeeping on the object's one schedule (`#rearm`, also re-marking history in
+  passes of 500 paths after a retention change), the files Worker (`platform/files`:
+  the only R2 binding, verified create-once chunk puts, gets and deletes of at most two
+  chunks' bytes a call, keys built by `keys.ts` alone), and the owner's one `FILES`
+  service binding, its Worker held to one `r2_buckets` entry by the config guard.
+  Quotas and retention are owner policy (the document's optional `files` table over
+  `FILE_DEFAULTS`, refused unless `max_entries` times `keep_versions` fits
+  `max_history`); a change that only frees is never refused by a quota; the owner alone
+  purges a path's history (`fileHistoryPurge`); `/.ta/tmp` keeps no history. An upload
+  declares its size and its 4 MiB plan, a chunk is stored only once `FILES` accepted
+  it, content ids carry their kind and size, and a sync commit answers each op. Declared
+  differences from the research: a version is named by the owner-wide seq (a dense
+  per-path counter would repeat once a deleted path's history ages out); content refs
+  count history rows only (a live entry's content is always its newest row's); a
+  whole-file SHA-256 is not stored (the content id is checked from the chunk hashes R2
+  verified).
+- [x] 6.2 The pi `ExecutionEnv` over the manifest (`files-env.ts`), passing pi-durable
+  1.4.0's conformance suite but for `exec` (20 cases run, the 6 `exec` cases excluded),
+  symlinks off, with a write to a path it read failing `changed since read` when
+  another writer committed there since; bytes come two chunks a `FILES` call, and a
+  whole-file read or write moves at most 16 MiB (larger files by range, line or
+  upload).
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
-  bound to owner, lease id and expiry, resolved by the binder as the owner). Decide
-  with the HTTP door whether the binder streams chunks to `FILES` itself, which needs
-  the namespace to leave the object, or keeps the object's chunk doors (`fileReadChunks`,
-  `fileUploadChunks`); the binder computes and serves the whole-file digest
-  (`Repr-Digest`) as it streams.
+  bound to owner, lease id and expiry, resolved by the binder as the owner).
 - [ ] The sandbox: the E2B sandbox through our proxy; the in-VM sync agent (sync in from
   the change feed, sync out as one fenced `fileSyncCommit`, a 20 s lease heartbeat and
   15 s checkpoints, `/proc` open-file deferral and SQLite file groups, the cold-create
@@ -190,7 +203,11 @@ live acceptance is still owed says so.
   against one pi turn, including whether the cap applies per Durable Object event.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
-  does not emulate it); the manifest tables in the nightly export; each droplet volume
+  does not emulate it); a live probe of the files Worker's create-once put, which
+  miniflare passed but the live bucket must also: `onlyIf: { etagDoesNotMatch: "*" }`
+  as a wildcard, and which R2 checks first when a key exists and the bytes miss the
+  `sha256` (the precondition or the digest), since the Worker's recheck of an existing
+  key reads either answer; the manifest tables in the nightly export; each droplet volume
   imported into the manifest and bucket in the cutover window (9).
 
 ## 7. Wakes and outside agents
