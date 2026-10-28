@@ -18,6 +18,11 @@ export const NOTICES_KEPT = 100;
 /** The characters a notice's detail keeps. */
 export const NOTICE_DETAIL = 1024;
 
+/** A notice's type and detail as kept: each cut to what its column holds. */
+function kept(type: string, detail: string): [string, string] {
+  return [type.slice(0, 64), [...detail].slice(0, NOTICE_DETAIL).join("")];
+}
+
 export interface Notice {
   readonly seq: number;
   readonly at: number;
@@ -37,7 +42,7 @@ export class Notices {
     const sql = this.#storage.sql;
     this.#storage.transactionSync(() => {
       sql.exec("INSERT INTO owner_notices (at, type, detail) VALUES (?, ?, ?)", at,
-               type.slice(0, 64), [...detail].slice(0, NOTICE_DETAIL).join(""));
+               ...kept(type, detail));
       sql.exec("DELETE FROM owner_notices WHERE seq <= " +
                  "(SELECT seq FROM owner_notices ORDER BY seq DESC LIMIT 1 OFFSET ?)",
                NOTICES_KEPT);
@@ -50,10 +55,10 @@ export class Notices {
    * other notices out.
    */
   once(type: string, detail: string, at: number): void {
-    const kept = this.#storage.sql.exec(
+    const held = this.#storage.sql.exec(
       "SELECT 1 FROM owner_notices WHERE type = ? AND detail = ? LIMIT 1",
-      type.slice(0, 64), [...detail].slice(0, NOTICE_DETAIL).join("")).toArray().length > 0;
-    if (!kept) {
+      ...kept(type, detail)).toArray().length > 0;
+    if (!held) {
       this.add(type, detail, at);
     }
   }
