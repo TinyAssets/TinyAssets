@@ -20,7 +20,11 @@
  *   only the rest, each against the version it read in the same call.
  * - Bytes come from `FILES` two chunks a call. A whole-file read, and a write, moves at
  *   most `WHOLE_BYTES` (16 MiB) through the object; a larger file is read by range or
- *   by line, and sent by upload.
+ *   by line, and sent by upload. One environment (one tool call) makes at most
+ *   `FILES_CALLS` calls to `FILES`, refused loudly before the request's 32-call cap: a
+ *   budget on the calls themselves, not a proxy in bytes, so any mix of methods in one
+ *   tool call stays inside it. A refused size or budget is `not_supported`.
+ * - `readTextFile` keeps a BOM: it is the file's bytes, which pi's `edit` writes back.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
  * - `listFiles` walks depth first in byte order and, inside a work tree (a `.git` entry
@@ -41,8 +45,8 @@ import {
 
 import { Invalid, Refused } from "./errors";
 import {
-  BATCH_BYTES, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
-  FileConflict, FileFault, type Files, sha256Hex, WHOLE_BYTES,
+  BATCH_BYTES, batches, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
+  FileConflict, FileFault, type Files, INLINE_BYTES, sha256Hex, WHOLE_BYTES,
 } from "./files";
 import { nameOf, parentOf, resolve, ROOTS, storedPath, within, WORKSPACE } from "./paths";
 import { utf8Bytes } from "./text";
@@ -60,6 +64,12 @@ const LIST_BYTES = 4 * 1024 * 1024;
 const LIST_MAX_BYTES = 16_672_358;
 const LIST_TIMEOUT_MS = 10_000;
 const PAGE = 1000;
+/**
+ * The `FILES` calls one environment, built for one tool call, may make. A request may
+ * make 32 service-binding calls in all (tasks 6 probes whether that holds per Durable
+ * Object event); the rest are left to the gateway and hooks until the probe says more.
+ */
+export const FILES_CALLS = 24;
 /** The characters a regex source escapes. */
 const SPECIAL = ".*+?^${}()|[]\\/";
 
@@ -250,14 +260,18 @@ export function ignored(rules: readonly IgnoreRule[], path: string, directory: b
 
 // -- readers ------------------------------------------------------------------------
 
+/** Chunk bytes from `FILES`, each call counted against the tool call's budget. */
+type Load = (reads: readonly { sha256: string; offset?: number; length?: number }[]) =>
+  Promise<Uint8Array[]>;
+
 /** Positional reads of one pinned content. */
 class PinnedReader implements BinaryReader {
-  readonly #files: Files;
+  readonly #load: Load;
   readonly #content: Content;
   #closed = false;
 
-  constructor(files: Files, content: Content) {
-    this.#files = files;
+  constructor(load: Load, content: Content) {
+    this.#load = load;
     this.#content = content;
   }
 
@@ -287,7 +301,7 @@ class PinnedReader implements BinaryReader {
       return ok(new Uint8Array(0));
     }
     try {
-      return ok(await readRange(this.#files, this.#content, offset, end));
+      return ok(await readRange(this.#load, this.#content, offset, end));
     } catch (error) {
       return err(fault(error, this.#content.entry.path));
     }
@@ -306,7 +320,7 @@ class PinnedReader implements BinaryReader {
       return err(new FileError("invalid", "Invalid line range", this.#content.entry.path));
     }
     try {
-      for await (const piece of pieces(this.#files, this.#content)) {
+      for await (const piece of pieces(this.#load, this.#content)) {
         const stop = aborted(context, this.#content.entry.path);
         if (stop) {
           return stop;
@@ -325,7 +339,7 @@ class PinnedReader implements BinaryReader {
 }
 
 /** A pinned content's bytes in order, two chunks (one `FILES` call) at a time. */
-async function* pieces(files: Files, content: Content): AsyncGenerator<Uint8Array> {
+async function* pieces(load: Load, content: Content): AsyncGenerator<Uint8Array> {
   if (content.inline !== undefined) {
     yield content.inline;
     return;
@@ -333,21 +347,25 @@ async function* pieces(files: Files, content: Content): AsyncGenerator<Uint8Arra
   const chunks = content.chunks ?? [];
   const pair = BATCH_BYTES / CHUNK_BYTES;
   for (let at = 0; at < chunks.length; at += pair) {
-    yield join(await files.fetch(chunks.slice(at, at + pair)
+    yield join(await load(chunks.slice(at, at + pair)
       .map((chunk) => ({ sha256: chunk.sha256 }))));
   }
 }
 
-/** Refuse moving more than `WHOLE_BYTES` through the object at once. */
+/**
+ * Refuse moving more than `WHOLE_BYTES` through the object at once. The refusal is
+ * `not_supported`, the one code pi's `edit` shows (it prints no message): the operation,
+ * not the caller's input, is what this environment does not do.
+ */
 function capped(bytes: number, what: string): void {
   if (bytes > WHOLE_BYTES) {
-    throw new Invalid(`${what} moves at most ${WHOLE_BYTES} bytes at once; ` +
-                      "read larger files by range or by line");
+    throw new FileError("not_supported", `${what} moves at most ${WHOLE_BYTES} bytes at ` +
+                        "once; read larger files by range or by line");
   }
 }
 
 /** Bytes `[from, to)` of a pinned content: only the chunks that hold them. */
-async function readRange(files: Files, content: Content, from: number, to: number):
+async function readRange(load: Load, content: Content, from: number, to: number):
     Promise<Uint8Array> {
   capped(to - from, "a read");
   if (content.inline !== undefined) {
@@ -360,13 +378,13 @@ async function readRange(files: Files, content: Content, from: number, to: numbe
     const stop = Math.min(to, (index + 1) * CHUNK_BYTES) - index * CHUNK_BYTES;
     reads.push({ sha256: chunks[index]!.sha256, offset: start, length: stop - start });
   }
-  return join(await files.fetch(reads));
+  return join(await load(reads));
 }
 
-async function wholeBytes(files: Files, content: Content): Promise<Uint8Array> {
+async function wholeBytes(load: Load, content: Content): Promise<Uint8Array> {
   capped(content.entry.size, "a whole-file read");
   const out: Uint8Array[] = [];
-  for await (const piece of pieces(files, content)) {
+  for await (const piece of pieces(load, content)) {
     out.push(piece);
   }
   return out.length === 0 ? new Uint8Array(0) : join(out);
@@ -381,9 +399,9 @@ class PinnedLines implements TextLineReader {
   #ended = false;
   #closed = false;
 
-  constructor(files: Files, content: Content) {
+  constructor(load: Load, content: Content) {
     this.#path = content.entry.path;
-    this.#source = pieces(files, content);
+    this.#source = pieces(load, content);
   }
 
   async readLine(context: Context): Promise<Result<TextLine | undefined, FileError>> {
@@ -496,6 +514,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
   readonly #rearm: () => Promise<void>;
   /** The etag this environment last saw at each path it read or wrote. */
   readonly #seen = new Map<string, string>();
+  /** `FILES` calls made so far, against `FILES_CALLS`. */
+  #calls = 0;
   readonly #temps = new Set<string>();
 
   constructor(options: FilesEnvOptions) {
@@ -537,6 +557,21 @@ export class OwnerFilesEnv implements ExecutionEnv {
     }
   }
 
+  /** Count `calls` more `FILES` calls, refused loudly before the budget is passed. */
+  #spend(calls: number): void {
+    if (this.#calls + calls > FILES_CALLS) {
+      throw new FileError("not_supported", `one tool call makes at most ${FILES_CALLS} ` +
+                          "file-store calls; read a smaller range, or fewer files at once");
+    }
+    this.#calls += calls;
+  }
+
+  /** Chunk bytes, each `FILES` call the manifest makes for them counted first. */
+  readonly #load: Load = (reads) => {
+    this.#spend(batches(reads.map((read) => ({ size: read.length ?? CHUNK_BYTES }))).length);
+    return this.#files.fetch(reads);
+  };
+
   /** The current content of a file, its etag remembered for this environment's writes. */
   #open(at: string): Content {
     const content = this.#files.open(at);
@@ -558,6 +593,9 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async #write(at: string, bytes: Uint8Array, expected: string | null,
                extra: { prefix?: readonly ChunkRef[]; mode?: number } = {}): Promise<Entry> {
+    // At most this many puts: the chunks after any kept prefix, two a call.
+    const whole = (extra.prefix?.length ?? 0) * CHUNK_BYTES + bytes.byteLength;
+    this.#spend(whole <= INLINE_BYTES ? 0 : Math.ceil(bytes.byteLength / BATCH_BYTES));
     const entry = await this.#files.write(at, bytes, { expected, writer: this.#writer,
                                                        parents: true, ...extra });
     this.#seen.set(at, entry.etag);
@@ -574,14 +612,16 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
-    return this.#run(context, path, async () => new TextDecoder().decode(
-      await wholeBytes(this.#files, this.#open(this.#where(path, false)))));
+    // A BOM is the file's own bytes: pi's `edit` strips it and writes it back (Fact 9).
+    const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+    return this.#run(context, path, async () => decoder.decode(
+      await wholeBytes(this.#load, this.#open(this.#where(path, false)))));
   }
 
   async openTextLineReader(path: string, context: Context):
       Promise<Result<TextLineReader, FileError>> {
     return this.#run(context, path,
-                     () => new PinnedLines(this.#files, this.#open(this.#where(path, false))));
+                     () => new PinnedLines(this.#load, this.#open(this.#where(path, false))));
   }
 
   async readTextLines(path: string, options: { maxLines?: number } | undefined,
@@ -612,7 +652,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
-    return this.#run(context, path, () => wholeBytes(this.#files,
+    return this.#run(context, path, () => wholeBytes(this.#load,
                                                      this.#open(this.#where(path, false))));
   }
 
@@ -620,7 +660,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async openBinaryReader(path: string, _options: { noFollow?: boolean } | undefined,
                          context: Context): Promise<Result<BinaryReader, FileError>> {
     return this.#run(context, path,
-                     () => new PinnedReader(this.#files, this.#open(this.#where(path, false))));
+                     () => new PinnedReader(this.#load, this.#open(this.#where(path, false))));
   }
 
   async writeFile(path: string, content: string | Uint8Array, context: Context):
@@ -642,7 +682,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     const whole = Math.floor(keep / CHUNK_BYTES);
     const from = whole * CHUNK_BYTES;
     return { prefix: (content.chunks ?? []).slice(0, whole),
-             tail: keep > from ? await readRange(this.#files, content, from, keep)
+             tail: keep > from ? await readRange(this.#load, content, from, keep)
                : new Uint8Array(0) };
   }
 
@@ -838,7 +878,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
       return [];
     }
     const content = this.#files.open(`${dir}/${name}`);
-    return ignoreRules(new TextDecoder().decode(await wholeBytes(this.#files, content)), base);
+    return ignoreRules(new TextDecoder().decode(await wholeBytes(this.#load, content)), base);
   }
 
   async watch(targets: readonly WatchTarget[], onChange: (change: WatchChange) => void,

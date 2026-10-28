@@ -5,7 +5,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { type Entry, INLINE_BYTES } from "../src/files";
+import { type Entry, type Files, INLINE_BYTES } from "../src/files";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
 
@@ -74,6 +74,63 @@ describe("a directory", () => {
       expect((await failure(() => r.stub.fileList(r.bind(null), { dir: W, limit }))).message)
         .toBe("limit is a whole number from 1 to 1000");
     }
+  });
+});
+
+/** A file's bytes as `files` reads them now. */
+async function bytesAt(files: Files, path: string): Promise<Uint8Array> {
+  const content = files.open(path);
+  if (content.inline !== undefined) {
+    return content.inline;
+  }
+  const pieces = await files.fetch((content.chunks ?? []).map((c) => ({ sha256: c.sha256 })));
+  return new Uint8Array(pieces.flatMap((piece) => [...piece]));
+}
+
+describe("a rename across the roots", () => {
+  const small = text("small");
+  const big = new Uint8Array(INLINE_BYTES + 100).fill(3);
+
+  /**
+   * Write `small` and `big` under `from`, rename each to `to`, both given two temporary
+   * directories; then read both back, before and after due garbage is collected.
+   */
+  async function crossing(from: (one: string, two: string) => string,
+                          to: (one: string, two: string) => string) {
+    const r = await rig();
+    const at = await inFiles(r.stub, {}, async (files) => {
+      const one = files.tempDir("t-", "agent");
+      const two = files.tempDir("t-", "agent");
+      for (const [name, body] of [["s", small], ["b", big]] as const) {
+        await files.write(`${from(one, two)}/${name}`, body, { expected: null, writer: "agent" });
+        files.rename(`${from(one, two)}/${name}`, `${to(one, two)}/${name}`,
+                     { expected: null, replace: false, writer: "agent" });
+      }
+      expect(await bytesAt(files, `${to(one, two)}/s`)).toEqual(small);
+      expect(await bytesAt(files, `${to(one, two)}/b`)).toEqual(big);
+      return to(one, two);
+    });
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
+    await inFiles(r.stub, {}, async (files) => {
+      await files.collect(Date.now() / 1000);
+      expect(await bytesAt(files, `${at}/s`)).toEqual(small);
+      expect(await bytesAt(files, `${at}/b`)).toEqual(big);
+    });
+    await fileCounters(r.stub);
+  }
+
+  it("keeps the content of a file moved out of the temporary area", async () => {
+    await crossing((one) => one, () => W);
+  });
+
+  it("keeps the content of a file moved within the temporary area", async () => {
+    await crossing((one) => one, (_one, two) => two);
+  });
+
+  it("keeps the content of a file moved into the temporary area", async () => {
+    await crossing(() => W, (one) => one);
   });
 });
 

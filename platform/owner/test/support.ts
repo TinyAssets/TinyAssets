@@ -79,10 +79,32 @@ export function sqlIn(stub: DurableObjectStub<OwnerDO>, statement: string,
 }
 
 /**
+ * What the manifest names but could lose: a content an entry or a kept history row
+ * names that has no row, and a chunk of such content that is missing, garbage or being
+ * deleted. Always empty.
+ */
+export async function lostContent(stub: DurableObjectStub<OwnerDO>): Promise<Row[]> {
+  return sqlIn(stub,
+    "WITH named AS (SELECT content_id FROM file_entries WHERE content_id IS NOT NULL " +
+      "UNION SELECT content_id FROM file_history WHERE content_id IS NOT NULL) " +
+      "SELECT n.content_id, 'no content row' AS lost FROM named n " +
+      "WHERE n.content_id NOT IN (SELECT content_id FROM file_contents) " +
+      "UNION ALL SELECT x.content_id, coalesce(k.state, 'no chunk row') FROM named n " +
+      "JOIN file_content_chunks x ON x.content_id = n.content_id " +
+      "LEFT JOIN file_chunks k ON k.sha256 = x.sha256 " +
+      "WHERE k.state IS NULL OR k.state NOT IN ('live')");
+}
+
+/**
  * Every counter and reference count the file manifest keeps, and the same numbers
- * counted from the rows: the two must always be equal.
+ * counted from the rows: the two must always be equal. Content anything names is never
+ * lost (`lostContent`), checked here too, so every counter check also checks that.
  */
 export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[Row, Row]> {
+  const lost = await lostContent(stub);
+  if (lost.length > 0) {
+    throw new Error(`content the manifest names is lost: ${JSON.stringify(lost)}`);
+  }
   const [kept] = await sqlIn(stub,
     "SELECT entries, history, chunk_bytes, inline_bytes, intents, intent_chunks, " +
       "(SELECT json_group_object(content_id, refs) FROM (SELECT * FROM file_contents " +
@@ -99,8 +121,7 @@ export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[R
       "(SELECT COALESCE(SUM(length(chunks) / 64), 0) FROM file_intents) AS intent_chunks, " +
       "(SELECT json_group_object(content_id, n) FROM (SELECT c.content_id, " +
       "(SELECT COUNT(*) FROM file_history h WHERE h.content_id = c.content_id) + " +
-      "(SELECT COUNT(*) FROM file_entries e WHERE e.content_id = c.content_id " +
-      "AND e.parent GLOB '/.ta/tmp*') AS n " +
+      "(SELECT COUNT(*) FROM file_entries e WHERE e.content_id = c.content_id) AS n " +
       "FROM file_contents c ORDER BY c.content_id)) AS contents, " +
       "(SELECT json_group_object(sha256, r || '/' || h) FROM (SELECT k.sha256, " +
       "(SELECT COUNT(*) FROM file_content_chunks x WHERE x.sha256 = k.sha256) AS r, " +

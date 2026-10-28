@@ -197,22 +197,26 @@ live acceptance is still owed says so.
   chunks' bytes a call, keys built by `keys.ts` alone), and the owner's one `FILES`
   service binding, its Worker held to one `r2_buckets` entry by the config guard.
   Quotas and retention are owner policy (the document's optional `files` table over
-  `FILE_DEFAULTS`, refused unless `max_entries` times `keep_versions` fits
-  `max_history`); a change that only frees is never refused by a quota; the owner alone
+  `FILE_DEFAULTS`, refused unless `max_entries` times the larger of `keep_versions` and
+  `keep_recent` fits `max_history`); a change that only frees is never refused by a quota; the owner alone
   purges a path's history (`fileHistoryPurge`); `/.ta/tmp` keeps no history. An upload
   declares its size and its 4 MiB plan, a chunk is stored only once `FILES` accepted
   it, content ids carry their kind and size, and a sync commit answers each op. Declared
   differences from the research: a version is named by the owner-wide seq (a dense
-  per-path counter would repeat once a deleted path's history ages out); content refs
-  count history rows only (a live entry's content is always its newest row's); a
-  whole-file SHA-256 is not stored (the content id is checked from the chunk hashes R2
+  per-path counter would repeat once a deleted path's history ages out); a content's
+  refs count every entry and every kept history row naming it, in every root (a row or
+  two more per write: 22 rows for a new one-chunk file); a whole-file SHA-256 is not
+  stored (the content id is checked from the chunk hashes R2
   verified).
 - [x] 6.2 The pi `ExecutionEnv` over the manifest (`files-env.ts`), passing pi-durable
   1.4.0's conformance suite but for `exec` (20 cases run, the 6 `exec` cases excluded),
   symlinks off, with a write to a path it read failing `changed since read` when
-  another writer committed there since; bytes come two chunks a `FILES` call, and a
+  another writer committed there since; bytes come two chunks a `FILES` call, a
   whole-file read or write moves at most 16 MiB (larger files by range, line or
-  upload).
+  upload), one environment (one tool call) makes at most 24 `FILES` calls until the
+  cap probe below says otherwise, and `readTextFile` keeps a BOM. pi's `edit` shows only
+  an error's code, so a refused size or budget is `not_supported`; its reason is in the
+  message, which `read` shows.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
