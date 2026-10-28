@@ -1,10 +1,11 @@
 /**
- * Outside-agent wakes on the object's one alarm (S3b, W3; ADR-026 zero idle tail).
+ * Outside-agent wakes, the `wakes` lane of the object's one schedule (S3b, W3; ADR-026
+ * zero idle tail).
  *
  * Ported from `agent_wake` (`tinyassets/broker/message_ledger.py`) and `run_due`
  * (`tinyassets/control_plane/outside_wakes.py`). The Python ran one shared tick that
  * walked every owner's ledger with a fairness rotation; here each object is its own
- * owner and schedules itself with one self-rearming alarm (`OwnerDO.alarm`), so there is
+ * owner and schedules itself on its own Lifecycle job queue (`schedule.ts`), so there is
  * no global tick and nothing to rotate.
  *
  * The op journal's may-have-sent record becomes the wake row's `marked` flag, written
@@ -14,12 +15,12 @@
  *
  * The doorbell itself (the signed MCP event POST through the owner's egress) is a later
  * slice (tasks 7): it implements {@link WakeSender}, which the object calls in process,
- * so no wake can be claimed or settled over RPC. Until then the alarm only recovers
+ * so no wake can be claimed or settled over RPC. Until then the lane only recovers
  * lapsed claims, and open wakes and revokes stay pending, held, not lost.
  */
 import { type Ledger, type Outcome, outcome, type WakeTarget } from "./ledger";
 
-/** At most this many rows per pass per alarm run; a run with more due rearms at once. */
+/** At most this many rows per pass per lane run; a run with more due runs again at once. */
 export const WAKES_PER_ALARM = 16;
 
 /** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
@@ -40,7 +41,7 @@ export interface WakeSender {
 }
 
 /**
- * One alarm pass; returns how many wakes were accepted.
+ * One lane pass; returns how many wakes were accepted.
  *
  * First the recover pass: each claim past its lease, by its own index, whether or not
  * there is a sender, so open work ahead of it can never starve it. Then, with a sender,

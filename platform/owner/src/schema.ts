@@ -115,7 +115,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
   // The object is its owner, so no row carries an owner column. Every bound the ledger
   // keeps is a counter that only the triggers below write, inside the statement that
-  // changes the rows it counts, and every query a door or the alarm runs has an index, so
+  // changes the rows it counts, and every query a door or a lane runs has an index, so
   // nothing scans the whole store.
   Object.freeze([
     "CREATE TABLE outside_agents (" +
@@ -184,7 +184,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0), " +
       "unacked_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_bytes >= 0))",
     // The object's one schedule: each outside agent's wake, and each revoke of a
-    // suppressed agent's callbacks, which the doorbell consumes on the alarm.
+    // suppressed agent's callbacks, which the doorbell consumes on the `wakes` lane.
     "CREATE TABLE ledger_wakes (" +
       "wake_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, " +
       "kind TEXT NOT NULL DEFAULT 'wake' CHECK (kind IN ('wake', 'revoke')), " +
@@ -420,7 +420,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // `refs` (its history rows: a live entry's content is always its newest row's) and a
   // chunk's `refs` (contents made of it). A content no row refers to goes, with its chunk
   // list; a chunk no content refers to and no upload holds becomes garbage, deleted by
-  // the alarm after `GC_GRACE_S` (24 h, SQLite's clock: the schedule compares it with the
+  // the `files` lane after `GC_GRACE_S` (24 h, SQLite's clock: the schedule compares it with the
   // object's, and a day's grace does not mind which). A history row never changes but
   // for its prune time and a redaction of its content.
   Object.freeze([

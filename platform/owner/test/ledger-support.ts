@@ -9,6 +9,7 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { runWakes, type WakeSender } from "../src/wakes";
+import { alarmOf, laneAt } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -167,11 +168,10 @@ export async function rig() {
     tick: (now: number = clock()): Promise<number> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
         runWakes(ledgerOn(state.storage), sender, () => now)),
-    /** The object's alarm time in seconds, or null when it is not set. */
-    alarmAt: (): Promise<number | null> => runInDurableObject(stub, async (_i: OwnerDO, state) => {
-      const at = await state.storage.getAlarm();
-      return at === null ? null : at / 1000;
-    }),
+    /** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
+    alarmAt: (): Promise<number | null> => alarmOf(stub),
+    /** The `wakes` lane's Lifecycle job due time in seconds, or null when it has none. */
+    wakesAt: (): Promise<number | null> => laneAt(stub, "wakes"),
   };
 }
 

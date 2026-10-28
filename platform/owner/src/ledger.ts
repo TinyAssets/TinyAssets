@@ -1106,7 +1106,7 @@ export class Ledger {
   }
 
   /**
-   * Open schedule rows that are due, oldest first: what the alarm's claim pass takes.
+   * Open schedule rows that are due, oldest first: what the `wakes` lane's claim pass takes.
    * The object is its owner, so there is no cross-owner fairness pass.
    */
   dueOpen(now: number, limit: number): Wake[] {
@@ -1116,7 +1116,7 @@ export class Ledger {
     ).toArray();
   }
 
-  /** Claims whose lease has lapsed, oldest first: what the alarm's recover pass takes. */
+  /** Claims whose lease has lapsed, oldest first: what the lane's recover pass takes. */
   lapsedClaims(now: number, limit: number): Wake[] {
     return this.#sql.exec<Wake>(
       "SELECT wake_id, agent_id, kind, state, due, claim_id FROM ledger_wakes " +
@@ -1290,14 +1290,14 @@ export class Ledger {
   }
 
   /**
-   * When the object's one alarm should next fire, never before `now`; null for never.
+   * When the `wakes` lane next has work, never before `now`; null for none.
    *
    * A claim's lease always counts: its recovery needs no sender. Open rows count only
    * when `ringing` (the object has a doorbell to send them); without one they stay
-   * pending and arm nothing, so no alarm fires for work it cannot do. Work already due
+   * pending and give the lane no job, so no alarm fires for work it cannot do. Work already due
    * arms at `now`, which every pass shrinks.
    */
-  nextAlarm(now: number, ringing: boolean): number | null {
+  nextDue(now: number, ringing: boolean): number | null {
     const sql = this.#sql;
     const earliest = (where: string) => sql.exec<{ due: number | null }>(
       `SELECT MIN(due) AS due FROM ledger_wakes WHERE ${where}`).one().due;

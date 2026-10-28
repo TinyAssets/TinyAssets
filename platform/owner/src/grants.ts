@@ -41,7 +41,7 @@
  * - Admission is the object's own, per call, where the grant lives: the Python router's
  *   identity stamp and the box's recheck of it have no counterpart.
  * - The platform's outside kill switch (`TINYASSETS_OUTSIDE_DENY`) is the binder's, from
- *   the owner directory (tasks 2), and the alarm's (tasks 7): the object has no env.
+ *   the owner directory (tasks 2), and the `wakes` lane's (tasks 7): the object has no env.
  * - A held API-key request applied with its grant (`_apply_key_request`) needs the
  *   directory's key ids, so it comes with the key store (tasks 2).
  * - Rows are bounded as above; the Python kept every row.

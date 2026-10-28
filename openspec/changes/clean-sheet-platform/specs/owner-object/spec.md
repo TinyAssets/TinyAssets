@@ -122,12 +122,34 @@ A post with a sender's client message id and body hash the ledger holds SHALL re
 - **WHEN** a reader acks at or behind its cursor, even after its acked mail was evicted
 - **THEN** the ack succeeds and changes nothing
 
-### Requirement: Only the object's alarm claims and settles wakes
-Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule. No RPC method SHALL claim, mark or settle one; the alarm SHALL, in process, with the doorbell's sender. Each run SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The alarm SHALL never be set in the past, and SHALL arm for open rows only with a sender, so without one they stay pending and arm nothing.
+### Requirement: The object's timed work is lanes on the Lifecycle job queue
+The object's one schedule SHALL run on the Agents SDK Lifecycle job queue (agents 0.31.0). Each kind of timed work SHALL be a lane: its own rows, the truth, and one Lifecycle job due at the lane's next work, never in the past, and cancelled when it has none. Every door that changes a lane's rows, and the object's wake, SHALL re-derive the jobs, leaving a job already in place unwritten. A lane's run SHALL be one bounded pass that ends by setting its own job from its rows as they then stand.
+
+#### Scenario: A door changes the rows while a lane runs
+- **WHEN** a door adds earlier work to a lane while that lane's pass is in flight
+- **THEN** the pass ends with the lane's job at the door's work, not at a time computed before it
+
+#### Scenario: A lane's pass keeps failing
+- **WHEN** a lane's pass fails through Lifecycle's in-process attempts
+- **THEN** its job is held for a fixed backoff, a door's re-derive keeps the hold, and the next pass that succeeds clears it
+
+### Requirement: Only Lifecycle touches the object's alarm
+Lifecycle SHALL own the object's single physical alarm, which PiHarness's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+
+#### Scenario: Source sets the alarm
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm` or `getAlarm`, imports any part of the `agents` package but `agents/lifecycle`, or installs Lifecycle's handlers
+- **THEN** the alarm guard fails CI
+
+#### Scenario: A binding fetches the object
+- **WHEN** a binding calls the object's `fetch`
+- **THEN** it fails, since the object defines no `fetch`
+
+### Requirement: Only the wakes lane claims and settles wakes
+Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell's sender. Each pass SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The lane SHALL have a job for open rows only with a sender, so without one they stay pending and arm nothing.
 
 #### Scenario: A lapsed claim behind due wakes
 - **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the object has no sender
-- **THEN** one alarm run recovers it and the alarm is left unset
+- **THEN** one pass recovers it, as `unknown` if it was marked, and the lane is left with no job
 
 #### Scenario: A door names a wake claim
 - **WHEN** a binding calls a claim, mark or settle method on the object
@@ -220,14 +242,14 @@ Each file change SHALL be a compare-and-swap on the entry's etag (null writes un
 - **THEN** the manifest holds two files with their own contents
 
 ### Requirement: Chunks are recorded before their bytes and collected without listing the bucket
-An upload SHALL record its chunks as held before any byte is sent, and its commit SHALL reference only chunks its intent holds. A chunk nothing references or holds SHALL become garbage, deleted on the owner's one schedule after a 24 h grace, without listing the bucket. A stored garbage chunk MAY revive; one whose upload never committed SHALL be sent again; one being deleted SHALL never be held or referenced.
+An upload SHALL record its chunks as held before any byte is sent, and its commit SHALL reference only chunks its intent holds. A chunk nothing references or holds SHALL become garbage, deleted by the `files` lane of the owner's one schedule after a 24 h grace, without listing the bucket. A stored garbage chunk MAY revive; one whose upload never committed SHALL be sent again; one being deleted SHALL never be held or referenced.
 
 #### Scenario: An upload that never commits
 - **WHEN** an intent expires with a chunk it never committed
 - **THEN** the chunk becomes garbage that a later upload sends again, and its key is deleted after the grace
 
 #### Scenario: A chunk still referenced
-- **WHEN** the alarm runs with a chunk that a kept version's content is made of
+- **WHEN** the `files` lane runs with a chunk that a kept version's content is made of
 - **THEN** the chunk stays, whatever its age
 
 ### Requirement: History is kept by owner policy, never dropped to make room

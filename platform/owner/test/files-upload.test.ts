@@ -3,7 +3,6 @@
  * §6): an intent records its chunks before any byte is sent, so nothing in the bucket
  * lacks a row and garbage collection never lists it.
  */
-import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -13,7 +12,7 @@ import {
 } from "../src/files";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
+import { alarmOf, drainDue, failure, fileCounters, inFiles, laneAt, sqlIn, text } from "./support";
 
 const W = "/workspace";
 
@@ -263,11 +262,14 @@ describe("a chunk", () => {
     await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null, content: text("x") });
     await r.stub.fileRedact(r.bind(null), { path: `${W}/a`, version: first.version });
     const due = (await chunk(r, sha))!["gc_after"] as number;
-    const armed = await r.alarmAt();
+    const armed = await laneAt(r.stub, "files");
     expect(armed).not.toBeNull();
     expect(armed!).toBeLessThanOrEqual(Math.ceil((due + HOUSEKEEPING_SLACK_S) * 1000) / 1000);
+    expect(await alarmOf(r.stub)).toBeLessThanOrEqual(armed!);  // Lifecycle armed it
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
-    expect(await runDurableObjectAlarm(r.stub)).toBe(true);
+    // Any change re-derives the lane's job from the rows: due now, so Lifecycle runs it.
+    await r.stub.fileMkdir(r.bind(null), { path: `${W}/d`, expected_etag: null });
+    await drainDue(r.stub);
     expect(await chunk(r, sha)).toBeUndefined();
     expect(await inBucket(r, sha)).toBe(false);
   });

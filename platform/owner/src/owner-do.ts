@@ -28,13 +28,17 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (`RPC_METHODS` in the tests pins the list). Claiming and settling wakes
- * is the alarm's own, in process, with the doorbell's {@link WakeSender}; no door
- * reaches it. The same alarm runs file housekeeping (expired uploads and temporary
- * directories, history prunes, garbage chunk deletes) through the one `#rearm`; task 3.6
- * moves both onto the Agents SDK Lifecycle queue, which owns the object's single
- * physical alarm once PiHarness is installed.
+ * but its doors (`RPC_METHODS` in the tests pins the list). Its timed work is the one
+ * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
+ * object's single physical alarm, as PiHarness's wake job will once it is installed. The
+ * object is a plain Durable Object that holds a Lifecycle, never the SDK's `Agent`, and
+ * installs none of Lifecycle's runtime handlers: `alarm` alone hands the runtime's alarm to
+ * it, so no `fetch` or WebSocket handler joins the surface. Claiming and settling wakes is
+ * the `wakes` lane's own, in process, with the doorbell's {@link WakeSender}; file
+ * housekeeping (expired uploads and temporary directories, history prunes, garbage chunk
+ * deletes) is the `files` lane's. No door reaches either.
  */
+import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
@@ -52,6 +56,7 @@ import {
 import {
   type Change, fileSettings, Policy, type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
+import { Schedule } from "./schedule";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
@@ -323,8 +328,6 @@ interface Serves {
 }
 
 export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
-/** How long file housekeeping that failed waits before the alarm tries it again. */
-export const HOUSEKEEPING_RETRY_S = 300;
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -403,10 +406,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  readonly #schedule: Schedule;
+  readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
-   * What rings outside agents' doorbells, called in process by the alarm. None until the
-   * doorbell slice (tasks 7) constructs one here; until then the alarm only recovers
-   * lapsed claims, and open wakes and revokes stay pending without arming it.
+   * What rings outside agents' doorbells, called in process by the `wakes` lane. None
+   * until the doorbell slice (tasks 7) constructs one here; until then the lane only
+   * recovers lapsed claims, and open wakes and revokes stay pending without a job.
    */
   readonly #sender: WakeSender | null = null;
 
@@ -419,55 +424,26 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger = new Ledger(ctx.storage, this.#grants);
     this.#files = new Files(ctx.storage, env.FILES,
                             () => fileSettings(this.#policy.read().document));
+    // The lanes of the one schedule. There is no global tick; each owner's object
+    // schedules only itself.
+    this.#schedule = new Schedule({
+      // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
+      wakes: { next: (now) => this.#ledger.nextDue(now, this.#sender !== null),
+               run: () => runWakes(this.#ledger, this.#sender, clock, WAKES_PER_ALARM) },
+      files: { next: (now) => this.#files.nextAlarm(now), run: (now) => this.#files.collect(now) },
+    }, clock);
+    this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
-      // The schedule as stored, for this code's sender: a deploy that adds a doorbell
-      // arms the wakes held while there was none.
-      await this.#rearm();
+      // The schedule as stored, for this code's lanes and sender: a deploy that adds a
+      // doorbell gives the wakes held while there was none their job.
+      await this.#schedule.sync();
     });
   }
 
-  /**
-   * The object's one alarm: lapsed claims, then due wakes and revokes, then file
-   * housekeeping (expired uploads and temporary directories, history prunes, garbage
-   * chunk deletes), then rearm at the next time there is work it can do. There is no
-   * global tick; each owner's object schedules only itself. Housekeeping that fails is
-   * logged and tried again after `HOUSEKEEPING_RETRY_S`, never in a tight loop.
-   */
+  /** The runtime's alarm, which Lifecycle owns: it drives the due jobs, then re-arms. */
   override async alarm(): Promise<void> {
-    await runWakes(this.#ledger, this.#sender, clock, WAKES_PER_ALARM);
-    let retry: number | null = null;
-    try {
-      await this.#files.collect(clock());
-    } catch {
-      console.error("file housekeeping failed");  // no paths or hashes in the log
-      retry = clock() + HOUSEKEEPING_RETRY_S;
-    }
-    await this.#rearm(retry);
-  }
-
-  /**
-   * Point the one alarm at the next work it can do, never in the past, or clear it: the
-   * ledger's wakes and the files' housekeeping share it. `notBefore` holds housekeeping
-   * that just failed.
-   */
-  async #rearm(notBefore: number | null = null): Promise<void> {
-    const now = clock();
-    const files = this.#files.nextAlarm(now);
-    const times = [this.#ledger.nextAlarm(now, this.#sender !== null),
-                   files === null || notBefore === null ? files : Math.max(files, notBefore)]
-      .filter((due): due is number => due !== null);
-    const next = times.length ? Math.ceil(Math.min(...times) * 1000) : null;
-    // Each set is a billed row written, and file doors rearm on every change: an alarm
-    // already where it belongs is left alone.
-    if (next === await this.ctx.storage.getAlarm()) {
-      return;
-    }
-    if (next === null) {
-      await this.ctx.storage.deleteAlarm();
-    } else {
-      await this.ctx.storage.setAlarm(next);
-    }
+    await this.#lifecycle.alarm();
   }
 
   /**
@@ -680,7 +656,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return changed;
       });
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return set;
   }
 
@@ -694,7 +670,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#ledger.suppressClient(result.client, clock());
       return result;
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return revoked;
   }
 
@@ -719,7 +695,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                        "recipe_id"]);
       return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
     }, { registering: true });
-    await this.#rearm();
+    await this.#schedule.sync();
     return agent;
   }
 
@@ -733,7 +709,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = ledgerFields(request, ["agent_id", "reason"]);
       return this.#ledger.disable(r["agent_id"], r["reason"], origin);
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return agent;
   }
 
@@ -745,7 +721,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = ledgerFields(request, ["agent_id"]);
       return this.#ledger.remove(r["agent_id"]);
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return deleted;
   }
 
@@ -757,7 +733,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#scope(account, "write_graph");
     const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
                                      r["body"], r["parent_id"]);
-    await this.#rearm();
+    await this.#schedule.sync();
     return posted;
   }
 
@@ -952,7 +928,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       entry: await this.#files.write(r["path"], content, {
         expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
     }));
-    await this.#rearm();
+    await this.#schedule.sync();
     return written;
   }
 
@@ -962,7 +938,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#filer(binding, "write_files");
     const r = fileFields(request, ["chunks"]);
     const begun = this.#files.begin(r["chunks"]);
-    await this.#rearm();
+    await this.#schedule.sync();
     return begun;
   }
 
@@ -984,7 +960,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         expected: r["expected_etag"], size: r["size"], chunks: r["chunks"], mode: r["mode"],
         writer: fileWriter(account) }),
     }));
-    await this.#rearm();
+    await this.#schedule.sync();
     return committed;
   }
 
@@ -992,7 +968,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#filer(binding, "write_files");
     const r = fileFields(request, ["intent_id"]);
     const aborted = this.#files.abort(r["intent_id"]);
-    await this.#rearm();
+    await this.#schedule.sync();
     return aborted;
   }
 
@@ -1004,7 +980,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
                                             writer: fileWriter(account) }),
     }));
-    await this.#rearm();
+    await this.#schedule.sync();
     return made;
   }
 
@@ -1015,7 +991,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const removed = await fileConflicted(() => this.#files.remove(r["path"], {
       expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
       writer: fileWriter(account) }));
-    await this.#rearm();
+    await this.#schedule.sync();
     return removed;
   }
 
@@ -1028,7 +1004,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
         writer: fileWriter(account) }),
     }));
-    await this.#rearm();
+    await this.#schedule.sync();
     return renamed;
   }
 
@@ -1047,7 +1023,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       entry: this.#files.restore(r["path"], r["version"], {
         expected: r["expected_etag"], writer: fileWriter(account) }),
     }));
-    await this.#rearm();
+    await this.#schedule.sync();
     return restored;
   }
 
@@ -1056,7 +1032,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#owner(binding, "redact its file history");
     const r = fileFields(request, ["path", "version"]);
     const redacted = this.#files.redact(r["path"], r["version"]);
-    await this.#rearm();
+    await this.#schedule.sync();
     return redacted;
   }
 
@@ -1099,7 +1075,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const r = fileFields(request, ["lease_id", "epoch", "intent_id", "ops"]);
     const committed = this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
                                                intent_id: r["intent_id"], ops: r["ops"] });
-    await this.#rearm();
+    await this.#schedule.sync();
     return committed;
   }
 }

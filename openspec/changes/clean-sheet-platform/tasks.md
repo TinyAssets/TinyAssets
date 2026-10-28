@@ -4,14 +4,15 @@ live acceptance is still owed says so.
 
 ## 1. Verify the unverified facts
 
-- [ ] E2B p50/p95 resume for a 1 GiB sandbox, measured live; paused-storage price
-  and retention, Pro-plan concurrency, regions. A p95 over 1.5 s switches the
-  sandbox to Cloudflare Containers.
-- [ ] Durable Object pricing and limits, and 2026 regional availability, from
-  Cloudflare's own pages.
-- [ ] Dynamic Workers and Facets availability and pricing.
-- [ ] OpenAI MCP Events delivery and Sign in with ChatGPT plan-usage terms; any
-  Grok or Meta Muse wake API.
+- [x] E2B 1 GiB resume p50 247 ms / p95 706 ms; paused storage free and kept; Pro 100
+  concurrent (docs/measurements/2026-10-28-e2b-resume.md)
+- [ ] E2B resume after 6 h and 24 h paused (run in progress)
+- [x] Durable Object pricing and limits (2026-10-28, facts-verified.md).
+- [ ] 2026 regional availability from Cloudflare's status history (blocked).
+- [x] Dynamic Workers and Facets: open beta, Workers Paid only, $0.002 per Dynamic
+  Worker per day after 1,000 a month; on the hooks path.
+- [x] OpenAI MCP Events delivery and Sign in with ChatGPT plan-usage terms.
+- [ ] MCP Events plan tiers; any Grok or Meta Muse wake API (sites blocked).
 
 ## 2. Doors and identity
 
@@ -82,15 +83,21 @@ live acceptance is still owed says so.
   bounded, and a grant row nothing depends on is forgotten oldest first rather than a
   new client refused; an egress host the URL parser reads as an IP address waits for
   the gateway's address check (4).
-- [ ] 3.6 The schedule: one table, one self-rearming alarm. Owed by 3.5: a scheduled
+- [ ] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
+  owns the single alarm and PiHarness's wake-up job; 3.4's direct `setAlarm`/`deleteAlarm`
+  move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
+  agents 0.31.0 pinned exactly), never the SDK's `Agent`, installs none of its runtime
+  handlers, and its `alarm` only hands the runtime's alarm to it. Each kind of timed work
+  is a lane with its own rows and one Lifecycle job derived from them: `wakes` (3.4's
+  wakes and revokes, `Ledger.nextDue`, `runWakes`) and `files` (6.1's housekeeping,
+  `Files.nextAlarm`, `Files.collect`). Every changing door and the object's wake re-derive
+  the jobs; a run is one bounded pass that sets its own job from the rows; a pass that
+  fails through Lifecycle's retries holds its lane back `LANE_RETRY_S`. The alarm guard
+  keeps every source off `setAlarm`, `deleteAlarm` and `getAlarm`, off every `agents`
+  import but `agents/lifecycle`, and off Lifecycle's handlers. Owed by 3.5: a scheduled
   turn or automation stamps the outside authority it was made under (client, grant
   generation, sign-in time) and is rechecked with `Grants.standing` before it runs; a
-  changed or revoked grant refuses it (the Python's `outside_standing`). Owed by 6.1:
-  the Agents SDK Lifecycle queue owns the object's single physical alarm once
-  PiHarness is installed, so the wakes' and the files' housekeeping due times (expired
-  uploads and temporary directories, history prunes, chunk deletes: `Files.nextAlarm`,
-  `Files.collect`) move onto Lifecycle jobs together, from the one `#rearm` path that
-  carries both now; no second alarm path is added before then.
+  changed or revoked grant refuses it (the Python's `outside_standing`).
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -122,8 +129,9 @@ live acceptance is still owed says so.
   step; a policy write ends the owner's in-flight turns and streams, and a grant
   change ends that client's (the Python's stream cancellation and
   `_end_outside_streams`).
-- [ ] User hooks in a separately deployed Worker's Durable Object, called over
-  RPC with JSON in and out and a timeout. A `beforeTool` timeout or error blocks
+- [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
+  owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
+  timeout. A `beforeTool` timeout or error blocks
   the call; `api.memo` holds decisions that must survive a crash.
 
 ## 6. Files and sandbox

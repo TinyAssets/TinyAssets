@@ -8,13 +8,13 @@
  * its own owner. The kill switch, owner admission, event store and HTTP doorbell are the
  * doorbell slice's (openspec clean-sheet-platform tasks 7).
  */
-import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { clock, HOUR_S, type Ledger, outcome, retryAfter, WAKE_LEASE_S } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { DOT, MCP, MUSE, origin, rig, type Rig, wakeReceipts } from "./ledger-support";
-import { failure } from "./support";
+import { drainDue, failure, laneJobs } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
                 recipe_id: null };
@@ -39,11 +39,13 @@ function ringing(ledger: Ledger, from = MUSE, perHour = 12): string {
   return id;
 }
 
-/** Run the object's own alarm now (it has no doorbell yet). */
+/**
+ * Run the object's own alarm now (it has no doorbell yet): Lifecycle drives the jobs that
+ * are due.
+ */
 async function fireAlarm(r: Rig): Promise<void> {
-  await runInDurableObject(r.stub, (_i: OwnerDO, state) =>
-    state.storage.setAlarm(Date.now() + 60_000));  // set ahead, so only this run fires it
-  expect(await runDurableObjectAlarm(r.stub)).toBe(true);
+  await runInDurableObject(r.stub, (instance: OwnerDO) => instance.alarm());
+  await drainDue(r.stub);  // and any run workerd's own firing of it started
 }
 
 describe("one open wake per ringing recipient", () => {
@@ -493,7 +495,8 @@ describe("a revoke of a suppressed agent's callbacks", () => {
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "gone" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "again" });
     expect(await revokes()).toEqual([[muse, "pending", 1]]);  // once for that subscription
-    expect(await r.alarmAt()).toBeNull();  // no doorbell yet: held, arming nothing
+    expect(await r.wakesAt()).toBeNull();  // no doorbell yet: held, no job
+    expect(await r.alarmAt()).toBeNull();
     expect(await r.tick()).toBe(0);
     expect([r.sender.revoked, r.sender.callbacks.get(muse)]).toEqual([[[muse, 1]], new Set()]);
     expect(await revokes()).toEqual([[muse, "sent", 1]]);
@@ -569,20 +572,23 @@ describe("a revoke of a suppressed agent's callbacks", () => {
   });
 });
 
-describe("the object's one alarm", () => {
-  it("without a doorbell arms nothing for open wakes and holds them pending", async () => {
+describe("the wakes lane of the object's one schedule", () => {
+  it("without a doorbell gives open wakes no job and holds them pending", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.post(null, `dm:${muse}`);
-    expect(await r.alarmAt()).toBeNull();  // nothing can send it, so nothing fires for it
+    expect(await r.wakesAt()).toBeNull();  // nothing can send it, so nothing fires for it
+    expect(await r.alarmAt()).toBeNull();
     await r.sql("UPDATE ledger_wakes SET due = due - 120");
+    await evictDurableObject(r.stub);
+    await r.stub.outsideAgents(r.bind(null));  // a wake re-derives the schedule as stored
     await fireAlarm(r);
     expect(await states(r)).toEqual(["pending"]);  // held, not lost
-    expect(await r.alarmAt()).toBeNull();  // and no busy loop
+    expect([await r.wakesAt(), await r.alarmAt()]).toEqual([null, null]);  // and no busy loop
   });
 
-  it("recovers a lapsed claim behind a full pass of due open wakes, and never rearms in " +
-     "the past", async () => {
+  it("recovers a lapsed claim behind a full pass of due open wakes, its job due now, never " +
+     "in the past", async () => {
     const r = await rig();
     const t = clock() - 600;
     const claimed = await r.inLedger({}, (ledger) => {
@@ -601,13 +607,19 @@ describe("the object's one alarm", () => {
       return claim.target.wake_id;
     });
     const before = Date.now() / 1000;
+    await evictDurableObject(r.stub);
+    // The wake re-derives the schedule as stored: the lapsed lease is due, so the lane's
+    // job is due now, never in the past. (workerd then fires its alarm on its own.)
+    const due = await r.wakesAt();
+    expect(due).not.toBeNull();
+    expect(due!).toBeGreaterThanOrEqual(Math.floor(before * 1000) / 1000);
+    expect(due!).toBeLessThanOrEqual(Date.now() / 1000 + 1);
     await fireAlarm(r);
     const byId = Object.fromEntries((await wakes(r)).map((w) => [w["wake_id"], w["state"]]));
     expect(byId[claimed]).toBe("unknown");  // marked: never replayed
     expect(Object.values(byId).filter((s) => s === "pending")).toHaveLength(16);
-    const at = await r.alarmAt();
-    expect(at === null || at >= before).toBe(true);
-    expect(at).toBeNull();  // the 16 cannot be sent without a doorbell
+    // The 16 cannot be sent without a doorbell: the job is gone and the alarm unset.
+    expect([await r.wakesAt(), await r.alarmAt()]).toEqual([null, null]);
   });
 
   it("arms for a live lease, and at once for due work, never earlier than now", async () => {
@@ -618,11 +630,11 @@ describe("the object's one alarm", () => {
       const dot = ringing(ledger, DOT);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       ledger.post(null, `dm:${dot}`, "c2", "hello", null, t + 500);
-      const empty = ledger.nextAlarm(t, true);
+      const empty = ledger.nextDue(t, true);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       expect(claim.outcome).toBe("claimed");
-      return [empty, ledger.nextAlarm(t, false), ledger.nextAlarm(t, true),
-              ledger.nextAlarm(t + WAKE_LEASE_S + 5, false)];
+      return [empty, ledger.nextDue(t, false), ledger.nextDue(t, true),
+              ledger.nextDue(t + WAKE_LEASE_S + 5, false)];
     });
     expect(times).toEqual([
       t,  // a wake due 100 s ago, with a doorbell: at once, not in the past
@@ -641,9 +653,9 @@ describe("the object's one alarm", () => {
       }
     });
     expect(await r.tick(t)).toBe(16);
-    expect(await r.inLedger({}, (ledger) => ledger.nextAlarm(t, true))).toBe(t);
+    expect(await r.inLedger({}, (ledger) => ledger.nextDue(t, true))).toBe(t);
     expect(await r.tick(t)).toBe(1);
-    expect(await r.inLedger({}, (ledger) => ledger.nextAlarm(t, true))).toBeNull();
+    expect(await r.inLedger({}, (ledger) => ledger.nextDue(t, true))).toBeNull();
   });
 
   it("rearms on wake from the schedule as stored", async () => {
@@ -656,9 +668,12 @@ describe("the object's one alarm", () => {
       expect(claim.outcome).toBe("claimed");
       return t + WAKE_LEASE_S;
     });
+    await r.sql("DELETE FROM cf_agents_jobs");
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => state.storage.deleteAlarm());
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // any call wakes it
+    expect(await laneJobs(r.stub))
+      .toEqual({ wakes: { time: Math.ceil(lease * 1000), payload: null } });
     expect(await r.alarmAt()).toBe(Math.ceil(lease * 1000) / 1000);
   });
 });
