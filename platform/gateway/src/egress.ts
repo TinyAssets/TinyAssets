@@ -14,6 +14,11 @@
  * captured runtime fetch, and the one write of the global. The scope holds no data
  * between calls (each call's guard lives only in its own async context), and the
  * interposer is the same function for every owner.
+ *
+ * The scope follows promises and timers, not events: a listener registered with an
+ * `EventTarget` inside a scope but dispatched from outside it runs unscoped, so a fetch
+ * it makes reaches the network unguarded. An adapter that fetches from an event
+ * listener must be checked in review before its API joins `SUPPORTED_APIS`.
  */
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import { AsyncLocalStorage } from "node:async_hooks";

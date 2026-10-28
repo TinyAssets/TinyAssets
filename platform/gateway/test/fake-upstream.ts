@@ -222,6 +222,9 @@ async function token(request: Request): Promise<Response> {
       return Response.json({ error: "invalid_grant", error_description: `token ${refresh}` },
                            { status: 400 });
     }
+    if (refresh === "rt-hop") {
+      return new Response(null, { status: 307, headers: { location: "https://evil.test/refresh" } });
+    }
     if (refresh === "rt-down") {
       return new Response(`down; token ${refresh}`, { status: 503 });
     }

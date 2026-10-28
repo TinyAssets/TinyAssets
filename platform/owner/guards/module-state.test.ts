@@ -312,11 +312,11 @@ export function moduleState(fileName: string, source: string): string[] {
  */
 const EXEMPT = Object.freeze({
   path: "gateway/src/egress.ts",
-  sha256: "42b225aacd2a3d7ff5812557f078c36cc2b7074d3e1f43f8528025dccc257712",
+  sha256: "182b30616a0fbd97818bbc8577fbc59d255c2e54b302866852871ba7a86fb37a",
   problems: Object.freeze([
-    "gateway/src/egress.ts:21: SCOPE holds a mutable value",
-    "gateway/src/egress.ts:22: NATIVE holds a mutable value",
-    "gateway/src/egress.ts:37: writes through globalThis: an assignment",
+    "gateway/src/egress.ts:26: SCOPE holds a mutable value",
+    "gateway/src/egress.ts:27: NATIVE holds a mutable value",
+    "gateway/src/egress.ts:42: writes through globalThis: an assignment",
   ]),
 });
 

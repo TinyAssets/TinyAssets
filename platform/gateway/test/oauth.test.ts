@@ -200,6 +200,16 @@ describe("refresh", () => {
     expect(grant.scope).toContain("chatgpt.tokens.use.direct");
   });
 
+  it("holds pi-ai's own refresh to the sealed token endpoint: a redirect is refused, unfollowed", async () => {
+    const env = ring("k1");
+    const record = oauthSource({ token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
+                                 refresh_with: "provider" });
+    const blob = await sealedGrant(env, { refresh: "rt-hop" }, record);
+    expect(await code(() => refresh(env, ALICE, blob, builtinCatalog()))).toBe("oauth_rejected");
+    // Followed, the POST (the refresh token in its body) would have reached evil.test.
+    expect(JSON.stringify(await evil())).not.toContain("evil.test/refresh");
+  });
+
   it("answers pi-ai's own refresh failing with a fixed code", async () => {
     const env = ring("k1");
     const record = oauthSource({ token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
