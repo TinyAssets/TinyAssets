@@ -160,10 +160,10 @@ describe("a file write", () => {
     expect((await r.stub.fileReadChunks(r.bind(null), { path: `${W}/v.bin`, version: v1,
                                                          first: 0, count: 1 })).chunks)
       .toEqual([first]);
-    for (const bad of [{ first: 1, count: 1 }, { first: 0, count: 0 }, { first: 0, count: 7 }]) {
+    for (const bad of [{ first: 1, count: 1 }, { first: 0, count: 0 }, { first: 0, count: 3 }]) {
       expect((await failure(() => r.stub.fileReadChunks(r.bind(null), {
         path: `${W}/v.bin`, version: v1, ...bad }))).message)
-        .toBe("first and count name 1 to 6 of the version's chunks");
+        .toBe("first and count name 1 or 2 of the version's chunks");
     }
   });
 
@@ -252,10 +252,10 @@ function doors(r: Rig): Record<string, (binding: Binding) => Promise<unknown>> {
     fileChanges: (b) => s.fileChanges(b, { after: 0, limit: 1 }),
     fileUsage: (b) => s.fileUsage(b),
     fileWrite: (b) => s.fileWrite(b, { path, expected_etag: null, content: text("x") }),
-    fileUploadBegin: (b) => s.fileUploadBegin(b, { chunks: [{ sha256: "a".repeat(64), size: 1 }] }),
+    fileUploadBegin: (b) => s.fileUploadBegin(b, { size: 5000, chunks: ["a".repeat(64)] }),
     fileUploadChunks: (b) => s.fileUploadChunks(b, { intent_id: "0".repeat(32), chunks: [] }),
     fileUploadCommit: (b) => s.fileUploadCommit(b, { intent_id: "0".repeat(32), path,
-      expected_etag: null, size: 5000, chunks: [] }),
+      expected_etag: null }),
     fileUploadAbort: (b) => s.fileUploadAbort(b, { intent_id: "0".repeat(32) }),
     fileMkdir: (b) => s.fileMkdir(b, { path: `${W}/d`, expected_etag: null }),
     fileRemove: (b) => s.fileRemove(b, { path, expected_etag: null, recursive: false }),
@@ -263,17 +263,18 @@ function doors(r: Rig): Record<string, (binding: Binding) => Promise<unknown>> {
                                           replace: false }),
     fileRestore: (b) => s.fileRestore(b, { path, version: 1, expected_etag: null }),
     fileRedact: (b) => s.fileRedact(b, { path, version: 1 }),
+    fileHistoryPurge: (b) => s.fileHistoryPurge(b, { path }),
     fileLeaseAcquire: (b) => s.fileLeaseAcquire(b, { holder: "sandbox" }),
     fileLeaseRenew: (b) => s.fileLeaseRenew(b, { lease_id: "0".repeat(32), epoch: 1 }),
     fileLeaseRelease: (b) => s.fileLeaseRelease(b, { lease_id: "0".repeat(32), epoch: 1 }),
     fileSyncCommit: (b) => s.fileSyncCommit(b, { lease_id: "0".repeat(32), epoch: 1,
-      intent_id: null, ops: [{ op: "mkdir", path: `${W}/s`, base: null }] }),
+      ops: [{ op: "mkdir", path: `${W}/s`, base: null }] }),
   };
 }
 
 const READS = ["fileStat", "fileList", "fileRead", "fileReadChunks", "fileHistory",
                "fileChanges", "fileUsage"];
-const OWNER_ONLY = ["fileRedact", "fileLeaseAcquire", "fileLeaseRenew", "fileLeaseRelease",
+const OWNER_ONLY = ["fileRedact", "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRenew", "fileLeaseRelease",
                     "fileSyncCommit"];
 const ADMISSION = /belongs to another owner|not named|own callers only|not granted|only the owner|never carries|not one enabled agent|no grant|revoked/;
 

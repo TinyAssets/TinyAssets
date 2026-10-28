@@ -44,9 +44,10 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    metadata and sealed credentials, subscriptions, the session event log, one
    schedule driven by one alarm, and hibernating app WebSockets. The runtime
    keeps each object's storage private. The object's code has no way to another
-   owner's object: its Worker binds nothing but service bindings to Workers
-   that themselves bind no Durable Object and no service (today the files
-   Worker; the gateway with its slice), checked against the bound Worker's own
+   owner's object: its Worker binds nothing but service bindings to Workers an
+   allow-list names with the binding kinds each may hold, none reaching another
+   Worker or a shared store beyond its purpose (today the files Worker, with one
+   bucket; the gateway with its slice), checked against the bound Worker's own
    config; the `disable_ctx_exports` flag keeps the runtime from handing it its
    own namespaces as `ctx.exports`; and its source never imports `env`. No
    module keeps mutable state at top level or writes through the global object,
@@ -121,17 +122,19 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    - **The files Worker** holds the only bucket binding, takes hex and bytes
      only, never sees a path or chooses an owner, and verifies every put with
      R2's `put` SHA-256 check (not S3 checksum headers, which R2 lists as
-     composite only). Its calls are batched: a request may make at most 32
-     service-binding calls.
+     composite only). A call moves at most two chunks' bytes, and a request may
+     make at most 32 service-binding calls. The binder, the trust root, may
+     stream chunks to it with a namespace read from the owner's object.
    - **Versions and GC:** 30 days plus each live path's last 10 versions, as
      owner policy; chunks are reference-counted, recorded before any byte is
-     sent, and deleted after a 24 h grace on the object's one schedule, so GC
-     never lists the bucket. Quotas, also owner policy, refuse loudly.
+     sent, counted stored only once the files Worker accepted them, and deleted
+     after a 24 h grace on the object's one schedule, so GC never lists the
+     bucket. Quotas, also owner policy, refuse loudly, but never a change that
+     only frees; the policy keeps `max_entries` times `keep_versions` within
+     `max_history`, and the owner may purge a path's history.
    - **Sync:** a lease of a random id (the claim token) and a rising epoch
      (fencing). API writes never take it; when both sides changed a file the
      API's version stays and the sandbox's is saved as a reported conflict copy.
-   - **pi's `ExecutionEnv`** maps onto the manifest and the files Worker and
-     passes pi-durable 1.4.0's own conformance suite but for `exec`.
 6. **The trusted side is TypeScript on Workers.** The Python logic is ported,
    never imported, and its tests become acceptance tests. The new stack is
    built beside production and moved to in one cutover window after a full

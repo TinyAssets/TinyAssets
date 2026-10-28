@@ -58,11 +58,15 @@ The owner Worker's config SHALL bind nothing but the service bindings the next r
 - **THEN** a source guard fails CI, for every script extension under `src`
 
 ### Requirement: The owner Worker binds only Workers that reach nothing
-A service binding the owner Worker holds SHALL be only to a Worker whose own config binds no Durable Object namespace and no service, each named in the config guard's allow-list (today only `FILES`, the files Worker) and checked against the bound Worker's own config.
+A service binding the owner Worker holds SHALL be only to a Worker the config guard's allow-list names, together with the binding kinds and counts that Worker may hold, none of which reaches another Worker or a store shared beyond its own purpose (today only `FILES`, the files Worker, holding exactly one `r2_buckets` entry). The guard SHALL check the bound Worker's own config, at top level and in every environment, and refuse any binding key the allow-list does not grant it.
 
 #### Scenario: The bound Worker gains a way on
-- **WHEN** the files Worker's config binds a Durable Object namespace or a service, at top level or in an environment
+- **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
 - **THEN** the config guard refuses the owner Worker's `FILES` binding
+
+#### Scenario: The binding names another Worker
+- **WHEN** `FILES` is bound to another platform Worker, even one that binds nothing
+- **THEN** the config guard refuses it
 
 ### Requirement: The object migrates its schema on wake
 The object SHALL apply every schema migration past its stored version before it serves its first call after a wake, each migration in its own transaction with its version bump. A failed migration SHALL leave the version where it was and nothing of the migration behind. A stored version newer than the code's SHALL stop the object loudly. A deployed migration SHALL never change; a new shape is a new migration at the end.
@@ -220,7 +224,11 @@ Each file change SHALL be a compare-and-swap on the entry's etag (null writes un
 - **THEN** the manifest holds two files with their own contents
 
 ### Requirement: Chunks are recorded before their bytes and collected without listing the bucket
-An upload SHALL record its chunks as held before any byte is sent, and its commit SHALL reference only chunks its intent holds. A chunk nothing references or holds SHALL become garbage, deleted on the owner's one schedule after a 24 h grace, without listing the bucket. A stored garbage chunk MAY revive; one whose upload never committed SHALL be sent again; one being deleted SHALL never be held or referenced.
+An upload SHALL declare its file's size and record its chunks, in that size's 4 MiB plan, as held before any byte is sent. A chunk SHALL count as stored only once the files Worker has accepted its put, and a commit SHALL refuse a chunk its intent does not hold or that was never stored. A chunk nothing references or holds SHALL become garbage, deleted on the owner's one schedule after a 24 h grace, without listing the bucket; a stored one MAY revive, and one being deleted SHALL never be held.
+
+#### Scenario: A commit before its bytes
+- **WHEN** an upload is begun and committed without its chunks being sent
+- **THEN** the commit is refused with "a chunk of this commit was never stored; send its bytes first", and an owner write of the same bytes later stores and reads them
 
 #### Scenario: An upload that never commits
 - **WHEN** an intent expires with a chunk it never committed
@@ -230,41 +238,69 @@ An upload SHALL record its chunks as held before any byte is sent, and its commi
 - **WHEN** the alarm runs with a chunk that a kept version's content is made of
 - **THEN** the chunk stays, whatever its age
 
+### Requirement: A content id names one content
+A content id SHALL name its kind (inline, one chunk or a chunk list) and its size, and a change whose content id is already recorded with another size or other chunks SHALL fail loudly rather than reuse the recorded content.
+
+#### Scenario: A chunk list whose hash another content holds
+- **WHEN** a stored content row and a new one share an id but not a size, in either order of writing
+- **THEN** the second change fails and the first content reads as it was
+
 ### Requirement: History is kept by owner policy, never dropped to make room
-History SHALL keep every version younger than the policy's retention and each live path's newest versions. A version MAY be restored as a new one, or have its content redacted unless it is current.
+History SHALL keep every version younger than the policy's retention and each live path's newest versions, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes. A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another history row holds the same content.
 
 #### Scenario: A path written twelve times
 - **WHEN** a path is written twelve times under the default policy
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
+### Requirement: The owner frees history, and temporary files keep none
+The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
+
+#### Scenario: History at its quota
+- **WHEN** history rows reach `max_history`
+- **THEN** a write is refused, and the owner frees room by a purge or a lowered retention without either being refused
+
 ### Requirement: File quotas are owner policy, refused loudly
-Chunk bytes, inline bytes, entries, history rows and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults), read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind; one that leaves every counter no higher SHALL pass a lowered bound.
+Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks they hold, and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults) or a fixed ceiling, read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind.
 
 #### Scenario: The owner's entries at their quota
 - **WHEN** a write would add an entry past `max_entries`
 - **THEN** it is refused, and no parent directory, history row or content of it is kept
 
-### Requirement: The sync lease fences the sandbox's commits
-The sync lease SHALL be a random lease id and a rising epoch, held by one holder until it lapses or is released. A sync commit SHALL be refused unless both are the live lease's. API writes SHALL never take the lease. A sync op made against a version that has moved on SHALL leave the current version in place, save a write's content as `<path>.ta-conflict-<epoch>`, and report the conflict; a directory SHALL be removed by sync only once empty.
+### Requirement: A quota never blocks a change that frees
+A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times `keep_versions` is at most `max_history`, so the versions history must keep can never fill it.
 
-#### Scenario: A sandbox and the API edit one file
-- **WHEN** the API writes `notes.md` after the sandbox last synced it, and the sandbox then commits its own edit
-- **THEN** `notes.md` keeps the API's content and the sandbox's is saved as `notes.md.ta-conflict-<epoch>`, reported in the answer
+#### Scenario: A full owner removes files
+- **WHEN** every counter is at its bound and the owner removes a file
+- **THEN** the remove lands
+
+### Requirement: The sync lease fences the sandbox's commits
+The sync lease SHALL be a random lease id and a rising epoch, held by one holder until it lapses or is released. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
 
 #### Scenario: A sandbox that lost its lease
 - **WHEN** a sync commit carries an earlier epoch or another lease id
 - **THEN** it is refused and nothing changes
 
+### Requirement: A sync conflict keeps both sides
+A sync op made against a version that has moved on SHALL leave the current version in place, save a write's content as a create-only copy named `<path>.ta-conflict-<epoch>` (with `-<n>` for the first free name, cut to 255 bytes), and report the conflict; a write under a parent the API made a file SHALL be saved under the parent's copy name. A directory SHALL be removed by sync only once empty.
+
+#### Scenario: A sandbox and the API edit one file
+- **WHEN** the API writes `notes.md` after the sandbox last synced it, and the sandbox then commits its own edit
+- **THEN** `notes.md` keeps the API's content and the sandbox's is saved as `notes.md.ta-conflict-<epoch>`, reported in the answer
+
+#### Scenario: A copy's name is taken
+- **WHEN** a file already sits at `notes.md.ta-conflict-<epoch>`
+- **THEN** the sandbox's content is saved as `notes.md.ta-conflict-<epoch>-2` and the other file stays
+
 ### Requirement: The files Worker moves bytes and never sees a path
-The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes. Its keys SHALL be only `o/<ns>/c/<sha256>`, built by one function. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes.
+The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes, moving at most two chunks' bytes a call. Its keys SHALL be only `o/<ns>/c/<sha256>`, built by one function. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes.
 
 #### Scenario: Bytes that miss their hash
 - **WHEN** a put names a hash its bytes do not have
 - **THEN** it is refused and nothing is stored
 
-### Requirement: One pi environment over the manifest
-The owner's pi `ExecutionEnv` SHALL serve its file methods from the manifest and the files Worker, never waking a sandbox, and SHALL pass pi-durable 1.4.0's conformance cases other than `exec`'s, with symbolic links off. A write to a path the environment read SHALL fail with `changed since read` when anything else committed there since; `exec` SHALL answer `shell_unavailable` until the sandbox lands.
+### Requirement: The binder may stream an owner's chunks
+The binder is the trust root: the HTTP door's binder MAY read an owner's namespace from that owner's object and stream chunks to the files Worker itself, since a binder already reaches every owner's object; no owner's object SHALL hand out another owner's namespace.
 
-#### Scenario: An edit raced by another writer
-- **WHEN** one environment reads `notes.md`, another writes it, and the first writes its edit
-- **THEN** the first write fails with `changed since read` and the other's content stays
+#### Scenario: The binder streams a large read
+- **WHEN** the binder serves Alice's large file
+- **THEN** it reads Alice's namespace from Alice's object and the chunk keys it asks for are under that namespace only

@@ -90,6 +90,32 @@ describe("putChunks", () => {
       .toBe("a chunk key holds bytes this Worker did not verify");
   });
 
+  // Whether R2 checks a put's digest before its precondition is unprobed (tasks 6): a
+  // bucket that reports "exists" first must still never vouch for the wrong bytes.
+  const existing = (size: number, sha256: string): R2Bucket => ({
+    put: async () => null,
+    head: async () => ({ size, checksums: { sha256: Uint8Array.from(
+      sha256.match(/../g)!.map((pair) => parseInt(pair, 16))).buffer } }),
+  }) as unknown as R2Bucket;
+
+  it("refuses bytes that miss their hash even when the bucket answers before checking", async () => {
+    const body = bytes("true bytes");
+    const hash = await sha(body);
+    const lying = new FilesService(createExecutionContext(), { BLOBS: existing(body.length, hash) });
+    expect((await failure(() => lying.putChunks(ns(), [{ sha256: hash,
+                                                         bytes: bytes("wrong byte") }]))).message)
+      .toBe("the chunk's bytes do not match its sha256");
+    expect(await lying.putChunks(ns(), [{ sha256: hash, bytes: body }])).toEqual({ created: 0 });
+  });
+
+  it("fails loudly when the key's object is another size than the chunk", async () => {
+    const body = bytes("sized");
+    const hash = await sha(body);
+    const odd = new FilesService(createExecutionContext(), { BLOBS: existing(body.length + 1, hash) });
+    expect((await failure(() => odd.putChunks(ns(), [{ sha256: hash, bytes: body }]))).message)
+      .toBe("a chunk key holds bytes this Worker did not verify");
+  });
+
   it.each([
     ["an empty chunk", new Uint8Array(0)],
     ["a chunk past 4 MiB", new Uint8Array(CHUNK_BYTES + 1)],

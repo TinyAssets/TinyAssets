@@ -59,6 +59,7 @@
 import { createHash } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
+import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { codePoints } from "./text";
 
 export const BEHAVIOURS: readonly string[] =
@@ -134,15 +135,22 @@ export interface PolicyEntry {
  * history. `max_bytes` counts unique chunk bytes, live and in history; `max_inline_bytes`
  * the small files kept in the object itself, whose 10 GB the high bound protects.
  * Retention keeps every version younger than `retention_days` and each live path's last
- * `keep_versions`. The sync agent's exclude list is not here: it is the owner's file
- * `/workspace/.ta/sync-ignore`, whose defaults come with the sync agent (tasks 6).
+ * `keep_versions`.
+ *
+ * `max_history` is never below `max_entries × keep_versions`, so the versions retention
+ * keeps of every live path fit in it at once: a full history is only ever the recent
+ * days' churn, which ages out, and the owner can purge a path's history or delete
+ * (neither is ever refused) at any time. A file is at most `MAX_INTENT_CHUNKS` chunks
+ * (40 GiB), the most one upload intent holds. The sync agent's exclude list is not here:
+ * it is the owner's file `/workspace/.ta/sync-ignore`, whose defaults come with the sync
+ * agent (tasks 6).
  */
 export const FILE_DEFAULTS = Object.freeze({
   max_bytes: 1024 ** 3,
   max_inline_bytes: 256 * 1024 ** 2,
   max_entries: 200_000,
   max_file_bytes: 5 * 1024 ** 3,
-  max_history: 1_000_000,
+  max_history: 2_000_000,
   retention_days: 30,
   keep_versions: 10,
 });
@@ -153,10 +161,10 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
     max_bytes: Object.freeze([0, 1024 ** 4] as const),
     max_inline_bytes: Object.freeze([0, 1024 ** 3] as const),
     max_entries: Object.freeze([0, 1_000_000] as const),
-    max_file_bytes: Object.freeze([0, 1024 ** 4] as const),
+    max_file_bytes: Object.freeze([0, MAX_INTENT_CHUNKS * CHUNK_BYTES] as const),
     max_history: Object.freeze([0, 5_000_000] as const),
     retention_days: Object.freeze([0, 3650] as const),
-    keep_versions: Object.freeze([1, 1000] as const),
+    keep_versions: Object.freeze([1, KEEP_CEILING] as const),
   });
 
 /** The files settings a document leaves in force: its own, and the defaults for the rest. */
@@ -326,6 +334,10 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
     || value < FILE_SETTINGS[key as keyof FileSettings][0]
     || value > FILE_SETTINGS[key as keyof FileSettings][1]))) {
     throw new Invalid("invalid files policy");
+  }
+  const settings = { ...FILE_DEFAULTS, ...(files as Partial<FileSettings> | undefined) };
+  if (settings.max_entries * settings.keep_versions > settings.max_history) {
+    throw new Invalid("files policy: max_history holds max_entries times keep_versions");
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])
