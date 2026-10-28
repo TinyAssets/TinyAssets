@@ -254,6 +254,25 @@ describe("loopback clients' grants", () => {
     expect(await grantsOf(alice)).toEqual(["http://127.0.0.1:7777/callback"]);
   });
 
+  it("are replaced only within one installation, and only for /mcp", async () => {
+    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+                         redirect_uris: ["http://127.0.0.1/a", "http://127.0.0.1/b"],
+                         token_endpoint_auth_method: "none" });
+    const alice = owner();
+    const oauth = authorizationServer(doorsEnv).getOAuthApi(doorsEnv);
+    // A grant for the app resource on the same installation, as the provider could hold.
+    const { challenge } = await pkce();
+    const forApp = await oauth.parseAuthRequest(new Request(authorizeUrl(
+      { clientId: CLI, redirectUri: "http://127.0.0.1:4444/b" }, challenge, APP_RESOURCE)));
+    await oauth.completeAuthorization({ request: forApp, userId: alice, metadata: {}, scope: [],
+                                        props: { kind: "app" }, revokeExistingGrants: false });
+    await connectCimd(alice, "http://127.0.0.1:5555/a");
+    await connectCimd(alice, "http://127.0.0.1:6666/b");
+    expect((await grantsOf(alice)).sort()).toEqual(["http://127.0.0.1:4444/b",
+                                                    "http://127.0.0.1:5555/a",
+                                                    "http://127.0.0.1:6666/b"]);
+  });
+
   it("are replaced only for the same client", async () => {
     const OTHER = "https://other-cli.example/client.json";
     const real = globalThis.fetch;
