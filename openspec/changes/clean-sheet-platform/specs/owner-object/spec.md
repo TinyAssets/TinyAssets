@@ -348,7 +348,7 @@ History SHALL keep each live path's newest `keep_versions` and its versions youn
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
 ### Requirement: Gone paths' history makes room at the quota
-A change that would take history past `max_history` SHALL first prune that many of the earliest-due rows of paths that are gone, which retention has already let go, raising the change feed's floor past any pruned row that was its path's newest. It SHALL prune no more rows than it recorded, and never a live path's row.
+A change that would take history past `max_history` SHALL first prune that many of the earliest-due rows of paths that are gone, which retention has already let go, raising the change feed's floor past any pruned row that was its path's newest, and never lowering it. It SHALL prune no more rows than it recorded, and never a live path's row.
 
 #### Scenario: Deleted paths' churn
 - **WHEN** a policy of 5 entries, `keep_versions` 1, `keep_recent` 2 and `max_history` 10 holds, and eight files of unique names are each written and removed
@@ -437,12 +437,19 @@ A whole-file read or write by the environment SHALL move at most 16 MiB, and `re
 - **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed
 
 ### Requirement: One call budget per invocation
-Every service-binding call the object makes SHALL draw from one budget per invocation, which each entry (an RPC door, a Lifecycle job) makes and passes down, shared by every tool call the entry runs. The files Worker MAY bring it to 24 of the 32 calls, the rest kept for the gateway and hooks, and a call that would cross it SHALL be refused before it is made, naming the budget (`not_supported` to pi).
+Every service-binding call the object makes SHALL draw from the ambient budget of the platform invocation it runs in: the alarm, which covers every Lifecycle job it drives, PiHarness's included, or an RPC door, each entering a fresh scope held on the object's instance. Callers SHALL read the scope rather than take a budget as an argument, and a draw outside any scope SHALL throw.
+
+#### Scenario: A call outside any invocation
+- **WHEN** a file-store call is made outside any invocation's scope
+- **THEN** it throws before the call is made
+
+### Requirement: A call past the invocation's budget is refused
+The files Worker MAY bring an invocation's budget to 24 of the 32 service-binding calls, the rest named for the gateway and hooks, and a call that would cross it SHALL be refused before it is made, naming the budget (`not_supported` to pi).
 
 #### Scenario: Two tool calls in one turn
-- **WHEN** two tool calls in one Lifecycle job each read 12 two-chunk files
-- **THEN** the next read in that job is refused before its call, and the next job's reads draw on a budget of their own
+- **WHEN** two tool calls in one alarm each read 12 two-chunk files
+- **THEN** the next read in that alarm is refused before its call, and the next alarm's reads draw on a budget of their own
 
 #### Scenario: Two doors at once
-- **WHEN** more door reads than one budget holds run in the object at the same time
-- **THEN** each draws on its own budget and every one is answered
+- **WHEN** two invocations run in the object at once, interleaving at every call
+- **THEN** each draws on its own budget

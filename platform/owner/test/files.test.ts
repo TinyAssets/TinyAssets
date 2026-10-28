@@ -186,7 +186,7 @@ describe("a file write", () => {
     const r = await rig();
     const bytes = new Uint8Array(2 * CHUNK_BYTES + 1).fill(4);
     const { version } = await inFiles(r.stub, {}, (files) => files.write(
-      `${W}/three.bin`, bytes, { expected: null, writer: "owner", calls: new Calls() }));
+      `${W}/three.bin`, bytes, { expected: null, writer: "owner" }));
     const read = (first: number, count: number) => r.stub.fileReadChunks(
       r.bind(null), { path: `${W}/three.bin`, version, first, count });
     expect((await read(1, 2)).chunks.map((chunk) => chunk.byteLength)).toEqual([CHUNK_BYTES, 1]);
@@ -445,8 +445,8 @@ describe("the manifest's queries", () => {
     expect(kept).toEqual(counted);
     await inFiles(r.stub, { keep_versions: 1, retention_days: 0 }, async (files) => {
       await files.write(`${W}/z/c.bin`, new Uint8Array(INLINE_BYTES * 2).fill(5),
-                        { expected: null, writer: "t", calls: new Calls() });
-      await files.collect(new Calls(), Date.now() / 1000 + 10);
+                        { expected: null, writer: "t" });
+      await files.collect(Date.now() / 1000 + 10);
     });
     const [after, recount] = await fileCounters(r.stub);
     expect(after).toEqual(recount);

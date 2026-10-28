@@ -56,9 +56,9 @@
  *
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind; only chunk bytes and their deletes cross to `FILES`, between
- * transactions, at most two chunks a call, each call drawn first from the invocation's
- * budget (`calls.ts`), which the caller's entry passes in. Watchers in the object (the
- * pi environment's `watch`) hear each committed change.
+ * transactions, at most two chunks a call, each call drawn first from the budget of the
+ * invocation running it (`calls.ts`), read from the object's scope. Watchers in the object
+ * (the pi environment's `watch`) hear each committed change.
  */
 import { createHash, randomBytes } from "node:crypto";
 
@@ -397,12 +397,16 @@ export class Files {
   readonly #storage: DurableObjectStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
+  /** The budget of the invocation running now (`CallScope.current`), which throws outside one. */
+  readonly #calls: () => Calls;
   readonly #watchers = new Set<(paths: string[]) => void>();
 
-  constructor(storage: DurableObjectStorage, store: ChunkStore, limits: () => FileLimits) {
+  constructor(storage: DurableObjectStorage, store: ChunkStore, limits: () => FileLimits,
+              calls: () => Calls) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
+    this.#calls = calls;
   }
 
   get #sql(): SqlStorage {
@@ -493,8 +497,9 @@ export class Files {
    * past `max_history` (or past where it found it, if a lowered policy left it higher),
    * prune that many of the earliest-due rows of gone paths (`released`), raising the
    * feed's floor as housekeeping does. A live path's rows are never taken early, and the
-   * policy keeps every live path's rows within `max_history`, so with the entries quota
-   * met there are always enough gone rows and the history quota never refuses a change.
+   * policy keeps every live path's rows within `max_history`, so once housekeeping has
+   * applied the retention in force, and with the entries quota met, there are always enough
+   * gone rows and the history quota never refuses a change.
    * The work is bounded by the change's own: it prunes at most the rows it recorded.
    */
   #fit(before: Counters): void {
@@ -618,16 +623,16 @@ export class Files {
 
   /**
    * Chunk bytes in order, fetched from `FILES` at most two chunks a call, every call drawn
-   * from the invocation's `calls` before the first is made.
+   * from the invocation's budget before the first is made.
    */
-  async fetch(calls: Calls, reads: readonly { sha256: string; offset?: number;
-                                              length?: number }[]): Promise<Uint8Array[]> {
+  async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
+      Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
     const ns = this.ns();
     const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
-    calls.draw("files", groups.length);
+    this.#calls().draw("files", groups.length);
     const out: Uint8Array[] = [];
     for (const group of groups) {
       out.push(...await this.#store.getChunks(ns, group.map((item) => item.read)));
@@ -864,11 +869,11 @@ export class Files {
    * object's own writes and the doors' small ones, at most `WHOLE_BYTES` at once.
    * `prefix` is whole chunks of content already stored that come first (an append or a
    * truncate keeps them), so only the chunks after them are cut from `bytes` and sent.
-   * Every put is drawn from the invocation's `calls` before the first is sent.
+   * Every put is drawn from the invocation's budget before the first is sent.
    */
   async write(path: unknown, bytes: unknown, options: { expected: unknown; mode?: unknown;
-              writer: string; parents?: boolean; prefix?: readonly ChunkRef[];
-              calls: Calls }): Promise<Entry> {
+              writer: string; parents?: boolean; prefix?: readonly ChunkRef[] }):
+      Promise<Entry> {
     const at = storedPath(path);
     if (!(bytes instanceof Uint8Array)) {
       throw new Invalid("content is bytes");
@@ -897,7 +902,7 @@ export class Files {
         throw new Refused("a kept chunk of this file is gone; write it whole");
       }
       const groups = batches(puts);
-      options.calls.draw("files", groups.length);
+      this.#calls().draw("files", groups.length);
       for (const group of groups) {
         await this.#put(group);
       }
@@ -1022,9 +1027,9 @@ export class Files {
   /**
    * Send bytes for chunks an intent holds, at most two chunks a call, each the size the
    * intent declared; each is stored once `FILES` accepted it. The put is drawn from the
-   * invocation's `calls` first.
+   * invocation's budget first.
    */
-  async upload(calls: Calls, intentId: unknown, chunks: unknown): Promise<{ created: number }> {
+  async upload(intentId: unknown, chunks: unknown): Promise<{ created: number }> {
     const held = new Set(this.#intent(intentId, Date.now() / 1000).chunks);
     if (!Array.isArray(chunks) || chunks.length === 0) {
       throw new Invalid("an upload sends a list of chunks");
@@ -1044,7 +1049,7 @@ export class Files {
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
       throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
-    calls.draw("files", 1);
+    this.#calls().draw("files", 1);
     await this.#put(puts);
     return { created: puts.length };
   }
@@ -1559,9 +1564,9 @@ export class Files {
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
    * is begun with less than `DELETE_FLOOR_MS` left before `until`, and the one delete is
-   * drawn from the job's `calls` first.
+   * drawn from the alarm's budget first.
    */
-  async collect(calls: Calls, now: number, until: number = Infinity): Promise<void> {
+  async collect(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
     this.#change((touched) => {
       this.#reretain();
@@ -1581,9 +1586,9 @@ export class Files {
       "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
         "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
     if (due.length === 0 || until - Date.now() < DELETE_FLOOR_MS) {
-      return;  // too little of the pass left to finish a delete: the next pass takes them
+      return;  // too little of this pass left: the chunks stay due for a later one
     }
-    calls.draw("files", 1);
+    this.#calls().draw("files", 1);
     this.#storage.transactionSync(() => {
       for (const sha256 of due) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",

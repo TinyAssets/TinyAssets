@@ -103,7 +103,8 @@ export interface WorkAnswer {
  * turn to pi's durable submit, and returns within `WORK_HANDOFF_MS`. A throw leaves the
  * row to its lease. The submit's `operationId` is the row's `work_id`, always: a second
  * hand-off of the same work (a late one, a lease's) is pi's duplicate, deduped, and the
- * turn's receipts are found by `work_id`.
+ * turn's receipts are found by `work_id`. Any service-binding call it makes draws on its
+ * alarm's ambient budget (`calls.ts`).
  */
 export interface WorkRunner {
   handOff(target: WorkTarget, mark: () => void): Promise<WorkAnswer>;

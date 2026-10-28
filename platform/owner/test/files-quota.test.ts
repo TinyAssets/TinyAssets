@@ -45,42 +45,36 @@ describe("a file quota", () => {
   it("refuses an entry past max_entries, parents and all", async () => {
     const r = await rig();
     await inFiles(r.stub, { max_entries: 2 }, async (files) => {
-      await files.write(`${W}/a`, text("a"), { expected: null, writer: "owner",
-                                               calls: new Calls() });
+      await files.write(`${W}/a`, text("a"), { expected: null, writer: "owner" });
     });
     await refusedWithNothingLeft(r, { max_entries: 2 }, (files) =>
-      files.write(`${W}/d/b`, text("b"), { expected: null, writer: "owner", calls: new Calls() }),
+      files.write(`${W}/d/b`, text("b"), { expected: null, writer: "owner" }),
     "the owner's file entries are at their quota");
     await inFiles(r.stub, { max_entries: 2 }, (files) =>
-      files.write(`${W}/b`, text("b"), { expected: null, writer: "owner", calls: new Calls() }));
+      files.write(`${W}/b`, text("b"), { expected: null, writer: "owner" }));
   });
 
   it("refuses history past max_history", async () => {
     const r = await rig();
     await inFiles(r.stub, { max_history: 2 }, async (files) => {
-      await files.write(`${W}/a`, text("1"), { expected: null, writer: "owner",
-                                               calls: new Calls() });
-      await files.write(`${W}/a`, text("2"), { expected: null, writer: "owner",
-                                               calls: new Calls() });
+      await files.write(`${W}/a`, text("1"), { expected: null, writer: "owner" });
+      await files.write(`${W}/a`, text("2"), { expected: null, writer: "owner" });
     });
     await refusedWithNothingLeft(r, { max_history: 2 }, (files) =>
-      files.write(`${W}/a`, text("3"), { expected: null, writer: "owner", calls: new Calls() }),
+      files.write(`${W}/a`, text("3"), { expected: null, writer: "owner" }),
     "the owner's file history is at its quota");
   });
 
   it("refuses inline bytes past max_inline_bytes, the history's included", async () => {
     const r = await rig();
     await inFiles(r.stub, { max_inline_bytes: 12 }, (files) =>
-      files.write(`${W}/a`, text("12345678"), { expected: null, writer: "owner",
-                                                calls: new Calls() }));
+      files.write(`${W}/a`, text("12345678"), { expected: null, writer: "owner" }));
     await refusedWithNothingLeft(r, { max_inline_bytes: 12 }, (files) =>
-      files.write(`${W}/a`, text("abcdefgh"), { expected: null, writer: "owner",
-                                                calls: new Calls() }),
+      files.write(`${W}/a`, text("abcdefgh"), { expected: null, writer: "owner" }),
     "the owner's small-file bytes are at their quota");
     // The same content again costs nothing: it is stored once.
     await inFiles(r.stub, { max_inline_bytes: 12 }, (files) =>
-      files.write(`${W}/b`, text("12345678"), { expected: null, writer: "owner",
-                                                calls: new Calls() }));
+      files.write(`${W}/b`, text("12345678"), { expected: null, writer: "owner" }));
   });
 
   it("refuses chunk bytes past max_bytes at the upload's begin, before any byte is sent",
@@ -88,10 +82,10 @@ describe("a file quota", () => {
     const r = await rig();
     await inFiles(r.stub, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/a`, new Uint8Array(INLINE_BYTES + 1).fill(1),
-                  { expected: null, writer: "owner", calls: new Calls() }));
+                  { expected: null, writer: "owner" }));
     await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
-                  { expected: null, writer: "owner", calls: new Calls() }),
+                  { expected: null, writer: "owner" }),
     "the owner's file bytes are at their quota");
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
   });
@@ -100,12 +94,10 @@ describe("a file quota", () => {
     const r = await rig();
     const reason = "the file is larger than the owner's file size quota";
     await refusedWithNothingLeft(r, { max_file_bytes: INLINE_BYTES + 1 }, (files) =>
-      files.write(`${W}/a`, new Uint8Array(INLINE_BYTES + 2), { expected: null, writer: "o",
-                                                                calls: new Calls() }),
+      files.write(`${W}/a`, new Uint8Array(INLINE_BYTES + 2), { expected: null, writer: "o" }),
     reason);
     await refusedWithNothingLeft(r, { max_file_bytes: 3 }, (files) =>
-      files.write(`${W}/a`, text("four"), { expected: null, writer: "o",
-                                            calls: new Calls() }), reason);
+      files.write(`${W}/a`, text("four"), { expected: null, writer: "o" }), reason);
     await refusedWithNothingLeft(r, { max_file_bytes: INLINE_BYTES + 1 }, (files) =>
       files.begin(INLINE_BYTES + 2, ["a".repeat(64)]), reason);
   });
@@ -114,8 +106,7 @@ describe("a file quota", () => {
     const r = await rig();
     await inFiles(r.stub, {}, async (files) => {
       for (const name of ["a", "b", "c", "d"]) {
-        await files.write(`${W}/${name}`, text(name), { expected: null, writer: "o",
-                                                        calls: new Calls() });
+        await files.write(`${W}/${name}`, text(name), { expected: null, writer: "o" });
       }
     });
     // A delete adds a history row, but only frees: a full history never refuses it, and
@@ -222,19 +213,58 @@ describe("a full history", () => {
       .toEqual([{ released: 1, due: 1 }, { released: 1, due: 1 }, { released: 1, due: 1 }]);
   });
 
+  it("never lowers the feed's floor when it prunes a path older than one purged", async () => {
+    const r = await rig();
+    await setPolicy(r, { max_entries: 5, keep_versions: 1, keep_recent: 2, max_history: 10 });
+    const pair = async (name: string) => {
+      await write(r, `${W}/${name}`, name);
+      await r.stub.fileRemove(r.bind(null), { path: `${W}/${name}`, expected_etag: null,
+                                              recursive: false });
+    };
+    for (let i = 0; i < 5; i++) {
+      await pair(`n${i}`);  // versions 2i + 1 and 2i + 2
+    }
+    expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/n4` }))
+      .toEqual({ purged: 2 });  // the floor rises to n4's delete, version 10
+    await pair("n5");
+    await pair("n6");  // takes n0's write, then n0's delete, version 2: its path's newest
+    expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
+      .toEqual([{ feed_floor: 10 }]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history WHERE path = ?",
+                       `${W}/n0`)).toEqual([{ n: 0 }]);
+  });
+
+  it("raises the feed's floor to the newest pruned path-end, in whatever order rows come due",
+     async () => {
+    const r = await rig();
+    for (const name of ["a", "b"]) {
+      await write(r, `${W}/${name}`, name);
+      await r.stub.fileRemove(r.bind(null), { path: `${W}/${name}`, expected_etag: null,
+                                              recursive: false });
+    }
+    // Rows marked under two retentions, as a re-mark still under way leaves them: b's
+    // delete (version 4) due before a's (version 2), both writes not yet.
+    await sqlIn(r.stub, "UPDATE file_history SET prune_after = CASE version WHEN 4 THEN 1 " +
+                          "WHEN 2 THEN 2 ELSE 9000000000 END");
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    expect(await sqlIn(r.stub, "SELECT feed_floor FROM file_space"))
+      .toEqual([{ feed_floor: 4 }]);
+    expect(await sqlIn(r.stub, "SELECT version FROM file_history ORDER BY version"))
+      .toEqual([{ version: 1 }, { version: 3 }]);
+  });
+
   it("prunes early no more than the change took past where it found history", async () => {
     const r = await rig();
     await inFiles(r.stub, {}, async (files) => {
       for (let i = 0; i < 6; i++) {
-        await files.write(`${W}/n${i}`, text(`${i}`), { expected: null, writer: "o",
-                                                       calls: new Calls() });
+        await files.write(`${W}/n${i}`, text(`${i}`), { expected: null, writer: "o" });
         files.remove(`${W}/n${i}`, { expected: null, writer: "o" });
       }
     });
     // A quota lowered under what is kept: a change brings history back to where it was,
     // not down to the quota, so its work stays its own size.
     await inFiles(r.stub, { max_history: 4 }, (files) =>
-      files.write(`${W}/live`, text("1"), { expected: null, writer: "o", calls: new Calls() }));
+      files.write(`${W}/live`, text("1"), { expected: null, writer: "o" }));
     expect((await r.stub.fileUsage(r.bind(null))).history).toBe(12);
     // A sync op at the quota makes its room the same way.
     const synced = await inFiles(r.stub, { max_history: 4 }, (files) => {
@@ -293,19 +323,17 @@ describe("a full history", () => {
     const r = await rig();
     await inFiles(r.stub, { keep_versions: 1 }, async (files) => {
       for (let i = 0; i < 600; i++) {
-        await files.write(`${W}/p${i}`, text("1"), { expected: null, writer: "o",
-                                                     calls: new Calls() });
-        await files.write(`${W}/p${i}`, text("2"), { expected: null, writer: "o",
-                                                     calls: new Calls() });
+        await files.write(`${W}/p${i}`, text("1"), { expected: null, writer: "o" });
+        await files.write(`${W}/p${i}`, text("2"), { expected: null, writer: "o" });
       }
     });
     // The rows were marked under keep 1; the policy in force keeps 3.
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1");
     await inFiles(r.stub, { keep_versions: 3 }, async (files) => {
       expect(files.nextAlarm(1000)).toBe(1000);
-      await files.collect(new Calls(), Date.now() / 1000);
+      await files.collect(Date.now() / 1000);
       expect(files.nextAlarm(1000)).toBe(1000);  // 500 paths a pass: one more to go
-      await files.collect(new Calls(), Date.now() / 1000);
+      await files.collect(Date.now() / 1000);
       expect(files.nextAlarm(Date.now() / 1000)).toBe(null);
     });
     expect(await sqlIn(r.stub,
@@ -318,14 +346,13 @@ describe("a full history", () => {
     const r = await rig();
     await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
       for (const body of ["1", "2", "3"]) {
-        await files.write(`${W}/a`, text(body), { expected: null, writer: "o",
-                                                  calls: new Calls() });
+        await files.write(`${W}/a`, text(body), { expected: null, writer: "o" });
       }
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
     await inFiles(r.stub, { keep_versions: 1, retention_days: 2 }, async (files) => {
       expect(files.nextAlarm(1000)).toBe(1000);
-      await files.collect(new Calls(), 1000);
+      await files.collect(1000);
     });
     expect(await sqlIn(r.stub, "SELECT prune_after - at AS due FROM file_history " +
                                  "ORDER BY version"))
@@ -350,14 +377,13 @@ describe("a full history", () => {
     const r = await rig();
     await inFiles(r.stub, { keep_versions: 1, keep_recent: 5 }, async (files) => {
       for (const body of ["1", "2", "3", "4", "5"]) {
-        await files.write(`${W}/a`, text(body), { expected: null, writer: "o",
-                                                  calls: new Calls() });
+        await files.write(`${W}/a`, text(body), { expected: null, writer: "o" });
       }
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_recent = 5");
     await inFiles(r.stub, { keep_versions: 1, keep_recent: 2 }, async (files) => {
       expect(files.nextAlarm(1000)).toBe(1000);
-      await files.collect(new Calls(), 1000);
+      await files.collect(1000);
     });
     expect(await sqlIn(r.stub, "SELECT op FROM file_history WHERE path = ?", `${W}/a`))
       .toEqual([{ op: "write" }, { op: "write" }]);
@@ -370,19 +396,19 @@ describe("a full history", () => {
     await inFiles(r.stub, { keep_versions: 1 }, async (files) => {
       for (let i = 0; i < 600; i++) {
         await files.write(`${W}/p${String(i).padStart(3, "0")}`, text("1"),
-                          { expected: null, writer: "o", calls: new Calls() });
+                          { expected: null, writer: "o" });
         await files.write(`${W}/p${String(i).padStart(3, "0")}`, text("2"),
-                          { expected: null, writer: "o", calls: new Calls() });
+                          { expected: null, writer: "o" });
       }
     });
     await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1");
     // A first pass under keep 2 stops after 500 paths; keep 1 then comes back in force.
-    await inFiles(r.stub, { keep_versions: 2 }, (files) => files.collect(new Calls(), 1000));
+    await inFiles(r.stub, { keep_versions: 2 }, (files) => files.collect(1000));
     expect(await sqlIn(r.stub, "SELECT retain_cursor FROM file_space"))
       .toEqual([{ retain_cursor: `${W}/p499` }]);
     await inFiles(r.stub, { keep_versions: 1 }, async (files) => {
-      await files.collect(new Calls(), 1000);
-      await files.collect(new Calls(), 1000);
+      await files.collect(1000);
+      await files.collect(1000);
       expect(files.nextAlarm(1000)).not.toBe(1000);
     });
     // Every path's older version is due again, the first 500's included.
@@ -399,11 +425,10 @@ describe("a full history", () => {
         const dir = files.tempDir("t-", "agent");
         for (let j = 0; j < 30; j++) {
           await files.write(`${dir}/f${j}`, text(`${i}-${j}`), { expected: null,
-                                                                  writer: "agent",
-                                                                  calls: new Calls() });
+                                                                  writer: "agent" });
         }
       }
-      await files.write(`${W}/a`, text("1"), { expected: null, writer: "o", calls: new Calls() });
+      await files.write(`${W}/a`, text("1"), { expected: null, writer: "o" });
       files.remove(`${W}/a`, { expected: null, writer: "o" });
       files.begin(INLINE_BYTES + 1, ["a".repeat(64)]);
     });
@@ -418,7 +443,7 @@ describe("a full history", () => {
     expect(before.entries).toBeGreaterThan(600);
     expect(before.history).toBe(2);
     await inFiles(r.stub, { max_entries: 0, max_history: 0, max_inline_bytes: 0, max_bytes: 0 },
-                  (files) => files.collect(new Calls(), Date.now() / 1000));
+                  (files) => files.collect(Date.now() / 1000));
     const after = await r.stub.fileUsage(r.bind(null));
     expect([after.entries, after.history, after.intents]).toEqual([0, 0, 0]);
     const [kept, counted] = await fileCounters(r.stub);

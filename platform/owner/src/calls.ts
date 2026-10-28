@@ -3,24 +3,24 @@
  *
  * "A single request has a maximum of 32 Worker invocations, and each call to a Service
  * binding counts towards this limit. Subsequent calls will throw" (Workers service
- * bindings). The unit is the invocation, not the tool call: a whole pi turn runs inside
- * one Lifecycle job of one alarm, so a budget per tool call would let a turn's tool calls
- * together pass the cap. So the object keeps one budget per invocation, which the files
- * Worker (`FILES`) draws from now and the gateway and hooks will draw from once they land
- * (tasks 4 and 5), and refuses before a call would cross it, loudly, naming the budget.
+ * bindings). The unit is the platform's invocation, not the tool call: a whole pi turn runs
+ * inside one Lifecycle job of one alarm, so a budget per tool call would let a turn's tool
+ * calls together pass the cap. So the object keeps one budget per invocation, which the
+ * files Worker (`FILES`) draws from now and the gateway and hooks will draw from once they
+ * land (tasks 4 and 5), and refuses before a call would cross it, loudly, naming the budget.
  *
- * Per entry, passed down; never a field of the object. Each entry makes its own
- * {@link Calls}: every RPC door that reaches `FILES`, and every Lifecycle job of the
- * object's schedule (`schedule.ts`), and hands it to whatever makes the calls (`files.ts`
- * takes it as an argument, the pi environment as an option). One counter on the object,
- * reset at each entry, would be wrong: the runtime delivers another RPC to the object
- * whenever the one in flight awaits I/O, so a second door's reset would hand the first
- * door's spent calls back, and two interleaved doors would draw on one count. The platform
- * counts each incoming request on its own, so each entry's own counter is its unit.
- * Lifecycle may drive several jobs in one alarm; a lane's pass makes at most one `FILES`
- * call (a chunk delete), which the headroom covers. The cap probe (tasks 6) confirms or
- * adjusts these numbers, and whether the cap applies per Durable Object event at all.
+ * The budget is ambient. The object holds one {@link CallScope} (an `AsyncLocalStorage` on
+ * the instance, never at module level), and each invocation enters a fresh scope: every
+ * RPC door, and the alarm, which covers every Lifecycle job it drives, PiHarness's turn
+ * among them. Whatever makes a call reads the scope's budget (`CallScope.current`) rather
+ * than taking one as an argument, so PiHarness's environment factory, which is handed no
+ * job, still draws on its alarm's budget. The runtime delivers another RPC to the object
+ * whenever one in flight awaits I/O; each runs in its own scope, so interleaved doors never
+ * share a count. A draw outside any scope is a bug and throws (Fact 8: no fallback budget).
+ * The cap probe before the gateway slice (tasks 6) confirms or adjusts these numbers, and
+ * whether the cap applies per Durable Object event at all.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 
 /** The service-binding calls one invocation may make (Workers service bindings). */
 export const INVOCATION_CALLS = 32;
@@ -62,5 +62,25 @@ export class Calls {
         `and ${calls} more were asked; read a smaller range, or fewer files at once`);
     }
     this.#made += calls;
+  }
+}
+
+/** The object's invocations, each with its own budget for everything it awaits. */
+export class CallScope {
+  readonly #scope = new AsyncLocalStorage<Calls>();
+
+  /** Run `act` as one invocation, with a fresh budget. */
+  run<T>(act: () => T): T {
+    return this.#scope.run(new Calls(), act);
+  }
+
+  /** The budget of the invocation running now. Outside one it is a bug, thrown loudly. */
+  current(): Calls {
+    const calls = this.#scope.getStore();
+    if (calls === undefined) {
+      throw new Error("a service-binding call outside any invocation's scope: enter one at " +
+                      "the door or the alarm");
+    }
+    return calls;
   }
 }

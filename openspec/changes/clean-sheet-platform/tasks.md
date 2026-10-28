@@ -215,19 +215,26 @@ live acceptance is still owed says so.
   whole-file read or write moves at most 16 MiB (larger files by range, line or
   upload), and `readTextFile` keeps a BOM. pi's `edit` shows only an error's code, so a
   refused size or budget is `not_supported`; its reason is in the message, which `read`
-  shows. Slice 6 (the review carries of slices 4 and 5): one call budget per invocation
-  (`calls.ts`), not per tool call, since a whole pi turn runs in one job: each entry (an
-  RPC door that reaches `FILES`, a Lifecycle job) makes its own and passes it down, never
-  a field of the object, since RPCs interleave at every await; `FILES` may bring it to 24
-  of the 32 service calls, keeping `GATEWAY_HOOKS_HEADROOM` (8) for the gateway (tasks 4)
-  and hooks (tasks 5), which draw from the same budget when they land, and every draw is refused,
-  naming the budget, before a call would cross it. A change at the history quota first
-  prunes that many of the earliest-due rows of gone paths (`released`), raising the feed's
-  floor as housekeeping does, so the quota never refuses a change while the entries quota
-  holds; a live path's rows are never taken early. The `wakes` lane bounds each send and
-  revoke itself (`WAKE_SEND_MS`), a late send marked and left to its lease; the `files`
-  lane begins no chunk delete with less than `DELETE_FLOOR_MS` left; the lane table is
-  `ownerLanes`, its wiring tested with recording passes.
+  shows. Slice 6 (the review carries of slices 4 and 5): one ambient call budget per
+  platform invocation (`calls.ts`), not per tool call, since a whole pi turn runs in one
+  Lifecycle job of one alarm: the object holds a `CallScope` (an `AsyncLocalStorage` on
+  the instance), the alarm and every RPC door (the invocation-scope guard) enter a fresh
+  scope, so interleaved doors never share a count, and whatever makes a service-binding
+  call reads the scope's budget (`Files`, `Schedule.onJob`, `runWakes` and `runWork`
+  through what they call), never a threaded one; a draw outside any scope throws. The
+  PiHarness wiring (5) builds its `ExecutionEnv` with no budget: its tool calls draw on the
+  alarm's scope. `FILES` may bring the budget to 24 of the 32 service calls, the other 8
+  named for the gateway (4) and hooks (5), which draw from the same budget when they land;
+  every draw is refused, naming the budget, before a call would cross it. Whether the cap
+  applies per Durable Object event is still the probe below, before the gateway slice. A
+  change at the history quota first prunes that many of the earliest-due rows of gone
+  paths (`released`), raising the feed's floor as housekeeping does, so once housekeeping
+  has applied the retention in force, and while the entries quota holds, the quota never
+  refuses a change; a live path's rows are never taken early. The `wakes` lane bounds each
+  send and revoke itself (`WAKE_SEND_MS`), a late send marked and left to its lease; the
+  `files` lane begins no chunk delete with less than `DELETE_FLOOR_MS` left; the lane table
+  is `ownerLanes`, its wiring tested with recording passes, the doorbell and runner read
+  through getters.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
@@ -243,10 +250,10 @@ live acceptance is still owed says so.
   lost sandbox.
 - [ ] Probe, before the agent (5) runs a turn on the object: the 32-service-binding-calls
   per request cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
-  against one pi turn, including whether the cap applies per Durable Object event. It
-  confirms or adjusts `INVOCATION_CALLS`, `GATEWAY_HOOKS_HEADROOM` and the per-entry unit
-  (`calls.ts`); if the cap counts one alarm event across all the jobs Lifecycle drives in
-  it, the budget moves from the job to the alarm.
+  against one pi turn, including whether the cap applies per Durable Object event, before
+  the gateway slice. It confirms or adjusts `INVOCATION_CALLS` and `GATEWAY_HOOKS_HEADROOM`
+  (`calls.ts`), whose budget already models one platform invocation (the alarm, or a
+  door).
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

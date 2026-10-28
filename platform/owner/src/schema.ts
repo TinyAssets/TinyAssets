@@ -504,9 +504,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // `keep_recent`, then 17 in the steady state (each change also moves a row between the
   // retention bands and drops the oldest); a new one-chunk file 22, its overwrite 22, 24,
   // then 35. A delete also releases the path's kept rows, two or three rows written for
-  // each: 13 for a path of one version, 72 for one of 20. An entry's own content reference
-  // costs a row or two of each figure: the new content's reference, and on an overwrite
-  // the old one's release.
+  // each: 13 for a path of one version, 72 for one of 20 (78 chunked); a path made again
+  // takes them back, so its first write is 44 rows after a gone path of 20 (62 chunked).
+  // An entry's own content reference costs a row or two of each figure: the new content's
+  // reference, and on an overwrite the old one's release.
   //
   // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
   // (chunks uploading or live), inline bytes, open intents and the chunks they hold,

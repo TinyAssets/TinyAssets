@@ -37,7 +37,8 @@
  *   (the work hand-off's `WORK_HANDOFF_MS`, each doorbell send's and revoke's
  *   `WAKE_SEND_MS`, which the lane holds itself, a chunk delete's remaining budget, never
  *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
- *   may run it again. Each pass is an entry with its own call budget (`calls.ts`).
+ *   may run it again. A pass draws on its alarm's call budget (`calls.ts`), which every
+ *   job that alarm drives shares, PiHarness's among them.
  * - Each lane fences its own work in its rows (a wake's claim lease and may-have-sent
  *   mark, a chunk's `deleting` state, a work row's claim), so a run Lifecycle repeats
  *   takes nothing the first took, and unknown work is never replayed.
@@ -61,7 +62,7 @@ import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import { Calls } from "./calls";
+import type { Calls } from "./calls";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
 export const SCHEDULE = "owner-schedule";
@@ -103,11 +104,10 @@ export interface Lane {
   /**
    * One short, bounded pass over what is due at `now`, taking no new row once the wall
    * clock (`Date.now()`, ms) reaches `until`. Each outside call's failure is kept in its
-   * own row, backed off there; a throw is a bug, and fails the whole pass. `calls` is the
-   * job's own call budget (`calls.ts`): a Lifecycle job is an entry, so each pass gets a
-   * new one, which every service-binding call it makes draws from.
+   * own row, backed off there; a throw is a bug, and fails the whole pass. Its
+   * service-binding calls draw on the alarm's budget, read from the object's scope.
    */
-  run(now: number, until: number, calls: Calls): Promise<unknown>;
+  run(now: number, until: number): Promise<unknown>;
 }
 
 /** The lane's work time, in ms, that a job was set for: its payload's, else its own time. */
@@ -121,13 +121,16 @@ function setFor(job: LifecycleJob): number {
 export class Schedule extends LifecycleCapability {
   readonly #lanes: ReadonlyMap<string, Lane>;
   readonly #clock: () => number;
+  /** The budget of the invocation running now (`CallScope.current`), which throws outside one. */
+  readonly #calls: () => Calls;
   readonly #passMs: number;
 
-  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number,
+  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, calls: () => Calls,
               passMs: number = LANE_PASS_S * 1000) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
     this.#clock = clock;
+    this.#calls = calls;
     this.#passMs = passMs;
   }
 
@@ -168,13 +171,18 @@ export class Schedule extends LifecycleCapability {
                       hungTimeoutSeconds: LANE_HUNG_S });
   }
 
-  /** A lane's job is due: one bounded pass, then its job set from the rows as they stand. */
+  /**
+   * A lane's job is due: one bounded pass, then its job set from the rows as they stand.
+   * It runs only inside an invocation's scope (the object's alarm enters one): a job driven
+   * outside any fails before its pass, loudly, rather than make calls no budget counts.
+   */
   async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
     const lane = this.#lanes.get(job.fn);
     if (lane === undefined || job.id !== laneJob(job.fn)) {
       return undefined;  // no lane of this code's: done
     }
-    await lane.run(this.#clock(), Date.now() + this.#passMs, new Calls());
+    this.#calls();
+    await lane.run(this.#clock(), Date.now() + this.#passMs);
     await this.#set(job.fn, null);
     return undefined;  // superseded by the set above
   }

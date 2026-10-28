@@ -8,7 +8,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { Calls, FILES_CALLS } from "../src/calls";
+import { FILES_CALLS } from "../src/calls";
 import {
   CHUNK_BYTES, type ChunkStore, chunkedId, DELETE_FLOOR_MS, type Entry, GC_GRACE_S,
   HOUSEKEEPING_SLACK_S, INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS,
@@ -147,8 +147,7 @@ describe("an upload", () => {
       deleteChunks: (space, list) => env.FILES.deleteChunks(space, list),
     };
     expect((await failure(() => inFiles(r.stub, {}, (files) =>
-      files.write(`${W}/a`, piece, { expected: null, writer: "owner",
-                                     calls: new Calls() }), refusing))).message)
+      files.write(`${W}/a`, piece, { expected: null, writer: "owner" }), refusing))).message)
       .toBe("FILES refused the put");
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ stored: 0, holds: 0 });
     expect(await r.stub.fileStat(r.bind(null), { path: `${W}/a` })).toEqual({ entry: null });
@@ -200,8 +199,7 @@ describe("an upload", () => {
      async () => {
     const r = await rig();
     const error = await failure(() => inFiles(r.stub, {}, (files) => files.write(
-      `${W}/huge`, new Uint8Array(WHOLE_BYTES + 1), { expected: null, writer: "o",
-                                                      calls: new Calls() })));
+      `${W}/huge`, new Uint8Array(WHOLE_BYTES + 1), { expected: null, writer: "o" })));
     expect([WHOLE_BYTES, error.message]).toEqual([16 * 1024 * 1024,
       `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 0 }]);
@@ -258,7 +256,7 @@ describe("an upload", () => {
     });
     expect((await r.stub.fileUsage(r.bind(null))).intents).toBe(MAX_OPEN_INTENTS);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
     // The held-chunk bound reads its counter: one short of it takes one chunk, not two.
@@ -347,7 +345,7 @@ describe("garbage collection", () => {
     const body = (seed: number) => filled(INLINE_BYTES + 10, seed);
     const limits = { keep_versions: 1, keep_recent: 2 };
     const other = await inFiles(r.stub, limits, async (files) => {
-      const o = { expected: null, writer: "o", calls: new Calls() };
+      const o = { expected: null, writer: "o" };
       const temp = files.tempDir("t-", "agent");
       const kept = files.tempDir("t-", "agent");
       for (const seed of [1, 2, 3]) {
@@ -366,17 +364,17 @@ describe("garbage collection", () => {
     });
     // The rows marked as these limits keep them, every marked row due, then every garbage
     // chunk: three passes collect all there is to collect.
-    await inFiles(r.stub, limits, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, limits, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, limits, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, limits, (files) => files.collect(Date.now() / 1000));
     expect(await lostContent(r.stub)).toEqual([]);
     expect(await read(r, `${W}/from-temp`)).toEqual(body(4));
     await inFiles(r.stub, limits, async (files) => {
       for (const [name, seed] of [["u", 5], ["a", 3]] as const) {
         const [chunk] = files.open(`${other}/${name}`).chunks!;
-        expect((await files.fetch(new Calls(), [{ sha256: chunk!.sha256 }]))[0])
+        expect((await files.fetch([{ sha256: chunk!.sha256 }]))[0])
           .toEqual(body(seed));
       }
     });
@@ -406,14 +404,14 @@ describe("a chunk", () => {
     expect(revived.begun.missing).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "live", refs: 1, gc_after: null });
     await r.stub.fileRemove(r.bind(null), { path: `${W}/b`, expected_etag: null, recursive: false });
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toMatchObject({ state: "live" });  // the delete keeps 30 days
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage" });
     expect(await inBucket(r, sha)).toBe(true);  // inside its grace
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect(await inBucket(r, sha)).toBe(false);
     const [kept, counted] = await fileCounters(r.stub);
@@ -428,7 +426,7 @@ describe("a chunk", () => {
     const begun = await begin(r, [piece]);
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", stored: 0, holds: 1 });
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT * FROM file_intents")).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage", stored: 0, holds: 0 });
     const again = await begin(r, [piece]);
@@ -443,10 +441,10 @@ describe("a chunk", () => {
     const piece = filled(INLINE_BYTES + 1, 11);
     const sha = sha256Hex(piece);
     const begun = await begin(r, [piece]);
-    const spent = new Calls();
-    spent.draw("files", FILES_CALLS);
-    expect((await failure(() => inFiles(r.stub, {}, (files) => files.upload(
-      spent, begun.intent_id, [{ sha256: sha, bytes: piece }])))).name).toBe("CallsSpent");
+    expect((await failure(() => inFiles(r.stub, {}, (files, _state, calls) => {
+      calls.draw("files", FILES_CALLS);
+      return files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]);
+    }))).name).toBe("CallsSpent");
     expect(await chunk(r, sha)).toMatchObject({ stored: 0 });
     expect(await inBucket(r, sha)).toBe(false);
     // Each door call is its own entry: more uploads than one budget holds all land.
@@ -474,7 +472,7 @@ describe("a chunk", () => {
     const sha = sha256Hex(piece);
     await begin(r, [piece]);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     const failing: ChunkStore = {
       putChunks: (space, chunks) => env.FILES.putChunks(space, chunks),
@@ -482,7 +480,7 @@ describe("a chunk", () => {
       deleteChunks: async () => { throw new Error("FILES is down"); },
     };
     // The failure stays in the chunk's row: the pass itself completes.
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000), failing);
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000), failing);
     const deleting = await chunk(r, sha);
     expect(deleting).toMatchObject({ state: "deleting" });
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
@@ -492,7 +490,7 @@ describe("a chunk", () => {
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
     await inFiles(r.stub, {}, (files) => files.collect(
-      new Calls(), Date.now() / 1000, Date.now() + DELETE_FLOOR_MS + 20), hung);
+      Date.now() / 1000, Date.now() + DELETE_FLOOR_MS + 20), hung);
     expect((await chunk(r, sha))!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
     // A pass with less than DELETE_FLOOR_MS left, or none, begins no delete: FILES is not
     // asked, and the chunk waits in its row as it was.
@@ -505,21 +503,21 @@ describe("a chunk", () => {
     expect(DELETE_FLOOR_MS).toBeGreaterThan(500);
     for (const left of [500, -1]) {
       await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
-      await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000,
+      await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000,
                                                          Date.now() + left), recording);
       expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     }
     expect(asked).toEqual([]);
-    // The delete is drawn from the job's call budget first: a spent one is refused before
+    // The delete is drawn from the alarm's call budget first: a spent one is refused before
     // the chunk is marked or FILES asked, a bug the lane backs off.
     await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1");
-    const spent = new Calls();
-    spent.draw("files", FILES_CALLS);
-    expect((await failure(() => inFiles(r.stub, {}, (files) => files.collect(
-      spent, Date.now() / 1000), recording))).name).toBe("CallsSpent");
+    expect((await failure(() => inFiles(r.stub, {}, (files, _state, calls) => {
+      calls.draw("files", FILES_CALLS);
+      return files.collect(Date.now() / 1000);
+    }, recording))).name).toBe("CallsSpent");
     expect([asked, await chunk(r, sha)]).toEqual([[], expect.objectContaining({
       state: "garbage", gc_after: 1 })]);
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);
   });
@@ -548,8 +546,7 @@ describe("a chunk", () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 9);
     await upload(r, `${W}/a`, [piece]);
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(),
-                                                       Date.now() / 1000 + 400 * 86_400));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000 + 400 * 86_400));
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state: "live", refs: 1 });
     expect(await inBucket(r, sha256Hex(piece))).toBe(true);
   });
@@ -583,7 +580,7 @@ describe("history retention", () => {
     }
     // Due rows go at the alarm; the newest ten stay whatever their age.
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
-    await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000));
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect((await r.stub.fileHistory(r.bind(null), { path: `${W}/a`, limit: 100 })).changes
       .map((c) => c.version)).toEqual(rows.slice(2).map((row) => row["version"]).reverse());
     const [kept, counted] = await fileCounters(r.stub);
@@ -608,8 +605,7 @@ describe("history retention", () => {
     const r = await rig();
     await inFiles(r.stub, { keep_versions: 2, retention_days: 1 }, async (files) => {
       for (let i = 0; i < 4; i++) {
-        await files.write(`${W}/a`, text(`v${i}`), { expected: null, writer: "owner",
-                                                     calls: new Calls() });
+        await files.write(`${W}/a`, text(`v${i}`), { expected: null, writer: "owner" });
       }
     });
     const rows = await sqlIn(r.stub, "SELECT at, prune_after FROM file_history ORDER BY version");

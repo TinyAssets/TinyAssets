@@ -31,7 +31,10 @@ export const WAKE_RETRY_S = 60;
  */
 export const WAKE_SEND_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 
-/** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
+/**
+ * What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). Any
+ * service-binding call it makes draws on its alarm's ambient budget (`calls.ts`).
+ */
 export interface WakeSender {
   /**
    * Send one wake and report the answer. `mark()` must be called before the first byte

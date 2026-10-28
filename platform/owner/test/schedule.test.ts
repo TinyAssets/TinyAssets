@@ -14,7 +14,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
-import { Calls, FILES_CALLS } from "../src/calls";
+import { type Calls, CallScope, FILES_CALLS } from "../src/calls";
 import { CHUNK_BYTES, Files } from "../src/files";
 import { OwnerFilesEnv } from "../src/files-env";
 import type { Ledger } from "../src/ledger";
@@ -26,7 +26,7 @@ import {
 import { type Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner } from "../src/scheduled";
 import { WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "../src/wakes";
 import { MUSE, rig } from "./ledger-support";
-import { alarmOf, failure, laneJobs, ownerObject, sqlIn } from "./support";
+import { alarmOf, failure, filesOn, laneJobs, ownerObject, sqlIn } from "./support";
 
 /** A lane over a script: its next work, and what each run does. */
 class ScriptedLane implements Lane {
@@ -47,16 +47,20 @@ class ScriptedLane implements Lane {
   mostAtOnce = 0;
   /** The wall-clock budget each run was given, in ms. */
   readonly untils: number[] = [];
-  /** The call budget each run was given. */
+  /** The invocation scope the probe runs alarms in, read by each run. */
+  scope: CallScope | null = null;
+  /** The call budget each run drew on: its alarm's. */
   readonly budgets: Calls[] = [];
 
   next(now: number): number | null {
     return this.due === null ? null : this.fixed ? this.due : Math.max(this.due, now);
   }
 
-  async run(_now: number, until: number, calls: Calls): Promise<void> {
+  async run(_now: number, until: number): Promise<void> {
     this.untils.push(until);
-    this.budgets.push(calls);
+    if (this.scope !== null) {
+      this.budgets.push(this.scope.current());
+    }
     this.runs++;
     this.#running++;
     this.mostAtOnce = Math.max(this.mostAtOnce, this.#running);
@@ -83,6 +87,10 @@ class ScriptedLane implements Lane {
 interface Probe {
   readonly schedule: Schedule;
   readonly lifecycle: Lifecycle;
+  /** The scope the probe's alarms run in, as the object's alarm enters one. */
+  readonly scope: CallScope;
+  /** One alarm, as the object runs it: Lifecycle's, inside a fresh invocation. */
+  alarm(): Promise<void>;
   /** Each alarm write Lifecycle made, in ms, null for a delete. */
   readonly alarms: (number | null)[];
   readonly lanes: Record<string, ScriptedLane>;
@@ -112,9 +120,14 @@ function probe(state: DurableObjectState, names: string[]): Probe {
   const ctx = new Proxy(state, {
     get: (target, key) => key === "storage" ? storage : bound(target, key),
   });
+  const scope = new CallScope();
   const lanes = Object.fromEntries(names.map((name) => [name, new ScriptedLane()]));
+  for (const lane of Object.values(lanes)) {
+    lane.scope = scope;
+  }
   const p: Probe = {
-    alarms, lanes, now: Date.now() / 1000,
+    alarms, lanes, scope, now: Date.now() / 1000,
+    alarm: () => scope.run(() => p.lifecycle.alarm()),
     sql: (statement, ...params) => void state.storage.sql.exec(statement, ...params).toArray(),
     read: (statement, ...params) => state.storage.sql.exec(statement, ...params).toArray(),
     schedule: undefined as unknown as Schedule,
@@ -127,7 +140,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       due: row.payload === null ? null : (JSON.parse(row.payload) as { due?: unknown }).due,
     }])),
   };
-  const schedule = new Schedule(lanes, () => p.now);
+  const schedule = new Schedule(lanes, () => p.now, () => scope.current());
   const host = { ctx, constructor: { name: "ProbeHost" } } as unknown as OwnerDO;
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }
@@ -218,18 +231,18 @@ describe("a lane's run", () => {
     a.after = p.now + 500;
     p.lanes["b"]!.due = p.now + 900;
     await p.schedule.sync();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect([a.runs, p.lanes["b"]!.runs]).toEqual([1, 0]);  // only the due lane ran
     expect(p.jobs()["a"]).toEqual(at(p.now + 500));
     // A run that leaves more work due now sets its job at once; the next alarm takes it.
     a.due = p.now - 10;
     a.after = p.now - 10;
     await p.schedule.sync();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(a.runs).toBe(2);
     expect(p.jobs()["a"]!.time).toBe(ms(p.now));
     a.after = null;
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect([a.runs, p.jobs()["a"]]).toEqual([3, undefined]);  // no work left: no job
   }));
 
@@ -242,7 +255,7 @@ describe("a lane's run", () => {
       await p.schedule.sync();
     };
     await p.schedule.sync();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(p.jobs()["a"]).toEqual(at(p.now + 40));
   }));
 
@@ -253,7 +266,7 @@ describe("a lane's run", () => {
     a.due = p.now - 10;
     a.after = p.now - 10;
     await p.schedule.sync();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(p.jobs()["a"]!.time).toBe(ms(p.now - 10));
   }));
 
@@ -263,7 +276,7 @@ describe("a lane's run", () => {
     a.due = p.now - 10;
     a.sleepMs = 200;
     await p.schedule.sync();
-    await Promise.all([p.lifecycle.alarm(), p.lifecycle.alarm()]);
+    await Promise.all([p.alarm(), p.alarm()]);
     expect([a.runs, a.mostAtOnce]).toEqual([1, 1]);
   }));
 
@@ -276,7 +289,7 @@ describe("a lane's run", () => {
                          "WHERE id = ?", laneJob("a"));
     expect([Boolean(job!["singleflight"]), job!["hung_timeout_seconds"]]).toEqual([true, 60]);
     const before = Date.now();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(a.untils).toHaveLength(1);
     expect(a.untils[0]!).toBeGreaterThanOrEqual(before + LANE_PASS_S * 1000);
     expect(a.untils[0]!).toBeLessThanOrEqual(Date.now() + LANE_PASS_S * 1000);
@@ -288,48 +301,62 @@ describe("a lane's run", () => {
     expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
   }));
 
-  it("gives each pass its own call budget: a Lifecycle job is an entry", () =>
-     withProbe(["a"], async (p) => {
-    const a = p.lanes["a"]!;
-    a.due = p.now - 10;
-    a.after = p.now - 10;
-    // Each pass spends all FILES may: a budget shared across jobs would refuse the second.
-    a.during = async () => a.budgets.at(-1)!.draw("files", FILES_CALLS);
+  it("draws every pass of one alarm on that alarm's one budget, and the next on its own",
+     () => withProbe(["a", "b"], async (p) => {
+    for (const lane of Object.values(p.lanes)) {
+      lane.due = p.now - 10;
+      lane.after = p.now - 10;
+      // Two passes in one alarm each draw half of what FILES may: together, all of it.
+      lane.during = async () => lane.budgets.at(-1)!.draw("files", FILES_CALLS / 2);
+    }
     await p.schedule.sync();
-    await p.lifecycle.alarm();
-    await p.lifecycle.alarm();
-    expect(a.runs).toBe(2);
-    expect(a.budgets[0]).not.toBe(a.budgets[1]);
+    await p.alarm();
+    await p.alarm();
+    const [a, b] = [p.lanes["a"]!, p.lanes["b"]!];
+    expect([a.runs, b.runs]).toEqual([2, 2]);
+    expect([a.budgets[0] === b.budgets[0], a.budgets[1] === b.budgets[1],
+            a.budgets[0] === a.budgets[1]]).toEqual([true, true, false]);
     expect(a.budgets.map((calls) => calls.made)).toEqual([FILES_CALLS, FILES_CALLS]);
   }));
 
-  it("lets the environment read inside a job draw on that job's budget", async () => {
+  it("runs no pass outside an invocation: a job driven with no scope fails before it",
+     () => withProbe(["a"], async (p) => {
+    const a = p.lanes["a"]!;
+    a.due = p.now - 10;
+    await p.schedule.sync();
+    await p.lifecycle.alarm();  // not through the object's alarm: no scope entered
+    expect(a.runs).toBe(0);
+    expect(p.jobs()["a"]!.time).toBeGreaterThanOrEqual(ms(p.now + LANE_RETRY_S));
+  }));
+
+  it("lets an environment built inside a pass draw on its alarm's budget", async () => {
     const { stub } = ownerObject();
     await runInDurableObject(stub, async (_i: OwnerDO, state) => {
       const p = probe(state, ["a"]);
-      const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
-      await files.write("/workspace/one.bin", new Uint8Array(CHUNK_BYTES).fill(3),
-                        { expected: null, writer: "owner", calls: new Calls() });
+      const files = filesOn(state.storage, p.scope, env.FILES);
+      await p.scope.run(() => files.write("/workspace/one.bin",
+                                          new Uint8Array(CHUNK_BYTES).fill(3),
+                                          { expected: null, writer: "owner" }));
       const a = p.lanes["a"]!;
       const reads: boolean[] = [];
       a.due = p.now - 10;
       a.after = p.now - 10;
       a.during = async () => {
-        // Two tool calls of one turn, each its own environment, on the job's one budget.
-        const calls = a.budgets.at(-1)!;
+        // Two tool calls of one turn, each an environment its factory builds with no
+        // budget of its own: both draw on the alarm's one.
         for (let tool = 0; tool < 2; tool++) {
-          const fs = new OwnerFilesEnv({ files, rearm: async () => undefined, calls });
+          const fs = new OwnerFilesEnv({ files, rearm: async () => undefined });
           for (let i = 0; i < FILES_CALLS / 2; i++) {
             getOrThrow(await fs.readBinaryFile("one.bin", BACKGROUND_CONTEXT));
           }
         }
-        const fs = new OwnerFilesEnv({ files, rearm: async () => undefined, calls });
+        const fs = new OwnerFilesEnv({ files, rearm: async () => undefined });
         reads.push((await fs.readBinaryFile("one.bin", BACKGROUND_CONTEXT)).ok);
       };
       await p.schedule.sync();
-      await p.lifecycle.alarm();
-      await p.lifecycle.alarm();
-      // Each job read all FILES may, and was refused the next; the next job began afresh.
+      await p.alarm();
+      await p.alarm();
+      // Each alarm read all FILES may, and was refused the next; the next began afresh.
       expect(reads).toEqual([false, false]);
       expect(a.budgets.map((calls) => calls.made)).toEqual([FILES_CALLS, FILES_CALLS]);
     });
@@ -341,7 +368,7 @@ describe("a lane's run", () => {
     a.due = p.now - 10;
     a.failing = 99;
     await p.schedule.sync();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(a.runs).toBe(3);  // Lifecycle's in-process attempts, then the lane's backoff
     const held = p.now + LANE_RETRY_S;
     expect(p.jobs()["a"]).toEqual(at(held, p.now));
@@ -363,11 +390,11 @@ describe("a lane's run", () => {
     a.due = p.now - 10;
     a.failing = 3;
     await p.schedule.sync();
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(p.jobs()["a"]).toEqual(at(p.now + LANE_RETRY_S, p.now));
     p.sql("UPDATE cf_agents_jobs SET time = 0");  // the backoff's time has come
     a.after = p.now + 900;
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect([a.runs, p.jobs()["a"]]).toEqual([4, at(p.now + 900)]);
   }));
 
@@ -379,7 +406,7 @@ describe("a lane's run", () => {
     a.error = new Error("Durable Object reset because its code was updated.");
     await p.schedule.sync();
     const before = p.jobs()["a"];
-    expect((await failure(() => p.lifecycle.alarm())).message).toMatch(/code was updated/);
+    expect((await failure(() => p.alarm())).message).toMatch(/code was updated/);
     expect([a.runs, p.jobs()["a"]]).toEqual([1, before]);
   }));
 
@@ -390,7 +417,7 @@ describe("a lane's run", () => {
     p.sql("INSERT INTO cf_agents_jobs (id, capability, fn, time) VALUES " +
             "(?, ?, 'stray', 0), ('a', ?, 'a', 0), (?, ?, 'a', 0)",
           laneJob("stray"), SCHEDULE, SCHEDULE, laneJob("b"), SCHEDULE);
-    await p.lifecycle.alarm();
+    await p.alarm();
     expect(p.lanes["a"]!.runs).toBe(0);
     expect(Object.keys(p.jobs())).toEqual(["a"]);
   }));
@@ -398,7 +425,7 @@ describe("a lane's run", () => {
 
 describe("the object's lanes", () => {
   /** Recording stand-ins for the stores and passes the lanes run over. */
-  function recorded(sender: WakeSender | null, runner: WorkRunner | null) {
+  function recorded(sender: () => WakeSender | null, runner: () => WorkRunner | null) {
     const seen: unknown[][] = [];
     const ledger = { nextDue: (now: number, ringing: boolean) => {
       seen.push(["ledger.nextDue", now, ringing]);
@@ -413,8 +440,8 @@ describe("the object's lanes", () => {
         seen.push(["files.nextAlarm", now]);
         return now + 3;
       },
-      collect: async (calls: Calls, now: number, until: number) => {
-        seen.push(["files.collect", calls, now, until]);
+      collect: async (now: number, until: number) => {
+        seen.push(["files.collect", now, until]);
       },
     };
     const clock = () => 42;
@@ -432,35 +459,37 @@ describe("the object's lanes", () => {
     return { seen, deps, ledger, work, clock };
   }
 
-  it("hand each pass its until, and the files pass its job's calls (slice 5 N1)", async () => {
-    const { seen, deps, ledger, work, clock } = recorded(null, null);
+  it("hand each pass its until (slice 5 N1)", async () => {
+    const { seen, deps, ledger, work, clock } = recorded(() => null, () => null);
     const lanes = ownerLanes(deps);
     expect(Object.keys(lanes)).toEqual(["wakes", "files", "work"]);
-    const calls = new Calls();
     for (const lane of Object.values(lanes)) {
-      await lane.run(100, 123_456, calls);
+      await lane.run(100, 123_456);
     }
     expect(seen).toEqual([
       ["runWakes", ledger, null, clock, WAKES_PER_ALARM, WAKE_SEND_MS, 123_456],
-      ["files.collect", calls, 100, 123_456],
+      ["files.collect", 100, 123_456],
       ["runWork", work, null, clock, WORK_PER_PASS, WORK_HANDOFF_MS, 123_456],
     ]);
-    expect(seen[1]![1]).toBe(calls);
   });
 
-  it("count open rows as work only with their doorbell and runner", () => {
-    for (const [sender, runner, ringing] of [
-      [null, null, false],
-      [{} as WakeSender, {} as WorkRunner, true],
-    ] as const) {
-      const { seen, deps } = recorded(sender, runner);
-      const lanes = ownerLanes(deps);
+  it("count open rows as work only with the doorbell and runner they read at each use " +
+     "(review N3)", () => {
+    let sender: WakeSender | null = null;
+    let runner: WorkRunner | null = null;
+    const { seen, deps } = recorded(() => sender, () => runner);
+    const lanes = ownerLanes(deps);
+    for (const ringing of [false, true]) {
       expect([lanes.wakes.next(7), lanes.files.next(7), lanes.work.next(7)]).toEqual([8, 10, 9]);
       expect(seen).toEqual([["ledger.nextDue", 7, ringing], ["files.nextAlarm", 7],
                             ["work.nextDue", 7, ringing]]);
       seen.length = 0;
-      void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2, new Calls())));
-      expect(seen.map((call) => call[2])).toEqual([sender, 1, runner]);
+      void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2)));
+      expect(seen.map((call) => call[2])).toEqual([sender, 2, runner]);
+      seen.length = 0;
+      // The object gains its doorbell and runner after the lanes were made.
+      sender = {} as WakeSender;
+      runner = {} as WorkRunner;
     }
   });
 });

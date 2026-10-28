@@ -20,12 +20,12 @@
  *   only the rest, each against the version it read in the same call.
  * - Bytes come from `FILES` two chunks a call. A whole-file read, and a write, moves at
  *   most `WHOLE_BYTES` (16 MiB) through the object; a larger file is read by range or
- *   by line, and sent by upload. Every `FILES` call draws from the invocation's one call
- *   budget (`calls.ts`), which the entry the tool call runs in made and passed in (a
- *   pi turn's Lifecycle job, shared by all its tool calls), refused loudly before it
- *   would cross the cap: a budget on the calls themselves, not a proxy in bytes, so any
- *   mix of methods in any number of tool calls stays inside it. A refused size or budget
- *   is `not_supported`.
+ *   by line, and sent by upload. Every `FILES` call draws from the budget of the
+ *   invocation the tool call runs in (`calls.ts`: the alarm a pi turn's Lifecycle job runs
+ *   in, shared by all its tool calls), read from the object's scope, so the factory that
+ *   builds an environment takes none; a call is refused loudly before it would cross the
+ *   cap: a budget on the calls themselves, not a proxy in bytes, so any mix of methods in
+ *   any number of tool calls stays inside it. A refused size or budget is `not_supported`.
  * - `readTextFile` keeps a BOM: it is the file's bytes, which pi's `edit` writes back.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
@@ -45,7 +45,7 @@ import {
   StreamDecoder, type TextLine, type TextLineReader, type WatchChange, type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 
-import { type Calls, CallsSpent } from "./calls";
+import { CallsSpent } from "./calls";
 import { Invalid, Refused } from "./errors";
 import {
   BATCH_BYTES, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
@@ -505,13 +505,6 @@ export interface FilesEnvOptions {
    * change's housekeeping unscheduled.
    */
   readonly rearm: () => Promise<void>;
-  /**
-   * The invocation's call budget (`calls.ts`), made at the entry this tool call runs in
-   * (the pi turn's Lifecycle job) and shared by every tool call there: each `FILES` call
-   * this environment makes draws from it, so a turn's tool calls together stay inside the
-   * cap. Required, so no environment counts calls of its own.
-   */
-  readonly calls: Calls;
 }
 
 export class OwnerFilesEnv implements ExecutionEnv {
@@ -522,7 +515,6 @@ export class OwnerFilesEnv implements ExecutionEnv {
   readonly #rearm: () => Promise<void>;
   /** The etag this environment last saw at each path it read or wrote. */
   readonly #seen = new Map<string, string>();
-  readonly #calls: Calls;
   readonly #temps = new Set<string>();
 
   constructor(options: FilesEnvOptions) {
@@ -530,7 +522,6 @@ export class OwnerFilesEnv implements ExecutionEnv {
     this.#writer = options.writer ?? "agent";
     this.cwd = options.cwd ?? WORKSPACE;
     this.#rearm = options.rearm;
-    this.#calls = options.calls;
     // Named by a hash of the namespace, which never leaves the object itself.
     this.id = `ta-files:${sha256Hex(`ta-env\n${this.#files.ns()}`).slice(0, 32)}`;
   }
@@ -566,7 +557,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   /** Chunk bytes, each `FILES` call the manifest makes for them drawn from the invocation's. */
-  readonly #load: Load = (reads) => this.#files.fetch(this.#calls, reads);
+  readonly #load: Load = (reads) => this.#files.fetch(reads);
 
   /** The current content of a file, its etag remembered for this environment's writes. */
   #open(at: string): Content {
@@ -590,8 +581,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async #write(at: string, bytes: Uint8Array, expected: string | null,
                extra: { prefix?: readonly ChunkRef[]; mode?: number } = {}): Promise<Entry> {
     const entry = await this.#files.write(at, bytes, { expected, writer: this.#writer,
-                                                       parents: true, calls: this.#calls,
-                                                       ...extra });
+                                                       parents: true, ...extra });
     this.#seen.set(at, entry.etag);
     await this.#rearm();
     return entry;

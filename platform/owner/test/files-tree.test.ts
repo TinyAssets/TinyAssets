@@ -84,7 +84,7 @@ async function bytesAt(files: Files, path: string): Promise<Uint8Array> {
   if (content.inline !== undefined) {
     return content.inline;
   }
-  const pieces = await files.fetch(new Calls(), (content.chunks ?? [])
+  const pieces = await files.fetch((content.chunks ?? [])
     .map((c) => ({ sha256: c.sha256 })));
   return new Uint8Array(pieces.flatMap((piece) => [...piece]));
 }
@@ -104,8 +104,7 @@ describe("a rename across the roots", () => {
       const one = files.tempDir("t-", "agent");
       const two = files.tempDir("t-", "agent");
       for (const [name, body] of [["s", small], ["b", big]] as const) {
-        await files.write(`${from(one, two)}/${name}`, body, { expected: null, writer: "agent",
-                                                               calls: new Calls() });
+        await files.write(`${from(one, two)}/${name}`, body, { expected: null, writer: "agent" });
         files.rename(`${from(one, two)}/${name}`, `${to(one, two)}/${name}`,
                      { expected: null, replace: false, writer: "agent" });
       }
@@ -117,7 +116,7 @@ describe("a rename across the roots", () => {
     expect(kept).toEqual(counted);
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
     await inFiles(r.stub, {}, async (files) => {
-      await files.collect(new Calls(), Date.now() / 1000);
+      await files.collect(Date.now() / 1000);
       expect(await bytesAt(files, `${at}/s`)).toEqual(small);
       expect(await bytesAt(files, `${at}/b`)).toEqual(big);
     });
@@ -293,7 +292,7 @@ describe("the change feed", () => {
     // With no retention, the delete's record is due as soon as it is written.
     await inFiles(r.stub, { retention_days: 0 }, async (files) => {
       files.remove(`${W}/gone`, { expected: null, writer: "owner" });
-      await files.collect(new Calls(), Date.now() / 1000 + 1);
+      await files.collect(Date.now() / 1000 + 1);
     });
     const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 10 });
     expect(page.reset).toBe(true);

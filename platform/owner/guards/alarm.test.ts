@@ -13,7 +13,8 @@
  *   module by a name computed at run time;
  * - never installs Lifecycle's runtime handlers (`Lifecycle.install`, `installHandlers`),
  *   which would add a `fetch` and WebSocket handlers to the object's surface;
- * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`.
+ * - has one `alarm`, the hand-off `await this.#calls.run(() => this.#lifecycle.alarm());`,
+ *   Lifecycle's alarm inside the object's invocation scope (`calls.ts`).
  * Lifecycle's and PiHarness's own tables (`cf_agents_*`, `pi_*`) are named by no source
  * (the policy-boundary guard). The guard is a tripwire for our own code's mistakes, not
  * proof against a source written to evade it.
@@ -39,7 +40,7 @@ const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlar
                                              "disableAlarms", "deleteAll"]);
 /** What a source may import from the Agents SDK: Lifecycle and its capability base. */
 const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
-const HAND_OFF = "await this.#lifecycle.alarm();";
+const HAND_OFF = "await this.#calls.run(() => this.#lifecycle.alarm());";
 /** The pinned Agents SDK, as the lockfile resolves it. */
 const AGENTS = Object.freeze({
   version: "0.31.0",
@@ -181,6 +182,10 @@ describe("alarm guard", () => {
     "export class O { async alarm() { await this.#lifecycle.alarm(); await this.more(); } }",
     "export class O { alarm = async () => { await this.#lifecycle.alarm(); }; }",
     "export class O { async alarm() {} }",
+    // Lifecycle's alarm outside the invocation scope: its jobs would draw on no budget.
+    "export class O { async alarm() { await this.#lifecycle.alarm(); } }",
+    "export class O { async alarm() { await this.#calls.run(() => this.#lifecycle.alarm()); " +
+      "await this.more(); } }",
     "export const handlers = { alarm: () => undefined };",
     // Slice 5's review N4: each bypass the first guard let through.
     "export function f(s: DurableObjectStorage) { return s['set' + 'Alarm'](1); }",
@@ -206,7 +211,8 @@ describe("alarm guard", () => {
     "import { LifecycleCapability, type LifecycleJob } from 'agents/lifecycle';",
     "import type { LifecycleJobContext } from 'agents/lifecycle';",
     "export class O { readonly #lifecycle = new Lifecycle(this); " +
-      "override async alarm(): Promise<void> { await this.#lifecycle.alarm(); } }",
+      "override async alarm(): Promise<void> { " +
+      "await this.#calls.run(() => this.#lifecycle.alarm()); } }",
     "export function f(lane: { nextDue(n: number): number }) { return lane.nextDue(0); }",
     "import { x } from 'agentsmith';",
     "export function f(npm: { install(): void }) { npm.install(); }",
@@ -217,5 +223,51 @@ describe("alarm guard", () => {
     "export async function f() { return import('./wakes'); }",
   ])("allows %s", (source) => {
     expect(alarmReach("probe.ts", source)).toEqual([]);
+  });
+});
+
+/**
+ * Each door of `source`'s `OwnerDO` (a public method taking the binding) whose body is not
+ * one `return this.#door(...)`: a door outside its own invocation's scope (`calls.ts`).
+ */
+export function unscopedDoors(source: string): string[] {
+  const file = parse("owner-do.ts", source);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isClassDeclaration(node) && node.name?.text === "OwnerDO") {
+      for (const member of node.members) {
+        if (!ts.isMethodDeclaration(member) || ts.isPrivateIdentifier(member.name)
+            || member.parameters[0]?.type?.getText(file) !== "Binding") {
+          continue;
+        }
+        const [only, ...rest] = member.body?.statements ?? [];
+        const scoped = only !== undefined && rest.length === 0 && ts.isReturnStatement(only)
+          && only.expression !== undefined && ts.isCallExpression(only.expression)
+          && only.expression.expression.getText(file) === "this.#door";
+        if (!scoped) {
+          found.push(member.name.getText(file));
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+describe("invocation scope guard", () => {
+  it("finds every door of the object its own invocation", () => {
+    const source = workerSources().get("owner/src/owner-do.ts")!;
+    expect(unscopedDoors(source)).toEqual([]);
+    expect(source.match(/return this\.#door\(/g)?.length).toBeGreaterThan(50);
+  });
+
+  it.each([
+    "export class OwnerDO { fileRead(binding: Binding) { return this.#files.read(); } }",
+    "export class OwnerDO { fileRead(binding: Binding) { this.#check(); " +
+      "return this.#door(() => 1); } }",
+    "export class OwnerDO { fileRead(binding: Binding) { return this.#other(() => 1); } }",
+  ])("sees %s", (source) => {
+    expect(unscopedDoors(source)).toEqual(["fileRead"]);
   });
 });
