@@ -1,0 +1,20 @@
+// The caller half of the 32-call cap probe (cap-probe.md). Throwaway, workers.dev only:
+// cap-probe.yml deploys it after the callee and deletes it. The runtime matches the owner
+// Worker's (platform/owner/wrangler.jsonc) plus global_fetch_strictly_public.
+// RUN_KEY and CALLEE_URL are not here: the workflow uploads them per run with --secrets-file.
+{
+  "name": "ta-capprobe",
+  "main": "caller.js",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "services": [{ "binding": "CALLEE", "service": "ta-capprobe-callee" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "PROBE", "class_name": "Probe" },
+      { "name": "PEER", "class_name": "Peer", "script_name": "ta-capprobe-callee" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Probe"] }]
+}
