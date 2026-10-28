@@ -192,6 +192,50 @@ describe("a full history", () => {
       .toEqual([{ n: 0 }]);
   });
 
+  it("re-marks rows for a change of days alone, each due its days after it was written",
+     async () => {
+    const r = await rig();
+    await inFiles(r.stub, { keep_versions: 1, retention_days: 30 }, async (files) => {
+      for (const body of ["1", "2", "3"]) {
+        await files.write(`${W}/a`, text(body), { expected: null, writer: "o" });
+      }
+    });
+    await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_days = 30");
+    await inFiles(r.stub, { keep_versions: 1, retention_days: 2 }, async (files) => {
+      expect(files.nextAlarm(1000)).toBe(1000);
+      await files.collect(1000);
+    });
+    expect(await sqlIn(r.stub, "SELECT prune_after - at AS due FROM file_history " +
+                                 "ORDER BY version"))
+      .toEqual([{ due: 2 * 86_400 }, { due: 2 * 86_400 }, { due: null }]);
+  });
+
+  it("starts a pass over when the policy changes during it", async () => {
+    const r = await rig();
+    await inFiles(r.stub, { keep_versions: 1 }, async (files) => {
+      for (let i = 0; i < 600; i++) {
+        await files.write(`${W}/p${String(i).padStart(3, "0")}`, text("1"),
+                          { expected: null, writer: "o" });
+        await files.write(`${W}/p${String(i).padStart(3, "0")}`, text("2"),
+                          { expected: null, writer: "o" });
+      }
+    });
+    await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1");
+    // A first pass under keep 2 stops after 500 paths; keep 1 then comes back in force.
+    await inFiles(r.stub, { keep_versions: 2 }, (files) => files.collect(1000));
+    expect(await sqlIn(r.stub, "SELECT retain_cursor FROM file_space"))
+      .toEqual([{ retain_cursor: `${W}/p499` }]);
+    await inFiles(r.stub, { keep_versions: 1 }, async (files) => {
+      await files.collect(1000);
+      await files.collect(1000);
+      expect(files.nextAlarm(1000)).not.toBe(1000);
+    });
+    // Every path's older version is due again, the first 500's included.
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
+                                 "WHERE prune_after IS NULL"))
+      .toEqual([{ n: 600 }]);
+  });
+
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
      async () => {
     const r = await rig();

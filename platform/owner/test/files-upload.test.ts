@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHUNK_BYTES, type ChunkStore, chunkedId, type Entry, GC_GRACE_S, HOUSEKEEPING_SLACK_S,
   INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS, MAX_OPEN_INTENTS,
-  sha256Hex,
+  sha256Hex, WHOLE_BYTES,
 } from "../src/files";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
@@ -193,6 +193,16 @@ describe("an upload", () => {
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ stored: 1 });
   });
 
+  it("is the only way past 16 MiB: a whole write refuses more before holding anything",
+     async () => {
+    const r = await rig();
+    const error = await failure(() => inFiles(r.stub, {}, (files) => files.write(
+      `${W}/huge`, new Uint8Array(WHOLE_BYTES + 1), { expected: null, writer: "o" })));
+    expect([WHOLE_BYTES, error.message]).toEqual([16 * 1024 * 1024,
+      `a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`]);
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 0 }]);
+  });
+
   it("sends at most two chunks a call", async () => {
     const r = await rig();
     const pieces = [filled(CHUNK_BYTES, 1), filled(CHUNK_BYTES, 2), filled(9, 3)];
@@ -310,17 +320,20 @@ describe("a content id", () => {
     expect(await r.stub.fileStat(r.bind(null), { path: `${W}/a` })).toEqual({ entry: null });
   });
 
-  it("fails loudly when a chunked id already names another chunk list", async () => {
-    const r = await rig();
-    const pieces = [filled(CHUNK_BYTES, 7), filled(5, 8)];
-    const id = chunkedId(CHUNK_BYTES + 5, shas(pieces));
-    await sqlIn(r.stub, "INSERT INTO file_contents (content_id, size) VALUES (?, ?)", id,
-                CHUNK_BYTES + 5);
-    await sqlIn(r.stub, "INSERT INTO file_content_chunks VALUES (?, 0, ?), (?, 1, ?)",
-                id, "c".repeat(64), id, "d".repeat(64));
-    expect((await failure(() => upload(r, `${W}/a`, pieces))).message)
-      .toBe("a content id names other stored content");
-  });
+  it.each([["another chunk list", 0, ["c".repeat(64), "d".repeat(64)]],
+           ["its chunks at another size", 1, null]])(
+    "fails loudly when a chunked id already names %s", async (_what, extra, planted) => {
+      const r = await rig();
+      const pieces = [filled(CHUNK_BYTES, 7), filled(5, 8)];
+      const id = chunkedId(CHUNK_BYTES + 5, shas(pieces));
+      const [first, second] = planted ?? shas(pieces);
+      await sqlIn(r.stub, "INSERT INTO file_contents (content_id, size) VALUES (?, ?)", id,
+                  CHUNK_BYTES + 5 + extra);
+      await sqlIn(r.stub, "INSERT INTO file_content_chunks VALUES (?, 0, ?), (?, 1, ?)",
+                  id, first!, id, second!);
+      expect((await failure(() => upload(r, `${W}/a`, pieces))).message)
+        .toBe("a content id names other stored content");
+    });
 });
 
 describe("a chunk", () => {
