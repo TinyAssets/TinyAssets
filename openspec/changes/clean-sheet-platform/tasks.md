@@ -4,9 +4,12 @@ live acceptance is still owed says so.
 
 ## 1. Verify the unverified facts
 
-- [ ] E2B p50/p95 resume for a 1 GiB sandbox, measured live; paused-storage price
+- [x] E2B p50/p95 resume for a 1 GiB sandbox, measured live; paused-storage price
   and retention, Pro-plan concurrency, regions. A p95 over 1.5 s switches the
-  sandbox to Cloudflare Containers.
+  sandbox to Cloudflare Containers. Measured 2026-10-28: p50 247 ms, p95 706 ms
+  over 40 cycles, so E2B stays; paused sandboxes are free, kept indefinitely and
+  outside concurrency; Pro 100 concurrent (`e2b-resume-measurement.md`).
+- [ ] E2B resume after hours or days paused (only up to 5 min was measured).
 - [x] Durable Object pricing and limits (2026-10-28, facts-verified.md).
 - [ ] 2026 regional availability from Cloudflare's status history (blocked).
 - [x] Dynamic Workers and Facets: open beta, Workers Paid only, $0.002 per Dynamic
