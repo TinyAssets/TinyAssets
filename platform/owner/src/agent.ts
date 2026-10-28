@@ -19,7 +19,8 @@
  *   `read` wrapped `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and
  *   `bash` stay `unsafe`, so a call an eviction cut off comes back `interrupted` and is
  *   never run twice), then the object's further extensions. One that pi refuses to
- *   install is skipped and kept as an owner notice: the factory never throws for owner
+ *   install is skipped and kept as an owner notice, once while it is kept, though pi
+ *   opens again at every wake: the factory never throws for owner
  *   content, since a failed open fails the Lifecycle's startup and the object's lanes
  *   with it;
  * - the models, read at each use: in this slice an empty catalog, so a turn settles
@@ -175,7 +176,7 @@ export class OwnerAgent {
         this.#registry.install(extension);
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
-        await this.#parts.write(() => this.#parts.notices.add(
+        await this.#parts.write(() => this.#parts.notices.once(
           "extension_skipped", `${String(extension.name)}: ${why}`, Date.now() / 1000));
       }
     }

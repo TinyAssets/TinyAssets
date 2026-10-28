@@ -346,9 +346,14 @@ account and no deploy.
   the gate test reproduces it); a door's synchronous body is one unit (`#door`), a door that
   crosses to `FILES` writes its later steps as units, the lanes and the environment a
   unit per write, Lifecycle's job sets inside one; the modules see the storage through the
-  gate's view, which refuses a write outside a unit. Guards: write-gate (doors begin in
-  the gate, `ctx.storage` only makes it, no second adapter, an awaiting function's writes
-  in units), `agents/harness/pi` allowed, the pi table ban kept, pi pin (schema version 2;
+  gate's view, which refuses a write, or a second statement after a read, outside a unit.
+  A unit reads what it decides on or re-checks it in its statement (review M1: the chunk
+  collector's due list is read in the unit that marks it, so an upload's begin landing
+  between can no longer lose a committed file's bytes); a whole write re-checks its
+  caller's authority in each unit it writes; a refused extension is noticed once while
+  kept. Guards: write-gate (doors begin in the gate, `ctx.storage` only makes it, no second
+  adapter, no async storage transaction, an awaiting function's writes in units, and no
+  raw SQL read outside a unit used inside one), `agents/harness/pi` allowed, the pi table ban kept, pi pin (schema version 2;
   pi-durable, pi-ai and chord 1.4.0 by integrity). Found in workerd: pi's commit runs its
   SQL transaction in a turn of its own and awaits only its own statements, so no
   continuation woken by I/O, a timer or a storage read lands inside one today; the gate

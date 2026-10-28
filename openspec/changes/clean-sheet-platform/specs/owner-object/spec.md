@@ -455,11 +455,22 @@ Every owner write SHALL run as a unit of the object's write gate: a synchronous 
 - **THEN** the unit runs, then the open, and neither waits on the other: a unit is never an async storage transaction of its own, which would need the input gate
 
 ### Requirement: No write reaches the storage past the gate
-The object's modules SHALL see the storage only through the gate's view, which SHALL refuse, loudly, any statement but a read and any `transactionSync` outside a unit; the gate SHALL refuse a unit inside another and a unit that returns a promise.
+The object's modules SHALL see the storage only through the gate's view, which SHALL refuse, loudly, any statement but a single read and any `transactionSync` outside a unit; the gate SHALL refuse a unit inside another and a unit that returns a promise.
 
 #### Scenario: A write outside the gate
 - **WHEN** any of the object's code writes through the view outside a unit
 - **THEN** the write is refused before it runs
+
+### Requirement: A unit acts only on what it reads itself
+A unit SHALL read the rows it decides on, or re-check them in its own statements, since another unit may land between any two; an authority a door checked SHALL be checked again in each unit that writes under it.
+
+#### Scenario: An upload holds a chunk the collector found due
+- **WHEN** an upload's begin is queued while a collection pass waits on the queue to mark a due chunk for deletion, and the upload then commits
+- **THEN** the pass's unit reads the chunk held again and leaves it, and the committed file stays readable
+
+#### Scenario: A grant narrows while a write waits
+- **WHEN** an outside client's whole write has passed its door's check and its grant loses `write_files` before the write's unit runs
+- **THEN** the write is refused and nothing is written
 
 ### Requirement: pi runs in the owner's object on PiHarness
 pi-durable SHALL run in the owner's object on PiHarness, a capability of the object's own Lifecycle beside the schedule, with none of Lifecycle's handlers installed. pi SHALL open in Lifecycle's startup, which the first alarm or the first PiHarness call runs, with no door starting it first. Its tables SHALL carry their own schema version beside ours, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity.
@@ -483,7 +494,7 @@ The environment SHALL be built per tool call over the owner's files, its history
 - **THEN** the new conversation carries the same stamp, and its file changes are the client's
 
 ### Requirement: pi's reports reach the owner, and owner content never stops the object
-What pi reports through `onReport`, and each extension pi refuses to install while opening, SHALL become an owner notice, the newest 100 kept, read by the owner alone. Opening pi SHALL never fail for owner content, since a failed open stops the object's lanes with Lifecycle's startup.
+What pi reports through `onReport`, and each extension pi refuses to install while opening, SHALL become an owner notice, the newest 100 kept, read by the owner alone; a refused extension SHALL be noticed once while that notice is kept, though pi opens again at every new instance. Opening pi SHALL never fail for owner content, since a failed open stops the object's lanes with Lifecycle's startup.
 
 #### Scenario: A malformed package
 - **WHEN** an extension pi refuses to install is among the object's

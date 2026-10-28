@@ -1235,7 +1235,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // `Files.write` writes each step around its `FILES` call as a unit of its own.
       return await fileConflictedAfter(async () => ({
         entry: await this.#files.write(r["path"], content, {
-          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+          expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
+          authorize: () => this.#filer(binding, "write_files") }),
       }));
     } finally {
       await this.#schedule.sync();

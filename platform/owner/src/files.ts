@@ -883,9 +883,13 @@ export class Files {
    * truncate keeps them), so only the chunks after them are cut from `bytes` and sent.
    * Called outside a unit: each step that writes (the inline write, or the intent, each
    * put's record and the commit or abort) is a unit of its own, between the calls.
+   * `authorize`, a door's check of the caller's authority, runs first in the inline
+   * write's, the intent's and the commit's unit, so the authority holds where it is used,
+   * not only where the door first read it.
    */
   async write(path: unknown, bytes: unknown, options: { expected: unknown; mode?: unknown;
-              writer: string; parents?: boolean; prefix?: readonly ChunkRef[] }):
+              writer: string; parents?: boolean; prefix?: readonly ChunkRef[];
+              authorize?: () => void }):
       Promise<Entry> {
     const at = storedPath(path);
     if (!(bytes instanceof Uint8Array)) {
@@ -902,13 +906,18 @@ export class Files {
       throw new Invalid("a kept prefix is whole chunks");
     }
     const size = prefix.length * CHUNK_BYTES + bytes.byteLength;
+    const authorize = options.authorize ?? (() => undefined);
     if (size <= INLINE_BYTES) {
-      return this.#write(() => this.#writeInline(at, bytes, expected, mode, options.writer,
-                                                 parents));
+      return this.#write(() => {
+        authorize();
+        return this.#writeInline(at, bytes, expected, mode, options.writer, parents);
+      });
     }
     const tail = cut(bytes);
-    const { intent_id, missing } = await this.#write(() => this.begin(
-      size, [...prefix, ...tail].map((chunk) => chunk.sha256)));
+    const { intent_id, missing } = await this.#write(() => {
+      authorize();
+      return this.begin(size, [...prefix, ...tail].map((chunk) => chunk.sha256));
+    });
     try {
       const wanted = new Set(missing);
       const puts = tail.filter((chunk) => wanted.delete(chunk.sha256));
@@ -918,8 +927,10 @@ export class Files {
       for (const group of batches(puts)) {
         await this.#put(group);
       }
-      return await this.#write(() => this.commit(intent_id, at, {
-        expected, mode, writer: options.writer, parents }));
+      return await this.#write(() => {
+        authorize();
+        return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents });
+      });
     } catch (error) {
       await this.#write(() => this.abort(intent_id));
       throw error;
@@ -1594,18 +1605,24 @@ export class Files {
       }
       this.#prune(now);
     }));
-    const due = sql.exec<{ sha256: string }>(
-      "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
-        "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
-    if (due.length === 0 || until - Date.now() < DELETE_FLOOR_MS) {
+    if (until - Date.now() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
-    await this.#write(() => this.#storage.transactionSync(() => {
-      for (const sha256 of due) {
+    // Read and marked in one unit: a chunk read due outside it could be held again (an
+    // upload's begin) before the mark, and its bytes then deleted under a live file.
+    const due = await this.#write(() => this.#storage.transactionSync(() => {
+      const found = sql.exec<{ sha256: string }>(
+        "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
+          "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
+      for (const sha256 of found) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
                  now + GC_RETRY_S, sha256);
       }
+      return found;
     }));
+    if (due.length === 0) {
+      return;
+    }
     try {
       // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
       if (await inTime(this.#store.deleteChunks(await this.namespace(), due),

@@ -156,6 +156,22 @@ describe("a turn in the owner's object", () => {
     expect(history.changes.map((c) => c.writer)).toEqual([`client:${stamp.client}`]);
   });
 
+  it("runs a conversation's tools from its own working directory", async () => {
+    const r = agentObject();
+    const answer = await r.in(async (instance) => {
+      const pi = await instance.agent.harness.pi();
+      const deep = await pi.createConversation({
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: AUTO.provider, modelId: AUTO.id }, cwd: "/workspace/deep" },
+      }, BG);
+      instance.script = [calls(fauxToolCall("write", { path: "here.md", content: "x" })), echo];
+      return instance.agent.harness.prompt("write it", { session: String(deep.id) });
+    });
+    expect(answer.status).toBe("done");
+    const read = await r.stub.fileRead(r.as(), { path: "/workspace/deep/here.md" });
+    expect(new TextDecoder().decode(read.inline)).toBe("x");
+  });
+
   it("brings an unsafe tool an eviction cut off back interrupted, never run twice, and " +
      "runs a cut-off read again", async () => {
     const r = agentObject();
@@ -232,6 +248,18 @@ describe("a package pi refuses to install", () => {
       .toContainEqual(["extension_skipped", "pkg"]);
     expect(notices.find((notice) => notice.type === "extension_skipped")!.detail)
       .toMatch(/^pkg:broken: Extension pkg:broken has two tools named twice/);
+    // pi opens again in every new instance (and after any pi failure): the package is
+    // refused each time, and noticed once while that notice is kept.
+    for (let open = 0; open < 2; open++) {
+      expect(await runInDurableObject(env.MALFORMED.getByName(name),
+                                      (_instance: MalformedOwnerDO, state) => state.abort("gone"))
+        .then(() => "alive", (error: Error) => error.message)).toBe("gone");
+      await runInDurableObject(env.MALFORMED.getByName(name), async (instance: MalformedOwnerDO) => {
+        await instance.agent.harness.pi();
+      });
+    }
+    const kept = (await env.MALFORMED.getByName(name).noticeList(as())).notices;
+    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(1);
   });
 });
 

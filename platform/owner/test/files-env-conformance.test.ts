@@ -8,6 +8,7 @@
  */
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEnvConformance, createExpectAssertions } from "@earendil-works/pi-durable/testing";
 import { createEditTool } from "@earendil-works/pi-durable/tools";
@@ -21,7 +22,9 @@ import { ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
 import { OUTSIDE_GATE, type WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
-import { filesOn, inGate, lostContent, ownerObject, sqlIn } from "./support";
+import {
+  failure, faulty, filesOn, inGate, lostContent, ownerObject, sqlIn, STORAGE_FAULT,
+} from "./support";
 
 const context = BACKGROUND_CONTEXT;
 /** The schedule's sync, which the object wires in; these cases drive no schedule. */
@@ -368,6 +371,55 @@ describe("the owner's environment", () => {
       expect(() => files.mkdir("/workspace/direct", { expected: null, writer: "agent" }))
         .toThrow(OUTSIDE_GATE);
       expect(files.stat("/workspace/direct")).toBeNull();
+    });
+  });
+
+  it("refuses a directory that is made while a plain createDir waits on the queue",
+     async () => {
+    await inGate(ownerObject().stub, async (_instance: OwnerDO, state, gate) => {
+      const files = await gated(gate);
+      const fs = new OwnerFilesEnv({ files, rearm });
+      // A pi commit holds the queue, another change to the same path is queued behind it,
+      // and the tool call's check and its mkdir are one unit after that: it sees the
+      // directory and refuses, as it would had the change landed before the call.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const other = gate.write(() => files.mkdir("/workspace/d", { expected: null,
+                                                                   writer: "owner" }));
+      const made = fs.createDir("d", { recursive: false }, context);
+      for (let i = 0; i < 20; i++) {
+        await Promise.resolve();
+      }
+      release();
+      await Promise.all([commit, other]);
+      const answer = await made;
+      expect(answer.ok ? null : [answer.error.code, answer.error.message])
+        .toEqual(["invalid", "exists: already exists"]);
+    });
+  });
+
+  it("fails a tool call, and cleanup, whose change cannot be written", async () => {
+    await inGate(ownerObject().stub, async (_instance: OwnerDO, _state, gate) => {
+      let down = false;
+      const files = filesOn(gate.storage, faulty(gate.write, () => down));
+      await files.namespace();
+      const fs = new OwnerFilesEnv({ files, rearm });
+      getOrThrow(await fs.writeFile("a.txt", "a", context));
+      getOrThrow(await fs.createTempDir("t-", context));
+      down = true;
+      const calls = {
+        createDir: fs.createDir("d", { recursive: true }, context),
+        renameFile: fs.renameFile("a.txt", "b.txt", context),
+        remove: fs.remove("a.txt", undefined, context),
+      };
+      for (const [name, call] of Object.entries(calls)) {
+        const answer = await call;
+        expect([name, answer.ok ? "ok" : answer.error.message]).toEqual([name, STORAGE_FAULT]);
+      }
+      expect((await failure(() => fs.cleanup(context))).message).toBe(STORAGE_FAULT);
+      down = false;
+      expect(getOrThrow(await fs.readTextFile("a.txt", context))).toBe("a");
     });
   });
 

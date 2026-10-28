@@ -82,6 +82,8 @@ interface Probe {
   alarm(): Promise<void>;
   /** Each alarm write Lifecycle made, in ms, null for a delete. */
   readonly alarms: (number | null)[];
+  /** Set to make each alarm write fail, as a storage fault would. */
+  alarmFault: Error | null;
   readonly lanes: Record<string, ScriptedLane>;
   /** The schedule's clock, in seconds; tests move it. */
   now: number;
@@ -102,7 +104,12 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       : value;
   };
   const storage = new Proxy(state.storage, {
-    get: (target, key) => key === "setAlarm" ? async (at: number) => { alarms.push(at); }
+    get: (target, key) => key === "setAlarm" ? async (at: number) => {
+      if (p.alarmFault !== null) {
+        throw p.alarmFault;
+      }
+      alarms.push(at);
+    }
       : key === "deleteAlarm" ? async () => { alarms.push(null); }
       : bound(target, key),
   });
@@ -111,7 +118,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
   });
   const lanes = Object.fromEntries(names.map((name) => [name, new ScriptedLane()]));
   const p: Probe = {
-    alarms, lanes, storage: state.storage, now: Date.now() / 1000,
+    alarms, alarmFault: null, lanes, storage: state.storage, now: Date.now() / 1000,
     alarm: () => p.lifecycle.alarm(),
     sql: (statement, ...params) => void state.storage.sql.exec(statement, ...params).toArray(),
     read: (statement, ...params) => state.storage.sql.exec(statement, ...params).toArray(),
@@ -160,6 +167,14 @@ describe("a lane's job", () => {
     await p.schedule.sync();
     expect(p.jobs()).toEqual({});
     expect(p.alarms.at(-1)).toBeNull();  // no job: the alarm is cleared
+  }));
+
+  it("fails a set whose alarm cannot be armed, rather than leave its job unarmed",
+     () => withProbe(["a"], async (p) => {
+    p.lanes["a"]!.due = p.now + 100;
+    p.alarmFault = new Error("the alarm could not be set");
+    expect((await failure(() => p.schedule.sync())).message).toBe("the alarm could not be set");
+    p.alarmFault = null;
   }));
 
   it("is never set before now, nor before the lane's work", () => withProbe(["a"], async (p) => {

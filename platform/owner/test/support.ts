@@ -21,6 +21,20 @@ export function inGate<R>(stub: DurableObjectStub<OwnerDO>,
     act(instance, state, new WriteGate(state.storage)));
 }
 
+/** The fault a `faulty` gate's unit fails with. */
+export const STORAGE_FAULT = "the unit's storage failed";
+
+/**
+ * `write`, except that each unit `fails` names (counted from 1, over this gate's units)
+ * rejects unrun, as a unit whose storage failed does: what awaits the unit must fail with
+ * it, never carry on as though it was written.
+ */
+export function faulty(write: Write, fails: (n: number) => boolean): Write {
+  let n = 0;
+  return <T,>(unit: () => T): Promise<T> =>
+    fails(++n) ? Promise.reject(new Error(STORAGE_FAULT)) : write(unit);
+}
+
 /**
  * Files over `storage`, writing their own units through `write`. The object builds them
  * over its gate's view; a test that calls their synchronous changes directly passes the
