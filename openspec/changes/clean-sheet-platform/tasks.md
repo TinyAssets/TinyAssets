@@ -19,15 +19,64 @@ live acceptance is still owed says so.
 
 ## 2. Doors and identity
 
-- [ ] Edge Workers as the only binder: the OAuth server (Workers OAuth Provider),
-  the stateless MCP handler, `/api` keys, `/hooks/inbound`, and the owner
-  directory (key and token hashes, published apps; no owner content).
-- [ ] Owner admission, the Python `require_admitted` (an owner suspended, or a
-  restored identity map not yet reconciled, admits no work): a deliberate
-  difference from the ported primitive, which `OwnerDO` does not check. The
-  binder refuses an unadmitted owner before it reaches the object, from the
-  directory's admission state.
-- [ ] Owed by 3.5. The owner's sign-in: the binder runs it (server PKCE,
+- [x] 2.1 The doors Worker (`platform/doors`, slice 7), in workerd, nothing deployed: the
+  binder (`binder.ts`, the only `getByName` and the only `Binding`, every field from
+  the verified credential), our authorization server on Workers OAuth Provider 1.2.4
+  (issuer `https://tinyassets.io`, resources `/mcp` and `/app`, CIMD on with
+  `global_fetch_strictly_public`, DCR only behind `DCR_ENABLED`, `prompt=login` on every
+  sign-in, consent never remembered, `authenticated_at` in the grant's props and never
+  moved by a refresh), the stateless MCP door on SDK v2's `createMcpHandler` 2.3.1 for
+  2026-07-28 and 2025-11-25, one tool per outside-callable owner door with all four
+  hints (`tools.ts`), `/api` keys in the Python's format, the owner surface
+  `/app/api/*` with the session cookie and CSRF rules, and the owner directory's `k:`
+  entries and fail-closed `c:control` record. Guards: the binder, the tool table, the
+  config; the platform's module-state and self-reach guards scan it. Declared
+  differences from the research: the first-party app is a CIMD client on our own
+  origin (`/oauth/clients/web.json`), so the first-party list needs no registry row or
+  config value; the doors port `apiKeyOrigin` (the object's `ledger.ts` is the object's
+  alone), held equal to the object's by test; the MCP client derivation is
+  domain-separated (`tinyassets-mcp-client\0issuer\0client_id`), which the research's
+  revoke step wrote as `issuer\0client_id`; and the SDK answers a thrown tool error as
+  the tool's error result, so a bug is logged in full and answered `internal error`.
+- [ ] Live AuthKit wiring: an `Upstream` (`doors/src/upstream.ts`) for AuthKit's
+  production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
+  the code exchange and the ID token's signature, issuer, audience and `auth_time`
+  against its JWKS; production Google and GitHub apps (founder dashboard work). Until
+  then the deployed entry refuses every sign-in loudly (`UNWIRED`).
+- [ ] DNS, routes and deploy: the doors Worker's routes on `tinyassets.io` (`/mcp`,
+  `/api/*`, `/hooks/inbound/*`, `/app/api/*`, `/authorize`, `/oauth/*`,
+  `/.well-known/oauth-*`), the `OAUTH_KV` and `DIRECTORY` namespaces, then the handles
+  canary (Fact 11). Cutover (9); every existing connector re-authorizes once, since the
+  issuer moves from AuthKit to `https://tinyassets.io`.
+- [ ] `/hooks/inbound`: the capability-URL and shared-app (Slack HMAC) shapes in the
+  binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
+  gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
+  secrets, the breaker).
+- [ ] Owner admission and erasure, in the owner's object: an `admission` row
+  (`admitted | suspended{billing, abuse} | erased`), checked in `#bind` at every door
+  and by every lane with `require_work` semantics, an erasure tombstone so a stale
+  `getByName` never recreates an erased owner, and a new door `admissionSet` taken only
+  from a reserved `platform` caller, with a guard keeping that name out of every source
+  but `platform/admin`. This **reverses** the earlier wording here ("the binder refuses
+  an unadmitted owner before it reaches the object, from the directory's admission
+  state"), because the object is strongly consistent and already on every path (no
+  extra read, no 60 s lag), the alarm reads it locally, and erasure needs an object
+  tombstone anyway. The binder keeps the platform gates (`control.ordinary`, the
+  canary) from the directory.
+- [ ] The key store in the owner's object: a new door holding each API key's id, name,
+  mint time and last use, so the owner's key list and erasure can enumerate key ids
+  (the grant row holds only the key's client hash), the 25-key count is strict, and
+  an agent's held API-key request is applied with its grant (`_apply_key_request`).
+- [ ] Rate limits: two `ratelimits` bindings, 120 a minute per key and 600 per owner,
+  declared approximate (their price and miniflare support unverified); the config guard
+  admits them with their slice.
+- [ ] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
+  the agent's doors (5).
+- [ ] Plan correction (doors section): "plus the earlier revision for Claude channels"
+  becomes "plus 2025-11-25 for clients still on MCP SDK 1.x, served statelessly from
+  the same handler"; Claude channels are local stdio plugins that cannot use 2026-07-28,
+  so a TinyAssets channel is a stdio plugin calling the door as an ordinary client (S9).
+- [x] Owed by 3.5 (slice 7). The owner's sign-in: the binder runs it (server PKCE,
   `prompt=login`, the browser-bound callback, the cookie's attributes) and calls
   `sessionOpen` with the verified sign-in's time, which the object takes only when
   at most 600 s old; it forwards the browser's session cookie as the binding's
@@ -51,9 +100,10 @@ live acceptance is still owed says so.
   `grantForget` only after the directory has deleted an API key, never for an MCP
   client. On `grantRevoke` the binder also revokes the client's grant in the OAuth
   provider, so its refresh tokens die with it, and a sign-in after a revoke always shows
-  the consent screen, so only the owner's own consent brings a revoked client back. An
-  agent's held API-key request applied with its grant (`_apply_key_request`) comes with
-  the key store, whose key ids it needs.
+  the consent screen, so only the owner's own consent brings a revoked client back.
+  Built in `platform/doors` with a test each; the outside kill switch reaching the
+  object's alarm is task 7's doorbell, and `_apply_key_request` comes with the key store
+  above.
 - [ ] Owed by 6.1. The file door's bytes: the binder streams chunks to `FILES` itself
   (decided: the binder is the trust root and already reaches every owner's object, so
   its reading an owner's namespace from that owner's object weakens no isolation), with
@@ -264,7 +314,11 @@ live acceptance is still owed says so.
   fails.
   Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
   kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
-  (`require_work`), and both reach the alarm from the owner directory (2).
+  (`require_work`). The kill switch reaches the alarm through a `DOORBELL` service
+  binding on the owner Worker, to a `tinyassets-doorbell` Worker that binds only
+  `DIRECTORY` and reads its `c:control` record; the `wakes` lane asks `DOORBELL.open()`
+  once a pass before it claims and claims nothing on closed or a failure, and the owner
+  config guard admits it as `{kv_namespaces: 1}`. Admission is the object's own row (2).
 
 ## 8. Founder live test
 

@@ -60,6 +60,27 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    owner it is named by (`ctx.id.name`) and refuses when it has no name. The
    caller reaches the object as a typed argument, never a request field. Cross-owner traffic goes
    through a postmaster Worker that reads the sender object's outbox.
+   How the doors bind (decided from research, 2026-10-28; `platform/doors`):
+   - **Our own authorization server,** issuer `https://tinyassets.io`, on Workers
+     OAuth Provider 1.2.x in the doors Worker, so validating a token spends no
+     service call. Client ID Metadata Documents are on; dynamic registration is
+     only a flagged, deprecated fallback. WorkOS AuthKit stays the owner's
+     upstream sign-in (owner ids stay its `sub`), always with `prompt=login`, so
+     a later vendor change never breaks a connector.
+   - **Consent is never remembered,** and an MCP grant's props hold the original
+     sign-in's time (`authenticated_at`), which no refresh moves. A revoke goes to
+     the owner's object first, then revokes the provider's grants.
+   - **The MCP door is SDK v2's stateless `createMcpHandler`,** serving 2026-07-28
+     and, for MCP SDK 1.x clients, 2025-11-25 from one factory; one external tool
+     per outside-callable owner door, every hint explicit, and never the model's own
+     tools.
+   - **The owner directory is one KV namespace and only a routing hint** (key ids
+     and other credential hashes to owners, and the fail-closed `control` record);
+     every revoke is enforced in the object, so KV's lag only routes a dead
+     credential to a refusal. Owner admission is the object's own row.
+   - **The session cookie is SameSite=Strict** and forwarded only on the owner
+     app's same-origin JSON requests; outside credentials never reach the owner
+     surface.
 3. **A gateway Worker holds no owner state and opens one owner's sealed
    credential per call,** meters usage, and swaps placeholder credentials on
    sandbox egress. No credential sits in the loop or the sandbox.
