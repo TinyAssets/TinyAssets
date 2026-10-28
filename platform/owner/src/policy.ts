@@ -120,6 +120,15 @@ export const POLICY_LIMITS: PolicyLimits = Object.freeze({
   receiptsListed: 50,
 });
 
+/**
+ * The longest any credential derived from one MCP sign-in stays usable: access tokens,
+ * and refresh tokens carrying the original sign-in time. An MCP revoke older than this
+ * fences nothing (`grants.ts`, the
+ * schema's `FORGETTABLE`). TODO(tasks 2): the Workers OAuth Provider's absolute refresh lifetime
+ * is set to at most this, and a test in the binder holds the two together.
+ */
+export const MCP_SIGN_IN_LIFETIME_S = 30 * 86_400;
+
 /** A rule, review setting, grant or declared operation: its values are flat. */
 export interface PolicyEntry {
   readonly scope: string;

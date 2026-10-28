@@ -7,7 +7,9 @@
  * and only the router's owner channel submitted a widening. Here, only the object
  * imports the session and grant modules (so only its doors, which check the owner's
  * session themselves, can call a widening), and each policy table is named only by the
- * module that keeps it and the schema. The lists only shrink.
+ * module that keeps it and the schema. The stamped schedule's work and the held agent
+ * registrations are held to the same: only the object (and the registrations, for the
+ * stamp's type) import them. The lists only shrink.
  */
 import { describe, expect, it } from "vitest";
 
@@ -19,6 +21,8 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   policy: Object.freeze([OWNER_DO, "owner/src/grants.ts", SCHEMA]),
   grants: Object.freeze([OWNER_DO]),
   sessions: Object.freeze([OWNER_DO]),
+  scheduled: Object.freeze([OWNER_DO, "owner/src/registrations.ts"]),
+  registrations: Object.freeze([OWNER_DO]),
 });
 const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_sessions: Object.freeze(["owner/src/sessions.ts", SCHEMA]),
@@ -28,7 +32,10 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   proposal_shares: Object.freeze(["owner/src/policy.ts", SCHEMA]),
   outside_clients: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   policy_usage: Object.freeze(["owner/src/grants.ts", "owner/src/policy.ts",
+                               "owner/src/registrations.ts", "owner/src/scheduled.ts",
                                "owner/src/sessions.ts", SCHEMA]),
+  scheduled_work: Object.freeze(["owner/src/scheduled.ts", SCHEMA]),
+  agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),
 });
 
 function importer(module: string): RegExp {

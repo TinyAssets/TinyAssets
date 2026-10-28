@@ -156,6 +156,10 @@ describe("an owner write", () => {
       request_digest: policyDigest({ action: "write", request: {
         request: { expected_generation: 1, policy: document }, origin: null } }),
     });
+    // A refusal after the generation moved names the generation it was refused at (N4).
+    await failure(() => r.stub.policyWrite(r.bind(null), { expected_generation: 2,
+                                                           policy: document as never }));
+    expect((await kinds(r, "refusal")).at(-1)).toMatchObject({ generation: 2 });
   });
 
   it.each<readonly [unknown, string, string]>([

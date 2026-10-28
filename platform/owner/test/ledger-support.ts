@@ -103,17 +103,19 @@ export async function rig() {
   const sender = new FakeSender();
 
   /**
-   * An agent registered from `origin` in the owner's session, then given any wake limits
-   * by the owner's own policy setter (a registration never carries them).
+   * An MCP agent registered from `origin`: its client files the card on its own call, and
+   * the owner applies it in its session. Then given any wake limits by the owner's own
+   * policy setter (a registration never carries them).
    */
   const registered = async (origin: Origin, name = "Muse", method = "pull",
                             extra: { max_wakes_per_hour?: number; batch_window_s?: number;
                                      command_center_id?: string } = {}) => {
     const { max_wakes_per_hour: perHour, batch_window_s: batch, ...request } = extra;
-    const agent = await stub.registerAgent(session(origin), {
+    const { card_id, digest } = await stub.registerPropose(bind(origin), {
       command_center_id: "alpha", display_name: name, delivery_method: method,
       recipe_id: null, ...request,
     });
+    const agent = await stub.registerAgent(session(null), { card_id, digest });
     if (perHour === undefined && batch === undefined) {
       return agent;
     }

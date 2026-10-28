@@ -36,12 +36,16 @@ live acceptance is still owed says so.
   and a request carrying an outside origin never reaches an owner-surface door (the
   Python's `mailbox_door._owner`); the object refuses an outside origin with a
   session itself, at every door but `registerAgent`, the owner's browser registering
-  an agent for an API key it holds or a verified MCP client. Every outside call
+  an agent for an API key it holds; an MCP client's agent registers through the card the
+  client files on its own call (`registerPropose`), which the owner's UI shows
+  (`registerProposal`) and applies by id and digest. Every outside call
   carries its verified `source` and, when known, `authenticated_at`. The outside kill switch
   (`TINYASSETS_OUTSIDE_DENY`) refuses every outside call at the binder, from the
   directory: the object has no env. A key's mint writes its grant (`grantSet`,
-  source `api_key`) and a key's revoke calls `grantRevoke` first; an agent's held
-  API-key request applied with its grant (`_apply_key_request`) comes with the key
+  source `api_key`), a key's revoke calls `grantRevoke` first, and a key's deletion
+  from the directory calls `grantForget` after it; the OAuth server's absolute refresh
+  lifetime is at most `MCP_SIGN_IN_LIFETIME_S` (30 days), held by a binder test; an
+  agent's held API-key request applied with its grant (`_apply_key_request`) comes with the key
   store, whose key ids it needs.
 
 ## 3. Owner object
@@ -83,21 +87,33 @@ live acceptance is still owed says so.
   bounded, and a grant row nothing depends on is forgotten oldest first rather than a
   new client refused; an egress host the URL parser reads as an IP address waits for
   the gateway's address check (4).
-- [ ] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
+- [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
   owns the single alarm and PiHarness's wake-up job; 3.4's direct `setAlarm`/`deleteAlarm`
   move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
   agents 0.31.0 pinned exactly), never the SDK's `Agent`, installs none of its runtime
   handlers, and its `alarm` only hands the runtime's alarm to it. Each kind of timed work
   is a lane with its own rows and one Lifecycle job derived from them: `wakes` (3.4's
-  wakes and revokes, `Ledger.nextDue`, `runWakes`) and `files` (6.1's housekeeping,
-  `Files.nextAlarm`, `Files.collect`). Every changing door and the object's wake re-derive
-  the jobs; a run is one bounded pass that sets its own job from the rows; a pass that
-  fails through Lifecycle's retries holds its lane back `LANE_RETRY_S`. The alarm guard
-  keeps every source off `setAlarm`, `deleteAlarm` and `getAlarm`, off every `agents`
-  import but `agents/lifecycle`, and off Lifecycle's handlers. Owed by 3.5: a scheduled
-  turn or automation stamps the outside authority it was made under (client, grant
-  generation, sign-in time) and is rechecked with `Grants.standing` before it runs; a
-  changed or revoked grant refuses it (the Python's `outside_standing`).
+  wakes and revokes, `Ledger.nextDue`, `runWakes`), `files` (6.1's housekeeping,
+  `Files.nextAlarm`, `Files.collect`) and `work` (stamped scheduled work,
+  `scheduled.ts`). Every changing door and the object's wake re-derive the jobs; a run
+  is one bounded pass that sets its own job from the rows; a pass that fails through
+  Lifecycle's retries holds its lane back `LANE_RETRY_S`. The alarm guard keeps every
+  source off `setAlarm`, `deleteAlarm` and `getAlarm`, off every `agents` import but
+  `agents/lifecycle`, and off Lifecycle's handlers. Stamped work (owed by 3.5): a
+  scheduled turn or automation carries the outside authority it was made under (client,
+  grant generation, sign-in time), rechecked with `Grants.standing` when made and before
+  it runs; a grant change refuses the client's pending work in its own transaction; open
+  work holds its client's grant row (`held`, slice 3's review N3); a run is fenced by a
+  lease and a may-have-run mark, so `unknown` work never runs again. Slice 3's review
+  carries: a revoked grant row is forgotten once it fences nothing, an API key's at the
+  binder's `grantForget`, an MCP client's once its revoke is older than
+  `MCP_SIGN_IN_LIFETIME_S`, and forgettable rows never count against the owner's bound
+  (L1); an MCP agent registers through a card its client files on its own verified call
+  (`registerPropose`), applied by the owner in session by card id and digest, so the
+  owner's browser pairs an outside origin with its session only for an API key (L2); the
+  scoped capabilities are declared (N1); the refusal receipt's generation and the grant
+  row's `CHECK` are held by tests (N4). The scheduled-work runner is the agent's (5):
+  until it lands, pending work is held and gives the lane no job.
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -126,8 +142,9 @@ live acceptance is still owed says so.
   policy feeds pi's settings, and the per-agent wake limits move into the policy
   document then; an agent run, launch or extension call made for an outside client
   stamps that client's authority and is rechecked with `Grants.standing` before each
-  step; a policy write ends the owner's in-flight turns and streams, and a grant
-  change ends that client's (the Python's stream cancellation and
+  step; the `WorkRunner` the `work` lane calls runs a scheduled turn (marking it before
+  it is handed to pi), and the door that schedules one stamps the caller's authority; a
+  policy write ends the owner's in-flight turns and streams, and a grant change ends that client's (the Python's stream cancellation and
   `_end_outside_streams`).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
@@ -188,7 +205,9 @@ live acceptance is still owed says so.
   store re-checks, as it writes, that the generation is past the agent's
   `revoked_through` and that the agent is still enabled, so a revoke scheduled between
   the two can never be outlived by the callback. The doorbell rechecks the client's
-  grant (`Grants.live`) immediately before it sends; a send already in flight when a
+  grant (`Grants.live`) immediately before it sends, and keeps each `wakes` lane pass
+  short: Lifecycle's drive loop awaits a pass inline, so a slow one delays every other
+  job on the object, PiHarness's wake job among them; a send already in flight when a
   revoke lands is not stopped, and counts as `unknown`, never replayed, only if it
   fails.
   Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside

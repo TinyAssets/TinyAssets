@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { GRANT_LIMITS, Grants } from "../src/grants";
 import { apiKeyOrigin, clock, Ledger, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
-import { Policy, POLICY_LIMITS, policyDigest } from "../src/policy";
+import { MCP_SIGN_IN_LIFETIME_S, Policy, POLICY_LIMITS, policyDigest } from "../src/policy";
 import { DOT, MCP, MUSE, rig, type Rig, signedIn } from "./ledger-support";
 import { failure } from "./support";
 
@@ -503,5 +503,112 @@ describe("every door admits an outside client against its grant (review L1, L4)"
     });
     expect((await r.table("proposal_shares")).map((row) => [row["proposer"], row["pending"]])
       .sort()).toEqual([[CHATGPT.client, 2], [CLAUDE.client, 1], ["owner", 3]].sort());
+  });
+});
+
+describe("a revoked grant is forgotten once it fences nothing (slice 3's review L1)", () => {
+  /** Revoke `origin` at `at` around the doors, as an old revoke would stand. */
+  const revokedAt = (r: Rig, origin: Origin, at: number) =>
+    runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      new Grants(state.storage, new Policy(state.storage)).revoke(origin.client, at);
+    });
+  const forget = (r: Rig, client: string) => r.stub.grantForget(r.bind(null), { client });
+
+  it("forgets an API key's once the binder deleted the key, and only a revoked one",
+     async () => {
+    const r = await rig();
+    const { origin, source } = await r.keyed("0123456789abcdef");
+    expect((await failure(() => forget(r, origin.client))).message)
+      .toBe("only a revoked grant is forgotten; revoke it first");
+    await r.stub.grantRevoke(r.bind(null), { client: origin.client });
+    const [before] = await r.sql("SELECT owner_clients FROM policy_usage");
+    expect(await forget(r, origin.client)).toEqual({ client: origin.client, forgotten: true });
+    expect(await forget(r, origin.client)).toEqual({ client: origin.client, forgotten: false });
+    expect((await clients(r)).map((c) => c.client)).toEqual([]);
+    const [after] = await r.sql("SELECT owner_clients FROM policy_usage");
+    expect([before!["owner_clients"], after!["owner_clients"]]).toEqual([1, 0]);
+    const [receipt] = (await kindsOf(r, "outside_grant")).slice(-1);
+    expect([receipt!["decision"], receipt!["rule"]]).toEqual(["forgotten", origin.client]);
+    // A key with no row is refused, never widened: forgetting it reopens nothing.
+    expect((await failure(() => r.stub.outsideAgents(r.bind(origin, { source })))).message)
+      .toBe("outside client has no grant");
+    expect((await failure(() => r.stub.grantForget(r.bind(MUSE), { client: origin.client })))
+      .message).toBe("only the owner may forget an outside client's grant");
+  });
+
+  it("forgets an MCP client's only once its revoke is older than any sign-in", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    await revokedAt(r, CHATGPT, clock() - MCP_SIGN_IN_LIFETIME_S + 60);
+    expect((await failure(() => forget(r, CHATGPT.client))).message)
+      .toBe("a credential signed in before the revoke may still be live");
+    await expect(r.sql("DELETE FROM outside_clients WHERE client = ?", CHATGPT.client))
+      .rejects.toThrow(/never deleted/);  // the schema holds the same rule
+    await r.stub.outsideAgents(r.bind(CLAUDE));
+    await revokedAt(r, CLAUDE, clock() - MCP_SIGN_IN_LIFETIME_S - 60);
+    expect(await forget(r, CLAUDE.client)).toEqual({ client: CLAUDE.client, forgotten: true });
+    // A forgotten client is one never seen: its next verified call is recorded full.
+    await r.stub.outsideAgents(r.bind(CLAUDE, { authenticated_at: signedIn() }));
+    const back = (await clients(r)).find((c) => c.client === CLAUDE.client)!;
+    expect([back.mode, back.generation, back.owner_set, back.revoked_at])
+      .toEqual(["full", 1, 0, null]);
+  });
+
+  it("keeps a revoked row an agent or stamped work holds", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    await revokedAt(r, MUSE, clock() - MCP_SIGN_IN_LIFETIME_S - 60);
+    expect((await failure(() => forget(r, MUSE.client))).message)
+      .toBe("an agent or scheduled work still holds this client's grant");
+    await expect(r.sql("DELETE FROM outside_clients WHERE client = ?", MUSE.client))
+      .rejects.toThrow(/never deleted/);
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    expect((await forget(r, MUSE.client)).forgotten).toBe(true);
+  });
+
+  it("never counts a forgettable revoke against the owner's bound", async () => {
+    const r = await rig();
+    for (const origin of [CHATGPT, CLAUDE, MUSE]) {
+      await r.stub.outsideAgents(r.bind(origin));
+    }
+    const out = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      const grants = new Grants(state.storage, new Policy(state.storage),
+                                { ...GRANT_LIMITS, maxOwnerClients: 2 });
+      const now = clock();
+      grants.revoke(CHATGPT.client, now - MCP_SIGN_IN_LIFETIME_S - 60);  // fences nothing
+      grants.revoke(CLAUDE.client, now - 60);  // still fences
+      const set = (client: string, expected = 1) => {
+        try {
+          return grants.set("session", { client, source: "mcp", mode: "full", scopes: [],
+                                         expected_generation: expected, name: "" }, now).mode;
+        } catch (error) {
+          return (error as Error).message;
+        }
+      };
+      return [set(MUSE.client), set(DOT.client, 0),
+              grants.list().map((c) => c.client).sort()];
+    });
+    expect(out).toEqual(["full", "the owner's managed outside clients are at their limit",
+                         [CLAUDE.client, MUSE.client].sort()]);
+  });
+});
+
+describe("the grant row's own rule (slice 3's review N4)", () => {
+  it("refuses a row the owner never set that is anything but a fresh full grant", async () => {
+    const r = await rig();
+    for (const values of [
+      "'mcp', 'scoped', '[]', 1, NULL, ''", "'api_key', 'full', '[]', 1, NULL, ''",
+      "'mcp', 'full', '[]', 2, NULL, ''", "'mcp', 'full', '[]', 1, 5, ''",
+      "'mcp', 'full', '[1]', 1, NULL, ''", "'mcp', 'full', '[]', 1, NULL, 'x'",
+    ]) {
+      await expect(r.sql("INSERT INTO outside_clients (client, source, mode, scopes, " +
+                           `generation, revoked_at, name, first_seen, last_seen) VALUES (?, ${
+                             values}, 1, 1)`, "9".repeat(64)))
+        .rejects.toThrow(/CHECK constraint failed/);
+    }
+    await r.sql("INSERT INTO outside_clients (client, source, mode, scopes, generation, " +
+                  "revoked_at, name, first_seen, last_seen) VALUES (?, 'mcp', 'full', '[]', 1, " +
+                  "NULL, '', 1, 1)", "9".repeat(64));
+    expect((await clients(r)).map((c) => c.client)).toEqual(["9".repeat(64)]);
   });
 });

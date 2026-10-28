@@ -202,19 +202,66 @@ The object SHALL admit each call from an outside client against that client's gr
 - **WHEN** a client scoped to `read_graph` writes a board row through the owner's account
 - **THEN** the write is refused with "outside client capability not granted" and a pull by it is served
 
+### Requirement: A scoped grant names the capabilities the doors check
+A scoped grant SHALL hold exact `{universe, agent, capability}` triples, and the object's doors SHALL check these capabilities: `read_graph` and `write_graph` at the mailbox, its doorbell subscription and the collections; `propose_policy` at an agent's policy proposal; and `read_files` and `write_files` at the file doors.
+
+#### Scenario: A scoped client proposes a policy change
+- **WHEN** a client scoped to `read_graph` in its agent's command center proposes a policy change
+- **THEN** the proposal is refused with "outside client capability not granted", and with `propose_policy` granted there it is held
+
 ### Requirement: An outside client's call never carries the owner's session
-A call from an outside client that also carries the owner's session cookie SHALL be refused before any grant is recorded, at every door but an agent's registration, where the owner's browser names the API key or verified MCP client the agent is.
+A call from an outside client that also carries the owner's session cookie SHALL be refused before any grant is recorded, at every door but an API key agent's registration, where the owner's browser names the key and the object re-derives its origin from the key id.
 
 #### Scenario: An outside client presents the owner's cookie
 - **WHEN** an outside client reads its mailbox with the owner's live session cookie in its binding
 - **THEN** the call is refused with "an outside client's call never carries the owner's session" and no receipt or grant is written
 
 ### Requirement: Grant rows stay bounded without forgetting a fence
-A grant row the owner set or revoked, or one an agent is registered from, SHALL never be deleted. Any other row SHALL be forgotten, least recently seen first, to make room, so a new client's verified call is never refused for the bound. The rows the owner sets SHALL be bounded at the owner's own grant change; a revoke SHALL never be refused for a bound.
+A grant row an agent is registered from, or that stamped work or a held registration holds, SHALL never be deleted, and a row the owner set SHALL be kept while it fences. Any other row SHALL be forgotten, least recently seen first, to make room, so a new client's verified call is never refused for the bound. The rows the owner sets SHALL be bounded at the owner's own grant change; a revoke SHALL never be refused for a bound.
 
 #### Scenario: A new client at the cap
 - **WHEN** the free grant rows are at their bound and the owner has revoked one client
 - **THEN** a new client is admitted `full`, the least recently seen free row is gone, and the revoked row is kept
+
+### Requirement: A revoked grant is forgotten once it fences nothing
+A revoked row nothing holds SHALL be kept only until no credential signed in before the revoke can exist: an API key's until the binder reports the key deleted, an MCP client's until its revoke is older than the longest sign-in the OAuth server issues. Then it MAY be forgotten, and it SHALL NOT count against the owner's bound.
+
+#### Scenario: A revoke that fences nothing any more
+- **WHEN** the owner's set rows are at their bound and one of them is an MCP revoke older than the longest sign-in
+- **THEN** the owner's next grant change forgets that row and is not refused, and the client's next verified call, from a later sign-in, is recorded `full`
+
+#### Scenario: A revoked key the directory deleted
+- **WHEN** the binder reports that an API key whose grant is revoked has been deleted
+- **THEN** its row is forgotten, and a call with that key is refused with "outside client has no grant"
+
+### Requirement: An MCP agent registers through a card its client files
+An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held for a bounded time. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
+
+#### Scenario: The owner's browser names an MCP client
+- **WHEN** a call carries an MCP client's origin together with the owner's session to register an agent
+- **THEN** it is refused before any grant is recorded, and no agent is registered
+
+#### Scenario: A card applied after a revoke
+- **WHEN** the owner applies a card whose client's grant was revoked after it was filed
+- **THEN** the apply is refused, no agent is registered, and the card is kept
+
+### Requirement: Scheduled work carries the authority it was made under
+Durable work the schedule runs later, a scheduled turn or automation, SHALL carry a stamp of the outside authority it was made under (the client, its grant generation and its sign-in time), or none for the owner's own, and SHALL be rechecked with the grant's standing when it is made and before it runs. A changed, revoked or fenced grant SHALL refuse it, and a grant change SHALL refuse the client's pending work in its own transaction. Open stamped work SHALL hold its client's grant row.
+
+#### Scenario: Free rows at their bound
+- **WHEN** the free grant rows are at their bound while a client's stamped work is pending
+- **THEN** the client's row is kept, and the work still runs under its standing grant
+
+#### Scenario: A grant changed around the doors
+- **WHEN** a stamped turn's client's grant generation moves before the turn is due
+- **THEN** the turn is refused at its run and the runner is never called
+
+### Requirement: Scheduled work that may have run is never run again
+A scheduled run SHALL be fenced as a wake is: claimed under a lease, and marked before it can have any effect. A claim abandoned past its lease SHALL be `unknown` if it was marked, and never run again; an unmarked one SHALL be due again, a bounded number of times.
+
+#### Scenario: A runner dies after its mark
+- **WHEN** the runner marks a turn and dies before it answers
+- **THEN** once the lease lapses the turn is `unknown`, and the runner is never handed it again
 
 ### Requirement: A grant change ends its client's wakes
 A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.

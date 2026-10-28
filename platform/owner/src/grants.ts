@@ -8,6 +8,11 @@
  * authority by default (`full`), or exact `{universe, agent, capability}` triples
  * (`scoped`), or none (`revoked`).
  *
+ * A scoped grant holds exact `{universe, agent, capability}` triples. The capabilities
+ * the object's doors check (`CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
+ * its doorbell subscription and the collections), `propose_policy` (an agent's policy
+ * proposal) and `read_files` and `write_files` (the file doors).
+ *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
  *   before any door acts (`admit`): an MCP client's first verified call records it
@@ -20,22 +25,30 @@
  *   wakes and revokes their doorbell subscriptions in the same transaction (the
  *   Python's M3), so the agent subscribes again under the new grant.
  * - Work saved under a grant is rechecked with `standing` against the generation it
- *   was stamped with: a changed, revoked or fenced grant refuses it.
+ *   was stamped with: a changed, revoked or fenced grant refuses it. The schedule's
+ *   stamped work (`scheduled.ts`) and an MCP client's held registration
+ *   (`registrations.ts`) carry that stamp and hold their client's row (`held`), as an
+ *   agent does, so the free-row bound can never forget it and turn a standing grant
+ *   into "no grant".
  *
- * Owed by later slices, each written into its task: durable work (scheduled turns
- * 3.6, agent runs and launches 5) stamps its outside authority and calls `standing`
- * before it runs; a grant change ends that client's in-flight turns and streams (the
- * Python's `_end_outside_streams`; there are none in the object yet); the doorbell
- * rechecks the grant just before it sends (7).
+ * Owed by later slices, each written into its task: agent runs and launches (5) stamp
+ * their outside authority and call `standing` before each step; a grant change ends that
+ * client's in-flight turns and streams (the Python's `_end_outside_streams`; there are
+ * none in the object yet); the doorbell rechecks the grant just before it sends (7).
  *
- * The rows stay bounded without ever forgetting a fence. A row the owner set or an
- * agent holds is kept: a revoked row is what keeps a pre-revoke credential dead, and
- * an agent's row is what its wakes ring under. Any other row is exactly what its
- * client's next verified call records again, so it is free: past `maxFreeClients` the
- * oldest free row goes, and a new client is never refused. Rows the owner sets are
- * bounded by `maxOwnerClients`, refused at the owner's own `set`; a revoke, a narrowing
- * that must always land, is never refused. Rows agents hold are bounded by the agent
- * registry.
+ * The rows stay bounded without forgetting a live fence. A row an agent or stamped work
+ * holds is kept: it is what that work is checked against. A row the owner set is kept
+ * while it fences: a revoked row keeps a pre-revoke credential dead, so it is forgotten
+ * only once no such credential can exist (`forgettable`): an API key's once the binder
+ * says the directory deleted the key (`forget`), an MCP client's once its revoke is
+ * older than `MCP_SIGN_IN_LIFETIME_S`. A forgotten client is one never seen: its next
+ * verified call, necessarily from a sign-in after the revoke, is recorded `full` (A1),
+ * and an API key with no row is refused. Any other row is exactly what its client's next
+ * verified call records again, so it is free: past `maxFreeClients` the oldest free row
+ * goes, and a new client is never refused. Rows the owner sets are bounded by
+ * `maxOwnerClients`, refused at the owner's own `set` once the forgettable ones are
+ * forgotten, so those never count; a revoke, a narrowing that must always land, is never
+ * refused. Rows agents and stamped work hold are bounded by their own bounds.
  *
  * Declared differences from the Python:
  * - Admission is the object's own, per call, where the grant lives: the Python router's
@@ -47,10 +60,16 @@
  * - Rows are bounded as above; the Python kept every row.
  */
 import { Invalid, Refused } from "./errors";
-import { canonical, plain, type Policy, policyDigest } from "./policy";
+import {
+  canonical, MCP_SIGN_IN_LIFETIME_S, plain, type Policy, policyDigest,
+} from "./policy";
 import { codePoints } from "./text";
 
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
+/** The capabilities a scoped grant's triples name at the object's doors. */
+export const CAPABILITIES = Object.freeze(
+  ["read_graph", "write_graph", "propose_policy", "read_files", "write_files"] as const);
+export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -101,10 +120,12 @@ export type Client = {
   readonly name: string;
   readonly first_seen: number;
   readonly last_seen: number;
-  /** Whether the owner has set or revoked this grant; such a row is never forgotten. */
+  /** Whether the owner has set or revoked this grant; kept while it fences. */
   readonly owner_set: number;
   /** The agents registered from this client, which hold its row. */
   readonly agents: number;
+  /** Its open stamped work and pending registrations, which hold its row too. */
+  readonly held: number;
 };
 
 type Stored = Omit<Client, "scopes"> & { scopes: string };
@@ -204,7 +225,7 @@ export class Grants {
         const over = this.#usage().free_clients - this.#limits.maxFreeClients + 1;
         if (over > 0) {
           sql.exec("DELETE FROM outside_clients WHERE client IN (SELECT client FROM " +
-                     "outside_clients WHERE owner_set = 0 AND agents = 0 " +
+                     "outside_clients WHERE owner_set = 0 AND agents = 0 AND held = 0 " +
                      "ORDER BY last_seen LIMIT ?)", over);
         }
         sql.exec("INSERT INTO outside_clients (client, source, mode, scopes, generation, " +
@@ -277,7 +298,8 @@ export class Grants {
       if (row !== undefined && row.source !== source) {
         throw new Refused("outside client source changed");
       }
-      if (row?.owner_set !== 1 && this.#usage().owner_clients >= this.#limits.maxOwnerClients) {
+      if (row?.owner_set !== 1 && this.#usage().owner_clients >= this.#limits.maxOwnerClients
+          && this.#forgetExpired(now, 1) === 0) {
         throw new Refused("the owner's managed outside clients are at their limit");
       }
       const generation = expected + 1;
@@ -295,6 +317,59 @@ export class Grants {
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
       return { client, mode, scopes: held, generation };
+    });
+  }
+
+  /**
+   * Forget up to `limit` MCP revokes that fence nothing any more, oldest first; how many.
+   * Such a row is what the client's first sign-in after the revoke would find missing
+   * anyway, so it never counts against the owner's bound.
+   */
+  #forgetExpired(now: number, limit: number): number {
+    const gone = this.#sql.exec<{ client: string }>(
+      "SELECT client FROM outside_clients WHERE mode = 'revoked' AND agents = 0 " +
+        "AND held = 0 AND revoked_at <= ? AND source = 'mcp' ORDER BY revoked_at LIMIT ?",
+      now - MCP_SIGN_IN_LIFETIME_S, limit,
+    ).toArray();
+    for (const { client } of gone) {
+      this.#forgotten(client, now);
+    }
+    return gone.length;
+  }
+
+  #forgotten(client: string, now: number): void {
+    this.#sql.exec("DELETE FROM outside_clients WHERE client = ?", client);
+    this.#policy.receipt("outside_grant", {
+      request_digest: policyDigest({ client, mode: "forgotten" }), generation: 0, rule: client,
+      decision: "forgotten", outcome: "committed",
+    }, now);
+  }
+
+  /**
+   * Forget a revoked grant no credential signed in before the revoke can use: an API
+   * key's, when the binder has deleted the key from the owner directory (so call it only
+   * then), or an MCP client's once the revoke is older than `MCP_SIGN_IN_LIFETIME_S`. A
+   * narrowing, so the owner's account makes it without a session. A row an agent or
+   * stamped work holds is kept; one never recorded has nothing to forget.
+   */
+  forget(clientId: unknown, now: number): { client: string; forgotten: boolean } {
+    const client = outsideClient(clientId);
+    return this.#storage.transactionSync(() => {
+      const row = this.#row(client);
+      if (row === undefined) {
+        return { client, forgotten: false };
+      }
+      if (row.mode !== "revoked") {
+        throw new Refused("only a revoked grant is forgotten; revoke it first");
+      }
+      if (row.agents > 0 || row.held > 0) {
+        throw new Refused("an agent or scheduled work still holds this client's grant");
+      }
+      if (row.source === "mcp" && row.revoked_at! > now - MCP_SIGN_IN_LIFETIME_S) {
+        throw new Refused("a credential signed in before the revoke may still be live");
+      }
+      this.#forgotten(client, now);
+      return { client, forgotten: true };
     });
   }
 
