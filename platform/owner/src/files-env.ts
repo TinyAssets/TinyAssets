@@ -609,8 +609,9 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
     // A BOM is the file's own bytes: pi's `edit` strips it and writes it back (Fact 9).
-    return this.#run(context, path, async () => new TextDecoder("utf-8", { fatal: false, ignoreBOM: true })
-      .decode(await wholeBytes(this.#load, this.#open(this.#where(path, false)))));
+    const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+    return this.#run(context, path, async () => decoder.decode(
+      await wholeBytes(this.#load, this.#open(this.#where(path, false)))));
   }
 
   async openTextLineReader(path: string, context: Context):

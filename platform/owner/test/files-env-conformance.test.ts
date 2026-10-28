@@ -344,8 +344,17 @@ describe("the owner's environment", () => {
         `one tool call makes at most ${FILES_CALLS} file-store calls; read a smaller range, ` +
         "or fewer files at once"]);
       expect(gets).toHaveLength(FILES_CALLS);
-      // The next tool call's environment has its own budget.
-      getOrThrow(await new OwnerFilesEnv({ files }).readBinaryFile("two.bin", context));
+      // The next tool call's environment has its own budget, which its puts spend too.
+      const next = new OwnerFilesEnv({ files });
+      for (let i = 0; i < FILES_CALLS; i++) {
+        getOrThrow(await next.writeFile(`p${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i),
+                                        context));
+      }
+      const refused = await next.writeFile("one-more.bin", new Uint8Array(INLINE_BYTES + 1),
+                                           context);
+      expect(refused.ok ? null : refused.error.code).toBe("not_supported");
+      // A small file moves no bytes through FILES, so it costs nothing.
+      getOrThrow(await next.writeFile("small.txt", "small", context));
     });
   });
 
