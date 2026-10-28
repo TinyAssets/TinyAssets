@@ -125,31 +125,58 @@ describe("a file quota", () => {
 describe("a full history", () => {
   const full = "the owner's file history is at its quota";
 
-  it("is never a dead end: a purge, a delete or a retention change makes room", async () => {
+  it("is never filled by live files' churn inside the window", async () => {
     const r = await rig();
-    await setPolicy(r, { max_entries: 2, keep_versions: 2, max_history: 4 });
-    for (const body of ["1", "2"]) {
-      await write(r, `${W}/a`, body);
-      await write(r, `${W}/b`, body);
+    // The reviewer's probe: ten entries of one version each, ten writes each inside the
+    // window, in a history that holds exactly what the live paths may keep.
+    await setPolicy(r, { max_entries: 10, keep_versions: 1, keep_recent: 1, max_history: 10 });
+    for (let round = 0; round < 10; round++) {
+      for (let i = 0; i < 10; i++) {
+        await write(r, `${W}/f${i}`, `${round}`);
+      }
     }
-    expect((await failure(() => write(r, `${W}/a`, "3"))).message).toBe(full);
-    // The owner's purge drops a path's old versions, never refused.
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(10);
+    // Kept inside the window, up to keep_recent each, and never past it.
+    await setPolicy(r, { max_entries: 10, keep_versions: 1, keep_recent: 3, max_history: 30 });
+    await runDurableObjectAlarm(r.stub);
+    for (let round = 0; round < 5; round++) {
+      await write(r, `${W}/f0`, `again ${round}`);
+    }
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history WHERE path = ?",
+                       `${W}/f0`)).toEqual([{ n: 3 }]);
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+  });
+
+  it("is never a dead end: a purge or a retention change makes room", async () => {
+    const r = await rig();
+    await setPolicy(r, { max_entries: 2, keep_versions: 1, keep_recent: 1, max_history: 2 });
+    // A deleted path keeps its delete for the window: the history live files never fill.
+    await write(r, `${W}/a`, "1");
+    await r.stub.fileRemove(r.bind(null), { path: `${W}/a`, expected_etag: null,
+                                            recursive: false });
+    await write(r, `${W}/b`, "1");
+    expect((await failure(() => write(r, `${W}/c`, "1"))).message).toBe(full);
+    // The owner's purge drops a gone path's history, never refused.
     expect(await r.stub.fileHistoryPurge(r.bind(null), { path: `${W}/a` }))
       .toEqual({ purged: 1 });
-    await write(r, `${W}/a`, "3");
-    expect((await failure(() => write(r, `${W}/b`, "3"))).message).toBe(full);
+    await write(r, `${W}/c`, "1");
+    await r.stub.fileRemove(r.bind(null), { path: `${W}/c`, expected_etag: null,
+                                            recursive: false });
+    expect((await failure(() => write(r, `${W}/d`, "1"))).message).toBe(full);
     // A retention change re-marks the rows already kept, on the one schedule.
-    await setPolicy(r, { max_entries: 2, keep_versions: 1, max_history: 4, retention_days: 0 });
+    await setPolicy(r, { max_entries: 2, keep_versions: 1, keep_recent: 1, max_history: 2,
+                         retention_days: 0 });
     // Due at once: the alarm may already have run by itself; run it if it has not.
     await runDurableObjectAlarm(r.stub);
-    for (let i = 0; i < 50 && (await r.stub.fileUsage(r.bind(null))).history !== 2; i++) {
+    for (let i = 0; i < 50 && (await r.stub.fileUsage(r.bind(null))).history !== 1; i++) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(2);
-    await write(r, `${W}/b`, "3");
-    expect(await sqlIn(r.stub, "SELECT retained_keep, retained_days, retain_cursor " +
-                                 "FROM file_space"))
-      .toEqual([{ retained_keep: 1, retained_days: 0, retain_cursor: null }]);
+    expect((await r.stub.fileUsage(r.bind(null))).history).toBe(1);
+    await write(r, `${W}/d`, "1");
+    expect(await sqlIn(r.stub, "SELECT retained_keep, retained_recent, retained_days, " +
+                                 "retain_cursor FROM file_space"))
+      .toEqual([{ retained_keep: 1, retained_recent: 1, retained_days: 0, retain_cursor: null }]);
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
   });
@@ -287,13 +314,20 @@ describe("the files policy", () => {
 
   it("refuses a history that cannot hold every live path's kept versions", async () => {
     const r = await rig();
-    const reason = "files policy: max_history holds max_entries times keep_versions";
+    const reason = "files policy: max_history holds max_entries times the larger of " +
+      "keep_versions and keep_recent";
     expect((await failure(() => setPolicy(r, { max_entries: 1000, keep_versions: 1000,
                                                max_history: 999_999 }))).message).toBe(reason);
-    expect((await failure(() => setPolicy(r, { keep_versions: 11 }))).message).toBe(reason);
+    expect((await failure(() => setPolicy(r, { max_entries: 1000, keep_versions: 1,
+                                               keep_recent: 1000, max_history: 999_999 })))
+      .message).toBe(reason);
+    expect((await failure(() => setPolicy(r, { keep_recent: 21 }))).message).toBe(reason);
     await setPolicy(r, { max_entries: 1000, keep_versions: 1000, max_history: 1_000_000 });
-    expect(FILE_DEFAULTS.max_entries * FILE_DEFAULTS.keep_versions)
-      .toBeLessThanOrEqual(FILE_DEFAULTS.max_history);
+    await setPolicy(r, { max_entries: 1000, keep_versions: 1, keep_recent: 1000,
+                         max_history: 1_000_000 });
+    expect(FILE_DEFAULTS.max_entries * Math.max(FILE_DEFAULTS.keep_versions,
+                                                FILE_DEFAULTS.keep_recent))
+      .toBe(FILE_DEFAULTS.max_history);
     expect(FILE_SETTINGS.keep_versions[1]).toBe(KEEP_CEILING);
     expect(FILE_SETTINGS.max_file_bytes[1]).toBe(MAX_INTENT_CHUNKS * CHUNK_BYTES);
   });

@@ -15,14 +15,17 @@
  *   the board (S34): `expected` null writes unconditionally, `""` only creates, and
  *   anything else must be the current etag; a lost swap is answered with the entry as it
  *   stands ({@link FileConflict}).
- * - Content. A content id names its kind and size with its bytes (inline, one chunk, or
- *   a chunk list), so no content of one kind can name another's; content already stored
- *   under an id is reused only when it is the same content, else the write fails loudly.
+ * - Content. A content id names its kind and size with its bytes (inline, or a chunk
+ *   list), so no content of one kind can name another's; content already stored under
+ *   an id is reused only when it is the same content, else the write fails loudly. A
+ *   content is held by every entry and every kept history row naming it, in any root,
+ *   so content anything still names is never collected.
  * - History. Every workspace change appends a history row (`file_history`), which is
- *   also the change feed; the temporary area keeps none. Retention keeps every version
- *   younger than the policy's `retention_days` and each live path's newest
- *   `keep_versions`. A row is due for pruning (`prune_after`) from the moment it falls
- *   out of what is kept, and housekeeping prunes due rows; a retention change is applied
+ *   also the change feed; the temporary area keeps none. Retention keeps each live
+ *   path's newest `keep_versions`, and its versions younger than `retention_days` up to
+ *   `keep_recent` in all; a version past those goes in the change that pushed it out. A
+ *   row kept only for its age is due for pruning (`prune_after`) at that age, and
+ *   housekeeping prunes due rows; a retention change is applied
  *   to the rows already kept, by housekeeping too. `restore` writes an old version as a
  *   new one; `redact` drops one old version's content, whose bytes go once no other row
  *   holds the same content; `purge` drops a path's old versions.
@@ -58,7 +61,8 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
 import {
-  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within, WORKSPACE,
+  ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, parentOf, storedPath, TEMP, within,
+  WORKSPACE,
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 
@@ -120,6 +124,7 @@ export interface FileLimits {
   readonly max_history: number;
   readonly retention_days: number;
   readonly keep_versions: number;
+  readonly keep_recent: number;
 }
 
 /** What the files Worker does for the object; the `FILES` binding. */
@@ -249,6 +254,7 @@ type Space = {
   holder: string | null;
   lease_expires: number;
   retained_keep: number;
+  retained_recent: number;
   retained_days: number;
   retain_cursor: string | null;
 };
@@ -430,8 +436,11 @@ export class Files {
   }
 
   /**
-   * Run `act` in one transaction, then tell watchers. Its quotas are checked at the end,
-   * unless it only removes (`freeing`): a delete, a redaction, a purge or housekeeping.
+   * Run `act` in one transaction, then tell watchers. Its quotas are checked at the end
+   * (`#bounds`), which never refuses a change that leaves every counter no higher, so a
+   * redaction, a purge, an abort or housekeeping always passes. `freeing` exempts the
+   * changes that free while writing a record: a remove (its delete row adds to history)
+   * and a sync commit (whose ops are bounded one by one, a remove's among them exempt).
    */
   #change<T>(act: (touched: Touched, now: number) => T, freeing = false): T {
     const touched: Touched = [];
@@ -655,32 +664,42 @@ export class Files {
   }
 
   /**
-   * Mark what retention no longer keeps of `path` after a change: past its newest `keep`
-   * versions (none once it is gone), each row is due `retention_days` after it was
-   * written. On a change only the newest rows move in or out of what is kept, so this
-   * looks no further than the most versions policy can keep; a policy change re-marks
-   * every row through housekeeping (`#remark`).
+   * Apply retention to `path` after a change. Its newest `keep` versions (none once it is
+   * gone) are kept; the next ones, up to `keep_recent` in all, are due `retention_days`
+   * after they were written; any older one goes now. So a path holds at most
+   * `max(keep_versions, keep_recent)` rows, and every live path's history fits in
+   * `max_history` (policy.ts). On a change only the newest rows move between those
+   * bands, so this looks no further than the most rows policy can keep; a policy change
+   * re-marks every row through housekeeping (`#remark`).
    */
   #retain(path: string, live: boolean): void {
     const limits = this.#limits();
     const keep = live ? limits.keep_versions : 0;
+    const cap = Math.max(keep, limits.keep_recent);
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC " +
       "LIMIT ? OFFSET ?";
     if (keep > 0) {
       this.#sql.exec(`UPDATE file_history SET prune_after = NULL WHERE prune_after IS NOT NULL ` +
                      `AND version IN (${newest})`, path, keep, 0);
     }
-    this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE prune_after IS NULL ` +
-                   `AND version IN (${newest})`, limits.retention_days * 86_400, path,
-                   KEEP_CEILING, keep);
+    if (cap > keep) {
+      this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE prune_after IS NULL ` +
+                     `AND version IN (${newest})`, limits.retention_days * 86_400, path,
+                     cap - keep, keep);
+    }
+    this.#sql.exec(`DELETE FROM file_history WHERE version IN (${newest})`, path, KEEP_CEILING,
+                   cap);
   }
 
-  /** Every row of `path` marked as the policy in force keeps it. */
+  /** Every row of `path` marked, or dropped, as the policy in force keeps it. */
   #remark(path: string, limits: FileLimits): void {
     const live = this.#entry(path) !== undefined;
     const keep = live ? limits.keep_versions : 0;
+    const cap = Math.max(keep, limits.keep_recent);
     const days = limits.retention_days * 86_400;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC LIMIT ?";
+    this.#sql.exec(`DELETE FROM file_history WHERE path = ? AND version NOT IN (${newest})`,
+                   path, path, cap);
     this.#sql.exec(`UPDATE file_history SET prune_after = NULL WHERE path = ? ` +
                    `AND prune_after IS NOT NULL AND version IN (${newest})`, path, path, keep);
     this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE path = ? ` +
@@ -955,7 +974,7 @@ export class Files {
         .toArray().length > 0;
       this.#release(intentId);
       return { aborted: held };
-    }, true);
+    });
   }
 
   /**
@@ -1156,9 +1175,12 @@ export class Files {
           throw new FileFault("not_empty", "the destination directory is not empty");
         }
       }
+      // The feed reads each source's leaving before its arrival, but the source entries
+      // go last: each content is held by its new entry before its old one lets go, so a
+      // move never leaves content unreferenced, in any root.
       const tree = [moving, ...(moving.kind === "dir" ? this.#below(source) : [])];
       for (const entry of tree) {
-        this.#drop(pathOf(entry), "rename_from", options.writer, now, touched);
+        this.#record(pathOf(entry), "rename_from", null, null, 0, 0, options.writer, now);
       }
       let moved: StoredEntry | undefined;
       for (const entry of tree) {
@@ -1169,6 +1191,11 @@ export class Files {
                                   entry.mode, options.writer, now);
         moved ??= made;
         touched.push(path);
+      }
+      for (const entry of tree) {
+        this.#sql.exec("DELETE FROM file_entries WHERE parent = ? AND name = ?", entry.parent,
+                       entry.name);
+        touched.push(pathOf(entry));
       }
       return shown(moved!);
     });
@@ -1207,7 +1234,7 @@ export class Files {
       }
       this.#sql.exec("UPDATE file_history SET content_id = NULL WHERE version = ?", row.version);
       return { redacted: row.version };
-    }, true);
+    });
   }
 
   /**
@@ -1226,7 +1253,7 @@ export class Files {
         this.#sql.exec("UPDATE file_space SET feed_floor = MAX(feed_floor, ?)", Math.max(...gone));
       }
       return { purged: gone.length };
-    }, true);
+    });
   }
 
   /** A new temporary directory under `/.ta/tmp`, expired after a day. */
@@ -1251,7 +1278,7 @@ export class Files {
       for (const path of paths) {
         this.#dropTemp(nameOf(path), writer, now, touched);
       }
-    }, true);
+    });
   }
 
   #dropTemp(name: string, writer: string, now: number, touched: Touched): void {
@@ -1372,7 +1399,10 @@ export class Files {
 
   /**
    * Where a conflicting write's content goes: the blocked ancestor, or else the path,
-   * under the first conflict name nothing holds, so a copy never replaces anything.
+   * under the first conflict name nothing holds, so a copy never replaces anything. The
+   * whole copy path is checked as any path is: one that would pass 4096 bytes is refused,
+   * as that op's reported outcome. The sandbox keeps such a file and the sync agent
+   * reports it on every sync until it is renamed or the conflict resolved (tasks 6).
    */
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
@@ -1380,7 +1410,11 @@ export class Files {
     for (let n = 1; n <= MAX_CONFLICT_COPIES; n++) {
       const copy = storedPath(`${parentOf(at)}/${conflictName(nameOf(at), epoch, n)}`);
       if (this.#entry(copy) === undefined) {
-        return copy + rest;
+        if (utf8Bytes(copy + rest) > MAX_PATH_BYTES) {
+          throw new Refused("the conflict copy's path would pass 4096 bytes; " +
+                            "the sandbox keeps this file and reports it each sync");
+        }
+        return storedPath(copy + rest);
       }
     }
     throw new Refused("too many conflict copies of this path in this epoch");
@@ -1440,10 +1474,16 @@ export class Files {
 
   // -- HOUSEKEEPING, ON THE OWNER'S ONE SCHEDULE ---------------------------------------
 
+  /** Whether the rows were marked under a retention other than the one in force. */
+  #retentionChanged(space: Space, limits: FileLimits): boolean {
+    return space.retained_keep !== limits.keep_versions
+      || space.retained_recent !== limits.keep_recent
+      || space.retained_days !== limits.retention_days;
+  }
+
   /** Whether a retention change is still to be applied to the rows already kept. */
   #reretaining(space: Space, limits: FileLimits): boolean {
-    return space.retain_cursor !== null || space.retained_keep !== limits.keep_versions
-      || space.retained_days !== limits.retention_days;
+    return space.retain_cursor !== null || this.#retentionChanged(space, limits);
   }
 
   /**
@@ -1488,7 +1528,7 @@ export class Files {
         this.#dropTemp(name, "system", now, touched);
       }
       this.#prune(now);
-    }, true);
+    });
     const due = sql.exec<{ sha256: string }>(
       "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
         "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
@@ -1520,8 +1560,7 @@ export class Files {
       return;
     }
     let cursor = space.retain_cursor ?? "";
-    if (space.retained_keep !== limits.keep_versions
-        || space.retained_days !== limits.retention_days) {
+    if (this.#retentionChanged(space, limits)) {
       cursor = "";
     }
     const paths = this.#sql.exec<{ path: string }>(
@@ -1530,8 +1569,9 @@ export class Files {
     for (const path of paths) {
       this.#remark(path, limits);
     }
-    this.#sql.exec("UPDATE file_space SET retained_keep = ?, retained_days = ?, retain_cursor = ?",
-                   limits.keep_versions, limits.retention_days,
+    this.#sql.exec("UPDATE file_space SET retained_keep = ?, retained_recent = ?, " +
+                     "retained_days = ?, retain_cursor = ?",
+                   limits.keep_versions, limits.keep_recent, limits.retention_days,
                    paths.length === HOUSEKEEPING_BATCH ? paths.at(-1)! : null);
   }
 

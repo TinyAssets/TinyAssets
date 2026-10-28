@@ -246,14 +246,25 @@ A content id SHALL name its kind (inline or chunks) and its size, and a change w
 - **THEN** the second change fails and the first content reads as it was
 
 ### Requirement: History is kept by owner policy, never dropped to make room
-History SHALL keep every version younger than the policy's retention and each live path's newest versions, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes. A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another history row holds the same content.
+History SHALL keep each live path's newest `keep_versions` and its versions younger than the policy's retention up to `keep_recent` in all, dropping a version past those in the change that pushed it out, and a change to the retention policy SHALL be applied to existing history on the owner's one schedule, in bounded passes.
 
 #### Scenario: A path written twelve times
 - **WHEN** a path is written twelve times under the default policy
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
+### Requirement: Every entry holds its content
+Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
+
+#### Scenario: A file renamed out of the temporary area
+- **WHEN** a file written under `/.ta/tmp` is renamed into `/workspace`, and housekeeping then collects every due chunk
+- **THEN** the file reads back byte for byte
+
+#### Scenario: Live files' churn inside the window
+- **WHEN** ten files of one kept version each, with `keep_recent` 1 and `max_history` 10, are each written ten times inside the retention window
+- **THEN** every write lands and history holds ten rows
+
 ### Requirement: The owner frees history, and temporary files keep none
-The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
+A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
 
 #### Scenario: History at its quota
 - **WHEN** history rows reach `max_history`
@@ -267,7 +278,7 @@ Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks th
 - **THEN** it is refused, and no parent directory, history row or content of it is kept
 
 ### Requirement: A quota never blocks a change that frees
-A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times `keep_versions` is at most `max_history`, so the versions history must keep can never fill it.
+A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it.
 
 #### Scenario: A full owner removes files
 - **WHEN** every counter is at its bound and the owner removes a file

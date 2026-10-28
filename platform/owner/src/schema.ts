@@ -62,9 +62,6 @@ const COUNTED = "('uploading', 'live')";
 const CHUNK_USAGE = (sign: string, row: string) =>
   `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED});`;
 /** A file entry in the temporary area, which keeps no history. */
-const TEMP_ENTRY = (row: string) =>
-  `${row}.content_id IS NOT NULL AND (${row}.parent = '/.ta/tmp' OR ${row}.parent GLOB '/.ta/tmp/*')`;
-
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
   Object.freeze([
@@ -413,20 +410,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // Every index and trigger write is a billed row written, so there are only the ones a
   // query or a bound needs. Tables keyed by text are WITHOUT ROWID (the key is the table,
   // no second index), and an entry is keyed by (parent, name), which serves a lookup, a
-  // directory listing and a subtree's range alike. A small file's overwrite writes about
-  // ten rows: the seq, the content and its inline-bytes counter, the entry, the history
-  // row with its path index, the history counter and the content's reference, and the
-  // row retention lets go of with its due index.
+  // directory listing and a subtree's range alike. Measured (`rowsWritten`, triggers and
+  // indexes included): a new small file writes 10 rows, its overwrite 10; a new one-chunk
+  // file 22, its overwrite 22. An entry's own content reference costs a row or two of
+  // those: the new content's reference, and on an overwrite the old one's release.
   //
   // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
   // (chunks uploading or live), inline bytes, open intents and the chunks they hold,
-  // which the bounds read; a content's `refs` (its history rows, and the temporary
-  // area's entries, which keep no history: a live workspace entry's content is always its
-  // newest row's) and a chunk's `refs` (contents made of it). A content nothing refers
-  // to goes, with its chunk list; a chunk no content refers to and no upload holds
-  // becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h, SQLite's clock:
-  // the schedule compares it with the object's, and a day's grace does not mind which).
-  // A history row never changes but for its prune time and a redaction of its content.
+  // which the bounds read; a content's `refs` (every entry and every kept history row
+  // that names it, in any root: one model, so no path, history or none, can drop
+  // content an entry still names) and a chunk's `refs` (contents made of it). A content
+  // nothing refers to goes, with its chunk list; a chunk no content refers to and no
+  // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h,
+  // SQLite's clock: the schedule compares it with the object's, and a day's grace does
+  // not mind which). So content any entry or kept row names is never garbage. A history
+  // row never changes but for its prune time and a redaction of its content.
   Object.freeze([
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       // The owner's chunk namespace, made on first use (files.ts `ns`).
@@ -443,9 +441,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "lease_expires REAL NOT NULL, " +
       // The retention every kept row is marked by, and how far housekeeping has re-marked
       // the rows for a newer one.
-      "retained_keep INTEGER NOT NULL, retained_days INTEGER NOT NULL, retain_cursor TEXT)",
+      "retained_keep INTEGER NOT NULL, retained_recent INTEGER NOT NULL, " +
+      "retained_days INTEGER NOT NULL, retain_cursor TEXT)",
     `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, ${
-      FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.retention_days}, NULL)`,
+      FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
+      FILE_DEFAULTS.retention_days}, NULL)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
       "WHEN NEW.epoch < OLD.epoch BEGIN SELECT RAISE(ABORT, 'the lease epoch only rises'); END",
     "CREATE TRIGGER file_seq_rises BEFORE UPDATE OF seq ON file_space " +
@@ -496,17 +496,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX file_history_due ON file_history (prune_after) WHERE prune_after IS NOT NULL",
     "CREATE TABLE file_temps (name TEXT PRIMARY KEY, expires_at REAL NOT NULL) WITHOUT ROWID",
     "CREATE INDEX file_temps_due ON file_temps (expires_at)",
+    // Every entry holds its own content, in every root, whatever history keeps.
     "CREATE TRIGGER file_entries_added AFTER INSERT ON file_entries BEGIN " +
-      "UPDATE file_space SET entries = entries + 1; END",
+      "UPDATE file_space SET entries = entries + 1; " +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
     "CREATE TRIGGER file_entries_removed AFTER DELETE ON file_entries BEGIN " +
-      "UPDATE file_space SET entries = entries - 1; END",
-    // The temporary area keeps no history, so its entries hold their own content.
-    `CREATE TRIGGER file_temp_held AFTER INSERT ON file_entries WHEN ${TEMP_ENTRY("NEW")} ` +
-      "BEGIN UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
-    `CREATE TRIGGER file_temp_released AFTER DELETE ON file_entries WHEN ${TEMP_ENTRY("OLD")} ` +
-      "BEGIN UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
-    "CREATE TRIGGER file_temp_changed AFTER UPDATE OF content_id ON file_entries " +
-      `WHEN ${TEMP_ENTRY("NEW")} BEGIN ` +
+      "UPDATE file_space SET entries = entries - 1; " +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_entries_changed AFTER UPDATE OF content_id ON file_entries " +
+      "WHEN NEW.content_id IS NOT OLD.content_id BEGIN " +
       "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
       "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
     "CREATE TRIGGER file_history_added AFTER INSERT ON file_history BEGIN " +

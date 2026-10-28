@@ -134,13 +134,14 @@ export interface PolicyEntry {
  * these values. Quotas are refused loudly at the bound and never make room by dropping
  * history. `max_bytes` counts unique chunk bytes, live and in history; `max_inline_bytes`
  * the small files kept in the object itself, whose 10 GB the high bound protects.
- * Retention keeps every version younger than `retention_days` and each live path's last
- * `keep_versions`.
+ * Retention keeps each live path's last `keep_versions`, and its versions younger than
+ * `retention_days` up to `keep_recent` in all; a deleted path keeps up to `keep_recent`
+ * for `retention_days`. A version past those goes in the change that pushed it out.
  *
- * `max_history` is never below `max_entries × keep_versions`, so the versions retention
- * keeps of every live path fit in it at once: a full history is only ever the recent
- * days' churn, which ages out, and the owner can purge a path's history or delete
- * (neither is ever refused) at any time. A file is at most `MAX_INTENT_CHUNKS` chunks
+ * `max_history` is never below `max_entries × max(keep_versions, keep_recent)`, the most
+ * rows the live paths can hold at once, so no churn of live files fills it. What can is
+ * the recent history of deleted paths, which ages out, is refused loudly, and is the
+ * owner's to purge (never refused) at any time. A file is at most `MAX_INTENT_CHUNKS` chunks
  * (40 GiB), the most one upload intent holds. The sync agent's exclude list is not here:
  * it is the owner's file `/workspace/.ta/sync-ignore`, whose defaults come with the sync
  * agent (tasks 6).
@@ -150,9 +151,10 @@ export const FILE_DEFAULTS = Object.freeze({
   max_inline_bytes: 256 * 1024 ** 2,
   max_entries: 200_000,
   max_file_bytes: 5 * 1024 ** 3,
-  max_history: 2_000_000,
+  max_history: 4_000_000,
   retention_days: 30,
   keep_versions: 10,
+  keep_recent: 20,
 });
 export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS]: number };
 /** The range each setting may take. */
@@ -165,6 +167,7 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
     max_history: Object.freeze([0, 5_000_000] as const),
     retention_days: Object.freeze([0, 3650] as const),
     keep_versions: Object.freeze([1, KEEP_CEILING] as const),
+    keep_recent: Object.freeze([1, KEEP_CEILING] as const),
   });
 
 /** The files settings a document leaves in force: its own, and the defaults for the rest. */
@@ -336,8 +339,10 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
     throw new Invalid("invalid files policy");
   }
   const settings = { ...FILE_DEFAULTS, ...(files as Partial<FileSettings> | undefined) };
-  if (settings.max_entries * settings.keep_versions > settings.max_history) {
-    throw new Invalid("files policy: max_history holds max_entries times keep_versions");
+  if (settings.max_entries * Math.max(settings.keep_versions, settings.keep_recent)
+      > settings.max_history) {
+    throw new Invalid("files policy: max_history holds max_entries times the larger of " +
+                      "keep_versions and keep_recent");
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])
