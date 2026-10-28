@@ -178,6 +178,7 @@ describe("the owner's environment", () => {
       first = new OwnerFilesEnv({ files }).id;
       expect(new OwnerFilesEnv({ files }).id).toBe(first);
       expect(first).toMatch(/^ta-files:[0-9a-f]{32}$/);
+      expect(first).not.toContain(files.ns());
     });
     await inOwner(async (files) => {
       expect(new OwnerFilesEnv({ files }).id).not.toBe(first);
