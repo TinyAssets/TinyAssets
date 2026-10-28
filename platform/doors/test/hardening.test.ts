@@ -12,6 +12,7 @@ import {
   ACCESS_TOKEN_TTL_S, APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S,
   WEB_CLIENT, WEB_REDIRECT,
 } from "../src/config";
+import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
 import { revokeClient } from "../src/revoke";
 import { mintKeyFor } from "./keys";
@@ -91,6 +92,36 @@ describe("L1: an outside client is never sent access on our own origin", () => {
     const page = await call(new Request(authorizeUrl({ clientId: evil, redirectUri: redirect },
                                                      challenge), { headers: { ...NAVIGATE } }));
     expect(page.status).toBe(400);
+  });
+
+  it.each([
+    ["the apex with a trailing dot", "https://tinyassets.io./cb"],
+    ["a subdomain with a trailing dot", "https://mcp.tinyassets.io./cb"],
+    ["a subdomain in capitals with a port", "https://MCP.TinyAssets.IO:8443/cb"],
+  ])("refuses a client naming a redirect on %s", async (_what, redirect) => {
+    const evil = "https://evil.example/client.json";
+    serveDocument(evil, { client_id: evil, client_name: "TinyAssets", redirect_uris: [redirect],
+                          token_endpoint_auth_method: "none" });
+    const { challenge } = await pkce();
+    const page = await call(new Request(authorizeUrl({ clientId: evil, redirectUri: redirect },
+                                                     challenge), { headers: { ...NAVIGATE } }));
+    expect(page.status).toBe(400);
+    expect(await page.text()).toBe("This app may not send access to TinyAssets itself.");
+  });
+
+  it("counts our hosts as DNS names them, and nothing that only looks like them", () => {
+    for (const host of ["https://tinyassets.io/x", "https://TinyAssets.IO/x",
+                        "https://mcp.tinyassets.io/x", "https://a.b.tinyassets.io:8443/x",
+                        "https://MCP.TinyAssets.IO:8443/x", "https://tinyassets.io./x",
+                        "https://mcp.tinyassets.io./x", "http://tinyassets.io/x"]) {
+      expect([host, ours(host)]).toEqual([host, true]);
+    }
+    for (const host of ["https://eviltinyassets.io/x", "https://tinyassets.io.evil.example/x",
+                        "https://tinyаssets.io/x", "https://xn--tinyssets-0fh.io/x",
+                        "https://tinyassets.io%2eevil.example/x", "https://tinyassets.io../x",
+                        "https://nottinyassets.io/x"]) {
+      expect([host, ours(host)]).toEqual([host, false]);
+    }
   });
 
   it("serves a client on a host that only ends like ours", async () => {
@@ -200,6 +231,27 @@ describe("loopback clients' grants", () => {
     expect(await grantsOf(alice)).toEqual(["http://127.0.0.1:6666/callback"]);
     expect((await refresh({ clientId: CLI, redirectUri: "" }, first.refresh_token)).status)
       .toBe(400);
+  });
+
+  it("are replaced all at once when earlier ports had piled up", async () => {
+    serveDocument(CLI, { client_id: CLI, client_name: "CLI",
+                         redirect_uris: ["http://127.0.0.1/callback"],
+                         token_endpoint_auth_method: "none" });
+    const alice = owner();
+    const oauth = authorizationServer(doorsEnv).getOAuthApi(doorsEnv);
+    // Two grants from earlier ports of one installation, as left before the doors
+    // replaced by installation.
+    for (const port of [5555, 6666]) {
+      const { challenge } = await pkce();
+      const request = await oauth.parseAuthRequest(new Request(authorizeUrl(
+        { clientId: CLI, redirectUri: `http://127.0.0.1:${port}/callback` }, challenge)));
+      await oauth.completeAuthorization({ request, userId: alice, metadata: {}, scope: [],
+                                          props: { kind: "mcp" }, revokeExistingGrants: false });
+    }
+    expect((await grantsOf(alice)).sort()).toEqual(["http://127.0.0.1:5555/callback",
+                                                    "http://127.0.0.1:6666/callback"]);
+    await connectCimd(alice, "http://127.0.0.1:7777/callback");
+    expect(await grantsOf(alice)).toEqual(["http://127.0.0.1:7777/callback"]);
   });
 
   it("are replaced only for the same client", async () => {

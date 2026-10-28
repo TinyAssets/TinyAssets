@@ -75,9 +75,14 @@ function granted(scope: readonly string[]): string[] {
   return scope.filter((s) => SCOPES.includes(s));
 }
 
-/** Whether a redirect URI is on one of our hosts: the apex or any subdomain. */
+/**
+ * Whether a redirect URI is on one of our hosts: the apex or any subdomain, as DNS names
+ * them, so a fully qualified spelling with its trailing dot (`tinyassets.io.`) is ours
+ * too. The URL parser has already lowercased the host, dropped the port, decoded `%2e`
+ * and turned a homoglyph into punycode, so only the dot is left to strip.
+ */
 export function ours(redirectUri: string): boolean {
-  const host = new URL(redirectUri).hostname;
+  const host = new URL(redirectUri).hostname.replace(/\.$/, "");
   return host === PUBLIC_HOST || host.endsWith(`.${PUBLIC_HOST}`);
 }
 
