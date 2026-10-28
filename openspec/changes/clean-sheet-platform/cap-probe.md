@@ -3,18 +3,53 @@
 For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
 `scripts/probes/capprobe/`. Workflow: `.github/workflows/cap-probe.yml` (manual only).
 
+## Found (run 1, Workers Free)
+
+- **The cap that bites is subrequests per invocation: 50 on this account.** The 32 the
+  probe was designed around never bit: 40 sequential service-binding calls passed in one
+  Worker request.
+- **A DO RPC does not share its caller's counter (M4), and an alarm starts fresh (M5).**
+  Inside one alarm, RPC and `fetch` share one counter.
+- **A call is charged to the object's current event, not to the async context that made
+  it (M12).** Concretely, it goes to the newest incoming invocation, or to one counter that
+  each incoming event resets. M12 cannot tell those two apart, and for `calls.ts` they mean
+  the same thing: work in flight spends the newest event's budget. This rules out the
+  per-async-context attribution that `calls.ts` assumes, a counter that never resets, and
+  charging to the oldest invocation.
+- **An alarm is cut at 15.0 minutes, even while it awaits I/O, and is then retried (M10).**
+- The account is almost certainly on Workers Free, because 50 is Free's subrequest limit.
+  Whether the documented 32 bites on Workers Paid still needs a Paid run ("Next" below).
+
+The probe was designed for a cap of 32, but the cap was 50. So several cases stayed under
+it and did not discriminate. The results table marks each of those cases "no".
+
 ## Why
 
-Cloudflare documents "a maximum of 32 Worker invocations" per request, with each
-service-binding call counting and later calls throwing. It says nothing about Durable
-Object events. `platform/owner/src/calls.ts` budgets 32 per platform invocation: 24 for
-`FILES`, 8 for the gateway and hooks. If the cap covers a whole alarm, including the work
-it awaits, a pi turn inside one PiHarness wait gets about 8 model calls. Pi starts work
-in `submit()` and continues it after that RPC returns, so which invocation such calls are
-charged to decides the gateway's shape. workerd charges an object's usage to its newest
-incoming request (`incomingRequests.front()`) and tops the actor up on every incoming
-request and WebSocket event, so "charged to the newest invocation" and "reset on each
-event" are both plausible. Its local limit enforcer is a no-op, so only a live run answers.
+The service-bindings page says (cloudflare-docs @95e3463,
+`workers/runtime-apis/bindings/service-bindings/index.mdx:190-191`):
+
+> - Each request to a Worker via a Service binding counts toward your subrequest limit.
+> - A single request has a maximum of 32 Worker invocations, and each call to a Service
+>   binding counts towards this limit. Subsequent calls will throw an exception.
+
+The limits page says (`workers/platform/limits.mdx:192-201`, same commit):
+
+> | Limit                            | Workers Free | Workers Paid                              |
+> | Subrequests per invocation       | 50           | 10,000 (up to 10M)                        |
+> | Subrequests to internal services | 1,000        | Matches configured limit (default 10,000) |
+>
+> You can change the subrequest limit per Worker using the `limits` configuration in
+> your Wrangler configuration file.
+
+The Wrangler configuration page (`workers/wrangler/configuration.mdx:481-482`) says the
+limit "defaults to 50 for free accounts and 10,000 for paid accounts. The free account
+maximum is 50 and the paid account maximum is 10,000,000."
+
+Neither page says what a Durable Object event counts as. `platform/owner/src/calls.ts`
+budgets 32 per platform invocation, 24 for `FILES` and 8 for the gateway and hooks, and
+it attributes each call to the async context that made it. Pi starts work in `submit()`
+and continues it after that RPC returns, so the attribution rule decides the gateway's
+shape. workerd's local limit enforcer is a no-op, so only a live run answers.
 
 ## Method
 
@@ -28,172 +63,221 @@ Two throwaway Workers on workers.dev, deployed, driven and deleted by one workfl
 
 Both use the owner Worker's runtime: compat date `2026-10-23`, `nodejs_compat`,
 `disable_ctx_exports`, plus `global_fetch_strictly_public`. Each case has its own `Probe`
-object. A burst makes its calls in sequence and records successes, the first error and
-where it came, successes after it, and each call's milliseconds. Every call runs, so a cap
-shows as where errors start and whether they stay. Some cases first spend a known number
-of calls (a pre-spend), so each charging rule predicts a different stopping point.
+object. A burst makes N calls in sequence (the workflow's `burst` input, 25–120, default
+40). It records successes, the first error and where it came, successes after it, and each
+call's milliseconds. Every call runs, so a cap shows as where errors start and whether
+they stay. Some cases first spend a fixed number of calls (a pre-spend), so each charging
+rule predicts a different stopping point.
 
 Every stored record carries the run id, and the driver refuses records from another run.
-The workflow also force-deletes both scripts, with their objects, before it deploys.
-The driver records a failing case (status, the first 200 bytes and any Cloudflare error
-code such as 1101) and goes on. It rewrites the results after every phase, and it always
-reads `/results` at the end.
-
-Run order (`drive.mjs`): the Worker cases and M4; M6 and M6a; the alarm cases; M12; M10
-last. No case is read while it should still be running, because a read is an incoming
-call to that object.
+The workflow force-deletes both scripts, with their objects, before it deploys. The driver
+records a failing case (status, the first 200 bytes and any Cloudflare error code such as
+1101) and carries on. It rewrites the results after every phase, always reads `/results`
+at the end, and prints the whole redacted report to the step log. No case is read while it
+should still be running, because a read is an incoming call to that object.
 
 | # | Where | What |
 |---|---|---|
-| M1 | Worker `fetch` handler | 40 × `CALLEE.ping()` |
-| M2 | Worker `fetch` handler | 40 × `CALLEE.fetch()` |
-| M3 | Worker `fetch` handler | 20 RPC, then 20 fetch |
-| M4 | the Worker, then a DO RPC method it calls | the Worker makes 16 RPC, then the object makes 40 |
-| M5 | `arm()` (a DO RPC), then the object's alarm | `arm()` makes 8 RPC; the alarm makes 40 RPC, then 40 fetch |
-| M6 | an RPC that starts a loop and returns; nothing awaits it | the RPC makes 8 calls (j); the loop makes 1 call every 2 s, 40 times |
-| M6a | as M6, plus an alarm that awaits the loop (PiHarness's shape) | j = 8 in the RPC; the alarm makes 4 (k), then awaits the loop's 40 |
-| M7 | DO `alarm()` | 40 × `PEER.getByName(i).ping()` |
-| M8 | DO `alarm()` | 40 × global `fetch` to the callee's workers.dev URL |
-| M9 | DO `alarm()` | one WebSocket over `CALLEE.fetch`; 100 echoes; 20 RPC; 1 echo; 20 RPC; 100 echoes |
+| M1 | Worker `fetch` handler | N × `CALLEE.ping()` |
+| M2 | Worker `fetch` handler | N × `CALLEE.fetch()` |
+| M3 | Worker `fetch` handler | h = ⌊N/2⌋ RPC, then N − h fetch |
+| M4 | the Worker, then a DO RPC method it calls | the Worker makes 16 RPC, then the object makes N |
+| M5 | `arm()` (a DO RPC), then the object's alarm | `arm()` makes 8 RPC; the alarm makes N RPC, then N fetch |
+| M6 | an RPC that starts a loop and returns; nothing awaits it | the RPC makes j = 8; the loop makes 1 call every 2 s, N times |
+| M6a | as M6, plus an alarm that awaits the loop (PiHarness's shape) | j = 8 in the RPC; the alarm makes k = 4, then awaits the loop's N |
+| M7 | DO `alarm()` | N × `PEER.getByName(i).ping()` |
+| M8 | DO `alarm()` | N × global `fetch` to the callee's workers.dev URL |
+| M9 | DO `alarm()` | one WebSocket over `CALLEE.fetch`; 100 echoes; h RPC; 1 echo; h RPC; 100 echoes |
 | M10 | DO `alarm()` | awaits `CALLEE.hold(16 min)`, with a storage beat every 30 s |
 | M11 | Worker `fetch` handler | `fetch` to 127.0.0.1, 10.0.0.1, 169.254.169.254 and localhost, as literals and `nip.io` names; status and size only |
-| M12 | two DO RPCs on one object, A and B | A makes 16; B starts 10 s later, after A's 16 have ended, and makes 16; both make 24 at once; after B's invocation ends, A makes 10 |
+| M12 | two DO RPCs on one object, A and B | A makes f = ⌊0.4N⌋; B starts 10 s later, after A's f have ended, and makes f; both make s = N − f at once; after B's invocation ends, A makes 10 |
 
-The plan check reads the plan from the billing API (Billing: Read is optional), and burns
-under a second of CPU in one request (1e8 loop steps), far past the Free plan's 10 ms. A
-Free or unknown plan is reported as a warning and the run still goes ahead. On Free, the
-50-subrequest limit can mask the cap.
+**The plan check.** The workflow asks the billing API for the plan (Billing: Read is
+optional; run 1's token got a 403). It also burns under a second of CPU in one request.
+That burn is inconclusive when it survives, because "each isolate has some built-in
+flexibility" for an infrequent overrun (`configuration.mdx`, the `isolate-cpu-flexibility`
+partial). Run 1's burn survived on Free. Only a refused burn says anything.
 
 **Local.** `node scripts/probes/capprobe/local.mjs` (after `npm ci` in `platform/`) loads
-both configs in miniflare and runs every case with short waits. It checks each pre-spend's
-size, that M12's B started after A's first phase, and every burst. A second run on the
-same objects then refuses one case with a 1101; the driver must record it, carry on, and
-refuse that case's first-run records as stale. Every call passes locally, so this proves
-the harness, not the cap. The workflow runs it before deploying.
+both configs in miniflare and runs every case twice. The first run uses N = 40. The second
+uses N = 60, refuses one case with a 1101, and must refuse that case's first-run records as
+stale. Each run checks the pre-spends, the ordering checks and every burst. Every call
+passes locally, so this proves the harness, not the cap.
 
 ## Reading key
 
-Each outcome names one rule. "Fresh" means a counter of its own, starting at 0.
+C is the per-invocation cap. It is either read from the case that hits it (on Free, 50) or
+set with `subrequests_limit`. "Fresh" means a counter of its own, starting at 0. A value at
+or above N cannot show, so each case says when it discriminates.
 
-**M1–M3.** M1's stopping point is the base cap (32 if documented). M2: the same number
-means `fetch` counts like RPC. M3: 20 + 12 means one counter for both kinds; 20 + 20 means
-separate counters.
+`rulePredictions(C, N)` in `drive.mjs` is this key as code, and `discrimination(C, N)`
+grades each case as full, partial or none. The report carries both for a run that sets the
+limit, and `local.mjs` asserts the grades for run 1 and for the plan in "Next".
 
-**M4** (the Worker spent 16):
+**M1–M3.** M1 and M2 stop at min(N, C). M3: with one counter for both kinds, the fetch
+burst stops at C − h; with separate counters, at min(N − h, C). These discriminate only
+when N > C.
 
-| object's RPC ok | rule |
-|---|---|
-| 32 | a DO RPC has a fresh budget |
-| 16 | the DO RPC shares the calling request's counter, and the stub call is not counted |
-| 15 | the DO RPC shares the calling request's counter, and the stub call is counted |
-| 40 | DO RPCs are uncapped |
+**M4** (the Worker spent 16). The object's RPC stops at:
+- min(N, C): a DO RPC has a fresh budget;
+- C − 16: it shares the calling request's counter, and the stub call is not counted;
+- C − 17: it shares the counter, and the stub call is counted;
+- N: uncapped.
 
-**M5** (`arm()` spent 8; the alarm makes 40 RPC, then 40 fetch):
+This discriminates when N > C − 17.
 
-| alarm RPC ok | rule |
-|---|---|
-| 32 | an alarm has a fresh budget |
-| 24 | an alarm continues the count from the RPC that armed it (one counter for the object, or charged across events) |
-| 40 | alarms are uncapped |
+**M5** (`arm()` spent 8). The alarm's RPC + fetch total:
+- C: an alarm has a fresh budget;
+- C − 8: it continues the count from the RPC that armed it;
+- 2N: uncapped.
 
-The alarm's fetch burst then repeats M3's question inside an alarm.
+This discriminates when 2N > C. A fetch burst that stops once the RPC burst has spent the
+rest means one counter for both kinds.
 
-**M6** (the RPC spent j = 8; nothing awaits the loop):
+**M6** (j = 8 in the starting RPC). The loop stops at:
+- C − j: charged to the starting RPC, or to one counter for the object;
+- C: a fresh budget of its own;
+- N: uncapped.
 
-| loop ok | rule |
-|---|---|
-| 24 (32 − j) | background work is charged to the RPC that started it, or to one counter for the object |
-| 32 | background work has a fresh budget of its own |
-| 40 | background work is uncapped |
-| fewer, with a non-cap error or calls that stop | the object was evicted mid-loop: read the times |
+A loop that stops early with a non-cap error means the object was evicted. This
+discriminates when N > C − j.
 
-**M6a** (j = 8 in the RPC; the alarm spends k = 4, then awaits the loop; each call
-records `inAlarmBefore` and `inAlarmAfter`). The loop waits, for at most 30 s, until the
-alarm has spent its k and is awaiting. The run's M6a is void unless that wait was met and
-every loop call has `inAlarmBefore` true (the driver's `m6aOrder`, which the summary prints):
+**M6a** (j = 8, k = 4; void unless `m6aOrder` holds: the loop's wait for the alarm was
+met, and every call has `inAlarmBefore` true). The loop stops at:
 
-| loop ok | rule |
-|---|---|
-| 24 (32 − j) | charged to the RPC that started the loop; or to the oldest live invocation, if the returned RPC still counts as live |
-| 28 (32 − k) | charged to the alarm awaiting it: the newest invocation, a counter reset when the alarm started, or the oldest live invocation once only the alarm is live (M12 separates these) |
-| 20 (32 − j − k) | one counter for the object, never reset |
-| 32 | the loop has a fresh budget of its own |
-| 40 | uncapped |
+| loop ok | rule | visible when |
+|---|---|---|
+| C − j − k | one counter for the object, never reset | N > C − 12 |
+| C − j | charged to the starting RPC; or to the oldest live invocation, if the returned RPC still counts as live | N > C − 8 |
+| C − k | charged to the alarm: the newest-or-reset rule (M12), or the oldest live invocation once only the alarm is live | N > C − 4 |
+| C | a fresh budget of its own | N > C |
+| N | uncapped | — |
 
-**M7, M8.** 32 (or M1's cap) means DO stub calls, or public-URL fetches to a Worker, count
-like service-binding calls. 40 means they don't.
+**M7, M8.** Stopping at C means DO stub calls, or public-URL fetches to a Worker, count like
+service-binding calls; reaching N means they don't. These discriminate only when N > C.
 
-**M9** (the socket's open is one `fetch`, 1 call; rpc1 = 20; then one echo; then rpc2):
+**M9.** The socket's open is one `fetch`, so the two RPC bursts total:
+- C − 1: the socket counted once, and a message does not refresh the budget;
+- C: the socket's open did not count, and a message does not refresh;
+- 2h: a socket message refreshed the budget, if each h < C.
 
-| rpc2 ok | rule |
-|---|---|
-| 11 | the socket counted once, and a socket message does not refresh the budget |
-| 12 | the socket's open did not count, and a message does not refresh |
-| 20 | a socket message refreshed the budget (if M5 shows alarms are capped) |
-
-`echoesAfter` = 100 means the channel keeps working after the cap.
+This discriminates when 2h > C. If `echoesAfter` is 100, the channel works after the cap.
 
 **M10.** Read the gap between `attempts[].startedAt` together with the first attempt's last
-beat. Alarms are at-least-once, so any retry alone means nothing.
-- `finished` after ≥ 16 min: no wall-time cut while an alarm awaits I/O.
-- A retry about 15 min (plus backoff) after the first start, with the first attempt's last
-  beat near 15 min: the cut, at about that beat.
-- A retry well under 15 min after the first start: a redelivery or crash, not the cut. Read
-  the beats for when the first attempt stopped.
-- Still `holding` with one attempt, and beats that stopped near 15 min: a cut with no retry
-  seen.
+beat. Alarms are at-least-once, so a retry alone means nothing.
+- Finished after ≥ 16 min: no cut.
+- A retry about 15 min after the first start, with the last beat near 15 min: the cut.
+- A retry well under 15 min: a redelivery or crash.
+- Still holding, with beats that stopped near 15 min: a cut with no retry seen.
 
 **M11** applies only to Workers that set `global_fetch_strictly_public`, as the probe and
-the gateway do. A Worker without the flag must be probed separately.
+the gateway do.
 
-**M12.** The run's M12 is void unless the driver's `m12Order` holds: B started after A's
-16 (`B.startedAt > A.startedAt + A.phase1.totalMs`), and all three waits were met (A for
-B's phase 1, A for B's end, B for A's phase 1). The summary prints the check and each wait.
+**M12** (void unless `m12Order` holds: B started after A's f, and all three waits were
+met). Both phase 1s are f when 2f ≤ C. M12 separates four rules:
 
-| A phase 1 | B phase 1 | A + B phase 2 | A phase 3 | rule |
-|---|---|---|---|---|
-| 16 | 16 | 32 (16 each) | 0 | per invocation: each RPC counts its own calls |
-| 16 | 16 | 0 | 0 | one counter for the object, never reset, or charged to the oldest live invocation: M6a tells them apart (20 means never reset; 24 or 28 means oldest) |
-| 16 | 16 | 16 combined | ≥ 1 (typically 9–10) | charged to the newest invocation: once B ends, A's own counter (16 used) is current again |
-| 16 | 16 | 16 combined | 0 | one counter for the object, reset on each incoming event; or the newest invocation with B still current |
-| 16 | 16 | 48 | 10 | uncapped |
+| A + B phase 2 | A phase 3 | rule |
+|---|---|---|
+| 2 · min(s, C − f) | min(10, C − min(N, C)) | per invocation: each RPC counts its own calls (per async context, as `calls.ts` assumes) |
+| C − 2f | min(10, C − 2f − 2s) | never reset or oldest: one counter for the object that never resets, or charged to the oldest live invocation (M6a tells them apart) |
+| C − f | min(10, C − f − 2s) | newest-or-reset: charged to the newest invocation, or one counter that each incoming event resets |
+| 2s | 10 | uncapped |
 
-Phase 3 under the newest-invocation rule is "at least 1", not exactly 10. B can stay the
-current request until A's settle-sleep timer fires, and that races A's first phase-3 call.
-So a phase 3 of 0 after "16 combined" means either a reset on each event, or the newest
-invocation with B still current. Neither reading pins it alone.
+"Newest invocation" and "reset on each event" are one rule here. Both stop phase 2 at
+C − f, and nothing makes A's older counter current again: run 1's phase 3 was 0. For
+`calls.ts` they mean the same thing: work in flight spends the newest event's budget. M12
+separates per-invocation from newest-or-reset when 2 · min(s, C − f) ≠ C − f.
 
 ## Running it
 
-Its trigger is `workflow_dispatch` only, so it runs once the workflow is on `main` and
-someone dispatches it. **The founder approves each run**: it deploys to the production
-Cloudflare account. It uses the repo secrets `CLOUDFLARE_API_TOKEN` (Account: Workers
-Scripts: Edit) and `CLOUDFLARE_ACCOUNT_ID`, and needs a workers.dev subdomain on the account.
-`hold_minutes` (M10) is 0 to 20, with a default of 16. The run takes about 25 minutes. The last step
-deletes both Workers (`force=true`, which also deletes their Durable Objects), confirms
-each is gone, and fails the run if one is not.
+Its trigger is `workflow_dispatch` only. **The founder approves each run**, because it
+deploys to the production Cloudflare account. It uses the repo secrets `CLOUDFLARE_API_TOKEN`
+(Account: Workers Scripts: Edit) and `CLOUDFLARE_ACCOUNT_ID`, and needs a workers.dev
+subdomain.
+
+The inputs are:
+- `hold_minutes` (M10): 0 to 20, default 16;
+- `burst` (N): 25 to 120, default 40;
+- `subrequests_limit`: empty (the plan's default), or 25 to 10,000.
+
+When `subrequests_limit` is set, `config.mjs` writes copies of both committed configs with
+`limits.subrequests` pinned, and the run deploys those. It pins the callee too, so the
+callee's own budget can't confound the result. The report and summary record the limit,
+where M5 stopped, and which M5 rule that stop matches. On Free the maximum is 50, so a
+higher value may not deploy.
+
+A run takes about 25 minutes. The last step deletes both Workers
+(`force=true`, which also deletes their Durable Objects), confirms each is gone, and fails
+the run if one is not.
 
 ## Results
 
-Not yet run. Fill this in from the job summary, then set `INVOCATION_CALLS` and the
-gateway's share in `calls.ts`, or choose a fallback from the gateway design §8.5.
+| Run | Date | Plan | Commit | N | Hold |
+|---|---|---|---|---|---|
+| 40701631460 | 2026-10-28 | Free by inference (billing API 403; CPU burn survived, inconclusive) | 816950be | 40 | 16 min |
 
-| Run | Date | Plan | Commit |
-|---|---|---|---|
-| | | | |
+Both Workers were absent before the deploy (404) and deleted after the run (200).
+C = 50. The error text was "Too many subrequests by single Worker invocation. To configure
+this limit, refer to …/wrangler/configuration/#limits".
 
-| # | ok (first error at) | First error | Rule (from the key) |
+| # | Result | Discriminates at C = 50, N = 40? | Rule (from the key) |
 |---|---|---|---|
-| M1 | | | |
-| M2 | | | |
-| M3 | | | |
-| M4 | | | |
-| M5 | | | |
-| M6 | | | |
-| M6a | | | |
-| M7 | | | |
-| M8 | | | |
-| M9 | | | |
-| M10 | | | |
-| M11 | | | |
-| M12 | | | |
+| M1 | rpc 40/40 | no (N < C) | the documented 32-invocation cap did not bite on 40 sequential calls |
+| M2 | fetch 40/40 | no | — |
+| M3 | 20/20 + 20/20 | no | — (M5 answers the one-counter question inside an alarm) |
+| M4 | workerPre 16/16; the DO's rpc 40/40 | partly: sharing would stop at 34 or 33; fresh (min(N, C)) and uncapped both give 40 | a DO RPC does not share the caller's counter |
+| M5 | armPre 8/8; alarm rpc 40/40, then fetch 10/40, failing at call 10 | yes | the alarm starts fresh (40 + 10 = C, not C − 8); RPC and fetch share one counter |
+| M6 | startPre 8/8; loop 40/40 | no (C − j = 42 > N) | — |
+| M6a | startPre 8/8, alarmPre 4/4, loop 40/40; `m6aOrder` ok | partly: only never-reset (C − 12 = 38) shows | not one never-reset object counter; start RPC (42), alarm (46) and fresh (50) are all above N |
+| M7 | peer 40/40 | no (N < C) | not shown whether DO stub calls count |
+| M8 | public 40/40 | no (N < C) | not shown whether public-URL fetches count |
+| M9 | rpc1 20/20, rpc2 20/20 | no (2h + 1 = 41 < C) | — |
+| M10 | retried 15.0 min after the first start; the first attempt's last beat at 15.0 min | yes | an alarm is cut at 15 minutes, even while it awaits I/O, and is retried |
+| M11 | 7 targets done | — | the per-target detail was only in the job summary's JSON; the driver now prints it to the log and the summary |
+| M12 | `m12Order` ok. Phase 1: A 16/16, B 16/16. Phase 2: A 17/24, B 17/24 (34 combined, both failing at call 17). Phase 3: A 0/10, failing at call 0 | partly: per invocation and uncapped both predict 48, 10 | B's 16 + 34 = C, then 0: newest-or-reset (34, 0). Rules out per invocation and uncapped (48, 10) and never reset or oldest (18, 0) |
+
+**What it means for the platform.** The budget is not per async context. Every service
+call an object makes counts against its newest event. Under either form of the rule
+(newest invocation, or reset on each event), work in flight spends that event's budget.
+That includes background work started by an earlier RPC and continued inside an alarm's
+wait, which is PiHarness's shape. An incoming RPC during a turn takes that budget over.
+`calls.ts` therefore has the wrong model in two ways:
+- its split is 32/24/8, while the cap was 50 here and is 10,000 by default on Paid;
+- it attributes per async context.
+
+Per §6 it is reworked after the two runs in "Next". `calls.ts` is not changed yet.
+
+## Next
+
+Two dispatches answer everything this probe asks, and each needs the founder's approval.
+Only run B needs Workers Paid.
+
+**Run A: `subrequests_limit=50`, `burst=60` (C = 50, N = 60), on the current Free
+account.** 50 is Free's maximum and its default, so pinning it only makes the limit
+explicit. If Free refuses the `limits` key, the deploy fails loudly, and the run is
+dispatched again with the limit empty. At this C and N every case separates all the rules
+it has, and M12 separates its four (newest and reset stay one rule). `local.mjs` asserts
+this from `rulePredictions`.
+
+| # | What each rule predicts at C = 50, N = 60 |
+|---|---|
+| M1, M2 | capped 50; uncapped 60 |
+| M3 | one counter 30 + 20; two counters 30 + 30 |
+| M4 | fresh 50; shared, stub not counted 34; shared, stub counted 33; uncapped 60 |
+| M5 (RPC + fetch) | fresh 50; continues from `arm()` 42; uncapped 120 |
+| M6 | charged to the starting RPC or one object counter 42; fresh 50; uncapped 60 |
+| M6a | never reset 38; starting RPC 42; alarm (newest-or-reset) 46; fresh 50; uncapped 60 |
+| M7, M8 | counted like a service call 50; not counted 60 |
+| M9 (rpc1 + rpc2) | socket counted once 49; socket not counted 50; a message refreshes 60 |
+| M12 (phase 2 combined, A's phase 3) | per invocation 52, 0; never reset or oldest 2, 0; newest-or-reset 26, 0; uncapped 72, 10 |
+
+M5 stopping at 50 (fresh) or 42 (continues from `arm()`) is a rule's result. Only a stop
+that matches no M5 rule means the limit did not apply as configured, and the driver notes
+that case alone.
+
+**Run B: the default limit, `burst=60`, on Workers Paid.** At C = 10,000 no case discriminates attribution.
+Every rule predicts the uncapped outcome, and `local.mjs` asserts that. The run answers the
+other question: whether the documented 32 Worker invocations, or any other cap at or below
+60, bites on Paid. M1 stopping at 32 would mean it does.
+
+Then rework `calls.ts` from both runs (tasks §6).

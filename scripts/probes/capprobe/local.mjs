@@ -13,19 +13,23 @@
  *
  *   node scripts/probes/capprobe/local.mjs [--out results.json]
  */
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { CASES, MAX_HOLD_MINUTES, drive, finished, summarize, worstCaseMs } from "./drive.mjs";
+import { MAX_LIMIT, MIN_LIMIT, writeLimited } from "./config.mjs";
+import { CASES, MAX_BURST, MAX_HOLD_MINUTES, discrimination, drive, finished, m5Stop,
+         rulePredictions, summarize, worstCaseMs } from "./drive.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLATFORM = join(HERE, "..", "..", "..", "platform");
 const fromPlatform = createRequire(join(PLATFORM, "package.json"));
 const load = async (name) => import(pathToFileURL(fromPlatform.resolve(name)).href);
 
-const { unstable_getMiniflareWorkerOptions: workerOptions } = await load("wrangler");
+const { unstable_getMiniflareWorkerOptions: workerOptions, unstable_readConfig: readConfig } =
+  await load("wrangler");
 const { Miniflare, convertV4MiniflareOptions } = await load("miniflare");
 
 const KEY = "local-key";
@@ -39,12 +43,67 @@ const TIMING = Object.freeze({
   m10FirstReadMs: 200, m10GraceMs: 10_000,
 });
 
+/**
+ * The run plan (cap-probe.md, "Next"): run A pins `limits.subrequests` to 50 with N = 60
+ * (on the current Free account), where every case separates the rules it has, M12 its four;
+ * run B keeps the default limit on Workers Paid.
+ */
+const PLAN = Object.freeze({ limit: 50, n: 60 });
+/** Run 1 (Free, C = 50, N = 40), as cap-probe.md's results table records it. */
+const RUN1 = Object.freeze({
+  M1: "none", M2: "none", M3: "none", M4: "partial", M5: "full", M6: "none", M6a: "partial",
+  M7: "none", M8: "none", M9: "none", M12: "partial",
+});
+
 /** The runtime and bindings each config declares; the rest is wrangler's dev defaults. */
 function worker(config, extra) {
-  const { workerOptions: options, main } = workerOptions(join(HERE, config));
+  const { workerOptions: options, main } = workerOptions(resolve(HERE, config));
   const { compatibilityDate, compatibilityFlags, durableObjects, serviceBindings } = options;
   return { compatibilityDate, compatibilityFlags, durableObjects, serviceBindings, ...extra,
            modules: true, scriptPath: main };
+}
+
+/** The key's discrimination at run 1, at the plan, and at Paid's default; config.mjs. */
+function checkPlan() {
+  const levels = (c, n) => discrimination(c, n);
+  expect(show(levels(50, 40)) === show(RUN1), `run 1's discrimination: ${show(levels(50, 40))}`);
+  expect(Object.values(levels(PLAN.limit, PLAN.n)).every((level) => level === "full"),
+         `the plan does not discriminate every case: ${show(levels(PLAN.limit, PLAN.n))}`);
+  expect(Object.values(levels(10_000, PLAN.n)).every((level) => level === "none"),
+         "Paid's default limit should discriminate nothing at the plan's N");
+  // M12 separates four rules, not five: newest invocation and reset-on-event are one.
+  const m12Rules = Object.keys(rulePredictions(PLAN.limit, PLAN.n).M12);
+  expect(show(m12Rules) === show(["perInvocation", "neverResetOrOldest", "newestOrReset", "uncapped"]),
+         `M12's rules: ${show(m12Rules)}`);
+  // A stop at a rule's prediction names that rule; only an unmatched stop is a misconfiguration.
+  const m5 = (rpc, fetch) => ({ rpc: { n: PLAN.n, ok: rpc, errors: PLAN.n - rpc },
+                                fetch: { n: PLAN.n, ok: fetch, errors: PLAN.n - fetch } });
+  expect(m5Stop(m5(50, 0), PLAN.limit, PLAN.n).rule === "fresh", "m5Stop: 50 is the fresh rule");
+  expect(m5Stop(m5(42, 0), PLAN.limit, PLAN.n).rule === "continuesArm", "m5Stop: 42 continues arm()");
+  expect(m5Stop(m5(47, 0), PLAN.limit, PLAN.n).rule === null, "m5Stop: 47 matches no rule");
+  const dir = mkdtempSync(join(tmpdir(), "capprobe-config-"));
+  try {
+    const paths = writeLimited(PLAN.limit, dir);
+    for (const name of ["caller", "callee"]) {
+      const config = readConfig({ config: paths[name] });
+      expect(config.limits?.subrequests === PLAN.limit, `${name}: limits.subrequests not pinned`);
+      expect(config.main === join(HERE, `${name}.js`), `${name}: main is ${config.main}`);
+      const limited = worker(paths[name], {});
+      const committed = worker(`${name}.wrangler.jsonc`, {});
+      expect(show(limited) === show(committed), `${name}: the pinned copy differs beyond its limit`);
+    }
+    for (const bad of [MIN_LIMIT - 1, MAX_LIMIT + 1, 50.5]) {
+      let refused = false;
+      try {
+        writeLimited(bad, dir);
+      } catch {
+        refused = true;
+      }
+      expect(refused, `config.mjs accepted a limit of ${bad}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** The global `fetch` stand-in: the callee's public URL pongs for the key; else a 502. */
@@ -122,6 +181,20 @@ function checkSecondRun(report, firstRunId) {
     expect(finished(id, report.results[id]), `run 2: ${id} did not finish after M2 failed`);
   }
   expect(report.phase === "done", `run 2 ended in phase ${report.phase}`);
+  // Run 2 uses N = 60: every burst and M12's and M9's splits scale with it.
+  const r = report.results;
+  const { A, B } = r.M12 ?? {};
+  expect(r.M1?.result?.rpc?.n === 60 && r.M1.result.rpc.ok === 60, `run 2: M1 at N = 60: ${show(r.M1)}`);
+  expect(A?.phase1?.n === 24 && A?.phase2?.n === 36 && B?.phase2?.n === 36 && A?.phase3?.n === 10,
+         `run 2: M12's phases at N = 60: ${show({ A, B })}`);
+  expect(r.M9?.result?.rpc1?.n === 30 && r.M9.result.rpc2?.n === 30, `run 2: M9 at N = 60`);
+  expect(r.M6a?.result?.calls?.length === 60 && report.checks.m6aOrder?.ok, "run 2: M6a at N = 60");
+  expect(report.subrequestsLimit === PLAN.limit
+         && summarize(report).includes(`(limits.subrequests): ${PLAN.limit}.`),
+         "run 2: the configured limit is not in the report and the summary");
+  expect(Object.values(report.discrimination ?? {}).every((level) => level === "full"),
+         `run 2: the report's discrimination at the plan: ${show(report.discrimination)}`);
+  expect(report.checks.m5Stop?.total === null, "run 2: a stop reported where no cap is enforced");
 }
 
 const mf = new Miniflare(convertV4MiniflareOptions({
@@ -135,8 +208,9 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   ],
 }));
 
+checkPlan();
 try {
-  const request = (path, init) => mf.dispatchFetch(`http://capprobe.local${path}`, {
+  const request =(path, init) => mf.dispatchFetch(`http://capprobe.local${path}`, {
     ...init, headers: { ...(init.headers ?? {}), "x-probe-key": KEY },
   });
   expect((await mf.dispatchFetch("http://capprobe.local/health")).status === 403,
@@ -157,14 +231,16 @@ try {
   const failing = (path, init) => (path.startsWith("/run/M2?")
     ? Promise.resolve(new Response("error code: 1101", { status: 500 }))
     : request(path, init));
-  const second = await drive({ request: failing, runId: "local-2", params: { ...PARAMS, holdMs: 0 },
-                               timing: TIMING });
+  const second = await drive({ request: failing, runId: "local-2",
+                               params: { ...PARAMS, holdMs: 0, n: PLAN.n }, timing: TIMING,
+                               subrequestsLimit: PLAN.limit });
   checkSecondRun(second, "local-1");
 
-  const worst = worstCaseMs({ holdMs: MAX_HOLD_MINUTES * 60_000 });
+  const worst = worstCaseMs({ holdMs: MAX_HOLD_MINUTES * 60_000, n: MAX_BURST });
   expect(worst < STEP_TIMEOUT_MINUTES * 60_000,
          `the driver's worst case (${(worst / 60_000).toFixed(1)} min) does not fit the step timeout`);
-  console.log(`driver worst case at a ${MAX_HOLD_MINUTES}-minute hold: ${(worst / 60_000).toFixed(1)} min`);
+  console.log(`driver worst case at a ${MAX_HOLD_MINUTES}-minute hold and N = ${MAX_BURST}: `
+              + `${(worst / 60_000).toFixed(1)} min`);
 
   const out = process.argv.indexOf("--out");
   if (out > 0) {
