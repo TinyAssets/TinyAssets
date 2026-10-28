@@ -135,6 +135,8 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    - **Sync:** a lease of a random id (the claim token) and a rising epoch
      (fencing). API writes never take it; when both sides changed a file the
      API's version stays and the sandbox's is saved as a reported conflict copy.
+   - **pi's `ExecutionEnv`** maps onto the manifest and the files Worker and
+     passes pi-durable 1.4.0's own conformance suite but for `exec`.
 6. **The trusted side is TypeScript on Workers.** The Python logic is ported,
    never imported, and its tests become acceptance tests. The new stack is
    built beside production and moved to in one cutover window after a full

@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   BATCH_BYTES as WORKER_BATCH_BYTES, CHUNK_BYTES as WORKER_CHUNK_BYTES,
 } from "../../files/src/keys";
-import { BATCH_BYTES, CHUNK_BYTES, Files, sha256Hex } from "../src/files";
+import { BATCH_BYTES, CHUNK_BYTES, type ChunkStore, Files, sha256Hex } from "../src/files";
 import { ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
 import type { OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
@@ -26,6 +26,27 @@ const context = BACKGROUND_CONTEXT;
 function inOwner(use: (files: Files) => Promise<void>): Promise<void> {
   return runInDurableObject(ownerObject().stub, (_instance: OwnerDO, state) =>
     use(new Files(state.storage, env.FILES, () => FILE_DEFAULTS)));
+}
+
+type Get = { sha256: string; offset?: number; length?: number };
+type Put = { sha256: string; bytes: Uint8Array };
+
+/** The real files Worker, each get and put call it answers recorded. */
+function counting(): { store: ChunkStore; gets: Get[][]; puts: Put[][] } {
+  const gets: Get[][] = [];
+  const puts: Put[][] = [];
+  const store: ChunkStore = {
+    putChunks: (ns, chunks) => {
+      puts.push(chunks);
+      return env.FILES.putChunks(ns, chunks);
+    },
+    getChunks: (ns, reads) => {
+      gets.push(reads);
+      return env.FILES.getChunks(ns, reads);
+    },
+    deleteChunks: (ns, shas) => env.FILES.deleteChunks(ns, shas),
+  };
+  return { store, gets, puts };
 }
 
 const cases = createEnvConformance({
@@ -200,6 +221,63 @@ describe("the owner's environment", () => {
       expect(invalid.ok ? null : invalid.error.code).toBe("invalid");
     });
   });
+
+  it("fetches only the kept tail and puts only the new last chunk on an append or truncate",
+     async () => {
+    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+      const { store, gets, puts } = counting();
+      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+      const fs = new OwnerFilesEnv({ files });
+      const big = new Uint8Array(CHUNK_BYTES + 10).map((_, i) => i % 251);
+      getOrThrow(await fs.writeFile("big.bin", big, context));
+      const first = files.open("/workspace/big.bin").chunks![0]!;
+      gets.length = 0;
+      puts.length = 0;
+      getOrThrow(await fs.appendFile("big.bin", new Uint8Array([1, 2, 3]), context));
+      expect(gets).toEqual([[{ sha256: expect.any(String), offset: 0, length: 10 }]]);
+      expect(puts.map((call) => call.map((put) => put.bytes.byteLength))).toEqual([[13]]);
+      expect(files.open("/workspace/big.bin").chunks![0]).toEqual(first);
+      gets.length = 0;
+      puts.length = 0;
+      getOrThrow(await fs.truncateFile("big.bin", CHUNK_BYTES + 5, context));
+      expect(gets.flat().map((read) => read.length)).toEqual([5]);
+      expect(puts.map((call) => call.map((put) => put.bytes.byteLength))).toEqual([[5]]);
+      expect(files.open("/workspace/big.bin").chunks![0]).toEqual(first);
+    });
+  });
+
+  it("reads a large file two chunks a call, by range or line, never whole", async () => {
+    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+      const { store, gets } = counting();
+      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+      const fs = new OwnerFilesEnv({ files });
+      // Five chunks, 16 MiB and one byte, sent by upload as the HTTP door will.
+      const piece = new Uint8Array(CHUNK_BYTES).fill(65);
+      const last = new Uint8Array([10]);
+      const size = 4 * CHUNK_BYTES + 1;
+      const begun = files.begin(size, [...Array(4).fill(sha256Hex(piece)), sha256Hex(last)]);
+      await files.upload(begun.intent_id, [{ sha256: sha256Hex(piece), bytes: piece },
+                                           { sha256: sha256Hex(last), bytes: last }]);
+      files.commit(begun.intent_id, "/workspace/huge.txt", { expected: null, writer: "owner" });
+      gets.length = 0;
+      for (const read of [await fs.readBinaryFile("huge.txt", context),
+                          await fs.readTextFile("huge.txt", context)]) {
+        expect(read.ok ? null : read.error.code).toBe("invalid");
+      }
+      const grown = await fs.truncateFile("huge.txt", 2 * size, context);
+      expect(grown.ok ? null : grown.error.code).toBe("invalid");
+      expect(gets).toEqual([]);
+      const reader = getOrThrow(await fs.openBinaryReader("huge.txt", undefined, context));
+      const tooMuch = await reader.read(0, size, context);
+      expect(tooMuch.ok ? null : tooMuch.error.code).toBe("invalid");
+      expect(getOrThrow(await reader.read(CHUNK_BYTES - 1, 2, context))).toEqual(
+        new Uint8Array([65, 65]));
+      expect(gets).toHaveLength(1);
+      gets.length = 0;
+      getOrThrow(await reader.scanLines({ startLine: 1 }, context));
+      expect(gets.map((call) => call.length)).toEqual([2, 2, 1]);
+    });
+  }, 30_000);
 
   it("keeps a temporary file under /.ta/tmp until cleanup, and refuses writes outside one",
      async () => {

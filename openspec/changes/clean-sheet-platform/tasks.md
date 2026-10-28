@@ -154,9 +154,12 @@ live acceptance is still owed says so.
   count history rows only (a live entry's content is always its newest row's); a
   whole-file SHA-256 is not stored (the content id is checked from the chunk hashes R2
   verified).
-- [ ] 6.2 The pi `ExecutionEnv` over the manifest (`files-env.ts`), passing pi-durable
-  1.4.0's conformance suite but for `exec`, symlinks off, with a write to a path it read
-  failing `changed since read` when another writer committed there since.
+- [x] 6.2 The pi `ExecutionEnv` over the manifest (`files-env.ts`), passing pi-durable
+  1.4.0's conformance suite but for `exec` (20 cases run, the 6 `exec` cases excluded),
+  symlinks off, with a write to a path it read failing `changed since read` when
+  another writer committed there since; bytes come two chunks a `FILES` call, and a
+  whole-file read or write moves at most 16 MiB (larger files by range, line or
+  upload).
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
