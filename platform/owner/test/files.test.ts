@@ -143,6 +143,20 @@ describe("a file write", () => {
       .toEqual([{ sha256: sha256Hex(big), state: "live", stored: 1, refs: 1, holds: 0 }]);
   });
 
+  it("keeps each owner's chunks under a random namespace of its own, made once", async () => {
+    const one = await rig();
+    const other = await rig();
+    for (const r of [one, other]) {
+      await write(r, `${W}/big`, new Uint8Array(INLINE_BYTES + 1).fill(1));
+      await write(r, `${W}/big2`, new Uint8Array(INLINE_BYTES + 1).fill(2));
+    }
+    const [a] = await sqlIn(one.stub, "SELECT ns FROM file_space");
+    const [b] = await sqlIn(other.stub, "SELECT ns FROM file_space");
+    expect(a!["ns"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(a!["ns"]).not.toBe(b!["ns"]);
+    expect(await inFiles(one.stub, {}, (files) => files.ns())).toBe(a!["ns"]);
+  });
+
   it("answers a read with only the entry while its etag is current", async () => {
     const r = await rig();
     const made = entryOf(await write(r, `${W}/a.txt`, "one"));

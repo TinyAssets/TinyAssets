@@ -147,7 +147,8 @@ describe("putChunks", () => {
     expect(await keys(space)).toEqual([]);
   });
 
-  it("takes a full batch of 4 MiB chunks", async () => {
+  it("takes a full batch of two 4 MiB chunks", async () => {
+    expect([CHUNK_BYTES, BATCH_BYTES / CHUNK_BYTES]).toEqual([4 * 1024 * 1024, 2]);
     const full = Array.from({ length: BATCH_BYTES / CHUNK_BYTES },
                             (_, i) => new Uint8Array(CHUNK_BYTES).fill(i + 1));
     expect(await put(ns(), ...full)).toEqual({ created: full.length });

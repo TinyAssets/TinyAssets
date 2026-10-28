@@ -270,10 +270,13 @@ export function inlineId(bytes: Uint8Array): string {
     .digest("hex");
 }
 
-/** The content id of chunked content: its kind (one chunk, or a list), size and chunks. */
+/**
+ * The content id of chunked content: its kind, size and ordered chunks. A one-chunk file
+ * is a list of one, so no kind of its own; the kind keeps it apart from a chunk's own
+ * hash and from inline content.
+ */
 export function chunkedId(size: number, shas: readonly string[]): string {
-  return shas.length === 1 ? sha256Hex(`ta-single\n${size}\n${shas[0]}`)
-    : sha256Hex(`ta-list\n${size}\n${shas.join("\n")}`);
+  return sha256Hex(`ta-chunks\n${size}\n${shas.join("\n")}`);
 }
 
 function etag(e: { version: number; kind: string; content_id: string | null; mode: number }):

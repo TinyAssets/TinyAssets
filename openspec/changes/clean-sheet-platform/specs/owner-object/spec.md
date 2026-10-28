@@ -239,7 +239,7 @@ An upload SHALL declare its file's size and record its chunks, in that size's 4 
 - **THEN** the chunk stays, whatever its age
 
 ### Requirement: A content id names one content
-A content id SHALL name its kind (inline, one chunk or a chunk list) and its size, and a change whose content id is already recorded with another size or other chunks SHALL fail loudly rather than reuse the recorded content.
+A content id SHALL name its kind (inline or chunks) and its size, and a change whose content id is already recorded with another size or other chunks SHALL fail loudly rather than reuse the recorded content.
 
 #### Scenario: A chunk list whose hash another content holds
 - **WHEN** a stored content row and a new one share an id but not a size, in either order of writing

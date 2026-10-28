@@ -210,6 +210,21 @@ describe("a sync commit", () => {
     });
   });
 
+  it("tells watchers only of the ops that landed", async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    await inFiles(r.stub, { max_entries: 1 }, (files) => {
+      const heard: string[] = [];
+      files.watch((paths) => heard.push(...paths));
+      const { outcomes } = files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
+        { op: "write", path: `${W}/deep/er/two`, base: null, inline: text("2") },
+        { op: "write", path: `${W}/one`, base: null, inline: text("1") },
+      ] });
+      expect(outcomes.map((o) => o.outcome)).toEqual(["refused", "committed"]);
+      expect(heard).toEqual([`${W}/one`]);
+    });
+  });
+
   it("is refused whole only for a lost lease or no ops at all", async () => {
     const r = await rig();
     const lease = await acquire(r);
