@@ -5,6 +5,7 @@
   "workspaces": [
     "owner",
     "files",
+    "doors",
     "gateway"
   ],
   "scripts": {
