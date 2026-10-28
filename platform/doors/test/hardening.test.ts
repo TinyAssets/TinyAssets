@@ -202,6 +202,25 @@ describe("loopback clients' grants", () => {
       .toBe(400);
   });
 
+  it("are replaced only for the same client", async () => {
+    const OTHER = "https://other-cli.example/client.json";
+    const real = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url === CLI || request.url === OTHER) {
+        return Response.json({ client_id: request.url, client_name: "CLI",
+                               redirect_uris: ["http://127.0.0.1/callback"],
+                               token_endpoint_auth_method: "none" });
+      }
+      return request.url === WEB_CLIENT ? call(new Request(WEB_CLIENT)) : real(input, init);
+    });
+    const alice = owner();
+    await connectCimd(alice, "http://127.0.0.1:5555/callback");
+    await connect({ clientId: OTHER, redirectUri: "http://127.0.0.1:6666/callback" },
+                  { owner: alice });
+    expect(await grantsOf(alice)).toEqual(["http://127.0.0.1:5555/callback"]);
+  });
+
   it("keep each non-loopback installation's own grant", async () => {
     serveDocument(CLI, { client_id: CLI, client_name: "CLI",
                          redirect_uris: ["https://a.example/cb", "https://b.example/cb"],
