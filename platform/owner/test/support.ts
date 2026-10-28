@@ -1,6 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { type Calls, CallScope } from "../src/calls";
 import { Collections, LIMITS, type Limits } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
@@ -9,15 +10,36 @@ import { SCHEDULE } from "../src/schedule";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
+/** `act` in `stub`'s object as one invocation, with the scope its call budget is read from. */
+export function inScope<R>(stub: DurableObjectStub<OwnerDO>,
+                           act: (instance: OwnerDO, state: DurableObjectState,
+                                 scope: CallScope) => R | Promise<R>): Promise<R> {
+  return runInDurableObject(stub, (instance: OwnerDO, state) => {
+    const scope = new CallScope();
+    return scope.run(() => act(instance, state, scope));
+  });
+}
+
+/** Files over `storage`, drawing on `scope`'s invocation, as the object builds them. */
+export function filesOn(storage: DurableObjectStorage, scope: CallScope,
+                        store: ChunkStore = env.FILES,
+                        limits: Partial<FileLimits> = {}): Files {
+  return new Files(storage, store, () => ({ ...FILE_DEFAULTS, ...limits }), scope);
+}
+
 /**
  * The owner's files on `stub`'s own storage, with some settings changed, over the real
- * files Worker or the store given.
+ * files Worker or the store given, all of `act` one invocation with its call budget.
  */
 export function inFiles<R>(stub: DurableObjectStub<OwnerDO>, limits: Partial<FileLimits>,
-                           act: (files: Files, state: DurableObjectState) => R | Promise<R>,
+                           act: (files: Files, state: DurableObjectState, calls: Calls) =>
+                             R | Promise<R>,
                            store: ChunkStore = env.FILES): Promise<R> {
-  return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    act(new Files(state.storage, store, () => ({ ...FILE_DEFAULTS, ...limits })), state));
+  return runInDurableObject(stub, (_instance: OwnerDO, state) => {
+    const scope = new CallScope();
+    return scope.run(() => act(filesOn(state.storage, scope, store, limits), state,
+                               scope.current()));
+  });
 }
 
 type Row = Record<string, SqlStorageValue>;

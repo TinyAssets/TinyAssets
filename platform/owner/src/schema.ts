@@ -499,9 +499,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // query or a bound needs. Tables keyed by text are WITHOUT ROWID (the key is the table,
   // no second index), and an entry is keyed by (parent, name), which serves a lookup, a
   // directory listing and a subtree's range alike. Measured (`rowsWritten`, triggers and
-  // indexes included): a new small file writes 10 rows, its overwrite 10; a new one-chunk
-  // file 22, its overwrite 22. An entry's own content reference costs a row or two of
-  // those: the new content's reference, and on an overwrite the old one's release.
+  // indexes included, under the default retention): a new small file writes 10 rows, and
+  // its overwrite 10 while the path keeps fewer than `keep_versions`, 12 until it keeps
+  // `keep_recent`, then 17 in the steady state (each change also moves a row between the
+  // retention bands and drops the oldest); a new one-chunk file 22, its overwrite 22, 24,
+  // then 35. A delete also releases the path's kept rows, two or three rows written for
+  // each: 13 for a path of one version, 72 for one of 20 (78 chunked); a path made again
+  // takes them back, so its first write is 44 rows after a gone path of 20 (62 chunked).
+  // An entry's own content reference costs a row or two of each figure: the new content's
+  // reference, and on an overwrite the old one's release.
   //
   // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
   // (chunks uploading or live), inline bytes, open intents and the chunks they hold,
@@ -512,7 +518,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h,
   // SQLite's clock: the schedule compares it with the object's, and a day's grace does
   // not mind which). So content any entry or kept row names is never garbage. A history
-  // row never changes but for its prune time and a redaction of its content.
+  // row never changes but for its prune time, its `released` mark and a redaction of
+  // its content.
   Object.freeze([
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       // The owner's chunk namespace, made on first use (files.ts `ns`).
@@ -579,9 +586,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "'rename_to', 'restore', 'conflict')), " +
       "kind TEXT CHECK (kind IS NULL OR kind IN ('file', 'dir')), content_id TEXT, " +
       "size INTEGER NOT NULL, mode INTEGER NOT NULL, writer TEXT NOT NULL, at REAL NOT NULL, " +
-      "prune_after REAL)",
+      // `released`: the path is gone, so retention has let the row go (it is always due);
+      // a change at the history quota prunes these first (files.ts `#fit`).
+      "prune_after REAL, released INTEGER NOT NULL DEFAULT 0 CHECK (released IN (0, 1)), " +
+      "CHECK (released = 0 OR prune_after IS NOT NULL))",
     "CREATE INDEX file_history_paths ON file_history (path, version)",
     "CREATE INDEX file_history_due ON file_history (prune_after) WHERE prune_after IS NOT NULL",
+    "CREATE INDEX file_history_released ON file_history (prune_after) WHERE released = 1",
     "CREATE TABLE file_temps (name TEXT PRIMARY KEY, expires_at REAL NOT NULL) WITHOUT ROWID",
     "CREATE INDEX file_temps_due ON file_temps (expires_at)",
     // Every entry holds its own content, in every root, whatever history keeps.

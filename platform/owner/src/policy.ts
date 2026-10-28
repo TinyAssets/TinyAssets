@@ -139,12 +139,13 @@ export interface PolicyEntry {
  * for `retention_days`. A version past those goes in the change that pushed it out.
  *
  * `max_history` is never below `max_entries × max(keep_versions, keep_recent)`, the most
- * rows the live paths can hold at once, so no churn of live files fills it. What can is
- * the recent history of deleted paths, which ages out, is refused loudly, and is the
- * owner's to purge (never refused) at any time. A file is at most `MAX_INTENT_CHUNKS` chunks
- * (40 GiB), the most one upload intent holds. The sync agent's exclude list is not here:
- * it is the owner's file `/workspace/.ta/sync-ignore`, whose defaults come with the sync
- * agent (tasks 6).
+ * rows the live paths can hold at once, so no churn of live files fills it. Deleted
+ * paths' recent history, which retention has already let go, makes room: a change that
+ * would pass `max_history` first prunes their earliest-due rows (files.ts `#fit`). The
+ * owner may purge any path's history (never refused) at any time. A file is at most
+ * `MAX_INTENT_CHUNKS` chunks (40 GiB), the most one upload intent holds. The sync agent's
+ * exclude list is not here: it is the owner's file `/workspace/.ta/sync-ignore`, whose
+ * defaults come with the sync agent (tasks 6).
  */
 export const FILE_DEFAULTS = Object.freeze({
   max_bytes: 1024 ** 3,

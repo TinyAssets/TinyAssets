@@ -20,10 +20,12 @@
  *   only the rest, each against the version it read in the same call.
  * - Bytes come from `FILES` two chunks a call. A whole-file read, and a write, moves at
  *   most `WHOLE_BYTES` (16 MiB) through the object; a larger file is read by range or
- *   by line, and sent by upload. One environment (one tool call) makes at most
- *   `FILES_CALLS` calls to `FILES`, refused loudly before the request's 32-call cap: a
- *   budget on the calls themselves, not a proxy in bytes, so any mix of methods in one
- *   tool call stays inside it. A refused size or budget is `not_supported`.
+ *   by line, and sent by upload. Every `FILES` call draws from the budget of the
+ *   invocation the tool call runs in (`calls.ts`: the alarm a pi turn's Lifecycle job runs
+ *   in, shared by all its tool calls), read from the object's scope, so the factory that
+ *   builds an environment takes none; a call is refused loudly before it would cross the
+ *   cap: a budget on the calls themselves, not a proxy in bytes, so any mix of methods in
+ *   any number of tool calls stays inside it. A refused size or budget is `not_supported`.
  * - `readTextFile` keeps a BOM: it is the file's bytes, which pi's `edit` writes back.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
@@ -43,10 +45,11 @@ import {
   StreamDecoder, type TextLine, type TextLineReader, type WatchChange, type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 
+import { CallsSpent } from "./calls";
 import { Invalid, Refused } from "./errors";
 import {
-  BATCH_BYTES, batches, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
-  FileConflict, FileFault, type Files, INLINE_BYTES, sha256Hex, WHOLE_BYTES,
+  BATCH_BYTES, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
+  FileConflict, FileFault, type Files, sha256Hex, WHOLE_BYTES,
 } from "./files";
 import { nameOf, parentOf, resolve, ROOTS, storedPath, within, WORKSPACE } from "./paths";
 import { utf8Bytes } from "./text";
@@ -64,12 +67,6 @@ const LIST_BYTES = 4 * 1024 * 1024;
 const LIST_MAX_BYTES = 16_672_358;
 const LIST_TIMEOUT_MS = 10_000;
 const PAGE = 1000;
-/**
- * The `FILES` calls one environment, built for one tool call, may make. A request may
- * make 32 service-binding calls in all (tasks 6 probes whether that holds per Durable
- * Object event); the rest are left to the gateway and hooks until the probe says more.
- */
-export const FILES_CALLS = 24;
 /** The characters a regex source escapes. */
 const SPECIAL = ".*+?^${}()|[]\\/";
 
@@ -83,6 +80,10 @@ function fault(error: unknown, path?: string): FileError {
     return error;
   }
   const cause = error instanceof Error ? error : new Error(String(error));
+  if (error instanceof CallsSpent) {
+    // pi's `edit` shows only the code: the operation is what this tool call cannot do.
+    return new FileError("not_supported", error.message, path, cause);
+  }
   if (error instanceof FileFault) {
     return new FileError(FAULTS[error.code], error.message, path, cause);
   }
@@ -514,8 +515,6 @@ export class OwnerFilesEnv implements ExecutionEnv {
   readonly #rearm: () => Promise<void>;
   /** The etag this environment last saw at each path it read or wrote. */
   readonly #seen = new Map<string, string>();
-  /** `FILES` calls made so far, against `FILES_CALLS`. */
-  #calls = 0;
   readonly #temps = new Set<string>();
 
   constructor(options: FilesEnvOptions) {
@@ -557,20 +556,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
     }
   }
 
-  /** Count `calls` more `FILES` calls, refused loudly before the budget is passed. */
-  #spend(calls: number): void {
-    if (this.#calls + calls > FILES_CALLS) {
-      throw new FileError("not_supported", `one tool call makes at most ${FILES_CALLS} ` +
-                          "file-store calls; read a smaller range, or fewer files at once");
-    }
-    this.#calls += calls;
-  }
-
-  /** Chunk bytes, each `FILES` call the manifest makes for them counted first. */
-  readonly #load: Load = (reads) => {
-    this.#spend(batches(reads.map((read) => ({ size: read.length ?? CHUNK_BYTES }))).length);
-    return this.#files.fetch(reads);
-  };
+  /** Chunk bytes, each `FILES` call the manifest makes for them drawn from the invocation's. */
+  readonly #load: Load = (reads) => this.#files.fetch(reads);
 
   /** The current content of a file, its etag remembered for this environment's writes. */
   #open(at: string): Content {
@@ -593,9 +580,6 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async #write(at: string, bytes: Uint8Array, expected: string | null,
                extra: { prefix?: readonly ChunkRef[]; mode?: number } = {}): Promise<Entry> {
-    // At most this many puts: the chunks after any kept prefix, two a call.
-    const whole = (extra.prefix?.length ?? 0) * CHUNK_BYTES + bytes.byteLength;
-    this.#spend(whole <= INLINE_BYTES ? 0 : Math.ceil(bytes.byteLength / BATCH_BYTES));
     const entry = await this.#files.write(at, bytes, { expected, writer: this.#writer,
                                                        parents: true, ...extra });
     this.#seen.set(at, entry.etag);
