@@ -49,6 +49,13 @@ describe("the ledger's limits", () => {
       expect(() => checkLimits({ ...LEDGER_LIMITS, ...bad })).toThrow(reason);
     }
   });
+
+  it("refuses to build a ledger over limits whose mailboxes do not fit", async () => {
+    const r = rig();
+    const refused = await failure(() => r.inLedger({ maxMessages: 9_999 }, () => "built"));
+    expect(refused.message).toMatch(/invalid ledger limits: the mailboxes' messages exceed/);
+    expect(await r.inLedger({}, () => "built")).toBe("built");
+  });
 });
 
 describe("the ledger's bounds", () => {
@@ -188,6 +195,7 @@ describe("the ledger's bounds", () => {
     const r = rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
+    await r.subscribe(MUSE, muse);
     const first = await r.post(null, `dm:${muse}`, { cmid: "o1" });
     await r.tick(clock() + 1);
     await r.read(MUSE);
@@ -211,11 +219,76 @@ describe("the ledger's bounds", () => {
     expect((await r.table("ledger_wakes")).map((w) => [w["agent_id"], w["kind"]]))
       .toEqual([[muse, "revoke"]]);  // its callbacks are still to be erased
     expect(await r.table("ledger_rings")).toEqual([]);
-    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([dot]);
+    // Its row stays as a tombstone until that revoke settles, listed to no one.
+    expect((await r.table("outside_agents")).map((a) => [a["agent_id"], a["disabled_reason"],
+                                                         a["deleted_at"] !== null]))
+      .toEqual([[muse, "deleted", true], [dot, null, false]]);
+    expect((await r.stub.outsideAgents(r.bind(null))).agents.map((a) => a.agent_id))
+      .toEqual([dot]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
     expect((await failure(() => r.stub.deleteAgent(r.session(null), { agent_id: muse })))
       .message).toBe("agent not found");
+    await r.tick();
+    expect(r.sender.revoked).toEqual([[muse, 1]]);
+    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([dot]);
+  });
+
+  it("bounds pending revokes by the registry: a deleted agent's tombstone counts",
+     async () => {
+    const r = rig();
+    const people = Array.from({ length: 30 }, (_, n) => origin(n));
+    const [ids, refused] = await r.inLedger({ maxAgents: 3, maxAgentRows: 3 },
+                                            (ledger: Ledger) => {
+      const made: string[] = [];
+      let full = 0;
+      for (const who of people) {  // 30 register, subscribe and delete cycles
+        try {
+          const id = ledger.register(who, MCP, RINGS).agent_id;
+          ledger.subscriber(who, "alpha", id);
+          ledger.remove(id);
+          made.push(id);
+        } catch (error) {
+          expect((error as Error).message).toBe("the owner's agent registry is full");
+          full++;
+        }
+      }
+      // A tombstone is no agent: no door reaches it.
+      for (const act of [() => ledger.disable(made[0], "x"), () => ledger.remove(made[0]),
+                         () => ledger.setWakeLimits(made[0], 12, 60)]) {
+        expect(refusal(act)).toBe("agent not found");
+      }
+      expect(refusal(() => ledger.post(null, `dm:${made[0]}`, "c1", "x", null)))
+        .toBe("room is not an enabled agent's dm");
+      expect(ledger.agents(null)).toEqual([]);
+      // Its identity registers again as itself, its generation kept.
+      const again = ledger.register(people[0]!, MCP, RINGS);
+      expect([again.agent_id, again.subscription, again.revoked_through, again.deleted_at])
+        .toEqual([made[0], 1, 1, null]);
+      return [made, full] as const;
+    });
+    expect([ids.length, refused]).toEqual([3, 27]);
+    expect((await r.table("ledger_wakes")).filter((w) => w["kind"] === "revoke")).toHaveLength(3);
+    await r.tick();  // the doorbell erases them, and the tombstones go
+    expect(r.sender.revoked.map(([id]) => id).sort()).toEqual([...ids].sort());
+    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([ids[0]]);
+    await r.inLedger({ maxAgents: 3, maxAgentRows: 3 }, (ledger: Ledger) => {
+      ledger.register(people[29]!, MCP, PULL);  // room again
+    });
+    const [usage, actual] = await counters(r);
+    expect([usage, usage["agents"]]).toEqual([actual, 2]);
+  });
+
+  it("schedules no revoke for an agent that never subscribed, and leaves no row", async () => {
+    const r = rig();
+    await r.inLedger({}, (ledger: Ledger) => {
+      const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
+      ledger.disable(muse, "paused");
+      ledger.register(MUSE, MCP, RINGS);
+      ledger.remove(muse);
+    });
+    expect(await r.table("ledger_wakes")).toEqual([]);
+    expect(await r.table("outside_agents")).toEqual([]);
   });
 
   it("caps enabled agents, and registry rows until the owner deletes one", async () => {
@@ -294,10 +367,10 @@ describe("the ledger's bounds", () => {
       const later = now + LEDGER_LIMITS.settledWakeRetentionS + 10;
       const [agent] = ledger.agents(null);
       ledger.post(null, `dm:${agent!.agent_id}`, "c4", "body 4", null, later);
-      ledger.disable(agent!.agent_id, "revoked", later);
+      ledger.disable(agent!.agent_id, "revoked", null, later);
     });
     expect((await r.table("ledger_wakes")).map((w) => [w["kind"], w["state"]]))
-      .toEqual([["wake", "suppressed"], ["revoke", "pending"]]);
+      .toEqual([["wake", "suppressed"]]);
     const [usage, actual] = await counters(r);
     expect([usage, usage["settled_wakes"]]).toEqual([actual, 1]);
   });

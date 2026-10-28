@@ -30,8 +30,13 @@ export interface WakeSender {
    * refused before any connection is `failed` with reason `not_sent`.
    */
   send(target: WakeTarget, mark: () => void): Promise<Outcome>;
-  /** Erase the agent's callbacks: it was disabled, moved off mcp_event or deleted. */
-  revoke(agentId: string): Promise<void>;
+  /**
+   * Erase the agent's callbacks tagged at or before `generation` (the subscription
+   * generation each subscribe returned), and never a newer one: the agent was disabled,
+   * moved off mcp_event or deleted, and may since have been re-enabled and subscribed
+   * again. Erasing twice is harmless.
+   */
+  revoke(agentId: string, generation: number): Promise<void>;
 }
 
 /**
@@ -59,7 +64,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
     try {
       const claim = ledger.claim(wake.wake_id, clock());
       if (claim.outcome === "revoke") {
-        await sender.revoke(claim.target.agent_id);
+        await sender.revoke(claim.target.agent_id, claim.target.generation);
         ledger.settle(claim.target.wake_id, claim.target.claim_id, { state: "sent" }, clock());
         continue;
       }

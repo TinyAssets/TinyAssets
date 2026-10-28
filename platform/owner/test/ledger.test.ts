@@ -366,6 +366,20 @@ describe("outside agents register from a verified identity", () => {
     expect(carried.message).toBe("invalid ledger request");
   });
 
+  it("lets an outside caller disable its own agent only; the owner disables any",
+     async () => {
+    const r = rig();
+    const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
+    const refused = await failure(() => r.stub.disableAgent(r.session(MUSE),
+                                                            { agent_id: dot, reason: "x" }));
+    expect([refused.name, refused.message])
+      .toEqual(["Refused", "an outside caller disables only its own agent"]);
+    expect((await r.stub.disableAgent(r.session(MUSE), { agent_id: muse, reason: "done" }))
+      .disabled_reason).toBe("done");
+    expect((await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "owner" }))
+      .disabled_reason).toBe("owner");
+  });
+
   it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
     const r = rig();
     const muse = await r.register(MUSE);

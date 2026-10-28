@@ -27,9 +27,16 @@
  *   retried ack succeeds. A body whose hash no longer matches is withheld.
  * - Wakes (S3b, W3) are data on the object's one schedule (`ledger_wakes`): one open
  *   wake per ringing recipient (`one_open_wake`), claimed under a lease, settled from the
- *   doorbell's answer, and never replayed once a byte may have left. Disabling an agent,
- *   moving it off `mcp_event` or deleting it schedules a revoke of its callbacks, which
- *   the doorbell consumes; a revoke is safe to repeat. Status comes only from receipts.
+ *   doorbell's answer, and never replayed once a byte may have left. Status comes only
+ *   from receipts.
+ * - Revokes are fenced like claims. Each `mailbox.message` subscribe opens the agent's
+ *   next subscription generation, which the doorbell tags its callback with. Disabling
+ *   an agent, moving it off `mcp_event` or deleting it, when it has subscribed since its
+ *   last revoke, schedules one revoke carrying that generation, and the doorbell erases
+ *   only callbacks at or before it: a stale revoke still erases the old callback but
+ *   never a re-enabled agent's newer one. A revoke is safe to repeat. A deleted agent
+ *   whose revoke has not run stays as a tombstone in the registry (so the registry bound
+ *   bounds pending revokes) until its revoke settles.
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind. The
  * object is its owner, so the Python's `owner` columns are gone.
@@ -105,7 +112,9 @@ export const RETRY_AFTER = Object.freeze({ low: 1, high: 86_400, unreadable: 60 
  * the owner's mail to another agent. One agent's share of the owner's mailbox is
  * `maxSenderUnacked` and `maxSenderUnackedBytes`, a quarter of it: a few busy agents can
  * fill it, which holds agent mail until the owner acks, back-pressure only the owner can
- * clear and always can.
+ * clear and always can. Per agent the same holds the other way: an agent that rarely
+ * reads refuses the owner's posts to it after about 7 maximum-size bodies (480 KiB of
+ * 64 KiB) or 80 short ones, until it acks.
  *
  * How they were chosen. The plan of record costs an owner at about 10 MB of trusted
  * state; that is the typical case, short text that is acked and evicted. These are
@@ -216,6 +225,10 @@ export type Agent = {
   /** Messages this agent sent that the owner has not acked yet, and their bytes. */
   readonly unacked_to_owner: number;
   readonly unacked_to_owner_bytes: number;
+  /** The newest subscription generation, and the newest one a revoke was scheduled for. */
+  readonly subscription: number;
+  readonly revoked_through: number;
+  readonly deleted_at: number | null;
 };
 
 export interface Registration {
@@ -277,11 +290,15 @@ export interface WakeTarget {
   readonly through: number;
 }
 
-/** A claimed revoke: erase this agent's callbacks, then settle it `sent`. */
+/**
+ * A claimed revoke: erase this agent's callbacks at or before `generation`, never a
+ * newer one, then settle it `sent`.
+ */
 export interface RevokeTarget {
   readonly wake_id: string;
   readonly claim_id: string;
   readonly agent_id: string;
+  readonly generation: number;
 }
 
 export type Claim =
@@ -338,6 +355,7 @@ type StoredWake = {
   attempts: number;
   marked: number;
   through_seq: number | null;
+  generation: number | null;
 };
 
 export function clock(): number {
@@ -373,7 +391,7 @@ function count(value: unknown, low: number, high: number): value is number {
     && value <= high;
 }
 
-/** An enabled agent that rings may hold doorbell callbacks; leaving that state revokes. */
+/** An enabled agent that rings: the only kind a wake is sent to. */
 function rings(agent: Agent): boolean {
   return agent.disabled_reason === null && WAKING.includes(agent.delivery_method);
 }
@@ -486,9 +504,11 @@ export class Ledger {
     ).one();
   }
 
+  /** A registered agent, enabled or not; never a deleted agent's tombstone. */
   #agent(agentId: string): Agent | undefined {
-    return this.#sql.exec<Agent>("SELECT * FROM outside_agents WHERE agent_id = ?", agentId)
-      .toArray()[0];
+    return this.#sql.exec<Agent>(
+      "SELECT * FROM outside_agents WHERE agent_id = ? AND deleted_at IS NULL", agentId,
+    ).toArray()[0];
   }
 
   // -- the agent registry ---------------------------------------------------
@@ -497,11 +517,12 @@ export class Ledger {
   agents(origin: Origin | null): Agent[] {
     if (origin === null) {
       return this.#sql.exec<Agent>(
-        "SELECT * FROM outside_agents ORDER BY created_at, agent_id").toArray();
+        "SELECT * FROM outside_agents WHERE deleted_at IS NULL ORDER BY created_at, agent_id",
+      ).toArray();
     }
     return this.#sql.exec<Agent>(
       "SELECT * FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
-        "ORDER BY created_at, agent_id", origin.client, origin.family,
+        "AND deleted_at IS NULL ORDER BY created_at, agent_id", origin.client, origin.family,
     ).toArray();
   }
 
@@ -559,14 +580,17 @@ export class Ledger {
             "revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
           agentId, commandCenter, client, family, ...fields, now,
         );
-      } else { // The same outside identity again: re-enabled, one revision on.
+      } else {
+        // The same outside identity again: re-enabled, one revision on. A deleted agent's
+        // tombstone comes back as itself, its mail gone but its subscription generation
+        // kept, so its pending revoke still fences only the callbacks it was made for.
         agentId = row.agent_id;
-        if (rings(row) && !WAKING.includes(method)) {
-          this.#revoke(agentId, now);
+        if (!WAKING.includes(method)) {
+          this.#revokeSubscribed(row, now);
         }
         sql.exec(
           "UPDATE outside_agents SET source = ?, source_ref = ?, display_name = ?, " +
-            "delivery_method = ?, recipe_id = ?, disabled_reason = NULL, " +
+            "delivery_method = ?, recipe_id = ?, disabled_reason = NULL, deleted_at = NULL, " +
             "revision = revision + 1 WHERE agent_id = ?",
           ...fields, agentId,
         );
@@ -581,9 +605,11 @@ export class Ledger {
   /**
    * A disabled agent can neither read nor ack, so its unacked mail is released: it no
    * longer holds the ledger and is evicted in turn (a re-enabled agent may still read
-   * what is left). Its open wakes are suppressed and its callbacks revoked.
+   * what is left). Its open wakes are suppressed and its callbacks revoked. The owner
+   * disables any agent; an outside caller (`origin`) only its own.
    */
-  disable(agentId: unknown, reason: unknown, now: number = clock()): Agent {
+  disable(agentId: unknown, reason: unknown, origin: Origin | null = null,
+          now: number = clock()): Agent {
     text(reason, 200, "reason");
     if (typeof agentId !== "string") {
       throw new Invalid("agent_id is an agent id");
@@ -594,9 +620,11 @@ export class Ledger {
       if (agent === undefined) {
         throw new Refused("agent not found");
       }
-      if (rings(agent)) {
-        this.#revoke(agentId, now);
+      if (origin !== null && (origin.client !== agent.outside_client
+                              || origin.family !== agent.outside_family)) {
+        throw new Refused("an outside caller disables only its own agent");
       }
+      this.#revokeSubscribed(agent, now);
       sql.exec("UPDATE outside_agents SET disabled_reason = ?, revision = revision + 1 " +
                  "WHERE agent_id = ?", reason, agentId);
       sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE agent_id = ? AND unacked = 1",
@@ -607,10 +635,11 @@ export class Ledger {
   }
 
   /**
-   * The owner deletes an agent: its registry row, every message in its dm room with
-   * their bodies and recipients, its cursor, wakes, rings and receipts, and the owner's
-   * own read and reply receipts for those messages. A revoke of its callbacks stays
-   * scheduled. Each step is an index range of that agent's rows.
+   * The owner deletes an agent: every message in its dm room with their bodies and
+   * recipients, its cursor, wakes, rings and receipts, the owner's own read and reply
+   * receipts for those messages, and its registry row. While a revoke of its callbacks
+   * is still to run, the row stays as a tombstone until that revoke settles. Each step is
+   * an index range of that agent's rows.
    */
   remove(agentId: unknown, now: number = clock()): { agent_id: string; messages: number } {
     if (typeof agentId !== "string") {
@@ -622,9 +651,7 @@ export class Ledger {
       if (agent === undefined) {
         throw new Refused("agent not found");
       }
-      if (rings(agent)) {
-        this.#revoke(agentId, now);
-      }
+      this.#revokeSubscribed(agent, now);
       const ids = sql.exec<{ message_id: string }>(
         "SELECT message_id FROM ledger_recipients WHERE agent_id = ? " +
           "UNION SELECT message_id FROM ledger_messages WHERE sender_id = ?", agentId, agentId,
@@ -641,7 +668,12 @@ export class Ledger {
       sql.exec("DELETE FROM ledger_readers WHERE reader = ?", agentId);
       sql.exec("DELETE FROM ledger_wakes WHERE agent_id = ? AND kind = 'wake'", agentId);
       sql.exec("DELETE FROM ledger_rings WHERE agent_id = ?", agentId);
-      sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", agentId);
+      if (this.#revokePending(agentId)) {
+        sql.exec("UPDATE outside_agents SET disabled_reason = 'deleted', deleted_at = ?, " +
+                   "revision = revision + 1 WHERE agent_id = ?", now, agentId);
+      } else {
+        sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", agentId);
+      }
       return { agent_id: agentId, messages: ids.length };
     });
   }
@@ -662,7 +694,7 @@ export class Ledger {
     return this.#storage.transactionSync(() => {
       if (!this.#sql.exec(
         "UPDATE outside_agents SET max_wakes_per_hour = ?, batch_window_s = ?, " +
-          "revision = revision + 1 WHERE agent_id = ? RETURNING agent_id",
+          "revision = revision + 1 WHERE agent_id = ? AND deleted_at IS NULL RETURNING agent_id",
         maxWakesPerHour, batchWindowS, agentId,
       ).toArray().length) {
         throw new Refused("agent not found");
@@ -965,17 +997,23 @@ export class Ledger {
     });
   }
 
-  /** W4: a `mailbox.message` subscribe names the caller's own ringing agent. */
-  subscriber(origin: Origin | null, commandCenterId: unknown, agentId: unknown): void {
-    if (origin === null || typeof commandCenterId !== "string" || typeof agentId !== "string"
-        || !this.#sql.exec(
-          "SELECT 1 FROM outside_agents WHERE agent_id = ? AND command_center_id = ? AND " +
-            "outside_client = ? AND outside_family = ? AND disabled_reason IS NULL AND " +
-            "delivery_method = 'mcp_event'", agentId, commandCenterId, origin.client,
-          origin.family,
-        ).toArray().length) {
+  /**
+   * W4: a `mailbox.message` subscribe names the caller's own ringing agent. It opens
+   * that agent's next subscription generation, which the doorbell tags the callback
+   * with, so a revoke made before it can never erase it.
+   */
+  subscriber(origin: Origin | null, commandCenterId: unknown, agentId: unknown): number {
+    const rows = origin === null || typeof commandCenterId !== "string"
+        || typeof agentId !== "string" ? [] : this.#sql.exec<{ subscription: number }>(
+      "UPDATE outside_agents SET subscription = subscription + 1 WHERE agent_id = ? AND " +
+        "command_center_id = ? AND outside_client = ? AND outside_family = ? AND " +
+        "disabled_reason IS NULL AND delivery_method = 'mcp_event' RETURNING subscription",
+      agentId, commandCenterId, origin.client, origin.family,
+    ).toArray();
+    if (!rows.length) {
       throw new Refused("not this caller's mcp_event agent");
     }
+    return rows[0]!.subscription;
   }
 
   // -- the schedule: wakes and revokes (S3b, W3) ------------------------------
@@ -988,13 +1026,37 @@ export class Ledger {
     this.#prune(now);
   }
 
-  /** Schedule a revoke of the agent's callbacks: at most one open per agent. */
-  #revoke(agentId: string, now: number): void {
-    this.#sql.exec(
-      "INSERT INTO ledger_wakes (wake_id, agent_id, kind, state, due, created_at) " +
-        "VALUES (?, ?, 'revoke', 'pending', ?, ?) ON CONFLICT DO NOTHING",
-      "revoke_" + token(16), agentId, now, now,
-    );
+  /**
+   * Schedule a revoke of the agent's callbacks through its newest subscription, when it
+   * has subscribed since its last revoke. At most one is open per agent: a new one raises
+   * the open one's generation instead.
+   */
+  #revokeSubscribed(agent: Agent, now: number): void {
+    if (agent.subscription <= agent.revoked_through) {
+      return;
+    }
+    const sql = this.#sql;
+    const generation = agent.subscription;
+    sql.exec("UPDATE outside_agents SET revoked_through = ? WHERE agent_id = ?", generation,
+             agent.agent_id);
+    if (!sql.exec(
+      "UPDATE ledger_wakes SET generation = MAX(generation, ?) WHERE agent_id = ? " +
+        `AND kind = 'revoke' AND ${OPEN} RETURNING wake_id`, generation, agent.agent_id,
+    ).toArray().length) {
+      sql.exec(
+        "INSERT INTO ledger_wakes (wake_id, agent_id, kind, state, due, generation, " +
+          "created_at) VALUES (?, ?, 'revoke', 'pending', ?, ?, ?)",
+        "revoke_" + token(16), agent.agent_id, now, generation, now,
+      );
+    }
+  }
+
+  /** Whether a revoke of the agent's callbacks is still open or being sent. */
+  #revokePending(agentId: string): boolean {
+    return this.#sql.exec(
+      "SELECT 1 FROM ledger_wakes WHERE agent_id = ? AND kind = 'revoke' " +
+        "AND state IN ('pending', 'rate_limited', 'sending')", agentId,
+    ).toArray().length > 0;
   }
 
   /** Settled schedule rows kept for the retention, and at most `maxSettledWakes`. */
@@ -1056,13 +1118,16 @@ export class Ledger {
         sql.exec("UPDATE ledger_wakes SET state = 'sending', claim_id = ?, " +
                    "attempts = attempts + 1, due = ? WHERE wake_id = ?",
                  claimId, now + WAKE_LEASE_S, wakeId);
-        return { outcome: "revoke",
-                 target: { wake_id: wakeId, claim_id: claimId, agent_id: wake.agent_id } };
+        return { outcome: "revoke", target: { wake_id: wakeId, claim_id: claimId,
+                                              agent_id: wake.agent_id,
+                                              generation: wake.generation! } };
       }
       const agent = this.#agent(wake.agent_id);
       if (agent === undefined || !rings(agent)) {
         this.#suppress(wake.agent_id, "agent", now);
-        this.#revoke(wake.agent_id, now);
+        if (agent !== undefined) {
+          this.#revokeSubscribed(agent, now);
+        }
         return { outcome: "suppressed", agent_id: wake.agent_id };
       }
       sql.exec("DELETE FROM ledger_rings WHERE agent_id = ? AND at <= ?", agent.agent_id,
@@ -1148,7 +1213,7 @@ export class Ledger {
       let state: string = answer.state;
       const kind = revoke ? (state === "sent" ? "revoked" : undefined) : WAKE_RECEIPTS[state];
       let detail: Record<string, unknown> = revoke
-        ? { ...answer } : { ...answer, through: wake.through_seq };
+        ? { ...answer, generation: wake.generation } : { ...answer, through: wake.through_seq };
       delete detail["state"];
       let due = now;
       if (state === "rate_limited") {
@@ -1159,8 +1224,9 @@ export class Ledger {
       // waits out any Retry-After.
       if ((state === "pending" || state === "rate_limited") && sql.exec(
         "UPDATE ledger_wakes SET due = MAX(due, ?), state = CASE WHEN ? = 'rate_limited' " +
-          `THEN 'rate_limited' ELSE state END WHERE agent_id = ? AND kind = ? AND ${OPEN} ` +
-          "RETURNING wake_id", due, state, wake.agent_id, wake.kind,
+          "THEN 'rate_limited' ELSE state END, generation = MAX(generation, ?) " +
+          `WHERE agent_id = ? AND kind = ? AND ${OPEN} RETURNING wake_id`,
+        due, state, wake.generation, wake.agent_id, wake.kind,
       ).toArray().length) {
         state = "suppressed";
         detail = { ...detail, folded: true };
@@ -1179,6 +1245,11 @@ export class Ledger {
       }
       if (kind !== undefined) {
         this.#receipt(wake.agent_id, kind, wakeId, now, detail);
+      }
+      // A deleted agent's tombstone goes once no revoke of its callbacks is left to run.
+      if (revoke && !this.#revokePending(wake.agent_id)) {
+        sql.exec("DELETE FROM outside_agents WHERE agent_id = ? AND deleted_at IS NOT NULL",
+                 wake.agent_id);
       }
       this.#prune(now);
       return true;

@@ -114,7 +114,8 @@ describe("one open wake per ringing recipient", () => {
     expect(wrongCenter.name).toBe("Refused");
     expect(await r.stub.mailboxSubscriber(r.bind(MUSE),
                                           { command_center_id: "alpha", agent_id: muse }))
-      .toEqual({ agent_id: muse });
+      .toEqual({ agent_id: muse, generation: 1 });  // each subscribe opens the next
+    expect(await r.subscribe(MUSE, muse)).toBe(2);
   });
 
   it("suppresses a disabled agent's open wake, or one moved off mcp_event", async () => {
@@ -135,21 +136,30 @@ describe("one open wake per ringing recipient", () => {
     expect(JSON.parse(second["receipt_json"] as string)).toEqual({ reason: "delivery_method" });
   });
 
-  it("suppresses a wake left open for a disabled agent at claim, and revokes", async () => {
+  it("suppresses a wake left open for a disabled agent at claim, and revokes what it lost",
+     async () => {
     const r = rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.subscribe(MUSE, muse);
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "revoked" });
     expect(await r.tick()).toBe(0);  // the disable's own revoke
-    expect(r.sender.revoked).toEqual([muse]);
+    expect(r.sender.revoked).toEqual([[muse, 1]]);
     // A wake left open by a direct store change, as a crash would.
     await r.sql("UPDATE ledger_wakes SET state = 'pending', settled_at = NULL " +
                 "WHERE kind = 'wake'");
     expect(await r.tick()).toBe(0);
     expect(r.sender.sent).toEqual([]);
     expect(await wakeStates(r)).toEqual(["suppressed"]);
-    expect(await r.tick()).toBe(0);  // the claim's revoke, on the next pass
-    expect(r.sender.revoked).toEqual([muse, muse]);
+    expect(await r.tick()).toBe(0);
+    expect(r.sender.revoked).toEqual([[muse, 1]]);  // that subscription is revoked already
+    // A crash that lost the suppression and the revoke's record too: the claim catches it.
+    await r.sql("UPDATE ledger_wakes SET state = 'pending', settled_at = NULL " +
+                "WHERE kind = 'wake'");
+    await r.sql("UPDATE outside_agents SET revoked_through = 0");
+    expect(await r.tick()).toBe(0);
+    expect(await r.tick()).toBe(0);  // its revoke, on the next pass
+    expect(r.sender.revoked).toEqual([[muse, 1], [muse, 1]]);
   });
 });
 
@@ -468,30 +478,69 @@ describe("W3 limits", () => {
 });
 
 describe("a revoke of a suppressed agent's callbacks", () => {
-  it("is scheduled on disable, off mcp_event and on delete, and the doorbell consumes it",
+  it("is scheduled once per subscription, on disable, off mcp_event and on delete",
      async () => {
     const r = rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     const dot = await r.register(DOT, "Dot", "pull");
     const revokes = async () => (await wakes(r)).filter((w) => w["kind"] === "revoke")
-      .map((w) => [w["agent_id"], w["state"]]);
+      .map((w) => [w["agent_id"], w["state"], w["generation"]]);
     await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "gone" });
-    expect(await revokes()).toEqual([]);  // a pull agent holds no callbacks
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "gone" });
+    expect(await revokes()).toEqual([]);  // neither ever subscribed: no callback to erase
+    await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "gone" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "again" });
-    expect(await revokes()).toEqual([[muse, "pending"]]);  // once: it was revoked already
+    expect(await revokes()).toEqual([[muse, "pending", 1]]);  // once for that subscription
     expect(await r.alarmAt()).toBeNull();  // no doorbell yet: held, arming nothing
     expect(await r.tick()).toBe(0);
-    expect(r.sender.revoked).toEqual([muse]);
-    expect(await revokes()).toEqual([[muse, "sent"]]);
+    expect([r.sender.revoked, r.sender.callbacks.get(muse)]).toEqual([[[muse, 1]], new Set()]);
+    expect(await revokes()).toEqual([[muse, "sent", 1]]);
     expect(await wakeReceipts(r)).toEqual(["revoked"]);
+    expect(JSON.parse((await r.table("ledger_receipts")).at(-1)!["detail_json"] as string))
+      .toEqual({ generation: 1 });
     await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
     await r.register(MUSE, "Muse", "pull");  // off mcp_event
     await r.register(MUSE, "Muse", "mcp_event");
     await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    expect(await revokes()).toEqual([[muse, "sent"], [muse, "pending"]]);  // one open at most
+    expect(await revokes()).toEqual([[muse, "sent", 1], [muse, "pending", 2]]);
     await r.tick();
-    expect(r.sender.revoked).toEqual([muse, muse]);
+    expect(r.sender.revoked).toEqual([[muse, 1], [muse, 2]]);
+  });
+
+  it("never erases the callback of an agent re-enabled after its revoke was scheduled",
+     async () => {
+    const r = rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.subscribe(MUSE, muse);
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
+    await r.register(MUSE, "Muse", "mcp_event");  // re-enabled before the revoke ran
+    expect(await r.subscribe(MUSE, muse)).toBe(2);
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    expect(await r.tick(clock() + 1)).toBe(1);
+    // The stale revoke still erased the old callback, and only it.
+    expect(r.sender.revoked).toEqual([[muse, 1]]);
+    expect(r.sender.callbacks.get(muse)).toEqual(new Set([2]));
+    expect(r.sender.sent.map((t) => t.agent_id)).toEqual([muse]);
+    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
+    expect([agent!.disabled_reason, agent!.subscription, agent!.revoked_through])
+      .toEqual([null, 2, 1]);
+  });
+
+  it("raises an open revoke's generation instead of opening a second", async () => {
+    const r = rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
+    await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
+    expect((await wakes(r)).map((w) => [w["kind"], w["state"], w["generation"]]))
+      .toEqual([["revoke", "pending", 2]]);
+    await r.tick();
+    expect([r.sender.revoked, r.sender.callbacks.get(muse)]).toEqual([[[muse, 2]], new Set()]);
   });
 
   it("is due again after a lapsed lease, since erasing callbacks twice is harmless",
@@ -500,6 +549,7 @@ describe("a revoke of a suppressed agent's callbacks", () => {
     const t = clock();
     const state = await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
+      ledger.subscriber(MUSE, "alpha", muse);
       ledger.register(MUSE, MCP, { ...RINGS, delivery_method: "pull" }, t);  // off mcp_event
       ledger.register(MUSE, MCP, RINGS, t);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t + 10);  // an open wake too

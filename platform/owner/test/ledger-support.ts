@@ -20,11 +20,21 @@ export function origin(n: number): Origin {
 
 type Row = Record<string, SqlStorageValue>;
 
-/** A doorbell that answers from a script: an outcome, or `crash` to die mid-send. */
+/**
+ * A doorbell that answers from a script: an outcome, or `crash` to die mid-send. It
+ * keeps each agent's callbacks by the subscription generation they were tagged with, and
+ * a revoke erases only those at or before its generation, as the contract says.
+ */
 export class FakeSender implements WakeSender {
   readonly sent: WakeTarget[] = [];
-  readonly revoked: string[] = [];
+  readonly revoked: [string, number][] = [];
   readonly answers: (Outcome | "crash")[] = [];
+  readonly callbacks = new Map<string, Set<number>>();
+
+  /** The subscribe door storing a callback tagged with its generation. */
+  subscribed(agentId: string, generation: number): void {
+    this.callbacks.set(agentId, (this.callbacks.get(agentId) ?? new Set()).add(generation));
+  }
 
   async send(target: WakeTarget, mark: () => void): Promise<Outcome> {
     mark();
@@ -36,8 +46,10 @@ export class FakeSender implements WakeSender {
     return answer;
   }
 
-  async revoke(agentId: string): Promise<void> {
-    this.revoked.push(agentId);
+  async revoke(agentId: string, generation: number): Promise<void> {
+    this.revoked.push([agentId, generation]);
+    const live = [...(this.callbacks.get(agentId) ?? [])].filter((g) => g > generation);
+    this.callbacks.set(agentId, new Set(live));
   }
 }
 
@@ -95,6 +107,13 @@ export function rig() {
       stub.mailboxRead(bind(origin), { limit, ...budget }),
     ack: (origin: Origin | null, through: number) =>
       stub.mailboxAck(bind(origin), { through }),
+    /** The agent's own client subscribes to its mailbox; the doorbell keeps the callback. */
+    subscribe: async (origin: Origin, agentId: string, commandCenter = "alpha") => {
+      const { generation } = await stub.mailboxSubscriber(
+        bind(origin), { command_center_id: commandCenter, agent_id: agentId });
+      sender.subscribed(agentId, generation);
+      return generation;
+    },
     /** A whole table, in insertion order. */
     table: (name: string): Promise<Row[]> => runInDurableObject(stub, (_i: OwnerDO, state) =>
       state.storage.sql.exec<Row>(`SELECT * FROM ${name} ORDER BY rowid`).toArray()),

@@ -115,6 +115,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // share of the owner's mailbox.
       "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
       "unacked_to_owner_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner_bytes >= 0), " +
+      // The doorbell callbacks' fence: each subscribe opens the next generation, and a
+      // revoke erases the callbacks at or before the generation it carries.
+      // `revoked_through` is the newest generation a revoke has been scheduled for.
+      "subscription INTEGER NOT NULL DEFAULT 0 CHECK (subscription >= 0), " +
+      "revoked_through INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (revoked_through BETWEEN 0 AND subscription), " +
+      // A deleted agent whose revoke is still to run: a tombstone, disabled, counted by
+      // the registry bound, and gone when its revoke settles.
+      "deleted_at REAL CHECK (deleted_at IS NULL OR disabled_reason IS NOT NULL), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
     // AUTOINCREMENT: a seq is never reused once its message is evicted, so no cursor
@@ -165,6 +174,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "attempts INTEGER NOT NULL DEFAULT 0, " +
       // The durable may-have-sent mark (the Python op journal's): set before a byte leaves.
       "marked INTEGER NOT NULL DEFAULT 0 CHECK (marked IN (0, 1)), through_seq INTEGER, " +
+      // A revoke's fence: it erases only callbacks at or before this subscription.
+      "generation INTEGER CHECK ((kind = 'revoke') = (generation IS NOT NULL)), " +
       "receipt_json TEXT, created_at REAL NOT NULL, settled_at REAL)",
     "CREATE UNIQUE INDEX one_open_wake ON ledger_wakes (agent_id, kind) " +
       "WHERE state IN ('pending', 'rate_limited')",

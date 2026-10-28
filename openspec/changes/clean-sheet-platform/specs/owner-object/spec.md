@@ -90,7 +90,7 @@ The ledger SHALL bound each mailbox's unacked messages and bytes, the owner's an
 - **THEN** the owner's next post to that agent is refused and posts to every other mailbox still succeed
 
 ### Requirement: A disabled agent holds no mail, and only the owner deletes one
-Disabling an agent SHALL release its unacked mail, so it no longer holds the ledger. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts, and leaves a revoke of its callbacks scheduled. The enabled-agent bound SHALL count enabled agents only.
+Disabling an agent SHALL release its unacked mail, so it no longer holds the ledger; the owner may disable any agent and an outside caller only its own. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts. While a revoke of its callbacks is pending its row SHALL stay as a tombstone that the registry bound counts, gone when the revoke settles. The enabled-agent bound SHALL count enabled agents only.
 
 #### Scenario: A disabled agent's unread mail
 - **WHEN** an agent holding unacked mail is disabled
@@ -124,3 +124,10 @@ An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s ba
 #### Scenario: An agent registers again
 - **WHEN** the owner has set an agent's limits and the agent registers again
 - **THEN** its limits stay the owner's, and a registration that names a limit is refused
+
+### Requirement: A revoke is fenced by the subscription generation
+Each `mailbox.message` subscribe SHALL open the agent's next subscription generation, which tags the doorbell's callback. Disabling an agent, moving it off `mcp_event` or deleting it SHALL schedule a revoke only when the agent has subscribed since its last revoke, carrying the newest generation, with at most one open per agent. The doorbell SHALL erase only callbacks at or before a revoke's generation.
+
+#### Scenario: An agent re-enabled before its revoke runs
+- **WHEN** a subscribed agent is disabled, registers again and subscribes again before the alarm runs its revoke
+- **THEN** the revoke erases the old callback only, and the agent's new callback still rings

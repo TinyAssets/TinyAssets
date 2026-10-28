@@ -273,9 +273,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   async disableAgent(binding: LedgerBinding, request: DisableRequest): Promise<Agent> {
-    this.#interactive(binding);
+    const origin = this.#interactive(binding);
     const r = ledgerFields(request, ["agent_id", "reason"]);
-    const agent = this.#ledger.disable(r["agent_id"], r["reason"]);
+    const agent = this.#ledger.disable(r["agent_id"], r["reason"], origin);
     await this.#rearm();
     return agent;
   }
@@ -320,12 +320,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#ledger.ack(origin, r["through"]);
   }
 
-  /** W4: a `mailbox.message` subscribe must name the caller's own ringing agent. */
-  mailboxSubscriber(binding: LedgerBinding, request: SubscriberRequest): { agent_id: string } {
+  /**
+   * W4: a `mailbox.message` subscribe must name the caller's own ringing agent. The
+   * answer's `generation` tags the callback the subscribe door stores, so a revoke made
+   * before it never erases it.
+   */
+  mailboxSubscriber(binding: LedgerBinding, request: SubscriberRequest):
+      { agent_id: string; generation: number } {
     const { origin } = this.#bindLedger(binding);
     const r = ledgerFields(request, ["command_center_id", "agent_id"]);
-    this.#ledger.subscriber(origin, r["command_center_id"], r["agent_id"]);
-    return { agent_id: r["agent_id"] as string };
+    const generation = this.#ledger.subscriber(origin, r["command_center_id"], r["agent_id"]);
+    return { agent_id: r["agent_id"] as string, generation };
   }
 
   /**
