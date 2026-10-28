@@ -12,10 +12,14 @@ name: Cap probe
 #   Account -> Workers Scripts: Edit   upload, DO class migrations, the
 #                                      workers.dev route, delete, and reading
 #                                      the workers.dev subdomain
-#   Account -> Billing: Read           optional: names the account's plan; without
-#                                      it the plan is read from a CPU burn instead
+#   Account -> Billing: Read           optional: names the account's plan (the CPU
+#                                      burn is only conclusive when it is refused)
 #
 # The run takes about 25 minutes: M10 holds one Durable Object alarm for 16.
+# subrequests_limit pins limits.subrequests on both Workers through generated
+# copies of their configs (config.mjs), so the attribution cases discriminate at
+# a known cap; cap-probe.md "Next" has the two-run plan (run A on Free, run B
+# on Paid).
 
 on:
   workflow_dispatch:
@@ -24,6 +28,16 @@ on:
         description: 'M10: minutes the alarm awaits one call, 0 to 20 (0 skips M10)'
         required: false
         default: '16'
+        type: string
+      burst:
+        description: 'N, the calls per burst, 25 to 120; above the cap minus the pre-spends where a case must discriminate (cap-probe.md)'
+        required: false
+        default: '40'
+        type: string
+      subrequests_limit:
+        description: 'limits.subrequests for both Workers, 25 to 10000; empty keeps the plan default (cap-probe.md, Next)'
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -46,11 +60,24 @@ jobs:
       - name: Check the input
         env:
           HOLD_MINUTES: ${{ inputs.hold_minutes }}
+          BURST: ${{ inputs.burst }}
+          SUBREQUESTS_LIMIT: ${{ inputs.subrequests_limit }}
         run: |
-          # One or two digits first, so a huge or odd value fails before any compare.
+          # Digits of a bounded length first, so a huge or odd value fails before any compare.
           if ! [[ "${HOLD_MINUTES}" =~ ^[0-9]{1,2}$ ]] || [ "$((10#${HOLD_MINUTES}))" -gt 20 ]; then
             echo "::error::hold_minutes must be a whole number from 0 to 20"
             exit 1
+          fi
+          if ! [[ "${BURST}" =~ ^[0-9]{1,3}$ ]] || [ "$((10#${BURST}))" -lt 25 ] || [ "$((10#${BURST}))" -gt 120 ]; then
+            echo "::error::burst must be a whole number from 25 to 120"
+            exit 1
+          fi
+          if [ -n "${SUBREQUESTS_LIMIT}" ]; then
+            if ! [[ "${SUBREQUESTS_LIMIT}" =~ ^[0-9]{1,5}$ ]] \
+                || [ "$((10#${SUBREQUESTS_LIMIT}))" -lt 25 ] || [ "$((10#${SUBREQUESTS_LIMIT}))" -gt 10000 ]; then
+              echo "::error::subrequests_limit must be empty or a whole number from 25 to 10000"
+              exit 1
+            fi
           fi
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -151,10 +178,24 @@ jobs:
         timeout-minutes: 10
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SUBREQUESTS_LIMIT: ${{ inputs.subrequests_limit }}
         run: |
           set -euo pipefail
           # Clear anything an earlier run left, Durable Object state included.
           bash scripts/probes/capprobe/delete.sh ta-capprobe ta-capprobe-callee
+          # A set limit deploys generated copies with limits.subrequests pinned on both
+          # Workers; the committed configs are never edited.
+          configs="scripts/probes/capprobe"
+          callee_config="${configs}/callee.wrangler.jsonc"
+          caller_config="${configs}/caller.wrangler.jsonc"
+          if [ -n "${SUBREQUESTS_LIMIT}" ]; then
+            node scripts/probes/capprobe/config.mjs --limit "$((10#${SUBREQUESTS_LIMIT}))" --out "${RUNNER_TEMP}/capprobe-config"
+            callee_config="${RUNNER_TEMP}/capprobe-config/callee.wrangler.json"
+            caller_config="${RUNNER_TEMP}/capprobe-config/caller.wrangler.json"
+            echo "limits.subrequests: $((10#${SUBREQUESTS_LIMIT})) on both Workers"
+          else
+            echo "limits.subrequests: the plan default"
+          fi
           # The per-run key and the callee URL go up as Worker secrets, never printed.
           callee="${RUNNER_TEMP}/capprobe-callee.json"
           caller="${RUNNER_TEMP}/capprobe-caller.json"
@@ -162,24 +203,31 @@ jobs:
           python3 -c 'import json,os,sys; json.dump({"RUN_KEY": os.environ["PROBE_KEY"]}, open(sys.argv[1], "w"))' "${callee}"
           python3 -c 'import json,os,sys; json.dump({"RUN_KEY": os.environ["PROBE_KEY"], "CALLEE_URL": "https://ta-capprobe-callee." + os.environ["PROBE_SUBDOMAIN"] + ".workers.dev"}, open(sys.argv[1], "w"))' "${caller}"
           # The callee first: the caller binds its Peer class by script_name.
-          "${WRANGLER}" deploy --config scripts/probes/capprobe/callee.wrangler.jsonc --secrets-file "${callee}"
-          "${WRANGLER}" deploy --config scripts/probes/capprobe/caller.wrangler.jsonc --secrets-file "${caller}"
+          "${WRANGLER}" deploy --config "${callee_config}" --secrets-file "${callee}"
+          "${WRANGLER}" deploy --config "${caller_config}" --secrets-file "${caller}"
 
-      # 55 minutes: drive.mjs's worstCaseMs at the 20-minute hold cap is 50.3
-      # (every wait at its bound, every request at its 45 s timeout), and
-      # local.mjs fails if it outgrows this. The driver rewrites the results
-      # after each phase, so a step killed here still leaves what it had.
+      # 55 minutes: drive.mjs's worstCaseMs at the caps (a 20-minute hold, N =
+      # 120) is 52.9 (every wait at its bound, every request at its 45 s
+      # timeout), and local.mjs fails if it outgrows this. The driver rewrites
+      # the results after each phase and prints the whole report to this log,
+      # so a step killed here still leaves what it had.
       - name: Run every case
         timeout-minutes: 55
         env:
           HOLD_MINUTES: ${{ inputs.hold_minutes }}
+          BURST: ${{ inputs.burst }}
+          SUBREQUESTS_LIMIT: ${{ inputs.subrequests_limit }}
         run: |
           set -euo pipefail
-          node scripts/probes/capprobe/drive.mjs \
+          limit=""
+          if [ -n "${SUBREQUESTS_LIMIT}" ]; then
+            limit="$((10#${SUBREQUESTS_LIMIT}))"
+          fi
+          node scripts/probes/capprobe/drive.mjs --subrequests-limit "${limit}" \
             --base "https://ta-capprobe.${PROBE_SUBDOMAIN}.workers.dev" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --out "${RUNNER_TEMP}/capprobe.json" --summary "${RUNNER_TEMP}/capprobe.md" \
-            --hold-minutes "${HOLD_MINUTES}" --redact "${PROBE_SUBDOMAIN}"
+            --hold-minutes "${HOLD_MINUTES}" --burst "${BURST}" --redact "${PROBE_SUBDOMAIN}"
 
       - name: Results into the job summary
         if: always()
