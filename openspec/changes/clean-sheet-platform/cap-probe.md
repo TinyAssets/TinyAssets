@@ -8,8 +8,8 @@ For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
 - **The cap that bites is subrequests per invocation: 50 on this account.** The 32 the
   probe was designed around never bit: 40 sequential service-binding calls passed in one
   Worker request.
-- **A DO RPC gets its own budget (M4), and an alarm starts fresh (M5).** Inside one
-  alarm, RPC and `fetch` share one counter.
+- **A DO RPC does not share its caller's counter (M4), and an alarm starts fresh (M5).**
+  Inside one alarm, RPC and `fetch` share one counter.
 - **A call is charged to the object's current event, not to the async context that made
   it (M12).** Concretely, it goes to the newest incoming invocation, or to one counter that
   each incoming event resets. This rules out the per-async-context attribution that
@@ -105,9 +105,13 @@ passes locally, so this proves the harness, not the cap.
 
 ## Reading key
 
-C is the per-invocation cap, read from the case that hits it (on Free, 50). "Fresh" means a
-counter of its own, starting at 0. A value at or above N cannot show, so each case says
-when it discriminates.
+C is the per-invocation cap. It is either read from the case that hits it (on Free, 50) or
+set with `subrequests_limit`. "Fresh" means a counter of its own, starting at 0. A value at
+or above N cannot show, so each case says when it discriminates.
+
+`rulePredictions(C, N)` in `drive.mjs` is this key as code, and `discrimination(C, N)`
+grades each case as full, partial or none. The report carries both for a run that sets the
+limit, and `local.mjs` asserts the grades for run 1 and for the plan in "Next".
 
 **M1–M3.** M1 and M2 stop at min(N, C). M3: with one counter for both kinds, the fetch
 burst stops at C − h; with separate counters, at min(N − h, C). These discriminate only
@@ -190,8 +194,15 @@ deploys to the production Cloudflare account. It uses the repo secrets `CLOUDFLA
 (Account: Workers Scripts: Edit) and `CLOUDFLARE_ACCOUNT_ID`, and needs a workers.dev
 subdomain.
 
-The inputs are `hold_minutes` (M10; 0 to 20, default 16) and `burst` (N; 25 to 120,
-default 40). A run takes about 25 minutes. The last step deletes both Workers
+The inputs are:
+- `hold_minutes` (M10): 0 to 20, default 16;
+- `burst` (N): 25 to 120, default 40;
+- `subrequests_limit`: empty (the plan's default), or 25 to 10,000.
+
+When `subrequests_limit` is set, `config.mjs` writes copies of both committed configs with
+`limits.subrequests` pinned, and the run deploys those. It pins the callee too, so the
+callee's own budget can't confound the result. The report and summary record the limit,
+and the cap M5 actually hit. On Free the maximum is 50, so a higher value may not deploy. A run takes about 25 minutes. The last step deletes both Workers
 (`force=true`, which also deletes their Durable Objects), confirms each is gone, and fails
 the run if one is not.
 
@@ -210,7 +221,7 @@ this limit, refer to …/wrangler/configuration/#limits".
 | M1 | rpc 40/40 | no (N < C) | the documented 32-invocation cap did not bite on 40 sequential calls |
 | M2 | fetch 40/40 | no | — |
 | M3 | 20/20 + 20/20 | no | — (M5 answers the one-counter question inside an alarm) |
-| M4 | workerPre 16/16; the DO's rpc 40/40 | yes (sharing would stop at 34 or 33) | a DO RPC has a fresh budget |
+| M4 | workerPre 16/16; the DO's rpc 40/40 | partly: sharing would stop at 34 or 33; fresh (min(N, C)) and uncapped both give 40 | a DO RPC does not share the caller's counter |
 | M5 | armPre 8/8; alarm rpc 40/40, then fetch 10/40, failing at call 10 | yes | the alarm starts fresh (40 + 10 = C, not C − 8); RPC and fetch share one counter |
 | M6 | startPre 8/8; loop 40/40 | no (C − j = 42 > N) | — |
 | M6a | startPre 8/8, alarmPre 4/4, loop 40/40; `m6aOrder` ok | partly: only never-reset (C − 12 = 38) shows | not one never-reset object counter; start RPC (42), alarm (46) and fresh (50) are all above N |
@@ -234,9 +245,32 @@ Per §6 it is reworked once the Paid run is in. `calls.ts` is not changed yet.
 
 ## Next
 
-Re-run on Workers Paid. At Paid's default of 10,000, every burst here (N ≤ 120) stays
-under the cap, so a default-limit run can show only two things: whether the documented 32
-bites on Paid, and whether some other limit does. To measure attribution on Paid, the
-caller's config needs a low `limits.subrequests` (for example 50), which Wrangler accepts
-per Worker. That is a config change for the next probe slice. Then choose N from the
-"discriminates when" conditions above: N ≥ C makes every case discriminate.
+Two dispatches on Workers Paid answer everything this probe asks. Each needs the founder's
+approval.
+
+**Run A: `subrequests_limit=50`, `burst=60` (C = 50, N = 60).** Every case discriminates
+here: each rule predicts a different outcome. `local.mjs` asserts this from
+`rulePredictions`.
+
+| # | What each rule predicts at C = 50, N = 60 |
+|---|---|
+| M1, M2 | capped 50; uncapped 60 |
+| M3 | one counter 30 + 20; two counters 30 + 30 |
+| M4 | fresh 50; shared, stub not counted 34; shared, stub counted 33; uncapped 60 |
+| M5 (RPC + fetch) | fresh 50; continues from `arm()` 42; uncapped 120 |
+| M6 | charged to the starting RPC or one object counter 42; fresh 50; uncapped 60 |
+| M6a | never reset 38; starting RPC 42; alarm, newest or reset 46; fresh 50; uncapped 60 |
+| M7, M8 | counted like a service call 50; not counted 60 |
+| M9 (rpc1 + rpc2) | socket counted once 49; socket not counted 50; a message refreshes 60 |
+| M12 (phase 2 combined, A's phase 3) | per invocation 52, 0; never reset or oldest 2, 0; newest 26, ≥ 1; reset on each event 26, 0; uncapped 72, 10 |
+
+M5's observed cap must equal 50, or the limit did not apply as configured (the driver
+notes it). M12's phase 3 still separates newest from reset only with the settle race in
+mind (see the key).
+
+**Run B: the default limit, `burst=60`.** At C = 10,000 no case discriminates attribution.
+Every rule predicts the uncapped outcome, and `local.mjs` asserts that. The run answers the
+other question: whether the documented 32 Worker invocations, or any other cap at or below
+60, bites on Paid. M1 stopping at 32 would mean it does.
+
+Then rework `calls.ts` from both runs (tasks §6).

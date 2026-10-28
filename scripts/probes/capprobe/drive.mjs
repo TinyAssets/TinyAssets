@@ -6,7 +6,7 @@
  *
  *   PROBE_KEY=... node drive.mjs --base https://ta-capprobe.<sub>.workers.dev \
  *       --run-id <id> --out results.json --summary summary.md \
- *       [--hold-minutes 16] [--burst 40] [--redact <text>]
+ *       [--hold-minutes 16] [--burst 40] [--subrequests-limit 50] [--redact <text>]
  *
  * Order: the Worker cases and M4; M6 and M6a (background loops) and the alarm cases M5,
  * M7, M8, M9; M12's two invocations, B started after A's first phase; M10 (the 16-minute
@@ -101,16 +101,23 @@ function failure(message, detail) {
  * Runs every case. `request(path, init)` answers like `fetch` against the Worker, with
  * the key already attached; the run id goes in `x-probe-run`. `timing` scales the waits.
  * `onPhase(report)` is called after each phase with the report so far.
+ * `subrequestsLimit` is the `limits.subrequests` both Workers were deployed with, or
+ * null for the plan's default; it is recorded, never sent.
  */
 export async function drive({ request, runId, params = {}, timing = {}, log = () => {},
-                              onPhase = () => {} }) {
+                              onPhase = () => {}, subrequestsLimit = null }) {
   if (!runId) {
     throw new Error("drive needs a runId");
   }
   const t = { ...LIVE_TIMING, ...timing };
   const p = { ...LIVE_PARAMS, ...params };
-  const report = { runId, phase: "start", plan: null, params: p, timing: t, notes: [],
-                   driverErrors: {}, checks: {}, results: {} };
+  const report = {
+    runId, phase: "start", plan: null, params: p, timing: t, notes: [],
+    subrequestsLimit: subrequestsLimit ?? "plan default",
+    // What each case can tell apart at this limit and N, from the reading key.
+    discrimination: subrequestsLimit ? discrimination(subrequestsLimit, p.n) : null,
+    driverErrors: {}, checks: {}, results: {},
+  };
   const query = (extra = {}) => new URLSearchParams(
     Object.entries({ ...p, ...extra }).map(([key, value]) => [key, String(value)]),
   ).toString();
@@ -249,6 +256,12 @@ export async function drive({ request, runId, params = {}, timing = {}, log = ()
 
     await sleep(Math.max(0, backgroundStarted + p.n * p.intervalMs + t.backgroundSlackMs - Date.now()));
     await pollUntil(BACKGROUND, t.backgroundGraceMs);
+    report.checks.observedCap = observedCap(report.results.M5?.result);
+    if (subrequestsLimit && report.checks.observedCap.cap !== null
+        && report.checks.observedCap.cap !== subrequestsLimit) {
+      report.notes.push(`the cap M5 hit (${report.checks.observedCap.cap}) is not the configured `
+                        + `limits.subrequests (${subrequestsLimit})`);
+    }
     report.checks.m6aOrder = m6aOrder(report.results.M6a?.result);
     if (!report.checks.m6aOrder.ok) {
       report.notes.push("M6a: a loop call ran before the alarm was awaiting it; its reading is void");
@@ -287,6 +300,63 @@ export function m6aOrder(loop) {
   const waited = loop?.waitedForAlarm?.met === true;
   return { ok: calls.length > 0 && early.length === 0 && waited, calls: calls.length,
            beforeAlarm: early, waitedForAlarm: waited };
+}
+
+/** C as M5's alarm measured it: its RPC + fetch successes, if its fetch burst hit a cap. */
+export function observedCap(m5) {
+  if (!m5?.rpc || !m5?.fetch) {
+    return { cap: null, why: "no fresh M5 result" };
+  }
+  return m5.fetch.errors > 0 || m5.rpc.errors > 0
+    ? { cap: m5.rpc.ok + m5.fetch.ok, error: m5.fetch.firstError ?? m5.rpc.firstError }
+    : { cap: null, why: `not reached by ${m5.rpc.n + m5.fetch.n} calls` };
+}
+
+/**
+ * The reading key (cap-probe.md) as numbers: what each case shows under each rule, for a
+ * per-invocation cap `C` and `N` calls per burst. A burst can show at most what it makes.
+ */
+export function rulePredictions(C, N) {
+  const clamp = (x, max = N) => Math.max(0, Math.min(max, x));
+  const h = Math.floor(N / 2);
+  const f = Math.floor(N * 0.4);
+  const s = N - f;
+  const PRE = { worker: 16, arm: 8, start: 8, alarm: 4 };
+  const capped = { capped: clamp(C), uncapped: N };
+  return {
+    M1: capped,
+    M2: capped,
+    M3: { oneCounter: [clamp(h, C), clamp(C - h, N - h)], twoCounters: [clamp(h, C), clamp(C, N - h)] },
+    M4: { fresh: clamp(C), sharedStubFree: clamp(C - PRE.worker), sharedStubCounted: clamp(C - PRE.worker - 1),
+          uncapped: N },
+    M5: { fresh: clamp(C, 2 * N), continuesArm: clamp(C - PRE.arm, 2 * N), uncapped: 2 * N },
+    M6: { startingRpcOrObject: clamp(C - PRE.start), fresh: clamp(C), uncapped: N },
+    M6a: { neverReset: clamp(C - PRE.start - PRE.alarm), startingRpc: clamp(C - PRE.start),
+           alarm: clamp(C - PRE.alarm), fresh: clamp(C), uncapped: N },
+    M7: capped,
+    M8: capped,
+    M9: { socketOnce: clamp(C - 1, 2 * h), socketFree: clamp(C, 2 * h), messageRefreshes: 2 * clamp(C, h) },
+    // [A + B phase 2, A phase 3]. Under "newest", phase 3 races B staying current, so
+    // it is only ">=1" once B's counter is spent; otherwise A has room for all 10.
+    M12: {
+      perInvocation: [2 * clamp(C - f, s), clamp(C - Math.min(N, C), 10)],
+      neverResetOrOldest: [clamp(C - 2 * f, 2 * s), clamp(C - 2 * f - 2 * s, 10)],
+      newest: [clamp(C - f, 2 * s), C - f > 2 * s ? clamp(C - f - 2 * s, 10) : ">=1"],
+      resetOnEvent: [clamp(C - f, 2 * s), clamp(C - f - 2 * s, 10)],
+      uncapped: [2 * s, 10],
+    },
+  };
+}
+
+/** Per case: "full" if every rule predicts a different outcome, "none" if all agree. */
+export function discrimination(C, N) {
+  const out = {};
+  for (const [id, rules] of Object.entries(rulePredictions(C, N))) {
+    const outcomes = new Set(Object.values(rules).map((value) => JSON.stringify(value)));
+    const count = Object.keys(rules).length;
+    out[id] = outcomes.size === count ? "full" : outcomes.size === 1 ? "none" : "partial";
+  }
+  return out;
 }
 
 const minutes = (ms) => (typeof ms === "number" ? `${(ms / MINUTE).toFixed(1)} min` : "unknown");
@@ -368,6 +438,12 @@ export function summarize(report) {
   const plan = report.plan ? `${report.plan.reading} (status ${report.plan.status})` : "not read";
   return [
     `Run \`${report.runId}\`, phase: ${report.phase}. Plan check: ${plan}.`,
+    `Subrequest limit (limits.subrequests): ${report.subrequestsLimit}. N: ${report.params.n}. `
+      + `Cap M5 hit: ${report.checks.observedCap?.cap ?? report.checks.observedCap?.why ?? "not read"}.`,
+    ...(report.discrimination
+      ? [`Discrimination at this limit and N: ${Object.entries(report.discrimination)
+          .map(([id, level]) => `${id} ${level}`).join(", ")}.`]
+      : []),
     ...["m12Order", "m6aOrder"].map((check) => `${check}: ${report.checks[check]
       ? (report.checks[check].ok ? "ok" : `FAILED (void) ${JSON.stringify(report.checks[check])}`)
       : "not reached"}.`), "",
@@ -392,7 +468,7 @@ function parseArgs(argv) {
 async function main(args, needles) {
   const key = process.env.PROBE_KEY;
   if (!args.base || !args["run-id"] || !key) {
-    throw new Error("usage: PROBE_KEY=... drive.mjs --base URL --run-id ID [--out F] [--summary F] [--hold-minutes M] [--burst N]");
+    throw new Error("usage: PROBE_KEY=... drive.mjs --base URL --run-id ID [--out F] [--summary F] [--hold-minutes M] [--burst N] [--subrequests-limit C]");
   }
   const holdMinutes = Number(args["hold-minutes"] ?? 16);
   if (!Number.isInteger(holdMinutes) || holdMinutes < 0 || holdMinutes > MAX_HOLD_MINUTES) {
@@ -401,6 +477,12 @@ async function main(args, needles) {
   const n = Number(args.burst ?? LIVE_PARAMS.n);
   if (!Number.isInteger(n) || n < MIN_BURST || n > MAX_BURST) {
     throw new Error(`--burst must be a whole number from ${MIN_BURST} to ${MAX_BURST}`);
+  }
+  // Empty means the plan's default; config.mjs has already refused anything out of range.
+  const limitArg = args["subrequests-limit"] ?? "";
+  const subrequestsLimit = limitArg === "" ? null : Number(limitArg);
+  if (subrequestsLimit !== null && !Number.isInteger(subrequestsLimit)) {
+    throw new Error("--subrequests-limit must be empty or a whole number");
   }
   const base = args.base.replace(/\/$/, "");
   const request = (path, init) => fetch(`${base}${path}`, {
@@ -416,6 +498,7 @@ async function main(args, needles) {
   };
   const report = await drive({
     request, runId: args["run-id"], params: { holdMs: holdMinutes * MINUTE, n }, onPhase: write,
+    subrequestsLimit,
     log: (line) => console.log(`[${new Date().toISOString()}] ${redact(line, needles)}`),
   });
   console.log(redact(summarize(report), needles));
