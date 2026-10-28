@@ -3,13 +3,14 @@
  * bound with nothing left behind, never making room by dropping history, and never a
  * dead end: what only frees is never refused, and housekeeping is never wedged.
  */
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
   CHUNK_BYTES, type FileLimits, INLINE_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS,
 } from "../src/files";
 import { canonical, DEFAULT_POLICY_JSON, FILE_DEFAULTS, FILE_SETTINGS } from "../src/policy";
+import type { OwnerDO } from "../src/owner-do";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
 
@@ -235,6 +236,38 @@ describe("a full history", () => {
     expect(await sqlIn(r.stub, "SELECT prune_after - at AS due FROM file_history " +
                                  "ORDER BY version"))
       .toEqual([{ due: 2 * 86_400 }, { due: 2 * 86_400 }, { due: null }]);
+  });
+
+  it("is armed at once by a policy write that changes retention", async () => {
+    const r = await rig();
+    await write(r, `${W}/a`, "1");
+    expect(await runInDurableObject(r.stub, (_instance: OwnerDO, state) =>
+      state.storage.getAlarm())).toBe(null);
+    await setPolicy(r, { keep_recent: 5 });
+    // Due at once, the alarm runs by itself and re-marks the rows under the new policy.
+    const retained = async () => (await sqlIn(r.stub, "SELECT retained_recent FROM file_space"))[0];
+    for (let i = 0; i < 50 && (await retained())!["retained_recent"] !== 5; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(await retained()).toEqual({ retained_recent: 5 });
+  });
+
+  it("drops rows past a lowered keep_recent, in housekeeping", async () => {
+    const r = await rig();
+    await inFiles(r.stub, { keep_versions: 1, keep_recent: 5 }, async (files) => {
+      for (const body of ["1", "2", "3", "4", "5"]) {
+        await files.write(`${W}/a`, text(body), { expected: null, writer: "o" });
+      }
+    });
+    await sqlIn(r.stub, "UPDATE file_space SET retained_keep = 1, retained_recent = 5");
+    await inFiles(r.stub, { keep_versions: 1, keep_recent: 2 }, async (files) => {
+      expect(files.nextAlarm(1000)).toBe(1000);
+      await files.collect(1000);
+    });
+    expect(await sqlIn(r.stub, "SELECT op FROM file_history WHERE path = ?", `${W}/a`))
+      .toEqual([{ op: "write" }, { op: "write" }]);
+    expect(await sqlIn(r.stub, "SELECT retained_recent FROM file_space"))
+      .toEqual([{ retained_recent: 2 }]);
   });
 
   it("starts a pass over when the policy changes during it", async () => {
