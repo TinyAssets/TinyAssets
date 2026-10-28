@@ -195,6 +195,7 @@ describe("alarm guard", () => {
     "export class O { ['alarm']() { return 1; } }",
     "export function f(ctx: DurableObjectState, k: string) { return (ctx.storage as any)[k]; }",
     "export class O { m(k: string) { return (this.#lifecycle as any)[k](); } }",
+    "export function f(lifecycle: any, k: string) { return lifecycle[k](); }",
     "export const o = { [Symbol.iterator]: 1 };",
   ])("sees %s", (source) => {
     expect(alarmReach("probe.ts", source)).not.toEqual([]);

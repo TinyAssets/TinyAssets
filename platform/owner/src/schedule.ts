@@ -74,7 +74,7 @@ export const LANE_PASS_S = 45;
  */
 export async function inTime<T>(run: Promise<T>, ms: number): Promise<T | "late"> {
   if (ms === Infinity) {
-    return run;  // unbounded: a timer would read Infinity as no wait at all
+    return run;  // unbounded: no timer, whatever a runtime makes of an Infinity delay
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<"late">((resolve) => {

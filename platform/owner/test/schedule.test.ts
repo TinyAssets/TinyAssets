@@ -272,7 +272,8 @@ describe("a lane's run", () => {
     expect(LANE_HUNG_S).toBe(60);
     expect(WORK_HANDOFF_MS).toBeLessThanOrEqual((LANE_HUNG_S - LANE_PASS_S) * 1000);
     expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
-    expect(await inTime(Promise.resolve("done"), Infinity)).toBe("done");
+    const slow = new Promise((resolve) => setTimeout(() => resolve("done"), 20));
+    expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
   }));
 
   it("that fails through Lifecycle's retries backs its lane off, and a door honours it",
@@ -287,6 +288,12 @@ describe("a lane's run", () => {
     expect(p.jobs()["a"]).toEqual(at(held, p.now));
     await p.schedule.sync();  // a door: the work is due now, but the lane is held
     expect(p.jobs()["a"]).toEqual(at(held, p.now));
+    a.due = held;  // work at the hold's own time: the job is now set for that work
+    await p.schedule.sync();
+    expect(p.jobs()["a"]).toEqual(at(held));
+    a.due = p.now + 10;  // so earlier work moves it, the hold spent
+    await p.schedule.sync();
+    expect(p.jobs()["a"]).toEqual(at(p.now + 10));
     a.due = p.now + 2 * LANE_RETRY_S;  // work later than the backoff keeps its own time
     await p.schedule.sync();
     expect(p.jobs()["a"]).toEqual(at(p.now + 2 * LANE_RETRY_S));
