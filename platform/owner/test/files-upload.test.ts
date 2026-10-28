@@ -501,7 +501,9 @@ describe("a chunk", () => {
       asked.push(shas);
       return { deleted: shas.length };
     } };
-    for (const left of [DELETE_FLOOR_MS - 100, -1]) {
+    // Half a second is too little to begin one (the floor is a second), and so is none.
+    expect(DELETE_FLOOR_MS).toBeGreaterThan(500);
+    for (const left of [500, -1]) {
       await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
       await inFiles(r.stub, {}, (files) => files.collect(new Calls(), Date.now() / 1000,
                                                          Date.now() + left), recording);
