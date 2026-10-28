@@ -23,8 +23,11 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  */
 const RPC_METHODS = Object.freeze([
   "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
-  "collectionWrite", "deleteAgent", "disableAgent", "mailboxAck", "mailboxRead",
-  "mailboxSubscriber", "outsideAgents", "registerAgent", "roomPost", "setWakeLimits",
+  "collectionWrite", "deleteAgent", "disableAgent", "grantList", "grantRevoke", "grantSet",
+  "mailboxAck", "mailboxRead", "mailboxSubscriber", "outsideAgents", "policyProposal",
+  "policyPropose", "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite",
+  "registerAgent", "roomPost", "sessionClose", "sessionCloseAll", "sessionExtend",
+  "sessionOpen",
 ]);
 
 describe("schema migration on wake", () => {

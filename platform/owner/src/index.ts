@@ -3,4 +3,4 @@
  * its own. Edge Workers (the binders) reach the object over RPC.
  */
 export { OwnerDO } from "./owner-do";
-export type { Binding, LedgerBinding, Origin, Source, WakeSender } from "./owner-do";
+export type { AccountBinding, Binding, Origin, Source, WakeSender } from "./owner-do";

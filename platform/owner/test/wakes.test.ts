@@ -49,7 +49,7 @@ async function fireAlarm(r: Rig): Promise<void> {
 describe("one open wake per ringing recipient", () => {
   it("opens one wake per burst, sends it once, and the next message opens the next",
      async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     const first = await r.post(null, `dm:${muse}`, { cmid: "c1" });
     await r.post(null, `dm:${muse}`, { body: "again", cmid: "c2" });
@@ -79,7 +79,7 @@ describe("one open wake per ringing recipient", () => {
   });
 
   it("opens none for the sender and never one for a pull agent", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot", "pull");
     const first = await r.post(null, `dm:${muse}`, { cmid: "c1" });
@@ -96,7 +96,7 @@ describe("one open wake per ringing recipient", () => {
   });
 
   it("lets only the agent's own client subscribe to its mailbox", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     // Each half of the identity alone is not the identity.
     const clientOnly = { client: MUSE.client, family: DOT.family };
@@ -119,7 +119,7 @@ describe("one open wake per ringing recipient", () => {
   });
 
   it("suppresses a disabled agent's open wake, or one moved off mcp_event", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "revoked" });
@@ -138,7 +138,7 @@ describe("one open wake per ringing recipient", () => {
 
   it("suppresses a wake left open for a disabled agent at claim, and revokes what it lost",
      async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE, muse);
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
@@ -165,7 +165,7 @@ describe("one open wake per ringing recipient", () => {
 
 describe("a wake is sent once and never replayed", () => {
   it("keeps the mail queued on a 429 and waits out Retry-After", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push({ state: "rate_limited", status: 429, retry_after: 120 });
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
@@ -202,7 +202,7 @@ describe("a wake is sent once and never replayed", () => {
   });
 
   it("settles an ambiguous send unknown and never replays it", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push({ state: "unknown" });  // the connection dropped after it left
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
@@ -246,7 +246,7 @@ describe("a wake is sent once and never replayed", () => {
   });
 
   it("leaves a sender that dies mid-send to its lease, then unknown", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push("crash");
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
@@ -259,7 +259,7 @@ describe("a wake is sent once and never replayed", () => {
   });
 
   it("settles a callback refused before any connection failed, not unknown", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push({ state: "failed", reason: "not_sent" });
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
@@ -271,7 +271,7 @@ describe("a wake is sent once and never replayed", () => {
   });
 
   it("carries no message body in any doorbell, wake row or receipt", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const bodies: string[] = [];
     const start = clock();
@@ -300,7 +300,7 @@ describe("a wake is sent once and never replayed", () => {
 describe("a claim settles only by its holder", () => {
   it("claims one due wake at a time and settles it only by the claim that holds it",
      async () => {
-    const r = rig();
+    const r = await rig();
     const now = clock();
     await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -328,7 +328,7 @@ describe("a claim settles only by its holder", () => {
   });
 
   it("lets a stale claim neither mark nor settle after a lapse and a new claim", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     const marked = await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -351,7 +351,7 @@ describe("a claim settles only by its holder", () => {
   });
 
   it("wakes only the mail its claim covered", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -369,7 +369,7 @@ describe("a claim settles only by its holder", () => {
 
   it("folds a wake due again into the agent's next one, which waits out Retry-After",
      async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -406,7 +406,7 @@ describe("a claim settles only by its holder", () => {
 
 describe("W3 limits", () => {
   it("caps an agent's rings per hour and pushes the wake past the cap", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event",
                                   { max_wakes_per_hour: 2, batch_window_s: 0 });
     const t = clock() + 1;
@@ -430,7 +430,7 @@ describe("W3 limits", () => {
   });
 
   it("reads held mail as read, with its receipt", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event",
                                   { max_wakes_per_hour: 1, batch_window_s: 0 });
     const t = clock() + 1;
@@ -446,7 +446,7 @@ describe("W3 limits", () => {
   });
 
   it("holds a lowered cap to the newest rings still in the hour", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     const capped = await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger, MUSE, 3);
@@ -467,7 +467,7 @@ describe("W3 limits", () => {
   });
 
   it("pushes a new wake's due time by the agent's batch window", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 300 });
     await r.post(null, `dm:${muse}`);
     const [wake] = await wakes(r);
@@ -480,7 +480,7 @@ describe("W3 limits", () => {
 describe("a revoke of a suppressed agent's callbacks", () => {
   it("is scheduled once per subscription, on disable, off mcp_event and on delete",
      async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     const dot = await r.register(DOT, "Dot", "pull");
     const revokes = async () => (await wakes(r)).filter((w) => w["kind"] === "revoke")
@@ -512,7 +512,7 @@ describe("a revoke of a suppressed agent's callbacks", () => {
 
   it("never erases the callback of an agent re-enabled after its revoke was scheduled",
      async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE, muse);
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
@@ -530,7 +530,7 @@ describe("a revoke of a suppressed agent's callbacks", () => {
   });
 
   it("raises an open revoke's generation instead of opening a second", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.subscribe(MUSE, muse);
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
@@ -545,7 +545,7 @@ describe("a revoke of a suppressed agent's callbacks", () => {
 
   it("is due again after a lapsed lease, since erasing callbacks twice is harmless",
      async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     const state = await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -571,7 +571,7 @@ describe("a revoke of a suppressed agent's callbacks", () => {
 
 describe("the object's one alarm", () => {
   it("without a doorbell arms nothing for open wakes and holds them pending", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.post(null, `dm:${muse}`);
     expect(await r.alarmAt()).toBeNull();  // nothing can send it, so nothing fires for it
@@ -583,7 +583,7 @@ describe("the object's one alarm", () => {
 
   it("recovers a lapsed claim behind a full pass of due open wakes, and never rearms in " +
      "the past", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock() - 600;
     const claimed = await r.inLedger({}, (ledger) => {
       const ids = Array.from({ length: 17 }, (_, n) => ringing(ledger, origin(n)));
@@ -611,7 +611,7 @@ describe("the object's one alarm", () => {
   });
 
   it("arms for a live lease, and at once for due work, never earlier than now", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     const times = await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -633,7 +633,7 @@ describe("the object's one alarm", () => {
   });
 
   it("drains more due rows than one pass across passes that rearm at once", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     await r.inLedger({}, (ledger) => {
       for (let n = 0; n < 17; n++) {
@@ -647,7 +647,7 @@ describe("the object's one alarm", () => {
   });
 
   it("rearms on wake from the schedule as stored", async () => {
-    const r = rig();
+    const r = await rig();
     const t = clock();
     const lease = await r.inLedger({}, (ledger) => {
       const muse = ringing(ledger);
@@ -660,5 +660,93 @@ describe("the object's one alarm", () => {
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // any call wakes it
     expect(await r.alarmAt()).toBe(Math.ceil(lease * 1000) / 1000);
+  });
+});
+
+/**
+ * Slice 2's review item L1: five rules the code kept and no test held. Each test fails
+ * if its rule is dropped.
+ */
+describe("the registry's quieter rules", () => {
+  it("hides a deleted agent's tombstone from its own outside caller's listing", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    const [tombstone] = await r.table("outside_agents");
+    expect([tombstone!["agent_id"], tombstone!["deleted_at"] !== null]).toEqual([muse, true]);
+    expect((await r.stub.outsideAgents(r.bind(MUSE))).agents).toEqual([]);
+    expect((await r.stub.outsideAgents(r.bind(null))).agents).toEqual([]);
+  });
+
+  it("refuses a subscribe for its own agent once that agent is disabled", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
+    const refused = await failure(() => r.subscribe(MUSE, muse));
+    expect([refused.name, refused.message])
+      .toEqual(["Refused", "not this caller's mcp_event agent"]);
+    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
+    expect(agent!.subscription).toBe(0);
+  });
+
+  it("lets an outside caller disable its own agent only by both halves of its identity",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    for (const from of [{ client: MUSE.client, family: DOT.family },
+                        { client: DOT.client, family: MUSE.family }]) {
+      const refused = await failure(() => r.stub.disableAgent(r.session(from),
+                                                              { agent_id: muse, reason: "x" }));
+      expect([refused.name, refused.message])
+        .toEqual(["Refused", "an outside caller disables only its own agent"]);
+    }
+    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
+    expect(agent!.disabled_reason).toBeNull();
+  });
+
+  it("keeps a deleted agent's tombstone while its revoke is being sent", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "paused" });
+    const at = clock() + 1;
+    const claim = await r.inLedger({}, (ledger) => ledger.claim(ledger.dueOpen(at, 1)[0]!.wake_id,
+                                                                at));
+    if (claim.outcome !== "revoke") {
+      throw new Error("expected the revoke claimed");
+    }
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });  // its revoke is in flight
+    expect((await r.table("outside_agents")).map((a) => a["deleted_at"] !== null))
+      .toEqual([true]);
+    await r.inLedger({}, (ledger) => ledger.settle(claim.target.wake_id, claim.target.claim_id,
+                                                   { state: "sent" }, at + 1));
+    expect(await r.table("outside_agents")).toEqual([]);
+  });
+
+  it("purges a tombstone only once no revoke of it is left to run", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    const at = clock() + 1;
+    const first = await r.inLedger({}, (ledger) => ledger.claim(ledger.dueOpen(at, 1)[0]!.wake_id,
+                                                                at));
+    if (first.outcome !== "revoke") {
+      throw new Error("expected the revoke claimed");
+    }
+    // While the first revoke is in flight the agent comes back, subscribes and is deleted
+    // again: a second revoke, for its newer callback, opens beside the first.
+    expect(await r.register(MUSE, "Muse", "mcp_event")).toBe(muse);
+    expect(await r.subscribe(MUSE, muse)).toBe(2);
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    expect((await r.table("ledger_wakes")).map((w) => [w["state"], w["generation"]]))
+      .toEqual([["sending", 1], ["pending", 2]]);
+    await r.inLedger({}, (ledger) => ledger.settle(first.target.wake_id, first.target.claim_id,
+                                                   { state: "sent" }, at + 1));
+    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([muse]);
+    await r.tick(at + 2);
+    expect(r.sender.revoked).toEqual([[muse, 2]]);
+    expect(await r.table("outside_agents")).toEqual([]);
   });
 });

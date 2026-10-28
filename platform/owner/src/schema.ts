@@ -8,13 +8,14 @@
  * loudly: code older than its data never runs against it.
  *
  * A migration is append-only. Once deployed it never changes; a new shape is a new
- * entry at the end. Nothing is deployed yet, so migrations 1 and 2 are still edited in
+ * entry at the end. Nothing is deployed yet, so migrations 1 to 3 are still edited in
  * place.
  *
  * The `CHECK` on a row body is the store's fixed ceiling of 65,536 characters. The
  * primitive's own bound is `LIMITS.maxRow`, which may be lower but never higher (a
  * test ties the two); raising the ceiling is a new migration.
  */
+import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON } from "./policy";
 
 export type Migration = readonly string[];
 
@@ -194,18 +195,26 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The owner-wide counters the ledger's bounds read.
     "CREATE TABLE ledger_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "agents INTEGER NOT NULL, enabled_agents INTEGER NOT NULL, messages INTEGER NOT NULL, " +
-      "body_bytes INTEGER NOT NULL, settled_wakes INTEGER NOT NULL)",
-    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0, 0)",
+      "body_bytes INTEGER NOT NULL, settled_wakes INTEGER NOT NULL, " +
+      // Deleted agents kept as tombstones while a revoke of their callbacks is pending.
+      "tombstones INTEGER NOT NULL)",
+    "INSERT INTO ledger_usage VALUES (1, 0, 0, 0, 0, 0, 0)",
     "CREATE TRIGGER outside_agents_added AFTER INSERT ON outside_agents BEGIN " +
       "UPDATE ledger_usage SET agents = agents + 1, " +
-      "enabled_agents = enabled_agents + (NEW.disabled_reason IS NULL); END",
+      "enabled_agents = enabled_agents + (NEW.disabled_reason IS NULL), " +
+      "tombstones = tombstones + (NEW.deleted_at IS NOT NULL); END",
+    "CREATE TRIGGER outside_agents_tombstoned AFTER UPDATE OF deleted_at ON outside_agents " +
+      "WHEN (OLD.deleted_at IS NULL) != (NEW.deleted_at IS NULL) BEGIN " +
+      "UPDATE ledger_usage SET tombstones = tombstones + " +
+      "CASE WHEN NEW.deleted_at IS NULL THEN -1 ELSE 1 END; END",
     "CREATE TRIGGER outside_agents_enabled AFTER UPDATE OF disabled_reason ON outside_agents " +
       "WHEN (OLD.disabled_reason IS NULL) != (NEW.disabled_reason IS NULL) BEGIN " +
       "UPDATE ledger_usage SET enabled_agents = enabled_agents + " +
       "CASE WHEN NEW.disabled_reason IS NULL THEN 1 ELSE -1 END; END",
     "CREATE TRIGGER outside_agents_removed AFTER DELETE ON outside_agents BEGIN " +
       "UPDATE ledger_usage SET agents = agents - 1, " +
-      "enabled_agents = enabled_agents - (OLD.disabled_reason IS NULL); END",
+      "enabled_agents = enabled_agents - (OLD.disabled_reason IS NULL), " +
+      "tombstones = tombstones - (OLD.deleted_at IS NOT NULL); END",
     "CREATE TRIGGER ledger_messages_added AFTER INSERT ON ledger_messages BEGIN " +
       "UPDATE ledger_usage SET messages = messages + 1, " +
       "body_bytes = body_bytes + NEW.body_bytes; END",
@@ -261,6 +270,85 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER ledger_wakes_removed AFTER DELETE ON ledger_wakes " +
       "WHEN OLD.settled_at IS NOT NULL BEGIN " +
       "UPDATE ledger_usage SET settled_wakes = settled_wakes - 1; END",
+  ]),
+  // 3: owner policy, outside-client grants and the owner's protected sessions (S3x N10,
+  // P0-3; tasks 3.5): policy.ts, grants.ts, sessions.ts. Each bound reads `policy_usage`,
+  // which only the triggers below write, and every query has an index.
+  Object.freeze([
+    // A session row holds the hash of the cookie the object minted, never the cookie.
+    "CREATE TABLE owner_sessions (" +
+      "session_hash TEXT PRIMARY KEY CHECK (length(session_hash) = 64), " +
+      "created_at REAL NOT NULL, expires_at REAL NOT NULL)",
+    "CREATE INDEX sessions_by_expiry ON owner_sessions (expires_at)",
+    // The owner's one policy document, its digest, and a generation every change bumps.
+    "CREATE TABLE owner_policy (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "generation INTEGER NOT NULL CHECK (generation >= 1), digest TEXT NOT NULL, " +
+      "document TEXT NOT NULL)",
+    `INSERT INTO owner_policy VALUES (1, 1, '${DEFAULT_POLICY_DIGEST}', '${DEFAULT_POLICY_JSON}')`,
+    // Append-only. Each bucket is kept and listed apart, so neither an agent's proposals
+    // nor a stranger's refusals can push the owner's own changes out.
+    "CREATE TABLE policy_receipts (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
+      "bucket TEXT NOT NULL CHECK (bucket IN ('owner', 'agent', 'refusal')), " +
+      "kind TEXT NOT NULL CHECK (kind IN ('write', 'wake_limits', 'outside_grant', " +
+      "'proposal', 'refusal')), at REAL NOT NULL, session_id TEXT, old_digest TEXT, " +
+      "new_digest TEXT, request_digest TEXT, generation INTEGER NOT NULL, rule TEXT, " +
+      "decision TEXT, outcome TEXT, " +
+      "CHECK ((kind = 'proposal') = (bucket = 'agent') " +
+      "AND (kind = 'refusal') = (bucket = 'refusal')))",
+    "CREATE INDEX policy_receipts_by_bucket ON policy_receipts (bucket, seq)",
+    "CREATE TRIGGER policy_receipts_kept BEFORE UPDATE ON policy_receipts " +
+      "BEGIN SELECT RAISE(ABORT, 'a policy receipt is never changed'); END",
+    "CREATE TABLE policy_proposals (request_id TEXT PRIMARY KEY, digest TEXT NOT NULL, " +
+      "document TEXT NOT NULL, at REAL NOT NULL, applied_at REAL)",
+    "CREATE INDEX proposals_by_age ON policy_proposals (at)",
+    "CREATE INDEX proposals_applied ON policy_proposals (applied_at) " +
+      "WHERE applied_at IS NOT NULL",
+    // One row per verified outside client, never deleted: a revoked row is what keeps a
+    // credential signed in before the revoke dead after a re-grant.
+    "CREATE TABLE outside_clients (" +
+      "client TEXT PRIMARY KEY CHECK (length(client) = 64), " +
+      "source TEXT NOT NULL CHECK (source IN ('mcp', 'api_key')), " +
+      "mode TEXT NOT NULL CHECK (mode IN ('full', 'scoped', 'revoked')), " +
+      "scopes TEXT NOT NULL, generation INTEGER NOT NULL CHECK (generation >= 1), " +
+      "revoked_at REAL, name TEXT NOT NULL, first_seen REAL NOT NULL, " +
+      "last_seen REAL NOT NULL)",
+    "CREATE INDEX outside_clients_listed ON outside_clients (first_seen, client)",
+    "CREATE TRIGGER outside_clients_kept BEFORE DELETE ON outside_clients " +
+      "BEGIN SELECT RAISE(ABORT, 'an outside client grant is never deleted'); END",
+    "CREATE TABLE policy_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "sessions INTEGER NOT NULL, clients INTEGER NOT NULL, " +
+      "pending_proposals INTEGER NOT NULL, applied_proposals INTEGER NOT NULL, " +
+      "owner_receipts INTEGER NOT NULL, agent_receipts INTEGER NOT NULL, " +
+      "refusal_receipts INTEGER NOT NULL)",
+    "INSERT INTO policy_usage VALUES (1, 0, 0, 0, 0, 0, 0, 0)",
+    "CREATE TRIGGER owner_sessions_added AFTER INSERT ON owner_sessions BEGIN " +
+      "UPDATE policy_usage SET sessions = sessions + 1; END",
+    "CREATE TRIGGER owner_sessions_removed AFTER DELETE ON owner_sessions BEGIN " +
+      "UPDATE policy_usage SET sessions = sessions - 1; END",
+    "CREATE TRIGGER outside_clients_added AFTER INSERT ON outside_clients BEGIN " +
+      "UPDATE policy_usage SET clients = clients + 1; END",
+    "CREATE TRIGGER policy_proposals_added AFTER INSERT ON policy_proposals BEGIN " +
+      "UPDATE policy_usage SET pending_proposals = pending_proposals + " +
+      "(NEW.applied_at IS NULL), applied_proposals = applied_proposals + " +
+      "(NEW.applied_at IS NOT NULL); END",
+    "CREATE TRIGGER policy_proposals_applied AFTER UPDATE OF applied_at ON policy_proposals " +
+      "WHEN (OLD.applied_at IS NULL) != (NEW.applied_at IS NULL) BEGIN " +
+      "UPDATE policy_usage SET " +
+      "pending_proposals = pending_proposals + CASE WHEN NEW.applied_at IS NULL " +
+      "THEN 1 ELSE -1 END, applied_proposals = applied_proposals + " +
+      "CASE WHEN NEW.applied_at IS NULL THEN -1 ELSE 1 END; END",
+    "CREATE TRIGGER policy_proposals_removed AFTER DELETE ON policy_proposals BEGIN " +
+      "UPDATE policy_usage SET pending_proposals = pending_proposals - " +
+      "(OLD.applied_at IS NULL), applied_proposals = applied_proposals - " +
+      "(OLD.applied_at IS NOT NULL); END",
+    "CREATE TRIGGER policy_receipts_added AFTER INSERT ON policy_receipts BEGIN " +
+      "UPDATE policy_usage SET owner_receipts = owner_receipts + (NEW.bucket = 'owner'), " +
+      "agent_receipts = agent_receipts + (NEW.bucket = 'agent'), " +
+      "refusal_receipts = refusal_receipts + (NEW.bucket = 'refusal'); END",
+    "CREATE TRIGGER policy_receipts_removed AFTER DELETE ON policy_receipts BEGIN " +
+      "UPDATE policy_usage SET owner_receipts = owner_receipts - (OLD.bucket = 'owner'), " +
+      "agent_receipts = agent_receipts - (OLD.bucket = 'agent'), " +
+      "refusal_receipts = refusal_receipts - (OLD.bucket = 'refusal'); END",
   ]),
 ]);
 
