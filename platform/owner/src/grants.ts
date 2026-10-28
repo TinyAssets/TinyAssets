@@ -66,6 +66,7 @@
  * - Rows are bounded as above; the Python kept every row.
  */
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage } from "./gate";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
 import { codePoints } from "./text";
 
@@ -184,17 +185,17 @@ export function holds(grant: Grant, scope: Scope): boolean {
 type Usage = { owner_clients: number; free_clients: number };
 
 export class Grants {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #policy: Policy;
   readonly #limits: GrantLimits;
 
-  constructor(storage: DurableObjectStorage, policy: Policy, limits: GrantLimits = GRANT_LIMITS) {
+  constructor(storage: OwnerStorage, policy: Policy, limits: GrantLimits = GRANT_LIMITS) {
     this.#storage = storage;
     this.#policy = policy;
     this.#limits = limits;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 

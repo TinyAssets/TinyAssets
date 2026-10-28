@@ -8,15 +8,11 @@
  * drives `alarm()` itself.
  */
 import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
-import { type Calls, CallScope, FILES_CALLS } from "../src/calls";
-import { CHUNK_BYTES, Files } from "../src/files";
-import { OwnerFilesEnv } from "../src/files-env";
+import { type Write, WriteGate } from "../src/gate";
 import type { Ledger } from "../src/ledger";
 import { type LaneDeps, type OwnerDO, ownerLanes } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
@@ -26,7 +22,7 @@ import {
 import { type Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner } from "../src/scheduled";
 import { WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "../src/wakes";
 import { MUSE, rig } from "./ledger-support";
-import { alarmOf, failure, filesOn, laneJobs, ownerObject, sqlIn } from "./support";
+import { alarmOf, failure, laneJobs, ownerObject, sqlIn } from "./support";
 
 /** A lane over a script: its next work, and what each run does. */
 class ScriptedLane implements Lane {
@@ -47,10 +43,6 @@ class ScriptedLane implements Lane {
   mostAtOnce = 0;
   /** The wall-clock budget each run was given, in ms. */
   readonly untils: number[] = [];
-  /** The invocation scope the probe runs alarms in, read by each run. */
-  scope: CallScope | null = null;
-  /** The call budget each run drew on: its alarm's. */
-  readonly budgets: Calls[] = [];
 
   next(now: number): number | null {
     return this.due === null ? null : this.fixed ? this.due : Math.max(this.due, now);
@@ -58,9 +50,6 @@ class ScriptedLane implements Lane {
 
   async run(_now: number, until: number): Promise<void> {
     this.untils.push(until);
-    if (this.scope !== null) {
-      this.budgets.push(this.scope.current());
-    }
     this.runs++;
     this.#running++;
     this.mostAtOnce = Math.max(this.mostAtOnce, this.#running);
@@ -87,12 +76,14 @@ class ScriptedLane implements Lane {
 interface Probe {
   readonly schedule: Schedule;
   readonly lifecycle: Lifecycle;
-  /** The scope the probe's alarms run in, as the object's alarm enters one. */
-  readonly scope: CallScope;
-  /** One alarm, as the object runs it: Lifecycle's, inside a fresh invocation. */
+  /** The object's own storage, as the probe found it. */
+  readonly storage: DurableObjectStorage;
+  /** One alarm, as the object runs it: Lifecycle's. */
   alarm(): Promise<void>;
   /** Each alarm write Lifecycle made, in ms, null for a delete. */
   readonly alarms: (number | null)[];
+  /** Set to make each alarm write fail, as a storage fault would. */
+  alarmFault: Error | null;
   readonly lanes: Record<string, ScriptedLane>;
   /** The schedule's clock, in seconds; tests move it. */
   now: number;
@@ -113,21 +104,22 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       : value;
   };
   const storage = new Proxy(state.storage, {
-    get: (target, key) => key === "setAlarm" ? async (at: number) => { alarms.push(at); }
+    get: (target, key) => key === "setAlarm" ? async (at: number) => {
+      if (p.alarmFault !== null) {
+        throw p.alarmFault;
+      }
+      alarms.push(at);
+    }
       : key === "deleteAlarm" ? async () => { alarms.push(null); }
       : bound(target, key),
   });
   const ctx = new Proxy(state, {
     get: (target, key) => key === "storage" ? storage : bound(target, key),
   });
-  const scope = new CallScope();
   const lanes = Object.fromEntries(names.map((name) => [name, new ScriptedLane()]));
-  for (const lane of Object.values(lanes)) {
-    lane.scope = scope;
-  }
   const p: Probe = {
-    alarms, lanes, scope, now: Date.now() / 1000,
-    alarm: () => scope.run(() => p.lifecycle.alarm()),
+    alarms, alarmFault: null, lanes, storage: state.storage, now: Date.now() / 1000,
+    alarm: () => p.lifecycle.alarm(),
     sql: (statement, ...params) => void state.storage.sql.exec(statement, ...params).toArray(),
     read: (statement, ...params) => state.storage.sql.exec(statement, ...params).toArray(),
     schedule: undefined as unknown as Schedule,
@@ -140,7 +132,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
       due: row.payload === null ? null : (JSON.parse(row.payload) as { due?: unknown }).due,
     }])),
   };
-  const schedule = new Schedule(lanes, () => p.now, scope);
+  const schedule = new Schedule(lanes, () => p.now, new WriteGate(state.storage).write);
   const host = { ctx, constructor: { name: "ProbeHost" } } as unknown as OwnerDO;
   return Object.assign(p, { schedule, lifecycle: new Lifecycle(host).use(schedule) });
 }
@@ -175,6 +167,14 @@ describe("a lane's job", () => {
     await p.schedule.sync();
     expect(p.jobs()).toEqual({});
     expect(p.alarms.at(-1)).toBeNull();  // no job: the alarm is cleared
+  }));
+
+  it("fails a set whose alarm cannot be armed, rather than leave its job unarmed",
+     () => withProbe(["a"], async (p) => {
+    p.lanes["a"]!.due = p.now + 100;
+    p.alarmFault = new Error("the alarm could not be set");
+    expect((await failure(() => p.schedule.sync())).message).toBe("the alarm could not be set");
+    p.alarmFault = null;
   }));
 
   it("is never set before now, nor before the lane's work", () => withProbe(["a"], async (p) => {
@@ -301,67 +301,22 @@ describe("a lane's run", () => {
     expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
   }));
 
-  it("draws every pass of one alarm on that alarm's one budget, and the next on its own",
-     () => withProbe(["a", "b"], async (p) => {
-    for (const lane of Object.values(p.lanes)) {
-      lane.due = p.now - 10;
-      lane.after = p.now - 10;
-      // Two passes in one alarm each draw half of what FILES may: together, all of it.
-      lane.during = async () => lane.budgets.at(-1)!.draw("files", FILES_CALLS / 2);
-    }
-    await p.schedule.sync();
-    await p.alarm();
-    await p.alarm();
-    const [a, b] = [p.lanes["a"]!, p.lanes["b"]!];
-    expect([a.runs, b.runs]).toEqual([2, 2]);
-    expect([a.budgets[0] === b.budgets[0], a.budgets[1] === b.budgets[1],
-            a.budgets[0] === a.budgets[1]]).toEqual([true, true, false]);
-    expect(a.budgets.map((calls) => calls.made)).toEqual([FILES_CALLS, FILES_CALLS]);
-  }));
-
-  it("runs no pass outside an invocation: a job driven with no scope fails before it",
+  it("is set inside a unit of the write gate: never while a pi transaction holds the queue",
      () => withProbe(["a"], async (p) => {
-    const a = p.lanes["a"]!;
-    a.scope = null;  // a pass that would make no call of its own: only the job stops it
-    a.due = p.now - 10;
-    await p.schedule.sync();
-    await p.lifecycle.alarm();  // not through the object's alarm: no scope entered
-    expect(a.runs).toBe(0);
-    expect(p.jobs()["a"]!.time).toBeGreaterThanOrEqual(ms(p.now + LANE_RETRY_S));
+    p.lanes["a"]!.due = p.now + 900;
+    // A transaction of the queue pi's commits use, held open as a pi commit holds it.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const open = new DurableObjectSqliteDatabase(p.storage).transaction(() => held);
+    const setting = p.schedule.sync();
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+    expect(p.jobs()).toEqual({});  // the job row waits for the queue
+    release();
+    await Promise.all([open, setting]);
+    expect(p.jobs()["a"]).toEqual(at(p.now + 900));
   }));
-
-  it("lets an environment built inside a pass draw on its alarm's budget", async () => {
-    const { stub } = ownerObject();
-    await runInDurableObject(stub, async (_i: OwnerDO, state) => {
-      const p = probe(state, ["a"]);
-      const files = filesOn(state.storage, p.scope, env.FILES);
-      await p.scope.run(() => files.write("/workspace/one.bin",
-                                          new Uint8Array(CHUNK_BYTES).fill(3),
-                                          { expected: null, writer: "owner" }));
-      const a = p.lanes["a"]!;
-      const reads: boolean[] = [];
-      a.due = p.now - 10;
-      a.after = p.now - 10;
-      a.during = async () => {
-        // Two tool calls of one turn, each an environment its factory builds with no
-        // budget of its own: both draw on the alarm's one.
-        for (let tool = 0; tool < 2; tool++) {
-          const fs = new OwnerFilesEnv({ files, rearm: async () => undefined });
-          for (let i = 0; i < FILES_CALLS / 2; i++) {
-            getOrThrow(await fs.readBinaryFile("one.bin", BACKGROUND_CONTEXT));
-          }
-        }
-        const fs = new OwnerFilesEnv({ files, rearm: async () => undefined });
-        reads.push((await fs.readBinaryFile("one.bin", BACKGROUND_CONTEXT)).ok);
-      };
-      await p.schedule.sync();
-      await p.alarm();
-      await p.alarm();
-      // Each alarm read all FILES may, and was refused the next; the next began afresh.
-      expect(reads).toEqual([false, false]);
-      expect(a.budgets.map((calls) => calls.made)).toEqual([FILES_CALLS, FILES_CALLS]);
-    });
-  });
 
   it("that fails through Lifecycle's retries backs its lane off, and a door honours it",
      () => withProbe(["a"], async (p) => {
@@ -446,8 +401,9 @@ describe("the object's lanes", () => {
       },
     };
     const clock = () => 42;
+    const write = (() => undefined) as unknown as Write;
     const deps: LaneDeps = {
-      ledger, files, work, sender, runner, clock,
+      ledger, files, work, sender, runner, clock, write,
       runWakes: async (...args) => {
         seen.push(["runWakes", ...args]);
         return 0;
@@ -457,20 +413,20 @@ describe("the object's lanes", () => {
         return 0;
       },
     };
-    return { seen, deps, ledger, work, clock };
+    return { seen, deps, ledger, work, clock, write };
   }
 
   it("hand each pass its until (slice 5 N1)", async () => {
-    const { seen, deps, ledger, work, clock } = recorded(() => null, () => null);
+    const { seen, deps, ledger, work, clock, write } = recorded(() => null, () => null);
     const lanes = ownerLanes(deps);
     expect(Object.keys(lanes)).toEqual(["wakes", "files", "work"]);
     for (const lane of Object.values(lanes)) {
       await lane.run(100, 123_456);
     }
     expect(seen).toEqual([
-      ["runWakes", ledger, null, clock, WAKES_PER_ALARM, WAKE_SEND_MS, 123_456],
+      ["runWakes", ledger, null, clock, write, WAKES_PER_ALARM, WAKE_SEND_MS, 123_456],
       ["files.collect", 100, 123_456],
-      ["runWork", work, null, clock, WORK_PER_PASS, WORK_HANDOFF_MS, 123_456],
+      ["runWork", work, null, clock, write, WORK_PER_PASS, WORK_HANDOFF_MS, 123_456],
     ]);
   });
 
@@ -516,12 +472,12 @@ describe("the object's schedule", () => {
     expect(await alarmOf(r.stub)).toBe(earliest / 1000);
   });
 
-  it("draws its doors' and its alarm's file-store calls on its own invocations", async () => {
+  it("writes its doors' and its alarm's file steps through the write gate", async () => {
     const r = await rig();
     const path = "/workspace/one.bin";
     const bytes = new Uint8Array(5000).fill(7);
-    // A door's put and get each run in the door's own scope: a part handed any other
-    // scope would throw here, outside every invocation.
+    // Each step a door writes around its FILES call is a unit of the gate: one written
+    // outside a unit would be refused by the storage view the object's modules hold.
     const written = await r.stub.fileWrite(r.bind(null), { path, expected_etag: null,
                                                            content: bytes });
     const version = (written as { entry: { version: number } }).entry.version;
@@ -531,8 +487,8 @@ describe("the object's schedule", () => {
     await r.stub.fileHistoryPurge(r.bind(null), { path });
     const [{ sha256 }] = await sqlIn(r.stub, "SELECT sha256 FROM file_chunks") as
       [{ sha256: string }];
-    // The alarm's files pass deletes the garbage chunk in the alarm's scope; a schedule
-    // handed another scope would run no pass, and the chunk would stay.
+    // The alarm's files pass deletes the garbage chunk, each of its writes a unit; a pass
+    // that wrote outside one would throw, and the chunk would stay.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/d", expected_etag: null });
     // The door re-derived the files job: due now.

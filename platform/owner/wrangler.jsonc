@@ -4,6 +4,11 @@
 // binds no Durable Object and no service, so it is no way to another owner's object.
 // `disable_ctx_exports` keeps the runtime from handing the object its own namespace as
 // `ctx.exports` (guards/config.test.ts checks this config and the files Worker's).
+// `limits.subrequests` is the platform's per-invocation count of the calls the object
+// makes (FILES, and later the gateway and hooks), charged to its newest incoming event or
+// to a count each event resets (cap-probe M12, newest-or-reset); the platform's own error
+// is the loud failure, and the object keeps no budget of its own. Set to the Paid default
+// explicitly, and pinned by the config guard.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-owner",
@@ -12,6 +17,7 @@
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
   "workers_dev": false,
   "preview_urls": false,
+  "limits": { "subrequests": 10000 },
   "services": [
     { "binding": "FILES", "service": "tinyassets-files" }
   ],

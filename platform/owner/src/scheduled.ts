@@ -18,7 +18,7 @@
  * the row, hands the turn to pi's durable submit and returns. pi runs it, and its status
  * is pi's receipts; the row says only `handed`. A hand-off is fenced as a wake's send is
  * (`wakes.ts`): a claim takes a `WORK_LEASE_S` lease, which bounds the hand-off alone; the
- * runner calls `mark()` before the work can have any effect, and stops if the mark
+ * runner awaits `mark()` before the work can have any effect, and stops if the mark
  * fails (the claim lapsed); a claim abandoned past its lease is `unknown` if it was
  * marked, never handed again, or else due again, at most `WORK_LIMITS.attempts` times. A
  * runner that holds its hand-off past `WORK_HANDOFF_MS` is reported, its row marked as
@@ -27,7 +27,9 @@
  *
  * A pass contains each row's failure in that row: a row whose step fails in process is
  * backed off `WORK_RETRY_S` in its own due time, so it neither stops the others nor
- * loops the alarm, and the pass throws only when that backoff cannot be written.
+ * loops the alarm, and the pass throws only when that backoff cannot be written. Each of
+ * a row's writes (its recovery, claim, mark, settle or backoff) is a unit of the object's
+ * write gate (`gate.ts`), between the hand-off's awaits, never the whole pass.
  *
  * The owner-wide bounds read counters the schema's triggers keep
  * (`policy_usage.open_work`, `settled_work`); a client's share is counted on its own
@@ -35,6 +37,7 @@
  * `settledRetentionS`, at most `maxSettled`.
  */
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage, Write } from "./gate";
 import { inTime } from "./schedule";
 import { codePoints } from "./text";
 
@@ -99,15 +102,15 @@ export interface WorkAnswer {
 
 /**
  * What hands a due piece of work to pi: the agent's, from tasks 5. It never runs the turn
- * inline: it calls `mark()`, which throws if the claim lapsed (then it stops), hands the
+ * inline: it awaits `mark()`, which rejects if the claim lapsed (then it stops), hands the
  * turn to pi's durable submit, and returns within `WORK_HANDOFF_MS`. A throw leaves the
  * row to its lease. The submit's `operationId` is the row's `work_id`, always: a second
  * hand-off of the same work (a late one, a lease's) is pi's duplicate, deduped, and the
- * turn's receipts are found by `work_id`. Any service-binding call it makes draws on its
- * alarm's ambient budget (`calls.ts`).
+ * turn's receipts are found by `work_id`. The mark is a unit of the write gate, so it
+ * resolves once it is stored outside any pi commit.
  */
 export interface WorkRunner {
-  handOff(target: WorkTarget, mark: () => void): Promise<WorkAnswer>;
+  handOff(target: WorkTarget, mark: () => Promise<void>): Promise<WorkAnswer>;
 }
 
 export type WorkClaim =
@@ -154,18 +157,18 @@ export function stamp(value: unknown): Stamp | null {
 }
 
 export class Scheduled {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #grants: StandingReader;
   readonly #limits: WorkLimits;
 
-  constructor(storage: DurableObjectStorage, grants: StandingReader,
+  constructor(storage: OwnerStorage, grants: StandingReader,
               limits: WorkLimits = WORK_LIMITS) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = limits;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 
@@ -381,18 +384,18 @@ export class Scheduled {
  * not there is a runner; then, with one, each due pending row once, taking none once the
  * wall clock reaches `until` (`schedule.ts`, `LANE_PASS_S`). A row's failure is kept in
  * its row (`WORK_RETRY_S`); a hand-off past `handoffMs` is reported and left to its lease,
- * marked.
+ * marked. Every write is one unit through `write`, the object's gate.
  */
 export async function runWork(work: Scheduled, runner: WorkRunner | null, clock: () => number,
-                              limit: number = WORK_PER_PASS,
+                              write: Write, limit: number = WORK_PER_PASS,
                               handoffMs: number = WORK_HANDOFF_MS,
                               until: number = Infinity): Promise<number> {
   for (const workId of work.lapsed(clock(), limit)) {
     try {
-      work.recover(workId, clock());
+      await write(() => work.recover(workId, clock()));
     } catch {
       console.error("scheduled work recovery failed");  // no ids or payload in the log
-      work.defer(workId, clock() + WORK_RETRY_S);
+      await write(() => work.defer(workId, clock() + WORK_RETRY_S));
     }
   }
   if (runner === null) {
@@ -404,13 +407,13 @@ export async function runWork(work: Scheduled, runner: WorkRunner | null, clock:
       break;  // the rest wait for the lane's next pass, which the job's set brings at once
     }
     try {
-      const claim = work.claim(workId, clock());
+      const claim = await write(() => work.claim(workId, clock()));
       if (claim.outcome !== "claimed") {
         continue;
       }
       const { target } = claim;
-      const handing = runner.handOff(target, () => {
-        if (!work.mark(target.work_id, target.claim_id)) {
+      const handing = runner.handOff(target, async () => {
+        if (!await write(() => work.mark(target.work_id, target.claim_id))) {
           throw new Error("the work's claim lapsed before its hand-off");
         }
       });
@@ -418,16 +421,16 @@ export async function runWork(work: Scheduled, runner: WorkRunner | null, clock:
       if (answer === "late") {
         // It may yet hand the work over: never hand it again, and let its lease decide.
         handing.catch(() => undefined);
-        work.mark(target.work_id, target.claim_id);
+        await write(() => work.mark(target.work_id, target.claim_id));
         console.error("a scheduled hand-off ran past its bound; it is left to its lease");
         continue;
       }
-      if (work.settle(target.work_id, target.claim_id, answer, clock())) {
+      if (await write(() => work.settle(target.work_id, target.claim_id, answer, clock()))) {
         finished++;
       }
     } catch {
       console.error("scheduled work failed");  // no ids or payload in the log
-      work.defer(workId, clock() + WORK_RETRY_S);
+      await write(() => work.defer(workId, clock() + WORK_RETRY_S));
     }
   }
   return finished;

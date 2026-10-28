@@ -18,6 +18,7 @@
  * so no wake can be claimed or settled over RPC. Until then the lane only recovers
  * lapsed claims, and open wakes and revokes stay pending, held, not lost.
  */
+import type { Write } from "./gate";
 import { type Ledger, type Outcome, outcome, type WakeTarget } from "./ledger";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
 
@@ -31,17 +32,15 @@ export const WAKE_RETRY_S = 60;
  */
 export const WAKE_SEND_MS = (LANE_HUNG_S - LANE_PASS_S) * 1000;
 
-/**
- * What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). Any
- * service-binding call it makes draws on its alarm's ambient budget (`calls.ts`).
- */
+/** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
 export interface WakeSender {
   /**
-   * Send one wake and report the answer. `mark()` must be called before the first byte
-   * leaves; a throw after it leaves the wake to its lease, then `unknown`. A callback
-   * refused before any connection is `failed` with reason `not_sent`.
+   * Send one wake and report the answer. `mark()` must have resolved before the first
+   * byte leaves (it is a unit of the object's write gate, stored once it resolves); a
+   * throw after it leaves the wake to its lease, then `unknown`. A callback refused before
+   * any connection is `failed` with reason `not_sent`.
    */
-  send(target: WakeTarget, mark: () => void): Promise<Outcome>;
+  send(target: WakeTarget, mark: () => Promise<void>): Promise<Outcome>;
   /**
    * Erase the agent's callbacks tagged at or before `generation` (the subscription
    * generation each subscribe returned), and never a newer one: the agent was disabled,
@@ -66,18 +65,19 @@ export interface WakeSender {
  * sender to: a late one is left to its lease, as a late hand-off is (`scheduled.ts`). A
  * late send is marked first, since a byte may have left, so its lapsed claim recovers as
  * `unknown`, never sent again; a late revoke recovers due again, since erasing twice is
- * harmless.
+ * harmless. Every write (a recovery, a claim, a mark, a settle, a backoff) is one unit
+ * through `write`, the object's gate (`gate.ts`), between the sends, never the whole pass.
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
-                               limit: number = WAKES_PER_ALARM,
+                               write: Write, limit: number = WAKES_PER_ALARM,
                                sendMs: number = WAKE_SEND_MS,
                                until: number = Infinity): Promise<number> {
   for (const lapsed of ledger.lapsedClaims(clock(), limit)) {
     try {
-      ledger.recover(lapsed.wake_id, clock());
+      await write(() => ledger.recover(lapsed.wake_id, clock()));
     } catch {
       console.error("outside-agent wake recovery failed");  // no ids, URL or body in the log
-      ledger.defer(lapsed.wake_id, clock() + WAKE_RETRY_S);
+      await write(() => ledger.defer(lapsed.wake_id, clock() + WAKE_RETRY_S));
     }
   }
   if (sender === null) {
@@ -89,7 +89,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       break;  // the rest wait for the lane's next pass, which the job's set brings at once
     }
     try {
-      const claim = ledger.claim(wake.wake_id, clock());
+      const claim = await write(() => ledger.claim(wake.wake_id, clock()));
       if (claim.outcome === "revoke") {
         const revoking = sender.revoke(claim.target.agent_id, claim.target.generation);
         if (await inTime(revoking, sendMs) === "late") {
@@ -97,15 +97,16 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
           console.error("a doorbell revoke ran past its bound; it is left to its lease");
           continue;
         }
-        ledger.settle(claim.target.wake_id, claim.target.claim_id, { state: "sent" }, clock());
+        await write(() => ledger.settle(claim.target.wake_id, claim.target.claim_id,
+                                        { state: "sent" }, clock()));
         continue;
       }
       if (claim.outcome !== "claimed") {
         continue;
       }
       const { target } = claim;
-      const sending = sender.send(target, () => {
-        if (!ledger.mark(target.wake_id, target.claim_id)) {
+      const sending = sender.send(target, async () => {
+        if (!await write(() => ledger.mark(target.wake_id, target.claim_id))) {
           throw new Error("the wake's claim lapsed before its send");
         }
       });
@@ -113,15 +114,16 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       if (answer === "late") {
         // A byte may have left: never send it again, and let its lease decide.
         sending.catch(() => undefined);
-        ledger.mark(target.wake_id, target.claim_id);
+        await write(() => ledger.mark(target.wake_id, target.claim_id));
         console.error("a doorbell send ran past its bound; it is left to its lease");
         continue;
       }
-      ledger.settle(target.wake_id, target.claim_id, outcome(answer), clock());
+      await write(() => ledger.settle(target.wake_id, target.claim_id, outcome(answer),
+                                      clock()));
       accepted += answer.state === "sent" ? 1 : 0;
     } catch {
       console.error("outside-agent wake failed");  // no ids, URL or body in the log
-      ledger.defer(wake.wake_id, clock() + WAKE_RETRY_S);
+      await write(() => ledger.defer(wake.wake_id, clock() + WAKE_RETRY_S));
     }
   }
   return accepted;

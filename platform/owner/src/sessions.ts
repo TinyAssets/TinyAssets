@@ -38,6 +38,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage } from "./gate";
 import { codePoints } from "./text";
 
 export interface SessionLimits {
@@ -70,15 +71,15 @@ function proofOf(value: unknown): string | null {
 }
 
 export class Sessions {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #limits: SessionLimits;
 
-  constructor(storage: DurableObjectStorage, limits: SessionLimits = SESSION_LIMITS) {
+  constructor(storage: OwnerStorage, limits: SessionLimits = SESSION_LIMITS) {
     this.#storage = storage;
     this.#limits = limits;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 

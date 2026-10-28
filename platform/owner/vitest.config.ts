@@ -41,13 +41,19 @@ export default defineConfig({
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
-        // Worker no binding to its own namespace. FILES is the config's own binding, to
-        // the files Worker run beside it.
+        // Worker no binding to its own namespace. AGENT and MALFORMED are the test
+        // Worker's own classes of the object (test/worker.ts), its agent on faux models.
+        // FILES is the config's own binding, to the files Worker run beside it.
         plugins: [
           cloudflareTest({
+            main: "./test/worker.ts",
             wrangler: { configPath: "./wrangler.jsonc" },
             miniflare: {
-              durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
+              durableObjects: {
+                OWNER: { className: "OwnerDO", useSQLite: true },
+                AGENT: { className: "FauxOwnerDO", useSQLite: true },
+                MALFORMED: { className: "MalformedOwnerDO", useSQLite: true },
+              },
               workers: [filesWorker()],
             },
           }),

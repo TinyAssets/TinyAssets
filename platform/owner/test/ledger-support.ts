@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import {
   apiKeyOrigin, clock, Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin, type Outcome,
@@ -39,8 +40,8 @@ export class FakeSender implements WakeSender {
     this.callbacks.set(agentId, (this.callbacks.get(agentId) ?? new Set()).add(generation));
   }
 
-  async send(target: WakeTarget, mark: () => void): Promise<Outcome> {
-    mark();
+  async send(target: WakeTarget, mark: () => Promise<void>): Promise<Outcome> {
+    await mark();
     this.sent.push(target);
     const answer = this.answers.shift() ?? { state: "sent", status: 202 };
     if (answer === "crash") {
@@ -169,7 +170,8 @@ export async function rig() {
     /** One alarm pass at `now`, with the scripted doorbell. */
     tick: (now: number = clock()): Promise<number> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
-        runWakes(ledgerOn(state.storage), sender, () => now)),
+        runWakes(ledgerOn(state.storage), sender, () => now,
+                 new WriteGate(state.storage).write)),
     /** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
     alarmAt: (): Promise<number | null> => alarmOf(stub),
     /** The `wakes` lane's Lifecycle job due time in seconds, or null when it has none. */

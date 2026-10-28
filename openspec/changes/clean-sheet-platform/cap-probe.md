@@ -280,5 +280,8 @@ wait, which is PiHarness's shape. An incoming RPC during a turn takes that budge
 - its split is 32/24/8, while the cap was 50 here and is 10,000 by default on Paid;
 - it attributes per async context.
 
+The agent slice deleted it (tasks §5, A0): the object keeps no budget of its own, and the
+owner Worker sets `limits.subrequests: 10000`, the platform's error being the loud failure.
+
 Run A is not needed. Attribution no longer drives any design: `calls.ts` is deleted by
 agent A0 (`platform-agent-a0`), and run 1 already narrowed attribution to newest-or-reset.

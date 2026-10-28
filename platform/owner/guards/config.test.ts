@@ -12,8 +12,11 @@
  * Worker loader, a tail consumer, a shared store, an unsafe binding) refuses the owner's
  * binding. The gateway joins `SERVICES` with its slice. Its compatibility flags carry
  * `disable_ctx_exports`, so the runtime does not hand the object its own namespaces as
- * `ctx.exports`. It is the only wrangler config in the owner Worker. Edge Workers bind
- * `OWNER` from their own configs.
+ * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
+ * of subrequests per invocation (50 on Free, 10,000 by default on Paid), whose own error
+ * is the object's only call limit, so the number the agent's turns rely on is explicit
+ * and moves only with a review here. It is the only wrangler config in the owner Worker.
+ * Edge Workers bind `OWNER` from their own configs.
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,8 +35,10 @@ const NO_EXPORTS = "disable_ctx_exports";
 /** The keys an environment may set besides `services`: none of them binds anything. */
 const ENV_KEYS: ReadonlySet<string> = new Set([
   "name", "main", "compatibility_date", "compatibility_flags", "workers_dev", "preview_urls",
-  "migrations",
+  "migrations", "limits",
 ]);
+/** The owner Worker's limits, wherever they are set: the Paid default subrequests. */
+const LIMITS = Object.freeze({ subrequests: 10000 });
 /** The keys the top level may set: an environment's, the schema, and the environments. */
 const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env"]);
 /** The keys a bound Worker may set that bind nothing. */
@@ -126,7 +131,12 @@ export function configProblems(config: Config,
         problems.push(...serviceProblems(scope[key], where, bound));
       } else if (!allowed.has(key)) {
         problems.push(`${where}${key} is not an allowed key`);
+      } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
+        problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
       }
+    }
+    if (top && scope["limits"] === undefined) {
+      problems.push(`${where}limits are not set`);
     }
     const flags = scope["compatibility_flags"];
     if (flags !== undefined || top) {
@@ -179,6 +189,20 @@ describe("owner Worker config", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);
     expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
     expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" }]);
+  });
+
+  it("sets the platform's subrequests per invocation explicitly, to the Paid default", () => {
+    expect(config["limits"]).toEqual({ subrequests: 10000 });
+    for (const limits of [undefined, {}, { subrequests: 50 }, { subrequests: 10000, cpu_ms: 1 },
+                          { cpu_ms: 30000 }]) {
+      const { limits: _drop, ...rest } = config;
+      const probe = limits === undefined ? rest : { ...rest, limits };
+      expect(configProblems(probe, platformConfigs())).toEqual(
+        [limits === undefined ? "limits are not set" : `limits are not ${JSON.stringify(LIMITS)}`]);
+    }
+    expect(configProblems({ ...config, env: { prod: { limits: { subrequests: 50 } } } },
+                          platformConfigs()))
+      .toEqual([`env.prod.limits are not ${JSON.stringify(LIMITS)}`]);
   });
 
   it("refuses FILES when the files Worker's config is not in the platform", () => {
@@ -257,7 +281,7 @@ describe("owner Worker config", () => {
   });
 
   const base = { name: "tinyassets-owner", main: "src/index.ts",
-                 compatibility_flags: ["nodejs_compat", NO_EXPORTS] };
+                 compatibility_flags: ["nodejs_compat", NO_EXPORTS], limits: LIMITS };
   const bound = new Map([["tinyassets-files", files as Config]]);
 
   it.each([
@@ -281,7 +305,7 @@ describe("owner Worker config", () => {
     ["an unsafe binding", { ...base, unsafe: { bindings: [] } }],
     ["a key wrangler adds later", { ...base, agent_memory: [] }],
     ["no ctx.exports flag", { ...base, compatibility_flags: ["nodejs_compat"] }],
-    ["no flags at all", { name: "tinyassets-owner" }],
+    ["no flags at all", { name: "tinyassets-owner", limits: LIMITS }],
     ["an environment's flags without it", { ...base, env: { prod: {
       compatibility_flags: ["nodejs_compat"] } } }],
     ["ctx.exports turned back on", { ...base, compatibility_flags: [NO_EXPORTS,

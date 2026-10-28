@@ -50,6 +50,7 @@
  */
 import { digest } from "./collections";
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage } from "./gate";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 
 /** The reader and sender id of the object's owner. An agent id is `agent_` + hex. */
@@ -493,18 +494,18 @@ export interface GrantReader {
 }
 
 export class Ledger {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #grants: GrantReader;
   readonly #limits: LedgerLimits;
 
-  constructor(storage: DurableObjectStorage, grants: GrantReader,
+  constructor(storage: OwnerStorage, grants: GrantReader,
               limits: LedgerLimits = LEDGER_LIMITS) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 

@@ -56,14 +56,16 @@
  *
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind; only chunk bytes and their deletes cross to `FILES`, between
- * transactions, at most two chunks a call, each call drawn first from the budget of the
- * invocation running it (`calls.ts`), read from the object's scope. Watchers in the object
- * (the pi environment's `watch`) hear each committed change.
+ * transactions, at most two chunks a call. A change a caller makes is one unit of the
+ * object's write gate (`gate.ts`), which the caller opens (a door, the pi environment);
+ * the methods that cross to `FILES` open their own, one for each step around a call, so
+ * no write waits on the files Worker and none lands inside a pi commit. Watchers in the
+ * object (the pi environment's `watch`) hear each change.
  */
 import { createHash, randomBytes } from "node:crypto";
 
-import type { CallScope } from "./calls";
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage, Write } from "./gate";
 import { inTime } from "./schedule";
 import {
   ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, parentOf, storedPath, TEMP, within,
@@ -394,22 +396,22 @@ export function conflictName(name: string, epoch: number, n: number): string {
 }
 
 export class Files {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
-  /** The object's invocations, whose current budget each call draws on (throws outside one). */
-  readonly #scope: CallScope;
+  /** The object's write gate: the units the methods that cross to `FILES` write through. */
+  readonly #write: Write;
   readonly #watchers = new Set<(paths: string[]) => void>();
 
-  constructor(storage: DurableObjectStorage, store: ChunkStore, limits: () => FileLimits,
-              scope: CallScope) {
+  constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
+              write: Write) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
-    this.#scope = scope;
+    this.#write = write;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 
@@ -417,17 +419,31 @@ export class Files {
     return this.#sql.exec<Space>("SELECT * FROM file_space").one();
   }
 
-  /** The owner's namespace, made on first use; it never leaves the object but to `FILES`. */
+  /**
+   * The owner's namespace, made on first use; it never leaves the object but to `FILES`.
+   * A read once made; making it is a write, so its first use is inside a unit.
+   */
   ns(): string {
-    return this.#storage.transactionSync(() => {
-      const stored = this.#space().ns;
-      if (stored !== null) {
-        return stored;
-      }
-      const made = randomBytes(16).toString("hex");
-      this.#sql.exec("UPDATE file_space SET ns = ?", made);
-      return made;
-    });
+    const stored = this.#space().ns;
+    if (stored !== null) {
+      return stored;
+    }
+    const made = randomBytes(16).toString("hex");
+    this.#sql.exec("UPDATE file_space SET ns = ?", made);
+    return made;
+  }
+
+  /** The namespace from outside a unit: made through the gate on first use. */
+  async namespace(): Promise<string> {
+    return this.#space().ns ?? await this.#write(() => this.ns());
+  }
+
+  /**
+   * Run a caller's synchronous changes (`mkdir`, `remove`, `rename`, ...) as one unit of
+   * the object's write gate, from outside a unit: the pi environment's tool calls.
+   */
+  unit<T>(changes: () => T): Promise<T> {
+    return this.#write(changes);
   }
 
   /** Hear every committed change's paths; returns the call that stops it. */
@@ -621,18 +637,14 @@ export class Files {
     return row;
   }
 
-  /**
-   * Chunk bytes in order, fetched from `FILES` at most two chunks a call, every call drawn
-   * from the invocation's budget before the first is made.
-   */
+  /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
   async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
       Promise<Uint8Array[]> {
     if (reads.length === 0) {
       return [];
     }
-    const ns = this.ns();
+    const ns = await this.namespace();
     const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
-    this.#scope.current().draw("files", groups.length);
     const out: Uint8Array[] = [];
     for (const group of groups) {
       out.push(...await this.#store.getChunks(ns, group.map((item) => item.read)));
@@ -869,10 +881,15 @@ export class Files {
    * object's own writes and the doors' small ones, at most `WHOLE_BYTES` at once.
    * `prefix` is whole chunks of content already stored that come first (an append or a
    * truncate keeps them), so only the chunks after them are cut from `bytes` and sent.
-   * Every put is drawn from the invocation's budget before the first is sent.
+   * Called outside a unit: each step that writes (the inline write, or the intent, each
+   * put's record and the commit or abort) is a unit of its own, between the calls.
+   * `authorize`, a door's check of the caller's authority, runs first in the inline
+   * write's, the intent's and the commit's unit, so the authority holds where it is used,
+   * not only where the door first read it.
    */
   async write(path: unknown, bytes: unknown, options: { expected: unknown; mode?: unknown;
-              writer: string; parents?: boolean; prefix?: readonly ChunkRef[] }):
+              writer: string; parents?: boolean; prefix?: readonly ChunkRef[];
+              authorize?: () => void }):
       Promise<Entry> {
     const at = storedPath(path);
     if (!(bytes instanceof Uint8Array)) {
@@ -889,39 +906,47 @@ export class Files {
       throw new Invalid("a kept prefix is whole chunks");
     }
     const size = prefix.length * CHUNK_BYTES + bytes.byteLength;
+    const authorize = options.authorize ?? (() => undefined);
     if (size <= INLINE_BYTES) {
-      return this.#writeInline(at, bytes, expected, mode, options.writer, parents);
+      return this.#write(() => {
+        authorize();
+        return this.#writeInline(at, bytes, expected, mode, options.writer, parents);
+      });
     }
     const tail = cut(bytes);
-    const { intent_id, missing } = this.begin(size, [...prefix, ...tail]
-      .map((chunk) => chunk.sha256));
+    const { intent_id, missing } = await this.#write(() => {
+      authorize();
+      return this.begin(size, [...prefix, ...tail].map((chunk) => chunk.sha256));
+    });
     try {
       const wanted = new Set(missing);
       const puts = tail.filter((chunk) => wanted.delete(chunk.sha256));
       if (wanted.size > 0) {
         throw new Refused("a kept chunk of this file is gone; write it whole");
       }
-      const groups = batches(puts);
-      this.#scope.current().draw("files", groups.length);
-      for (const group of groups) {
+      for (const group of batches(puts)) {
         await this.#put(group);
       }
-      return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents });
+      return await this.#write(() => {
+        authorize();
+        return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents });
+      });
     } catch (error) {
-      this.abort(intent_id);
+      await this.#write(() => this.abort(intent_id));
       throw error;
     }
   }
 
-  /** Put chunks through `FILES`, and record them stored once it accepted them. */
+  /** Put chunks through `FILES`, then record them stored, in a unit, once it accepted them. */
   async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[]): Promise<void> {
-    await this.#store.putChunks(this.ns(), chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
-    this.#storage.transactionSync(() => {
+    await this.#store.putChunks(await this.namespace(),
+                                chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    await this.#write(() => this.#storage.transactionSync(() => {
       for (const { sha256 } of chunks) {
         this.#sql.exec("UPDATE file_chunks SET stored = 1 WHERE sha256 = ? AND stored = 0",
                        sha256);
       }
-    });
+    }));
   }
 
   /**
@@ -1026,8 +1051,7 @@ export class Files {
 
   /**
    * Send bytes for chunks an intent holds, at most two chunks a call, each the size the
-   * intent declared; each is stored once `FILES` accepted it. The put is drawn from the
-   * invocation's budget first.
+   * intent declared; each is recorded stored, in a unit, once `FILES` accepted it.
    */
   async upload(intentId: unknown, chunks: unknown): Promise<{ created: number }> {
     const held = new Set(this.#intent(intentId, Date.now() / 1000).chunks);
@@ -1049,7 +1073,6 @@ export class Files {
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
       throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
-    this.#scope.current().draw("files", 1);
     await this.#put(puts);
     return { created: puts.length };
   }
@@ -1563,12 +1586,12 @@ export class Files {
    * held again) before it asks `FILES`, and removes their rows only after; one that fails
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
-   * is begun with less than `DELETE_FLOOR_MS` left before `until`, and the one delete is
-   * drawn from the alarm's budget first.
+   * is begun with less than `DELETE_FLOOR_MS` left before `until`. Each step that writes
+   * is a unit of the gate of its own, between the calls, never the whole pass.
    */
   async collect(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
-    this.#change((touched) => {
+    await this.#write(() => this.#change((touched) => {
       this.#reretain();
       for (const { intent_id: intentId } of sql.exec<{ intent_id: string }>(
              "SELECT intent_id FROM file_intents WHERE expires_at <= ? ORDER BY expires_at " +
@@ -1581,35 +1604,40 @@ export class Files {
         this.#dropTemp(name, "system", now, touched);
       }
       this.#prune(now);
-    });
-    const due = sql.exec<{ sha256: string }>(
-      "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
-        "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
-    if (due.length === 0 || until - Date.now() < DELETE_FLOOR_MS) {
+    }));
+    if (until - Date.now() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
-    this.#scope.current().draw("files", 1);
-    this.#storage.transactionSync(() => {
-      for (const sha256 of due) {
+    // Read and marked in one unit: a chunk read due outside it could be held again (an
+    // upload's begin) before the mark, and its bytes then deleted under a live file.
+    const due = await this.#write(() => this.#storage.transactionSync(() => {
+      const found = sql.exec<{ sha256: string }>(
+        "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
+          "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
+      for (const sha256 of found) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
                  now + GC_RETRY_S, sha256);
       }
-    });
+      return found;
+    }));
+    if (due.length === 0) {
+      return;
+    }
     try {
       // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
-      if (await inTime(this.#store.deleteChunks(this.ns(), due), until - Date.now())
-          === "late") {
+      if (await inTime(this.#store.deleteChunks(await this.namespace(), due),
+                       until - Date.now()) === "late") {
         throw new Error("the chunk delete ran past its pass");
       }
     } catch {
       console.error("chunk delete failed; it is tried again later");  // no hashes in the log
       return;
     }
-    this.#storage.transactionSync(() => {
+    await this.#write(() => this.#storage.transactionSync(() => {
       for (const sha256 of due) {
         sql.exec("DELETE FROM file_chunks WHERE sha256 = ? AND state = 'deleting'", sha256);
       }
-    });
+    }));
   }
 
   /**

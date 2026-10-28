@@ -5,15 +5,15 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
-import { Calls, FILES_CALLS } from "../src/calls";
 import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { apiKeyOrigin } from "../src/ledger";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, ownerObject, sqlIn, text } from "./support";
+import { failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, text } from "./support";
 
 const W = "/workspace";
 
@@ -194,22 +194,23 @@ describe("a file write", () => {
       .toBe("first and count name 1 or 2 of the version's chunks");
   });
 
-  it("gives each door call its own call budget, one after another or at once", async () => {
+  it("serves door reads and writes that interleave at their FILES calls", async () => {
     const r = await rig();
     const version = entryOf(await write(r, `${W}/one.bin`,
                                         new Uint8Array(INLINE_BYTES + 1).fill(6))).version;
     const read = () => r.stub.fileReadChunks(r.bind(null), { path: `${W}/one.bin`, version,
                                                              first: 0, count: 1 });
-    // More door reads than one budget holds, each its own entry: none draws on another's.
-    for (let i = 0; i <= FILES_CALLS; i++) {
-      expect((await read()).chunks[0]!.byteLength).toBe(INLINE_BYTES + 1);
-    }
-    const together = await Promise.all(Array.from({ length: FILES_CALLS + 1 }, read));
-    expect(together.every((answer) => answer.chunks[0]!.byteLength === INLINE_BYTES + 1))
-      .toBe(true);
-    for (let i = 0; i <= FILES_CALLS; i++) {
-      await write(r, `${W}/w${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i));
-    }
+    // Each door's account is a unit of its own, and its FILES calls run between units, so
+    // doors at once never wait on each other's calls.
+    const together = await Promise.all([
+      ...Array.from({ length: 8 }, read),
+      ...Array.from({ length: 8 }, (_, i) => write(r, `${W}/w${i}.bin`,
+                                                   new Uint8Array(INLINE_BYTES + 1).fill(i))),
+    ]);
+    expect(together.slice(0, 8).every((answer) =>
+      "chunks" in answer && answer.chunks[0]!.byteLength === INLINE_BYTES + 1)).toBe(true);
+    expect(together.slice(8).map((answer) => entryOf(answer as never).size))
+      .toEqual(Array(8).fill(INLINE_BYTES + 1));
   });
 
   it("keeps the mode it had when an overwrite names none", async () => {
@@ -390,6 +391,111 @@ describe("every file door", () => {
     await r.register(MUSE);
     expect(entryOf(await write(r, `${W}/a.txt`, "x", null, r.bind(MUSE))).writer)
       .toBe(`client:${MUSE.client}`);
+  });
+
+  it("checks a writer's authority in the unit that writes, not only where its door began",
+     async () => {
+    const r = await rig();
+    await r.register(MUSE);
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
+      // A pi commit holds the queue: the write's door queues its check, then the owner's
+      // narrowing of the client's grant queues behind it, before the write itself.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const writing = instance.fileWrite(r.bind(MUSE), {
+        path: `${W}/a.txt`, expected_etag: null, content: text("x") })
+        .then(() => "written", (error: Error) => error.message);
+      const narrowing = instance.grantSet(r.session(null), {
+        client: MUSE.client, source: "mcp", mode: "scoped",
+        scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
+        expected_generation: row!.generation, name: "" });
+      release();
+      await Promise.all([commit, narrowing]);
+      return writing;
+    });
+    expect(answer).toBe("outside client capability not granted");
+    expect(await sqlIn(r.stub, "SELECT name FROM file_entries WHERE name = 'a.txt'"))
+      .toEqual([]);
+  });
+
+  /** Narrow MUSE's grant to reading files, from inside the object. */
+  const narrow = async (r: Rig, instance: OwnerDO, generation: number) =>
+    instance.grantSet(r.session(null), {
+      client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
+      expected_generation: generation, name: "" });
+
+  /** What a refused chunked write may leave: its intent, its chunk rows, its entry. */
+  const leftBy = (r: Rig) => Promise.all([
+    sqlIn(r.stub, "SELECT intent_id FROM file_intents"),
+    sqlIn(r.stub, "SELECT state, stored, holds FROM file_chunks"),
+    sqlIn(r.stub, "SELECT name FROM file_entries WHERE name = 'big.bin'"),
+  ]);
+
+  it("refuses a chunked write whose grant narrows before its intent, holding nothing",
+     async () => {
+    const r = await rig();
+    await r.register(MUSE);
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
+      // The door's check queues behind a held pi commit, the narrowing behind it, then
+      // the write's intent.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const writing = instance.fileWrite(r.bind(MUSE), {
+        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        .then(() => "written", (error: Error) => error.message);
+      const narrowing = narrow(r, instance, row!.generation);
+      release();
+      await Promise.all([commit, narrowing]);
+      return writing;
+    });
+    expect(answer).toBe("outside client capability not granted");
+    expect(await leftBy(r)).toEqual([[], [], []]);  // no intent, no chunk held or sent
+  });
+
+  it("refuses a chunked write whose grant narrows while its chunks are out at FILES",
+     async () => {
+    const r = await rig();
+    await r.register(MUSE);
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
+      const writing = instance.fileWrite(r.bind(MUSE), {
+        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        .then(() => "written", (error: Error) => error.message);
+      // Its intent is made in a few microtasks; its put to FILES needs I/O, so it is
+      // still out while the queue is held and the grant narrowed ahead of the commit.
+      const intents = () => state.storage.sql.exec("SELECT 1 FROM file_intents").toArray();
+      for (let i = 0; i < 1000 && intents().length === 0; i++) {
+        await Promise.resolve();
+      }
+      expect(intents()).toHaveLength(1);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const narrowing = narrow(r, instance, row!.generation);
+      release();
+      await Promise.all([commit, narrowing]);
+      return writing;
+    });
+    expect(answer).toBe("outside client capability not granted");
+    // The intent is ended; the chunk it sent is garbage, collected in its time.
+    expect(await leftBy(r)).toEqual([[], [{ state: "garbage", stored: 1, holds: 0 }], []]);
+  });
+
+  it("sets the files lane's job from the rows after a whole write, as every file door does",
+     async () => {
+    const r = await rig();
+    // An open upload: the lane's job waits for its expiry, which the rows then bring due.
+    await r.stub.fileUploadBegin(r.bind(null), { size: INLINE_BYTES + 1,
+                                                 chunks: [sha256Hex(text("x"))] });
+    expect(await laneAt(r.stub, "files")).toBeGreaterThan(Date.now() / 1000 + 60);
+    await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
+    await write(r, `${W}/b`, "1");
+    expect(await laneAt(r.stub, "files")).toBeLessThanOrEqual(Date.now() / 1000);
   });
 
   it("refuses a request with a field it does not take", async () => {

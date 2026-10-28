@@ -24,6 +24,7 @@
 import { createHash } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage } from "./gate";
 import { codePoints, name, utf8Bytes } from "./text";
 
 export interface Limits {
@@ -133,15 +134,15 @@ function now(): number {
 }
 
 export class Collections {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #limits: Limits;
 
-  constructor(storage: DurableObjectStorage, limits: Limits = LIMITS) {
+  constructor(storage: OwnerStorage, limits: Limits = LIMITS) {
     this.#storage = storage;
     this.#limits = limits;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 

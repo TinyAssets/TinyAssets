@@ -11,16 +11,19 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { WriteGate } from "../src/gate";
 import {
   clock, HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
 } from "../src/ledger";
 import { LANE_HUNG_S, LANE_PASS_S } from "../src/schedule";
-import { runWakes, WAKE_RETRY_S, WAKE_SEND_MS, WAKES_PER_ALARM } from "../src/wakes";
+import {
+  runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM,
+} from "../src/wakes";
 import type { OwnerDO } from "../src/owner-do";
 import {
   DOT, FakeSender, ledgerOn, MCP, MUSE, origin, rig, type Rig, wakeReceipts,
 } from "./ledger-support";
-import { drainDue, failure, laneJobs } from "./support";
+import { drainDue, failure, faulty, laneJobs } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
                 recipe_id: null };
@@ -37,6 +40,9 @@ async function states(r: Rig, table = "ledger_wakes"): Promise<string[]> {
 async function wakeStates(r: Rig): Promise<string[]> {
   return (await wakes(r)).filter((w) => w["kind"] === "wake").map((w) => w["state"] as string);
 }
+
+/** A write gate over the object's storage, as the object's lanes write through. */
+const gateOf = (state: DurableObjectState) => new WriteGate(state.storage).write;
 
 /** A ringing agent with no batch window, registered and tuned in `ledger` itself. */
 function ringing(ledger: Ledger, from = MUSE, perHour = 12): string {
@@ -56,7 +62,7 @@ class HangingSender extends FakeSender {
     this.#waiting.splice(0).forEach((resolve) => resolve());
   }
 
-  override async send(target: WakeTarget, _mark: () => void): Promise<Outcome> {
+  override async send(target: WakeTarget, _mark: () => Promise<void>): Promise<Outcome> {
     this.sent.push(target);
     await new Promise<void>((resolve) => this.#waiting.push(resolve));
     return { state: "sent", status: 202 };
@@ -358,6 +364,42 @@ describe("a claim settles only by its holder", () => {
     expect(await wakeStates(r)).toEqual(["sent", "pending"]);
   });
 
+  it("stops a sender whose mark fails, before its first byte", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    const now = clock() + 1;
+    const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      // The claim lapses and is taken again while the sender is handed its target.
+      const lapsing: WakeSender = {
+        send: (target, mark) => {
+          state.storage.sql.exec("UPDATE ledger_wakes SET claim_id = 'claim_other' " +
+                                 "WHERE wake_id = ?", target.wake_id);
+          return r.sender.send(target, mark);
+        },
+        revoke: (agentId, generation) => r.sender.revoke(agentId, generation),
+      };
+      return runWakes(ledgerOn(state.storage), lapsing, () => now, gateOf(state));
+    });
+    expect([accepted, r.sender.sent]).toEqual([0, []]);  // it never got past its mark
+    expect((await wakes(r)).map((w) => [w["state"], w["marked"]])).toEqual([["sending", 0]]);
+  });
+
+  it("counts no send whose settle cannot be written, and backs its row off", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    const now = clock() + 1;
+    // The pass's units: the claim, the mark, then the settle, which fails.
+    const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) =>
+      runWakes(ledgerOn(state.storage), r.sender, () => now,
+               faulty(gateOf(state), (n) => n === 3)));
+    expect([accepted, r.sender.sent.length]).toEqual([0, 1]);
+    const [wake] = await wakes(r);
+    expect([wake!["state"], wake!["marked"], wake!["due"]])
+      .toEqual(["sending", 1, now + WAKE_RETRY_S]);
+  });
+
   it("lets a stale claim neither mark nor settle after a lapse and a new claim", async () => {
     const r = await rig();
     const t = clock();
@@ -623,7 +665,8 @@ describe("the wakes lane of the object's one schedule", () => {
       const ledger = ledgerOn(state.storage);
       const muse = ringing(ledger);
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      expect(await runWakes(ledger, r.sender, () => t, 16, WAKE_SEND_MS, Date.now() - 1))
+      expect(await runWakes(ledger, r.sender, () => t, gateOf(state), 16, WAKE_SEND_MS,
+                            Date.now() - 1))
         .toBe(0);
       return ledger.dueOpen(t, 16).length;
     });
@@ -642,14 +685,14 @@ describe("the wakes lane of the object's one schedule", () => {
       ledger.post(null, `dm:${ringing(ledger)}`, "c1", "hello", null, t - 100);
       const hanging = new HangingSender();
       const started = Date.now();
-      const accepted = await runWakes(ledger, hanging, () => t, WAKES_PER_ALARM, 30);
+      const accepted = await runWakes(ledger, hanging, () => t, gateOf(state), WAKES_PER_ALARM, 30);
       const took = Date.now() - started;
       const late = row();
       hanging.release();  // its answer comes after the pass let it go, and settles nothing
       await new Promise((resolve) => setTimeout(resolve, 20));
       const released = row();
       // Its lease lapses: a byte may have left, so it is unknown, never sent again.
-      await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, WAKES_PER_ALARM, 30);
+      await runWakes(ledger, hanging, () => t + WAKE_LEASE_S, gateOf(state), WAKES_PER_ALARM, 30);
       return { accepted, took, late, released, after: row(), sent: hanging.sent.length };
     });
     expect(out.accepted).toBe(0);
@@ -670,10 +713,10 @@ describe("the wakes lane of the object's one schedule", () => {
       ledger.subscriber(MUSE, "alpha", muse);
       ledger.register(MUSE, MCP, { ...RINGS, delivery_method: "pull" }, t);  // off mcp_event
       const hanging = new HangingSender();
-      await runWakes(ledger, hanging, () => t, WAKES_PER_ALARM, 30);
+      await runWakes(ledger, hanging, () => t, gateOf(state), WAKES_PER_ALARM, 30);
       const late = row();
       const sender = new FakeSender();
-      await runWakes(ledger, sender, () => t + WAKE_LEASE_S, WAKES_PER_ALARM, 30);
+      await runWakes(ledger, sender, () => t + WAKE_LEASE_S, gateOf(state), WAKES_PER_ALARM, 30);
       return { late, after: row(), revoked: [hanging.revoked.length, sender.revoked.length] };
     });
     expect(out).toEqual({ late: { state: "sending", marked: 0 },
@@ -690,7 +733,7 @@ describe("the wakes lane of the object's one schedule", () => {
       ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
       state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      const sent = await runWakes(ledger, r.sender, () => t);
+      const sent = await runWakes(ledger, r.sender, () => t, gateOf(state));
       const after = [sent, ledger.nextDue(t, true)];
       // A lapsed claim whose recovery fails waits the same.
       state.storage.sql.exec("DROP TRIGGER probe_claim");
@@ -699,7 +742,7 @@ describe("the wakes lane of the object's one schedule", () => {
       expect(ledger.claim(wake!.wake_id, at).outcome).toBe("claimed");
       state.storage.sql.exec("CREATE TRIGGER probe_settle BEFORE UPDATE OF settled_at ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      await runWakes(ledger, null, () => at + WAKE_LEASE_S);
+      await runWakes(ledger, null, () => at + WAKE_LEASE_S, gateOf(state));
       state.storage.sql.exec("DROP TRIGGER probe_settle");
       return [...after, ledger.nextDue(at + WAKE_LEASE_S, false)];
     });

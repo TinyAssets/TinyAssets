@@ -152,10 +152,10 @@ A lane's pass SHALL end within its job's single-flight hung timeout by wall cloc
 - **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
 
 ### Requirement: Only Lifecycle touches the object's alarm
-Lifecycle SHALL own the object's single physical alarm, which PiHarness's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+Lifecycle SHALL own the object's single physical alarm, which PiHarness's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` and `agents/harness/pi` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
 
 #### Scenario: Source sets the alarm
-- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle`, installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` and `agents/harness/pi`, installs Lifecycle's handlers, or names a Lifecycle or pi table
 - **THEN** the alarm guard or the policy-boundary guard fails CI
 
 #### Scenario: A binding fetches the object
@@ -436,20 +436,66 @@ A whole-file read or write by the environment SHALL move at most 16 MiB, and `re
 - **WHEN** pi's `edit` changes one line of a CRLF file that starts with a BOM
 - **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed
 
-### Requirement: One call budget per invocation
-Every service-binding call the object makes SHALL draw from the ambient budget of the invocation whose async context it runs in: the alarm, which covers the Lifecycle jobs it drives, or an RPC door, each entering a fresh scope held on the object's instance; a pi task's is the invocation whose context started it. Callers SHALL read the scope rather than take a budget as an argument, and a draw outside any scope SHALL throw.
+### Requirement: The platform counts the object's calls
+The object SHALL keep no call budget of its own: the platform counts subrequests per invocation, charged to the object's newest incoming event or to a count each event resets (the cap probe's M12 found one of the two and could not tell them apart), and its own error SHALL be the failure a caller sees (a tool call's error result). The owner Worker's config SHALL set `limits.subrequests` to 10,000, and the config guard SHALL refuse any other value, or none.
 
-#### Scenario: A call outside any invocation
-- **WHEN** a file-store call is made outside any invocation's scope
-- **THEN** it throws before the call is made
+#### Scenario: The platform refuses a call
+- **WHEN** the files Worker's call throws the platform's subrequest error inside a tool call
+- **THEN** the tool's result is that error, and nothing was written
 
-### Requirement: A call past the invocation's budget is refused
-The files Worker MAY bring an invocation's budget to 24 of the 32 service-binding calls, the rest named for the gateway and hooks, and a call that would cross it SHALL be refused before it is made, naming the budget (`not_supported` to pi).
+### Requirement: Every owner write goes through pi's SQLite queue
+Every owner write SHALL run as a unit of the object's write gate: a synchronous turn of chord's per-storage queue, which pi's commits use, run once the queue holds nothing. A door's synchronous body SHALL be one unit; a door, lane or tool call that crosses to an outside call SHALL write each step around it as a unit of its own; Lifecycle's job sets SHALL be made inside a unit. A unit SHALL keep its own atomicity. Reads stay direct.
 
-#### Scenario: Two tool calls in one turn
-- **WHEN** two tool calls in one alarm each read 12 two-chunk files
-- **THEN** the next read in that alarm is refused before its call, and the next alarm's reads draw on a budget of their own
+#### Scenario: A door writes while a transaction of the queue is open
+- **WHEN** a door is called while a transaction of the shared queue is open, and that transaction then rolls back
+- **THEN** the door's write waits for the queue and is kept, where a direct write made at the same point is rolled back with the transaction
 
-#### Scenario: Two doors at once
-- **WHEN** two invocations run in the object at once, interleaving at every call
-- **THEN** each draws on its own budget
+#### Scenario: A unit queued as Lifecycle starts
+- **WHEN** a unit is queued just before Lifecycle's startup, which holds the input gate, awaits pi's open on the queue
+- **THEN** the unit runs, then the open, and neither waits on the other: a unit is never an async storage transaction of its own, which would need the input gate
+
+### Requirement: No write reaches the storage past the gate
+The object's modules SHALL see the storage only through the gate's view, which SHALL refuse, loudly, any statement but a single read and any `transactionSync` outside a unit; the gate SHALL refuse a unit inside another and a unit that returns a promise.
+
+#### Scenario: A write outside the gate
+- **WHEN** any of the object's code writes through the view outside a unit
+- **THEN** the write is refused before it runs
+
+### Requirement: A unit acts only on what it reads itself
+A unit SHALL read the rows it decides on, or re-check them in its own statements, since another unit may land between any two; an authority a door checked SHALL be checked again in each unit that writes under it.
+
+#### Scenario: An upload holds a chunk the collector found due
+- **WHEN** an upload's begin is queued while a collection pass waits on the queue to mark a due chunk for deletion, and the upload then commits
+- **THEN** the pass's unit reads the chunk held again and leaves it, and the committed file stays readable
+
+#### Scenario: A grant narrows while a write waits
+- **WHEN** an outside client's whole write has passed its door's check and its grant loses `write_files` before the write's unit runs
+- **THEN** the write is refused and nothing is written
+
+### Requirement: pi runs in the owner's object on PiHarness
+pi-durable SHALL run in the owner's object on PiHarness, a capability of the object's own Lifecycle beside the schedule, with none of Lifecycle's handlers installed. pi SHALL open in Lifecycle's startup, which the first alarm or the first PiHarness call runs, with no door starting it first. Its tables SHALL carry their own schema version beside ours, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity.
+
+#### Scenario: A cold object's first call
+- **WHEN** a cold object's first call submits a turn
+- **THEN** pi opens, migrates its tables to version 2, and the turn completes
+
+### Requirement: pi opens with the object's registry, tools and settings
+The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn), and an empty model catalog until the gateway provider lands, so a turn settles `no_model` rather than run on a model no owner connected.
+
+#### Scenario: An eviction mid-tool
+- **WHEN** the object dies while a `read` and an unsafe tool are running, and its alarm starts it again
+- **THEN** `read` runs again, and the unsafe tool comes back `interrupted` and never runs twice
+
+### Requirement: A conversation's file changes are by its stamp
+The environment SHALL be built per tool call over the owner's files, its history writer the conversation's `ta.authority` stamp: `client:<id>` for an outside client's conversation, else `agent`. A conversation a task creates SHALL take its owner conversation's stamp in the creating commit, and a fork SHALL keep its parent's.
+
+#### Scenario: A subagent of an outside client's conversation
+- **WHEN** a tool in a conversation stamped for a client creates a conversation it owns
+- **THEN** the new conversation carries the same stamp, and its file changes are the client's
+
+### Requirement: pi's reports reach the owner, and owner content never stops the object
+What pi reports through `onReport`, and each extension pi refuses to install while opening, SHALL become an owner notice, the newest 100 kept, read by the owner alone; a refused extension SHALL be noticed once while that notice is kept, though pi opens again at every new instance. Opening pi SHALL never fail for owner content, since a failed open stops the object's lanes with Lifecycle's startup.
+
+#### Scenario: A malformed package
+- **WHEN** an extension pi refuses to install is among the object's
+- **THEN** it is skipped and kept as a notice, pi opens with the rest, and the `wakes` and `files` lanes run

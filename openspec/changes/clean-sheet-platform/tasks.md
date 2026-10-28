@@ -323,15 +323,44 @@ account and no deploy.
   `work_id`), and the door that schedules
   one stamps the caller's authority; a policy write ends the owner's in-flight turns and
   streams, and a grant change ends that client's (the Python's stream cancellation and
-  `_end_outside_streams`). PiHarness installs with `lifecycle.use` beside the schedule;
-  since the object installs none of Lifecycle's runtime handlers, every door that reaches
-  pi awaits `lifecycle.start()` first, so PiHarness's `onStart` (pi's open) has run.
-  Owed by slice 6's call scope (`calls.ts`), whose budget a pi task takes from the async
-  context that started pi-durable's drain loop (its scheduler kicks it with
-  `queueMicrotask`): a turn kicked by alarm B while door A's drain is still running draws
-  on B's budget, or the slice shows that workerd attributes the service calls the same
-  way the scope does; and pi is never opened or kicked outside a scope, the constructor's
-  `blockConcurrencyWhile` included, where every task would throw.
+  `_end_outside_streams`). PiHarness installs with `lifecycle.use` beside the schedule.
+  Every owner write goes through the SQLite queue pi's commits use (pi-durable README,
+  "Storage"), so no owner write lands inside a pi transaction.
+- [x] A0 pi in the object, on faux models, in workerd, nothing deployed (`agent.ts`,
+  `gate.ts`, `notices.ts`, migration 5). PiHarness sits on the object's own Lifecycle
+  beside the schedule, no handlers installed, `alarm` the one forwarded; pi opens in
+  Lifecycle's startup (the first alarm or PiHarness call), and no door starts it first.
+  One registry per object: pi's `CodingTools`, `read` wrapped `replay: "safe"`, then the
+  object's further extensions, one pi refuses skipped and kept as an owner notice, so the
+  open never fails for owner content. The environment is `OwnerFilesEnv` per call, its
+  history writer the conversation's `ta.authority` stamp (`client:<id>`, else `agent`),
+  which `conversationCreated` copies into a task's new conversation (a fork keeps it).
+  Settings: progress at most once a second, `afterFailedRun: "withdraw"`, `restartLimit`
+  5. `onReport` is an owner notice (`noticeList`, owner only, the newest 100). Models: an
+  empty catalog, so turns settle `no_model`, until A1's gateway provider; the default is
+  its `auto`. `calls.ts` is gone: no budget of ours, `limits.subrequests: 10000` pinned by
+  the config guard. The write gate: one `DurableObjectSqliteDatabase` over the storage,
+  sharing pi's queue; a unit waits for the queue (`close()`) and runs as a
+  `transactionSync`, never a `storage.transaction()` of its own, whose input-gate hold
+  deadlocked against Lifecycle's startup awaiting pi's open (the object reset after 30 s;
+  the gate test reproduces it); a door's synchronous body is one unit (`#door`), a door that
+  crosses to `FILES` writes its later steps as units, the lanes and the environment a
+  unit per write, Lifecycle's job sets inside one; the modules see the storage through the
+  gate's view, which refuses a write, or a second statement after a read, outside a unit.
+  A unit reads what it decides on or re-checks it in its statement (review M1: the chunk
+  collector's due list is read in the unit that marks it, so an upload's begin landing
+  between can no longer lose a committed file's bytes); a whole write re-checks its
+  caller's authority in each unit it writes; a refused extension is noticed once while
+  kept. Guards: write-gate (doors begin in the gate, `ctx.storage` only makes it, no second
+  adapter, no async storage transaction, an awaiting function's writes in units, and no
+  raw SQL read outside a unit used inside one), `agents/harness/pi` allowed, the pi table ban kept, pi pin (schema version 2;
+  pi-durable, pi-ai and chord 1.4.0 by integrity). Found in workerd: pi's commit runs its
+  SQL transaction in a turn of its own and awaits only its own statements, so no
+  continuation woken by I/O, a timer or a storage read lands inside one today; the gate
+  holds to pi's documented contract regardless, and the rollback test shows a direct write
+  rolled back with a transaction of the shared queue while a door's is kept. Owner bundle
+  1,495 KiB, 303 KiB gzip (311 and 74 before; no provider SDK), local startup 20 ms active
+  in a 50 ms window (16 in 28 before) of the 1 s limit.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks
@@ -367,21 +396,11 @@ account and no deploy.
   another writer committed there since; bytes come two chunks a `FILES` call, a
   whole-file read or write moves at most 16 MiB (larger files by range, line or
   upload), and `readTextFile` keeps a BOM. pi's `edit` shows only an error's code, so a
-  refused size or budget is `not_supported`; its reason is in the message, which `read`
-  shows. Slice 6 (the review carries of slices 4 and 5): one ambient call budget per
-  platform invocation (`calls.ts`), not per tool call, since a whole pi turn runs in one
-  Lifecycle job of one alarm: the object holds a `CallScope` (an `AsyncLocalStorage` on
-  the instance), the alarm and every RPC door (the invocation-scope guard) enter a fresh
-  scope, so interleaved doors never share a count, and whatever makes a service-binding
-  call reads the scope's budget (`Files`, `Schedule.onJob`, `runWakes` and `runWork`
-  through what they call), never a threaded one; a draw outside any scope throws. The
-  PiHarness wiring (5) builds its `ExecutionEnv` with no budget: its tool calls draw on the
-  budget of the invocation whose async context started the pi task, which the agent slice
-  checks (5). `Files` and `Schedule` take the object's scope itself, so the object's only
-  wiring choice, which scope, is tested through the object. `FILES` may bring the budget to 24 of the 32 service calls, the other 8
-  named for the gateway (4) and hooks (5), which draw from the same budget when they land;
-  every draw is refused, naming the budget, before a call would cross it. Whether the cap
-  applies per Durable Object event is still the probe below, before the gateway slice. A
+  refused size is `not_supported`; its reason is in the message, which `read` shows.
+  The calls are the platform's to count (subrequests per invocation, charged to the
+  object's newest event); its own error is the loud failure, and the object keeps no
+  budget (5, A0, which deleted slice 6's `calls.ts`). `Files` and `Schedule` take the
+  object's write gate itself, so the object's wiring is tested through the object. A
   change at the history quota first prunes that many of the earliest-due rows of gone
   paths (`released`), raising the feed's floor as housekeeping does, so once housekeeping
   has applied the retention in force, and while the entries quota holds, the quota never
@@ -403,13 +422,12 @@ account and no deploy.
   the owner's file `/workspace/.ta/sync-ignore` (`node_modules`, `.venv`, `__pycache__`,
   `.cache`, build output), shown to the founder first since they decide what survives a
   lost sandbox.
-- [x] Probe, before the agent (5) runs a turn on the object: the 32-service-binding-calls
-  per request cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
-  against one pi turn, including whether the cap applies per Durable Object event, before
-  the gateway slice. It confirms or adjusts `INVOCATION_CALLS` and `GATEWAY_HOOKS_HEADROOM`
-  (`calls.ts`), whose budget already models one platform invocation (the alarm, or a
-  door), and answers whether workerd attributes a service call to the invocation whose
-  async context started it, as the scope does.
+- [x] Probe, before the agent (5) runs a turn on the object: the subrequests-per-
+  invocation cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
+  including whether the cap applies per Durable Object event, before the gateway slice.
+  The runs measured bursts of service calls per request, DO RPC and alarm, not a pi
+  turn. Run 1 answered the shape (below), and the agent keeps no budget of its own
+  (5, A0).
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
   `cap-probe.yml` (gateway G0), which has run live (results in `cap-probe.md`).
 - [x] Done (`cap-probe.md`). Run B on Paid (40741034491): no cap within 60 calls per
@@ -418,9 +436,11 @@ account and no deploy.
   Run 1 on Workers Free (run 40701631460) found this: the cap
   that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
   alarm each start fresh, and calls are charged to the object's current event (its newest
-  invocation, or a counter each event resets; one rule for `calls.ts`: work in flight
-  spends the newest event's budget), not to the async context that made them. An alarm is
+  invocation, or a counter each event resets; one rule here: work in flight
+  spends the newest event's count), not to the async context that made them. An alarm is
   cut at 15 minutes.
+- [ ] On the owner Worker's first deploy: check that Paid accepts its explicit
+  `limits.subrequests: 10000` (run B ran at the default limit and never set it).
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

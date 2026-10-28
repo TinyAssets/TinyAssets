@@ -16,6 +16,7 @@
  * test ties the two); raising the ceiling is a new migration.
  */
 import { GC_GRACE_S } from "./files";
+import type { OwnerStorage } from "./gate";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 
 export type Migration = readonly string[];
@@ -644,11 +645,19 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE file_chunks SET state = 'garbage', " +
       `gc_after = unixepoch('subsec') + ${GC_GRACE_S} WHERE sha256 = NEW.sha256; END`,
   ]),
+  // 5: owner notices (notices.ts): what the agent's runtime reports that no call fails
+  // with (pi's `onReport`: a parked or faulted task, an extension skipped), the newest
+  // kept. A notice names what happened, never a transcript's content past its message.
+  Object.freeze([
+    "CREATE TABLE owner_notices (seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, " +
+      "type TEXT NOT NULL CHECK (length(type) BETWEEN 1 AND 64), " +
+      "detail TEXT NOT NULL CHECK (length(detail) <= 1024))",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */
 export function migrate(
-  storage: DurableObjectStorage,
+  storage: OwnerStorage,
   migrations: readonly Migration[] = MIGRATIONS,
 ): number {
   const sql = storage.sql;
