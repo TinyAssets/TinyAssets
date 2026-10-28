@@ -44,9 +44,9 @@ const TIMING = Object.freeze({
 });
 
 /**
- * The run plan (cap-probe.md, "Next"): run A pins `limits.subrequests` to 50 with N = 60
- * (on the current Free account), where every case separates the rules it has, M12 its four;
- * run B keeps the default limit on Workers Paid.
+ * Run A's plan (cap-probe.md; not needed now): pin `limits.subrequests` to 50 with N = 60
+ * on the current Free account, where every case separates the rules it has, M12 its four.
+ * Run B kept the default limit on Workers Paid.
  */
 const PLAN = Object.freeze({ limit: 50, n: 60 });
 /** Run 1 (Free, C = 50, N = 40), as cap-probe.md's results table records it. */

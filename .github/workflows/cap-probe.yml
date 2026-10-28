@@ -18,8 +18,7 @@ name: Cap probe
 # The run takes about 25 minutes: M10 holds one Durable Object alarm for 16.
 # subrequests_limit pins limits.subrequests on both Workers through generated
 # copies of their configs (config.mjs), so the attribution cases discriminate at
-# a known cap; cap-probe.md "Next" has the two-run plan (run A on Free, run B
-# on Paid).
+# a known cap (cap-probe.md has the runs and results).
 
 on:
   workflow_dispatch:
@@ -35,7 +34,7 @@ on:
         default: '40'
         type: string
       subrequests_limit:
-        description: 'limits.subrequests for both Workers, 25 to 10000; empty keeps the plan default (cap-probe.md, Next)'
+        description: 'limits.subrequests for both Workers, 25 to 10000; empty keeps the plan default (cap-probe.md)'
         required: false
         default: ''
         type: string

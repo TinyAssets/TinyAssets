@@ -417,27 +417,22 @@ account and no deploy.
   the owner's file `/workspace/.ta/sync-ignore` (`node_modules`, `.venv`, `__pycache__`,
   `.cache`, build output), shown to the founder first since they decide what survives a
   lost sandbox.
-- [ ] Probe, before the agent (5) runs a turn on the object: the subrequests-per-
+- [x] Probe, before the agent (5) runs a turn on the object: the subrequests-per-
   invocation cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time, against
   one pi turn, including whether the cap applies per Durable Object event, before the
   gateway slice. Run 1 answered the shape (below), and the agent keeps no budget of its
   own (5, A0).
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
   `cap-probe.yml` (gateway G0), which has run live (results in `cap-probe.md`).
-- [ ] The cap probe ran once, on Workers Free (run 40701631460, `cap-probe.md`). The cap
+- [x] Done (`cap-probe.md`). Run B on Paid (40741034491): no cap within 60 calls per
+  request or DO RPC, or 120 in one alarm, and private addresses refused. Run A is not
+  needed: `calls.ts` is deleted by agent A0 (`platform-agent-a0`).
+  Run 1 on Workers Free (run 40701631460) found this: the cap
   that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
   alarm each start fresh, and calls are charged to the object's current event (its newest
   invocation, or a counter each event resets; one rule here: work in flight
   spends the newest event's count), not to the async context that made them. An alarm is
-  cut at 15 minutes. Next, two runs:
-  - Run A (`subrequests_limit=50`, `burst=60`) runs on the current Free account and
-    settles attribution.
-  - Run B (the default limit, `burst=60`) needs Workers Paid and tests whether the
-    documented 32 bites there.
-
-  `calls.ts` is gone (5, A0): the owner Worker sets `limits.subrequests: 10000` and keeps
-  no budget of its own. Run B also shows whether Paid accepts that limit, and run A
-  whether Free refuses or clamps it.
+  cut at 15 minutes.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
