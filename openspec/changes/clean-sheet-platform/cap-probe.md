@@ -12,12 +12,13 @@ For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
   Inside one alarm, RPC and `fetch` share one counter.
 - **A call is charged to the object's current event, not to the async context that made
   it (M12).** Concretely, it goes to the newest incoming invocation, or to one counter that
-  each incoming event resets. This rules out the per-async-context attribution that
-  `calls.ts` assumes, a counter that never resets, and charging to the oldest invocation.
+  each incoming event resets. M12 cannot tell those two apart, and for `calls.ts` they mean
+  the same thing: work in flight spends the newest event's budget. This rules out the
+  per-async-context attribution that `calls.ts` assumes, a counter that never resets, and
+  charging to the oldest invocation.
 - **An alarm is cut at 15.0 minutes, even while it awaits I/O, and is then retried (M10).**
 - The account is almost certainly on Workers Free, because 50 is Free's subrequest limit.
-  The Workers Paid behaviour still needs a Paid run, and at Paid's default limit the bursts
-  here would not reach the cap at all ("Next" below).
+  Whether the documented 32 bites on Workers Paid still needs a Paid run ("Next" below).
 
 The probe was designed for a cap of 32, but the cap was 50. So several cases stayed under
 it and did not discriminate. The results table marks each of those cases "no".
@@ -148,7 +149,7 @@ met, and every call has `inAlarmBefore` true). The loop stops at:
 |---|---|---|
 | C − j − k | one counter for the object, never reset | N > C − 12 |
 | C − j | charged to the starting RPC; or to the oldest live invocation, if the returned RPC still counts as live | N > C − 8 |
-| C − k | charged to the alarm: the newest invocation, a counter reset at the alarm's start, or the oldest live invocation once only the alarm is live | N > C − 4 |
+| C − k | charged to the alarm: the newest-or-reset rule (M12), or the oldest live invocation once only the alarm is live | N > C − 4 |
 | C | a fresh budget of its own | N > C |
 | N | uncapped | — |
 
@@ -173,19 +174,19 @@ beat. Alarms are at-least-once, so a retry alone means nothing.
 the gateway do.
 
 **M12** (void unless `m12Order` holds: B started after A's f, and all three waits were
-met). Both phase 1s are f when 2f ≤ C.
+met). Both phase 1s are f when 2f ≤ C. M12 separates four rules:
 
 | A + B phase 2 | A phase 3 | rule |
 |---|---|---|
 | 2 · min(s, C − f) | min(10, C − min(N, C)) | per invocation: each RPC counts its own calls (per async context, as `calls.ts` assumes) |
-| C − 2f | 0 | one counter for the object, never reset, or charged to the oldest live invocation (M6a tells them apart) |
-| C − f | ≥ 1 (typically 9–10) | charged to the newest invocation: once B ends, A's own counter (f used) is current again |
-| C − f | 0 | one counter for the object, reset on each incoming event; or the newest invocation with B still current |
+| C − 2f | min(10, C − 2f − 2s) | never reset or oldest: one counter for the object that never resets, or charged to the oldest live invocation (M6a tells them apart) |
+| C − f | min(10, C − f − 2s) | newest-or-reset: charged to the newest invocation, or one counter that each incoming event resets |
 | 2s | 10 | uncapped |
 
-Under the newest-invocation rule, phase 3 is "at least 1", not exactly 10. B can stay
-current until A's settle-sleep timer fires, and that races A's first phase-3 call. M12
-separates per-invocation from newest or reset when 2 · min(s, C − f) ≠ C − f.
+"Newest invocation" and "reset on each event" are one rule here. Both stop phase 2 at
+C − f, and nothing makes A's older counter current again: run 1's phase 3 was 0. For
+`calls.ts` they mean the same thing: work in flight spends the newest event's budget. M12
+separates per-invocation from newest-or-reset when 2 · min(s, C − f) ≠ C − f.
 
 ## Running it
 
@@ -202,7 +203,10 @@ The inputs are:
 When `subrequests_limit` is set, `config.mjs` writes copies of both committed configs with
 `limits.subrequests` pinned, and the run deploys those. It pins the callee too, so the
 callee's own budget can't confound the result. The report and summary record the limit,
-and the cap M5 actually hit. On Free the maximum is 50, so a higher value may not deploy. A run takes about 25 minutes. The last step deletes both Workers
+where M5 stopped, and which M5 rule that stop matches. On Free the maximum is 50, so a
+higher value may not deploy.
+
+A run takes about 25 minutes. The last step deletes both Workers
 (`force=true`, which also deletes their Durable Objects), confirms each is gone, and fails
 the run if one is not.
 
@@ -230,27 +234,30 @@ this limit, refer to …/wrangler/configuration/#limits".
 | M9 | rpc1 20/20, rpc2 20/20 | no (2h + 1 = 41 < C) | — |
 | M10 | retried 15.0 min after the first start; the first attempt's last beat at 15.0 min | yes | an alarm is cut at 15 minutes, even while it awaits I/O, and is retried |
 | M11 | 7 targets done | — | the per-target detail was only in the job summary's JSON; the driver now prints it to the log and the summary |
-| M12 | `m12Order` ok. Phase 1: A 16/16, B 16/16. Phase 2: A 17/24, B 17/24 (34 combined, both failing at call 17). Phase 3: A 0/10, failing at call 0 | yes | B's 16 + 34 = C: newest invocation (with B still current at phase 3) or reset on each incoming event. Rules out per invocation (it predicts 48 and 10), never reset or oldest (18), and uncapped (48) |
+| M12 | `m12Order` ok. Phase 1: A 16/16, B 16/16. Phase 2: A 17/24, B 17/24 (34 combined, both failing at call 17). Phase 3: A 0/10, failing at call 0 | partly: per invocation and uncapped both predict 48, 10 | B's 16 + 34 = C, then 0: newest-or-reset (34, 0). Rules out per invocation and uncapped (48, 10) and never reset or oldest (18, 0) |
 
 **What it means for the platform.** The budget is not per async context. Every service
-call an object makes counts against its current event: the alarm, or whichever invocation
-is newest or last reset the counter. That includes background work started by an earlier
-RPC and continued inside an alarm's wait, which is PiHarness's shape. An incoming RPC
-during a turn can take that budget over or reset it. `calls.ts` therefore has the wrong
-model in two ways:
+call an object makes counts against its newest event. Under either form of the rule
+(newest invocation, or reset on each event), work in flight spends that event's budget.
+That includes background work started by an earlier RPC and continued inside an alarm's
+wait, which is PiHarness's shape. An incoming RPC during a turn takes that budget over.
+`calls.ts` therefore has the wrong model in two ways:
 - its split is 32/24/8, while the cap was 50 here and is 10,000 by default on Paid;
 - it attributes per async context.
 
-Per §6 it is reworked once the Paid run is in. `calls.ts` is not changed yet.
+Per §6 it is reworked after the two runs in "Next". `calls.ts` is not changed yet.
 
 ## Next
 
-Two dispatches on Workers Paid answer everything this probe asks. Each needs the founder's
-approval.
+Two dispatches answer everything this probe asks, and each needs the founder's approval.
+Only run B needs Workers Paid.
 
-**Run A: `subrequests_limit=50`, `burst=60` (C = 50, N = 60).** Every case discriminates
-here: each rule predicts a different outcome. `local.mjs` asserts this from
-`rulePredictions`.
+**Run A: `subrequests_limit=50`, `burst=60` (C = 50, N = 60), on the current Free
+account.** 50 is Free's maximum and its default, so pinning it only makes the limit
+explicit. If Free refuses the `limits` key, the deploy fails loudly, and the run is
+dispatched again with the limit empty. At this C and N every case separates all the rules
+it has, and M12 separates its four (newest and reset stay one rule). `local.mjs` asserts
+this from `rulePredictions`.
 
 | # | What each rule predicts at C = 50, N = 60 |
 |---|---|
@@ -259,16 +266,16 @@ here: each rule predicts a different outcome. `local.mjs` asserts this from
 | M4 | fresh 50; shared, stub not counted 34; shared, stub counted 33; uncapped 60 |
 | M5 (RPC + fetch) | fresh 50; continues from `arm()` 42; uncapped 120 |
 | M6 | charged to the starting RPC or one object counter 42; fresh 50; uncapped 60 |
-| M6a | never reset 38; starting RPC 42; alarm, newest or reset 46; fresh 50; uncapped 60 |
+| M6a | never reset 38; starting RPC 42; alarm (newest-or-reset) 46; fresh 50; uncapped 60 |
 | M7, M8 | counted like a service call 50; not counted 60 |
 | M9 (rpc1 + rpc2) | socket counted once 49; socket not counted 50; a message refreshes 60 |
-| M12 (phase 2 combined, A's phase 3) | per invocation 52, 0; never reset or oldest 2, 0; newest 26, ≥ 1; reset on each event 26, 0; uncapped 72, 10 |
+| M12 (phase 2 combined, A's phase 3) | per invocation 52, 0; never reset or oldest 2, 0; newest-or-reset 26, 0; uncapped 72, 10 |
 
-M5's observed cap must equal 50, or the limit did not apply as configured (the driver
-notes it). M12's phase 3 still separates newest from reset only with the settle race in
-mind (see the key).
+M5 stopping at 50 (fresh) or 42 (continues from `arm()`) is a rule's result. Only a stop
+that matches no M5 rule means the limit did not apply as configured, and the driver notes
+that case alone.
 
-**Run B: the default limit, `burst=60`.** At C = 10,000 no case discriminates attribution.
+**Run B: the default limit, `burst=60`, on Workers Paid.** At C = 10,000 no case discriminates attribution.
 Every rule predicts the uncapped outcome, and `local.mjs` asserts that. The run answers the
 other question: whether the documented 32 Worker invocations, or any other cap at or below
 60, bites on Paid. M1 stopping at 32 would mean it does.

@@ -20,8 +20,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { MAX_LIMIT, MIN_LIMIT, writeLimited } from "./config.mjs";
-import { CASES, MAX_BURST, MAX_HOLD_MINUTES, discrimination, drive, finished, summarize,
-         worstCaseMs } from "./drive.mjs";
+import { CASES, MAX_BURST, MAX_HOLD_MINUTES, discrimination, drive, finished, m5Stop,
+         rulePredictions, summarize, worstCaseMs } from "./drive.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLATFORM = join(HERE, "..", "..", "..", "platform");
@@ -44,8 +44,9 @@ const TIMING = Object.freeze({
 });
 
 /**
- * The Paid run plan (cap-probe.md, "Next"): run A pins `limits.subrequests` to 50 with N
- * = 60, where every case discriminates; run B keeps the default limit.
+ * The run plan (cap-probe.md, "Next"): run A pins `limits.subrequests` to 50 with N = 60
+ * (on the current Free account), where every case separates the rules it has, M12 its four;
+ * run B keeps the default limit on Workers Paid.
  */
 const PLAN = Object.freeze({ limit: 50, n: 60 });
 /** Run 1 (Free, C = 50, N = 40), as cap-probe.md's results table records it. */
@@ -70,6 +71,16 @@ function checkPlan() {
          `the plan does not discriminate every case: ${show(levels(PLAN.limit, PLAN.n))}`);
   expect(Object.values(levels(10_000, PLAN.n)).every((level) => level === "none"),
          "Paid's default limit should discriminate nothing at the plan's N");
+  // M12 separates four rules, not five: newest invocation and reset-on-event are one.
+  const m12Rules = Object.keys(rulePredictions(PLAN.limit, PLAN.n).M12);
+  expect(show(m12Rules) === show(["perInvocation", "neverResetOrOldest", "newestOrReset", "uncapped"]),
+         `M12's rules: ${show(m12Rules)}`);
+  // A stop at a rule's prediction names that rule; only an unmatched stop is a misconfiguration.
+  const m5 = (rpc, fetch) => ({ rpc: { n: PLAN.n, ok: rpc, errors: PLAN.n - rpc },
+                                fetch: { n: PLAN.n, ok: fetch, errors: PLAN.n - fetch } });
+  expect(m5Stop(m5(50, 0), PLAN.limit, PLAN.n).rule === "fresh", "m5Stop: 50 is the fresh rule");
+  expect(m5Stop(m5(42, 0), PLAN.limit, PLAN.n).rule === "continuesArm", "m5Stop: 42 continues arm()");
+  expect(m5Stop(m5(47, 0), PLAN.limit, PLAN.n).rule === null, "m5Stop: 47 matches no rule");
   const dir = mkdtempSync(join(tmpdir(), "capprobe-config-"));
   try {
     const paths = writeLimited(PLAN.limit, dir);
@@ -183,7 +194,7 @@ function checkSecondRun(report, firstRunId) {
          "run 2: the configured limit is not in the report and the summary");
   expect(Object.values(report.discrimination ?? {}).every((level) => level === "full"),
          `run 2: the report's discrimination at the plan: ${show(report.discrimination)}`);
-  expect(report.checks.observedCap?.cap === null, "run 2: a cap reported where none is enforced");
+  expect(report.checks.m5Stop?.total === null, "run 2: a stop reported where no cap is enforced");
 }
 
 const mf = new Miniflare(convertV4MiniflareOptions({

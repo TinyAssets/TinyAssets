@@ -342,10 +342,16 @@ live acceptance is still owed says so.
 - [ ] The cap probe ran once, on Workers Free (run 40701631460, `cap-probe.md`). The cap
   that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
   alarm each start fresh, and calls are charged to the object's current event (its newest
-  invocation, or a counter each event resets), not to the async context that made them.
-  An alarm is cut at 15 minutes. Re-run on Workers Paid, both at the default limit and with
-  a low `limits.subrequests` so the attribution cases discriminate. Then rework `calls.ts`,
-  whose 32/24/8 split and per-async-context attribution match neither plan.
+  invocation, or a counter each event resets; one rule for `calls.ts`: work in flight
+  spends the newest event's budget), not to the async context that made them. An alarm is
+  cut at 15 minutes. Next, two runs:
+  - Run A (`subrequests_limit=50`, `burst=60`) runs on the current Free account and
+    settles attribution.
+  - Run B (the default limit, `burst=60`) needs Workers Paid and tests whether the
+    documented 32 bites there.
+
+  Then rework `calls.ts`: its 32/24/8 split and its per-async-context attribution match
+  neither plan.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

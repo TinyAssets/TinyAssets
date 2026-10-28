@@ -256,11 +256,10 @@ export async function drive({ request, runId, params = {}, timing = {}, log = ()
 
     await sleep(Math.max(0, backgroundStarted + p.n * p.intervalMs + t.backgroundSlackMs - Date.now()));
     await pollUntil(BACKGROUND, t.backgroundGraceMs);
-    report.checks.observedCap = observedCap(report.results.M5?.result);
-    if (subrequestsLimit && report.checks.observedCap.cap !== null
-        && report.checks.observedCap.cap !== subrequestsLimit) {
-      report.notes.push(`the cap M5 hit (${report.checks.observedCap.cap}) is not the configured `
-                        + `limits.subrequests (${subrequestsLimit})`);
+    report.checks.m5Stop = m5Stop(report.results.M5?.result, subrequestsLimit, p.n);
+    if (subrequestsLimit && report.checks.m5Stop.total !== null && report.checks.m5Stop.rule === null) {
+      report.notes.push(`M5 stopped at ${report.checks.m5Stop.total}, which matches no M5 rule at `
+                        + `limits.subrequests ${subrequestsLimit}: not the configured limit`);
     }
     report.checks.m6aOrder = m6aOrder(report.results.M6a?.result);
     if (!report.checks.m6aOrder.ok) {
@@ -302,14 +301,23 @@ export function m6aOrder(loop) {
            beforeAlarm: early, waitedForAlarm: waited };
 }
 
-/** C as M5's alarm measured it: its RPC + fetch successes, if its fetch burst hit a cap. */
-export function observedCap(m5) {
+/**
+ * Where M5's alarm stopped (its RPC + fetch successes, once a burst hit a cap) and, for a
+ * configured limit `C`, which M5 rule that stop matches. A stop at C − 8 is the "alarm
+ * continues from arm()" rule, not a misconfiguration; only a stop that matches no rule
+ * means the limit did not apply as configured.
+ */
+export function m5Stop(m5, C, N) {
   if (!m5?.rpc || !m5?.fetch) {
-    return { cap: null, why: "no fresh M5 result" };
+    return { total: null, why: "no fresh M5 result" };
   }
-  return m5.fetch.errors > 0 || m5.rpc.errors > 0
-    ? { cap: m5.rpc.ok + m5.fetch.ok, error: m5.fetch.firstError ?? m5.rpc.firstError }
-    : { cap: null, why: `not reached by ${m5.rpc.n + m5.fetch.n} calls` };
+  if (!(m5.fetch.errors > 0 || m5.rpc.errors > 0)) {
+    return { total: null, why: `not reached by ${m5.rpc.n + m5.fetch.n} calls` };
+  }
+  const total = m5.rpc.ok + m5.fetch.ok;
+  const rules = C ? Object.entries(rulePredictions(C, N).M5) : [];
+  const rule = rules.find(([, predicted]) => predicted === total)?.[0] ?? null;
+  return { total, rule, error: m5.fetch.firstError ?? m5.rpc.firstError };
 }
 
 /**
@@ -336,13 +344,13 @@ export function rulePredictions(C, N) {
     M7: capped,
     M8: capped,
     M9: { socketOnce: clamp(C - 1, 2 * h), socketFree: clamp(C, 2 * h), messageRefreshes: 2 * clamp(C, h) },
-    // [A + B phase 2, A phase 3]. Under "newest", phase 3 races B staying current, so
-    // it is only ">=1" once B's counter is spent; otherwise A has room for all 10.
+    // [A + B phase 2, A phase 3]. "Newest invocation" and "reset on each event" are one
+    // rule here: both spend the newest event's budget, and nothing makes A's older
+    // counter current again (run 1's phase 3 was 0), so M12 cannot tell them apart.
     M12: {
       perInvocation: [2 * clamp(C - f, s), clamp(C - Math.min(N, C), 10)],
       neverResetOrOldest: [clamp(C - 2 * f, 2 * s), clamp(C - 2 * f - 2 * s, 10)],
-      newest: [clamp(C - f, 2 * s), C - f > 2 * s ? clamp(C - f - 2 * s, 10) : ">=1"],
-      resetOnEvent: [clamp(C - f, 2 * s), clamp(C - f - 2 * s, 10)],
+      newestOrReset: [clamp(C - f, 2 * s), clamp(C - f - 2 * s, 10)],
       uncapped: [2 * s, 10],
     },
   };
@@ -439,7 +447,8 @@ export function summarize(report) {
   return [
     `Run \`${report.runId}\`, phase: ${report.phase}. Plan check: ${plan}.`,
     `Subrequest limit (limits.subrequests): ${report.subrequestsLimit}. N: ${report.params.n}. `
-      + `Cap M5 hit: ${report.checks.observedCap?.cap ?? report.checks.observedCap?.why ?? "not read"}.`,
+      + `M5 stopped at: ${report.checks.m5Stop?.total ?? report.checks.m5Stop?.why ?? "not read"}`
+      + `${report.checks.m5Stop?.rule ? ` (rule ${report.checks.m5Stop.rule})` : ""}.`,
     ...(report.discrimination
       ? [`Discrimination at this limit and N: ${Object.entries(report.discrimination)
           .map(([id, level]) => `${id} ${level}`).join(", ")}.`]
