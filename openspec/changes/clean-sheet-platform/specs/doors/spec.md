@@ -12,7 +12,7 @@ One module of the doors Worker SHALL hold every `getByName` call and build every
 - **THEN** the binder refuses it as a bug and no object is reached
 
 ### Requirement: Our authorization server issues the connectors' tokens
-The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be on only behind its flag. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. The owner SHALL be named from the sign-in's issuer and subject: the owner issuer's subject as it stands, any other issuer's namespaced. Consent SHALL never be remembered.
+The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be on only behind its flag. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. Consent SHALL never be remembered.
 
 #### Scenario: A client authorizes again after a revoke
 - **WHEN** the owner revoked an MCP client and the client starts a new authorization
@@ -21,6 +21,13 @@ The doors SHALL run their own OAuth authorization server, issuer `https://tinyas
 #### Scenario: An upstream that does not ask for a fresh sign-in
 - **WHEN** an upstream's sign-in URL lacks `prompt=login`, the doors' S256 challenge, state or callback
 - **THEN** the authorization fails loudly
+
+### Requirement: The owner is named by the sign-in's issuer and subject
+The doors SHALL name the owner from the verified sign-in's issuer and subject: the owner issuer's (AuthKit's) subject as it stands, so today's owners keep their ids, and any other issuer's subject namespaced by that issuer. With no owner issuer configured, every sign-in SHALL fail.
+
+#### Scenario: A second provider signs in a subject AuthKit also has
+- **WHEN** another issuer's sign-in carries a subject equal to an AuthKit owner's id
+- **THEN** it names a different, namespaced owner, and the AuthKit owner's object is never reached
 
 ### Requirement: An MCP call carries its grant's original sign-in
 An MCP grant's encrypted props SHALL hold the time of the interactive sign-in that created it, and no token exchange SHALL change them, so every MCP call carries that time as `authenticated_at`. A native client's loopback port SHALL be no part of its agent identity.
