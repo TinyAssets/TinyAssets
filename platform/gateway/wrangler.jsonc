@@ -1,0 +1,24 @@
+// The model gateway (ADR-032 Decision 3, gateway research §1, §2, §12 G1): opens one
+// owner's sealed credential per call and runs pi-ai's own adapter with it. Not deployed:
+// no workflow deploys platform/. It binds nothing, so it reaches no object, store or other
+// Worker, and it serves no URL (no routes, no workers.dev or preview URL): only the
+// service bindings of the owner and doors Workers reach it (guards/config.test.ts).
+// - GATEWAY_KEYRING: the one root keyring, a Worker secret read only by src/keyring.ts.
+//   `secrets.required` makes a deploy without it fail.
+// - nodejs_compat: pi-ai and its provider SDKs; `nodejs_compat_do_not_populate_process_env`
+//   keeps the keyring out of `process.env`, where any module (an SDK reading its own
+//   environment among them) could read it.
+// - disable_ctx_exports: no way to the Worker's own namespaces.
+// - global_fetch_strictly_public: an upstream fetch never takes same-zone routing to an
+//   origin (research §6, the address check).
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "nodejs_compat_do_not_populate_process_env",
+                          "disable_ctx_exports", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "secrets": { "required": ["GATEWAY_KEYRING"] }
+}

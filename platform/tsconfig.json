@@ -17,5 +17,7 @@
   },
   "include": ["owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",
               "files/src/**/*.ts", "files/test/**/*.ts", "files/guards/**/*.ts", "files/*.ts",
-              "doors/src/**/*.ts", "doors/test/**/*.ts", "doors/guards/**/*.ts", "doors/*.ts"]
+              "doors/src/**/*.ts", "doors/test/**/*.ts", "doors/guards/**/*.ts", "doors/*.ts",
+              "gateway/src/**/*.ts", "gateway/test/**/*.ts", "gateway/guards/**/*.ts",
+              "gateway/*.ts"]
 }

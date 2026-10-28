@@ -83,8 +83,9 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      app's same-origin JSON requests; outside credentials never reach the owner
      surface.
 3. **A gateway Worker holds no owner state and opens one owner's sealed
-   credential per call,** meters usage, and swaps placeholder credentials on
-   sandbox egress. No credential sits in the loop or the sandbox.
+   credential per call,** meters usage, and admits each sandbox egress request
+   at the owner's object and injects the real credential only on its sealed
+   endpoints. No credential sits in the loop or the sandbox.
 4. **pi-durable is the loop, hosted in the owner's object, on its own
    mechanisms** (source-checked against pi-durable 1.4.0 and agents 0.31.0,
    2026-10-28). Where pi-durable has a native mechanism it is used and ours

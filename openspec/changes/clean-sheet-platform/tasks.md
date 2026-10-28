@@ -225,14 +225,87 @@ live acceptance is still owed says so.
 
 ## 4. Gateway
 
-- [ ] Sealed per-owner credentials, metering, the egress swap of placeholder
-  credentials. Owed by 3.5: the gateway reads the owner's policy generation on every
-  call, a policy write closes the owner's open egress tunnels before it commits (the
-  Python's), and an egress destination's resolved addresses are checked here, at
-  each call (the address check policy writes defer IP literals to).
-- [ ] Connection flows (hosted model connect, connection OAuth, inline model connect)
-  as owner-object state. Owed by 3.5: account revocation (`sessionCloseAll`) cancels
-  every open flow with the sessions, as the Python's `revoke_owner` did.
+Settled by the gateway research (2026-10-28): one keyring in the gateway's own Worker
+secret seals each credential to its owner, connection and version with its endpoints
+inside; the loop speaks pi-ai's own pi-messages protocol to the gateway, which runs pi-ai's
+adapter for the source; sandbox egress is passed through raw under the sealed endpoints;
+the owner object reserves and settles spend. Six slices, G1 to G3 with no spending, no
+account and no deploy.
+
+- [x] G0 The 32-call cap probe (with 6's probe item): two throwaway workers.dev Workers
+  through a `workflow_dispatch` workflow, measuring service-binding RPC, `fetch`,
+  Durable Object stub and public-URL calls per Worker request, per DO RPC, per alarm and
+  per background work outliving its RPC, the 15-minute alarm cut, and whether Worker
+  `fetch` reaches names resolving to private addresses (miniflare's limit enforcer is a
+  no-op, so only live counts). It ran live (`cap-probe.yml`; the results are in
+  `cap-probe.md`, and the follow-up runs are 6's probe item). The platform's subrequest
+  limit (`limits.subrequests`) is the only cap on gateway calls: no per-kind budget is
+  kept beside it.
+- [x] G1 `platform/gateway`, the Worker, in workerd, nothing deployed. Config: no
+  binding, no routes, no workers.dev or preview URL, `secrets.required:
+  ["GATEWAY_KEYRING"]` (wrangler's schema shape), flags `nodejs_compat`,
+  `nodejs_compat_do_not_populate_process_env` (so the keyring is never in `process.env`,
+  where any SDK could read it), `disable_ctx_exports`, `global_fetch_strictly_public`.
+  `keyring.ts` (the only reader of the secret: AES-256-GCM under HKDF-SHA256(root[kid],
+  owner), AAD owner, connection, version and kid; a blob under an older kid also comes back
+  resealed at the next version), `envelope.ts` (`x-ta-envelope`, the owner grammar of
+  `owner/src/text.ts`), `messages.ts` and `encode.ts` (`POST /v1/messages` in pi-messages,
+  pi-ai's built-in provider or a declared custom endpoint, the origin check, the clamp,
+  `streamSimple` through an endpoint-guarding fetch that never follows a redirect, and the
+  inverse of pi-ai's own client), `forward.ts` (raw egress and the setup check
+  `verify`), `oauth.ts` (exchange with PKCE, refresh, RFC 7009 revoke) and `index.ts` (a
+  `WorkerEntrypoint`: `fetch`, `seal`, `exchange`, `refresh`, `verify`, `forward`,
+  `revokeAtProvider`, `reseal`). Every error is a fixed code. Guards: the config against
+  wrangler's schema; the keyring named only in `keyring.ts`; no `process`, `OWNER` or
+  `getByName`; the platform's module-state and self-reach guards scan `gateway/src`.
+  Tested against pi-ai's faux provider and a fake upstream in each provider's wire format
+  (Anthropic Messages, OpenAI Responses, Google Generative AI) through pi-ai's own
+  pi-messages client, cancellation reaching the upstream included. Bundle 3,980 KiB,
+  539 KiB gzip (the limit is 64 MiB uncompressed on both plans; local startup 32 ms of
+  the 1 s limit). Declared differences from the research: Google's adapters refuse a
+  custom fetch, so every model call runs in an `AsyncLocalStorage` scope whose global
+  `fetch` is the call's guard (`egress.ts`, the module-state guard's one pinned exemption),
+  which holds Google to the sealed origin, paths, methods and no redirects like the rest
+  (the security review's key-leak finding); only APIs whose every request goes through
+  fetch run, so Bedrock and the legacy Codex backend are refused; the clamp also lowers
+  the model's own output limit, since a thinking budget otherwise raises the request's
+  past it, and a reasoning call under 2048 tokens is refused (`reservation_too_small`);
+  `forward` returns the provider's `Response`, its bytes counted by the binder that
+  streams them, asks for an unencoded answer and redacts every secret from its headers
+  and body; `verify` checks the sealed `verify_url` and lists pi-ai's catalog models (no
+  per-provider listing parse); sealed URLs must be canonical; pi-ai's own refresh runs
+  only for Sign in with ChatGPT, through its statically bundled OAuth flows
+  (`registerBunOAuthFlows`, since its lazy loader's import cannot be bundled) and inside
+  a scope that reaches only the sealed token endpoint.
+- [ ] G2 The owner side: the gateway joins the owner config guard's `SERVICES` (binding
+  nothing, `secrets` allowed); migration for `connections`, `connection_secrets`,
+  `connection_flows` and `model_reservations`, and the policy's optional `models` table;
+  `connections.ts` (prepare, commit, revoke, list, flow begin and finish, each in session;
+  the refresh lease; housekeeping on a `connections` lane); `usage.ts` (reserve, settle,
+  `unknown`, per-turn and per-source caps, ported from `request_budget.py` with its
+  tests); `gateway-provider.ts` (pi-ai `createProvider` over pi-messages: reserve, stamp
+  the envelope with the policy generation read in the same transaction, `GATEWAY.fetch`
+  under the platform's subrequest limit (`limits.subrequests`, the only cap), settle from
+  `done`'s usage; the `auto`
+  router to the strongest connected source; the live-delta tee). Owed by 3.5: account
+  revocation (`sessionCloseAll`) cancels every open flow with the sessions, as the
+  Python's `revoke_owner` did; the gateway sees the owner's policy generation on every
+  call, stamped by the object, with no call back.
+- [ ] G3 The connect doors (the doors Worker): paste-key connect and OAuth connect with
+  its callback; the source records ported as data files with a schema; plaintext never
+  reaches `OwnerDO`.
+- [ ] G4 The egress door (with the sandbox slice): `egress.tinyassets.io/c/<connection>/*`,
+  the sandbox identity (E2B workload identity or a lease token), `egressOpen`, `forward`,
+  `egressSettle`; the E2B network document from owner policy. Owed by 3.5: each egress
+  request is admitted at open against the owner's current policy generation, so no
+  tunnel outlives a write; a policy write ends the owner's in-flight turns and re-sets the
+  sandbox's network, fail-closed until it does; resolved addresses are not visible to
+  Workers fetch, so the gateway fetches strictly publicly, the object refuses IP
+  literals, E2B filters CIDRs, and a live probe confirms private addresses are
+  unreachable.
+- [ ] G5 Measurement and cost: pi-durable's partial commits at most once a second with
+  the live tee, per-owner busy seconds, rows written, call durations and delta counts, and
+  the rule for building the deferred mode for unattended turns.
 
 ## 5. Agent
 
@@ -338,7 +411,7 @@ live acceptance is still owed says so.
   door), and answers whether workerd attributes a service call to the invocation whose
   async context started it, as the scope does.
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
-  `cap-probe.yml` (gateway G0).
+  `cap-probe.yml` (gateway G0), which has run live (results in `cap-probe.md`).
 - [ ] The cap probe ran once, on Workers Free (run 40701631460, `cap-probe.md`). The cap
   that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
   alarm each start fresh, and calls are charged to the object's current event (its newest

@@ -14,8 +14,10 @@
  * global it holds (`Math`, `console`, `Object.prototype`, `crypto`, `JSON` and the rest):
  * a member written, or a built-in handed to a call that changes it
  * (`Object.defineProperty(Math, ...)`). Every script extension a bundler takes is
- * scanned, not only `.ts`.
+ * scanned, not only `.ts`. One file is exempt, for three pinned findings and at one
+ * pinned hash: the gateway's global-fetch interposer (`EXEMPT`).
  */
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -297,12 +299,67 @@ export function moduleState(fileName: string, source: string): string[] {
   return problems;
 }
 
+/**
+ * The one exemption: the gateway's global-fetch interposer (`gateway/src/egress.ts`).
+ * pi-ai's Google adapters take no custom fetch, so the gateway replaces the global
+ * `fetch`, once, by a function that is the current call's endpoint guard inside that
+ * call's `AsyncLocalStorage` scope and the runtime's own fetch outside any. That needs a
+ * module-level scope, the captured runtime fetch and one write of the global, and
+ * nothing else: no owner's data lives in any of them (gateway spec, "Every adapter
+ * request goes through the call's guard"). The exemption is pinned to exactly those three
+ * findings in that one file and to the file's SHA-256, so it can neither widen nor
+ * outlive a change to the file without a review here.
+ */
+const EXEMPT = Object.freeze({
+  path: "gateway/src/egress.ts",
+  sha256: "182b30616a0fbd97818bbc8577fbc59d255c2e54b302866852871ba7a86fb37a",
+  problems: Object.freeze([
+    "gateway/src/egress.ts:26: SCOPE holds a mutable value",
+    "gateway/src/egress.ts:27: NATIVE holds a mutable value",
+    "gateway/src/egress.ts:42: writes through globalThis: an assignment",
+  ]),
+});
+
+/** Every finding in `sources` the exemption does not cover, and every way it is off. */
+export function unexempted(sources: ReadonlyMap<string, string>): string[] {
+  const problems = [...sources].flatMap(([path, source]) => moduleState(path, source));
+  const exempt = sources.get(EXEMPT.path);
+  if (exempt === undefined) {
+    return problems;
+  }
+  const digest = createHash("sha256").update(exempt).digest("hex");
+  const pinned = problems.filter((problem) => problem.startsWith(`${EXEMPT.path}:`)).sort();
+  return [
+    ...problems.filter((problem) => !EXEMPT.problems.includes(problem)),
+    ...(digest === EXEMPT.sha256 ? [] : [`${EXEMPT.path} changed (sha256 ${digest}): review its exemption`]),
+    ...(JSON.stringify(pinned) === JSON.stringify(EXEMPT.problems)
+      ? [] : [`${EXEMPT.path} findings ${JSON.stringify(pinned)} are not the pinned three`]),
+  ];
+}
+
 describe("module-state guard", () => {
   it("finds no module-level mutable state in any Worker's source", () => {
     const sources = workerSources();
     expect([...sources.keys()]).toContain("owner/src/owner-do.ts");
-    const problems = [...sources].flatMap(([path, source]) => moduleState(path, source));
-    expect(problems).toEqual([]);
+    expect([...sources.keys()]).toContain(EXEMPT.path);
+    expect(unexempted(sources)).toEqual([]);
+  });
+
+  it("exempts the interposer's three findings, in that one file, at that one hash", () => {
+    const sources = workerSources();
+    const exempt = sources.get(EXEMPT.path)!;
+    expect([...sources].flatMap(([path, source]) => moduleState(path, source)).sort())
+      .toEqual([...EXEMPT.problems]);
+    // A fourth finding in the file, or any edit to it, is refused.
+    expect(unexempted(new Map([[EXEMPT.path, `${exempt}\nexport let calls = 0;\n`]])))
+      .toHaveLength(3);
+    expect(unexempted(new Map([[EXEMPT.path, `// edited\n${exempt}`]])))
+      .not.toEqual([]);
+    // The same text anywhere else is not exempt.
+    expect(unexempted(new Map([["gateway/src/other.ts", exempt]]))).toHaveLength(3);
+    // And the file without its global write is a change, refused too.
+    expect(unexempted(new Map([[EXEMPT.path,
+      exempt.replace("globalThis.fetch = interposed;", "void interposed;")]]))).not.toEqual([]);
   });
 
   it.each([
