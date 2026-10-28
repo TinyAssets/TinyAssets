@@ -10,11 +10,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { apiKeyOrigin } from "../../owner/src/ledger";
 import {
-  apiKeyOrigin as doorsKeyOrigin, bindApiKey, bindKeyRegistration, bindMcp, bindOwner, bindSignIn, mcpClient, mcpOrigin,
+  apiKeyOrigin as doorsKeyOrigin, bindApiKey, bindKeyRegistration, bindMcp, bindOwner,
+  bindSignIn, installationOf, mcpClient, mcpOrigin, ownerOf,
 } from "../src/binder";
 import { APP_RESOURCE, MCP_RESOURCE, WEB_CLIENT } from "../src/config";
+import { FAKE_ISSUER } from "./fake-upstream";
 import { mintKeyFor } from "./keys";
 import {
+  signInApp,
   appPost, call, connect, doorsEnv, legacyPost, OPEN, reached, registerClient, rpcBody,
   serveFirstPartyDocument, setControl, sqlIn, url,
 } from "./support";
@@ -81,6 +84,33 @@ describe("an MCP binding", () => {
     });
   });
 
+  it("drops a loopback redirect's port, and nothing else's", () => {
+    expect(installationOf("http://127.0.0.1:5555/callback")).toBe("http://127.0.0.1/callback");
+    expect(installationOf("http://[::1]:5555/cb?x=1")).toBe("http://[::1]/cb?x=1");
+    expect(installationOf("http://localhost:8080/cb")).toBe("http://localhost/cb");
+    for (const kept of ["https://127.0.0.1:5555/cb", "https://client.example:8443/cb",
+                        "http://127.0.0.2:5555/cb", "https://localhost:5555/cb"]) {
+      expect(installationOf(kept)).toBe(kept);
+    }
+  });
+
+  it("keeps one agent identity for a native client across loopback ports", async () => {
+    const alice = owner();
+    const registered = await registerClient("Claude Code", "http://127.0.0.1/callback");
+    for (const port of [5555, 6666]) {
+      const tokens = await connect({ clientId: registered.clientId,
+                                     redirectUri: `http://127.0.0.1:${port}/callback` },
+                                   { owner: alice });
+      const filed = await legacyPost(tokens.access_token, { jsonrpc: "2.0", id: 1,
+        method: "tools/call", params: { name: "agent_register", arguments: {
+          command_center_id: "cc", display_name: `port ${port}`, delivery_method: "pull",
+          recipe_id: null } } });
+      expect(await rpcBody(filed)).toMatchObject({ result: { structuredContent: {} } });
+    }
+    const origin = await mcpOrigin(registered.clientId, "http://127.0.0.1:7777/callback");
+    expect(await sqlIn(alice, "SELECT client, family FROM agent_cards")).toEqual([origin]);
+  });
+
   it("derives the client from the issuer and client id alone", async () => {
     const one = await mcpOrigin("c", "https://a.test/cb");
     const two = await mcpOrigin("c", "https://b.test/cb");
@@ -122,6 +152,7 @@ describe("the other bindings", () => {
     ["another client", { clientId: "https://evil.test/client.json" }],
     ["another user", { userId: "bob" }],
     ["the MCP resource", { audience: MCP_RESOURCE }],
+    ["an MCP grant's props", { props: { kind: "mcp", owner: "alice" } }],
   ])("the owner: never from a token of %s", (_what, change) => {
     expect(() => bindOwner(doorsEnv, { ...app, ...change }, undefined)).toThrow();
   });
@@ -136,10 +167,56 @@ describe("the other bindings", () => {
                                      { ...entry, o: "bob" }, undefined)).toThrow();
   });
 
-  it("a sign-in: the subject at its time", () => {
-    expect(bindSignIn(doorsEnv, "alice", 5).binding)
+  it("a sign-in: the owner its issuer and subject name, at its time", async () => {
+    expect((await bindSignIn(doorsEnv, { issuer: FAKE_ISSUER, subject: "alice",
+                                         authenticated_at: 5 })).binding)
       .toEqual({ owner: "alice", caller: "alice", origin: null, authenticated_at: 5 });
-    expect(() => bindSignIn(doorsEnv, " alice", 5)).toThrow();
+    await expect(bindSignIn(doorsEnv, { issuer: FAKE_ISSUER, subject: " alice",
+                                        authenticated_at: 5 })).rejects.toThrow();
+  });
+});
+
+describe("the owner a sign-in names", () => {
+  it("is the owner issuer's subject as it stands", async () => {
+    expect(await ownerOf(doorsEnv, FAKE_ISSUER, "user_01H")).toBe("user_01H");
+  });
+
+  it("is namespaced by any other issuer, so two issuers' subjects never meet", async () => {
+    const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+    const chatgpt = await ownerOf(doorsEnv, "https://auth.openai.com", "user_01H");
+    expect(chatgpt).toBe(`iss-${sha("https://auth.openai.com").slice(0, 32)}-user_01H`);
+    expect(chatgpt).not.toBe(await ownerOf(doorsEnv, "https://other.example", "user_01H"));
+    expect(await ownerOf(doorsEnv, "https://auth.openai.com", "a:b")).toMatch(/-a%3Ab$/);
+  });
+
+  it.each([
+    ["the owner namespace's prefix", "iss-0123-user"],
+    ["a colon", "user:1"],
+    ["blank", ""],
+  ])("refuses an owner issuer's subject holding %s", async (_what, subject) => {
+    await expect(ownerOf(doorsEnv, FAKE_ISSUER, subject)).rejects.toThrow();
+  });
+
+  it("fails loudly before the owner issuer is configured", async () => {
+    for (const issuer of ["not-configured", "http://upstream.test", ""]) {
+      await expect(ownerOf({ ...doorsEnv, OWNER_ISSUER: issuer }, FAKE_ISSUER, "alice"))
+        .rejects.toThrow("OWNER_ISSUER");
+    }
+  });
+
+  it("is what a sign-in through another issuer is bound to", async () => {
+    const restoreDocument = serveFirstPartyDocument();
+    try {
+      const subject = owner();
+      const app = await signInApp({ owner: subject, issuer: "https://auth.openai.com" });
+      const named = await ownerOf(doorsEnv, "https://auth.openai.com", subject);
+      expect(await appPost("session/extend", app.access_token, app.session, {})).toMatchObject(
+        { status: 200 });
+      expect(await reached(named)).toBe(true);
+      expect(await reached(subject)).toBe(false);
+    } finally {
+      restoreDocument();
+    }
   });
 });
 

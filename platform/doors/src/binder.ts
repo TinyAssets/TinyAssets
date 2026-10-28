@@ -23,9 +23,10 @@ import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
 import { principal } from "../../owner/src/text";
 
 import {
-  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, ISSUER, MCP_RESOURCE,
+  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, ISSUER, MCP_RESOURCE, ownerIssuer,
 } from "./config";
 import type { KeyEntry } from "./directory";
+import type { SignIn } from "./upstream";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[0-9a-f]{16}$/;
@@ -62,14 +63,53 @@ async function sha256(text: string): Promise<string> {
  * The outside identity an MCP client resolves to: `client` from the issuer and its
  * `client_id` (the Python's `issuer \0 client`), `family` from those and the redirect
  * URI, the installation boundary, so a re-authorization of one installation keeps its
- * agents' mailbox (research §1.4).
+ * agents' mailbox (research §1.4). A loopback redirect's port is dropped first: a native
+ * client listens on whatever port is free (RFC 8252 §7.3), so its port names no
+ * installation.
  */
 export async function mcpOrigin(clientId: string, redirectUri: string):
     Promise<{ client: string; family: string }> {
+  const installation = installationOf(redirectUri);
   return {
     client: await mcpClient(clientId),
-    family: await sha256(`tinyassets-mcp-family\0${ISSUER}\0${clientId}\0${redirectUri}`),
+    family: await sha256(`tinyassets-mcp-family\0${ISSUER}\0${clientId}\0${installation}`),
   };
+}
+
+const LOOPBACK_HOSTS: readonly string[] = Object.freeze(["127.0.0.1", "[::1]", "localhost"]);
+
+/** A redirect URI as an installation: a loopback one without its port. */
+export function installationOf(redirectUri: string): string {
+  const url = new URL(redirectUri);
+  if (url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname)) {
+    url.port = "";
+    return url.href;
+  }
+  return redirectUri;
+}
+
+/** Where a namespaced issuer's owners start: never an owner issuer's subject. */
+const FOREIGN = "iss-";
+
+/**
+ * The owner a verified upstream sign-in names, from its issuer and subject. The owner
+ * issuer's (AuthKit's) subject is the owner id as it stands, so today's owners keep
+ * theirs; any other issuer's subject (Sign in with ChatGPT, say) is namespaced by its
+ * issuer, so two providers' subjects never name one owner. Linking a second provider to
+ * an existing owner is that provider's slice's own act.
+ */
+export async function ownerOf(env: DoorsEnv, issuer: string, subject: string): Promise<string> {
+  if (typeof issuer !== "string" || !issuer || typeof subject !== "string") {
+    throw new Error("a sign-in names its issuer and subject");
+  }
+  if (issuer === ownerIssuer(env)) {
+    if (subject.startsWith(FOREIGN) || subject.includes(":")) {
+      throw new Error("the owner issuer's subject is outside the owner namespace");
+    }
+    return principal(subject);
+  }
+  return principal(`${FOREIGN}${(await sha256(issuer)).slice(0, 32)}-${
+    encodeURIComponent(principal(subject))}`);
 }
 
 /**
@@ -179,13 +219,14 @@ export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<u
 }
 
 /**
- * A fresh upstream sign-in at the callback (`authorize.ts`): the owner on its own
- * account, at the verified sign-in's time, which opens a session (`sessionOpen`).
+ * A fresh upstream sign-in at the callback (`authorize.ts`): the owner its issuer and
+ * subject name (`ownerOf`), on its own account, at the verified sign-in's time, which
+ * opens a session (`sessionOpen`).
  */
-export function bindSignIn(env: DoorsEnv, subject: string, authenticatedAt: number): Bound {
-  const owner = principal(subject);
+export async function bindSignIn(env: DoorsEnv, signIn: SignIn): Promise<Bound> {
+  const owner = await ownerOf(env, signIn.issuer, signIn.subject);
   return bound(env, { owner, caller: owner, origin: null,
-                      authenticated_at: seconds(authenticatedAt, "a sign-in's time") });
+                      authenticated_at: seconds(signIn.authenticated_at, "a sign-in's time") });
 }
 
 function appOwner(token: ValidatedAccessToken<unknown>): string {

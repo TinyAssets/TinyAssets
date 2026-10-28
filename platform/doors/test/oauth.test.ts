@@ -7,7 +7,7 @@ import { createExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { mcpOrigin } from "../src/binder";
-import { MCP_RESOURCE, now } from "../src/config";
+import { ACCESS_TOKEN_TTL_S, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S, WEB_REDIRECT } from "../src/config";
 import { serve } from "../src/doors";
 import { authorizationServer } from "../src/oauth";
 import type { Upstream } from "../src/upstream";
@@ -68,7 +68,8 @@ describe("dynamic client registration", () => {
     expect((await registration()).status).toBe(404);
   });
 
-  it("is on with the flag, and refuses a redirect to our own origin", async () => {
+  it("is on with the flag; a client it registers for our own origin is refused at consent",
+     async () => {
     const on = { ...doorsEnv, DCR_ENABLED: "true" };
     const response = await registration(on);
     expect(response.status).toBe(201);
@@ -77,11 +78,16 @@ describe("dynamic client registration", () => {
     expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
     const ours = await call(new Request(url("/oauth/register"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_name: "Fake TinyAssets",
-                             redirect_uris: ["https://tinyassets.io/app/signed-in"],
+      body: JSON.stringify({ client_name: "TinyAssets", redirect_uris: [WEB_REDIRECT],
                              token_endpoint_auth_method: "none" }),
     }), on);
-    expect(ours.status).toBe(400);
+    const { client_id } = await ours.json<{ client_id: string }>();
+    const { challenge } = await pkce();
+    const page = await call(new Request(authorizeUrl(
+      { clientId: client_id, redirectUri: WEB_REDIRECT }, challenge), { headers: { ...NAVIGATE } }),
+      on);
+    expect(page.status).toBe(400);
+    expect(await page.text()).toBe("This app may not send access to TinyAssets itself.");
   });
 
   it("refuses a flag that is neither spelling", async () => {

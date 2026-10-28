@@ -9,8 +9,11 @@
 import type { SignIn, Upstream } from "../src/upstream";
 
 export const UPSTREAM_AUTHORIZE = "https://upstream.test/authorize";
+/** The fake's issuer, which the tests' config names as the owner issuer. */
+export const FAKE_ISSUER = "https://upstream.test";
 
 interface FakeCode {
+  readonly issuer?: string;
   readonly subject: string;
   readonly authenticated_at: number;
   readonly challenge: string;
@@ -45,6 +48,7 @@ export const FAKE_UPSTREAM: Upstream = Object.freeze({
     if (base64url(new Uint8Array(digest)) !== parsed.challenge) {
       throw new Error("the fake upstream refuses a PKCE verifier that misses its challenge");
     }
-    return { subject: parsed.subject, authenticated_at: parsed.authenticated_at };
+    return { issuer: parsed.issuer ?? FAKE_ISSUER, subject: parsed.subject,
+             authenticated_at: parsed.authenticated_at };
   },
 });

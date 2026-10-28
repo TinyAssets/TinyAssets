@@ -9,7 +9,8 @@
  */
 import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
-import type { DoorsEnv } from "./config";
+import { jsonObject } from "./body";
+import { API_BODY_MAX, type DoorsEnv } from "./config";
 import { outsideGate } from "./control";
 import { mediaType } from "./session";
 import { callDoor, refusal, toolNamed } from "./tools";
@@ -42,14 +43,9 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
   if (mediaType(request) !== "application/json") {
     return failure(415, "the API takes application/json");
   }
-  let args: unknown;
-  try {
-    args = await request.json();
-  } catch {
-    return failure(400, "the request is one JSON object");
-  }
-  if (typeof args !== "object" || args === null || Array.isArray(args)) {
-    return failure(400, "the request is one JSON object");
+  const args = await jsonObject(request, API_BODY_MAX);
+  if (args instanceof Response) {
+    return args;
   }
   try {
     return Response.json(await callDoor(bound.stub, bound.binding, tool, args));

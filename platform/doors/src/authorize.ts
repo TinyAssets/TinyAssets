@@ -20,24 +20,25 @@
  *    and the grant.
  *
  * A resource and its clients never cross: a token for `/app` goes only to a first-party
- * client, and a first-party client never gets one for `/mcp`.
+ * client, and a first-party client never gets one for `/mcp`. An outside client may not
+ * name a redirect on our own origin, however it registered. The consent POST is a form
+ * of at most 4 KiB.
  */
 import {
   AuthorizationError, type AuthRequest, authorizationErrorRedirect, CimdFetchError,
   type ConsentDescription, type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 
-import { principal } from "../../owner/src/text";
-
-import { type AppProps, bindSignIn, type McpProps, mcpOrigin } from "./binder";
+import { type AppProps, bindSignIn, type McpProps, mcpOrigin, ownerOf } from "./binder";
+import { boundedText, TOO_LARGE } from "./body";
 import {
-  APP_RESOURCE, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE, now,
-  SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
+  APP_RESOURCE, AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS,
+  MCP_RESOURCE, now, PUBLIC_ORIGIN, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
 } from "./config";
 import { outsideOpen, ownerOpen } from "./control";
 import { readControl } from "./directory";
 import { authorizationServer } from "./oauth";
-import { sessionCookie } from "./session";
+import { mediaType, sessionCookie } from "./session";
 import type { Upstream } from "./upstream";
 
 interface Verifier {
@@ -157,6 +158,12 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
           || (parsed.resource !== APP_RESOURCE && parsed.resource !== MCP_RESOURCE)) {
         return redirect(authorizationErrorRedirect(parsed, "access_denied"));
       }
+      // Only our own app is sent access on our own origin: an outside client naming a
+      // redirect there (a CIMD document or a registration may) would have the consent
+      // page say the access goes to TinyAssets.
+      if (!forApp && new URL(parsed.redirectUri).origin === PUBLIC_ORIGIN) {
+        return text(400, "This app may not send access to TinyAssets itself.");
+      }
       if (forApp) {
         return await signIn(oauth, upstream, parsed);
       }
@@ -166,8 +173,17 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
       return new Response(consentPage(details, consent.handle), { headers: consent.headers });
     }
     if (request.method === "POST") {
-      const form = await request.clone().formData();
-      const handle = String(form.get("handle") ?? "");
+      // The consent form, and nothing larger: the provider reads only the binding
+      // cookie from the request, so its body is ours to read once.
+      if (mediaType(request) !== "application/x-www-form-urlencoded") {
+        return text(415, "The consent form is posted as a form.");
+      }
+      const body = await boundedText(request, AUTHORIZE_BODY_MAX);
+      if (body === null) {
+        return text(413, TOO_LARGE);
+      }
+      const form = new URLSearchParams(body);
+      const handle = form.get("handle") ?? "";
       if (form.get("decision") !== "approve") {
         const denied = await oauth.denyConsent(request, handle);
         return new Response(null, { status: 302, headers: denied.headers });
@@ -208,8 +224,7 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
     return redirect(authorizationErrorRedirect(original, "access_denied",
                                                "sign in again"), headers);
   }
-  // The provider keys grants and tokens by user id, and refuses one holding a colon.
-  const owner = principal(signedIn.subject);
+  const owner = await ownerOf(env, signedIn.issuer, signedIn.subject);
   const control = await readControl(env);
   const scope = granted(original.scope);
   if (original.resource === MCP_RESOURCE && !firstParty(original)) {
@@ -220,6 +235,9 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
       kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
       source_ref: original.clientId, authenticated_at: signedIn.authenticated_at,
     };
+    // The provider's default stands: a re-authorization replaces the client's earlier
+    // grant for this owner, scoped for a CIMD client to the same redirect URI, so one
+    // installation's sign-in never revokes another's and stale grants never pile up.
     const { redirectTo } = await oauth.completeAuthorization({
       request: original, userId: owner, metadata: {}, scope, props });
     return redirect(redirectTo, headers);
@@ -228,11 +246,14 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
     if (!ownerOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
     }
-    const { binding, stub } = bindSignIn(env, owner, signedIn.authenticated_at);
+    const { binding, stub } = await bindSignIn(env, signedIn);
     const { session } = await stub.sessionOpen(binding);
     const props: AppProps = { kind: "app", owner };
+    // Each device keeps its own grant: the app on a phone and in a browser stay signed in
+    // together, and sign-out revokes the presented token's grant alone (`app.ts`).
     const { redirectTo } = await oauth.completeAuthorization({
-      request: original, userId: owner, metadata: {}, scope, props });
+      request: original, userId: owner, metadata: {}, scope, props,
+      revokeExistingGrants: false });
     headers.append("Set-Cookie", sessionCookie(session));
     return redirect(redirectTo, headers);
   }

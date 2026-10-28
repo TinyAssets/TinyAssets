@@ -21,22 +21,31 @@ export interface Revoked {
   readonly grants: number;
 }
 
-export async function revokeClient(env: DoorsEnv, { binding, stub }: Bound, client: unknown):
-    Promise<Revoked> {
+/** The provider's largest page of grants. */
+export const GRANT_PAGE = 1000;
+
+/**
+ * Revoke `client` in the owner's object, then every provider grant of it: every page of
+ * the owner's grants is read before any is revoked, so a revoke never shifts the pages.
+ */
+export async function revokeClient(env: DoorsEnv, { binding, stub }: Bound, client: unknown,
+                                   pageSize: number = GRANT_PAGE): Promise<Revoked> {
   const done = await stub.grantRevoke(binding, { client: client as string });
   const oauth = authorizationServer(env).getOAuthApi(env);
-  let grants = 0;
+  const matching: string[] = [];
   let cursor: string | undefined;
   do {
-    const page = await oauth.listUserGrants(binding.owner,
-                                            cursor === undefined ? {} : { cursor });
+    const page = await oauth.listUserGrants(binding.owner, cursor === undefined
+      ? { limit: pageSize } : { limit: pageSize, cursor });
     for (const grant of page.items) {
       if (grant.resource === MCP_RESOURCE && await mcpClient(grant.clientId) === done.client) {
-        await oauth.revokeGrant(grant.id, binding.owner);
-        grants++;
+        matching.push(grant.id);
       }
     }
     cursor = page.cursor;
   } while (cursor !== undefined);
-  return { ...done, grants };
+  for (const id of matching) {
+    await oauth.revokeGrant(id, binding.owner);
+  }
+  return { ...done, grants: matching.length };
 }

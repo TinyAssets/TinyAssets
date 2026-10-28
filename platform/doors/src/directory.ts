@@ -96,24 +96,31 @@ export function parseControl(value: unknown): Control | null {
 }
 
 /**
- * The `control` record, or null when it is missing, malformed or unreadable: every
- * outside door then refuses (`control.ts`). A record that is there but unreadable is
- * reported, since only an operator's write or an outage makes one.
+ * The `control` record as read: there and well formed, missing, malformed (an operator's
+ * bad write), or unreadable (an outage, or a value that is not JSON). The gates tell them
+ * apart (`control.ts`); the last two are reported.
  */
-export async function readControl(env: DoorsEnv): Promise<Control | null> {
+export type ControlRead =
+  | { readonly kind: "read"; readonly control: Control }
+  | { readonly kind: "missing" }
+  | { readonly kind: "malformed" }
+  | { readonly kind: "unreadable" };
+
+export async function readControl(env: DoorsEnv): Promise<ControlRead> {
   let value: unknown;
   try {
     value = await env.DIRECTORY.get(CONTROL, { type: "json" });
   } catch (error) {
     console.error("the directory's control record is unreadable", error);
-    return null;
+    return { kind: "unreadable" };
   }
   if (value === null) {
-    return null;
+    return { kind: "missing" };
   }
   const control = parseControl(value);
   if (control === null) {
     console.error("the directory's control record is malformed");
+    return { kind: "malformed" };
   }
-  return control;
+  return { kind: "read", control };
 }

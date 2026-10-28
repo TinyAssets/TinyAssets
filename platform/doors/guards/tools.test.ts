@@ -38,6 +38,8 @@ const DISPATCH: readonly string[] = Object.freeze(["method", "operation", "tool"
 /** Writes that destroy or send nothing: an ack, a filed card, a proposal, a new directory. */
 const ADDITIVE: readonly string[] = Object.freeze(["mailboxAck", "registerPropose",
                                                    "policyPropose", "fileMkdir"]);
+/** Writes that repeat to the same end: an ack through a sequence, a directory made once. */
+const IDEMPOTENT_WRITES: readonly string[] = Object.freeze(["mailboxAck", "fileMkdir"]);
 /** The one outside-callable read with no scope: an identity's own agents. */
 const UNSCOPED_READS: readonly string[] = Object.freeze(["outsideAgents"]);
 
@@ -177,6 +179,9 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
     if (!reads && tool.destructiveHint !== !ADDITIVE.includes(tool.door)) {
       say(`destructiveHint must be ${!ADDITIVE.includes(tool.door)} for ${tool.door}`);
     }
+    if (!reads && tool.idempotentHint !== IDEMPOTENT_WRITES.includes(tool.door)) {
+      say(`idempotentHint must be ${IDEMPOTENT_WRITES.includes(tool.door)} for ${tool.door}`);
+    }
     const input = tool.input;
     const properties = (input["properties"] ?? {}) as Record<string, unknown>;
     const required = (input["required"] ?? []) as string[];
@@ -253,6 +258,14 @@ describe("tool table guard", () => {
   ])("sees %s", (_what, change) => {
     expect(toolProblems([{ ...base, ...change }, ...toolTable().slice(1)], DOORS))
       .not.toEqual([]);
+  });
+
+  it("sees an ack marked other than idempotent, and a post marked idempotent", () => {
+    const table = toolTable();
+    for (const [name, idempotentHint] of [["mailbox_ack", false], ["room_post", true]] as const) {
+      expect(toolProblems(table.map((tool) => tool.name === name
+        ? { ...tool, idempotentHint } : tool), DOORS)).not.toEqual([]);
+    }
   });
 
   it("sees a write marked non-destructive, and a door given two tools", () => {

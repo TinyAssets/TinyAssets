@@ -7,13 +7,15 @@ export default defineConfig({
       {
         // Runs in workerd, against the config's own KV namespaces and flags. The test entry
         // serves the doors with a fake upstream sign-in and exports the real OwnerDO beside
-        // them, so OWNER, which the config binds by script_name, is bound to it here.
+        // them, so OWNER, which the config binds by script_name, is bound to it here, and
+        // the fake upstream's issuer stands in for AuthKit's as the owner issuer.
         plugins: [
           cloudflareTest({
             main: "./test/entry.ts",
             wrangler: { configPath: "./wrangler.jsonc" },
             miniflare: {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
+              bindings: { OWNER_ISSUER: "https://upstream.test" },
             },
           }),
         ],

@@ -10,12 +10,14 @@
  *   authorization must name it (no default resource is guessed).
  * - Client ID Metadata Documents are on, which needs the `global_fetch_strictly_public`
  *   compatibility flag (the config guard). Dynamic registration is the deprecated
- *   fallback, on only with `DCR_ENABLED`, and refuses a redirect to our own origin.
- * - `authenticated_at` is in the grant's encrypted props from the authorization on, and
- *   `keepProps` returns nothing at every exchange, so a refresh never moves it.
+ *   fallback, on only with `DCR_ENABLED`. An outside client naming a redirect on our own
+ *   origin is refused at `/authorize`, however it registered (`authorize.ts`).
+ * - `authenticated_at` is in the grant's encrypted props from the authorization on. No
+ *   token exchange callback is installed, so a refresh carries the props unchanged and
+ *   never moves it; token exchange (RFC 8693) is off, so no other client can take them.
  * - Consent is never remembered (`authorize.ts`): every authorization shows the consent
  *   screen, the first one after a revoke included.
- * - A revoke goes to the owner's object first, then here (`grants.ts`); a refresh of a
+ * - A revoke goes to the owner's object first, then here (`revoke.ts`); a refresh of a
  *   revoked grant is `invalid_grant`, the code Claude requires.
  *
  * The provider is built per request: a module may keep no state (the module-state
@@ -26,40 +28,16 @@
  * `props` hold only the binding facts (`McpProps`, `AppProps`).
  */
 import {
-  type ClientRegistrationCallbackOptions, type ClientRegistrationCallbackResult,
   OAuthAuthorizationServer, type OAuthResourceContext, OAuthResourceServer,
   type ValidatedAccessToken,
 } from "@cloudflare/workers-oauth-provider";
 
 import {
   ACCESS_TOKEN_TTL_S, APP_RESOURCE, dcrEnabled, type DoorsEnv, ISSUER, MCP_RESOURCE,
-  PUBLIC_ORIGIN, REFRESH_TOKEN_TTL_S, SCOPES,
+  REFRESH_TOKEN_TTL_S, SCOPES,
 } from "./config";
 
 export const REGISTRATION_ENDPOINT = "/oauth/register";
-
-/**
- * Every token exchange keeps the grant's props as they are: "return nothing to keep the
- * existing values". The original sign-in in them is what every MCP call carries.
- */
-export function keepProps(): void {
-  return undefined;
-}
-
-/** A dynamic registration naming a redirect on our own origin is refused. */
-export function registrationPolicy({ clientMetadata }: ClientRegistrationCallbackOptions):
-    ClientRegistrationCallbackResult | undefined {
-  const uris = clientMetadata["redirect_uris"];
-  const ours = Array.isArray(uris) && uris.some((uri) => {
-    try {
-      return new URL(String(uri)).origin === PUBLIC_ORIGIN;
-    } catch {
-      return false;
-    }
-  });
-  return ours ? { code: "invalid_redirect_uri", description: "redirect URI not permitted" }
-              : undefined;
-}
 
 export function authorizationServer(env: DoorsEnv): OAuthAuthorizationServer<DoorsEnv> {
   return new OAuthAuthorizationServer<DoorsEnv>({
@@ -67,13 +45,11 @@ export function authorizationServer(env: DoorsEnv): OAuthAuthorizationServer<Doo
     resources: [MCP_RESOURCE, APP_RESOURCE],
     scopesSupported: [...SCOPES],
     clientIdMetadataDocumentEnabled: true,
-    ...(dcrEnabled(env) ? { clientRegistrationEndpoint: REGISTRATION_ENDPOINT,
-                            clientRegistrationCallback: registrationPolicy } : {}),
+    ...(dcrEnabled(env) ? { clientRegistrationEndpoint: REGISTRATION_ENDPOINT } : {}),
     accessTokenTTL: ACCESS_TOKEN_TTL_S,
     refreshTokenTTL: REFRESH_TOKEN_TTL_S,
     refreshTokenIdleTTL: REFRESH_TOKEN_TTL_S,
     allowTokenExchangeGrant: false,
-    tokenExchangeCallback: keepProps,
   });
 }
 

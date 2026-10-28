@@ -3,19 +3,20 @@
  * `control` record on every outside call, fail-closed.
  *
  * - An outside call (an MCP tool call, an `/api` call, an MCP authorization) passes only
- *   when the record is there and well formed, `outside` is `on`, and the maintenance gate
+ *   when the record reads well formed, `outside` is `on`, and the maintenance gate
  *   admits its owner. A missing, malformed or unreadable record refuses it: the kill
  *   switch is off unless it is provably on.
- * - The owner's own surfaces (`/app/api/*`, the owner's sign-in) are held only by the
- *   maintenance gate, and only when the record reads; with no record they stay open, so
- *   the owner can always reach their own account. The kill switch is for outside work.
+ * - The owner's own surfaces (`/app/api/*`, the owner's sign-in) are held by the
+ *   maintenance gate. With no record at all they stay open, so a fresh deployment's owner
+ *   can reach their account (research checklist 11); a record that is malformed or
+ *   unreadable closes them, as the Python's `router_traffic.admits` did, since a gate
+ *   that cannot be read is never taken as open.
  *
  * A flip reaches every location within KV's 60 s; no revoke depends on it. The switch
  * reaching the object's alarm (the doorbell) is task 7's.
  */
-import type { Control } from "./directory";
-import { readControl } from "./directory";
 import type { DoorsEnv } from "./config";
+import { type Control, type ControlRead, readControl } from "./directory";
 
 export const OUTSIDE_OFF = "outside access is switched off";
 export const MAINTENANCE = "TinyAssets is in maintenance";
@@ -25,14 +26,15 @@ function ordinaryAdmits(control: Control, owner: string): boolean {
     || (control.ordinary === "canary" && control.canary.includes(owner));
 }
 
-/** Whether `control` admits an outside call for `owner`. */
-export function outsideOpen(control: Control | null, owner: string): boolean {
-  return control !== null && control.outside === "on" && ordinaryAdmits(control, owner);
+/** Whether the record admits an outside call for `owner`. */
+export function outsideOpen(read: ControlRead, owner: string): boolean {
+  return read.kind === "read" && read.control.outside === "on"
+    && ordinaryAdmits(read.control, owner);
 }
 
-/** Whether `control` admits the owner's own call. */
-export function ownerOpen(control: Control | null, owner: string): boolean {
-  return control === null || ordinaryAdmits(control, owner);
+/** Whether the record admits the owner's own call. */
+export function ownerOpen(read: ControlRead, owner: string): boolean {
+  return read.kind === "missing" || (read.kind === "read" && ordinaryAdmits(read.control, owner));
 }
 
 /** Refused, as a 503 naming why; or null when the gate admits the call. */

@@ -14,15 +14,17 @@
  *
  * Routes, each a door or a binder sequence:
  * - `keys`, `keys/revoke`, `keys/delete`: `api-keys.ts`.
- * - `grants/revoke`: an MCP client's revoke, object then provider (`grants.ts`).
+ * - `grants/revoke`: an MCP client's revoke, object then provider (`revoke.ts`).
  * - `outside-agents`: the owner's browser registering an agent for an API key it holds.
- * - `session/extend`, `session/close`: the session's renewal and sign-out.
+ * - `session/extend`: the session's renewal.
+ * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
  */
 import {
   type Bound, bindKeyRegistration, bindOwner,
 } from "./binder";
+import { jsonObject } from "./body";
 import {
-  APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE,
+  APP_BODY_MAX, APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE,
 } from "./config";
 import { ownerGate } from "./control";
 import {
@@ -49,18 +51,26 @@ export function bearer(request: Request): string | null {
   return match === null ? null : match[1]!;
 }
 
-async function body(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value: unknown = await request.json();
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
 type Route = (env: DoorsEnv, owner: Bound, request: Record<string, unknown>,
-              raw: Request) => Promise<Response>;
+              token: string) => Promise<Response>;
+
+/**
+ * Sign-out: the session closed in the object when the browser presented it, and the
+ * presented token's own grant revoked in the provider, so neither outlives it. Other
+ * devices' grants stand.
+ */
+async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknown,
+                       token: string):
+    Promise<Response> {
+  const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
+  const oauth = authorizationServer(env).getOAuthApi(env);
+  const presented = await oauth.unwrapToken(token);
+  if (presented === null || presented.userId !== binding.owner) {
+    throw new Error("a validated first-party token unwraps to its owner's grant");
+  }
+  await oauth.revokeGrant(presented.grantId, binding.owner);
+  return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
+}
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
@@ -73,13 +83,11 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     const extended = await stub.sessionExtend(binding);
     return json(200, extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
   },
-  "session/close": async (_env, { binding, stub }) =>
-    json(200, await stub.sessionClose(binding), { "Set-Cookie": clearedCookie() }),
+  "session/close": signOut,
 });
 
 /** The owner's first-party token, or the refusal for what came instead. */
-async function ownerToken(request: Request, env: DoorsEnv) {
-  const token = bearer(request);
+async function ownerToken(env: DoorsEnv, token: string | null) {
   if (token === null) {
     return failure(401, "sign in required");
   }
@@ -100,7 +108,8 @@ async function ownerToken(request: Request, env: DoorsEnv) {
 }
 
 export async function serveApp(request: Request, env: DoorsEnv): Promise<Response> {
-  const token = await ownerToken(request, env);
+  const presented = bearer(request);
+  const token = await ownerToken(env, presented);
   if (token instanceof Response) {
     return token;
   }
@@ -117,9 +126,9 @@ export async function serveApp(request: Request, env: DoorsEnv): Promise<Respons
   if (mediaType(request) !== "application/json") {
     return failure(415, "the owner surface takes application/json");
   }
-  const parsed = await body(request);
-  if (parsed === null) {
-    return failure(400, "the request is one JSON object");
+  const parsed = await jsonObject(request, APP_BODY_MAX);
+  if (parsed instanceof Response) {
+    return parsed;
   }
   const owner = bindOwner(env, token, session);
   const gated = await ownerGate(env, owner.binding.owner);
@@ -133,7 +142,7 @@ export async function serveApp(request: Request, env: DoorsEnv): Promise<Respons
       const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, session);
       return json(200, await stub.registerAgent(binding, register as never));
     }
-    return await route!(env, owner, parsed, request);
+    return await route!(env, owner, parsed, presented!);
   } catch (error) {
     if (error instanceof KeyRefused) {
       return failure(error.status, error.message);

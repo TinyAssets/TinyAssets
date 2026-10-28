@@ -201,11 +201,11 @@ describe("the owner surface", () => {
       expect(extended.headers.get("Set-Cookie")).toBe(
         `__Host-ta-owner=${app.session}; Secure; HttpOnly; Path=/; SameSite=Strict; Max-Age=28800`);
       const closed = await appPost("session/close", app.access_token, app.session, {});
-      expect(await closed.json()).toEqual({ closed: 1 });
+      expect(await closed.json()).toEqual({ closed: 1, signed_out: true });
       expect(closed.headers.get("Set-Cookie")).toBe(
         "__Host-ta-owner=; Secure; HttpOnly; Path=/; SameSite=Strict; Max-Age=0");
       const after = await appPost("session/extend", app.access_token, app.session, {});
-      expect(after.status).toBe(403);
+      expect(after.status).toBe(401);
     } finally {
       restore();
     }

@@ -6,11 +6,15 @@
  * upstream only builds its sign-in URL and verifies the callback. This slice has no
  * live one: `UNWIRED` refuses loudly, and the tests run a fake. The AuthKit slice
  * implements it (tasks 2): its authorize URL, the code exchange, and the ID token's
- * signature, issuer, audience and `auth_time` against its JWKS. Owner ids stay AuthKit's
- * `sub`, so no identity migration is owed at cutover.
+ * signature, issuer, audience and `auth_time` against its JWKS, refusing a token without
+ * `auth_time` (there is no clock fallback). The binder names the owner from the issuer
+ * and subject: AuthKit's (`OWNER_ISSUER`) subjects stay owner ids as they are, so no
+ * identity migration is owed at cutover, and any later issuer's are namespaced.
  */
 export interface SignIn {
-  /** The owner principal: the provider's stable subject. */
+  /** The verified ID token's issuer (`iss`). */
+  readonly issuer: string;
+  /** The provider's stable subject (`sub`); with the issuer, it names the owner (`binder.ts`). */
   readonly subject: string;
   /** When the person signed in, whole seconds: the ID token's `auth_time`. */
   readonly authenticated_at: number;

@@ -45,6 +45,14 @@ export const REFRESH_TOKEN_TTL_S = 30 * 86_400;
 export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
 
+/** The largest body each door reads; past it, `413` before anything is parsed. */
+export const AUTHORIZE_BODY_MAX = 4 * 1024;
+export const APP_BODY_MAX = 64 * 1024;
+export const API_BODY_MAX = 1024 * 1024;
+
+/** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
+export const ISSUER_NOT_CONFIGURED = "not-configured";
+
 /** What `wrangler.jsonc` binds, exactly (the config guard). */
 export interface DoorsEnv {
   /** The owner Worker's namespace, by `script_name`; reached only in `binder.ts`. */
@@ -55,6 +63,23 @@ export interface DoorsEnv {
   readonly DIRECTORY: KVNamespace;
   /** Dynamic client registration, the deprecated fallback: exactly "true" or "false". */
   readonly DCR_ENABLED: string;
+  /**
+   * The upstream issuer whose subjects are owner ids as they stand (AuthKit's, so today's
+   * owners keep theirs); every other issuer's subjects are namespaced (`binder.ts`).
+   */
+  readonly OWNER_ISSUER: string;
+}
+
+/** The owner issuer, an https URL; unset, every sign-in fails loudly. */
+export function ownerIssuer(env: DoorsEnv): string {
+  const issuer = env.OWNER_ISSUER;
+  if (issuer === ISSUER_NOT_CONFIGURED) {
+    throw new Error("OWNER_ISSUER is not configured (tasks 2: AuthKit)");
+  }
+  if (typeof issuer !== "string" || !/^https:\/\/[^\s]+$/.test(issuer)) {
+    throw new Error("OWNER_ISSUER is an https issuer URL");
+  }
+  return issuer;
 }
 
 /** Whether the deprecated DCR fallback is on. Anything but the two spellings is a config bug. */

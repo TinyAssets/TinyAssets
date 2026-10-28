@@ -12,7 +12,7 @@ One module of the doors Worker SHALL hold every `getByName` call and build every
 - **THEN** the binder refuses it as a bug and no object is reached
 
 ### Requirement: Our authorization server issues the connectors' tokens
-The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be on only behind its flag. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. Consent SHALL never be remembered.
+The doors SHALL run their own OAuth authorization server, issuer `https://tinyassets.io`, on Workers OAuth Provider 1.2.4, with the resources `/mcp` (outside clients) and `/app` (first-party clients only). Client ID Metadata Documents SHALL be on; dynamic registration SHALL be on only behind its flag. Every authorization SHALL run the upstream sign-in with `prompt=login` and server-side PKCE, and SHALL take a sign-in only when at most 600 s old. The owner SHALL be named from the sign-in's issuer and subject: the owner issuer's subject as it stands, any other issuer's namespaced. Consent SHALL never be remembered.
 
 #### Scenario: A client authorizes again after a revoke
 - **WHEN** the owner revoked an MCP client and the client starts a new authorization
@@ -23,7 +23,7 @@ The doors SHALL run their own OAuth authorization server, issuer `https://tinyas
 - **THEN** the authorization fails loudly
 
 ### Requirement: An MCP call carries its grant's original sign-in
-An MCP grant's encrypted props SHALL hold the time of the interactive sign-in that created it, and no token exchange SHALL change them, so every MCP call carries that time as `authenticated_at`.
+An MCP grant's encrypted props SHALL hold the time of the interactive sign-in that created it, and no token exchange SHALL change them, so every MCP call carries that time as `authenticated_at`. A native client's loopback port SHALL be no part of its agent identity.
 
 #### Scenario: A token refreshed twice
 - **WHEN** a client signed in at T refreshes its token twice and calls a tool
@@ -69,11 +69,29 @@ The session cookie SHALL be `__Host-ta-owner`, Secure, HttpOnly, Path=/, SameSit
 - **THEN** no session is forwarded and the object refuses the widening
 
 ### Requirement: The outside kill switch fails closed
-Every outside call (an MCP call, an `/api` call, an outside client's authorization) SHALL pass only when the directory's `control` record reads, well formed, with `outside` on and the maintenance gate admitting its owner; a missing, malformed or unreadable record SHALL refuse it. The owner's own surfaces SHALL be held only by the maintenance gate.
+Every outside call (an MCP call, an `/api` call, an outside client's authorization) SHALL pass only when the directory's `control` record reads, well formed, with `outside` on and the maintenance gate admitting its owner; a missing, malformed or unreadable record SHALL refuse it. The owner's own surfaces and sign-in SHALL be held by the maintenance gate, and SHALL stay open only when the record is missing.
 
 #### Scenario: The control record is missing
 - **WHEN** the directory holds no `control` record
 - **THEN** outside calls are refused `503` before any object, and the owner's own surface stays open
+
+#### Scenario: The control record cannot be read
+- **WHEN** the record is malformed, or the directory read fails
+- **THEN** outside calls and the owner's own surface and sign-in are all refused
+
+### Requirement: Nothing but the owner surface is served on our origin
+No published app, user content or third-party page SHALL ever be served on `https://tinyassets.io`: the session cookie, the exact-`Origin` rule and the first-party redirect all rest on every page of that origin being ours. No outside client SHALL be sent access on that origin.
+
+#### Scenario: A client document names a redirect on our origin
+- **WHEN** a CIMD document or a registered client names a redirect on `https://tinyassets.io`
+- **THEN** its authorization is refused before the consent page
+
+### Requirement: Sign-out ends the device's access, and devices sign in apart
+Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed in together. Sign-out SHALL close the session and revoke the presented token's grant, leaving other devices signed in.
+
+#### Scenario: The owner signs out on one device
+- **WHEN** the owner signs out on a phone while signed in on a laptop
+- **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
 The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `OAUTH_KV` and `DIRECTORY` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.

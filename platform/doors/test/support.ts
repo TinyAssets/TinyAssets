@@ -111,20 +111,24 @@ export function handleOf(html: string): string {
 export interface SignInAs {
   readonly owner: string;
   readonly authenticatedAt?: number;
+  /** The issuer the upstream reports; the owner issuer by default. */
+  readonly issuer?: string;
 }
 
 /** The upstream sign-in after the doors redirected to it: back to the callback. */
-export async function upstreamReturns(jar: Jar, location: string, who: SignInAs):
-    Promise<Response> {
+export async function upstreamReturns(jar: Jar, location: string, who: SignInAs,
+                                      environment: DoorsEnv = doorsEnv,
+                                      extra: Record<string, string> = {}): Promise<Response> {
   const sent = new URL(location);
   if (`${sent.origin}${sent.pathname}` !== UPSTREAM_AUTHORIZE) {
     throw new Error(`the doors sent the browser to ${location}`);
   }
-  const code = fakeCode({ subject: who.owner, authenticated_at: who.authenticatedAt ?? now() - 100,
+  const code = fakeCode({ ...(who.issuer === undefined ? {} : { issuer: who.issuer }),
+                          subject: who.owner, authenticated_at: who.authenticatedAt ?? now() - 100,
                           challenge: sent.searchParams.get("code_challenge")! });
-  const back = new URLSearchParams({ code, state: sent.searchParams.get("state")! });
+  const back = new URLSearchParams({ code, state: sent.searchParams.get("state")!, ...extra });
   return jar.take(await call(new Request(url(`/oauth/upstream/callback?${back}`), {
-    headers: { ...NAVIGATE, Cookie: jar.header() } })));
+    headers: { ...NAVIGATE, Cookie: jar.header() } }), environment));
 }
 
 /** The consent page for `client`, as the owner's browser opens it. */
@@ -143,7 +147,8 @@ export async function decide(jar: Jar, handle: string, decision: "approve" | "de
 }
 
 /** A full authorization: consent, approval, the upstream sign-in; the client's code. */
-export async function authorizeMcp(client: Client, who: SignInAs):
+export async function authorizeMcp(client: Client, who: SignInAs,
+                                   environment: DoorsEnv = doorsEnv):
     Promise<{ code: string; verifier: string; redirect: URL }> {
   const jar = new Jar();
   const { verifier, challenge } = await pkce();
@@ -152,7 +157,7 @@ export async function authorizeMcp(client: Client, who: SignInAs):
     throw new Error(`consent page: ${page.status} ${await page.text()}`);
   }
   const approved = await decide(jar, handleOf(await page.text()), "approve");
-  const back = await upstreamReturns(jar, approved.headers.get("Location")!, who);
+  const back = await upstreamReturns(jar, approved.headers.get("Location")!, who, environment);
   const redirect = new URL(back.headers.get("Location")!);
   const code = redirect.searchParams.get("code");
   if (back.status !== 302 || code === null) {
@@ -207,9 +212,9 @@ export function serveFirstPartyDocument(): () => void {
   return () => spy.mockRestore();
 }
 
-/** The owner's own sign-in in its app: the session cookie, and a first-party token. */
-export async function signInApp(who: SignInAs):
-    Promise<{ jar: Jar; access_token: string; session: string }> {
+/** The owner's app sign-in up to the upstream's return to the callback, and its answer. */
+export async function appCallback(who: SignInAs, environment: DoorsEnv = doorsEnv):
+    Promise<{ jar: Jar; verifier: string; back: Response }> {
   const jar = new Jar();
   const { verifier, challenge } = await pkce();
   const params = new URLSearchParams({
@@ -222,7 +227,14 @@ export async function signInApp(who: SignInAs):
   if (started.status !== 302) {
     throw new Error(`app sign-in: ${started.status} ${await started.text()}`);
   }
-  const back = await upstreamReturns(jar, started.headers.get("Location")!, who);
+  const back = await upstreamReturns(jar, started.headers.get("Location")!, who, environment);
+  return { jar, verifier, back };
+}
+
+/** The owner's own sign-in in its app: the session cookie, and a first-party token. */
+export async function signInApp(who: SignInAs):
+    Promise<{ jar: Jar; access_token: string; session: string }> {
+  const { jar, verifier, back } = await appCallback(who);
   const code = new URL(back.headers.get("Location")!).searchParams.get("code")!;
   const response = await tokenCall({ grant_type: "authorization_code", code,
                                      redirect_uri: WEB_REDIRECT, client_id: WEB_CLIENT,
@@ -266,15 +278,15 @@ export interface ToolResult {
 }
 
 /** A POST to `/mcp` as a 2025-11-25 client on MCP SDK 1.x sends one. */
-export function legacyPost(token: string, message: unknown, headers: Record<string, string> = {}):
-    Promise<Response> {
+export function legacyPost(token: string, message: unknown, headers: Record<string, string> = {},
+                           environment: DoorsEnv = doorsEnv): Promise<Response> {
   return call(new Request(url("/mcp"), {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json",
                Accept: "application/json, text/event-stream",
                "MCP-Protocol-Version": "2025-11-25", ...headers },
     body: JSON.stringify(message),
-  }));
+  }), environment);
 }
 
 /**

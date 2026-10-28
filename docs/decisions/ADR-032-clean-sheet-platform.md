@@ -65,8 +65,9 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      OAuth Provider 1.2.x in the doors Worker, so validating a token spends no
      service call. Client ID Metadata Documents are on; dynamic registration is
      only a flagged, deprecated fallback. WorkOS AuthKit stays the owner's
-     upstream sign-in (owner ids stay its `sub`), always with `prompt=login`, so
-     a later vendor change never breaks a connector.
+     upstream sign-in (owner ids stay its `sub`; any later issuer's subjects are
+     namespaced by issuer), always with `prompt=login`, so a later vendor change
+     never breaks a connector.
    - **Consent is never remembered,** and an MCP grant's props hold the original
      sign-in's time (`authenticated_at`), which no refresh moves. A revoke goes to
      the owner's object first, then revokes the provider's grants.

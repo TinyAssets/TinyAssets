@@ -38,11 +38,26 @@ live acceptance is still owed says so.
   domain-separated (`tinyassets-mcp-client\0issuer\0client_id`), which the research's
   revoke step wrote as `issuer\0client_id`; and the SDK answers a thrown tool error as
   the tool's error result, so a bug is logged in full and answered `internal error`.
+  From slice 7's security review: an outside client naming a redirect on our own origin
+  is refused at `/authorize` (CIMD or DCR alike); sign-out revokes the presented token's
+  grant; each device keeps its own first-party grant (`revokeExistingGrants: false`),
+  while an outside client's re-authorization keeps the provider's default and replaces
+  its earlier grant (per redirect URI for CIMD); a loopback redirect's port is no part of
+  an agent's `family` (RFC 8252 §7.3); a `control` record that is there but malformed or
+  unreadable also closes the owner's surfaces; every body the doors read is bounded; no
+  token exchange callback is installed.
 - [ ] Live AuthKit wiring: an `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
   the code exchange and the ID token's signature, issuer, audience and `auth_time`
-  against its JWKS; production Google and GitHub apps (founder dashboard work). Until
+  against its JWKS; `OWNER_ISSUER` set to AuthKit's issuer (the config guard pins it
+  unset until then); production Google and GitHub apps (founder dashboard work). Until
   then the deployed entry refuses every sign-in loudly (`UNWIRED`).
+- [ ] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
+  fallback (this replaces the research's "use the binder's own clock"), since the fence
+  and the session's 600 s bound both rest on the sign-in's real time. The binder names
+  the owner from the token's issuer and subject: AuthKit's subjects stay owner ids as
+  today, and any later issuer's (Sign in with ChatGPT) are namespaced `iss-<hash>-<sub>`,
+  so linking a second provider to an existing owner is that provider's slice's own act.
 - [ ] DNS, routes and deploy: the doors Worker's routes on `tinyassets.io` (`/mcp`,
   `/api/*`, `/hooks/inbound/*`, `/app/api/*`, `/authorize`, `/oauth/*`,
   `/.well-known/oauth-*`), the `OAUTH_KV` and `DIRECTORY` namespaces, then the handles
@@ -69,7 +84,9 @@ live acceptance is still owed says so.
   an agent's held API-key request is applied with its grant (`_apply_key_request`).
 - [ ] Rate limits: two `ratelimits` bindings, 120 a minute per key and 600 per owner,
   declared approximate (their price and miniflare support unverified); the config guard
-  admits them with their slice.
+  admits them with their slice. They count JSON-RPC messages, not HTTP requests (a
+  2025-11-25 batch is one request of many calls), and a third limit bounds the CIMD
+  metadata fetches an unknown `client_id` makes the provider send.
 - [ ] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
   the agent's doors (5).
 - [ ] Plan correction (doors section): "plus the earlier revision for Claude channels"
